@@ -518,6 +518,7 @@ unsafe fn configure_controller(
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
         let navigation_start_log = events.policy_event.clone();
+        let navigation_started = events.navigation_started.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -533,6 +534,9 @@ unsafe fn configure_controller(
                         .map(|url| navigation_start_policy(url, allowed_file_for_handler.as_ref()))
                     {
                         Some(NavigationStartPolicy::Allow) => {
+                            if let Some(callback) = navigation_started.as_ref() {
+                                callback();
+                            }
                             if let Some(log) = navigation_start_log.as_ref() {
                                 log("navigation_started");
                             }

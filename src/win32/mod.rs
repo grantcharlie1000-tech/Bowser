@@ -1,5 +1,7 @@
 mod window;
 
+pub(crate) use window::schedule_idle_timer;
+
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -30,6 +32,7 @@ pub(crate) const INPUT_ID: u16 = 100;
 pub(crate) const WM_SUBMIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub(crate) const WM_HISTORY_BACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
 pub(crate) const WM_HISTORY_FORWARD: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
+pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
 
 pub(crate) fn post(
     hwnd: HWND,

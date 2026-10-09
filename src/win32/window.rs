@@ -7,23 +7,26 @@ use windows::{
             COLOR_WINDOW, CreateFontIndirectW, DeleteObject, GetSysColorBrush, HFONT, HGDIOBJ,
         },
         System::LibraryLoader::GetModuleHandleW,
+        System::SystemInformation::GetTickCount,
         UI::{
             Controls::{EM_SETCUEBANNER, EM_SETMARGINS},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetKeyState, SetFocus, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT,
+                GetKeyState, GetLastInputInfo, LASTINPUTINFO, SetFocus, VK_LEFT, VK_MENU,
+                VK_RETURN, VK_RIGHT,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, EC_LEFTMARGIN, EC_RIGHTMARGIN, EN_CHANGE, ES_AUTOHSCROLL,
                 GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
-                HMENU, LoadCursorW, MSG, MoveWindow, NONCLIENTMETRICSW, PostQuitMessage,
+                HMENU, KillTimer, LoadCursorW, MSG, MoveWindow, NONCLIENTMETRICSW, PostQuitMessage,
                 RegisterClassW, SIZE_MINIMIZED, SPI_GETNONCLIENTMETRICS, SW_SHOW,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowLongPtrW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SETFONT, WM_SIZE,
-                WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
+                ShowWindow, SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CLOSE,
+                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS,
+                WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+                WS_VISIBLE,
             },
         },
     },
@@ -31,9 +34,23 @@ use windows::{
 };
 
 use super::{INPUT_ID, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_SUBMIT};
-use crate::app::{App, AppRef, layout_client};
+use crate::app::{App, AppRef, IdleTimerAction, layout_client};
 
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
+
+pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
+    unsafe {
+        match action {
+            IdleTimerAction::Kill => {
+                let _ = KillTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER);
+            }
+            IdleTimerAction::Arm(delay) => {
+                let _ = KillTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER);
+                let _ = SetTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER, delay, None);
+            }
+        }
+    }
+}
 
 pub fn dpi_scale(hwnd: HWND) -> u32 {
     (unsafe { GetDpiForWindow(hwnd) }.max(96) / 96).max(1)
@@ -269,6 +286,23 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == super::WM_IDLE_TRIM_TIMER => {
+                if let Some(app) = app {
+                    let _ = KillTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER);
+                    let mut last_input = LASTINPUTINFO {
+                        cbSize: size_of::<LASTINPUTINFO>() as u32,
+                        ..Default::default()
+                    };
+                    let idle_ms = if GetLastInputInfo(&mut last_input).as_bool() {
+                        GetTickCount().wrapping_sub(last_input.dwTime)
+                    } else {
+                        0
+                    };
+                    let action = App::idle_timer_fired(app, idle_ms);
+                    schedule_idle_timer(hwnd, action);
+                }
+                LRESULT(0)
+            }
             WM_SETFOCUS => {
                 if let Some(app) = app {
                     let _ = SetFocus(Some(app.borrow().edit));
@@ -276,6 +310,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_CLOSE => {
+                let _ = KillTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER);
                 if let Some(app) = app {
                     let (mut engine, log) = {
                         let mut state = app.borrow_mut();
@@ -291,6 +326,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = KillTimer(Some(hwnd), super::WM_IDLE_TRIM_TIMER);
                 if let Some(app) = app {
                     let mut state = app.borrow_mut();
                     if !state.input_font.is_invalid() {

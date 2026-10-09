@@ -40,6 +40,7 @@ pub trait EngineAdapter {
 pub struct EngineEvents {
     pub address_changed: Option<std::rc::Rc<dyn Fn(url::Url)>>,
     pub page_usable: Option<std::rc::Rc<dyn Fn()>>,
+    pub navigation_started: Option<std::rc::Rc<dyn Fn()>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }

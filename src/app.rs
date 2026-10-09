@@ -95,6 +95,64 @@ pub fn window_memory_transition(was_minimized: bool, is_minimized: bool) -> Wind
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdleTimerAction {
+    Kill,
+    Arm(u32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IdleMemoryDecision {
+    pub target: MemoryUsageTarget,
+    pub timer: IdleTimerAction,
+}
+
+pub fn idle_memory_decision(
+    minimized: bool,
+    page_loaded: bool,
+    idle_ms: u32,
+    current_target: MemoryUsageTarget,
+) -> IdleMemoryDecision {
+    if minimized {
+        return IdleMemoryDecision {
+            target: MemoryUsageTarget::Low,
+            timer: IdleTimerAction::Kill,
+        };
+    }
+    if !page_loaded {
+        return IdleMemoryDecision {
+            target: MemoryUsageTarget::Normal,
+            timer: IdleTimerAction::Kill,
+        };
+    }
+    if idle_ms == 0 && current_target == MemoryUsageTarget::Normal {
+        return IdleMemoryDecision {
+            target: MemoryUsageTarget::Normal,
+            timer: IdleTimerAction::Arm(3_000),
+        };
+    }
+    if current_target == MemoryUsageTarget::Low {
+        if idle_ms <= 1_000 {
+            return IdleMemoryDecision {
+                target: MemoryUsageTarget::Normal,
+                timer: IdleTimerAction::Arm(3_000),
+            };
+        }
+        return IdleMemoryDecision {
+            target: MemoryUsageTarget::Low,
+            timer: IdleTimerAction::Arm(1_000),
+        };
+    }
+    IdleMemoryDecision {
+        target: if idle_ms >= 3_000 {
+            MemoryUsageTarget::Low
+        } else {
+            MemoryUsageTarget::Normal
+        },
+        timer: IdleTimerAction::Arm(1_000),
+    }
+}
+
 fn valid_viewport_bounds(bounds: windows::Win32::Foundation::RECT) -> bool {
     bounds.right > bounds.left && bounds.bottom > bounds.top
 }
@@ -138,6 +196,7 @@ pub struct App {
     pub memory_target_unsupported_logged: bool,
     pub last_valid_viewport_bounds: Option<windows::Win32::Foundation::RECT>,
     pub has_navigated: bool,
+    pub page_loaded: bool,
 }
 
 pub type AppRef = Rc<RefCell<App>>;
@@ -210,6 +269,7 @@ impl App {
             memory_target_unsupported_logged: false,
             last_valid_viewport_bounds: None,
             has_navigated: false,
+            page_loaded: false,
         }
     }
 
@@ -248,6 +308,7 @@ impl App {
                 }
                 let repeat_boundary = state.has_navigated && state.log.enabled();
                 drop(state);
+                Self::navigation_started(app);
                 if repeat_boundary {
                     let _ = app.borrow().log.record("repeat_navigation_boundary");
                 }
@@ -312,7 +373,17 @@ impl App {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move || {
                     if let Some(app) = events_app.upgrade() {
-                        let _ = app.borrow().log.record("page_usable");
+                        let action = App::page_usable(&app);
+                        win32::schedule_idle_timer(app.borrow().hwnd, action);
+                    }
+                }))
+            },
+            navigation_started: {
+                let events_app = Rc::downgrade(app);
+                Some(Rc::new(move || {
+                    if let Some(app) = events_app.upgrade() {
+                        let action = App::navigation_started(&app);
+                        win32::schedule_idle_timer(app.borrow().hwnd, action);
                     }
                 }))
             },
@@ -498,8 +569,74 @@ impl App {
         }
         if let Some(target) = transition.target {
             Self::set_memory_target_current(app, target);
+            if target == MemoryUsageTarget::Normal {
+                let page_loaded = app.borrow().page_loaded;
+                if page_loaded {
+                    win32::schedule_idle_timer(app.borrow().hwnd, IdleTimerAction::Arm(3_000));
+                }
+            } else {
+                win32::schedule_idle_timer(app.borrow().hwnd, IdleTimerAction::Kill);
+            }
         }
         transition
+    }
+
+    pub fn page_usable(app: &AppRef) -> IdleTimerAction {
+        let decision = {
+            let mut state = app.borrow_mut();
+            state.page_loaded = true;
+            let _ = state.log.record("page_usable");
+            idle_memory_decision(state.minimized, true, 0, state.desired_memory_target)
+        };
+        Self::apply_idle_decision(app, decision);
+        decision.timer
+    }
+
+    pub fn navigation_started(app: &AppRef) -> IdleTimerAction {
+        {
+            let mut state = app.borrow_mut();
+            state.page_loaded = false;
+        }
+        let decision = {
+            let state = app.borrow();
+            idle_memory_decision(state.minimized, false, 0, state.desired_memory_target)
+        };
+        Self::apply_idle_decision(app, decision);
+        decision.timer
+    }
+
+    pub fn idle_timer_fired(app: &AppRef, idle_ms: u32) -> IdleTimerAction {
+        let decision = {
+            let state = app.borrow();
+            idle_memory_decision(
+                state.minimized,
+                state.page_loaded,
+                idle_ms,
+                state.desired_memory_target,
+            )
+        };
+        Self::apply_idle_decision(app, decision);
+        decision.timer
+    }
+
+    fn apply_idle_decision(app: &AppRef, decision: IdleMemoryDecision) {
+        let changed = {
+            let mut state = app.borrow_mut();
+            if state.desired_memory_target == decision.target {
+                false
+            } else {
+                state.desired_memory_target = decision.target;
+                true
+            }
+        };
+        if changed {
+            let event = match decision.target {
+                MemoryUsageTarget::Low => "idle_trim_low",
+                MemoryUsageTarget::Normal => "idle_trim_normal",
+            };
+            let _ = app.borrow().log.record(event);
+            Self::set_memory_target_current(app, decision.target);
+        }
     }
 
     fn set_memory_target_current(app: &AppRef, target: MemoryUsageTarget) {
@@ -698,6 +835,7 @@ mod tests {
             memory_target_unsupported_logged: false,
             last_valid_viewport_bounds: Some(bounds),
             has_navigated: false,
+            page_loaded: false,
         }))
     }
 
@@ -1079,6 +1217,80 @@ mod tests {
                 Some(MemoryUsageTarget::Low)
             ]
         );
+    }
+
+    #[test]
+    fn idle_policy_trims_only_loaded_visible_pages_after_three_seconds() {
+        let decision = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
+        assert_eq!(decision.target, MemoryUsageTarget::Low);
+        assert_eq!(decision.timer, IdleTimerAction::Arm(1_000));
+        assert_eq!(
+            idle_memory_decision(false, true, 2_999, MemoryUsageTarget::Normal),
+            IdleMemoryDecision {
+                target: MemoryUsageTarget::Normal,
+                timer: IdleTimerAction::Arm(1_000),
+            }
+        );
+        assert_eq!(
+            idle_memory_decision(false, false, 30_000, MemoryUsageTarget::Normal).timer,
+            IdleTimerAction::Kill
+        );
+    }
+
+    #[test]
+    fn idle_policy_restores_after_activity_and_preserves_minimize_priority() {
+        assert_eq!(
+            idle_memory_decision(false, true, 999, MemoryUsageTarget::Low),
+            IdleMemoryDecision {
+                target: MemoryUsageTarget::Normal,
+                timer: IdleTimerAction::Arm(3_000),
+            }
+        );
+        assert_eq!(
+            idle_memory_decision(true, true, 0, MemoryUsageTarget::Normal),
+            IdleMemoryDecision {
+                target: MemoryUsageTarget::Low,
+                timer: IdleTimerAction::Kill,
+            }
+        );
+    }
+
+    #[test]
+    fn idle_timer_applies_targets_and_logs_benchmark_transitions() {
+        let path =
+            std::env::temp_dir().join(format!("bowser-idle-trim-{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let log = Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        {
+            let mut state = app.borrow_mut();
+            state.log = log.clone();
+            state.engine = Some(recording_engine(calls.clone(), []));
+            state.page_loaded = true;
+            state.effective_memory_target = Some(MemoryUsageTarget::Normal);
+        }
+
+        assert_eq!(
+            App::idle_timer_fired(&app, 3_000),
+            IdleTimerAction::Arm(1_000)
+        );
+        assert_eq!(
+            App::idle_timer_fired(&app, 2_000),
+            IdleTimerAction::Arm(1_000)
+        );
+        assert_eq!(
+            App::idle_timer_fired(&app, 1_000),
+            IdleTimerAction::Arm(3_000)
+        );
+        assert_eq!(*calls.borrow(), ["target:Low", "target:Normal"]);
+        drop(app);
+        drop(log);
+
+        let events = std::fs::read_to_string(&path).unwrap();
+        assert!(events.contains("idle_trim_low,"));
+        assert!(events.contains("idle_trim_normal,"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
