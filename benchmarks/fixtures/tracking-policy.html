@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TRACKING_POLICY_LOADING</title>
+<img id="essential-image" src="/essential.png" alt="">
+<script src="/essential.js"></script>
+<script>
+(() => {
+  const state = Object.assign(window.bowserSmoke || {}, { image: false, candidate: 'pending' });
+  window.bowserSmoke = state;
+  const publish = () => {
+    if (state.script && state.image) {
+      document.title = `TRACKING_POLICY_READY|script=${state.script}|image=${state.image}|candidate=${state.candidate}`;
+    }
+  };
+  const essentialImage = document.getElementById('essential-image');
+  essentialImage.addEventListener('load', () => { state.image = true; publish(); });
+  essentialImage.addEventListener('error', () => { state.image = false; publish(); });
+  if (essentialImage.complete) { state.image = essentialImage.naturalWidth > 0; publish(); }
+  const candidate = new Image();
+  candidate.onload = () => { state.candidate = 'loaded'; publish(); };
+  candidate.onerror = () => { state.candidate = 'error'; publish(); };
+  candidate.src = 'https://www.google-analytics.com/g/collect?v=2&tid=G-BOWSER-SMOKE&cid=1&en=page_view';
+  window.setTimeout(() => { if (state.candidate === 'pending') state.candidate = 'timeout'; publish(); }, 8000);
+})();
+</script>

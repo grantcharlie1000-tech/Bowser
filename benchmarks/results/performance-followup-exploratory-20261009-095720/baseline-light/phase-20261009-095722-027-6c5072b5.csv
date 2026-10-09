@@ -1,0 +1,3 @@
+﻿"browser","workload","launch_condition","run","phase","start_event","end_event","start_qpc","end_qpc","duration_ms","app_elapsed_crosscheck_delta_ms","valid","invalid_reason","tracking_prevention_requested","tracking_policy_valid"
+"Bowser","light","cold-profile","1","event_log_parse",,,,,,,"False","event_log_missing","","False"
+"Bowser","light","warm-profile","1","event_log_parse",,,,,,,"False","event_log_missing","","False"

@@ -1,0 +1,260 @@
+﻿{
+    "captured_utc":  "2026-10-08T20:47:59.6972581Z",
+    "outcome":  "PASS",
+    "browser":  "Bowser",
+    "version":  null,
+    "bowser_sha256_before":  "c1a8b654574a4df64890a39c2a5898bf06fceda7ab8ff25735cc352bc5b1a0b6",
+    "bowser_sha256_after":  "c1a8b654574a4df64890a39c2a5898bf06fceda7ab8ff25735cc352bc5b1a0b6",
+    "bowser_sha256_unchanged":  true,
+    "process_id":  60712,
+    "process_group_shutdown_confirmed":  true,
+    "temporary_profile_removed":  true,
+    "artifact_directory":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-60500a0d654841f8a2ee0471ce4a82af",
+    "event_log_csv":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-60500a0d654841f8a2ee0471ce4a82af\\events.csv",
+    "request_log":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-60500a0d654841f8a2ee0471ce4a82af\\requests.txt",
+    "event_log_exists":  true,
+    "request_log_exists":  true,
+    "local_http_requests":  [
+                                "/one",
+                                "/favicon.ico",
+                                "/two",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/",
+                                "/popup-user",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/download",
+                                "/slow",
+                                "/"
+                            ],
+    "external_protocol_scheme":  "bowser-smoke-b520e3c4bcd34575bb743f1420804521",
+    "external_protocol_event_observed":  true,
+    "external_handler_marker_created":  false,
+    "real_web_search":  {
+                            "requested":  true,
+                            "outcome":  "PASS",
+                            "query":  "Rust WebView2",
+                            "provider_url":  "https://html.duckduckgo.com/html/?q=Rust%20WebView2",
+                            "provider_native_address":  "https://html.duckduckgo.com/html/?q=Rust%20WebView2",
+                            "provider_title":  "Rust WebView2 at DuckDuckGo",
+                            "visible_result_name":  "webview2 - Rust - Docs.rs",
+                            "result_url":  "https://docs.rs/webview2/latest/webview2/",
+                            "result_native_address":  "https://docs.rs/webview2/latest/webview2/",
+                            "result_title":  "webview2 - Rust",
+                            "same_window":  true,
+                            "detail":  "Visible UIA result hyperlink clicked at its physical BoundingRectangle center; WebView source and native address EDIT agree on the final non-provider HTTP(S) URL, the document title identifies the destination page, and the original Bowser HWND remains visible."
+                        },
+    "click_diagnostics":  [
+                              {
+                                  "name":  "Open local search result / second page",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  46,
+                                  "top":  105,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  126,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "Open user initiated popup",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  46,
+                                  "top":  157,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  178,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "Open delayed non-user popup",
+                                  "control_type":  "ControlType.Button",
+                                  "left":  46,
+                                  "top":  209,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  230,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "Request geolocation permission",
+                                  "control_type":  "ControlType.Button",
+                                  "left":  46,
+                                  "top":  261,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  282,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "Start test download",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  46,
+                                  "top":  313,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  334,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "Open blocked external protocol",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  46,
+                                  "top":  365,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  246,
+                                  "click_y":  386,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              },
+                              {
+                                  "name":  "webview2 - Rust - Docs.rs",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  110,
+                                  "top":  228,
+                                  "width":  220,
+                                  "height":  24,
+                                  "click_x":  220,
+                                  "click_y":  240,
+                                  "main_left":  26,
+                                  "main_top":  26,
+                                  "main_right":  1026,
+                                  "main_bottom":  746
+                              }
+                          ],
+    "failure_screenshot":  null,
+    "failure_uia_controls":  [
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "https://docs.rs/webview2/latest/webview2/",
+                                     "offscreen":  false,
+                                     "left":  34,
+                                     "top":  57,
+                                     "width":  984,
+                                     "height":  36
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "webview2 - Rust",
+                                     "offscreen":  false,
+                                     "left":  34,
+                                     "top":  93,
+                                     "width":  984,
+                                     "height":  645
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "webview2 - Rust - Web content",
+                                     "offscreen":  false,
+                                     "left":  34,
+                                     "top":  93,
+                                     "width":  984,
+                                     "height":  645
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "webview2 - Rust - Web content",
+                                     "offscreen":  false,
+                                     "left":  34,
+                                     "top":  93,
+                                     "width":  984,
+                                     "height":  645
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "webview2 - Rust - Web content",
+                                     "offscreen":  false,
+                                     "left":  34,
+                                     "top":  93,
+                                     "width":  984,
+                                     "height":  645
+                                 }
+                             ],
+    "tests":  [
+                  {
+                      "test":  "empty_launch_native_input",
+                      "result":  "PASS",
+                      "detail":  "Visible native window and EDIT control found."
+                  },
+                  {
+                      "test":  "lazy_engine_start",
+                      "result":  "PASS",
+                      "detail":  "No msedgewebview2.exe descendant before navigation."
+                  },
+                  {
+                      "test":  "address_submission_navigation",
+                      "result":  "PASS",
+                      "detail":  "Address field verified before Enter using SendInput; loopback HTTP navigation reached BOWSER_SMOKE_ONE."
+                  },
+                  {
+                      "test":  "result_link_and_history",
+                      "result":  "PASS",
+                      "detail":  "Clicked the local result link; Alt+Left and Alt+Right title markers observed."
+                  },
+                  {
+                      "test":  "user_popup_same_view",
+                      "result":  "PASS",
+                      "detail":  "User-initiated target=_blank loaded in the original main HWND; popup_same_view event observed."
+                  },
+                  {
+                      "test":  "non_user_popup_blocked",
+                      "result":  "PASS",
+                      "detail":  "Delayed popup produced popup_blocked and left the current document usable."
+                  },
+                  {
+                      "test":  "permission_denied",
+                      "result":  "PASS",
+                      "detail":  "Local-page geolocation request produced permission_denied."
+                  },
+                  {
+                      "test":  "download_cancelled",
+                      "result":  "PASS",
+                      "detail":  "Local attachment request produced download_cancelled."
+                  },
+                  {
+                      "test":  "external_protocol_blocked",
+                      "result":  "PASS",
+                      "detail":  "scheme=bowser-smoke-b520e3c4bcd34575bb743f1420804521; external_protocol_blocked observed; handler marker absent after 1 second."
+                  },
+                  {
+                      "test":  "real_web_search_result",
+                      "result":  "PASS",
+                      "detail":  "query=Rust WebView2; provider=https://html.duckduckgo.com/html/?q=Rust%20WebView2; title=Rust WebView2 at DuckDuckGo; result=\"webview2 - Rust - Docs.rs\" -\u003e https://docs.rs/webview2/latest/webview2/; native address=https://docs.rs/webview2/latest/webview2/; destination title=webview2 - Rust; same HWND"
+                  },
+                  {
+                      "test":  "close_during_loading",
+                      "result":  "PASS",
+                      "detail":  "The browser and all observed descendants exited after WM_CLOSE while /slow was pending."
+                  },
+                  {
+                      "test":  "frozen_binary_check",
+                      "result":  "PASS",
+                      "detail":  "Bowser release SHA-256 unchanged: c1a8b654574a4df64890a39c2a5898bf06fceda7ab8ff25735cc352bc5b1a0b6"
+                  }
+              ]
+}

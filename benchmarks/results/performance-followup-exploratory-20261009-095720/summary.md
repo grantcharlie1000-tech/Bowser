@@ -1,0 +1,9 @@
+# Exploratory performance follow-up — 9 October 2026
+
+**Outcome: no valid runtime comparison.** One baseline-only light-fixture invocation produced two invalid rows. Bowser's title marker did not appear within the 120-second timeout and the pre-performance baseline emitted no event log, so the harness marked both rows invalid. The observed window-visible values (460.702 ms fresh profile; 196.195 ms reused profile) are not page-ready timings. Native memory fields are blank because no usable page snapshot was reached. No candidate executable was launched and no demanding-fixture comparison was made.
+
+The baseline binary is the frozen pre-performance executable, SHA-256 `d5659a77ddb559a100ab57cf57576233b2a7c0a0a1db6054ed9a920804ed279d` (670,720 bytes; product version 0.0.1). The intended candidate was pinned at SHA-256 `1da04761536afc0824dadbf8dcaccc90684a631b0db53d9dae0831195a87bb23` (692,736 bytes), but it was not run. The common runner SHA-256 was `fc370ec0ceb2f4f3cf74c06fbddeae7c751cb82c09dd55069d27017877244c51`. Host metadata: Windows 10 Home, build 19045; installed WebView2 runtime versions reported by the host were 152.0.4191.66 and 154.0.4258.62. The selected runtime for a successful baseline page was not established.
+
+The original launcher artifact was left unchanged. The 60% page-ready reduction and 20% native private-memory reduction remain unverified. No energy result was collected. The local policy fixtures contain no third-party requests, so this attempt provides no real-site tracking-prevention savings evidence. The Task5 policy smoke validates configuration and behavior, not memory reduction.
+
+Raw invocation metadata, runner JSON/CSV, phase CSV, and the failed-sample reasons are preserved beside this report. The earlier pre-fix invocation diagnostic is in `../performance-followup-exploratory-20261009-094815/` and contains no app launch or sample rows.

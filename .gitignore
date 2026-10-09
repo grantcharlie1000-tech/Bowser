@@ -1,0 +1,6 @@
+/target/
+/.superpowers/
+/benchmarks/results/profiles/
+/benchmarks/results/**/profiles-*/
+/benchmarks/results/pilot-*/
+/benchmarks/results/*.events.csv

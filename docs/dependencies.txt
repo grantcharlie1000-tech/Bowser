@@ -1,0 +1,5 @@
+bowser v0.0.1 (C:\Users\charlie\Documents\ChatGPT\Bowser)
+├── url v2.5.8
+├── webview2-com v0.39.1
+├── windows v0.62.2
+└── windows-core v0.62.2

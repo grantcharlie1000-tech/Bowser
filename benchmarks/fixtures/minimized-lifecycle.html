@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MINIMIZED_LIFECYCLE_LOADING</title>
+<audio id="local-media" muted loop preload="auto"></audio>
+<script>
+(() => {
+  const state = { ticks: 0, heartbeats: 0, media: 'unsupported' };
+  window.bowserLifecycle = state;
+  const video = document.getElementById('local-media');
+  // Generate a tiny valid silent WAV locally so the fixture needs no media file or network.
+  const sampleRate = 8000, sampleCount = 80000, wav = new ArrayBuffer(44 + sampleCount);
+  const view = new DataView(wav), write = (offset, value) => {
+    for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  write(0, 'RIFF'); view.setUint32(4, 36 + sampleCount, true); write(8, 'WAVE');
+  write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate, true); view.setUint16(32, 1, true); view.setUint16(34, 8, true);
+  write(36, 'data'); view.setUint32(40, sampleCount, true);
+  new Uint8Array(wav, 44).fill(128);
+  video.src = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+  video.addEventListener('loadedmetadata', () => {
+    state.media = 'ready';
+    video.play().then(() => { state.media = 'playing'; }).catch(() => { state.media = 'blocked'; });
+  });
+  video.addEventListener('error', () => { state.media = 'unsupported'; });
+  window.setInterval(() => { state.ticks++; }, 250);
+  window.setInterval(() => {
+    fetch('/heartbeat?tick=' + state.ticks + '&media=' + state.media + '&time=' + video.currentTime.toFixed(2), { cache: 'no-store' })
+      .then(() => { state.heartbeats++; }).catch(() => {});
+  }, 500);
+  window.setInterval(() => {
+    document.title = `LIFECYCLE|ticks=${state.ticks}|heartbeats=${state.heartbeats}|media=${state.media}|time=${video.currentTime.toFixed(2)}`;
+  }, 250);
+})();
+</script>

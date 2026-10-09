@@ -1,0 +1,9 @@
+{
+  "arm": "baseline",
+  "workload": "light",
+  "executable": "C:\\Users\\charlie\\AppData\\Local\\Temp\\Bowser-performance-baselines-20261009-083701-af8d0602\\target\\x86_64-pc-windows-msvc\\release\\bowser.exe",
+  "sha256": "d5659a77ddb559a100ab57cf57576233b2a7c0a0a1db6054ed9a920804ed279d",
+  "started_utc": "2026-10-09T08:48:15.6702027Z",
+  "exit_code": 1,
+  "output_directory": "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\performance-followup-exploratory-20261009-094815\\baseline-light"
+}

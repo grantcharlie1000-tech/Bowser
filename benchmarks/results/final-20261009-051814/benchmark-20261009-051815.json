@@ -1,0 +1,52 @@
+﻿{
+    "captured_utc":  "2026-10-09T04:18:18.0749071Z",
+    "computer":  "LAPTOP-EMHV4OCC",
+    "os":  "Microsoft Windows 10 Home",
+    "os_version":  "10.0.19045",
+    "os_build":  "19045",
+    "cpu":  "Intel(R) Core(TM) i5-7300HQ CPU @ 2.50GHz",
+    "logical_processors":  4,
+    "physical_memory_bytes":  17057812480,
+    "powershell":  "5.1.19041.6456",
+    "rustc":  "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "target":  "x86_64-pc-windows-msvc",
+    "stopwatch_frequency":  10000000,
+    "bowser_executable":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\target\\release\\bowser.exe",
+    "bowser_app_disk_bytes":  666112,
+    "bowser_version":  "0.0.1",
+    "edge_executable":  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "edge_version":  "154.0.4258.62",
+    "chrome_executable":  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "chrome_version":  "154.0.8037.98",
+    "input_sha256_before":  {
+                                "bowser_exe":  "c1a8b654574a4df64890a39c2a5898bf06fceda7ab8ff25735cc352bc5b1a0b6",
+                                "edge_exe":  "d366716ba3cd2cc67d92d9b712b129fea4c8df769961d1e04b037ce034780ad0",
+                                "chrome_exe":  "6849d2982038de9f9489a7b3858f3b785b7fec06a842c93c517281d21995c8ca",
+                                "light_fixture":  "f41a4c2a2daf518fe5dc16eb9516a84a950a4272ca8d6970062ee4a7c8ee7f29",
+                                "demanding_fixture":  "4e70b7d15a5aad62402a5448407bef399a587cb36e56a1fd42d9d5ba8be544b7"
+                            },
+    "webview2_runtime":  "152.0.4191.66;154.0.4258.62",
+    "webview2_runtime_versioned_directories_bytes":  1963805232,
+    "fixtures":  "light: 24 list rows and a 320x180 static canvas; demanding: 2,400 cards (9,600 DOM nodes) and 1,200x675 opaque canvas (~3.09 MiB RGBA). No remote resources or ongoing animation.",
+    "workload_definitions":  "blank-idle: about:blank plus empty-page memory/idle CPU; blank-submit: launch, focus/read back input, Enter, with submitted_ms immediately at key-up and no later samples; light/demanding: direct local file URL, marker timing immediately after visible window, then page memory/idle CPU.",
+    "conditions":  "cold-profile = fresh browser profile; warm-profile = process restart with the same profile. Windows OS cache was not flushed and is uncontrolled.",
+    "background_activity":  "CPU/RAM group measurements include only the launched application and its descendants. Unrelated desktop processes are excluded from app totals; ambient machine activity is uncontrolled.",
+    "idle_seconds":  30,
+    "runs_per_condition":  5,
+    "browser_order":  "Browser order rotates for each workload/run/condition to balance launch-order cache bias.",
+    "keep_profiles":  false,
+    "browser_filter":  "All",
+    "input_phrase":  "Bowser reproducible browser benchmark",
+    "input_method":  "Windows Forms SendKeys.SendWait after focusing the browser address UI. Bowser EDIT text is read back; if synthetic virtual-key/SendKeys entry does not populate it, verified WM_SETTEXT fallback is recorded before Enter. Chromium address bar content is submitted through its focused UI.",
+    "input_sha256_after":  {
+                               "bowser_exe":  "c1a8b654574a4df64890a39c2a5898bf06fceda7ab8ff25735cc352bc5b1a0b6",
+                               "edge_exe":  "d366716ba3cd2cc67d92d9b712b129fea4c8df769961d1e04b037ce034780ad0",
+                               "chrome_exe":  "6849d2982038de9f9489a7b3858f3b785b7fec06a842c93c517281d21995c8ca",
+                               "light_fixture":  "f41a4c2a2daf518fe5dc16eb9516a84a950a4272ca8d6970062ee4a7c8ee7f29",
+                               "demanding_fixture":  "4e70b7d15a5aad62402a5448407bef399a587cb36e56a1fd42d9d5ba8be544b7"
+                           },
+    "inputs_unchanged":  true,
+    "changed_inputs":  [
+
+                       ]
+}

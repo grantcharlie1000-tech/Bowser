@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOWSER_BENCH_WAIT_LIGHT</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.45 "Segoe UI", sans-serif; }
+    body { margin: 0; padding: 24px; color: #1d2733; background: #eef3f7; }
+    main { max-width: 760px; margin: auto; padding: 24px; background: white; border: 1px solid #d5dee7; }
+    h1 { margin-top: 0; }
+    ul { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 0; list-style: none; }
+    li { padding: 10px; background: #f2f6fa; border: 1px solid #dce5ed; }
+    canvas { display: block; width: 320px; height: 180px; border: 1px solid #8497aa; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Bowser local light benchmark</h1>
+    <p>A deterministic, local-only document with a small DOM and one static canvas.</p>
+    <ul id="items"></ul>
+    <canvas id="payload" width="320" height="180" aria-label="Static color grid"></canvas>
+    <p id="description">Ready marker appears after document content and two animation frames.</p>
+  </main>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const list = document.getElementById("items");
+      for (let i = 0; i < 24; i += 1) {
+        const item = document.createElement("li");
+        item.textContent = "Fixture item " + String(i + 1).padStart(2, "0");
+        list.appendChild(item);
+      }
+      const canvas = document.getElementById("payload");
+      const ctx = canvas.getContext("2d", { alpha: false });
+      for (let y = 0; y < 180; y += 16) {
+        for (let x = 0; x < 320; x += 16) {
+          const tile = ((x >> 4) + (y >> 4)) % 2;
+          ctx.fillStyle = tile ? "#3977a8" : "#d5e7f4";
+          ctx.fillRect(x, y, 16, 16);
+        }
+      }
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          document.title = "BOWSER_BENCH_READY_LIGHT";
+        });
+      });
+    });
+  </script>
+</body>
+</html>

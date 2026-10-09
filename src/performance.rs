@@ -1,0 +1,760 @@
+use crate::engine::TrackingPreventionLevel;
+use std::{
+    cell::RefCell,
+    fs::File,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    time::Instant,
+};
+use url::Url;
+
+#[derive(Debug, Default)]
+pub struct LaunchOptions {
+    pub benchmark_log: Option<PathBuf>,
+    pub user_data_dir: Option<PathBuf>,
+    pub benchmark_url: Option<Url>,
+    pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
+}
+
+impl LaunchOptions {
+    pub fn parse() -> Result<Self, String> {
+        let args = std::env::args_os()
+            .skip(1)
+            .map(|arg| {
+                arg.into_string()
+                    .map_err(|_| "Arguments must be valid Unicode".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::parse_from(
+            args,
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/fixtures"),
+        )
+    }
+    pub fn parse_from(
+        args: impl IntoIterator<Item = String>,
+        fixtures: &Path,
+    ) -> Result<Self, String> {
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        Self::parse_from_with_production_profile(args, fixtures, local_app_data.as_deref())
+    }
+
+    #[cfg(test)]
+    fn parse_from_with_local_app_data(
+        args: impl IntoIterator<Item = String>,
+        fixtures: &Path,
+        local_app_data: &Path,
+    ) -> Result<Self, String> {
+        Self::parse_from_with_production_profile(args, fixtures, Some(local_app_data))
+    }
+
+    fn parse_from_with_production_profile(
+        args: impl IntoIterator<Item = String>,
+        fixtures: &Path,
+        local_app_data: Option<&Path>,
+    ) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut raw_url = None;
+        let mut iter = args.into_iter();
+        while let Some(flag) = iter.next() {
+            if !matches!(
+                flag.as_str(),
+                "--benchmark-log"
+                    | "--benchmark-user-data-dir"
+                    | "--benchmark-url"
+                    | "--benchmark-tracking-prevention"
+            ) {
+                return Err(format!("Unknown argument: {flag}"));
+            }
+            let value = iter
+                .next()
+                .filter(|v| !v.is_empty() && !v.starts_with("--"))
+                .ok_or_else(|| format!("Missing value for {flag}"))?;
+            match flag.as_str() {
+                "--benchmark-log" => {
+                    if options
+                        .benchmark_log
+                        .replace(PathBuf::from(value))
+                        .is_some()
+                    {
+                        return Err("Duplicate benchmark log argument".into());
+                    }
+                }
+                "--benchmark-user-data-dir" => {
+                    if options
+                        .user_data_dir
+                        .replace(PathBuf::from(value))
+                        .is_some()
+                    {
+                        return Err("Duplicate benchmark profile argument".into());
+                    }
+                }
+                "--benchmark-tracking-prevention" => {
+                    let level = match value.as_str() {
+                        "balanced" => TrackingPreventionLevel::Balanced,
+                        "strict" => TrackingPreventionLevel::Strict,
+                        _ => {
+                            return Err(
+                                "Benchmark tracking prevention must be balanced or strict".into()
+                            );
+                        }
+                    };
+                    if options
+                        .benchmark_tracking_prevention
+                        .replace(level)
+                        .is_some()
+                    {
+                        return Err("Duplicate benchmark tracking prevention argument".into());
+                    }
+                }
+                _ => {
+                    if raw_url.replace(value).is_some() {
+                        return Err("Duplicate benchmark URL argument".into());
+                    }
+                }
+            }
+        }
+        if options.benchmark_log.is_none()
+            && (options.user_data_dir.is_some()
+                || raw_url.is_some()
+                || options.benchmark_tracking_prevention.is_some())
+        {
+            return Err("Benchmark profile and URL require --benchmark-log".into());
+        }
+        if options.benchmark_tracking_prevention.is_some() && options.user_data_dir.is_none() {
+            return Err("Benchmark tracking prevention requires --benchmark-user-data-dir".into());
+        }
+        if options
+            .user_data_dir
+            .as_ref()
+            .is_some_and(|p| !p.is_absolute())
+        {
+            return Err("Benchmark user-data directory must be absolute".into());
+        }
+        if let Some(text) = raw_url {
+            let url = Url::parse(&text).map_err(|e| format!("Invalid benchmark URL: {e}"))?;
+            let path = url
+                .to_file_path()
+                .map_err(|_| "Benchmark URL must be a local file URL".to_owned())?;
+            let path = path
+                .canonicalize()
+                .map_err(|e| format!("Cannot resolve benchmark fixture: {e}"))?;
+            let root = fixtures
+                .canonicalize()
+                .map_err(|e| format!("Cannot resolve fixture directory: {e}"))?;
+            if !path.is_file() || !path.starts_with(&root) {
+                return Err("Benchmark URL must be a file inside benchmarks/fixtures".into());
+            }
+            options.benchmark_url = Some(
+                Url::from_file_path(path).map_err(|_| "Cannot encode fixture path".to_owned())?,
+            );
+        }
+        if let Some(profile) = &options.user_data_dir {
+            if options.benchmark_tracking_prevention.is_some() {
+                let local_app_data = local_app_data.ok_or_else(|| {
+                    "Cannot safely compare the benchmark profile without LOCALAPPDATA".to_owned()
+                })?;
+                let production_profile = local_app_data.join("Bowser").join("WebView2");
+                let requested = canonicalize_for_comparison(profile)?;
+                let production = canonicalize_for_comparison(&production_profile)?;
+                if windows_path_keys_equal_paths(&requested, &production) {
+                    return Err(
+                        "Benchmark tracking prevention cannot use Bowser's production WebView2 profile".into(),
+                    );
+                }
+            }
+            ensure_benchmark_profile(profile)?;
+        }
+        Ok(options)
+    }
+}
+
+fn canonicalize_for_comparison(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("Benchmark profile path must be absolute".into());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+
+    let mut existing = normalized.clone();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::canonicalize(&existing) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let name = existing.file_name().ok_or_else(|| {
+                    format!("Cannot resolve profile path {}: {error}", path.display())
+                })?;
+                missing.push(name.to_os_string());
+                if !existing.pop() {
+                    return Err(format!(
+                        "Cannot resolve profile path {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Cannot resolve profile path {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn windows_path_keys_equal(left: &str, right: &str) -> bool {
+    fn key(path: &str) -> String {
+        let path = path.replace('/', "\\");
+        let trimmed = path.trim_end_matches('\\');
+        let normalized = if trimmed.len() == 2 && trimmed.ends_with(':') && path.ends_with('\\') {
+            format!("{trimmed}\\")
+        } else {
+            trimmed.to_owned()
+        };
+        normalized.to_ascii_lowercase()
+    }
+    key(left) == key(right)
+}
+
+fn windows_path_keys_equal_paths(left: &Path, right: &Path) -> bool {
+    windows_path_keys_equal(&left.to_string_lossy(), &right.to_string_lossy())
+}
+
+fn ensure_benchmark_profile(path: &Path) -> Result<(), String> {
+    const OWNER: &str = "Bowser benchmark WebView2 profile v1\n";
+    let marker = path.join(".bowser-benchmark-profile");
+    if path.exists() {
+        if std::fs::read_to_string(&marker).ok().as_deref() == Some(OWNER) {
+            return Ok(());
+        }
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|e| format!("Cannot inspect benchmark profile: {e}"))?;
+        if entries.next().is_some() {
+            return Err("Benchmark profile must be empty or owned by Bowser; existing browser data will not be reused".into());
+        }
+    }
+    std::fs::create_dir_all(path).map_err(|e| format!("Cannot create benchmark profile: {e}"))?;
+    std::fs::write(marker, OWNER)
+        .map_err(|e| format!("Cannot mark isolated benchmark profile: {e}"))
+}
+
+pub struct PerfLog {
+    active: Option<ActiveLog>,
+}
+struct ActiveLog {
+    start: Instant,
+    output: RefCell<File>,
+    failure: RefCell<Option<String>>,
+}
+impl PerfLog {
+    pub fn new(path: Option<&Path>) -> io::Result<Self> {
+        let active = if let Some(path) = path {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = File::create(path)?;
+            writeln!(file, "event,elapsed_ms,qpc_ticks")?;
+            Some(ActiveLog {
+                start: Instant::now(),
+                output: RefCell::new(file),
+                failure: RefCell::new(None),
+            })
+        } else {
+            None
+        };
+        Ok(Self { active })
+    }
+    pub fn enabled(&self) -> bool {
+        self.active.is_some()
+    }
+    pub fn failure(&self) -> Option<String> {
+        self.active
+            .as_ref()
+            .and_then(|active| active.failure.borrow().clone())
+    }
+    pub fn record(&self, event: &str) -> io::Result<()> {
+        let Some(active) = &self.active else {
+            return Ok(());
+        };
+        let result = (|| {
+            if event.is_empty() || !event.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid event name",
+                ));
+            }
+            let mut tick = 0;
+            // QPC is a system-wide monotonic timestamp shared with the harness.
+            unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut tick) }
+                .map_err(io::Error::other)?;
+            {
+                let mut file = active.output.borrow_mut();
+                writeln!(
+                    file,
+                    "{event},{:.6},{tick}",
+                    active.start.elapsed().as_secs_f64() * 1000.0
+                )?;
+                file.flush()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            let mut failure = active.failure.borrow_mut();
+            if failure.is_none() {
+                *failure = Some(format!(
+                    "Benchmark event '{event}' could not be recorded: {error}"
+                ));
+            }
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+    #[test]
+    fn ordinary_launch_has_no_instrumentation() {
+        let options =
+            LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing")).unwrap();
+        assert!(options.benchmark_log.is_none());
+        assert!(!PerfLog::new(None).unwrap().enabled());
+    }
+    #[test]
+    fn measurement_flags_require_log() {
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--benchmark-user-data-dir", "C:\\somewhere"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn unknown_or_missing_options_fail() {
+        assert!(LaunchOptions::parse_from(args(&["--unknown"]), Path::new("missing")).is_err());
+        assert!(
+            LaunchOptions::parse_from(args(&["--benchmark-log"]), Path::new("missing")).is_err()
+        );
+    }
+    #[test]
+    fn fixture_escape_is_rejected() {
+        let root = std::env::temp_dir().join(format!("bowser-perf-path-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("fixtures")).unwrap();
+        std::fs::write(root.join("outside.html"), "outside").unwrap();
+        let url = Url::from_file_path(root.join("outside.html"))
+            .unwrap()
+            .to_string();
+        let result = LaunchOptions::parse_from(
+            args(&["--benchmark-log", "events.csv", "--benchmark-url", &url]),
+            &root.join("fixtures"),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(result.is_err());
+    }
+    #[test]
+    fn existing_fixture_and_isolated_profile_are_accepted_only_in_measurement_mode() {
+        let root = std::env::temp_dir().join(format!("bowser-perf-valid-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("fixtures")).unwrap();
+        let fixture = root.join("fixtures/light.html");
+        std::fs::write(&fixture, "light").unwrap();
+        let url = Url::from_file_path(&fixture).unwrap().to_string();
+        let profile = root.join("profile").to_string_lossy().to_string();
+        let result = LaunchOptions::parse_from(
+            args(&[
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-user-data-dir",
+                &profile,
+                "--benchmark-url",
+                &url,
+            ]),
+            &root.join("fixtures"),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        let options = result.unwrap();
+        assert_eq!(options.user_data_dir, Some(PathBuf::from(profile)));
+        assert_eq!(options.benchmark_url.unwrap().scheme(), "file");
+    }
+    #[test]
+    fn remote_benchmark_url_and_duplicate_flags_are_rejected() {
+        assert!(
+            LaunchOptions::parse_from(
+                args(&[
+                    "--benchmark-log",
+                    "events.csv",
+                    "--benchmark-url",
+                    "https://example.com"
+                ]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--benchmark-log", "one.csv", "--benchmark-log", "two.csv"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tracking_prevention_is_opt_in_and_requires_an_isolated_logged_profile() {
+        let root = std::env::temp_dir().join(format!("bowser-policy-{}", std::process::id()));
+        let fixtures = root.join("fixtures");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(
+            profile.join(".bowser-benchmark-profile"),
+            "Bowser benchmark WebView2 profile v1\n",
+        )
+        .unwrap();
+        let local_app_data = root.join("local-app-data");
+
+        let default = LaunchOptions::parse_from_with_local_app_data(
+            Vec::<String>::new(),
+            &fixtures,
+            &local_app_data,
+        )
+        .unwrap();
+        assert_eq!(default.benchmark_tracking_prevention, None);
+
+        for (value, expected) in [
+            ("balanced", crate::engine::TrackingPreventionLevel::Balanced),
+            ("strict", crate::engine::TrackingPreventionLevel::Strict),
+        ] {
+            let profile_text = profile.to_string_lossy().to_string();
+            let options = LaunchOptions::parse_from_with_local_app_data(
+                args(&[
+                    "--benchmark-log",
+                    "events.csv",
+                    "--benchmark-user-data-dir",
+                    &profile_text,
+                    "--benchmark-tracking-prevention",
+                    value,
+                ]),
+                &fixtures,
+                &local_app_data,
+            )
+            .unwrap();
+            assert_eq!(options.benchmark_tracking_prevention, Some(expected));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tracking_prevention_rejects_missing_invalid_and_duplicate_values() {
+        let root = std::env::temp_dir().join(format!("bowser-policy-args-{}", std::process::id()));
+        let fixtures = root.join("fixtures");
+        let profile = root.join("profile");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(
+            profile.join(".bowser-benchmark-profile"),
+            "Bowser benchmark WebView2 profile v1\n",
+        )
+        .unwrap();
+        let profile_text = profile.to_string_lossy().to_string();
+        let local_app_data = root.join("local-app-data");
+
+        for values in [
+            vec!["--benchmark-tracking-prevention"],
+            vec!["--benchmark-tracking-prevention", "none"],
+            vec![
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-user-data-dir",
+                &profile_text,
+                "--benchmark-tracking-prevention",
+                "balanced",
+                "--benchmark-tracking-prevention",
+                "strict",
+            ],
+        ] {
+            assert!(
+                LaunchOptions::parse_from_with_local_app_data(
+                    args(&values),
+                    &fixtures,
+                    &local_app_data,
+                )
+                .is_err(),
+                "arguments should be rejected: {values:?}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tracking_prevention_requires_logging_and_a_benchmark_profile() {
+        let root =
+            std::env::temp_dir().join(format!("bowser-policy-requires-{}", std::process::id()));
+        let fixtures = root.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        let profile = root.join("profile").to_string_lossy().to_string();
+        let local_app_data = root.join("local-app-data");
+
+        for values in [
+            vec!["--benchmark-tracking-prevention", "balanced"],
+            vec![
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-tracking-prevention",
+                "strict",
+            ],
+        ] {
+            assert!(
+                LaunchOptions::parse_from_with_local_app_data(
+                    args(&values),
+                    &fixtures,
+                    &local_app_data,
+                )
+                .is_err(),
+                "arguments should be rejected: {values:?}"
+            );
+        }
+
+        let no_log_but_profile = args(&[
+            "--benchmark-user-data-dir",
+            &profile,
+            "--benchmark-tracking-prevention",
+            "balanced",
+        ]);
+        assert!(
+            LaunchOptions::parse_from_with_local_app_data(
+                no_log_but_profile,
+                &fixtures,
+                &local_app_data,
+            )
+            .is_err()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn policy_never_accepts_the_production_profile_even_when_it_is_owned() {
+        let root = std::env::temp_dir().join(format!("bowser-policy-prod-{}", std::process::id()));
+        let fixtures = root.join("fixtures");
+        let local_app_data = root.join("local-app-data");
+        let production = local_app_data.join("Bowser").join("WebView2");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::create_dir_all(&production).unwrap();
+        std::fs::write(
+            production.join(".bowser-benchmark-profile"),
+            "Bowser benchmark WebView2 profile v1\n",
+        )
+        .unwrap();
+        let alias = local_app_data
+            .join("bowser")
+            .join("unused")
+            .join("..")
+            .join("WebView2");
+        let alias_text = alias.to_string_lossy().to_string();
+        let options = args(&[
+            "--benchmark-log",
+            "events.csv",
+            "--benchmark-user-data-dir",
+            &alias_text,
+            "--benchmark-tracking-prevention",
+            "strict",
+        ]);
+
+        let result =
+            LaunchOptions::parse_from_with_local_app_data(options, &fixtures, &local_app_data);
+        assert!(
+            result.is_err(),
+            "production profile aliases must be refused"
+        );
+        assert!(production.join(".bowser-benchmark-profile").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn policy_rejects_a_junction_alias_before_writing_a_profile_marker() {
+        struct Cleanup {
+            root: PathBuf,
+            junction: PathBuf,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // Remove the reparse point itself before deleting its target's parent tree.
+                let _ = std::fs::remove_dir(&self.junction);
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "bowser-policy-junction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let local_app_data = root.join("local-app-data");
+        let production = local_app_data.join("Bowser").join("WebView2");
+        let junction = root.join("production-profile-alias");
+        let _cleanup = Cleanup {
+            root: root.clone(),
+            junction: junction.clone(),
+        };
+        std::fs::create_dir_all(&production).unwrap();
+
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&production)
+            .output()
+            .expect("cmd.exe must be available for creating a temporary junction");
+        assert!(
+            output.status.success(),
+            "creating the temporary junction failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            windows_path_keys_equal_paths(
+                &canonicalize_for_comparison(&junction).unwrap(),
+                &canonicalize_for_comparison(&production).unwrap(),
+            ),
+            "the test path must resolve through the junction to the simulated production profile"
+        );
+
+        let alias = junction.to_string_lossy().to_string();
+        let result = LaunchOptions::parse_from_with_local_app_data(
+            args(&[
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-user-data-dir",
+                &alias,
+                "--benchmark-tracking-prevention",
+                "balanced",
+            ]),
+            Path::new("missing"),
+            &local_app_data,
+        );
+        assert!(
+            result.is_err(),
+            "junction aliases of production must be refused"
+        );
+        assert!(
+            std::fs::read_dir(&production).unwrap().next().is_none(),
+            "rejecting the alias must happen before writing the benchmark ownership marker"
+        );
+        assert!(
+            !production.join(".bowser-benchmark-profile").exists(),
+            "the production profile must remain untouched"
+        );
+    }
+
+    #[test]
+    fn windows_path_keys_ignore_case_and_normalize_separators() {
+        assert!(windows_path_keys_equal(
+            r"C:\Users\Charlie\AppData\Local\Bowser\WebView2\",
+            r"c:/users/charlie/appdata/local/bowser/webview2",
+        ));
+        assert!(!windows_path_keys_equal(
+            r"C:\Bowser\WebView2",
+            r"C:\Bowser\Other"
+        ));
+    }
+    #[test]
+    fn benchmark_profile_does_not_reuse_existing_browser_data() {
+        let root = std::env::temp_dir().join(format!("bowser-perf-unowned-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Local State"), "existing browser data").unwrap();
+        let path = root.to_string_lossy().to_string();
+        let result = LaunchOptions::parse_from_with_local_app_data(
+            args(&[
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-user-data-dir",
+                &path,
+                "--benchmark-tracking-prevention",
+                "strict",
+            ]),
+            Path::new("missing"),
+            &std::env::temp_dir().join("bowser-local-app-data"),
+        );
+        assert!(result.is_err(), "must not share an unowned browser profile");
+        assert_eq!(
+            std::fs::read_to_string(root.join("Local State")).unwrap(),
+            "existing browser data"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn log_records_ordered_events_and_elapsed_time() {
+        let path = std::env::temp_dir().join(format!("bowser-events-{}.csv", std::process::id()));
+        let log = PerfLog::new(Some(&path)).unwrap();
+        assert!(log.enabled());
+        log.record("window_visible").unwrap();
+        log.record("input_ready").unwrap();
+        drop(log);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let rows: Vec<_> = text.lines().collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks");
+        let a: Vec<_> = rows[1].split(',').collect();
+        let b: Vec<_> = rows[2].split(',').collect();
+        assert_eq!(a[0], "window_visible");
+        assert_eq!(b[0], "input_ready");
+        assert!(b[1].parse::<f64>().unwrap() >= a[1].parse::<f64>().unwrap());
+    }
+
+    #[test]
+    fn log_records_webview_startup_phase_events() {
+        let path = std::env::temp_dir().join(format!(
+            "bowser-engine-phase-events-{}.csv",
+            std::process::id()
+        ));
+        let log = PerfLog::new(Some(&path)).unwrap();
+        let expected = [
+            "webview_profile_started",
+            "webview_profile_ready",
+            "webview_environment_requested",
+            "webview_environment_result",
+            "webview_controller_requested",
+            "webview_controller_result",
+            "webview_configure_started",
+            "webview_configure_finished",
+            "webview_create_completed",
+        ];
+        for event in expected {
+            log.record(event).unwrap();
+        }
+        assert_eq!(log.failure(), None);
+        drop(log);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let recorded: Vec<_> = text
+            .lines()
+            .skip(1)
+            .map(|line| line.split(',').next().unwrap())
+            .collect();
+        assert_eq!(recorded, expected);
+    }
+}

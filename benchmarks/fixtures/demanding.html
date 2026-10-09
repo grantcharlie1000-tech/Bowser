@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOWSER_BENCH_WAIT_DEMANDING</title>
+  <style>
+    :root { color-scheme: light; font: 13px/1.35 "Segoe UI", sans-serif; }
+    body { margin: 0; padding: 18px; color: #172330; background: #e8edf2; }
+    header { position: sticky; top: 0; z-index: 1; padding: 12px; background: #183d5b; color: white; }
+    #grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 7px; margin: 12px 0; }
+    article { min-height: 82px; padding: 8px; background: white; border: 1px solid #bdc9d4; }
+    article h2 { margin: 0 0 5px; font-size: 13px; }
+    article p { margin: 0; color: #425466; }
+    canvas { display: block; width: 1200px; height: 675px; max-width: 100%; border: 1px solid #71869a; }
+  </style>
+</head>
+<body>
+  <header><strong>Bowser local demanding benchmark</strong> — fixed DOM and canvas workload</header>
+  <section id="grid" aria-label="Generated benchmark cards"></section>
+  <canvas id="payload" width="1200" height="675" aria-label="Static deterministic pixel payload"></canvas>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const grid = document.getElementById("grid");
+      const fragment = document.createDocumentFragment();
+      // Fixed workload: 2,400 cards, each with one heading and two paragraphs.
+      for (let i = 0; i < 2400; i += 1) {
+        const card = document.createElement("article");
+        const heading = document.createElement("h2");
+        const lineA = document.createElement("p");
+        const lineB = document.createElement("p");
+        const n = String(i + 1).padStart(4, "0");
+        heading.textContent = "Record " + n;
+        lineA.textContent = "Deterministic benchmark row " + n + " / group " + String(i % 24).padStart(2, "0");
+        lineB.textContent = "Static text payload for browser layout and memory measurement.";
+        card.appendChild(heading);
+        card.appendChild(lineA);
+        card.appendChild(lineB);
+        fragment.appendChild(card);
+      }
+      grid.appendChild(fragment);
+
+      // Fixed 1200 x 675 opaque backing store (810,000 pixels, about 3.09 MiB RGBA).
+      // Each pixel's color is a pure function of its coordinates; no image/network fetches.
+      const canvas = document.getElementById("payload");
+      const ctx = canvas.getContext("2d", { alpha: false });
+      const pixels = ctx.createImageData(canvas.width, canvas.height);
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const p = (y * canvas.width + x) * 4;
+          pixels.data[p] = (x * 17 + y * 3) & 255;
+          pixels.data[p + 1] = (x * 5 + y * 11) & 255;
+          pixels.data[p + 2] = ((x >> 3) ^ (y >> 2)) & 255;
+          pixels.data[p + 3] = 255;
+        }
+      }
+      ctx.putImageData(pixels, 0, 0);
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          document.title = "BOWSER_BENCH_READY_DEMANDING";
+        });
+      });
+    });
+  </script>
+</body>
+</html>
