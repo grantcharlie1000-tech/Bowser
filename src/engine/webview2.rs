@@ -289,7 +289,10 @@ impl WebView2Engine {
                 let completion_ctl = completion_env.clone();
                 let completion_create = completion_env.clone();
                 let handler_events = event_handlers.clone();
-                let requested_tracking_prevention = tracking_prevention;
+                let requested_tracking_prevention = TrackingPolicy {
+                    level: tracking_prevention,
+                    enabled: tracking_prevention_enabled,
+                };
                 let controller_log = event_handlers.policy_event.clone();
                 let allowed_file = allowed_file.clone();
                 let controller_environment = environment.clone();
@@ -326,7 +329,6 @@ impl WebView2Engine {
                                 allowed_file,
                                 handler_events,
                                 requested_tracking_prevention,
-                                tracking_prevention_enabled,
                             )
                         };
                         if let Some(log) = controller_log.as_ref() {
@@ -485,6 +487,13 @@ fn memory_target_api_from_error(error: Error) -> MemoryTargetApi {
     }
 }
 
+/// Requested tracking-prevention level, plus whether the environment supports it.
+#[derive(Clone, Copy)]
+struct TrackingPolicy {
+    level: Option<TrackingPreventionLevel>,
+    enabled: bool,
+}
+
 unsafe fn configure_controller(
     environment: &ICoreWebView2Environment,
     controller: ICoreWebView2Controller,
@@ -492,18 +501,17 @@ unsafe fn configure_controller(
     bounds: RECT,
     allowed_file: Option<Url>,
     events: EngineEvents,
-    tracking_prevention: Option<TrackingPreventionLevel>,
-    tracking_prevention_enabled: bool,
+    tracking_policy: TrackingPolicy,
 ) -> Result<WebView2Engine> {
     unsafe {
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(true)?;
         let webview = controller.CoreWebView2()?;
-        if let Some(level) = tracking_prevention {
+        if let Some(level) = tracking_policy.level {
             apply_tracking_prevention(
                 &webview,
                 level,
-                tracking_prevention_enabled,
+                tracking_policy.enabled,
                 events.policy_event.as_ref(),
             );
         }
