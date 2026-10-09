@@ -3,9 +3,12 @@ use std::{cell::RefCell, rc::Rc};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{COLOR_WINDOW, GetSysColorBrush},
+        Graphics::Gdi::{
+            COLOR_WINDOW, CreateFontIndirectW, DeleteObject, GetSysColorBrush, HFONT, HGDIOBJ,
+        },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            Controls::{EM_SETCUEBANNER, EM_SETMARGINS},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
                 GetKeyState, SetFocus, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT,
@@ -13,11 +16,13 @@ use windows::{
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect,
-                GetMessageW, GetWindowTextLengthW, GetWindowTextW, HMENU, LoadCursorW, MSG,
-                MoveWindow, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_SHOW,
-                SetWindowLongPtrW, ShowWindow, TranslateMessage, WINDOW_STYLE, WM_CLOSE,
-                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SIZE,
+                DispatchMessageW, EC_LEFTMARGIN, EC_RIGHTMARGIN, EN_CHANGE, ES_AUTOHSCROLL,
+                GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+                HMENU, LoadCursorW, MSG, MoveWindow, NONCLIENTMETRICSW, PostQuitMessage,
+                RegisterClassW, SIZE_MINIMIZED, SPI_GETNONCLIENTMETRICS, SW_SHOW,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowLongPtrW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+                WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SETFONT, WM_SIZE,
                 WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         },
@@ -32,6 +37,28 @@ const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 
 pub fn dpi_scale(hwnd: HWND) -> u32 {
     (unsafe { GetDpiForWindow(hwnd) }.max(96) / 96).max(1)
+}
+
+fn message_font(hwnd: HWND) -> HFONT {
+    let mut metrics = NONCLIENTMETRICSW {
+        cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            Some((&mut metrics as *mut NONCLIENTMETRICSW).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_err()
+        {
+            return HFONT::default();
+        }
+        let mut logfont = metrics.lfMessageFont;
+        logfont.lfHeight = logfont.lfHeight * GetDpiForWindow(hwnd).max(96) as i32 / 96;
+        CreateFontIndirectW(&logfont)
+    }
 }
 
 pub fn run(app: App) -> windows::core::Result<()> {
@@ -134,13 +161,36 @@ unsafe extern "system" fn window_proc(
                             return LRESULT(-1);
                         }
                     };
+                    let font = message_font(hwnd);
+                    SendMessageW(
+                        edit,
+                        WM_SETFONT,
+                        Some(WPARAM(font.0 as usize)),
+                        Some(LPARAM(1)),
+                    );
+                    let margin = 6 * dpi_scale(hwnd) as isize;
+                    SendMessageW(
+                        edit,
+                        EM_SETMARGINS,
+                        Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)),
+                        Some(LPARAM(margin | (margin << 16))),
+                    );
+                    SendMessageW(
+                        edit,
+                        EM_SETCUEBANNER,
+                        Some(WPARAM(1)),
+                        Some(LPARAM(w!("Search or enter address").0 as isize)),
+                    );
                     if !SetWindowSubclass(edit, Some(edit_subclass), 1, hwnd.0 as usize).as_bool() {
                         super::show_error_message(
                             "Bowser could not install keyboard handling for its address input.",
                         );
                         return LRESULT(-1);
                     }
-                    app.borrow_mut().edit = edit;
+                    let mut state = app.borrow_mut();
+                    state.edit = edit;
+                    state.input_font = font;
+                    drop(state);
                     let _ = SetFocus(Some(edit));
                 }
                 LRESULT(0)
@@ -243,6 +293,9 @@ unsafe extern "system" fn window_proc(
             WM_DESTROY => {
                 if let Some(app) = app {
                     let mut state = app.borrow_mut();
+                    if !state.input_font.is_invalid() {
+                        let _ = DeleteObject(HGDIOBJ(state.input_font.0));
+                    }
                     if state.initializing {
                         state.loop_shutdown_pending = true;
                     } else {

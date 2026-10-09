@@ -1,6 +1,9 @@
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
-use windows::{Win32::Foundation::HWND, core::Result};
+use windows::{
+    Win32::{Foundation::HWND, Graphics::Gdi::HFONT},
+    core::Result,
+};
 
 use crate::{
     navigation::{NavigationTarget, SearchProvider, resolve_input},
@@ -12,7 +15,8 @@ use crate::{
     win32,
 };
 
-const EDIT_HEIGHT: i32 = 36;
+const EDIT_HEIGHT: i32 = 28;
+const INPUT_PADDING: i32 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowLayout {
@@ -29,16 +33,26 @@ pub struct WindowLayout {
 pub fn layout_client(width: i32, height: i32, scale: u32) -> WindowLayout {
     let width = width.max(0);
     let height = height.max(0);
-    let input_height = EDIT_HEIGHT.saturating_mul(scale.max(1) as i32).min(height);
+    let scale = scale.max(1) as i32;
+    let padding = INPUT_PADDING.saturating_mul(scale);
+    let input_x = padding.min(width);
+    let input_y = padding.min(height);
+    let input_height = EDIT_HEIGHT
+        .saturating_mul(scale)
+        .min(height.saturating_sub(input_y));
+    let viewport_y = input_y
+        .saturating_add(input_height)
+        .saturating_add(padding)
+        .min(height);
     WindowLayout {
-        input_x: 0,
-        input_y: 0,
-        input_width: width,
+        input_x,
+        input_y,
+        input_width: width.saturating_sub(input_x.saturating_mul(2)).max(0),
         input_height,
         viewport_x: 0,
-        viewport_y: input_height,
+        viewport_y,
         viewport_width: width,
-        viewport_height: height.saturating_sub(input_height),
+        viewport_height: height.saturating_sub(viewport_y),
     }
 }
 
@@ -106,6 +120,7 @@ impl From<std::io::Error> for AppError {
 pub struct App {
     pub hwnd: HWND,
     pub edit: HWND,
+    pub input_font: HFONT,
     pub engine: Option<Box<dyn engine::EngineAdapter>>,
     pub pending: Option<url::Url>,
     pub initializing: bool,
@@ -177,6 +192,7 @@ impl App {
         Self {
             hwnd: HWND::default(),
             edit: HWND::default(),
+            input_font: HFONT::default(),
             engine: None,
             pending: None,
             initializing: false,
@@ -664,6 +680,7 @@ mod tests {
         Rc::new(RefCell::new(App {
             hwnd: HWND::default(),
             edit: HWND::default(),
+            input_font: HFONT::default(),
             engine: None,
             pending: Some(url::Url::parse("https://example.test/first").unwrap()),
             initializing: true,
@@ -1096,10 +1113,13 @@ mod tests {
     #[test]
     fn layout_has_fixed_input_and_remaining_viewport() {
         let l = layout_client(800, 600, 1);
-        assert_eq!((l.input_width, l.input_height), (800, 36));
+        assert_eq!(
+            (l.input_x, l.input_y, l.input_width, l.input_height),
+            (8, 8, 784, 28)
+        );
         assert_eq!(
             (l.viewport_y, l.viewport_width, l.viewport_height),
-            (36, 800, 564)
+            (44, 800, 556)
         );
     }
 
@@ -1116,16 +1136,20 @@ mod tests {
     #[test]
     fn tiny_layout_never_has_negative_dimensions() {
         let l = layout_client(2, 1, 1);
-        assert_eq!((l.input_height, l.viewport_height), (1, 0));
+        assert_eq!((l.input_height, l.viewport_height), (0, 0));
         assert!(l.input_width >= 0 && l.viewport_width >= 0);
+        assert!(l.viewport_y <= 1);
     }
 
     #[test]
-    fn scale_changes_only_fixed_input_height() {
+    fn scale_doubles_input_inset_and_height() {
         let one = layout_client(500, 1000, 1);
         let two = layout_client(500, 1000, 2);
+        assert_eq!(one.input_x * 2, two.input_x);
+        assert_eq!(one.input_y * 2, two.input_y);
         assert_eq!(one.input_height * 2, two.input_height);
-        assert_eq!(one.input_width, two.input_width);
+        assert_eq!(one.input_width + one.input_x * 2, 500);
+        assert_eq!(two.input_width + two.input_x * 2, 500);
         assert_eq!(one.viewport_width, two.viewport_width);
         assert_eq!(one.viewport_y * 2, two.viewport_y);
     }
