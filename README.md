@@ -10,7 +10,7 @@ Build from this directory:
 
     cargo build --release --locked
 
-Double-click Start-Bowser.cmd, or run target\release\bowser.exe. The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The renderer is initialized when the first destination is submitted.
+Double-click Start-Bowser.cmd, or run target\release\bowser.exe. The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter.
 
 The shared WebView2 runtime is required but is not bundled into Bowser. Runtime availability is checked and failures are shown as native error messages. Microsoft manages Evergreen security updates.
 

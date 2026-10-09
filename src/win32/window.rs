@@ -13,12 +13,12 @@ use windows::{
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect, GetMessageW,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, LoadCursorW, MSG, MoveWindow,
-                PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_SHOW, SetWindowLongPtrW,
-                ShowWindow, TranslateMessage, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
-                WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SIZE, WNDCLASSW, WS_BORDER,
-                WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA, GetClientRect,
+                GetMessageW, GetWindowTextLengthW, GetWindowTextW, HMENU, LoadCursorW, MSG,
+                MoveWindow, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_SHOW,
+                SetWindowLongPtrW, ShowWindow, TranslateMessage, WINDOW_STYLE, WM_CLOSE,
+                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_SETFOCUS, WM_SIZE,
+                WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         },
     },
@@ -178,6 +178,20 @@ unsafe extern "system" fn window_proc(
                             bottom: layout.viewport_y + layout.viewport_height,
                         },
                     );
+                }
+                LRESULT(0)
+            }
+            WM_COMMAND
+                if (wparam.0 & 0xffff) as u16 == INPUT_ID
+                    && (wparam.0 >> 16) as u32 == EN_CHANGE =>
+            {
+                if let Some(app) = app {
+                    let edit = app.borrow().edit;
+                    let length = GetWindowTextLengthW(edit).max(0) as usize;
+                    let mut buffer = vec![0u16; length + 1];
+                    let copied = GetWindowTextW(edit, &mut buffer) as usize;
+                    let text = String::from_utf16_lossy(&buffer[..copied]);
+                    App::prewarm(app, &text);
                 }
                 LRESULT(0)
             }

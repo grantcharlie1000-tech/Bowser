@@ -42,6 +42,13 @@ pub fn layout_client(width: i32, height: i32, scale: u32) -> WindowLayout {
     }
 }
 
+pub fn should_prewarm(has_engine: bool, initializing: bool, closing: bool, text: &str) -> bool {
+    !has_engine
+        && !initializing
+        && !closing
+        && text.chars().any(|character| !character.is_whitespace())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowMemoryTransition {
     pub minimized: bool,
@@ -238,6 +245,27 @@ impl App {
             }
             state.initializing = true;
         }
+        Self::start_engine_creation(app);
+    }
+
+    pub fn prewarm(app: &AppRef, text: &str) {
+        {
+            let mut state = app.borrow_mut();
+            if !should_prewarm(
+                state.engine.is_some(),
+                state.initializing,
+                state.closing,
+                text,
+            ) {
+                return;
+            }
+            state.initializing = true;
+            let _ = state.log.record("engine_prewarm_started");
+        }
+        Self::start_engine_creation(app);
+    }
+
+    fn start_engine_creation(app: &AppRef) {
         let weak = Rc::downgrade(app);
         let bounds = app.borrow_mut().latest_viewport_bounds();
         let (hwnd, profile, tracking_prevention) = {
@@ -1073,6 +1101,16 @@ mod tests {
             (l.viewport_y, l.viewport_width, l.viewport_height),
             (36, 800, 564)
         );
+    }
+
+    #[test]
+    fn prewarm_requires_meaningful_text_and_an_idle_open_app() {
+        assert!(!should_prewarm(false, false, false, ""));
+        assert!(!should_prewarm(false, false, false, " \t\n"));
+        assert!(should_prewarm(false, false, false, " h"));
+        assert!(!should_prewarm(true, false, false, "hello"));
+        assert!(!should_prewarm(false, true, false, "hello"));
+        assert!(!should_prewarm(false, false, true, "hello"));
     }
 
     #[test]
