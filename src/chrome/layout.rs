@@ -48,6 +48,8 @@ impl Metrics {
     pub const NAV_BUTTON_GAP: i32 = 3;
     /// Inset of the first navigation button from the window edge.
     pub const NAV_LEFT_INSET: i32 = 4;
+    /// Square main-menu button at the far right of the omnibox row.
+    pub const MENU_BUTTON_SIZE: i32 = 28;
     /// Inset of the tabs and omnibox from the window edges, and the margin below the omnibox.
     pub const OUTER_MARGIN: i32 = 2;
     pub const ROW_GAP: i32 = 2;
@@ -180,6 +182,8 @@ pub struct Layout {
     pub forward_button: Rect,
     pub reload_button: Rect,
     pub omnibox: Rect,
+    /// Opens the main menu (profiles, settings). Sits right of the omnibox.
+    pub main_menu_button: Rect,
     pub viewport: Rect,
     tab_count: usize,
     tab_width: i32,
@@ -304,7 +308,26 @@ pub fn compute_with_active(
         Rect::new(left, omnibox_top, left + nav_size, omnibox_bottom)
     };
     let omnibox_left = (nav_left + 3 * nav_pitch).min(client_w - margin);
-    let omnibox = Rect::new(omnibox_left, omnibox_top, client_w - margin, omnibox_bottom);
+    let menu_size = m.px(Metrics::MENU_BUTTON_SIZE);
+    // The menu button keeps the omnibox's outer margin; the omnibox gives up the width it needs
+    // and the button collapses on a window too narrow to hold both.
+    let menu_left = (client_w - margin - menu_size).max(omnibox_left + gap);
+    let main_menu_button = if menu_left + menu_size <= client_w - margin {
+        Rect::new(
+            menu_left,
+            omnibox_top,
+            menu_left + menu_size,
+            omnibox_bottom,
+        )
+    } else {
+        Rect::default()
+    };
+    let omnibox_right = if main_menu_button.is_empty() {
+        client_w - margin
+    } else {
+        (main_menu_button.left - m.px(Metrics::NAV_BUTTON_GAP)).max(omnibox_left)
+    };
+    let omnibox = Rect::new(omnibox_left, omnibox_top, omnibox_right, omnibox_bottom);
     let viewport_top = (omnibox_bottom + margin).min(client_h);
     let rim = if maximised {
         0
@@ -331,6 +354,7 @@ pub fn compute_with_active(
         forward_button: nav_button(1),
         reload_button: nav_button(2),
         omnibox,
+        main_menu_button,
         viewport,
         tab_count,
         tab_width,
@@ -354,6 +378,7 @@ pub enum Hit {
     Forward,
     Reload,
     Omnibox,
+    MainMenu,
     Viewport,
     /// Empty strip. Dragging here moves the window.
     CaptionArea,
@@ -537,6 +562,9 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
     }
     if layout.omnibox.contains(x, y) {
         return Hit::Omnibox;
+    }
+    if layout.main_menu_button.contains(x, y) {
+        return Hit::MainMenu;
     }
     if layout.back_button.contains(x, y) {
         return Hit::Back;
@@ -795,7 +823,9 @@ mod tests {
         assert_eq!(l.back_button, Rect::new(4, 32, 32, 60));
         assert_eq!(l.forward_button, Rect::new(35, 32, 63, 60));
         assert_eq!(l.reload_button, Rect::new(66, 32, 94, 60));
-        assert_eq!(l.omnibox, Rect::new(97, 32, 1022, 60));
+        assert_eq!(l.omnibox, Rect::new(97, 32, 991, 60));
+        assert_eq!(l.main_menu_button, Rect::new(994, 32, 1022, 60));
+        assert_eq!(hit_test(&l, 1000, 40), Hit::MainMenu);
         assert_eq!(l.viewport, Rect::new(4, 62, 1020, 696));
     }
 
@@ -897,7 +927,11 @@ mod tests {
                     l.reload_button.right + m.px(Metrics::NAV_BUTTON_GAP),
                     "the omnibox follows the nav buttons"
                 );
-                assert_eq!(l.omnibox.right, width - margin);
+                assert_eq!(l.main_menu_button.right, width - margin);
+                assert_eq!(
+                    l.omnibox.right,
+                    l.main_menu_button.left - m.px(Metrics::NAV_BUTTON_GAP)
+                );
                 assert_eq!(l.viewport.left, rim);
                 assert_eq!(l.viewport.right, width - rim);
 

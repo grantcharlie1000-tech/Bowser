@@ -605,6 +605,21 @@ impl App {
         }
     }
 
+    /// Whether the blocker is acting on the active tab's site: `None` when the blocker is
+    /// disabled or the tab has no site, else `Some(true)` while blocking and `Some(false)` once
+    /// the site is exempted.
+    pub fn blocker_active_for_site(app: &AppRef) -> Option<bool> {
+        let state = app.borrow();
+        let blocker = state.blocker.as_ref()?;
+        let host = state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == state.tab_model.active())
+            .and_then(|tab| tab.url.as_ref())
+            .and_then(|url| url.host_str())?;
+        Some(!blocker.borrow().site_allowed(host))
+    }
+
     /// Ctrl+Shift+B: switches blocking off or on for the active tab's site, then reloads it.
     pub fn toggle_blocker(app: &AppRef) {
         let (blocker, host) = {

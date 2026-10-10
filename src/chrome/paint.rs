@@ -216,6 +216,7 @@ impl ChromeSurface {
         self.paint_tabs(view, dirty);
         self.paint_tab_menu(view, dirty);
         self.paint_new_tab(view, dirty);
+        self.paint_main_menu(view, dirty);
         self.paint_nav(view, dirty);
         self.paint_caption(view, dirty);
         self.paint_omnibox(view, dirty);
@@ -543,6 +544,31 @@ impl ChromeSurface {
         let c = view.palette.caption_glyph;
         self.line(x - 4, y - 2, x, y + 2, 1.5, c, dirty);
         self.line(x, y + 2, x + 4, y - 2, 1.5, c, dirty);
+    }
+
+    /// Three stacked dots at the right of the omnibox row; the main menu opens from here.
+    fn paint_main_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let rect = view.layout.main_menu_button;
+        if rect.intersect(dirty).is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        if view.hover == Hit::MainMenu || view.pressed == Hit::MainMenu {
+            let colour = if view.pressed == Hit::MainMenu {
+                view.palette.tab_active_border
+            } else {
+                view.palette.caption_hover
+            };
+            self.round(rect, m.island_radius(), colour, dirty);
+        }
+        let (cx, cy) = center(rect);
+        let size = m.px(3).max(2);
+        let pitch = m.px(6);
+        for step in -1..=1 {
+            let top = cy + step * pitch - size / 2;
+            let dot = Rect::new(cx - size / 2, top, cx - size / 2 + size, top + size);
+            self.round(dot, size / 2, view.palette.caption_glyph, dirty);
+        }
     }
 
     /// Back, forward and reload. Back and forward are dimmed and inert when there is no history.
