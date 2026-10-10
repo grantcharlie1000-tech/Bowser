@@ -43,26 +43,28 @@ use windows::{
                 AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu,
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE,
-                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetMessageW,
-                GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-                GetWindowThreadProcessId, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
-                HideCaret, IsIconic, IsZoomed, KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow,
-                NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE,
-                SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
-                SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE,
-                WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
-                WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
-                WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
-                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE, WM_RBUTTONUP,
-                WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND,
-                WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-                WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
+                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
+                GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+                GetWindowTextW, GetWindowThreadProcessId, HMENU, HTBOTTOM, HTBOTTOMLEFT,
+                HTBOTTOMRIGHT, HTCAPTION, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT,
+                HTTOP, HTTOPLEFT, HTTOPRIGHT, HideCaret, IsIconic, IsZoomed, KillTimer,
+                LoadCursorW, MF_STRING, MSG, MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage,
+                RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED,
+                SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW,
+                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+                ShowWindow, SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE,
+                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
+                WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE,
+                WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+                WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE,
+                WM_RBUTTONUP, WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE,
+                WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION,
+                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+                WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -316,6 +318,133 @@ impl WindowChrome {
     }
 }
 thread_local! {static WINDOWS:RefCell<HashMap<isize,WindowChrome>>=RefCell::new(HashMap::new());}
+#[derive(Clone, Copy)]
+struct ResizeEdges {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
+}
+struct ResizeState {
+    edges: ResizeEdges,
+    start_cursor: windows::Win32::Foundation::POINT,
+    start_rect: RECT,
+    min_width: i32,
+    min_height: i32,
+}
+thread_local! {static RESIZING:RefCell<HashMap<isize,ResizeState>>=RefCell::new(HashMap::new());}
+
+fn resize_edges(hit: usize) -> Option<ResizeEdges> {
+    let (left, right, top, bottom) = match hit as u32 {
+        x if x == HTLEFT as u32 => (true, false, false, false),
+        x if x == HTRIGHT as u32 => (false, true, false, false),
+        x if x == HTTOP as u32 => (false, false, true, false),
+        x if x == HTBOTTOM as u32 => (false, false, false, true),
+        x if x == HTTOPLEFT as u32 => (true, false, true, false),
+        x if x == HTTOPRIGHT as u32 => (false, true, true, false),
+        x if x == HTBOTTOMLEFT as u32 => (true, false, false, true),
+        x if x == HTBOTTOMRIGHT as u32 => (false, true, false, true),
+        _ => return None,
+    };
+    Some(ResizeEdges {
+        left,
+        right,
+        top,
+        bottom,
+    })
+}
+
+fn begin_resize(hwnd: HWND, hit: usize) -> bool {
+    let Some(edges) = resize_edges(hit) else {
+        return false;
+    };
+    if unsafe { IsZoomed(hwnd).as_bool() } {
+        return false;
+    }
+    let mut start_rect = RECT::default();
+    let mut start_cursor = windows::Win32::Foundation::POINT::default();
+    if unsafe { GetWindowRect(hwnd, &mut start_rect) }.is_err()
+        || unsafe { GetCursorPos(&mut start_cursor) }.is_err()
+    {
+        return false;
+    }
+    let metrics = Metrics::new(dpi(hwnd));
+    let min_width = metrics.px(520);
+    let min_height = metrics.px(300);
+    unsafe {
+        let _ = SetCapture(hwnd);
+    }
+    if unsafe { GetCapture() } != hwnd {
+        return false;
+    }
+    RESIZING.with(|states| {
+        states.borrow_mut().insert(
+            hwnd.0 as isize,
+            ResizeState {
+                edges,
+                start_cursor,
+                start_rect,
+                min_width,
+                min_height,
+            },
+        );
+    });
+    true
+}
+
+fn resize_window(hwnd: HWND) {
+    let state = RESIZING.with(|states| {
+        states.borrow().get(&(hwnd.0 as isize)).map(|state| {
+            (
+                state.edges,
+                state.start_cursor,
+                state.start_rect,
+                state.min_width,
+                state.min_height,
+            )
+        })
+    });
+    let Some((edges, start_cursor, start_rect, min_width, min_height)) = state else {
+        return;
+    };
+    let mut cursor = windows::Win32::Foundation::POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return;
+    }
+    let dx = cursor.x - start_cursor.x;
+    let dy = cursor.y - start_cursor.y;
+    let mut rect = start_rect;
+    if edges.left {
+        rect.left = (start_rect.left + dx).min(start_rect.right - min_width);
+    }
+    if edges.right {
+        rect.right = (start_rect.right + dx).max(start_rect.left + min_width);
+    }
+    if edges.top {
+        rect.top = (start_rect.top + dy).min(start_rect.bottom - min_height);
+    }
+    if edges.bottom {
+        rect.bottom = (start_rect.bottom + dy).max(start_rect.top + min_height);
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+}
+
+fn finish_resize(hwnd: HWND) -> bool {
+    RESIZING.with(|states| states.borrow_mut().remove(&(hwnd.0 as isize)).is_some())
+}
+fn is_resizing(hwnd: HWND) -> bool {
+    RESIZING.with(|states| states.borrow().contains_key(&(hwnd.0 as isize)))
+}
 fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<T> {
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
 }
@@ -559,7 +688,9 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Default::default(),
             CLASS_NAME,
             w!("Bowser - Search or enter address"),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            // The system sizing frame also forces WS_EX_WINDOWEDGE on this HWND. Bowser
+            // handles the resize loop itself so its rounded region can stay edge-free.
+            WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1000,
@@ -693,8 +824,9 @@ unsafe extern "system" fn window_proc(
                 set_hover(hwnd, Hit::None);
                 LRESULT(0)
             }
+            WM_NCLBUTTONDOWN if begin_resize(hwnd, wparam.0) => LRESULT(0),
             // Only the caption buttons are ours. Dragging the strip and the resize edges need the
-            // default handler, which runs the system move and size loops.
+            // default handler, which runs the system move loop. Resize edges are handled above.
             WM_NCLBUTTONDOWN | WM_NCLBUTTONUP if caption_hit(wparam.0 as u32) == Hit::None => {
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
@@ -991,6 +1123,10 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
+                if is_resizing(hwnd) {
+                    resize_window(hwnd);
+                    return LRESULT(0);
+                }
                 if GetCapture() == hwnd {
                 } else {
                     let p = frame::point_from_lparam(lparam);
@@ -1011,13 +1147,16 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
+                finish_resize(hwnd);
                 if clear_pointer_state(hwnd) {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
-                if clear_pointer_state(hwnd) {
+                let was_resizing = finish_resize(hwnd);
+                let had_pointer_state = clear_pointer_state(hwnd);
+                if was_resizing || had_pointer_state {
                     if GetCapture() == hwnd {
                         let _ = ReleaseCapture();
                     }
@@ -1081,6 +1220,10 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
+                if finish_resize(hwnd) {
+                    let _ = ReleaseCapture();
+                    return LRESULT(0);
+                }
                 let p = frame::point_from_lparam(lparam);
                 if let Some((id, from)) = with_chrome(hwnd, |s| s.drag.take()).flatten() {
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
@@ -1271,6 +1414,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                finish_resize(hwnd);
                 let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if !raw.is_null() {
                     drop(Box::from_raw(raw as *mut AppRef));
