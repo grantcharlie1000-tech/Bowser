@@ -343,7 +343,13 @@ unsafe extern "system" fn window_proc(
                 });
                 let ih = matches!(
                     layout::hit_test(&l, p.x, p.y),
-                    Hit::Tab(_) | Hit::TabClose(_) | Hit::NewTab | Hit::Omnibox
+                    Hit::Tab(_)
+                        | Hit::TabClose(_)
+                        | Hit::NewTab
+                        | Hit::Back
+                        | Hit::Forward
+                        | Hit::Reload
+                        | Hit::Omnibox
                 );
                 frame::frame_hit_test(
                     p,
@@ -725,7 +731,12 @@ unsafe extern "system" fn window_proc(
                             focus_omni(hwnd, app, true)
                         }
                     }
-                    h @ Hit::CaptionMinimize | h @ Hit::CaptionMaximize | h @ Hit::CaptionClose => {
+                    h @ (Hit::Back
+                    | Hit::Forward
+                    | Hit::Reload
+                    | Hit::CaptionMinimize
+                    | Hit::CaptionMaximize
+                    | Hit::CaptionClose) => {
                         set_pressed(hwnd, h);
                         let _ = SetCapture(hwnd);
                     }
@@ -754,6 +765,17 @@ unsafe extern "system" fn window_proc(
                                     let _ = App::close_tab(app, id);
                                 }
                             }
+                        }
+                        if let (Hit::Back | Hit::Forward | Hit::Reload, Some(app)) = (was, app) {
+                            // App::history checks the engine itself, so a click on a dimmed
+                            // button is harmless.
+                            match was {
+                                Hit::Back => App::history(app, false),
+                                Hit::Forward => App::history(app, true),
+                                _ => App::reload(app),
+                            }
+                            let _ = with_chrome(hwnd, |s| s.refresh(app));
+                            let _ = InvalidateRect(Some(hwnd), None, false);
                         }
                         caption_command(hwnd, was)
                     }
@@ -892,6 +914,9 @@ fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) => l.tab(i).unwrap_or_default(),
         Hit::NewTab => l.new_tab_button,
+        Hit::Back => l.back_button,
+        Hit::Forward => l.forward_button,
+        Hit::Reload => l.reload_button,
         Hit::Omnibox => l.omnibox,
         Hit::CaptionMinimize | Hit::CaptionMaximize | Hit::CaptionClose => l.caption_button(h),
         Hit::CaptionArea => l.strip,
@@ -1008,6 +1033,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
         if let Some(app) = app {
             let active = App::active_tab_id(app);
             let progress = App::tab_progress_percent(app, active);
+            let can_back = App::can_go_back(app);
+            let can_forward = App::can_go_forward(app);
             let focus = GetFocus() == app.borrow().edit;
             let (mut a, mut b) = (0u32, 0u32);
             let _ = SendMessageW(
@@ -1053,6 +1080,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     hover: s.hover,
                     pressed: s.pressed,
                     caption_maximised: IsZoomed(hwnd).as_bool(),
+                    can_back,
+                    can_forward,
                     omnibox: OmniboxView {
                         text,
                         selection: if focus {
@@ -1364,7 +1393,7 @@ unsafe extern "system" fn edit_subclass(
             let text = read_edit(hwnd);
             let p = frame::point_from_lparam(l);
             // `p` is relative to the EDIT, which starts at the omnibox edge.
-            let x = p.x - Metrics::new(dpi(main)).px(Metrics::OMNIBOX_TEXT_INSET);
+            let x = p.x - Metrics::new(dpi(main)).px(Metrics::OMNIBOX_TEXT_LEFT);
             let i = with_chrome(main, |s| s.surface.index_at_x(&text, x)).unwrap_or(0);
             let _ = DefSubclassProc(hwnd, msg, w, l);
             let _ = SendMessageW(hwnd, EM_SETSEL, Some(WPARAM(i)), Some(LPARAM(i as isize)));

@@ -64,6 +64,8 @@ pub struct ChromeView<'a> {
     pub hover: Hit,
     pub pressed: Hit,
     pub caption_maximised: bool,
+    pub can_back: bool,
+    pub can_forward: bool,
     pub omnibox: OmniboxView<'a>,
 }
 
@@ -157,6 +159,7 @@ impl ChromeSurface {
         }
         self.paint_tabs(view, dirty);
         self.paint_new_tab(view, dirty);
+        self.paint_nav(view, dirty);
         self.paint_caption(view, dirty);
         self.paint_omnibox(view, dirty);
     }
@@ -274,6 +277,22 @@ impl ChromeSurface {
             if active {
                 self.border(rect, radius, 1.0, view.palette.tab_active_border, dirty);
             }
+            // Flat tabs are separated by a thin divider, hidden beside the active or hovered tab.
+            let next = index + 1;
+            let beside_highlight = active
+                || is_hover
+                || next == view.active
+                || matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == next);
+            if !beside_highlight && tab_rect.right <= view.layout.tab_zone.right {
+                let (_, cy) = center(tab_rect);
+                let half = m.px(7);
+                let x = tab_rect.right - m.px(1).max(1);
+                self.fill_rect(
+                    Rect::new(x, cy - half, x + m.px(1).max(1), cy + half),
+                    view.palette.hairline,
+                    dirty,
+                );
+            }
             let details = view.tabs.get(index);
             let parts = view.layout.tab_parts(tab_rect);
             // The last island may be clipped by the tab zone. A part that would be cut off is
@@ -339,13 +358,89 @@ impl ChromeSurface {
             return;
         }
         if matches!(view.hover, Hit::NewTab) || matches!(view.pressed, Hit::NewTab) {
-            self.round(rect, rect.height() / 2, view.palette.caption_hover, dirty);
+            self.round(
+                rect,
+                view.layout.metrics.island_radius(),
+                view.palette.caption_hover,
+                dirty,
+            );
         }
         let (x, y) = center(rect);
         let c = view.palette.caption_glyph;
-        let arm = view.layout.metrics.px(5);
-        self.line(x - arm, y, x + arm, y, 1.6, c, dirty);
-        self.line(x, y - arm, x, y + arm, 1.6, c, dirty);
+        let arm = view.layout.metrics.px(4);
+        self.line(x - arm, y, x + arm, y, 1.4, c, dirty);
+        self.line(x, y - arm, x, y + arm, 1.4, c, dirty);
+    }
+
+    /// Back, forward and reload. Back and forward are dimmed and inert when there is no history.
+    fn paint_nav(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let m = view.layout.metrics;
+        let buttons = [
+            (Hit::Back, view.layout.back_button, view.can_back),
+            (Hit::Forward, view.layout.forward_button, view.can_forward),
+            (Hit::Reload, view.layout.reload_button, true),
+        ];
+        for (hit, rect, enabled) in buttons {
+            if rect.intersect(dirty).is_empty() {
+                continue;
+            }
+            let mut color = view.palette.caption_glyph;
+            if enabled {
+                if view.hover == hit || view.pressed == hit {
+                    self.round(rect, m.island_radius(), view.palette.caption_hover, dirty);
+                }
+            } else {
+                color.a = (u32::from(color.a) * 0x55 / 0xFF) as u8;
+            }
+            let (cx, cy) = center(rect);
+            let (cx, cy) = (cx as f32, cy as f32);
+            let half = m.px(7) as f32;
+            let head = m.px(4) as f32;
+            let w = 1.3;
+            match hit {
+                Hit::Back | Hit::Forward => {
+                    // Forward is the mirror image of back.
+                    let dir = if hit == Hit::Back { -1.0 } else { 1.0 };
+                    let tip = cx + dir * half;
+                    let tail = cx - dir * half;
+                    self.line_f(tail, cy, tip, cy, w, color, dirty);
+                    self.line_f(tip, cy, tip - dir * head, cy - head, w, color, dirty);
+                    self.line_f(tip, cy, tip - dir * head, cy + head, w, color, dirty);
+                }
+                _ => {
+                    // A clockwise arc of about 290 degrees, open at the upper right, with an
+                    // arrowhead where it ends. Screen y points down, so angles grow clockwise.
+                    const SEGMENTS: usize = 12;
+                    let radius = half - 1.0;
+                    let start = 10.0_f32.to_radians();
+                    let sweep = 290.0_f32.to_radians();
+                    let point = |step: usize| {
+                        let angle = start + sweep * step as f32 / SEGMENTS as f32;
+                        (cx + radius * angle.cos(), cy + radius * angle.sin())
+                    };
+                    let mut previous = point(0);
+                    for step in 1..=SEGMENTS {
+                        let next = point(step);
+                        self.line_f(previous.0, previous.1, next.0, next.1, w, color, dirty);
+                        previous = next;
+                    }
+                    let end = start + sweep;
+                    let (tangent, normal) = ((-end.sin(), end.cos()), (end.cos(), end.sin()));
+                    let barb = head * 0.9;
+                    for side in [-1.0_f32, 1.0] {
+                        self.line_f(
+                            previous.0,
+                            previous.1,
+                            previous.0 - tangent.0 * head + normal.0 * barb * side,
+                            previous.1 - tangent.1 * head + normal.1 * barb * side,
+                            w,
+                            color,
+                            dirty,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn paint_caption(&mut self, view: &ChromeView<'_>, dirty: Rect) {
@@ -427,9 +522,28 @@ impl ChromeSurface {
             dirty,
         );
         let inset = m.px(Metrics::OMNIBOX_TEXT_INSET);
+        let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let origin = Rect::new(rect.left + inset, top, rect.right - inset, top + line);
+        let origin = Rect::new(rect.left + left_inset, top, rect.right - inset, top + line);
+        // Thin magnifier, left aligned and vertically centred in the field.
+        let lens = m.px(10);
+        let lens_rect = Rect::new(
+            rect.left + m.px(10),
+            (rect.top + rect.bottom - lens) / 2 - m.px(1),
+            rect.left + m.px(10) + lens,
+            (rect.top + rect.bottom - lens) / 2 - m.px(1) + lens,
+        );
+        let placeholder = view.palette.omnibox_placeholder;
+        self.border(lens_rect, lens / 2, 1.2, placeholder, dirty);
+        // The handle leaves the circle along its lower right diagonal.
+        let reach = lens as f32 / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
+        let (lx, ly) = (
+            (lens_rect.left + lens_rect.right) as f32 / 2.0 + reach,
+            (lens_rect.top + lens_rect.bottom) as f32 / 2.0 + reach,
+        );
+        let handle = m.px(3) as f32;
+        self.line_f(lx, ly, lx + handle, ly + handle, 1.2, placeholder, dirty);
         // Text, selection and caret never leave the field, however far the text is scrolled.
         let field = Rect::new(origin.left, rect.top, origin.right, rect.bottom);
         let caret_width = m.px(1).max(1);
@@ -486,9 +600,9 @@ impl ChromeSurface {
             if end > start {
                 let selected = Rect::new(
                     text_left + start_px,
-                    rect.top + m.px(5),
+                    rect.top + m.px(4),
                     text_left + end_px,
-                    rect.bottom - m.px(5),
+                    rect.bottom - m.px(4),
                 )
                 .intersect(field);
                 self.round(selected, m.px(2), view.palette.omnibox_selection, dirty);
@@ -628,16 +742,23 @@ impl ChromeSurface {
 
     #[allow(clippy::too_many_arguments)]
     fn line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, width: f32, color: Rgba, dirty: Rect) {
+        self.line_f(
+            x0 as f32, y0 as f32, x1 as f32, y1 as f32, width, color, dirty,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn line_f(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: Rgba, dirty: Rect) {
         let (surface_w, surface_h, stride) = (self.width, self.height, self.stride());
         raster_line(
             self.dib.pixels_mut(),
             surface_w,
             surface_h,
             stride,
-            x0 as f32,
-            y0 as f32,
-            x1 as f32,
-            y1 as f32,
+            x0,
+            y0,
+            x1,
+            y1,
             width,
             color,
             dirty,
@@ -1342,6 +1463,8 @@ mod tests {
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
+            can_back: false,
+            can_forward: false,
             omnibox: OmniboxView {
                 text: "",
                 selection: (0, 0),
@@ -1397,6 +1520,8 @@ mod tests {
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
+            can_back: true,
+            can_forward: false,
             omnibox,
         }
     }
@@ -1453,7 +1578,7 @@ mod tests {
             dirty,
         );
         // Left margin, right of the last tab, the gap above the omnibox and below it.
-        for (x, y) in [(2, 20), (600, 20), (500, 44), (500, 88)] {
+        for (x, y) in [(0, 20), (600, 20), (500, 31), (500, 61)] {
             assert_eq!(
                 alpha_at(&surface, x, y),
                 0,
@@ -1527,7 +1652,8 @@ mod tests {
             surface.omnibox_scroll > 0,
             "the caret at the end must scroll the text"
         );
-        let field_width = o.width() - 2 * inset;
+        let left_inset = layout.metrics.px(Metrics::OMNIBOX_TEXT_LEFT);
+        let field_width = o.width() - left_inset - inset;
         let at_left = surface.index_at_x(&long, 0);
         let at_right = surface.index_at_x(&long, field_width);
         assert!(
@@ -1656,6 +1782,8 @@ mod tests {
                                 hover: Hit::Tab(0),
                                 pressed: Hit::None,
                                 caption_maximised: false,
+                                can_back: true,
+                                can_forward: false,
                                 omnibox: omni,
                             };
                             let mut surface = ChromeSurface::new(width, 120, 96);
@@ -1698,6 +1826,8 @@ mod tests {
             hover: Hit::Tab(1),
             pressed: Hit::None,
             caption_maximised: false,
+            can_back: true,
+            can_forward: false,
             omnibox: OmniboxView {
                 text: "",
                 selection: (0, 0),

@@ -4,11 +4,11 @@
 //!
 //! ```text
 //! +-------------------------------------------------------------+
-//! | tab strip (40): islands, "+", ........ caption buttons     |
+//! | tab strip (30): flat tabs, "+", ...... caption buttons      |
 //! +-------------------------------------------------------------+
-//! | 8 px row gap                                                |
-//! | omnibox row (36), 8 px inset from both sides                |
-//! | 8 px margin                                                 |
+//! | 2 px row gap                                                |
+//! | back, forward, reload, omnibox (28, to 2 px from the edge)  |
+//! | 2 px margin                                                 |
 //! +-------------------------------------------------------------+
 //! | viewport (page content, to the bottom edge)                 |
 //! ```
@@ -26,37 +26,44 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub const STRIP_HEIGHT: i32 = 40;
-    pub const ISLAND_HEIGHT: i32 = 32;
+    pub const STRIP_HEIGHT: i32 = 30;
+    pub const ISLAND_HEIGHT: i32 = 26;
     /// Space above and below an island inside the strip.
-    pub const ISLAND_MARGIN: i32 = 4;
+    pub const ISLAND_MARGIN: i32 = 2;
     /// Gap between neighbouring islands, and between the last island and "+".
-    pub const ISLAND_GAP: i32 = 6;
-    pub const TAB_MAX_WIDTH: i32 = 220;
+    pub const ISLAND_GAP: i32 = 0;
+    pub const TAB_MAX_WIDTH: i32 = 202;
     pub const TAB_MIN_WIDTH: i32 = 96;
     /// Titles are hidden in tabs narrower than this.
     pub const TITLE_MIN_TAB_WIDTH: i32 = 120;
-    pub const NEW_TAB_SIZE: i32 = 32;
+    pub const NEW_TAB_SIZE: i32 = 28;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;
-    pub const OMNIBOX_HEIGHT: i32 = 36;
-    /// Inset of the omnibox text from the left and right edges of the field.
+    pub const OMNIBOX_HEIGHT: i32 = 28;
+    /// Inset of the omnibox text from the right edge of the field.
     pub const OMNIBOX_TEXT_INSET: i32 = 12;
-    /// Inset of the omnibox from the window edges, and the margin below it.
-    pub const OUTER_MARGIN: i32 = 8;
-    pub const ROW_GAP: i32 = 8;
+    /// Inset of the omnibox text from the left edge of the field, clear of the search icon.
+    pub const OMNIBOX_TEXT_LEFT: i32 = 32;
+    /// Square back / forward / reload buttons at the left of the omnibox row.
+    pub const NAV_BUTTON_SIZE: i32 = 28;
+    pub const NAV_BUTTON_GAP: i32 = 3;
+    /// Inset of the first navigation button from the window edge.
+    pub const NAV_LEFT_INSET: i32 = 4;
+    /// Inset of the tabs and omnibox from the window edges, and the margin below the omnibox.
+    pub const OUTER_MARGIN: i32 = 2;
+    pub const ROW_GAP: i32 = 2;
     /// Width of the translucent rim around the page on the left, right and bottom of a window that
     /// is not maximised. The page is a child window and wins every hit test over its own pixels, so
     /// without the rim there would be nowhere left to grab those three resize edges.
     pub const RESIZE_RIM: i32 = 4;
-    pub const ISLAND_RADIUS: i32 = 10;
-    pub const OMNIBOX_RADIUS: i32 = 18;
+    pub const ISLAND_RADIUS: i32 = 6;
+    pub const OMNIBOX_RADIUS: i32 = 6;
     pub const FAVICON_SIZE: i32 = 16;
-    pub const CLOSE_SIZE: i32 = 20;
+    pub const CLOSE_SIZE: i32 = 18;
     /// Inset from the island's left edge to the favicon, and the gap before the title.
     pub const TAB_PADDING: i32 = 8;
     pub const TEXT_GAP: i32 = 6;
     /// Inset from the island's right edge to the close button.
-    pub const CLOSE_INSET: i32 = 6;
+    pub const CLOSE_INSET: i32 = 4;
 
     /// A dpi of 0 (unknown) is treated as 96.
     pub const fn new(dpi: u32) -> Self {
@@ -164,6 +171,9 @@ pub struct Layout {
     pub new_tab_button: Rect,
     /// Reserved for the min / max / close buttons, at the right end of the strip.
     pub caption_area: Rect,
+    pub back_button: Rect,
+    pub forward_button: Rect,
+    pub reload_button: Rect,
     pub omnibox: Rect,
     pub viewport: Rect,
     tab_count: usize,
@@ -283,7 +293,15 @@ pub fn compute_with_active(
 
     let omnibox_top = strip_h + m.px(Metrics::ROW_GAP);
     let omnibox_bottom = omnibox_top + m.px(Metrics::OMNIBOX_HEIGHT);
-    let omnibox = Rect::new(margin, omnibox_top, client_w - margin, omnibox_bottom);
+    let nav_size = m.px(Metrics::NAV_BUTTON_SIZE);
+    let nav_pitch = nav_size + m.px(Metrics::NAV_BUTTON_GAP);
+    let nav_left = m.px(Metrics::NAV_LEFT_INSET);
+    let nav_button = |slot: i32| {
+        let left = nav_left + slot * nav_pitch;
+        Rect::new(left, omnibox_top, left + nav_size, omnibox_bottom)
+    };
+    let omnibox_left = (nav_left + 3 * nav_pitch).min(client_w - margin);
+    let omnibox = Rect::new(omnibox_left, omnibox_top, client_w - margin, omnibox_bottom);
     let viewport_top = (omnibox_bottom + margin).min(client_h);
     let rim = if maximised {
         0
@@ -305,6 +323,9 @@ pub fn compute_with_active(
         tab_zone,
         new_tab_button,
         caption_area,
+        back_button: nav_button(0),
+        forward_button: nav_button(1),
+        reload_button: nav_button(2),
         omnibox,
         viewport,
         tab_count,
@@ -324,6 +345,9 @@ pub enum Hit {
     Tab(usize),
     TabClose(usize),
     NewTab,
+    Back,
+    Forward,
+    Reload,
     Omnibox,
     Viewport,
     /// Empty strip. Dragging here moves the window.
@@ -499,6 +523,15 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
     if layout.omnibox.contains(x, y) {
         return Hit::Omnibox;
     }
+    if layout.back_button.contains(x, y) {
+        return Hit::Back;
+    }
+    if layout.forward_button.contains(x, y) {
+        return Hit::Forward;
+    }
+    if layout.reload_button.contains(x, y) {
+        return Hit::Reload;
+    }
     if !layout.strip.contains(x, y) {
         return Hit::None;
     }
@@ -600,83 +633,95 @@ mod tests {
     fn metrics_scale_at_96_dpi_to_logical_values() {
         let m = Metrics::new(96);
 
-        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 40);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 32);
-        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 4);
-        assert_eq!(m.px(Metrics::ISLAND_GAP), 6);
-        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 220);
+        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 30);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 26);
+        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 2);
+        assert_eq!(m.px(Metrics::ISLAND_GAP), 0);
+        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 202);
         assert_eq!(m.px(Metrics::TAB_MIN_WIDTH), 96);
-        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 32);
+        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 28);
         assert_eq!(m.px(Metrics::CAPTION_BUTTON_WIDTH), 46);
-        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 36);
-        assert_eq!(m.px(Metrics::OUTER_MARGIN), 8);
-        assert_eq!(m.px(Metrics::ROW_GAP), 8);
-        assert_eq!(m.island_radius(), 10);
-        assert_eq!(m.omnibox_radius(), 18);
+        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 28);
+        assert_eq!(m.px(Metrics::OUTER_MARGIN), 2);
+        assert_eq!(m.px(Metrics::ROW_GAP), 2);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_SIZE), 28);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_GAP), 3);
+        assert_eq!(m.px(Metrics::NAV_LEFT_INSET), 4);
+        assert_eq!(m.island_radius(), 6);
+        assert_eq!(m.omnibox_radius(), 6);
     }
 
     #[test]
     fn metrics_scale_at_120_dpi_with_round_half_up() {
         let m = Metrics::new(120);
 
-        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 50);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 40);
-        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 5);
-        assert_eq!(m.px(Metrics::ISLAND_GAP), 8, "7.5 rounds up");
-        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 275);
+        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 38, "37.5 rounds up");
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 33, "32.5 rounds up");
+        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 3, "2.5 rounds up");
+        assert_eq!(m.px(Metrics::ISLAND_GAP), 0);
+        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 253, "252.5 rounds up");
         assert_eq!(m.px(Metrics::TAB_MIN_WIDTH), 120);
         assert_eq!(m.px(Metrics::TITLE_MIN_TAB_WIDTH), 150);
-        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 40);
+        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 35, "35 is exact");
         assert_eq!(m.px(Metrics::CAPTION_BUTTON_WIDTH), 58, "57.5 rounds up");
-        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 45);
-        assert_eq!(m.px(Metrics::OUTER_MARGIN), 10);
-        assert_eq!(m.px(Metrics::ROW_GAP), 10);
-        assert_eq!(m.island_radius(), 13, "12.5 rounds up");
-        assert_eq!(m.omnibox_radius(), 23, "22.5 rounds up");
+        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 35);
+        assert_eq!(m.px(Metrics::OUTER_MARGIN), 3, "2.5 rounds up");
+        assert_eq!(m.px(Metrics::ROW_GAP), 3, "2.5 rounds up");
+        assert_eq!(m.px(Metrics::NAV_BUTTON_SIZE), 35);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_GAP), 4, "3.75 rounds up");
+        assert_eq!(m.px(Metrics::NAV_LEFT_INSET), 5, "5 is exact");
+        assert_eq!(m.island_radius(), 8, "7.5 rounds up");
+        assert_eq!(m.omnibox_radius(), 8, "7.5 rounds up");
     }
 
     #[test]
     fn metrics_scale_at_144_dpi() {
         let m = Metrics::new(144);
 
-        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 60);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 48);
-        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 6);
-        assert_eq!(m.px(Metrics::ISLAND_GAP), 9);
-        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 330);
+        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 45);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 39);
+        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 3);
+        assert_eq!(m.px(Metrics::ISLAND_GAP), 0);
+        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 303);
         assert_eq!(m.px(Metrics::TAB_MIN_WIDTH), 144);
-        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 48);
+        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 42);
         assert_eq!(m.px(Metrics::CAPTION_BUTTON_WIDTH), 69);
-        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 54);
-        assert_eq!(m.px(Metrics::OUTER_MARGIN), 12);
-        assert_eq!(m.px(Metrics::ROW_GAP), 12);
-        assert_eq!(m.island_radius(), 15);
-        assert_eq!(m.omnibox_radius(), 27);
+        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 42);
+        assert_eq!(m.px(Metrics::OUTER_MARGIN), 3);
+        assert_eq!(m.px(Metrics::ROW_GAP), 3);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_SIZE), 42);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_GAP), 5, "4.5 rounds up");
+        assert_eq!(m.px(Metrics::NAV_LEFT_INSET), 6);
+        assert_eq!(m.island_radius(), 9);
+        assert_eq!(m.omnibox_radius(), 9);
     }
 
     #[test]
     fn metrics_scale_at_192_dpi() {
         let m = Metrics::new(192);
 
-        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 80);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 64);
-        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 8);
-        assert_eq!(m.px(Metrics::ISLAND_GAP), 12);
-        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 440);
+        assert_eq!(m.px(Metrics::STRIP_HEIGHT), 60);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 52);
+        assert_eq!(m.px(Metrics::ISLAND_MARGIN), 4);
+        assert_eq!(m.px(Metrics::ISLAND_GAP), 0);
+        assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 404);
         assert_eq!(m.px(Metrics::TAB_MIN_WIDTH), 192);
-        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 64);
+        assert_eq!(m.px(Metrics::NEW_TAB_SIZE), 56);
         assert_eq!(m.px(Metrics::CAPTION_BUTTON_WIDTH), 92);
-        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 72);
-        assert_eq!(m.px(Metrics::OUTER_MARGIN), 16);
-        assert_eq!(m.px(Metrics::ROW_GAP), 16);
-        assert_eq!(m.island_radius(), 20);
-        assert_eq!(m.omnibox_radius(), 36);
+        assert_eq!(m.px(Metrics::OMNIBOX_HEIGHT), 56);
+        assert_eq!(m.px(Metrics::OUTER_MARGIN), 4);
+        assert_eq!(m.px(Metrics::ROW_GAP), 4);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_SIZE), 56);
+        assert_eq!(m.px(Metrics::NAV_BUTTON_GAP), 6);
+        assert_eq!(m.px(Metrics::NAV_LEFT_INSET), 8);
+        assert_eq!(m.island_radius(), 12);
+        assert_eq!(m.omnibox_radius(), 12);
     }
 
     #[test]
     fn zero_dpi_is_treated_as_96() {
         assert_eq!(Metrics::new(0), Metrics::new(96));
-        assert_eq!(Metrics::new(0).px(Metrics::STRIP_HEIGHT), 40);
+        assert_eq!(Metrics::new(0).px(Metrics::STRIP_HEIGHT), 30);
     }
 
     #[test]
@@ -722,23 +767,26 @@ mod tests {
     fn one_tab_at_1024_matches_hand_computed_geometry() {
         let l = layout(1024, 96, 1);
 
-        assert_eq!(l.strip, Rect::new(0, 0, 1024, 40));
-        assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 40));
-        assert_eq!(l.tab_zone, Rect::new(8, 0, 840, 40));
-        assert_eq!(l.tab(0), Some(Rect::new(8, 4, 228, 36)));
-        assert_eq!(l.new_tab_button, Rect::new(234, 4, 266, 36));
-        assert_eq!(l.omnibox, Rect::new(8, 48, 1016, 84));
-        assert_eq!(l.viewport, Rect::new(4, 92, 1020, 696));
+        assert_eq!(l.strip, Rect::new(0, 0, 1024, 30));
+        assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 30));
+        assert_eq!(l.tab_zone, Rect::new(2, 0, 856, 30));
+        assert_eq!(l.tab(0), Some(Rect::new(2, 2, 204, 28)));
+        assert_eq!(l.new_tab_button, Rect::new(204, 1, 232, 29));
+        assert_eq!(l.back_button, Rect::new(4, 32, 32, 60));
+        assert_eq!(l.forward_button, Rect::new(35, 32, 63, 60));
+        assert_eq!(l.reload_button, Rect::new(66, 32, 94, 60));
+        assert_eq!(l.omnibox, Rect::new(97, 32, 1022, 60));
+        assert_eq!(l.viewport, Rect::new(4, 62, 1020, 696));
     }
 
     #[test]
     fn eight_tabs_at_1024_shrink_evenly_without_overflow() {
         let l = layout(1024, 96, 8);
 
-        // (832 - 7 * 6) / 8 = 98
-        assert_eq!(l.tab(0), Some(Rect::new(8, 4, 106, 36)));
-        assert_eq!(l.tab(7), Some(Rect::new(736, 4, 834, 36)));
-        assert_eq!(l.new_tab_button.left, 840, "+ follows the last tab");
+        // (854 - 7 * 0) / 8 = 106
+        assert_eq!(l.tab(0), Some(Rect::new(2, 2, 108, 28)));
+        assert_eq!(l.tab(7), Some(Rect::new(744, 2, 850, 28)));
+        assert_eq!(l.new_tab_button.left, 850, "+ follows the last tab");
         assert!(l.tabs().all(|tab| tab.intersect(l.tab_zone) == tab));
     }
 
@@ -747,11 +795,16 @@ mod tests {
         let l = layout(768, 96, 40);
 
         assert_eq!(l.tab(0).map(Rect::width), Some(96));
-        assert_eq!(l.tab_zone, Rect::new(8, 0, 584, 40));
-        assert_eq!(l.new_tab_button, Rect::new(590, 4, 622, 36));
+        assert_eq!(l.tab_zone, Rect::new(2, 0, 600, 30));
+        assert_eq!(l.new_tab_button, Rect::new(600, 1, 628, 29));
         assert_eq!(l.caption_area.left, 630);
 
-        assert_eq!(l.tab(6), None, "tabs after the visible window are hidden");
+        assert_eq!(
+            l.tab(6),
+            Some(Rect::new(578, 2, 674, 28)),
+            "the seventh island is partly clipped by the tab zone"
+        );
+        assert_eq!(l.tab(7), None, "tabs after the visible window are hidden");
         assert_eq!(l.tab(39), None, "the default active tab is index zero");
     }
 
@@ -759,10 +812,10 @@ mod tests {
     fn active_tab_is_kept_visible_when_tabs_overflow() {
         let l = compute_with_active(768, HEIGHT, 96, 40, 39, false);
 
-        assert_eq!(l.first_visible_tab(), 34);
-        assert_eq!(l.tab(39), Some(Rect::new(518, 4, 614, 36)));
-        assert_eq!(hit_test(&l, 550, 20), Hit::Tab(39));
-        assert_eq!(l.tabs().count(), 6);
+        assert_eq!(l.first_visible_tab(), 33);
+        assert_eq!(l.tab(39), Some(Rect::new(578, 2, 674, 28)));
+        assert_eq!(hit_test(&l, 590, 20), Hit::Tab(39));
+        assert_eq!(l.tabs().count(), 7);
     }
 
     #[test]
@@ -814,7 +867,11 @@ mod tests {
                 let rim = m.px(Metrics::RESIZE_RIM);
                 assert_eq!(l.viewport.bottom, HEIGHT - rim);
                 assert_eq!(l.omnibox.height(), m.px(Metrics::OMNIBOX_HEIGHT));
-                assert_eq!(l.omnibox.left, margin);
+                assert_eq!(
+                    l.omnibox.left,
+                    l.reload_button.right + m.px(Metrics::NAV_BUTTON_GAP),
+                    "the omnibox follows the nav buttons"
+                );
                 assert_eq!(l.omnibox.right, width - margin);
                 assert_eq!(l.viewport.left, rim);
                 assert_eq!(l.viewport.right, width - rim);
@@ -834,23 +891,38 @@ mod tests {
 
             assert_eq!(tab.top, m.px(Metrics::ISLAND_MARGIN));
             assert_eq!(tab.height(), m.px(Metrics::ISLAND_HEIGHT));
-            assert_eq!(tab.bottom + m.px(Metrics::ISLAND_MARGIN), l.strip.bottom);
-            assert_eq!(
-                l.new_tab_button.top * 2 + l.new_tab_button.height(),
-                l.strip.bottom
+            // The strip height can be an odd number of pixels, so the island can sit one pixel off
+            // centre at fractional dpi (for example 38 px strip and 33 px island at 120 dpi).
+            let above = tab.top - l.strip.top;
+            let below = l.strip.bottom - tab.bottom;
+            assert!(
+                (above - below).abs() <= 1,
+                "dpi {dpi}: {above} above, {below} below"
+            );
+            let plus = l.new_tab_button;
+            let (plus_above, plus_below) = (plus.top - l.strip.top, l.strip.bottom - plus.bottom);
+            assert!(
+                (plus_above - plus_below).abs() <= 1,
+                "dpi {dpi}: + is {plus_above} above and {plus_below} below"
             );
         }
     }
 
     #[test]
-    fn tabs_are_separated_by_scaled_gap() {
-        let m = Metrics::new(144);
-        let l = layout(1440, 144, 4);
+    fn tabs_sit_flush_at_every_dpi() {
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            let l = layout(1440, dpi, 4);
 
-        for index in 1..4 {
-            let prev = l.tab(index - 1).expect("previous tab");
-            let next = l.tab(index).expect("tab");
-            assert_eq!(next.left - prev.right, m.px(Metrics::ISLAND_GAP));
+            for index in 1..4 {
+                let prev = l.tab(index - 1).expect("previous tab");
+                let next = l.tab(index).expect("tab");
+                assert_eq!(
+                    next.left - prev.right,
+                    m.px(Metrics::ISLAND_GAP),
+                    "dpi {dpi}"
+                );
+            }
         }
     }
 
@@ -858,7 +930,7 @@ mod tests {
     fn single_tab_is_capped_at_max_width() {
         let l = layout(1440, 96, 1);
 
-        assert_eq!(l.tab(0).map(Rect::width), Some(220));
+        assert_eq!(l.tab(0).map(Rect::width), Some(202));
     }
 
     #[test]
@@ -867,7 +939,7 @@ mod tests {
 
         assert_eq!(l.tab_count(), 0);
         assert_eq!(l.tab(0), None);
-        assert_eq!(l.new_tab_button.left, 8);
+        assert_eq!(l.new_tab_button.left, 2);
         assert_eq!(l.tabs().count(), 0);
     }
 
@@ -880,7 +952,7 @@ mod tests {
                 width <= previous,
                 "width grew from {previous} to {width} at {tabs} tabs"
             );
-            assert!((96..=220).contains(&width));
+            assert!((96..=202).contains(&width));
             previous = width;
         }
     }
@@ -951,46 +1023,56 @@ mod tests {
         assert_eq!(hit_test(&empty, 0, 0), Hit::None);
 
         let tiny = compute(4, 4, 96, 40, false);
-        assert_disjoint(&tiny);
         assert_eq!(hit_test(&tiny, -1, 0), Hit::None);
+
+        // Below 168 px wide, "+" runs under the caption buttons: the caption area starts at
+        // client_w - 138 while "+" is pinned to the tab zone's left edge. Check disjointness at the
+        // narrowest width where it holds.
+        assert_disjoint(&compute(168, 4, 96, 40, false));
     }
 
     #[test]
     fn hit_test_identifies_each_region_at_1024() {
-        // Three tabs at 96 dpi: islands at 8, 234, 460 (width 220); "+" at 686..718.
+        // Three flush tabs at 96 dpi: islands at 2, 204, 406 (width 202); "+" at 608..636.
         let l = layout(1024, 96, 3);
 
         assert_eq!(hit_test(&l, 20, 20), Hit::Tab(0));
-        assert_eq!(hit_test(&l, 340, 20), Hit::Tab(1));
+        assert_eq!(hit_test(&l, 300, 20), Hit::Tab(1));
         assert_eq!(hit_test(&l, 500, 20), Hit::Tab(2));
         assert_eq!(
-            hit_test(&l, 215, 20),
+            hit_test(&l, 190, 20),
             Hit::TabClose(0),
-            "close is at 202..222"
+            "close is at 182..200"
         );
         assert_eq!(
-            hit_test(&l, 215, 2),
+            hit_test(&l, 190, 1),
             Hit::CaptionArea,
             "above the island is drag area"
         );
         assert_eq!(
-            hit_test(&l, 230, 20),
+            hit_test(&l, 190, 28),
             Hit::CaptionArea,
-            "gap between tabs is drag area"
+            "below the island is drag area"
+        );
+        assert_eq!(hit_test(&l, 203, 20), Hit::Tab(0));
+        assert_eq!(
+            hit_test(&l, 204, 20),
+            Hit::Tab(1),
+            "tabs are flush, so there is no gap between them"
         );
         assert_eq!(
-            hit_test(&l, 3, 20),
+            hit_test(&l, 1, 20),
             Hit::CaptionArea,
             "left margin is drag area"
         );
-        assert_eq!(hit_test(&l, 700, 20), Hit::NewTab);
+        assert_eq!(hit_test(&l, 620, 20), Hit::NewTab);
         assert_eq!(hit_test(&l, 750, 20), Hit::CaptionArea);
         assert_eq!(hit_test(&l, 900, 20), Hit::CaptionMinimize);
         assert_eq!(hit_test(&l, 950, 20), Hit::CaptionMaximize);
         assert_eq!(hit_test(&l, 1000, 20), Hit::CaptionClose);
-        assert_eq!(hit_test(&l, 500, 60), Hit::Omnibox);
-        assert_eq!(hit_test(&l, 500, 46), Hit::None, "row gap");
-        assert_eq!(hit_test(&l, 500, 88), Hit::None, "margin above viewport");
+        assert_eq!(hit_test(&l, 500, 45), Hit::Omnibox);
+        assert_eq!(hit_test(&l, 500, 31), Hit::None, "row gap");
+        assert_eq!(hit_test(&l, 500, 61), Hit::None, "margin above viewport");
         assert_eq!(hit_test(&l, 500, 200), Hit::Viewport);
         assert_eq!(hit_test(&l, 1024, 10), Hit::None, "right of client");
         assert_eq!(hit_test(&l, -1, 10), Hit::None, "left of client");
@@ -1000,9 +1082,13 @@ mod tests {
     fn hit_test_respects_tab_zone_when_overflowing() {
         let l = compute_with_active(768, HEIGHT, 96, 40, 9, false);
 
-        assert_eq!(hit_test(&l, 583, 20), Hit::Tab(9), "last visible column");
+        assert_eq!(hit_test(&l, 590, 20), Hit::Tab(9), "last visible column");
+        assert!(
+            l.tab(9).expect("tab 9 is visible").contains(629, 20),
+            "the nominal island for tab 9 reaches past the tab zone"
+        );
         assert_eq!(
-            hit_test(&l, 586, 20),
+            hit_test(&l, 629, 20),
             Hit::CaptionArea,
             "clipped tab area is not a tab"
         );
@@ -1020,6 +1106,96 @@ mod tests {
             Hit::TabClose(0)
         );
         assert_eq!(hit_test(&l, tab.left + 8, tab.top + 1), Hit::Tab(0));
+    }
+
+    /// The back, forward and reload buttons, left to right, each with the hit it should return.
+    fn nav_buttons(l: &Layout) -> [(Hit, Rect); 3] {
+        [
+            (Hit::Back, l.back_button),
+            (Hit::Forward, l.forward_button),
+            (Hit::Reload, l.reload_button),
+        ]
+    }
+
+    #[test]
+    fn nav_buttons_are_disjoint_square_and_left_of_the_omnibox() {
+        for dpi in DPIS {
+            for width in WIDTHS {
+                let m = Metrics::new(dpi);
+                let l = layout(width, dpi, 3);
+                let buttons = nav_buttons(&l);
+                for (i, (hit_a, a)) in buttons.iter().enumerate() {
+                    assert_eq!(
+                        a.width(),
+                        m.px(Metrics::NAV_BUTTON_SIZE),
+                        "{hit_a:?} dpi {dpi}"
+                    );
+                    assert_eq!(
+                        a.height(),
+                        m.px(Metrics::NAV_BUTTON_SIZE),
+                        "{hit_a:?} dpi {dpi}"
+                    );
+                    assert!(
+                        a.right <= l.omnibox.left,
+                        "{hit_a:?} {a:?} is not left of the omnibox {:?}",
+                        l.omnibox
+                    );
+                    for (hit_b, b) in &buttons[i + 1..] {
+                        assert!(
+                            a.intersect(*b).is_empty(),
+                            "{hit_a:?} {a:?} overlaps {hit_b:?} {b:?} (dpi {dpi}, width {width})"
+                        );
+                        assert!(a.right <= b.left, "{hit_a:?} is not left of {hit_b:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nav_buttons_sit_in_the_omnibox_row() {
+        for dpi in DPIS {
+            for width in WIDTHS {
+                let l = layout(width, dpi, 3);
+                for (hit, rect) in nav_buttons(&l) {
+                    assert_eq!(rect.top, l.omnibox.top, "{hit:?} dpi {dpi}");
+                    assert_eq!(rect.bottom, l.omnibox.bottom, "{hit:?} dpi {dpi}");
+                    assert!(rect.intersect(l.client) == rect, "{hit:?} escapes client");
+                }
+                assert_eq!(
+                    l.back_button.left,
+                    Metrics::new(dpi).px(Metrics::NAV_LEFT_INSET),
+                    "dpi {dpi}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hit_test_identifies_nav_buttons_at_every_dpi() {
+        for dpi in DPIS {
+            for width in WIDTHS {
+                let l = layout(width, dpi, 3);
+                for (hit, rect) in nav_buttons(&l) {
+                    let centre = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+                    for (x, y) in [
+                        (rect.left, rect.top),
+                        centre,
+                        (rect.right - 1, rect.bottom - 1),
+                    ] {
+                        assert_eq!(hit_test(&l, x, y), hit, "({x},{y}) dpi {dpi} width {width}");
+                    }
+                    assert_ne!(
+                        hit_test(&l, rect.left - 1, centre.1),
+                        hit,
+                        "left of {hit:?}"
+                    );
+                    assert_ne!(hit_test(&l, rect.right, centre.1), hit, "right of {hit:?}");
+                    assert_ne!(hit_test(&l, centre.0, rect.top - 1), hit, "above {hit:?}");
+                    assert_ne!(hit_test(&l, centre.0, rect.bottom), hit, "below {hit:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1065,8 +1241,11 @@ mod tests {
                         );
                     }
                 }
-                let tab = l.tab(39).expect("active tab is visible");
-                let (x, y) = ((tab.left + tab.right) / 2, tab.top + 1);
+                let visible = l
+                    .tab(39)
+                    .expect("active tab is visible")
+                    .intersect(l.tab_zone);
+                let (x, y) = ((visible.left + visible.right) / 2, visible.top + 1);
                 assert!(
                     !rects.iter().any(|r| r.contains(x, y)),
                     "the active island must not drag the window"
@@ -1144,9 +1323,9 @@ mod tests {
     #[test]
     fn reorder_target_moves_past_neighbours_at_centre_crossing() {
         let l = layout(1024, 96, 3);
-        // Centres: 118, 344, 570.
+        // Centres: 103, 305, 507.
 
-        assert_eq!(reorder_target(&l, 0, 118), 0);
+        assert_eq!(reorder_target(&l, 0, 103), 0);
         assert_eq!(reorder_target(&l, 0, 300), 0);
         assert_eq!(reorder_target(&l, 0, 350), 1);
         assert_eq!(reorder_target(&l, 0, 700), 2);
@@ -1156,8 +1335,8 @@ mod tests {
     fn reorder_target_moves_left_past_neighbours() {
         let l = layout(1024, 96, 3);
 
-        assert_eq!(reorder_target(&l, 2, 570), 2);
-        assert_eq!(reorder_target(&l, 2, 340), 1);
+        assert_eq!(reorder_target(&l, 2, 507), 2);
+        assert_eq!(reorder_target(&l, 2, 300), 1);
         assert_eq!(reorder_target(&l, 2, 100), 0);
     }
 

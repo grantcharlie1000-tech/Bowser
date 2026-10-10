@@ -185,21 +185,21 @@ mod tests {
             assert_eq!(hit(799, y, ChromeHit::None), FrameHit::TopRight, "y {y}");
             assert_eq!(hit(795, y, ChromeHit::None), FrameHit::TopRight, "y {y}");
         }
-        for y in 0..4 {
+        for y in 0..2 {
             assert_eq!(hit(780, y, ChromeHit::None), FrameHit::Top, "close y {y}");
             assert_eq!(hit(730, y, ChromeHit::None), FrameHit::Top, "max y {y}");
             assert_eq!(hit(680, y, ChromeHit::None), FrameHit::Top, "min y {y}");
         }
-        assert_eq!(hit(780, 4, ChromeHit::None), FrameHit::Close);
+        assert_eq!(hit(780, 2, ChromeHit::None), FrameHit::Close);
         assert_eq!(hit(730, 5, ChromeHit::None), FrameHit::Maximize);
         assert_eq!(hit(680, 5, ChromeHit::None), FrameHit::Minimize);
     }
 
     #[test]
     fn top_grip_does_not_overlap_the_tab_islands() {
-        // Islands start 4 px below the top, at x >= 8, so a click on a tab never starts a resize.
-        assert_eq!(hit(100, 3, ChromeHit::Interactive), FrameHit::Top);
-        for y in 4..36 {
+        // Islands start 2 px below the top, at x >= 2, so a click on a tab never starts a resize.
+        assert_eq!(hit(100, 1, ChromeHit::Interactive), FrameHit::Top);
+        for y in 2..30 {
             assert_eq!(
                 hit(100, y, ChromeHit::Interactive),
                 FrameHit::Client,
@@ -220,12 +220,11 @@ mod tests {
         assert_eq!(hit(400, 20, ChromeHit::Interactive), FrameHit::Client);
         assert_eq!(hit(790, 20, ChromeHit::None), FrameHit::Close);
         assert_eq!(
-            hit(730, 36, ChromeHit::None),
+            hit(730, 29, ChromeHit::None),
             FrameHit::Maximize,
-            "the caption button hit target covers the full 40 px strip"
+            "the caption button hit target covers the full 30 px strip"
         );
-        assert_eq!(hit(730, 39, ChromeHit::None), FrameHit::Maximize);
-        assert_eq!(hit(730, 40, ChromeHit::None), FrameHit::Client);
+        assert_eq!(hit(730, 30, ChromeHit::None), FrameHit::Client);
     }
 
     #[test]
@@ -264,6 +263,6 @@ mod tests {
             frame_hit_test(p(200, 80), (1600, 900), 192, true, ChromeHit::None),
             FrameHit::Client
         );
-        assert_eq!(caption_strip_height(120), 50);
+        assert_eq!(caption_strip_height(120), 38, "37.5 rounds up");
     }
 }
