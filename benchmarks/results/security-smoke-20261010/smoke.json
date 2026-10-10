@@ -1,0 +1,517 @@
+﻿{
+    "captured_utc":  "2026-10-10T05:24:39.2916470Z",
+    "outcome":  "FAIL",
+    "browser":  "Bowser",
+    "version":  null,
+    "bowser_sha256_before":  "b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3",
+    "bowser_sha256_after":  "b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3",
+    "bowser_sha256_unchanged":  true,
+    "process_id":  24324,
+    "process_group_shutdown_confirmed":  true,
+    "temporary_profile_removed":  true,
+    "artifact_directory":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-139a863b54ea42a0aec6b6a47cc1e452",
+    "event_log_csv":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-139a863b54ea42a0aec6b6a47cc1e452\\events.csv",
+    "request_log":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-139a863b54ea42a0aec6b6a47cc1e452\\requests.txt",
+    "event_log_exists":  true,
+    "request_log_exists":  true,
+    "local_http_requests":  [
+                                "/one",
+                                "/favicon.ico",
+                                "/two",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/favicon.ico",
+                                "/",
+                                "/popup-user",
+                                "/favicon.ico",
+                                "/download"
+                            ],
+    "external_protocol_scheme":  "bowser-smoke-562ad62fe0f84f089235b44c0ab58579",
+    "external_protocol_event_observed":  true,
+    "external_handler_marker_created":  false,
+    "real_web_search":  {
+                            "requested":  false,
+                            "outcome":  "NOT_REQUESTED",
+                            "query":  null,
+                            "provider_url":  null,
+                            "provider_native_address":  null,
+                            "provider_title":  null,
+                            "visible_result_name":  null,
+                            "result_url":  null,
+                            "result_native_address":  null,
+                            "result_title":  null,
+                            "same_window":  null,
+                            "detail":  null
+                        },
+    "click_diagnostics":  [
+                              {
+                                  "name":  "Open local search result / second page",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  172,
+                                  "top":  230,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  251,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              },
+                              {
+                                  "name":  "Open user initiated popup",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  172,
+                                  "top":  282,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  303,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              },
+                              {
+                                  "name":  "Open delayed non-user popup",
+                                  "control_type":  "ControlType.Button",
+                                  "left":  172,
+                                  "top":  334,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  355,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              },
+                              {
+                                  "name":  "Request geolocation permission",
+                                  "control_type":  "ControlType.Button",
+                                  "left":  172,
+                                  "top":  386,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  407,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              },
+                              {
+                                  "name":  "Start test download",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  172,
+                                  "top":  438,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  459,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              },
+                              {
+                                  "name":  "Open blocked external protocol",
+                                  "control_type":  "ControlType.Hyperlink",
+                                  "left":  172,
+                                  "top":  490,
+                                  "width":  400,
+                                  "height":  42,
+                                  "click_x":  372,
+                                  "click_y":  511,
+                                  "main_left":  156,
+                                  "main_top":  156,
+                                  "main_right":  1156,
+                                  "main_bottom":  876
+                              }
+                          ],
+    "failure_screenshot":  "C:\\Users\\charlie\\AppData\\Local\\Temp\\bowser-smoke-139a863b54ea42a0aec6b6a47cc1e452\\failure-window.png",
+    "failure_uia_controls":  [
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "http://127.0.0.1:57022/one",
+                                     "offscreen":  false,
+                                     "left":  253,
+                                     "top":  188,
+                                     "width":  1,
+                                     "height":  1
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "BOWSER_SMOKE_ONE - Web content",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Document",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Text",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  168,
+                                     "top":  239,
+                                     "width":  976,
+                                     "height":  38
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open local search result / second page",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  230,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open user initiated popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  282,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Open delayed non-user popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  334,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Request geolocation permission",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  386,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Start test download",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  438,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open blocked external protocol",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  490,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "BOWSER_SMOKE_ONE - Web content",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Document",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Text",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  168,
+                                     "top":  239,
+                                     "width":  976,
+                                     "height":  38
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open local search result / second page",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  230,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open user initiated popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  282,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Open delayed non-user popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  334,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Request geolocation permission",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  386,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Start test download",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  438,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open blocked external protocol",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  490,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Pane",
+                                     "name":  "BOWSER_SMOKE_ONE - Web content",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Document",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  160,
+                                     "top":  218,
+                                     "width":  992,
+                                     "height":  654
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Text",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  168,
+                                     "top":  239,
+                                     "width":  976,
+                                     "height":  38
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open local search result / second page",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  230,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open user initiated popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  282,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Open delayed non-user popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  334,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Request geolocation permission",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  386,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Start test download",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  438,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open blocked external protocol",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  490,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Text",
+                                     "name":  "BOWSER_SMOKE_ONE",
+                                     "offscreen":  false,
+                                     "left":  168,
+                                     "top":  239,
+                                     "width":  976,
+                                     "height":  38
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open local search result / second page",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  230,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open user initiated popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  282,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Open delayed non-user popup",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  334,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Button",
+                                     "name":  "Request geolocation permission",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  386,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Start test download",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  438,
+                                     "width":  400,
+                                     "height":  42
+                                 },
+                                 {
+                                     "control_type":  "ControlType.Hyperlink",
+                                     "name":  "Open blocked external protocol",
+                                     "offscreen":  false,
+                                     "left":  172,
+                                     "top":  490,
+                                     "width":  400,
+                                     "height":  42
+                                 }
+                             ],
+    "tests":  [
+                  {
+                      "test":  "empty_launch_native_input",
+                      "result":  "PASS",
+                      "detail":  "Visible native window and EDIT control found."
+                  },
+                  {
+                      "test":  "lazy_engine_start",
+                      "result":  "PASS",
+                      "detail":  "No msedgewebview2.exe descendant before navigation."
+                  },
+                  {
+                      "test":  "address_submission_navigation",
+                      "result":  "PASS",
+                      "detail":  "Address field verified before Enter using SendInput; loopback HTTP navigation reached BOWSER_SMOKE_ONE."
+                  },
+                  {
+                      "test":  "result_link_and_history",
+                      "result":  "PASS",
+                      "detail":  "Clicked the local result link; Alt+Left and Alt+Right title markers observed."
+                  },
+                  {
+                      "test":  "user_popup_new_tab",
+                      "result":  "PASS",
+                      "detail":  "User-initiated target=_blank produced popup_new_tab in the original HWND; /popup-user reached the loopback server and BOWSER_SMOKE_POPUP_USER became the active tab title; Ctrl+1 restored the original tab with BOWSER_SMOKE_ONE."
+                  },
+                  {
+                      "test":  "non_user_popup_blocked",
+                      "result":  "PASS",
+                      "detail":  "Delayed popup produced popup_blocked and left the current document usable."
+                  },
+                  {
+                      "test":  "permission_denied",
+                      "result":  "PASS",
+                      "detail":  "Local-page geolocation request produced permission_denied."
+                  },
+                  {
+                      "test":  "download_cancelled",
+                      "result":  "PASS",
+                      "detail":  "Local attachment request produced download_cancelled."
+                  },
+                  {
+                      "test":  "external_protocol_blocked",
+                      "result":  "PASS",
+                      "detail":  "scheme=bowser-smoke-562ad62fe0f84f089235b44c0ab58579; external_protocol_blocked observed; handler marker absent after 1 second."
+                  },
+                  {
+                      "test":  "close_during_loading",
+                      "result":  "FAIL",
+                      "detail":  "The local slow navigation request was not observed. | at \u003cScriptBlock\u003e, C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\smoke.ps1: line 1067 | Events: process_start@0.001500ms, window_visible@43.436600ms, input_ready@43.593200ms, engine_prewarm_started@1095.732900ms, webview_profile_started@1095.906700ms, webview_profile_ready@1096.596800ms, webview_environment_requested@1096.736900ms, webview_environment_result@1109.091600ms, webview_create_completed@1109.497700ms, engine_ready@1109.624500ms, submitted@1181.947700ms, webview_controller_requested@1182.120500ms, webview_controller_result@2197.397000ms, webview_configure_started@2197.538800ms, smartscreen_setting_enabled_verified@2198.724300ms, webview_configure_finished@2199.108300ms, navigation_started@2204.447600ms, address_updated@2683.470500ms, navigation_completed@2713.153900ms, address_updated@2713.468500ms, navigation_started@3562.559100ms, address_updated@3588.772200ms, navigation_completed@3589.453500ms, address_updated@3589.768600ms, navigation_started@3848.136800ms, address_updated@3863.189400ms, navigation_completed@3871.820900ms, address_updated@3872.209400ms, navigation_started@4000.730900ms, address_updated@4014.437500ms, navigation_completed@4020.618700ms, address_updated@4020.986800ms, navigation_started@4167.489200ms, address_updated@4180.704300ms, navigation_completed@4191.848500ms, address_updated@4192.210600ms, submitted@4637.894500ms, repeat_navigation_boundary@4637.955800ms, webview_controller_requested@4638.000000ms, popup_new_tab@4640.427700ms, webview_controller_result@4716.966000ms, webview_configure_started@4717.025800ms, smartscreen_setting_enabled_verified@4717.676800ms, webview_configure_finished@4717.816300ms, navigation_started@4726.890100ms, address_updated@4800.910600ms, navigation_completed@4821.861200ms, address_updated@4822.331900ms, idle_trim_low@8957.155500ms, memory_target_applied_low@8957.256800ms, idle_trim_normal@10982.587800ms, memory_target_applied_normal@10982.690900ms, popup_blocked@11804.208100ms, permission_denied@12142.756500ms, download_cancelled@12677.783400ms, external_protocol_blocked@13299.282300ms, navigation_failed@13302.206200ms, idle_trim_low@25003.936700ms, memory_target_applied_low@25004.077800ms, idle_trim_normal@25992.914100ms, memory_target_applied_normal@25993.039700ms | HTTP requests: /one, /favicon.ico, /two, /favicon.ico, /favicon.ico, /favicon.ico, /favicon.ico, /, /popup-user, /favicon.ico, /download | UIA bounds: [{\"control_type\":\"ControlType.Pane\",\"name\":\"http://127.0.0.1:57022/one\",\"offscreen\":false,\"left\":253,\"top\":188,\"width\":1,\"height\":1},{\"control_type\":\"ControlType.Pane\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Pane\",\"name\":\"BOWSER_SMOKE_ONE - Web content\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Document\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Text\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":168,\"top\":239,\"width\":976,\"height\":38},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open local search result / second page\",\"offscreen\":false,\"left\":172,\"top\":230,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open user initiated popup\",\"offscreen\":false,\"left\":172,\"top\":282,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Open delayed non-user popup\",\"offscreen\":false,\"left\":172,\"top\":334,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Request geolocation permission\",\"offscreen\":false,\"left\":172,\"top\":386,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Start test download\",\"offscreen\":false,\"left\":172,\"top\":438,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open blocked external protocol\",\"offscreen\":false,\"left\":172,\"top\":490,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Pane\",\"name\":\"BOWSER_SMOKE_ONE - Web content\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Document\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Text\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":168,\"top\":239,\"width\":976,\"height\":38},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open local search result / second page\",\"offscreen\":false,\"left\":172,\"top\":230,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open user initiated popup\",\"offscreen\":false,\"left\":172,\"top\":282,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Open delayed non-user popup\",\"offscreen\":false,\"left\":172,\"top\":334,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Request geolocation permission\",\"offscreen\":false,\"left\":172,\"top\":386,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Start test download\",\"offscreen\":false,\"left\":172,\"top\":438,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open blocked external protocol\",\"offscreen\":false,\"left\":172,\"top\":490,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Pane\",\"name\":\"BOWSER_SMOKE_ONE - Web content\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Document\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":160,\"top\":218,\"width\":992,\"height\":654},{\"control_type\":\"ControlType.Text\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":168,\"top\":239,\"width\":976,\"height\":38},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open local search result / second page\",\"offscreen\":false,\"left\":172,\"top\":230,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open user initiated popup\",\"offscreen\":false,\"left\":172,\"top\":282,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Open delayed non-user popup\",\"offscreen\":false,\"left\":172,\"top\":334,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Request geolocation permission\",\"offscreen\":false,\"left\":172,\"top\":386,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Start test download\",\"offscreen\":false,\"left\":172,\"top\":438,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open blocked external protocol\",\"offscreen\":false,\"left\":172,\"top\":490,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Text\",\"name\":\"BOWSER_SMOKE_ONE\",\"offscreen\":false,\"left\":168,\"top\":239,\"width\":976,\"height\":38},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open local search result / second page\",\"offscreen\":false,\"left\":172,\"top\":230,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open user initiated popup\",\"offscreen\":false,\"left\":172,\"top\":282,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Open delayed non-user popup\",\"offscreen\":false,\"left\":172,\"top\":334,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Button\",\"name\":\"Request geolocation permission\",\"offscreen\":false,\"left\":172,\"top\":386,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Start test download\",\"offscreen\":false,\"left\":172,\"top\":438,\"width\":400,\"height\":42},{\"control_type\":\"ControlType.Hyperlink\",\"name\":\"Open blocked external protocol\",\"offscreen\":false,\"left\":172,\"top\":490,\"width\":400,\"height\":42}] | UIA child HWNDs: [{\"hwnd\":125833586,\"class\":\"Edit\"},{\"hwnd\":31657954,\"class\":\"Chrome_WidgetWin_0\"},{\"hwnd\":51253688,\"class\":\"Chrome_WidgetWin_1\"},{\"hwnd\":81923824,\"class\":\"Chrome_RenderWidgetHostHWND\"},{\"hwnd\":246943482,\"class\":\"Intermediate D3D Window\"}]"
+                  },
+                  {
+                      "test":  "frozen_binary_check",
+                      "result":  "PASS",
+                      "detail":  "Bowser release SHA-256 unchanged: b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3"
+                  }
+              ]
+}

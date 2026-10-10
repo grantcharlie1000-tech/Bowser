@@ -324,6 +324,8 @@ pub struct App {
     navigation_progress: NavigationProgress,
     tabs: Vec<AppTab>,
     tab_model: crate::tabs::TabList,
+    group_preferences: crate::tab_groups::GroupPreferences,
+    group_preferences_path: Option<PathBuf>,
 }
 
 struct AppTab {
@@ -525,6 +527,7 @@ impl App {
     }
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
+        let _ = Self::expand_group_for_tab(app, id);
         let (hwnd, previous, old_has_controller, new_has_controller) = {
             let mut state = app.borrow_mut();
             let previous = state.tab_model.active();
@@ -682,6 +685,134 @@ impl App {
         true
     }
 
+    /// Pins or unpins one tab in the ordered model without touching its WebView controller or
+    /// active selection. The ordered AppTab mirror is moved to the same model index.
+    pub fn set_tab_pinned(app: &AppRef, id: TabId, pinned: bool) -> bool {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let Some(from) = state.tabs.iter().position(|tab| tab.id == id) else {
+                return false;
+            };
+            if !state.tab_model.set_pinned(id, pinned) {
+                return false;
+            }
+            let tab = state.tabs.remove(from);
+            let target = state
+                .tab_model
+                .index_of(id)
+                .unwrap_or(from)
+                .min(state.tabs.len());
+            state.tabs.insert(target, tab);
+            state.hwnd
+        };
+        Self::post_tab_changed(hwnd, id);
+        true
+    }
+
+    pub fn tab_pinned(app: &AppRef, id: TabId) -> bool {
+        app.borrow().tab_model.get(id).is_some_and(|tab| tab.pinned)
+    }
+
+    pub fn tab_committed_url(app: &AppRef, id: TabId) -> Option<url::Url> {
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.url.clone())
+    }
+
+    pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
+        app.borrow().group_preferences.clone()
+    }
+
+    pub fn set_tab_group_mode(app: &AppRef, id: TabId, mode: crate::tab_groups::GroupMode) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
+                return false;
+            };
+            let Some(key) = url::Url::parse(url)
+                .ok()
+                .and_then(|url| crate::tab_groups::DomainKey::from_url(&url))
+            else {
+                return false;
+            };
+            let Ok(changed) = state.group_preferences.set_mode(&key, mode) else {
+                return false;
+            };
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed(hwnd, active);
+        }
+        changed
+    }
+
+    pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
+                return false;
+            };
+            let Some(key) = url::Url::parse(url)
+                .ok()
+                .and_then(|url| crate::tab_groups::DomainKey::from_url(&url))
+            else {
+                return false;
+            };
+            let Ok(changed) = state.group_preferences.set_collapsed(&key, collapsed) else {
+                return false;
+            };
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed(hwnd, active);
+        }
+        changed
+    }
+
+    fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            if state.tab_model.active() == id {
+                return false;
+            }
+            let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
+                return false;
+            };
+            let Some(key) = url::Url::parse(url)
+                .ok()
+                .and_then(|url| crate::tab_groups::DomainKey::from_url(&url))
+            else {
+                return false;
+            };
+            if !state.group_preferences.is_collapsed(&key) {
+                return false;
+            }
+            let changed = state
+                .group_preferences
+                .set_collapsed(&key, false)
+                .unwrap_or(false);
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed(hwnd, active);
+        }
+        changed
+    }
+
+    fn save_group_preferences(app: &AppRef) {
+        let state = app.borrow();
+        if let Some(path) = &state.group_preferences_path
+            && state.group_preferences.save(path).is_err()
+        {
+            let _ = state.log.record("tab_groups_preferences_save_failed");
+        }
+    }
+
     pub fn tab_count(app: &AppRef) -> usize {
         app.borrow().tab_model.len()
     }
@@ -834,6 +965,7 @@ impl App {
             user_data_dir,
             provider,
             log,
+            Some(app_data.join(crate::tab_groups::FILE_NAME)),
         ))
     }
 
@@ -842,6 +974,7 @@ impl App {
         user_data_dir: PathBuf,
         provider: SearchProvider,
         log: Rc<PerfLog>,
+        group_preferences_path: Option<PathBuf>,
     ) -> Self {
         let benchmark_url = options.benchmark_url;
         let allowed_benchmark_file = benchmark_url.clone();
@@ -873,6 +1006,11 @@ impl App {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(initial_tab)],
             tab_model,
+            group_preferences: group_preferences_path
+                .as_deref()
+                .map(crate::tab_groups::GroupPreferences::load)
+                .unwrap_or_default(),
+            group_preferences_path,
         }
     }
 
@@ -1843,6 +1981,134 @@ mod tests {
     }
 
     #[test]
+    fn pinning_moves_both_tab_models_without_touching_active_webview() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        assert!(App::select_tab(&app, second));
+
+        assert!(App::set_tab_pinned(&app, third, true));
+
+        assert_eq!(App::active_tab_id(&app), second);
+        assert_eq!(App::tab_ids(&app), vec![third, first, second]);
+        assert!(App::tab_pinned(&app, third));
+        let state = app.borrow();
+        assert_eq!(
+            state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![third, first, second]
+        );
+        assert!(
+            !state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == third)
+                .unwrap()
+                .controller_created
+        );
+    }
+
+    #[test]
+    fn selecting_a_hidden_group_member_expands_the_domain_and_preserves_lazy_controllers() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        {
+            let mut state = app.borrow_mut();
+            for (id, address) in [
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+                (third, "https://other.test/"),
+            ] {
+                let url = url::Url::parse(address).unwrap();
+                state.tab_model.set_url(id, Some(address));
+                state.tabs.iter_mut().find(|tab| tab.id == id).unwrap().url = Some(url);
+            }
+            let key = crate::tab_groups::DomainKey::parse("example.com").unwrap();
+            state.group_preferences.set_collapsed(&key, true).unwrap();
+        }
+
+        assert!(App::select_tab(&app, second));
+        assert_eq!(App::active_tab_id(&app), second);
+        assert!(
+            !App::tab_group_preferences(&app)
+                .is_collapsed(&crate::tab_groups::DomainKey::parse("example.com").unwrap())
+        );
+        assert!(app.borrow().tabs.iter().all(|tab| !tab.controller_created));
+    }
+
+    #[test]
+    fn an_active_group_member_stays_selected_when_its_group_collapses() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        assert!(App::select_tab(&app, first));
+        {
+            let mut state = app.borrow_mut();
+            for (id, address) in [
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+            ] {
+                let url = url::Url::parse(address).unwrap();
+                state.tab_model.set_url(id, Some(address));
+                state.tabs.iter_mut().find(|tab| tab.id == id).unwrap().url = Some(url);
+            }
+            let key = crate::tab_groups::DomainKey::parse("example.com").unwrap();
+            state.group_preferences.set_collapsed(&key, true).unwrap();
+        }
+
+        assert!(App::select_tab(&app, first));
+        assert_eq!(App::active_tab_id(&app), first);
+        assert!(
+            App::tab_group_preferences(&app)
+                .is_collapsed(&crate::tab_groups::DomainKey::parse("example.com").unwrap())
+        );
+    }
+
+    #[test]
+    fn manual_group_mode_is_scoped_to_the_committed_registrable_domain() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        {
+            let mut state = app.borrow_mut();
+            for (id, address) in [
+                (first, "https://a.example.com/"),
+                (second, "http://b.example.com:8080/"),
+                (third, "https://example.net/"),
+            ] {
+                let url = url::Url::parse(address).unwrap();
+                state.tab_model.set_url(id, Some(address));
+                state.tabs.iter_mut().find(|tab| tab.id == id).unwrap().url = Some(url);
+            }
+        }
+
+        assert!(App::set_tab_group_mode(
+            &app,
+            first,
+            crate::tab_groups::GroupMode::Always
+        ));
+        let preferences = App::tab_group_preferences(&app);
+        let example = crate::tab_groups::DomainKey::parse("example.com").unwrap();
+        assert_eq!(
+            preferences.mode(&example),
+            crate::tab_groups::GroupMode::Always
+        );
+        assert!(preferences.forms_group(&example, 1));
+        assert_eq!(
+            preferences.mode(&crate::tab_groups::DomainKey::parse("example.net").unwrap()),
+            crate::tab_groups::GroupMode::Auto
+        );
+        assert!(!App::set_tab_group_mode(
+            &app,
+            second,
+            crate::tab_groups::GroupMode::Always
+        ));
+    }
+
+    #[test]
     fn progress_is_per_tab_and_callbacks_for_closed_tabs_are_ignored() {
         let app = app_with_pending(rect(800, 600));
         let first = App::active_tab_id(&app);
@@ -2108,6 +2374,8 @@ mod tests {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(TabId(0))],
             tab_model: crate::tabs::TabList::new(),
+            group_preferences: crate::tab_groups::GroupPreferences::default(),
+            group_preferences_path: None,
         }))
     }
 
@@ -2398,6 +2666,7 @@ mod tests {
             PathBuf::from("production-profile"),
             SearchProvider::from_config(Path::new("missing-search-provider.txt")),
             log.clone(),
+            None,
         );
         assert!(app.engine.is_none());
         assert!(app.pending.is_none());

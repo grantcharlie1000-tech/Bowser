@@ -17,6 +17,7 @@ pub struct FaviconKey(pub u64);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tab {
     pub id: TabId,
+    pub pinned: bool,
     pub title: String,
     /// Display form of the current address. `None` until the tab first has a page.
     pub url: Option<String>,
@@ -28,6 +29,7 @@ impl Tab {
     pub fn new(id: TabId) -> Self {
         Self {
             id,
+            pinned: false,
             title: String::new(),
             url: None,
             loading: false,
@@ -91,7 +93,13 @@ impl TabList {
     pub fn add(&mut self, after_active: bool) -> TabId {
         let id = self.allocate_id();
         let at = match self.index_of(self.active) {
-            Some(active_index) if after_active => active_index + 1,
+            Some(active_index) if after_active => {
+                if !self.tabs[active_index].pinned {
+                    active_index + 1
+                } else {
+                    self.pinned_count()
+                }
+            }
             _ => self.tabs.len(),
         };
         self.tabs.insert(at, Tab::new(id));
@@ -157,13 +165,42 @@ impl TabList {
         let Some(from) = self.index_of(id) else {
             return false;
         };
-        let to = to_index.min(self.tabs.len() - 1);
+        let pinned = self.tabs[from].pinned;
+        let pinned_count = self.pinned_count();
+        let (first, last) = if pinned {
+            (0, pinned_count.saturating_sub(1))
+        } else {
+            (pinned_count, self.tabs.len() - 1)
+        };
+        let to = to_index.clamp(first, last);
         if from == to {
             return false;
         }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
         true
+    }
+
+    /// Changes whether `id` is pinned. Pinned tabs form a stable leading partition; pinning puts
+    /// the tab at its end, while unpinning puts it at the start of the unpinned partition.
+    /// Relative order in both partitions and the active tab identity are preserved. Returns false
+    /// for an unknown tab or when its state already matches `pinned`.
+    pub fn set_pinned(&mut self, id: TabId, pinned: bool) -> bool {
+        let Some(index) = self.index_of(id) else {
+            return false;
+        };
+        if self.tabs[index].pinned == pinned {
+            return false;
+        }
+        let mut tab = self.tabs.remove(index);
+        tab.pinned = pinned;
+        let insert_at = self.pinned_count();
+        self.tabs.insert(insert_at, tab);
+        true
+    }
+
+    pub fn pinned_count(&self) -> usize {
+        self.tabs.iter().take_while(|tab| tab.pinned).count()
     }
 
     pub fn active(&self) -> TabId {
@@ -554,6 +591,65 @@ mod tests {
         assert!(!list.move_tab(TabId(0), 0));
         assert!(!list.move_tab(TabId(0), 5));
         assert_eq!(ids(&list), vec![TabId(0)]);
+    }
+
+    #[test]
+    fn pinning_moves_tab_to_stable_prefix_without_changing_active_identity() {
+        let mut list = list_of(4);
+        list.select(TabId(2));
+
+        assert!(list.set_pinned(TabId(3), true));
+        assert_eq!(ids(&list), vec![TabId(3), TabId(0), TabId(1), TabId(2)]);
+        assert_eq!(list.active(), TabId(2));
+        assert!(list.get(TabId(3)).unwrap().pinned);
+    }
+
+    #[test]
+    fn unpinning_appends_after_remaining_pinned_tabs_and_preserves_active() {
+        let mut list = list_of(4);
+        list.set_pinned(TabId(0), true);
+        list.set_pinned(TabId(2), true);
+        list.select(TabId(2));
+
+        assert!(list.set_pinned(TabId(0), false));
+        assert_eq!(ids(&list), vec![TabId(2), TabId(0), TabId(1), TabId(3)]);
+        assert_eq!(list.active(), TabId(2));
+        assert!(!list.get(TabId(0)).unwrap().pinned);
+    }
+
+    #[test]
+    fn pinning_unknown_or_unchanged_tabs_is_a_noop() {
+        let mut list = list_of(2);
+
+        assert!(!list.set_pinned(TabId(99), true));
+        assert!(!list.set_pinned(TabId(0), false));
+        assert_eq!(ids(&list), vec![TabId(0), TabId(1)]);
+    }
+
+    #[test]
+    fn adding_after_active_never_splits_the_pinned_prefix() {
+        let mut list = list_of(3);
+        list.set_pinned(TabId(0), true);
+        list.set_pinned(TabId(1), true);
+        list.select(TabId(1));
+
+        let added = list.add(true);
+
+        assert_eq!(ids(&list), vec![TabId(0), TabId(1), added, TabId(2)]);
+        assert!(!list.get(added).unwrap().pinned);
+    }
+
+    #[test]
+    fn drag_reordering_cannot_move_tabs_across_the_pinned_partition() {
+        let mut list = list_of(4);
+        list.set_pinned(TabId(0), true);
+        list.set_pinned(TabId(1), true);
+
+        assert!(!list.move_tab(TabId(2), 0));
+        assert_eq!(ids(&list), vec![TabId(0), TabId(1), TabId(2), TabId(3)]);
+        assert!(list.move_tab(TabId(0), 3));
+        assert_eq!(ids(&list), vec![TabId(1), TabId(0), TabId(2), TabId(3)]);
+        assert_eq!(list.pinned_count(), 2);
     }
 
     #[test]

@@ -50,6 +50,8 @@ pub struct TabView<'a> {
     pub loading: bool,
     pub favicon: Option<&'a FaviconBitmap>,
     pub emphasis: Emphasis,
+    pub group_size: Option<usize>,
+    pub group_control: bool,
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -400,6 +402,19 @@ impl ChromeSurface {
             );
             let radius = m.island_radius();
             self.round(rect, radius, fill, dirty);
+            if details.is_some_and(|tab| tab.group_size.is_some()) {
+                let accent = scale_alpha(view.palette.tab_active_border, 0.8);
+                self.fill_rect(
+                    Rect::new(
+                        rect.left + m.px(8),
+                        rect.bottom - m.px(2),
+                        rect.right - m.px(8),
+                        rect.bottom - m.px(1),
+                    ),
+                    accent,
+                    dirty,
+                );
+            }
             if selected > 0.0 {
                 // Glass keeps only a faint outline on the selected island. Its edge comes from the
                 // rim, so a hard stroke would read as a frame rather than glass.
@@ -434,7 +449,25 @@ impl ChromeSurface {
             let parts = view.layout.tab_parts(tab_rect);
             // The last island may be clipped by the tab zone. A part that would be cut off is
             // skipped, so a half-visible close glyph never lands on the "+" button.
-            if rect.contains_rect(parts.favicon) {
+            if details.is_some_and(|tab| tab.group_control) && rect.contains_rect(parts.favicon) {
+                self.round(
+                    parts.favicon,
+                    m.px(6),
+                    scale_alpha(view.palette.tab_active_border, 0.88),
+                    dirty,
+                );
+                let count = details
+                    .and_then(|tab| tab.group_size)
+                    .map_or_else(|| String::from("1"), |count| count.to_string());
+                self.draw_text(
+                    &count,
+                    parts.favicon,
+                    view.palette.tab_text_active,
+                    true,
+                    rect,
+                    dirty,
+                );
+            } else if rect.contains_rect(parts.favicon) {
                 if let Some(Some(favicon)) = details.map(|value| value.favicon) {
                     self.blit_favicon(parts.favicon, favicon, dirty);
                 } else {
@@ -1779,6 +1812,8 @@ mod tests {
             loading: false,
             favicon: None,
             emphasis: rest(),
+            group_size: None,
+            group_control: false,
         }];
         let view = ChromeView {
             layout: &layout,
@@ -1886,6 +1921,8 @@ mod tests {
             loading: false,
             favicon: None,
             emphasis,
+            group_size: None,
+            group_control: false,
         });
         let view = ChromeView {
             layout,
@@ -1988,6 +2025,8 @@ mod tests {
             loading: false,
             favicon: None,
             emphasis: rest(),
+            group_size: None,
+            group_control: false,
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -2008,6 +2047,8 @@ mod tests {
             loading: false,
             favicon: None,
             emphasis: rest(),
+            group_size: None,
+            group_control: false,
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -2051,6 +2092,8 @@ mod tests {
             loading: false,
             favicon: None,
             emphasis: rest(),
+            group_size: None,
+            group_control: false,
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -2121,6 +2164,8 @@ mod tests {
                 loading: false,
                 favicon: None,
                 emphasis: rest(),
+                group_size: None,
+                group_control: false,
             };
             40
         ];
@@ -2203,7 +2248,7 @@ mod tests {
                                 let layout =
                                     crate::chrome::layout::compute(width, 120, dpi, count, false);
                                 let now = Instant::now();
-                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now)}).collect::<Vec<_>>();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false}).collect::<Vec<_>>();
                                 let text = match state {
                                     0 => "",
                                     1 => "https://example.com/a-very-long-address",
@@ -2269,6 +2314,8 @@ mod tests {
                 loading: false,
                 favicon: if i % 2 == 0 { Some(&QA_FAVICON) } else { None },
                 emphasis: rest(),
+                group_size: None,
+                group_control: false,
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -2359,6 +2406,8 @@ mod tests {
                 loading: false,
                 favicon: None,
                 emphasis: rest(),
+                group_size: None,
+                group_control: false,
             };
             5
         ];

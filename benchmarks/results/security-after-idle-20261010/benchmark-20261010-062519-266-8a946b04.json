@@ -1,0 +1,68 @@
+﻿{
+    "captured_utc":  "2026-10-10T05:25:21.2896008Z",
+    "computer":  "LAPTOP-EMHV4OCC",
+    "os":  "Microsoft Windows 10 Home",
+    "os_version":  "10.0.19045",
+    "os_build":  "19045",
+    "cpu":  "Intel(R) Core(TM) i5-7300HQ CPU @ 2.50GHz",
+    "logical_processors":  4,
+    "physical_memory_bytes":  17057812480,
+    "powershell":  "5.1.19041.6456",
+    "rustc":  "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "target":  "x86_64-pc-windows-msvc",
+    "stopwatch_frequency":  10000000,
+    "bowser_executable":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\target\\release\\bowser.exe",
+    "bowser_app_disk_bytes":  1041920,
+    "bowser_version":  "0.0.1",
+    "bowser_executable_sha256":  "b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3",
+    "edge_executable":  null,
+    "edge_version":  null,
+    "chrome_executable":  null,
+    "chrome_version":  null,
+    "measurement_harness":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\run.ps1",
+    "measurement_module":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\measurements.psm1",
+    "input_sha256_before":  {
+                                "bowser_executable":  "b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3",
+                                "run_harness":  "1dcab61c175375eba4ea466dba0d2a9fe7b429dacb9d1ddcc43d58ba6b7152f6",
+                                "measurement_module":  "1cb58a2b265c5bdb7094dfd2fbae0201e0cd536cfe95cde2a108f8703e1a7272",
+                                "fixture/demanding.html":  "4e70b7d15a5aad62402a5448407bef399a587cb36e56a1fd42d9d5ba8be544b7",
+                                "fixture/light.html":  "f41a4c2a2daf518fe5dc16eb9516a84a950a4272ca8d6970062ee4a7c8ee7f29",
+                                "fixture/minimized-lifecycle.html":  "9ff9b0ee52db500fdb2dddbb434211bd1a802807d72f6f63c358b5ce73ef556f",
+                                "fixture/tracking-policy.html":  "56c21e8114217e61fdb7ba4ca0739b27525c16709f7a5c5b222ee17f330e14c2"
+                            },
+    "webview2_runtime":  "152.0.4191.66;154.0.4258.62",
+    "webview2_runtime_versioned_directories_bytes":  1963805232,
+    "fixtures":  [
+                     "demanding.html",
+                     "light.html",
+                     "minimized-lifecycle.html",
+                     "tracking-policy.html"
+                 ],
+    "workload_definitions":  "blank-idle: about:blank plus empty-page memory/idle CPU; blank-submit: launch, focus/read back input, Enter, with submitted_ms immediately at key-up and no later samples; light/demanding: direct local file URL, marker timing immediately after visible window, then page memory/idle CPU.",
+    "conditions":  "cold-profile = fresh browser profile; warm-profile = process restart with the same profile. Windows OS cache was not flushed and is uncontrolled.",
+    "background_activity":  "CPU/RAM group measurements include only the launched application and its descendants. Unrelated desktop processes are excluded from app totals; ambient machine activity is uncontrolled.",
+    "idle_seconds":  10,
+    "runs_per_condition":  1,
+    "browser_order":  "Browser order rotates for each workload/run/condition to balance launch-order cache bias.",
+    "keep_profiles":  false,
+    "browser_filter":  "Bowser",
+    "tracking_prevention":  null,
+    "input_phrase":  "Bowser reproducible browser benchmark",
+    "input_method":  "Windows Forms SendKeys.SendWait after focusing the browser address UI. Bowser EDIT text is read back; if synthetic virtual-key/SendKeys entry does not populate it, verified WM_SETTEXT fallback is recorded before Enter. Chromium address bar content is submitted through its focused UI.",
+    "selected_workloads":  [
+                               "blank-idle"
+                           ],
+    "input_sha256_after":  {
+                               "bowser_executable":  "b58a416f51cd9fc42415b4a25baafaf2da8d228c887250555453eb70e48418b3",
+                               "run_harness":  "1dcab61c175375eba4ea466dba0d2a9fe7b429dacb9d1ddcc43d58ba6b7152f6",
+                               "measurement_module":  "1cb58a2b265c5bdb7094dfd2fbae0201e0cd536cfe95cde2a108f8703e1a7272",
+                               "fixture/demanding.html":  "4e70b7d15a5aad62402a5448407bef399a587cb36e56a1fd42d9d5ba8be544b7",
+                               "fixture/light.html":  "f41a4c2a2daf518fe5dc16eb9516a84a950a4272ca8d6970062ee4a7c8ee7f29",
+                               "fixture/minimized-lifecycle.html":  "9ff9b0ee52db500fdb2dddbb434211bd1a802807d72f6f63c358b5ce73ef556f",
+                               "fixture/tracking-policy.html":  "56c21e8114217e61fdb7ba4ca0739b27525c16709f7a5c5b222ee17f330e14c2"
+                           },
+    "inputs_unchanged":  true,
+    "changed_inputs":  [
+
+                       ]
+}

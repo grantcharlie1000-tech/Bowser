@@ -22,19 +22,27 @@ The default search provider is Bing (`https://www.bing.com/search?q={query}`). T
 
 Missing or invalid configuration uses the default. Search text is percent encoded. Explicit HTTP(S) addresses and bare hostnames are accepted; unsupported schemes and embedded URL credentials are rejected.
 
-Browser cookies/cache remain in %LOCALAPPDATA%\Bowser\WebView2, isolated from Edge's profile. The executable has no hosted backend or telemetry. Websites and the selected search provider receive normal network requests when used.
+Browser cookies/cache remain in %LOCALAPPDATA%\Bowser\WebView2, isolated from Edge's profile. Bowser has no hosted backend or first-party telemetry. WebView2's [Microsoft Defender SmartScreen reputation checking](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy) is enabled where allowed by Windows settings; reputation checks may send visited URLs to Microsoft's service. Websites and the selected search provider receive normal network requests when used.
+
+## Password migration status
+
+`Ctrl+,` opens the native Passwords & Passkeys import panel. It accepts user-selected password CSV exports with recognized URL, username, and password headers. Preview shows counts only; new records are written only after confirmation. Exact duplicates and conflicting passwords are skipped. The local vault is protected with Windows DPAPI for the current user at %LOCALAPPDATA%\Bowser\Passwords.dat. DPAPI protects stored data at rest but does not prompt for user authentication before the vault is opened.
+
+CSV exports contain plaintext passwords. Bowser reads the selected file locally and does not delete it. Keep your original passwords until you can test a sign-in; Bowser cannot autofill imported entries yet. Delete the plaintext export yourself only after successful sign-in verification. Bowser currently has no credential reveal, export, search, update, delete, or website autofill feature. WebView2 password autosave is disabled because it has no supported API for importing or managing its password store. Passwords imported into the Bowser vault therefore cannot yet be used to sign in from a website.
+
+WebAuthn/passkeys remain handled by Windows and the WebView2 runtime where the OS, runtime and provider support them. Bowser does not import or transfer passkeys, and the CSV workflow does not include them. For a passkey unavailable on the new device, register a replacement with the website before removing the old one.
 
 ## Default website policy
 
-Website permissions are denied, downloads are cancelled, and external application protocols are blocked. User-initiated HTTP(S) links requesting another window navigate in the existing viewport; script popups are blocked. Bowser retains the runtime's sandbox, site isolation, certificate validation and update behavior.
+Website permissions are denied, downloads are cancelled, and external application protocols are blocked. User-initiated HTTP(S) requests for another window open in a new tab; script popups are blocked. Web messages and host objects are disabled because Bowser does not expose a website-to-native bridge. Bowser retains the runtime's sandbox, site isolation, certificate validation and update behavior.
 
-Tabs are in progress (see [Tabs and keyboard shortcuts](#tabs-and-keyboard-shortcuts)). Bookmarks, account management, extensions, a settings UI, and a download manager are not included. It is an experimental browser and the benchmark report describes its observed behavior and limits.
+Bookmarks, account management, extensions, a general settings UI, and a download manager are not included. It is an experimental browser and the benchmark report describes its observed behavior and limits.
 
 ## Interface
 
 The window has two rows over a translucent surface:
 
-- **Tab islands:** each tab is its own rounded island with a favicon, title and close button. The active tab is lighter and has a border. A `+` button adds a tab, and the minimise, maximise and close buttons sit at the far right.
+- **Tab islands:** each tab is its own rounded island with a favicon, title and close button. The active tab is lighter and has a border. Tabs on the same registrable domain group automatically when there are at least two unpinned tabs; a shared count badge collapses or expands the group while keeping the active tab visible. Right-click a tab to pin/unpin it or choose Auto, Always, or Never for its site's grouping. Pinned tabs stay at the left and do not join groups. Group preferences are stored in `%LOCALAPPDATA%\Bowser\tab-groups.txt`; tab sessions are not restored. A `+` button adds a tab, and the minimise, maximise and close buttons sit at the far right.
 - **Omnibox:** one address and search field spanning nearly the full width below the tabs. There is no toolbar, logo or bookmarks bar.
 
 An empty tab shows the desktop through the window. Real pages render opaque, as before. The tab islands and per-tab engine wiring are still in progress, so this describes the intended layout.
@@ -54,7 +62,7 @@ Set `BOWSER_FORCE_SOLID=1` to force the solid fallback regardless of these setti
 
 ## Tabs and keyboard shortcuts
 
-Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keyboard layouts) never trigger a command. Tab commands are wired to the shortcut handler, but the tab islands are still in progress.
+Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keyboard layouts) never trigger a command.
 
 | Action | Shortcut |
 | --- | --- |
@@ -70,6 +78,7 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Stop loading | Esc, browser stop key |
 | Back | Alt+Left, browser back key |
 | Forward | Alt+Right, browser forward key |
+| Passwords & Passkeys | Ctrl+, |
 
 ## Verification and benchmarks
 
@@ -86,4 +95,4 @@ Raw results, software/hardware metadata and the measurement report are in benchm
 
 The Phase 0 measurements, known limits, largest measured bottleneck, and next performance experiments are summarized in [docs/phase-0-results.md](docs/phase-0-results.md).
 
-The shell uses direct windows and webview2-com bindings; url supplies URL parsing and encoding. Cargo.lock pins the complete dependency set. Benchmark code and optional event logging run only during explicit measurement launches.
+The shell uses direct windows and webview2-com bindings; url supplies URL parsing and encoding; psl provides the local Public Suffix List used for tab grouping; zeroize clears selected temporary credential buffers. Cargo.lock pins the complete dependency set. Benchmark code and optional event logging run only during explicit measurement launches.

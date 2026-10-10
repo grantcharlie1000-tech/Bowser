@@ -9,6 +9,15 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
+$script:clickDiagnostics = New-Object 'System.Collections.Generic.List[object]'
+$script:editHandle = [IntPtr]::Zero
+$script:lastAddressEntryMethod = ''
+$script:lastUiaVisibleDetails = @()
+$script:lastUiaVisibleNames = @()
+$script:lastVisibleUiaHyperlinkNames = @()
+$script:pageArea = 0L
+$script:pageView = [IntPtr]::Zero
+$script:uiaChildHandles = New-Object 'System.Collections.Generic.List[object]'
 $resultDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient

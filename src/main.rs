@@ -14,76 +14,7 @@ use windows::{
     core::w,
 };
 
-// TEMPORARY G3h crash diagnosis: logs the first-chance access violation with a backtrace.
-// REMOVE before finishing.
-#[repr(C)]
-struct DiagExceptionRecord {
-    code: u32,
-    flags: u32,
-    nested: *const std::ffi::c_void,
-    address: *const std::ffi::c_void,
-    parameter_count: u32,
-    information: [usize; 15],
-}
-
-#[repr(C)]
-struct DiagExceptionPointers {
-    record: *const DiagExceptionRecord,
-    context: *const std::ffi::c_void,
-}
-
-unsafe extern "system" {
-    fn AddVectoredExceptionHandler(
-        first: u32,
-        handler: unsafe extern "system" fn(*mut DiagExceptionPointers) -> i32,
-    ) -> *mut std::ffi::c_void;
-}
-
-unsafe extern "system" fn diag_exception(info: *mut DiagExceptionPointers) -> i32 {
-    unsafe {
-        let record = &*(*info).record;
-        if record.code == 0xc000_0005 || record.code == 0xc000_041d {
-            use std::io::Write;
-            let path = std::env::temp_dir().join("bowser-panic.txt");
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(
-                    file,
-                    "EXCEPTION code={:#x} address={:p} access={:?} target={:#x}\nBACKTRACE:\n{}",
-                    record.code,
-                    record.address,
-                    record.information[0],
-                    record.information[1],
-                    std::backtrace::Backtrace::force_capture()
-                );
-            }
-        }
-    }
-    0
-}
-
 fn main() -> ExitCode {
-    unsafe {
-        AddVectoredExceptionHandler(1, diag_exception);
-    }
-    std::panic::set_hook(Box::new(|info| {
-        use std::io::Write;
-        let path = std::env::temp_dir().join("bowser-panic.txt");
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            let _ = writeln!(
-                file,
-                "PANIC: {info}\nBACKTRACE:\n{}",
-                std::backtrace::Backtrace::force_capture()
-            );
-        }
-    }));
     let options = match LaunchOptions::parse() {
         Ok(options) => options,
         Err(error) => {

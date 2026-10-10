@@ -1,7 +1,7 @@
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_HISTORY_BACK, WM_HISTORY_FORWARD,
     WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame,
-    glass,
+    glass, passwords_panel, show_error_message,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
@@ -13,6 +13,7 @@ use crate::{
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
     shortcuts::{self, Command},
+    tab_groups::{self, StripSlot, TabGroupInput},
     tabs::{FaviconKey, TabId},
     theme::Palette,
 };
@@ -36,25 +37,27 @@ use windows::{
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
-                CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
-                GetCaretBlinkTime, GetClientRect, GetMessageW, GetWindowLongPtrW,
-                GetWindowTextLengthW, GetWindowTextW, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON,
-                HTMINBUTTON, HideCaret, IsIconic, IsZoomed, KillTimer, LoadCursorW, MSG,
-                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE,
-                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME,
-                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
-                SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+                AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu,
+                CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
+                EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA, GetCaretBlinkTime, GetClientRect,
+                GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU,
+                HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IsIconic, IsZoomed,
+                KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow, NCCALCSIZE_PARAMS,
+                PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
+                SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
+                SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
                 WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
                 WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
                 WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE,
                 WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETTINGCHANGE,
-                WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW,
-                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-                WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS,
+                WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER,
+                WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+                WVR_REDRAW,
             },
         },
     },
@@ -82,6 +85,7 @@ struct WindowChrome {
     layout: Layout,
     palette: &'static Palette,
     tabs: Vec<TabSnapshot>,
+    slots: Vec<StripSlot>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
     failed: Vec<FaviconKey>,
@@ -110,6 +114,7 @@ impl WindowChrome {
             layout: layout::compute(width, height, dpi, 1, false),
             palette: glass::palette(),
             tabs: Vec::with_capacity(8),
+            slots: Vec::with_capacity(8),
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
             failed: Vec::new(),
@@ -134,7 +139,9 @@ impl WindowChrome {
         let now = Instant::now();
         let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
+        let preferences = App::tab_group_preferences(app);
         let mut tabs = Vec::with_capacity(ids.len());
+        let mut group_inputs = Vec::with_capacity(ids.len());
         for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
             let title = App::tab_title(app, id).unwrap_or_default();
@@ -144,6 +151,11 @@ impl WindowChrome {
                 title
             };
             let loading = App::tab_loading(app, id);
+            let pinned = App::tab_pinned(app, id);
+            let domain = App::tab_committed_url(app, id)
+                .as_ref()
+                .and_then(tab_groups::DomainKey::from_url);
+            group_inputs.push(TabGroupInput { domain, pinned });
             let bytes = App::tab_favicon(app, id);
             let key = bytes.as_deref().map(favicon::key_for);
             let image = match (key, bytes.as_deref(), old) {
@@ -179,18 +191,21 @@ impl WindowChrome {
                 favicon: image,
             });
         }
+        let active_index = ids.iter().position(|&id| id == active).unwrap_or(0);
+        let slots = tab_groups::project_strip(&group_inputs, active_index, &preferences);
         // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
         let hovered = self.hovered_tab();
         {
-            let (layout, old) = (&self.layout, &self.tabs);
+            let (layout, old, old_slots) = (&self.layout, &self.tabs, &self.slots);
             self.motion.sync(
                 &ids,
                 hovered,
                 Some(active),
                 |id| {
-                    old.iter()
-                        .position(|t| t.id == id)
-                        .and_then(|i| layout.tab(i))
+                    old_slots
+                        .iter()
+                        .position(|slot| old.get(slot.tab_index).is_some_and(|tab| tab.id == id))
+                        .and_then(|slot| layout.tab(slot))
                 },
                 now,
             );
@@ -198,7 +213,14 @@ impl WindowChrome {
         self.active_tab = Some(active);
         self.views.clear();
         self.tabs = tabs;
-        let index = hovered.and_then(|id| self.tabs.iter().position(|t| t.id == id));
+        self.slots = slots;
+        let index = hovered.and_then(|id| {
+            self.slots.iter().position(|slot| {
+                self.tabs
+                    .get(slot.tab_index)
+                    .is_some_and(|tab| tab.id == id)
+            })
+        });
         self.hover = moved_hover(self.hover, index);
         if !self.focused {
             self.edit_text.clear();
@@ -217,15 +239,27 @@ impl WindowChrome {
     fn relayout(&mut self, w: i32, h: i32, dpi: u32, active: TabId, maximised: bool) {
         self.client = (w, h);
         self.dpi = dpi.max(96);
-        let i = self.tabs.iter().position(|t| t.id == active).unwrap_or(0);
+        let i = self
+            .slots
+            .iter()
+            .position(|slot| {
+                self.tabs
+                    .get(slot.tab_index)
+                    .is_some_and(|tab| tab.id == active)
+            })
+            .unwrap_or(0);
         self.layout =
-            layout::compute_with_active(w, h, self.dpi, self.tabs.len().max(1), i, maximised);
+            layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised);
         self.surface.resize(w, h, self.dpi)
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
         match self.hover {
-            Hit::Tab(i) | Hit::TabClose(i) => self.tabs.get(i).map(|t| t.id),
+            Hit::Tab(i) | Hit::TabClose(i) => self
+                .slots
+                .get(i)
+                .and_then(|slot| self.tabs.get(slot.tab_index))
+                .map(|tab| tab.id),
             _ => None,
         }
     }
@@ -235,7 +269,11 @@ impl WindowChrome {
     }
     /// The visible part of a tab's island, or `None` when it is scrolled out of the strip.
     fn tab_rect(&self, id: TabId) -> Option<Rect> {
-        let index = self.tabs.iter().position(|t| t.id == id)?;
+        let index = self.slots.iter().position(|slot| {
+            self.tabs
+                .get(slot.tab_index)
+                .is_some_and(|tab| tab.id == id)
+        })?;
         self.layout
             .tab(index)
             .map(|rect| rect.intersect(self.layout.tab_zone))
@@ -831,9 +869,18 @@ unsafe extern "system" fn window_proc(
                 let p = frame::point_from_lparam(lparam);
                 match hit(hwnd, p.x, p.y) {
                     Hit::Tab(i) => {
-                        if let Some(app) = app {
-                            let ids = App::tab_ids(app);
-                            if let Some(id) = ids.get(i).copied() {
+                        if let Some((id, collapsed)) = group_toggle_target(hwnd, i, p.x, p.y) {
+                            if let Some(app) = app {
+                                let _ = App::set_tab_group_collapsed(app, id, collapsed);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        } else if let Some(id) = collapsed_group_target(hwnd, i) {
+                            if let Some(app) = app {
+                                let _ = App::set_tab_group_collapsed(app, id, false);
+                                let _ = App::select_tab(app, id);
+                            }
+                        } else if let Some(app) = app {
+                            if let Some(id) = slot_tab_id(hwnd, i) {
                                 let _ = App::select_tab(app, id);
                                 let _ = with_chrome(hwnd, |s| {
                                     s.pressed = Hit::Tab(i);
@@ -874,7 +921,8 @@ unsafe extern "system" fn window_proc(
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     if let Some(app) = app {
                         let to = layout::reorder_target(&l, from, p.x);
-                        let _ = App::move_tab(app, id, to);
+                        let model_to = slot_model_index(hwnd, to).unwrap_or(to);
+                        let _ = App::move_tab(app, id, model_to);
                     }
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
@@ -885,7 +933,7 @@ unsafe extern "system" fn window_proc(
                     if was == hit(hwnd, p.x, p.y) {
                         if let Hit::TabClose(i) = was {
                             if let Some(app) = app {
-                                if let Some(id) = App::tab_ids(app).get(i).copied() {
+                                if let Some(id) = slot_tab_id(hwnd, i) {
                                     let _ = App::close_tab(app, id);
                                 }
                             }
@@ -917,11 +965,20 @@ unsafe extern "system" fn window_proc(
                 let p = frame::point_from_lparam(lparam);
                 if let Hit::Tab(i) | Hit::TabClose(i) = hit(hwnd, p.x, p.y) {
                     if let Some(app) = app {
-                        let ids = App::tab_ids(app);
-                        if let Some(id) = ids.get(i) {
-                            let _ = App::close_tab(app, *id);
+                        if let Some(id) = slot_tab_id(hwnd, i) {
+                            let _ = App::close_tab(app, id);
                         }
                     }
+                }
+                LRESULT(0)
+            }
+            WM_RBUTTONUP => {
+                let p = frame::point_from_lparam(lparam);
+                if let Hit::Tab(i) | Hit::TabClose(i) = hit(hwnd, p.x, p.y)
+                    && let Some(app) = app
+                    && let Some(id) = slot_tab_id(hwnd, i)
+                {
+                    show_tab_context_menu(hwnd, app, id, p.x, p.y);
                 }
                 LRESULT(0)
             }
@@ -1043,6 +1100,131 @@ unsafe extern "system" fn window_proc(
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| layout::hit_test(&s.layout, x, y)).unwrap_or(Hit::None)
+}
+fn slot_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
+    with_chrome(hwnd, |s| {
+        s.slots
+            .get(index)
+            .and_then(|slot| s.tabs.get(slot.tab_index))
+            .map(|tab| tab.id)
+    })
+    .flatten()
+}
+fn slot_model_index(hwnd: HWND, index: usize) -> Option<usize> {
+    with_chrome(hwnd, |s| s.slots.get(index).map(|slot| slot.tab_index)).flatten()
+}
+fn group_toggle_target(hwnd: HWND, slot_index: usize, x: i32, y: i32) -> Option<(TabId, bool)> {
+    with_chrome(hwnd, |s| {
+        let slot = s.slots.get(slot_index)?;
+        if !slot.group_control {
+            return None;
+        }
+        let tab = s.tabs.get(slot.tab_index)?;
+        let island = s.layout.tab(slot_index)?;
+        s.layout
+            .tab_parts(island)
+            .favicon
+            .contains(x, y)
+            .then_some((tab.id, !slot.collapsed))
+    })
+    .flatten()
+}
+fn collapsed_group_target(hwnd: HWND, slot_index: usize) -> Option<TabId> {
+    with_chrome(hwnd, |s| {
+        let slot = s.slots.get(slot_index)?;
+        (slot.collapsed && slot.group_control)
+            .then(|| s.tabs.get(slot.tab_index).map(|tab| tab.id))
+            .flatten()
+    })
+    .flatten()
+}
+fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
+    const PIN: usize = 1;
+    const AUTO: usize = 2;
+    const ALWAYS: usize = 3;
+    const NEVER: usize = 4;
+    const COLLAPSE: usize = 5;
+
+    let menu = unsafe { CreatePopupMenu() };
+    let Ok(menu) = menu else { return };
+    let pinned = App::tab_pinned(app, id);
+    let _ = unsafe {
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            PIN,
+            if pinned {
+                w!("Unpin tab")
+            } else {
+                w!("Pin tab")
+            },
+        )
+    };
+    let url = App::tab_committed_url(app, id);
+    let key = url.as_ref().and_then(tab_groups::DomainKey::from_url);
+    let mut has_group = false;
+    let mut collapsed = false;
+    if let Some(key) = &key {
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, AUTO, w!("Group this site automatically")) };
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, ALWAYS, w!("Always group this site")) };
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, NEVER, w!("Never group this site")) };
+        (has_group, collapsed) = with_chrome(hwnd, |state| {
+            state
+                .slots
+                .iter()
+                .find(|slot| slot.domain.as_ref() == Some(key))
+                .map_or((false, false), |slot| (true, slot.collapsed))
+        })
+        .unwrap_or((false, false));
+        if has_group {
+            let _ = unsafe {
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    COLLAPSE,
+                    if collapsed {
+                        w!("Expand group")
+                    } else {
+                        w!("Collapse group")
+                    },
+                )
+            };
+        }
+    }
+    let mut point = windows::Win32::Foundation::POINT { x, y };
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        match command {
+            PIN => {
+                let _ = App::set_tab_pinned(app, id, !pinned);
+            }
+            AUTO => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Auto);
+            }
+            ALWAYS => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
+            }
+            NEVER => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Never);
+            }
+            COLLAPSE if has_group => {
+                let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+            }
+            _ => {}
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
 }
 fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
@@ -1212,20 +1394,39 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 // WindowChrome owns the text and icons. The short-lived references below are used only while
                 // this mutable borrow is held; clearing the vector precedes every snapshot replacement.
                 s.views.clear();
-                for t in &s.tabs {
+                for slot in &s.slots {
+                    let Some(t) = s.tabs.get(slot.tab_index) else {
+                        continue;
+                    };
                     let v = TabView {
-                        title: &t.title,
+                        title: if slot.collapsed {
+                            slot.domain
+                                .as_ref()
+                                .map_or(&t.title, |domain| domain.as_str())
+                        } else {
+                            &t.title
+                        },
                         loading: t.loading,
                         favicon: t.favicon.as_ref(),
                         emphasis: s
                             .motion
                             .emphasis(t.id)
                             .unwrap_or_else(|| Emphasis::resting(false, false, now)),
+                        group_size: slot.domain.as_ref().map(|_| slot.group_size),
+                        group_control: slot.group_control,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
                 }
-                let active_i = s.tabs.iter().position(|t| t.id == active).unwrap_or(0);
+                let active_i = s
+                    .slots
+                    .iter()
+                    .position(|slot| {
+                        s.tabs
+                            .get(slot.tab_index)
+                            .is_some_and(|tab| tab.id == active)
+                    })
+                    .unwrap_or(0);
                 let suffix = s
                     .completion
                     .as_ref()
@@ -1402,6 +1603,13 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::Stop => App::stop(app),
         Command::Back => App::history(app, false),
         Command::Forward => App::history(app, true),
+        Command::OpenPasswords => {
+            if let Err(error) = passwords_panel::open(hwnd) {
+                show_error_message(&format!(
+                    "Passwords & Passkeys could not be opened: {error}"
+                ));
+            }
+        }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };

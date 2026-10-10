@@ -1,0 +1,5 @@
+﻿"browser","workload","launch_condition","run","phase","start_event","end_event","start_qpc","end_qpc","duration_ms","app_elapsed_crosscheck_delta_ms","valid","invalid_reason","tracking_prevention_requested","tracking_policy_valid"
+"Bowser","blank-idle","cold-profile","1","shell_ready_to_visible","process_start","window_visible","26060524385064","26060525183852","79.8788","0","True",,"",
+"Bowser","blank-idle","cold-profile","1","shell_ready_to_input","process_start","input_ready","26060524385064","26060525185434","80.037","-0.0002","True",,"",
+"Bowser","blank-idle","warm-profile","1","shell_ready_to_visible","process_start","window_visible","26060699649656","26060700318093","66.8437","0.0003","True",,"",
+"Bowser","blank-idle","warm-profile","1","shell_ready_to_input","process_start","input_ready","26060699649656","26060700320243","67.0587","-0.0001","True",,"",

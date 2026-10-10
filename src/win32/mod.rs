@@ -1,5 +1,7 @@
 pub mod frame;
 pub mod glass;
+pub mod passwords_import;
+mod passwords_panel;
 mod window;
 
 pub(crate) use window::schedule_idle_timer;

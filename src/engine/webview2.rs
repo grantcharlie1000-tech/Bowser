@@ -120,11 +120,38 @@ fn navigation_scheme_allowed(uri: &Url) -> bool {
     matches!(uri.scheme(), "http" | "https")
 }
 
+fn frame_navigation_scheme_allowed(uri: &Url) -> bool {
+    matches!(uri.scheme(), "http" | "https" | "blob" | "data")
+        || (uri.scheme() == "about" && matches!(uri.path(), "blank" | "srcdoc"))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavigationStartPolicy {
     Allow,
     Block,
     ExternalProtocol,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControllerSecuritySetting {
+    WebMessages,
+    HostObjects,
+}
+
+fn apply_controller_security_policy<E>(
+    mut disable: impl FnMut(ControllerSecuritySetting) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    for setting in [
+        ControllerSecuritySetting::WebMessages,
+        ControllerSecuritySetting::HostObjects,
+    ] {
+        disable(setting)?;
+    }
+    Ok(())
+}
+
+fn password_autosave_disabled(enabled: bool) -> bool {
+    !enabled
 }
 
 fn navigation_start_policy(uri: &Url, allowed_file: Option<&Url>) -> NavigationStartPolicy {
@@ -147,6 +174,14 @@ fn navigation_start_policy(uri: &Url, allowed_file: Option<&Url>) -> NavigationS
         | "view-source" => NavigationStartPolicy::Block,
         _ => NavigationStartPolicy::ExternalProtocol,
     }
+}
+
+fn consume_allowed_file_navigation(
+    uri: &Url,
+    allowed_file: Option<&Url>,
+    pending: &Cell<bool>,
+) -> bool {
+    allowed_file == Some(uri) && pending.replace(false)
 }
 
 fn web_url_from_source(source: &str) -> Option<Url> {
@@ -252,7 +287,7 @@ impl WebView2Engine {
                     .clone()
                     .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?,
                 state.parent,
-                state.allowed_file.clone(),
+                state.allowed_file.take(),
                 state.events.clone(),
                 state.tracking_policy,
             )
@@ -997,6 +1032,27 @@ unsafe fn configure_controller(
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
+        let settings = webview.Settings()?;
+        match settings.cast::<ICoreWebView2Settings4>() {
+            Ok(settings4) => {
+                settings4.SetIsPasswordAutosaveEnabled(false)?;
+                let mut password_autosave_enabled = BOOL::default();
+                settings4.IsPasswordAutosaveEnabled(&mut password_autosave_enabled)?;
+                if !password_autosave_disabled(password_autosave_enabled.as_bool()) {
+                    return Err(Error::new(
+                        windows::core::HRESULT(0x80070005u32 as i32),
+                        "WebView2 password autosave could not be disabled",
+                    ));
+                }
+            }
+            Err(error) if error.code() == windows::Win32::Foundation::E_NOINTERFACE => {}
+            Err(error) => return Err(error),
+        }
+        apply_controller_security_policy(|setting| match setting {
+            ControllerSecuritySetting::WebMessages => settings.SetIsWebMessageEnabled(false),
+            ControllerSecuritySetting::HostObjects => settings.SetAreHostObjectsAllowed(false),
+        })?;
+        enable_smart_screen(&settings, events.policy_event.as_ref())?;
         if let Some(level) = tracking_policy.level {
             apply_tracking_prevention(
                 &webview,
@@ -1007,6 +1063,7 @@ unsafe fn configure_controller(
         }
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
+        let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         webview.add_NavigationStarting(
@@ -1019,9 +1076,14 @@ unsafe fn configure_controller(
                         String::new()
                     };
                     let parsed = Url::parse(&uri_value).ok();
+                    let navigation_file_grant = parsed.as_ref().and_then(|uri| {
+                        allowed_file_for_handler.as_ref().filter(|file| {
+                            consume_allowed_file_navigation(uri, Some(*file), &allowed_file_pending)
+                        })
+                    });
                     match parsed
                         .as_ref()
-                        .map(|url| navigation_start_policy(url, allowed_file_for_handler.as_ref()))
+                        .map(|url| navigation_start_policy(url, navigation_file_grant))
                     {
                         Some(NavigationStartPolicy::Allow) => {
                             let mut navigation_id = 0;
@@ -1041,6 +1103,21 @@ unsafe fn configure_controller(
                         Some(NavigationStartPolicy::Block) | None => {
                             let _ = args.SetCancel(true);
                         }
+                    }
+                }
+                Ok(())
+            })),
+            &mut token,
+        )?;
+        webview.add_FrameNavigationStarting(
+            &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+                if let Some(args) = args {
+                    let mut uri = PWSTR::null();
+                    let allowed = args.Uri(&mut uri).is_ok()
+                        && Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
+                            .is_ok_and(|url| frame_navigation_scheme_allowed(&url));
+                    if !allowed {
+                        let _ = args.SetCancel(true);
                     }
                 }
                 Ok(())
@@ -1339,6 +1416,31 @@ fn event(log: Option<&Rc<dyn Fn(&'static str)>>, name: &'static str) {
     }
 }
 
+fn enable_smart_screen(
+    settings: &ICoreWebView2Settings,
+    log: Option<&Rc<dyn Fn(&'static str)>>,
+) -> Result<()> {
+    let settings8 = match settings.cast::<ICoreWebView2Settings8>() {
+        Ok(settings8) => settings8,
+        Err(error) if error.code() == windows::Win32::Foundation::E_NOINTERFACE => {
+            event(log, "smartscreen_default_enabled_unverified");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    unsafe { settings8.SetIsReputationCheckingRequired(true)? };
+    let mut enabled = BOOL::default();
+    unsafe { settings8.IsReputationCheckingRequired(&mut enabled)? };
+    if !enabled.as_bool() {
+        return Err(Error::new(
+            windows::core::HRESULT(0x80070005u32 as i32),
+            "WebView2 SmartScreen setting could not be enabled",
+        ));
+    }
+    event(log, "smartscreen_setting_enabled_verified");
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrackingPolicyApplyResult {
     Verified,
@@ -1503,6 +1605,56 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controller_security_policy_disables_unused_webview_capabilities() {
+        let mut applied = Vec::new();
+        apply_controller_security_policy(|setting| {
+            applied.push(setting);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            applied,
+            [
+                ControllerSecuritySetting::WebMessages,
+                ControllerSecuritySetting::HostObjects,
+            ]
+        );
+    }
+
+    #[test]
+    fn controller_security_policy_stops_after_a_setting_failure() {
+        let mut applied = Vec::new();
+        let result = apply_controller_security_policy(|setting| {
+            applied.push(setting);
+            if setting == ControllerSecuritySetting::HostObjects {
+                Err("setting failed")
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(result, Err("setting failed"));
+        assert_eq!(
+            applied,
+            [
+                ControllerSecuritySetting::WebMessages,
+                ControllerSecuritySetting::HostObjects,
+            ]
+        );
+    }
+
+    #[test]
+    fn password_autosave_policy_disables_and_verifies_the_setting() {
+        assert!(password_autosave_disabled(false));
+    }
+
+    #[test]
+    fn password_autosave_policy_fails_if_setting_cannot_be_disabled() {
+        assert!(!password_autosave_disabled(true));
+    }
 
     #[test]
     fn tracking_policy_does_not_write_when_initial_read_fails() {
@@ -1805,6 +1957,40 @@ mod tests {
     }
 
     #[test]
+    fn frame_navigation_blocks_local_files_and_internal_browser_schemes() {
+        for value in [
+            "file:///C:/secret",
+            "javascript:alert(1)",
+            "edge://settings",
+            "chrome://settings",
+            "devtools://devtools/",
+            "vbscript:msgbox(1)",
+        ] {
+            assert!(
+                !frame_navigation_scheme_allowed(&Url::parse(value).unwrap()),
+                "{value} must be blocked in frames"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_navigation_keeps_normal_web_and_document_frames_working() {
+        for value in [
+            "https://example.com/frame",
+            "http://localhost:3000/frame",
+            "about:blank",
+            "about:srcdoc",
+            "blob:https://example.com/id",
+            "data:text/html,frame",
+        ] {
+            assert!(
+                frame_navigation_scheme_allowed(&Url::parse(value).unwrap()),
+                "{value} must remain available to websites"
+            );
+        }
+    }
+
+    #[test]
     fn external_protocols_reach_the_explicit_cancel_handler_only() {
         let allowed_file = Url::parse("file:///C:/Bowser/fixture.html").unwrap();
         assert_eq!(
@@ -1844,6 +2030,36 @@ mod tests {
                 "{value} must reach the LaunchingExternalUriScheme cancellation handler"
             );
         }
+    }
+
+    #[test]
+    fn benchmark_file_grant_can_authorize_only_its_exact_first_navigation() {
+        let allowed = Url::parse("file:///C:/Bowser/benchmarks/fixtures/light.html").unwrap();
+        let other_file = Url::parse("file:///C:/Users/charlie/secret.txt").unwrap();
+        let pending = Cell::new(true);
+
+        assert!(!consume_allowed_file_navigation(
+            &other_file,
+            Some(&allowed),
+            &pending
+        ));
+        assert!(pending.get(), "a rejected URL must not consume the grant");
+        assert!(consume_allowed_file_navigation(
+            &allowed,
+            Some(&allowed),
+            &pending
+        ));
+        assert!(!consume_allowed_file_navigation(
+            &allowed,
+            Some(&allowed),
+            &pending
+        ));
+        assert!(!pending.get());
+        assert!(!consume_allowed_file_navigation(
+            &other_file,
+            Some(&allowed),
+            &pending
+        ));
     }
 
     fn forward(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<ShortcutForward> {

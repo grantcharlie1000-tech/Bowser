@@ -20,6 +20,8 @@ pub enum Command {
     Stop,
     Back,
     Forward,
+    /// Ctrl+, opens Passwords & Passkeys.
+    OpenPasswords,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -36,6 +38,7 @@ const VK_L: u32 = 0x4C;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
+const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_F5: u32 = 0x74;
 const VK_F6: u32 = 0x75;
@@ -68,6 +71,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_RIGHT, false, false, true) | (VK_BROWSER_FORWARD, false, false, false) => {
             Some(Command::Forward)
         }
+        (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
         _ => None,
     }
 }
@@ -101,6 +105,7 @@ mod tests {
             (VK_BROWSER_BACK, false, false, false, Command::Back),
             (VK_RIGHT, false, false, true, Command::Forward),
             (VK_BROWSER_FORWARD, false, false, false, Command::Forward),
+            (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
         ];
         for index in 0..8 {
             table.push((
