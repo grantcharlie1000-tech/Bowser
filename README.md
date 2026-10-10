@@ -10,7 +10,7 @@ Build from this directory:
 
     cargo build --release --locked
 
-Double-click Start-Bowser.cmd, or run target\release\bowser.exe. The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter.
+Double-click the **Launch Bowser** desktop shortcut (or `Start-Bowser.cmd`). The launcher checks the local build inputs and compiles a release build only when they have changed, using Cargo's incremental compilation. It launches a versioned copy so a running Bowser window never blocks a new build; older copies are removed after they are no longer in use. A failed build is shown in the launcher window and never starts an outdated executable. The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter.
 
 The shared WebView2 runtime is required but is not bundled into Bowser. Runtime availability is checked and failures are shown as native error messages. Microsoft manages Evergreen security updates.
 

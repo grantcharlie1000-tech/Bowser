@@ -1,11 +1,6 @@
 @echo off
 setlocal
-set "BOWSER_EXE=%~dp0target\release\bowser.exe"
-if not exist "%BOWSER_EXE%" (
-  echo Bowser has not been built. Open a terminal in this project and run:
-  echo cargo build --release --locked
-  pause
-  exit /b 1
-)
-start "" "%BOWSER_EXE%"
-exit /b 0
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Start-Bowser.ps1"
+set "BOWSER_EXIT_CODE=%ERRORLEVEL%"
+if not "%BOWSER_EXIT_CODE%"=="0" pause
+exit /b %BOWSER_EXIT_CODE%
