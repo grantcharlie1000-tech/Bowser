@@ -3,10 +3,7 @@
 //! This module only imports official CSV exports and stores encrypted records. It does not
 //! integrate with WebView2 credential handling, reveal or export passwords, or autofill.
 
-use std::{
-    fmt, fs, io,
-    path::PathBuf,
-};
+use std::{fmt, fs, io, path::PathBuf};
 use zeroize::{Zeroize, Zeroizing};
 
 const MAGIC: &[u8; 8] = b"BWSRPW01";

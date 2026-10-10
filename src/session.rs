@@ -252,9 +252,7 @@ impl SessionStore {
         let lock_path = dir.join(LOCK_NAME);
         let prior = if lock_path.exists() {
             let mut text = String::new();
-            match File::open(&lock_path)
-                .and_then(|file| file.take(256).read_to_string(&mut text))
-            {
+            match File::open(&lock_path).and_then(|file| file.take(256).read_to_string(&mut text)) {
                 Ok(_) => Some(parse_lock(&text)),
                 Err(_) => return None, // held open by a live instance
             }
@@ -270,9 +268,12 @@ impl SessionStore {
         };
         let offer = match decide_start(prior) {
             StartDecision::Clean => None,
-            StartDecision::OfferRestore { consecutive } => store
-                .read_session()
-                .map(|session| Offer { session, consecutive }),
+            StartDecision::OfferRestore { consecutive } => {
+                store.read_session().map(|session| Offer {
+                    session,
+                    consecutive,
+                })
+            }
             StartDecision::CrashLoop => {
                 // Set aside, never delete; a bad or missing file is simply left alone.
                 let path = dir.join(FILE_NAME);
@@ -363,7 +364,8 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bowser-session-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bowser-session-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
     }
@@ -435,7 +437,9 @@ mod tests {
     fn tab_count_and_title_are_capped() {
         let u = url("https://a.test/");
         let title = "t".repeat(MAX_TITLE_CHARS * 2);
-        let tabs: Vec<_> = (0..MAX_TABS + 50).map(|_| (Some(&u), title.as_str(), false)).collect();
+        let tabs: Vec<_> = (0..MAX_TABS + 50)
+            .map(|_| (Some(&u), title.as_str(), false))
+            .collect();
         let s = Session::from_tabs(tabs, 0).unwrap();
         assert_eq!(s.tabs.len(), MAX_TABS);
         assert_eq!(s.tabs[0].title.chars().count(), MAX_TITLE_CHARS);
@@ -445,7 +449,10 @@ mod tests {
     #[test]
     fn start_decision_offers_once_then_stops_a_crash_loop() {
         assert_eq!(decide_start(None), StartDecision::Clean);
-        assert_eq!(decide_start(Some(0)), StartDecision::OfferRestore { consecutive: 1 });
+        assert_eq!(
+            decide_start(Some(0)),
+            StartDecision::OfferRestore { consecutive: 1 }
+        );
         assert_eq!(decide_start(Some(1)), StartDecision::CrashLoop);
         assert_eq!(decide_start(Some(u32::MAX)), StartDecision::CrashLoop);
         assert_eq!(parse_lock("bowser-lock 1"), 1);
@@ -464,7 +471,10 @@ mod tests {
         assert!(!dir.join(LOCK_NAME).exists());
         let (_, offer) = SessionStore::open(&dir).unwrap();
         assert!(offer.is_none(), "a clean exit is not offered for restore");
-        assert_eq!(Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()), Some(sample()));
+        assert_eq!(
+            Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()),
+            Some(sample())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -507,7 +517,10 @@ mod tests {
             store.begin_run(None); // user said no
         }
         let (_, offer) = SessionStore::open(&dir).unwrap();
-        assert!(offer.is_some(), "still offered: only one crashed run in a row");
+        assert!(
+            offer.is_some(),
+            "still offered: only one crashed run in a row"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -535,7 +548,11 @@ mod tests {
         store.save(&sample()).unwrap();
         let other = Session::from_tabs([(Some(&url("https://n.test/")), "n", false)], 0).unwrap();
         store.save(&other).unwrap();
-        assert_eq!(fs::read_to_string(dir.join(PREV_NAME)).unwrap(), "old", "backup is once per run");
+        assert_eq!(
+            fs::read_to_string(dir.join(PREV_NAME)).unwrap(),
+            "old",
+            "backup is once per run"
+        );
         assert_ne!(fs::read_to_string(dir.join(FILE_NAME)).unwrap(), first);
         assert!(!dir.join("session.txt.tmp").exists());
         store.finish(None);

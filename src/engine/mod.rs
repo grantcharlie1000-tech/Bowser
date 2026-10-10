@@ -88,7 +88,9 @@ pub trait EngineAdapter {
         done: Box<dyn FnOnce(Result<(), String>)>,
     ) {
         if enabled {
-            done(Err("This browser engine does not support extensions.".to_owned()));
+            done(Err(
+                "This browser engine does not support extensions.".to_owned()
+            ));
         } else {
             done(Ok(()));
         }

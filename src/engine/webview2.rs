@@ -13,12 +13,12 @@ use webview2_com::{
     BrowserExtensionRemoveCompletedHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
-    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
-    ExecuteScriptCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
+    FaviconChangedEventHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
-    ProcessFailedEventHandler, ProfileAddBrowserExtensionCompletedHandler,
-    SourceChangedEventHandler, TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    ProfileAddBrowserExtensionCompletedHandler, SourceChangedEventHandler,
+    TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
 };
 use windows::{
     Win32::{
@@ -590,12 +590,14 @@ fn add_extension(
     let completion = slot.clone();
     let weak = Rc::downgrade(core);
     let loaded_id = id.clone();
-    let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
-        move |status, extension| {
+    let handler =
+        ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |status, extension| {
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
                     if let Some(core) = weak.upgrade() {
-                        core.borrow_mut().extensions_loaded.insert(loaded_id, extension);
+                        core.borrow_mut()
+                            .extensions_loaded
+                            .insert(loaded_id, extension);
                     }
                     Ok(())
                 }
@@ -604,8 +606,7 @@ fn add_extension(
             };
             finish_slot(&completion, result);
             Ok(())
-        },
-    ));
+        }));
     let path: Vec<u16> = folder
         .as_os_str()
         .encode_wide()
@@ -616,7 +617,11 @@ fn add_extension(
     }
 }
 
-fn set_loaded_enabled(extension: &ICoreWebView2BrowserExtension, enabled: bool, done: ExtensionDone) {
+fn set_loaded_enabled(
+    extension: &ICoreWebView2BrowserExtension,
+    enabled: bool,
+    done: ExtensionDone,
+) {
     let slot = once_slot(done);
     let completion = slot.clone();
     let handler = BrowserExtensionEnableCompletedHandler::create(Box::new(move |status| {
@@ -923,13 +928,16 @@ impl EngineAdapter for WebView2Engine {
                 "Bowser is still opening this window. Try again in a moment.".to_owned(),
             )),
             (None, None) => done(Err(
-                "This window was started without extensions. Restart Bowser to load it."
-                    .to_owned(),
+                "This window was started without extensions. Restart Bowser to load it.".to_owned(),
             )),
         }
     }
 
-    fn remove_extension(&mut self, id: &str, done: Box<dyn FnOnce(std::result::Result<(), String>)>) {
+    fn remove_extension(
+        &mut self,
+        id: &str,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
         let loaded = self.core.borrow().extensions_loaded.get(id).cloned();
         match loaded {
             None => done(Ok(())),

@@ -77,7 +77,9 @@ fn parse_line(line: &str) -> Option<Rule> {
         }
     }
     let pattern = pattern.to_ascii_lowercase();
-    if !pattern.is_ascii() || pattern.len() > MAX_PATTERN_BYTES || pattern.contains(char::is_whitespace)
+    if !pattern.is_ascii()
+        || pattern.len() > MAX_PATTERN_BYTES
+        || pattern.contains(char::is_whitespace)
     {
         return None;
     }
@@ -106,7 +108,11 @@ fn parse_line(line: &str) -> Option<Rule> {
         return None;
     }
     // `/.../` is a regular expression in ADBLOCK syntax.
-    if pattern.len() > 2 && pattern.starts_with('/') && pattern.ends_with('/') && pattern[1..].contains(['\\', '(', '[', '+', '{']) {
+    if pattern.len() > 2
+        && pattern.starts_with('/')
+        && pattern.ends_with('/')
+        && pattern[1..].contains(['\\', '(', '[', '+', '{'])
+    {
         return None;
     }
     let pattern = pattern.trim_end_matches('|');
@@ -122,9 +128,9 @@ fn valid_rule_host(host: &str) -> bool {
         && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
-                && label
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+                && label.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_')
+                })
         })
 }
 
@@ -439,7 +445,8 @@ impl BlockerState {
         };
         let mut sites: Vec<&str> = self.user_allow.iter().map(String::as_str).collect();
         sites.sort_unstable();
-        let mut text = String::from("# Sites where Bowser's blocker is switched off (Ctrl+Shift+B).\n");
+        let mut text =
+            String::from("# Sites where Bowser's blocker is switched off (Ctrl+Shift+B).\n");
         for site in sites {
             text.push_str(site);
             text.push('\n');
@@ -489,14 +496,29 @@ mod tests {
 
     #[test]
     fn parser_accepts_host_path_and_substring_rules() {
-        assert_eq!(parse_line("||Ads.Example.com^"), Some(Rule::Host("ads.example.com".into())));
-        assert_eq!(parse_line("||ads.example.com^$third-party"), Some(Rule::Host("ads.example.com".into())));
-        assert_eq!(parse_line("||example.com"), Some(Rule::Host("example.com".into())));
+        assert_eq!(
+            parse_line("||Ads.Example.com^"),
+            Some(Rule::Host("ads.example.com".into()))
+        );
+        assert_eq!(
+            parse_line("||ads.example.com^$third-party"),
+            Some(Rule::Host("ads.example.com".into()))
+        );
+        assert_eq!(
+            parse_line("||example.com"),
+            Some(Rule::Host("example.com".into()))
+        );
         assert_eq!(
             parse_line("||example.com/ads/*.js|"),
-            Some(Rule::Path { host: "example.com".into(), pattern: "/ads/*.js".into() })
+            Some(Rule::Path {
+                host: "example.com".into(),
+                pattern: "/ads/*.js".into()
+            })
         );
-        assert_eq!(parse_line("/banner/ads/"), Some(Rule::Substring("/banner/ads/".into())));
+        assert_eq!(
+            parse_line("/banner/ads/"),
+            Some(Rule::Substring("/banner/ads/".into()))
+        );
     }
 
     #[test]
@@ -562,7 +584,9 @@ mod tests {
         let s = state("/adserver/banner.\n", &[]);
         assert!(s.should_block("https://x.example.com/AdServer/Banner.gif", "site.test"));
         assert!(!s.should_block("https://x.example.com/adserver/other.gif", "site.test"));
-        let many: String = (0..1000).map(|i| format!("/unique-path-{i}-x/\n")).collect();
+        let many: String = (0..1000)
+            .map(|i| format!("/unique-path-{i}-x/\n"))
+            .collect();
         let mut blocker = Blocker::default();
         assert_eq!(blocker.add_list(&many), MAX_SUBSTRING_RULES);
     }
@@ -589,7 +613,10 @@ mod tests {
 
     #[test]
     fn allow_list_and_disabled_switch_stop_blocking() {
-        let mut s = state("||tracker.net^\n", &["Shop.Example.com", "bad entry", "# no"]);
+        let mut s = state(
+            "||tracker.net^\n",
+            &["Shop.Example.com", "bad entry", "# no"],
+        );
         assert!(!s.should_block("https://tracker.net/a.js", "shop.example.com"));
         assert!(!s.should_block("https://tracker.net/a.js", "m.shop.example.com"));
         assert!(s.should_block("https://tracker.net/a.js", "example.com"));
@@ -609,12 +636,17 @@ mod tests {
         assert_eq!(s.toggle_site("localhost"), SiteToggle::NoSite);
         assert_eq!(s.toggle_site("www.page.test"), SiteToggle::Allowed);
         assert!(!s.should_block("https://extra-tracker.org/x", "other.page.test"));
-        assert_eq!(s.toggle_site("configured.com"), SiteToggle::ConfiguredInSettings);
+        assert_eq!(
+            s.toggle_site("configured.com"),
+            SiteToggle::ConfiguredInSettings
+        );
         let reloaded = BlockerState::load(&dir, &[]);
         assert!(!reloaded.should_block("https://extra-tracker.org/x", "page.test"));
         assert_eq!(s.toggle_site("page.test"), SiteToggle::Blocking);
         assert!(s.should_block("https://extra-tracker.org/x", "page.test"));
-        assert!(BlockerState::load(&dir, &[]).should_block("https://extra-tracker.org/x", "page.test"));
+        assert!(
+            BlockerState::load(&dir, &[]).should_block("https://extra-tracker.org/x", "page.test")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -634,8 +666,14 @@ mod tests {
     #[test]
     fn builtin_list_blocks_known_trackers_and_spares_common_sites() {
         let s = BlockerState::new(Blocker::from_lists(None), &[]);
-        assert!(s.should_block("https://www.google-analytics.com/analytics.js", "news.example"));
-        assert!(s.should_block("https://securepubads.g.doubleclick.net/tag/js/gpt.js", "news.example"));
+        assert!(s.should_block(
+            "https://www.google-analytics.com/analytics.js",
+            "news.example"
+        ));
+        assert!(s.should_block(
+            "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
+            "news.example"
+        ));
         for ok in [
             "https://www.google.com/search?q=x",
             "https://fonts.gstatic.com/s/a.woff2",

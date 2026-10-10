@@ -71,8 +71,12 @@ impl fmt::Display for UpdateError {
             Self::InsecureUrl => f.write_str("url is not a plain HTTPS url"),
             Self::Oversize => f.write_str("package exceeds the size limit"),
             Self::NotNewer => f.write_str("manifest version is not newer than the running build"),
-            Self::BelowMinVersion => f.write_str("running build is older than the manifest's min_version"),
-            Self::Rejected => f.write_str("this version was rolled back earlier and is not offered again"),
+            Self::BelowMinVersion => {
+                f.write_str("running build is older than the manifest's min_version")
+            }
+            Self::Rejected => {
+                f.write_str("this version was rolled back earlier and is not offered again")
+            }
             Self::HashMismatch => f.write_str("sha256 mismatch"),
             Self::SizeMismatch => f.write_str("size mismatch"),
             Self::Authenticode(code) => write!(f, "Authenticode check failed ({code:#x})"),
@@ -232,7 +236,11 @@ mod cng {
     }
 
     /// Verifies a P1363 (r||s) ECDSA P-256 signature over an already-computed SHA-256 digest.
-    pub fn ecdsa_p256_verify(public_xy: &[u8; 64], digest: &[u8; 32], signature: &[u8; 64]) -> bool {
+    pub fn ecdsa_p256_verify(
+        public_xy: &[u8; 64],
+        digest: &[u8; 32],
+        signature: &[u8; 64],
+    ) -> bool {
         let Some(alg) = open(BCRYPT_ECDSA_P256_ALGORITHM) else {
             return false;
         };
@@ -297,7 +305,11 @@ mod cng {
             assert_eq!(written, 72);
             let mut public_xy = [0u8; 64];
             public_xy.copy_from_slice(&blob[8..]);
-            Self { alg, key, public_xy }
+            Self {
+                alg,
+                key,
+                public_xy,
+            }
         }
 
         pub fn sign(&self, digest: &[u8; 32]) -> [u8; 64] {
@@ -306,8 +318,15 @@ mod cng {
             let mut written = 0u32;
             unsafe {
                 assert!(
-                    BCryptSignHash(self.key, None, digest, Some(&mut sig), &mut written, BCRYPT_FLAGS(0)).0
-                        >= 0
+                    BCryptSignHash(
+                        self.key,
+                        None,
+                        digest,
+                        Some(&mut sig),
+                        &mut written,
+                        BCRYPT_FLAGS(0)
+                    )
+                    .0 >= 0
                 );
             }
             assert_eq!(written, 64);
@@ -391,7 +410,9 @@ pub fn validate_https_url(text: &str) -> Result<Url, UpdateError> {
 
 /// Resolves a redirect target against the current URL and requires it to stay on HTTPS.
 pub fn resolve_redirect(current: &Url, location: &str) -> Result<Url, UpdateError> {
-    let next = current.join(location).map_err(|_| UpdateError::InsecureUrl)?;
+    let next = current
+        .join(location)
+        .map_err(|_| UpdateError::InsecureUrl)?;
     validate_https_url(next.as_str())
 }
 
@@ -406,7 +427,9 @@ fn split_signed(text: &str) -> Result<(&str, [u8; 64]), UpdateError> {
     let trimmed = text.strip_suffix('\n').unwrap_or(text);
     let start = trimmed.rfind('\n').map_or(0, |i| i + 1);
     let (body, last) = trimmed.split_at(start);
-    let hex = last.strip_prefix("signature=").ok_or(UpdateError::BadSignature)?;
+    let hex = last
+        .strip_prefix("signature=")
+        .ok_or(UpdateError::BadSignature)?;
     let signature = hex_decode::<64>(hex).ok_or(UpdateError::BadSignature)?;
     Ok((body, signature))
 }
@@ -420,17 +443,24 @@ fn parse_body(body: &str) -> Result<Manifest, UpdateError> {
     let (mut version, mut min_version, mut url, mut digest, mut size, mut notes) =
         (None, None, None, None, None, String::new());
     for line in lines {
-        let (key, value) = line.split_once('=').ok_or(UpdateError::Malformed("line without ="))?;
+        let (key, value) = line
+            .split_once('=')
+            .ok_or(UpdateError::Malformed("line without ="))?;
         if !seen.insert(key) {
             return Err(UpdateError::Malformed("duplicate key"));
         }
         match key {
-            "version" => version = Some(Version::parse(value).ok_or(UpdateError::Malformed("version"))?),
+            "version" => {
+                version = Some(Version::parse(value).ok_or(UpdateError::Malformed("version"))?)
+            }
             "min_version" => {
-                min_version = Some(Version::parse(value).ok_or(UpdateError::Malformed("min_version"))?)
+                min_version =
+                    Some(Version::parse(value).ok_or(UpdateError::Malformed("min_version"))?)
             }
             "url" => url = Some(validate_https_url(value)?),
-            "sha256" => digest = Some(hex_decode::<32>(value).ok_or(UpdateError::Malformed("sha256"))?),
+            "sha256" => {
+                digest = Some(hex_decode::<32>(value).ok_or(UpdateError::Malformed("sha256"))?)
+            }
             "size" => {
                 size = Some(
                     (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
@@ -496,11 +526,18 @@ pub fn evaluate(
     if current < manifest.min_version {
         return Err(UpdateError::BelowMinVersion);
     }
-    Ok(Evaluated { manifest, authentic })
+    Ok(Evaluated {
+        manifest,
+        authentic,
+    })
 }
 
 /// Checks downloaded bytes' length and digest against the manifest.
-pub fn verify_package(manifest: &Manifest, length: u64, digest: &[u8; 32]) -> Result<(), UpdateError> {
+pub fn verify_package(
+    manifest: &Manifest,
+    length: u64,
+    digest: &[u8; 32],
+) -> Result<(), UpdateError> {
     if length > MAX_PACKAGE_BYTES {
         return Err(UpdateError::Oversize);
     }
@@ -528,7 +565,9 @@ pub fn check_due(now_secs: u64, last_check_secs: Option<u64>) -> bool {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[derive(Debug, Clone)]
@@ -544,10 +583,18 @@ pub fn load_config(root: &Path) -> Option<Config> {
         .ok()
         .filter(|bytes| bytes.len() <= 2048)
         .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|text| text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned));
+        .and_then(|text| {
+            text.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_owned)
+        });
     let text = from_file.or_else(|| COMPILED_MANIFEST_URL.map(str::to_owned))?;
     let manifest_url = validate_https_url(text.trim()).ok()?;
-    Some(Config { manifest_url, public_key: compiled_public_key() })
+    Some(Config {
+        manifest_url,
+        public_key: compiled_public_key(),
+    })
 }
 
 pub fn data_root() -> Option<PathBuf> {
@@ -620,7 +667,9 @@ mod http {
             )
         };
         if len == 0 || len > 8192 {
-            return Err(UpdateError::Network("redirect without usable Location".into()));
+            return Err(UpdateError::Network(
+                "redirect without usable Location".into(),
+            ));
         }
         let mut buffer = vec![0u16; len as usize / 2 + 1];
         unsafe {
@@ -646,7 +695,13 @@ mod http {
     ) -> Result<u64, UpdateError> {
         let agent = HSTRING::from(concat!("Bowser-Updater/", env!("CARGO_PKG_VERSION")));
         let session = Handle(unsafe {
-            WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0)
+            WinHttpOpen(
+                &agent,
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                0,
+            )
         });
         if session.0.is_null() {
             return Err(UpdateError::Network("WinHttpOpen failed".into()));
@@ -684,7 +739,8 @@ mod http {
                 )
             }
             .map_err(|e| net("disable redirects", e))?;
-            unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }.map_err(|e| net("send", e))?;
+            unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }
+                .map_err(|e| net("send", e))?;
             unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
                 .map_err(|e| net("receive", e))?;
             match status(request.0)? {
@@ -768,7 +824,11 @@ pub fn authenticode(path: &Path) -> Authenticode {
         core::PCWSTR,
     };
 
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let mut file = WINTRUST_FILE_INFO {
         cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
         pcwszFilePath: PCWSTR(wide.as_ptr()),
@@ -824,7 +884,10 @@ fn read_kv(path: &Path) -> Option<Vec<(String, String)>> {
 }
 
 fn kv<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    pairs
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 /// Paths used by the swap, derived from the running executable and the data root.
@@ -836,7 +899,10 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(exe: PathBuf, root: &Path) -> Self {
-        Self { exe, updates: root.join("updates") }
+        Self {
+            exe,
+            updates: root.join("updates"),
+        }
     }
     fn sibling(&self, name: &str) -> PathBuf {
         self.exe.with_file_name(name)
@@ -920,7 +986,8 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
     }
     let staged = layout.staged_exe(version);
     match sha256_file(&staged) {
-        Ok((actual, length)) if actual == digest && length == size && size <= MAX_PACKAGE_BYTES => {}
+        Ok((actual, length)) if actual == digest && length == size && size <= MAX_PACKAGE_BYTES => {
+        }
         Ok(_) => {
             discard_staged(layout, Some(version));
             return ApplyResult::Failed("staged file does not match its record; discarded".into());
@@ -966,7 +1033,9 @@ fn read_trial(layout: &Layout) -> Option<Trial> {
     let pairs = read_kv(&layout.trial())?;
     Some(Trial {
         version: kv(&pairs, "version").and_then(Version::parse)?,
-        attempts: kv(&pairs, "attempts").and_then(|a| a.parse().ok()).unwrap_or(MAX_TRIAL_ATTEMPTS),
+        attempts: kv(&pairs, "attempts")
+            .and_then(|a| a.parse().ok())
+            .unwrap_or(MAX_TRIAL_ATTEMPTS),
     })
 }
 
@@ -1042,7 +1111,10 @@ pub fn startup(benchmark: bool) -> StartupAction {
             let _ = fs::remove_file(layout.trial());
         }
         TrialAction::Count(attempts) => {
-            let _ = write_atomic(&layout.trial(), &format!("version={running}\nattempts={attempts}\n"));
+            let _ = write_atomic(
+                &layout.trial(),
+                &format!("version={running}\nattempts={attempts}\n"),
+            );
         }
         TrialAction::Rollback => {
             return match rollback(&layout, running) {
@@ -1062,7 +1134,10 @@ pub fn relaunch() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().is_ok()
+    std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .spawn()
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1079,13 +1154,21 @@ pub enum CheckOutcome {
 }
 
 /// One full check: fetch and evaluate the manifest, then (only when authentic) download, verify, stage.
-pub fn check_and_stage(config: &Config, layout: &Layout, current: Version) -> Result<CheckOutcome, UpdateError> {
+pub fn check_and_stage(
+    config: &Config,
+    layout: &Layout,
+    current: Version,
+) -> Result<CheckOutcome, UpdateError> {
     fs::create_dir_all(&layout.updates)?;
     let mut text = Vec::new();
-    http::get(&config.manifest_url, MAX_MANIFEST_BYTES as u64, &mut |chunk| {
-        text.extend_from_slice(chunk);
-        Ok(())
-    })?;
+    http::get(
+        &config.manifest_url,
+        MAX_MANIFEST_BYTES as u64,
+        &mut |chunk| {
+            text.extend_from_slice(chunk);
+            Ok(())
+        },
+    )?;
     let text = String::from_utf8(text).map_err(|_| UpdateError::Malformed("not UTF-8"))?;
     let evaluated = match evaluate(&text, config.public_key.as_ref(), current) {
         Ok(evaluated) => evaluated,
@@ -1116,13 +1199,23 @@ fn download_and_verify(manifest: &Manifest, partial: &Path) -> Result<(), Update
     let mut file = fs::File::create(partial)?;
     let mut hasher =
         cng::Sha256::new().ok_or_else(|| UpdateError::Io("SHA-256 provider unavailable".into()))?;
-    let length = http::get(&manifest.url, manifest.size.min(MAX_PACKAGE_BYTES), &mut |chunk| {
-        file.write_all(chunk)?;
-        if hasher.update(chunk) { Ok(()) } else { Err(UpdateError::Io("hashing failed".into())) }
-    })?;
+    let length = http::get(
+        &manifest.url,
+        manifest.size.min(MAX_PACKAGE_BYTES),
+        &mut |chunk| {
+            file.write_all(chunk)?;
+            if hasher.update(chunk) {
+                Ok(())
+            } else {
+                Err(UpdateError::Io("hashing failed".into()))
+            }
+        },
+    )?;
     file.sync_all()?;
     drop(file);
-    let digest = hasher.finish().ok_or_else(|| UpdateError::Io("hashing failed".into()))?;
+    let digest = hasher
+        .finish()
+        .ok_or_else(|| UpdateError::Io("hashing failed".into()))?;
     verify_package(manifest, length, &digest)?;
     // A signed-but-untrusted binary is refused; an unsigned one relies on the manifest signature alone.
     match authenticode(partial) {
@@ -1144,28 +1237,34 @@ pub fn spawn_background(benchmark: bool) {
     let Some(config) = load_config(&root) else {
         return;
     };
-    let _ = std::thread::Builder::new().name("bowser-updater".into()).spawn(move || {
-        std::thread::sleep(HEALTHY_AFTER);
-        let Ok(exe) = std::env::current_exe() else {
-            return;
-        };
-        let layout = Layout::new(exe, &root);
-        let _ = fs::remove_file(layout.trial());
-        let last = fs::read_to_string(layout.last_check()).ok().and_then(|t| t.trim().parse().ok());
-        if !check_due(now_secs(), last) {
-            return;
-        }
-        let _ = fs::create_dir_all(&layout.updates);
-        let outcome = check_and_stage(&config, &layout, Version::current());
-        let _ = write_atomic(&layout.last_check(), &now_secs().to_string());
-        let summary = match outcome {
-            Ok(CheckOutcome::UpToDate) => "up to date".to_owned(),
-            Ok(CheckOutcome::AvailableUnverified(v)) => format!("{v} available; no signing key embedded, not installed"),
-            Ok(CheckOutcome::Staged(v)) => format!("{v} staged for next start"),
-            Err(error) => format!("check failed: {error}"),
-        };
-        let _ = write_atomic(&layout.updates.join("status.txt"), &summary);
-    });
+    let _ = std::thread::Builder::new()
+        .name("bowser-updater".into())
+        .spawn(move || {
+            std::thread::sleep(HEALTHY_AFTER);
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            let layout = Layout::new(exe, &root);
+            let _ = fs::remove_file(layout.trial());
+            let last = fs::read_to_string(layout.last_check())
+                .ok()
+                .and_then(|t| t.trim().parse().ok());
+            if !check_due(now_secs(), last) {
+                return;
+            }
+            let _ = fs::create_dir_all(&layout.updates);
+            let outcome = check_and_stage(&config, &layout, Version::current());
+            let _ = write_atomic(&layout.last_check(), &now_secs().to_string());
+            let summary = match outcome {
+                Ok(CheckOutcome::UpToDate) => "up to date".to_owned(),
+                Ok(CheckOutcome::AvailableUnverified(v)) => {
+                    format!("{v} available; no signing key embedded, not installed")
+                }
+                Ok(CheckOutcome::Staged(v)) => format!("{v} staged for next start"),
+                Err(error) => format!("check failed: {error}"),
+            };
+            let _ = write_atomic(&layout.updates.join("status.txt"), &summary);
+        });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1179,7 +1278,8 @@ mod tests {
     const CURRENT: Version = Version(0, 0, 1);
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bowser-updater-test-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bowser-updater-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1197,7 +1297,13 @@ mod tests {
     }
 
     fn good_body() -> String {
-        body("0.2.0", "0.0.1", "https://example.com/bowser.exe", &"ab".repeat(32), 1000)
+        body(
+            "0.2.0",
+            "0.0.1",
+            "https://example.com/bowser.exe",
+            &"ab".repeat(32),
+            1000,
+        )
     }
 
     #[test]
@@ -1220,7 +1326,19 @@ mod tests {
     #[test]
     fn version_parse_and_order() {
         assert_eq!(Version::parse("1.2.3"), Some(Version(1, 2, 3)));
-        for bad in ["", "1", "1.2", "1.2.3.4", "1.2.x", "1..3", "-1.2.3", "1.2.3-beta", "+1.2.3", "1.2.3 ", "9999999999.0.0"] {
+        for bad in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "1.2.x",
+            "1..3",
+            "-1.2.3",
+            "1.2.3-beta",
+            "+1.2.3",
+            "1.2.3 ",
+            "9999999999.0.0",
+        ] {
             assert_eq!(Version::parse(bad), None, "{bad:?}");
         }
         assert!(Version(0, 10, 0) > Version(0, 9, 9));
@@ -1245,24 +1363,37 @@ mod tests {
         let text = sign(&good_body(), &key);
         for (from, to) in [
             ("version=0.2.0", "version=0.3.0"),
-            ("https://example.com/bowser.exe", "https://evil.example/bowser.exe"),
+            (
+                "https://example.com/bowser.exe",
+                "https://evil.example/bowser.exe",
+            ),
             ("size=1000", "size=1001"),
             ("notes=Fixes", "notes=Fixed"),
             ("min_version=0.0.1", "min_version=0.0.0"),
         ] {
             let tampered = text.replace(from, to);
             assert_ne!(tampered, text);
-            assert_eq!(evaluate(&tampered, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature), "{from}");
+            assert_eq!(
+                evaluate(&tampered, Some(&key.public_xy), CURRENT),
+                Err(UpdateError::BadSignature),
+                "{from}"
+            );
         }
         // Flipped signature bit.
         let (head, sig) = text.trim_end().rsplit_once("signature=").unwrap();
         let mut sig_bytes = hex_decode::<64>(sig).unwrap();
         sig_bytes[10] ^= 1;
         let flipped = format!("{head}signature={}\n", hex_encode(&sig_bytes));
-        assert_eq!(evaluate(&flipped, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
+        assert_eq!(
+            evaluate(&flipped, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
         // Extra line appended after the signature, and trailing junk body line.
         let appended = format!("{text}notes=x\n");
-        assert_eq!(evaluate(&appended, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
+        assert_eq!(
+            evaluate(&appended, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
     }
 
     #[test]
@@ -1270,17 +1401,38 @@ mod tests {
         let key = cng::TestKey::generate();
         let other = cng::TestKey::generate();
         let text = sign(&good_body(), &key);
-        assert_eq!(evaluate(&text, Some(&other.public_xy), CURRENT), Err(UpdateError::BadSignature));
-        assert_eq!(evaluate(&good_body(), Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
+        assert_eq!(
+            evaluate(&text, Some(&other.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
+        assert_eq!(
+            evaluate(&good_body(), Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
         let short = format!("{}signature={}\n", good_body(), "00".repeat(63));
-        assert_eq!(evaluate(&short, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
+        assert_eq!(
+            evaluate(&short, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
         let zero = format!("{}signature={}\n", good_body(), "00".repeat(64));
-        assert_eq!(evaluate(&zero, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
+        assert_eq!(
+            evaluate(&zero, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
         let not_hex = format!("{}signature={}\n", good_body(), "zz".repeat(64));
-        assert_eq!(evaluate(&not_hex, Some(&key.public_xy), CURRENT), Err(UpdateError::BadSignature));
-        assert_eq!(evaluate(&text.replace('\n', "\r\n"), Some(&key.public_xy), CURRENT), Err(UpdateError::Malformed("CR or NUL")));
+        assert_eq!(
+            evaluate(&not_hex, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::BadSignature)
+        );
+        assert_eq!(
+            evaluate(&text.replace('\n', "\r\n"), Some(&key.public_xy), CURRENT),
+            Err(UpdateError::Malformed("CR or NUL"))
+        );
         let big = format!("{}{}", "x".repeat(MAX_MANIFEST_BYTES), text);
-        assert_eq!(evaluate(&big, Some(&key.public_xy), CURRENT), Err(UpdateError::ManifestTooLarge));
+        assert_eq!(
+            evaluate(&big, Some(&key.public_xy), CURRENT),
+            Err(UpdateError::ManifestTooLarge)
+        );
     }
 
     #[test]
@@ -1288,20 +1440,74 @@ mod tests {
         let key = cng::TestKey::generate();
         let sha = "cd".repeat(32);
         let check = |b: String| evaluate(&sign(&b, &key), Some(&key.public_xy), CURRENT);
-        assert_eq!(check(body("0.0.1", "0.0.1", "https://e.com/a.exe", &sha, 10)), Err(UpdateError::NotNewer));
-        assert_eq!(check(body("0.0.0", "0.0.0", "https://e.com/a.exe", &sha, 10)), Err(UpdateError::NotNewer));
-        assert_eq!(check(body("0.5.0", "0.4.0", "https://e.com/a.exe", &sha, 10)), Err(UpdateError::BelowMinVersion));
-        assert_eq!(check(body("0.5.0", "0.0.1", "http://e.com/a.exe", &sha, 10)), Err(UpdateError::InsecureUrl));
-        assert_eq!(check(body("0.5.0", "0.0.1", "ftp://e.com/a.exe", &sha, 10)), Err(UpdateError::InsecureUrl));
-        assert_eq!(check(body("0.5.0", "0.0.1", "https://user:pw@e.com/a.exe", &sha, 10)), Err(UpdateError::InsecureUrl));
-        assert_eq!(check(body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, MAX_PACKAGE_BYTES + 1)), Err(UpdateError::Oversize));
-        assert_eq!(check(body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 0)), Err(UpdateError::Oversize));
-        assert!(matches!(check(body("0.5.0", "0.0.1", "https://e.com/a.exe", "abcd", 10)), Err(UpdateError::Malformed(_))));
-        let dup = format!("{}version=0.9.0\n", body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 10));
-        assert!(matches!(check(dup), Err(UpdateError::Malformed("duplicate key"))));
-        let unknown = format!("{}extra=1\n", body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 10));
-        assert!(matches!(check(unknown), Err(UpdateError::Malformed("unknown key"))));
-        assert!(matches!(check("something-else\nversion=0.5.0\n".into()), Err(UpdateError::Malformed(_))));
+        assert_eq!(
+            check(body("0.0.1", "0.0.1", "https://e.com/a.exe", &sha, 10)),
+            Err(UpdateError::NotNewer)
+        );
+        assert_eq!(
+            check(body("0.0.0", "0.0.0", "https://e.com/a.exe", &sha, 10)),
+            Err(UpdateError::NotNewer)
+        );
+        assert_eq!(
+            check(body("0.5.0", "0.4.0", "https://e.com/a.exe", &sha, 10)),
+            Err(UpdateError::BelowMinVersion)
+        );
+        assert_eq!(
+            check(body("0.5.0", "0.0.1", "http://e.com/a.exe", &sha, 10)),
+            Err(UpdateError::InsecureUrl)
+        );
+        assert_eq!(
+            check(body("0.5.0", "0.0.1", "ftp://e.com/a.exe", &sha, 10)),
+            Err(UpdateError::InsecureUrl)
+        );
+        assert_eq!(
+            check(body(
+                "0.5.0",
+                "0.0.1",
+                "https://user:pw@e.com/a.exe",
+                &sha,
+                10
+            )),
+            Err(UpdateError::InsecureUrl)
+        );
+        assert_eq!(
+            check(body(
+                "0.5.0",
+                "0.0.1",
+                "https://e.com/a.exe",
+                &sha,
+                MAX_PACKAGE_BYTES + 1
+            )),
+            Err(UpdateError::Oversize)
+        );
+        assert_eq!(
+            check(body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 0)),
+            Err(UpdateError::Oversize)
+        );
+        assert!(matches!(
+            check(body("0.5.0", "0.0.1", "https://e.com/a.exe", "abcd", 10)),
+            Err(UpdateError::Malformed(_))
+        ));
+        let dup = format!(
+            "{}version=0.9.0\n",
+            body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 10)
+        );
+        assert!(matches!(
+            check(dup),
+            Err(UpdateError::Malformed("duplicate key"))
+        ));
+        let unknown = format!(
+            "{}extra=1\n",
+            body("0.5.0", "0.0.1", "https://e.com/a.exe", &sha, 10)
+        );
+        assert!(matches!(
+            check(unknown),
+            Err(UpdateError::Malformed("unknown key"))
+        ));
+        assert!(matches!(
+            check("something-else\nversion=0.5.0\n".into()),
+            Err(UpdateError::Malformed(_))
+        ));
     }
 
     #[test]
@@ -1309,27 +1515,75 @@ mod tests {
         let key = cng::TestKey::generate();
         let text = sign(&good_body(), &key);
         let evaluated = evaluate(&text, None, CURRENT).unwrap();
-        assert!(!evaluated.authentic, "check-only mode must not be installable");
+        assert!(
+            !evaluated.authentic,
+            "check-only mode must not be installable"
+        );
         // No key and no signature line at all is still non-authentic or an error, never authentic.
         assert!(evaluate(&good_body(), None, CURRENT).is_err());
-        assert_eq!(compiled_public_key(), None, "test builds must not embed a key");
+        assert_eq!(
+            compiled_public_key(),
+            None,
+            "test builds must not embed a key"
+        );
     }
 
     #[test]
     fn package_verification_catches_size_and_hash() {
-        let manifest = evaluate(&sign(&body("0.2.0", "0.0.1", "https://e.com/a.exe", &hex_encode(&sha256(b"hello").unwrap()), 5), &cng::TestKey::generate()), None, CURRENT).unwrap().manifest;
-        assert_eq!(verify_package(&manifest, 5, &sha256(b"hello").unwrap()), Ok(()));
-        assert_eq!(verify_package(&manifest, 5, &sha256(b"hellp").unwrap()), Err(UpdateError::HashMismatch));
-        assert_eq!(verify_package(&manifest, 6, &sha256(b"hello").unwrap()), Err(UpdateError::SizeMismatch));
-        assert_eq!(verify_package(&manifest, MAX_PACKAGE_BYTES + 1, &sha256(b"hello").unwrap()), Err(UpdateError::Oversize));
+        let manifest = evaluate(
+            &sign(
+                &body(
+                    "0.2.0",
+                    "0.0.1",
+                    "https://e.com/a.exe",
+                    &hex_encode(&sha256(b"hello").unwrap()),
+                    5,
+                ),
+                &cng::TestKey::generate(),
+            ),
+            None,
+            CURRENT,
+        )
+        .unwrap()
+        .manifest;
+        assert_eq!(
+            verify_package(&manifest, 5, &sha256(b"hello").unwrap()),
+            Ok(())
+        );
+        assert_eq!(
+            verify_package(&manifest, 5, &sha256(b"hellp").unwrap()),
+            Err(UpdateError::HashMismatch)
+        );
+        assert_eq!(
+            verify_package(&manifest, 6, &sha256(b"hello").unwrap()),
+            Err(UpdateError::SizeMismatch)
+        );
+        assert_eq!(
+            verify_package(&manifest, MAX_PACKAGE_BYTES + 1, &sha256(b"hello").unwrap()),
+            Err(UpdateError::Oversize)
+        );
     }
 
     #[test]
     fn redirects_must_stay_on_https() {
         let base = Url::parse("https://example.com/dir/manifest.txt").unwrap();
-        assert_eq!(resolve_redirect(&base, "/other.exe").unwrap().as_str(), "https://example.com/other.exe");
-        assert_eq!(resolve_redirect(&base, "https://cdn.example.net/x").unwrap().host_str(), Some("cdn.example.net"));
-        for bad in ["http://example.com/x", "//evil.test/x#", "ftp://example.com/x", "file:///c:/x", "https://u:p@example.com/x"] {
+        assert_eq!(
+            resolve_redirect(&base, "/other.exe").unwrap().as_str(),
+            "https://example.com/other.exe"
+        );
+        assert_eq!(
+            resolve_redirect(&base, "https://cdn.example.net/x")
+                .unwrap()
+                .host_str(),
+            Some("cdn.example.net")
+        );
+        for bad in [
+            "http://example.com/x",
+            "//evil.test/x#",
+            "ftp://example.com/x",
+            "file:///c:/x",
+            "https://u:p@example.com/x",
+        ] {
             let result = resolve_redirect(&base, bad);
             if bad == "//evil.test/x#" {
                 assert!(result.is_ok(), "scheme-relative keeps https");
@@ -1349,15 +1603,25 @@ mod tests {
         assert!(!check_due(1_000_000, Some(1_000_000)));
         assert!(!check_due(1_000_000 + day - 1, Some(1_000_000)));
         assert!(check_due(1_000_000 + day, Some(1_000_000)));
-        assert!(check_due(1_000, Some(5_000_000)), "timestamps in the future must not suppress checks forever");
+        assert!(
+            check_due(1_000, Some(5_000_000)),
+            "timestamps in the future must not suppress checks forever"
+        );
     }
 
     #[test]
     fn config_requires_https_and_disables_when_empty() {
         let root = temp_dir("config");
         assert!(load_config(&root).is_none() || COMPILED_MANIFEST_URL.is_some());
-        fs::write(root.join("update-url.txt"), "\n  https://example.com/m.txt \n").unwrap();
-        assert_eq!(load_config(&root).unwrap().manifest_url.as_str(), "https://example.com/m.txt");
+        fs::write(
+            root.join("update-url.txt"),
+            "\n  https://example.com/m.txt \n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_config(&root).unwrap().manifest_url.as_str(),
+            "https://example.com/m.txt"
+        );
         fs::write(root.join("update-url.txt"), "http://example.com/m.txt").unwrap();
         assert!(load_config(&root).is_none());
         fs::write(root.join("update-url.txt"), "").unwrap();
@@ -1369,10 +1633,46 @@ mod tests {
     fn trial_decisions() {
         let new = Version(0, 2, 0);
         assert_eq!(decide_trial(None, new), TrialAction::None);
-        assert_eq!(decide_trial(Some(Trial { version: new, attempts: 0 }), new), TrialAction::Count(1));
-        assert_eq!(decide_trial(Some(Trial { version: new, attempts: 2 }), new), TrialAction::Count(3));
-        assert_eq!(decide_trial(Some(Trial { version: new, attempts: MAX_TRIAL_ATTEMPTS }), new), TrialAction::Rollback);
-        assert_eq!(decide_trial(Some(Trial { version: new, attempts: 1 }), Version(0, 0, 1)), TrialAction::Clear);
+        assert_eq!(
+            decide_trial(
+                Some(Trial {
+                    version: new,
+                    attempts: 0
+                }),
+                new
+            ),
+            TrialAction::Count(1)
+        );
+        assert_eq!(
+            decide_trial(
+                Some(Trial {
+                    version: new,
+                    attempts: 2
+                }),
+                new
+            ),
+            TrialAction::Count(3)
+        );
+        assert_eq!(
+            decide_trial(
+                Some(Trial {
+                    version: new,
+                    attempts: MAX_TRIAL_ATTEMPTS
+                }),
+                new
+            ),
+            TrialAction::Rollback
+        );
+        assert_eq!(
+            decide_trial(
+                Some(Trial {
+                    version: new,
+                    attempts: 1
+                }),
+                Version(0, 0, 1)
+            ),
+            TrialAction::Clear
+        );
     }
 
     struct Fixture {
@@ -1412,7 +1712,13 @@ mod tests {
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"NEW BUILD");
         assert_eq!(fs::read(f.layout.old_exe()).unwrap(), b"OLD BUILD");
         assert!(!f.layout.pending().exists() && !f.layout.staged_exe(new).exists());
-        assert_eq!(read_trial(&f.layout), Some(Trial { version: new, attempts: 0 }));
+        assert_eq!(
+            read_trial(&f.layout),
+            Some(Trial {
+                version: new,
+                attempts: 0
+            })
+        );
         assert_eq!(apply_pending(&f.layout, new), ApplyResult::Nothing);
         let _ = fs::remove_dir_all(f.dir);
     }
@@ -1423,20 +1729,34 @@ mod tests {
         let new = Version(0, 2, 0);
         stage(&f, new, b"NEW BUILD");
         fs::write(f.layout.staged_exe(new), b"EVIL BUILD").unwrap();
-        assert!(matches!(apply_pending(&f.layout, CURRENT), ApplyResult::Failed(_)));
+        assert!(matches!(
+            apply_pending(&f.layout, CURRENT),
+            ApplyResult::Failed(_)
+        ));
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
         assert!(!f.layout.old_exe().exists());
         assert!(!f.layout.pending().exists(), "bad stage is discarded");
 
         stage(&f, new, b"NEW BUILD");
-        assert_eq!(apply_pending(&f.layout, new), ApplyResult::Nothing, "same version is never re-applied");
+        assert_eq!(
+            apply_pending(&f.layout, new),
+            ApplyResult::Nothing,
+            "same version is never re-applied"
+        );
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
         stage(&f, Version(0, 0, 1), b"DOWNGRADE");
-        assert_eq!(apply_pending(&f.layout, Version(0, 1, 0)), ApplyResult::Nothing, "downgrade is never applied");
+        assert_eq!(
+            apply_pending(&f.layout, Version(0, 1, 0)),
+            ApplyResult::Nothing,
+            "downgrade is never applied"
+        );
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
 
         fs::write(f.layout.pending(), "version=banana\n").unwrap();
-        assert!(matches!(apply_pending(&f.layout, CURRENT), ApplyResult::Failed(_)));
+        assert!(matches!(
+            apply_pending(&f.layout, CURRENT),
+            ApplyResult::Failed(_)
+        ));
         let _ = fs::remove_dir_all(f.dir);
     }
 
@@ -1450,9 +1770,16 @@ mod tests {
         for expected in 1..=MAX_TRIAL_ATTEMPTS {
             let action = decide_trial(read_trial(&f.layout), new);
             assert_eq!(action, TrialAction::Count(expected));
-            write_atomic(&f.layout.trial(), &format!("version={new}\nattempts={expected}\n")).unwrap();
+            write_atomic(
+                &f.layout.trial(),
+                &format!("version={new}\nattempts={expected}\n"),
+            )
+            .unwrap();
         }
-        assert_eq!(decide_trial(read_trial(&f.layout), new), TrialAction::Rollback);
+        assert_eq!(
+            decide_trial(read_trial(&f.layout), new),
+            TrialAction::Rollback
+        );
         rollback(&f.layout, new).unwrap();
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
         assert_eq!(fs::read(f.layout.bad_exe()).unwrap(), b"NEW BUILD");

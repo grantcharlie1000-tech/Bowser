@@ -180,7 +180,8 @@ impl LaunchOptions {
                     "Cannot safely compare the benchmark profile without LOCALAPPDATA".to_owned()
                 })?;
                 let production_profile =
-                    crate::profile::Profile::default_in(&local_app_data.join("Bowser")).webview2_dir();
+                    crate::profile::Profile::default_in(&local_app_data.join("Bowser"))
+                        .webview2_dir();
                 let requested = canonicalize_for_comparison(profile)?;
                 let production = canonicalize_for_comparison(&production_profile)?;
                 if windows_path_keys_equal_paths(&requested, &production) {
@@ -361,28 +362,35 @@ mod tests {
     #[test]
     fn profile_flag_accepts_only_valid_names_and_not_with_benchmarks() {
         let options =
-            LaunchOptions::parse_from(args(&["--profile", "Work-1"]), Path::new("missing")).unwrap();
+            LaunchOptions::parse_from(args(&["--profile", "Work-1"]), Path::new("missing"))
+                .unwrap();
         assert_eq!(options.profile.as_deref(), Some("Work-1"));
-        assert!(LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing"))
-            .unwrap()
-            .profile
-            .is_none());
+        assert!(
+            LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing"))
+                .unwrap()
+                .profile
+                .is_none()
+        );
         for bad in ["..", "a/b", "CON", "default", "x y"] {
             assert!(
                 LaunchOptions::parse_from(args(&["--profile", bad]), Path::new("missing")).is_err(),
                 "{bad}"
             );
         }
-        assert!(LaunchOptions::parse_from(
-            args(&["--profile", "A", "--profile", "B"]),
-            Path::new("missing")
-        )
-        .is_err());
-        assert!(LaunchOptions::parse_from(
-            args(&["--profile", "A", "--benchmark-log", "x.csv"]),
-            Path::new("missing")
-        )
-        .is_err());
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--profile", "A", "--profile", "B"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--profile", "A", "--benchmark-log", "x.csv"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
     }
 
     #[test]

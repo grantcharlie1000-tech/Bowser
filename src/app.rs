@@ -545,7 +545,11 @@ impl App {
         let Some(tab) = state.tabs.iter().find(|tab| tab.id == active) else {
             return String::new();
         };
-        let host = tab.url.as_ref().and_then(|url| url.host_str()).unwrap_or("");
+        let host = tab
+            .url
+            .as_ref()
+            .and_then(|url| url.host_str())
+            .unwrap_or("");
         if blocker.borrow().site_allowed(host) {
             " [blocker off for this site]".to_owned()
         } else if tab.blocked > 0 {
@@ -568,7 +572,9 @@ impl App {
             (state.blocker.clone(), host)
         };
         let Some(blocker) = blocker else {
-            win32::show_error_message("The blocker is disabled (blocker_enabled=false in settings.txt).");
+            win32::show_error_message(
+                "The blocker is disabled (blocker_enabled=false in settings.txt).",
+            );
             return;
         };
         let Some(host) = host else { return };
@@ -1208,8 +1214,10 @@ impl App {
         );
         app.settings = crate::settings::Settings::load(&profile.settings_file());
         if track_session && app.settings.blocker_enabled {
-            let mut state =
-                crate::blocker::BlockerState::load(&profile.blocker_dir(), &app.settings.blocker_allow);
+            let mut state = crate::blocker::BlockerState::load(
+                &profile.blocker_dir(),
+                &app.settings.blocker_allow,
+            );
             state.enabled = true;
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
@@ -1278,7 +1286,11 @@ impl App {
             win32::ask_yes_no(&format!(
                 "Bowser did not close properly last time. Restore your {} open tab{}?",
                 offer.session.tabs.len(),
-                if offer.session.tabs.len() == 1 { "" } else { "s" }
+                if offer.session.tabs.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ))
         });
         store.begin_run(accepted.as_ref());
@@ -2178,7 +2190,10 @@ impl App {
                         .url
                         .as_ref()
                         .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
-                    && !state.tab_model.get(tab.id).is_some_and(|model| model.pinned)
+                    && !state
+                        .tab_model
+                        .get(tab.id)
+                        .is_some_and(|model| model.pinned)
             })
             .filter_map(|tab| tab.hidden_since)
             .map(|since| {
@@ -2367,7 +2382,8 @@ impl App {
         let pressure = under_pressure();
         hidden.sort_by_key(|(since, _)| *since);
         for (since, id) in hidden {
-            let due = sleep_after.is_some_and(|after| now.saturating_duration_since(since) >= after);
+            let due =
+                sleep_after.is_some_and(|after| now.saturating_duration_since(since) >= after);
             if !pressure && !due {
                 continue;
             }
@@ -2894,7 +2910,12 @@ mod tests {
         let (app, hidden, _active, calls) = sleeping_app(300);
         App::discard_one_hidden_tab_if(&app, || false);
         assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
-        assert!(app.borrow().tabs.iter().any(|t| t.id == hidden && t.discarded));
+        assert!(
+            app.borrow()
+                .tabs
+                .iter()
+                .any(|t| t.id == hidden && t.discarded)
+        );
 
         let (app, _hidden, _active, calls) = sleeping_app(3600);
         App::discard_one_hidden_tab_if(&app, || false);
@@ -2924,7 +2945,12 @@ mod tests {
         SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Inline(true));
         App::discard_one_hidden_tab_if(&app, || false);
         assert!(closed_tabs(&calls).is_empty());
-        assert!(app.borrow().tabs.iter().any(|t| t.id == hidden && !t.discarded));
+        assert!(
+            app.borrow()
+                .tabs
+                .iter()
+                .any(|t| t.id == hidden && !t.discarded)
+        );
         let asked = SLEEP_CHECKS_ASKED.with(|asked| asked.get());
         assert_eq!(asked, 1);
         App::discard_one_hidden_tab_if(&app, || false);
@@ -2938,7 +2964,11 @@ mod tests {
         SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
         App::discard_one_hidden_tab_if(&app, || false);
         App::discard_one_hidden_tab_if(&app, || false);
-        assert_eq!(SLEEP_CHECKS_ASKED.with(|a| a.get()), 1, "one check in flight");
+        assert_eq!(
+            SLEEP_CHECKS_ASKED.with(|a| a.get()),
+            1,
+            "one check in flight"
+        );
         let done = SLEEP_CHECK
             .with(|check| match &mut *check.borrow_mut() {
                 SleepCheck::Deferred(slot) => slot.take(),

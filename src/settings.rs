@@ -126,7 +126,10 @@ mod tests {
     #[test]
     fn defaults_apply_to_empty_and_unknown_input() {
         assert_eq!(Settings::parse(""), Settings::default());
-        assert_eq!(Settings::parse("# c\nnonsense\nfoo=bar\n"), Settings::default());
+        assert_eq!(
+            Settings::parse("# c\nnonsense\nfoo=bar\n"),
+            Settings::default()
+        );
         assert!(Settings::default().sleep_enabled);
         assert_eq!(Settings::default().sleep_after_secs, 300);
     }
@@ -168,7 +171,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::load(&dir.join("nope.txt")), Settings::default());
         let big = dir.join("big.txt");
-        std::fs::write(&big, format!("sleep_enabled=false\n{}", "#".repeat(MAX_FILE_BYTES))).unwrap();
+        std::fs::write(
+            &big,
+            format!("sleep_enabled=false\n{}", "#".repeat(MAX_FILE_BYTES)),
+        )
+        .unwrap();
         assert_eq!(Settings::load(&big), Settings::default());
         let ok = dir.join("ok.txt");
         std::fs::write(&ok, "sleep_enabled=false\n").unwrap();
@@ -181,7 +188,10 @@ mod tests {
         assert!(Settings::default().blocker_enabled);
         let s = Settings::parse("blocker_enabled=off\nblocker_allow= a.com , ,b.org\n");
         assert!(!s.blocker_enabled);
-        assert_eq!(s.blocker_allow, vec!["a.com".to_owned(), "b.org".to_owned()]);
+        assert_eq!(
+            s.blocker_allow,
+            vec!["a.com".to_owned(), "b.org".to_owned()]
+        );
         assert!(Settings::parse("blocker_enabled=maybe").blocker_enabled);
     }
 }

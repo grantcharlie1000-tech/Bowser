@@ -1,7 +1,7 @@
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
-    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT,
-    WM_SESSION_SAVE_TIMER, WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
+    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SESSION_SAVE_TIMER,
+    WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
@@ -49,12 +49,12 @@ use windows::{
                 HTBOTTOMRIGHT, HTCAPTION, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT,
                 HTTOP, HTTOPLEFT, HTTOPRIGHT, HideCaret, IsIconic, IsZoomed, KillTimer,
                 LoadCursorW, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage,
-                RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED,
-                SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW,
-                SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-                ShowWindow, SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE,
+                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME,
+                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
+                SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
                 TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE,
                 WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
                 WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
@@ -1654,14 +1654,7 @@ fn show_profile_menu(hwnd: HWND) {
             MF_POPUP
         };
         // The submenu handle is owned by `menu` and is destroyed with it.
-        let _ = unsafe {
-            AppendMenuW(
-                menu,
-                flags,
-                submenu.0 as usize,
-                w!("Delete profile…"),
-            )
-        };
+        let _ = unsafe { AppendMenuW(menu, flags, submenu.0 as usize, w!("Delete profile…")) };
     }
 
     let mut point = windows::Win32::Foundation::POINT { x: 8, y: 8 };
@@ -1740,14 +1733,25 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
         return;
     };
     if records.is_empty() {
-        let _ = unsafe { AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, w!("No extensions installed")) };
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                MF_STRING | MF_GRAYED,
+                0,
+                w!("No extensions installed"),
+            )
+        };
     }
     for (index, record) in records.iter().enumerate() {
         let mut label = format!(
             "{} {} ({})",
             record.name,
             record.version,
-            if record.enabled { "enabled" } else { "disabled" }
+            if record.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
         if let Some(reason) = extensions::load_failure(&record.id) {
             label.push_str(&format!(" (failed: {reason})"));
@@ -1822,7 +1826,11 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
     }
 }
 
-fn toggle_extension(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record) {
+fn toggle_extension(
+    app: &AppRef,
+    profile: &crate::profile::Profile,
+    record: &crate::extensions::Record,
+) {
     use crate::extensions;
     let enabled = !record.enabled;
     if let Err(error) = extensions::set_enabled(&profile.extensions_file(), &record.id, enabled) {
@@ -1835,7 +1843,11 @@ fn toggle_extension(app: &AppRef, profile: &crate::profile::Profile, record: &cr
     }
 }
 
-fn remove_extension(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record) {
+fn remove_extension(
+    app: &AppRef,
+    profile: &crate::profile::Profile,
+    record: &crate::extensions::Record,
+) {
     use crate::extensions;
     let question = format!(
         "Remove the extension \"{}\" from this profile? Its copied files will be deleted.",
@@ -1854,7 +1866,9 @@ fn remove_extension(app: &AppRef, profile: &crate::profile::Profile, record: &cr
             Ok(()) => {
                 extensions::record_load_result(&id, Ok(()));
                 if let Err(error) = extensions::uninstall(&extensions_dir, &records_file, &id) {
-                    show_error_message(&format!("The extension was removed from the list, but its files were not deleted. {error}"));
+                    show_error_message(&format!(
+                        "The extension was removed from the list, but its files were not deleted. {error}"
+                    ));
                 }
             }
             Err(reason) => {
@@ -1887,7 +1901,11 @@ fn install_extension(hwnd: HWND, app: &AppRef, profile: &crate::profile::Profile
     if !crate::win32::ask_yes_no(&question) {
         return;
     }
-    match extensions::install(&folder, &profile.extensions_dir(), &profile.extensions_file()) {
+    match extensions::install(
+        &folder,
+        &profile.extensions_dir(),
+        &profile.extensions_file(),
+    ) {
         Ok(record) => match extensions::folder_for(&profile.extensions_dir(), &record.id) {
             Ok(installed) => App::set_extension_enabled(app, record.id, installed, true),
             Err(error) => show_error_message(&error.to_string()),
@@ -1901,7 +1919,8 @@ fn pick_extension_folder(owner: HWND) -> Option<std::path::PathBuf> {
     use windows::Win32::{
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
         UI::Shell::{
-            FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+            FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+            SIGDN_FILESYSPATH,
         },
     };
     unsafe {
@@ -1911,7 +1930,9 @@ fn pick_extension_folder(owner: HWND) -> Option<std::path::PathBuf> {
             .SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
             .ok()?;
         dialog
-            .SetTitle(w!("Choose an unpacked extension folder (the one with manifest.json)"))
+            .SetTitle(w!(
+                "Choose an unpacked extension folder (the one with manifest.json)"
+            ))
             .ok()?;
         dialog.Show(Some(owner)).ok()?;
         let item = dialog.GetResult().ok()?;
