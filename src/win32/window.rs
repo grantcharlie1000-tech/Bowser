@@ -580,7 +580,9 @@ pub fn run(app: App) -> windows::core::Result<()> {
         if !app.borrow().edit.is_invalid() {
             app.borrow().log.record("input_ready").ok();
         }
-        if let Some(url) = app.borrow_mut().benchmark_url.take() {
+        // Take the URL first so the app borrow ends before submit_url borrows it again.
+        let benchmark_url = app.borrow_mut().benchmark_url.take();
+        if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
         }
         let mut m = MSG::default();
