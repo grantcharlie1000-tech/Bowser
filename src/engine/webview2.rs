@@ -16,7 +16,7 @@ use webview2_com::{
     ExecuteScriptCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    SourceChangedEventHandler, TrySuspendCompletedHandler,
+    SourceChangedEventHandler, TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
 };
 use windows::{
     Win32::{
@@ -24,7 +24,7 @@ use windows::{
         System::Com::IStream,
         UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT},
     },
-    core::{BOOL, Error, Interface, PCWSTR, PWSTR, Ref, Result, implement},
+    core::{BOOL, Error, Interface, PCWSTR, PWSTR, Ref, Result, implement, w},
 };
 
 use super::{
@@ -228,6 +228,30 @@ impl std::fmt::Display for RuntimeUnavailable {
     }
 }
 
+/// Per-tab state for the request blocker: the top-level host of the current navigation and the
+/// number of requests blocked since the document started loading.
+#[derive(Default)]
+struct TabBlockState {
+    top_host: RefCell<String>,
+    count: Cell<u32>,
+}
+
+thread_local! {
+    /// Reused UTF-8 copy of the request URL so matching does not allocate per request.
+    static REQUEST_URL: RefCell<String> = RefCell::new(String::with_capacity(512));
+}
+
+const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
+];
+
 struct WebView2Tab {
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
@@ -248,6 +272,7 @@ struct EngineCore {
     allowed_file: Option<Url>,
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
+    blocker: Option<super::BlockerHandle>,
     active_tab: Option<TabId>,
     target: MemoryUsageTarget,
     tabs: HashMap<TabId, WebView2Tab>,
@@ -273,7 +298,7 @@ impl WebView2Engine {
 
 impl WebView2Engine {
     fn request_controller(core: &Rc<RefCell<EngineCore>>, tab_id: TabId) -> Result<()> {
-        let (environment, parent, allowed_file, events, tracking_policy) = {
+        let (environment, parent, allowed_file, events, tracking_policy, blocker) = {
             let mut state = core.borrow_mut();
             if state.closed || !state.known_tabs.contains(&tab_id) {
                 return Ok(());
@@ -290,6 +315,7 @@ impl WebView2Engine {
                 state.allowed_file.take(),
                 state.events.clone(),
                 state.tracking_policy,
+                state.blocker.clone(),
             )
         };
 
@@ -359,6 +385,7 @@ impl WebView2Engine {
                         allowed_file.clone(),
                         completion_events.clone(),
                         tracking_policy,
+                        blocker.clone(),
                         visible,
                     )
                 };
@@ -526,6 +553,33 @@ impl WebView2Engine {
     where
         F: FnOnce(Result<Self>) + 'static,
     {
+        Self::begin_create_with_extras(
+            parent,
+            bounds,
+            user_data_dir,
+            allowed_file,
+            events,
+            tracking_prevention,
+            super::EngineExtras::default(),
+            on_ready,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_create_with_extras<F>(
+        parent: HWND,
+        bounds: RECT,
+        user_data_dir: &Path,
+        allowed_file: Option<Url>,
+        events: EngineEvents,
+        tracking_prevention: Option<TrackingPreventionLevel>,
+        extras: super::EngineExtras,
+        on_ready: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(Result<Self>) + 'static,
+    {
+        let blocker = extras.blocker;
         let creation_log = events.policy_event.clone();
         if let Some(log) = creation_log.as_ref() {
             log("webview_profile_started");
@@ -626,6 +680,7 @@ impl WebView2Engine {
                             level: tracking_prevention,
                             enabled: tracking_prevention_enabled,
                         },
+                        blocker: blocker.clone(),
                         active_tab: None,
                         target: MemoryUsageTarget::Normal,
                         tabs: HashMap::new(),
@@ -1091,6 +1146,7 @@ unsafe fn configure_controller(
     allowed_file: Option<Url>,
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
+    blocker: Option<super::BlockerHandle>,
     visible: bool,
 ) -> Result<WebView2Tab> {
     unsafe {
@@ -1129,6 +1185,8 @@ unsafe fn configure_controller(
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
+        let block_tab = Rc::new(TabBlockState::default());
+        let navigation_block_tab = block_tab.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         webview.add_NavigationStarting(
@@ -1151,6 +1209,11 @@ unsafe fn configure_controller(
                         .map(|url| navigation_start_policy(url, navigation_file_grant))
                     {
                         Some(NavigationStartPolicy::Allow) => {
+                            if let Some(host) = parsed.as_ref().and_then(Url::host_str) {
+                                let mut top = navigation_block_tab.top_host.borrow_mut();
+                                top.clear();
+                                top.push_str(host);
+                            }
                             let mut navigation_id = 0;
                             if args.NavigationId(&mut navigation_id).is_ok() {
                                 if let Some(callback) = navigation_started.as_ref() {
@@ -1190,8 +1253,15 @@ unsafe fn configure_controller(
             &mut token,
         )?;
         let content_progress = events.navigation_progress.clone();
+        let content_block_tab = block_tab.clone();
+        let content_blocked = events.blocked_changed.clone();
         webview.add_ContentLoading(
             &ContentLoadingEventHandler::create(Box::new(move |_sender, args| {
+                if content_block_tab.count.replace(0) != 0
+                    && let Some(callback) = content_blocked.as_ref()
+                {
+                    callback(tab_id, 0);
+                }
                 if let (Some(args), Some(callback)) = (args, content_progress.as_ref()) {
                     let mut navigation_id = 0;
                     if args.NavigationId(&mut navigation_id).is_ok() {
@@ -1408,6 +1478,60 @@ unsafe fn configure_controller(
                 Ok(())
             }));
             let _ = webview15.add_FaviconChanged(&favicon_handler, &mut token);
+        }
+
+        if let Some(blocker) = blocker {
+            let response_environment = environment.clone();
+            let blocked_callback = events.blocked_changed.clone();
+            let policy_log = events.policy_event.clone();
+            let request_tab = block_tab.clone();
+            webview.add_WebResourceRequested(
+                &WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let request = args.Request()?;
+                    let mut uri = PWSTR::null();
+                    request.Uri(&mut uri)?;
+                    let guard = CoTaskMemPWSTR::from(uri);
+                    let block = REQUEST_URL.with(|buffer| {
+                        let mut buffer = buffer.borrow_mut();
+                        buffer.clear();
+                        buffer.extend(
+                            char::decode_utf16(uri.as_wide().iter().copied())
+                                .map(|unit| unit.unwrap_or('\u{FFFD}')),
+                        );
+                        blocker
+                            .borrow()
+                            .should_block(&buffer, &request_tab.top_host.borrow())
+                    });
+                    drop(guard);
+                    if block {
+                        let response = response_environment.CreateWebResourceResponse(
+                            None::<&IStream>,
+                            403,
+                            w!("Blocked by Bowser"),
+                            w!(""),
+                        )?;
+                        args.SetResponse(&response)?;
+                        let count = request_tab.count.get().saturating_add(1);
+                        request_tab.count.set(count);
+                        if let Some(callback) = blocked_callback.as_ref() {
+                            callback(tab_id, count);
+                        }
+                        if let Some(log) = policy_log.as_ref() {
+                            log("request_blocked");
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+            // Subresource kinds only: never Document (main frames and iframes), never Stylesheet
+            // or Font, which could break page layout for little privacy gain.
+            for context in BLOCKABLE_CONTEXTS {
+                webview.AddWebResourceRequestedFilter(w!("*"), context)?;
+            }
         }
 
         controller.add_AcceleratorKeyPressed(

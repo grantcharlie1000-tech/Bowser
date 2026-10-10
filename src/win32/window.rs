@@ -2050,6 +2050,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::Stop => App::stop(app),
         Command::Back => App::history(app, false),
         Command::Forward => App::history(app, true),
+        Command::ToggleBlocker => App::toggle_blocker(app),
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

@@ -22,6 +22,8 @@ pub enum Command {
     Forward,
     /// Ctrl+, opens Passwords & Passkeys.
     OpenPasswords,
+    /// Ctrl+Shift+B switches the ad/tracker blocker off or on for the current site.
+    ToggleBlocker,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -33,6 +35,7 @@ const VK_RIGHT: u32 = 0x27;
 const VK_1: u32 = 0x31;
 const VK_8: u32 = 0x38;
 const VK_9: u32 = 0x39;
+const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_L: u32 = 0x4C;
 const VK_R: u32 = 0x52;
@@ -72,6 +75,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
             Some(Command::Forward)
         }
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
+        (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         _ => None,
     }
 }
@@ -106,6 +110,7 @@ mod tests {
             (VK_RIGHT, false, false, true, Command::Forward),
             (VK_BROWSER_FORWARD, false, false, false, Command::Forward),
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
+            (VK_B, true, true, false, Command::ToggleBlocker),
         ];
         for index in 0..8 {
             table.push((

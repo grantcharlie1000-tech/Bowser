@@ -401,6 +401,8 @@ pub struct App {
     settings: crate::settings::Settings,
     session: Option<crate::session::SessionStore>,
     pending_restore: Option<crate::session::Session>,
+    /// Ad/tracker blocker shared with the engine; `None` for benchmark launches or when disabled.
+    blocker: Option<engine::BlockerHandle>,
 }
 
 struct AppTab {
@@ -426,6 +428,8 @@ struct AppTab {
     sleep_blocked_until: Option<Instant>,
     /// Last time a crashed render process was recovered by reloading this tab.
     last_crash_reload: Option<Instant>,
+    /// Requests the blocker stopped since this document started loading.
+    blocked: u32,
 }
 
 impl AppTab {
@@ -447,6 +451,7 @@ impl AppTab {
             sleep_check_started: None,
             sleep_blocked_until: None,
             last_crash_reload: None,
+            blocked: 0,
         }
     }
 }
@@ -469,6 +474,55 @@ impl App {
         Some(result)
     }
 
+    /// Title suffix describing the blocker for the active tab, e.g. ` [12 blocked]`.
+    fn blocker_suffix(state: &App) -> String {
+        let Some(blocker) = state.blocker.as_ref() else {
+            return String::new();
+        };
+        let active = state.tab_model.active();
+        let Some(tab) = state.tabs.iter().find(|tab| tab.id == active) else {
+            return String::new();
+        };
+        let host = tab.url.as_ref().and_then(|url| url.host_str()).unwrap_or("");
+        if blocker.borrow().site_allowed(host) {
+            " [blocker off for this site]".to_owned()
+        } else if tab.blocked > 0 {
+            format!(" [{} blocked]", tab.blocked)
+        } else {
+            String::new()
+        }
+    }
+
+    /// Ctrl+Shift+B: switches blocking off or on for the active tab's site, then reloads it.
+    pub fn toggle_blocker(app: &AppRef) {
+        let (blocker, host) = {
+            let state = app.borrow();
+            let host = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == state.tab_model.active())
+                .and_then(|tab| tab.url.as_ref())
+                .and_then(|url| url.host_str().map(str::to_owned));
+            (state.blocker.clone(), host)
+        };
+        let Some(blocker) = blocker else {
+            win32::show_error_message("The blocker is disabled (blocker_enabled=false in settings.txt).");
+            return;
+        };
+        let Some(host) = host else { return };
+        let result = blocker.borrow_mut().toggle_site(&host);
+        match result {
+            crate::blocker::SiteToggle::Allowed | crate::blocker::SiteToggle::Blocking => {
+                Self::sync_window_title(app);
+                Self::reload(app);
+            }
+            crate::blocker::SiteToggle::ConfiguredInSettings => win32::show_error_message(
+                "This site is exempted by blocker_allow in settings.txt. Edit that file to change it.",
+            ),
+            crate::blocker::SiteToggle::NoSite => {}
+        }
+    }
+
     fn sync_window_title(app: &AppRef) {
         let (hwnd, title) = {
             let state = app.borrow();
@@ -480,7 +534,7 @@ impl App {
                 .map(|tab| tab.title.trim())
                 .filter(|title| !title.is_empty())
                 .unwrap_or("Bowser");
-            (state.hwnd, title.to_owned())
+            (state.hwnd, format!("{title}{}", Self::blocker_suffix(&state)))
         };
         let mut title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
@@ -1074,6 +1128,11 @@ impl App {
             Some(app_data.join(crate::tab_groups::FILE_NAME)),
         );
         app.settings = crate::settings::Settings::load(&app_data.join(crate::settings::FILE_NAME));
+        if track_session && app.settings.blocker_enabled {
+            let mut state = crate::blocker::BlockerState::load(&app_data, &app.settings.blocker_allow);
+            state.enabled = true;
+            app.blocker = Some(Rc::new(RefCell::new(state)));
+        }
         if track_session {
             app.init_session(&app_data);
         }
@@ -1126,6 +1185,7 @@ impl App {
             settings: crate::settings::Settings::default(),
             session: None,
             pending_restore: None,
+            blocker: None,
         }
     }
 
@@ -1372,12 +1432,18 @@ impl App {
     fn start_engine_creation(app: &AppRef) {
         let weak = Rc::downgrade(app);
         let bounds = app.borrow_mut().latest_viewport_bounds();
-        let (hwnd, profile, tracking_prevention) = {
+        let (hwnd, profile, tracking_prevention, blocker) = {
             let s = app.borrow();
             (
                 s.hwnd,
                 s.user_data_dir.clone(),
-                s.benchmark_tracking_prevention,
+                // Production launches state the default (Balanced) explicitly; benchmark launches
+                // keep the engine default so recorded baselines stay comparable.
+                s.benchmark_tracking_prevention.or(s
+                    .benchmark_url
+                    .is_none()
+                    .then_some(TrackingPreventionLevel::Balanced)),
+                s.blocker.clone(),
             )
         };
         let events_app = Rc::downgrade(app);
@@ -1582,6 +1648,23 @@ impl App {
                     }
                 }))
             },
+            blocked_changed: {
+                let blocked_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, count| {
+                    if let Some(app) = blocked_app.upgrade() {
+                        let active = {
+                            let mut state = app.borrow_mut();
+                            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                                tab.blocked = count;
+                            }
+                            state.tab_model.active() == tab_id
+                        };
+                        if active {
+                            Self::sync_window_title(&app);
+                        }
+                    }
+                }))
+            },
             failed: Some(Rc::new(|error| {
                 win32::show_error_message(&format!("WebView2 error: {error}"))
             })),
@@ -1595,13 +1678,15 @@ impl App {
             },
         };
         let allowed_file = app.borrow().allowed_benchmark_file.clone();
-        let create_result = engine::WebView2Engine::begin_create_with_tracking_policy(
+        let extras = engine::EngineExtras { blocker };
+        let create_result = engine::WebView2Engine::begin_create_with_extras(
             hwnd,
             bounds,
             &profile,
             allowed_file,
             events,
             tracking_prevention,
+            extras,
             move |result| {
                 if let Some(app) = weak.upgrade() {
                     let mut state = app.borrow_mut();
@@ -2715,6 +2800,7 @@ mod tests {
             state.settings = crate::settings::Settings {
                 sleep_enabled: true,
                 sleep_after_secs,
+                ..Default::default()
             };
             state.engine = Some(Box::new(TabRecordingEngine {
                 calls: calls.clone(),
@@ -3667,6 +3753,7 @@ mod tests {
             },
             session: None,
             pending_restore: None,
+            blocker: None,
         }))
     }
 

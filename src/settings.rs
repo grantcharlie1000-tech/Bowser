@@ -7,6 +7,8 @@
 //! ```text
 //! sleep_enabled=true
 //! sleep_after_secs=300
+//! blocker_enabled=true
+//! blocker_allow=example.com,other.org
 //! ```
 
 use std::{fs::File, io::Read, path::Path};
@@ -19,12 +21,19 @@ pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
 pub const MIN_SLEEP_AFTER_SECS: u64 = 30;
 pub const MAX_SLEEP_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Most `blocker_allow` entries kept; the rest of a longer list is ignored.
+pub const MAX_BLOCKER_ALLOW: usize = 500;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Settings {
     /// Whether hidden tabs sleep (are discarded) after `sleep_after_secs` even without memory
     /// pressure. Under memory pressure the long-hidden tabs are discarded regardless.
     pub sleep_enabled: bool,
     pub sleep_after_secs: u64,
+    /// `blocker_enabled`: master switch for the ad/tracker blocker (default on).
+    pub blocker_enabled: bool,
+    /// `blocker_allow=example.com,other.org`: sites where the blocker never blocks.
+    pub blocker_allow: Vec<String>,
 }
 
 impl Default for Settings {
@@ -32,7 +41,17 @@ impl Default for Settings {
         Self {
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
+            blocker_enabled: true,
+            blocker_allow: Vec::new(),
         }
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -49,11 +68,25 @@ impl Settings {
             };
             let (key, value) = (key.trim(), value.trim());
             match key {
-                "sleep_enabled" => match value.to_ascii_lowercase().as_str() {
-                    "true" | "1" | "yes" | "on" => settings.sleep_enabled = true,
-                    "false" | "0" | "no" | "off" => settings.sleep_enabled = false,
-                    _ => {}
-                },
+                "sleep_enabled" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.sleep_enabled = on;
+                    }
+                }
+                "blocker_enabled" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.blocker_enabled = on;
+                    }
+                }
+                "blocker_allow" => {
+                    settings.blocker_allow = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|site| !site.is_empty())
+                        .take(MAX_BLOCKER_ALLOW)
+                        .map(str::to_owned)
+                        .collect();
+                }
                 "sleep_after_secs" => {
                     if let Ok(secs) = value.parse::<u64>() {
                         settings.sleep_after_secs =
@@ -105,7 +138,8 @@ mod tests {
             s,
             Settings {
                 sleep_enabled: false,
-                sleep_after_secs: 120
+                sleep_after_secs: 120,
+                ..Settings::default()
             }
         );
     }
@@ -140,5 +174,14 @@ mod tests {
         std::fs::write(&ok, "sleep_enabled=false\n").unwrap();
         assert!(!Settings::load(&ok).sleep_enabled);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blocker_settings_parse_and_default_on() {
+        assert!(Settings::default().blocker_enabled);
+        let s = Settings::parse("blocker_enabled=off\nblocker_allow= a.com , ,b.org\n");
+        assert!(!s.blocker_enabled);
+        assert_eq!(s.blocker_allow, vec!["a.com".to_owned(), "b.org".to_owned()]);
+        assert!(Settings::parse("blocker_enabled=maybe").blocker_enabled);
     }
 }

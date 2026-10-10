@@ -106,6 +106,9 @@ pub struct EngineEvents {
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// The blocker stopped a request on this tab; the argument is the running count for the
+    /// current page.
+    pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }
@@ -115,4 +118,14 @@ pub enum NavigationProgressEvent {
     ContentLoading(u64),
     DomContentLoaded(u64),
     Completed(u64),
+}
+
+/// The ad/tracker blocker shared between the UI (site toggle) and the WebView2 request hook.
+pub type BlockerHandle = std::rc::Rc<std::cell::RefCell<crate::blocker::BlockerState>>;
+
+/// Optional engine features. The default (nothing) is what benchmark launches use.
+#[derive(Clone, Default)]
+pub struct EngineExtras {
+    /// When set, subresource requests on every tab are checked against the blocker.
+    pub blocker: Option<BlockerHandle>,
 }
