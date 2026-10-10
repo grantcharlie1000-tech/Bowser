@@ -17,8 +17,8 @@ use webview2_com::{
     FaviconChangedEventHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    ProfileAddBrowserExtensionCompletedHandler, SourceChangedEventHandler,
-    TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
+    ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
+    SourceChangedEventHandler, TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
 };
 use windows::{
     Win32::{
@@ -197,6 +197,25 @@ fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
     web_url_from_source(&CoTaskMemPWSTR::from(source).to_string())
 }
 
+/// The blocker's first-party host for a document: the host of an http(s) source, or empty for
+/// anything else (about:, data:, file:, ...), so no stale host carries over.
+fn top_host_for_source(source: &str) -> String {
+    web_url_from_source(source)
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Re-reads the tab's committed document address into the blocker's first-party host.
+fn sync_top_host(webview: &ICoreWebView2, block: &TabBlockState) {
+    let mut source = PWSTR::null();
+    let host = if unsafe { webview.Source(&mut source) }.is_ok() {
+        top_host_for_source(&CoTaskMemPWSTR::from(source).to_string())
+    } else {
+        String::new()
+    };
+    *block.top_host.borrow_mut() = host;
+}
+
 fn read_favicon_stream(stream: IStream) -> Option<Vec<u8>> {
     const MAX_FAVICON_BYTES: usize = 1024 * 1024;
     let mut result = Vec::new();
@@ -292,6 +311,12 @@ struct EngineCore {
     extensions_loaded: HashMap<String, ICoreWebView2BrowserExtension>,
     /// Enabled extensions to add once `extension_profile` is available.
     startup_extensions: Vec<(String, PathBuf)>,
+    /// Every installed extension as (Bowser id, enabled), for reconciling the profile at startup.
+    known_extensions: Vec<(String, bool)>,
+    /// Where `extension_ids` is saved.
+    extension_ids_file: Option<PathBuf>,
+    /// Bowser id to WebView2 extension id, for extensions present in the profile.
+    extension_ids: HashMap<String, String>,
 }
 
 /// Completion for an extension operation. It runs once, on the UI thread.
@@ -555,16 +580,7 @@ fn capture_extension_profile(core: &Rc<RefCell<EngineCore>>, webview: &ICoreWebV
     match profile {
         Ok(profile) => {
             core.borrow_mut().extension_profile = Some(profile.clone());
-            for (id, folder) in pending {
-                let report = id.clone();
-                add_extension(
-                    core,
-                    &profile,
-                    id,
-                    &folder,
-                    Box::new(move |result| crate::extensions::record_load_result(&report, result)),
-                );
-            }
+            reconcile_profile(core, &profile, pending);
         }
         Err(_) => {
             for (id, _) in pending {
@@ -574,6 +590,259 @@ fn capture_extension_profile(core: &Rc<RefCell<EngineCore>>, webview: &ICoreWebV
                 );
             }
         }
+    }
+}
+
+/// What to do with an extension the profile holds, given Bowser's record for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileExtensionAction {
+    /// No record, or enabled without a folder to load from: unload it.
+    Remove,
+    /// Recorded as disabled: keep it in the profile, turned off.
+    Disable,
+    /// Recorded as enabled with its folder present: turn it on.
+    Enable,
+}
+
+/// `record` is Bowser's enabled flag, or None when Bowser has no record of the extension.
+/// `folder_ready` says whether an enabled extension's folder is present to load.
+fn reconcile_action(record: Option<bool>, folder_ready: bool) -> ProfileExtensionAction {
+    match record {
+        None => ProfileExtensionAction::Remove,
+        Some(false) => ProfileExtensionAction::Disable,
+        Some(true) if folder_ready => ProfileExtensionAction::Enable,
+        Some(true) => ProfileExtensionAction::Remove,
+    }
+}
+
+/// The profile's extensions as (WebView2 id, extension), or the reason they could not be listed.
+type ProfileList =
+    Box<dyn FnOnce(std::result::Result<Vec<(String, ICoreWebView2BrowserExtension)>, String>)>;
+
+fn list_profile_extensions(profile: &ICoreWebView2Profile7, done: ProfileList) {
+    let slot: Rc<RefCell<Option<ProfileList>>> = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler =
+        ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |status, list| {
+            let result = match (status, list) {
+                (Ok(()), Some(list)) => extensions_in(&list),
+                (Ok(()), None) => Ok(Vec::new()),
+                (Err(error), _) => Err(format!("{error}")),
+            };
+            let done = completion.borrow_mut().take();
+            if let Some(done) = done {
+                done(result);
+            }
+            Ok(())
+        }));
+    if let Err(error) = unsafe { profile.GetBrowserExtensions(&handler) } {
+        let done = slot.borrow_mut().take();
+        if let Some(done) = done {
+            done(Err(format!("{error}")));
+        }
+    }
+}
+
+fn extensions_in(
+    list: &ICoreWebView2BrowserExtensionList,
+) -> std::result::Result<Vec<(String, ICoreWebView2BrowserExtension)>, String> {
+    let mut count = 0u32;
+    unsafe { list.Count(&mut count) }.map_err(|error| format!("{error}"))?;
+    let mut found = Vec::new();
+    for index in 0..count {
+        let extension =
+            unsafe { list.GetValueAtIndex(index) }.map_err(|error| format!("{error}"))?;
+        if let Some(id) = extension_webview_id(&extension) {
+            found.push((id, extension));
+        }
+    }
+    Ok(found)
+}
+
+/// WebView2's id for a loaded extension. It is not Bowser's id.
+fn extension_webview_id(extension: &ICoreWebView2BrowserExtension) -> Option<String> {
+    let mut id = PWSTR::null();
+    unsafe { extension.Id(&mut id) }.ok()?;
+    let id = CoTaskMemPWSTR::from(id).to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+fn report_load(id: String) -> ExtensionDone {
+    Box::new(move |result| crate::extensions::record_load_result(&id, result))
+}
+
+/// Brings the profile in line with Bowser's records before enabled extensions are loaded. The
+/// profile can keep extensions across restarts, so an extension Bowser does not record is
+/// removed, a recorded but disabled one is disabled, and an enabled one already in the profile
+/// is reused rather than added a second time.
+fn reconcile_profile(
+    core: &Rc<RefCell<EngineCore>>,
+    profile: &ICoreWebView2Profile7,
+    pending: Vec<(String, PathBuf)>,
+) {
+    let weak = Rc::downgrade(core);
+    let profile_for_add = profile.clone();
+    list_profile_extensions(
+        profile,
+        Box::new(move |result| {
+            let Some(core) = weak.upgrade() else {
+                return;
+            };
+            let present = match result {
+                Ok(present) => present,
+                Err(_) => {
+                    // The profile cannot be read: add each enabled extension as a fresh load.
+                    for (id, folder) in pending {
+                        let report = report_load(id.clone());
+                        add_extension(&core, &profile_for_add, id, &folder, report);
+                    }
+                    return;
+                }
+            };
+            let (known, previous): (HashMap<String, bool>, HashMap<String, String>) = {
+                let state = core.borrow();
+                (
+                    state.known_extensions.iter().cloned().collect(),
+                    state.extension_ids.clone(),
+                )
+            };
+            let webview_to_bowser: HashMap<String, String> = previous
+                .iter()
+                .map(|(bowser, webview)| (webview.clone(), bowser.clone()))
+                .collect();
+            let folder_ready: HashSet<String> = pending.iter().map(|(id, _)| id.clone()).collect();
+            let mut mapping = HashMap::new();
+            let mut held = HashMap::new();
+            let mut unloads = Vec::new();
+            let mut disables = Vec::new();
+            let mut enables = Vec::new();
+            for (webview_id, extension) in present {
+                let Some(bowser) = webview_to_bowser.get(&webview_id).cloned() else {
+                    unloads.push((webview_id, extension));
+                    continue;
+                };
+                let record = known.get(&bowser).copied();
+                match reconcile_action(record, folder_ready.contains(&bowser)) {
+                    ProfileExtensionAction::Remove => unloads.push((bowser, extension)),
+                    ProfileExtensionAction::Disable => {
+                        mapping.insert(bowser.clone(), webview_id);
+                        held.insert(bowser.clone(), extension.clone());
+                        disables.push(extension);
+                    }
+                    ProfileExtensionAction::Enable => {
+                        mapping.insert(bowser.clone(), webview_id);
+                        held.insert(bowser.clone(), extension.clone());
+                        enables.push((bowser, extension));
+                    }
+                }
+            }
+            for (id, extension) in unloads {
+                remove_loaded(&core, id, &extension, Box::new(|_| {}));
+            }
+            for extension in disables {
+                set_loaded_enabled(&extension, false, Box::new(|_| {}));
+            }
+            let reused: HashSet<String> = enables.iter().map(|(id, _)| id.clone()).collect();
+            {
+                let mut state = core.borrow_mut();
+                state.extensions_loaded.extend(held);
+                state.extension_ids = mapping;
+                save_extension_ids(&state);
+            }
+            for (id, extension) in enables {
+                set_loaded_enabled(&extension, true, report_load(id));
+            }
+            for (id, folder) in pending {
+                if !reused.contains(&id) {
+                    let report = report_load(id.clone());
+                    add_extension(&core, &profile_for_add, id, &folder, report);
+                }
+            }
+        }),
+    );
+}
+
+/// Removes an extension that is in the profile but not loaded in this session. It is found by
+/// its WebView2 id, and the folder must not be deleted until this completes.
+fn remove_unloaded(
+    core: &Rc<RefCell<EngineCore>>,
+    profile: &ICoreWebView2Profile7,
+    id: String,
+    webview_id: String,
+    done: ExtensionDone,
+) {
+    let weak = Rc::downgrade(core);
+    list_profile_extensions(
+        profile,
+        Box::new(move |result| {
+            let found = match result {
+                Ok(list) => list
+                    .into_iter()
+                    .find(|(webview, _)| *webview == webview_id)
+                    .map(|(_, extension)| extension),
+                Err(reason) => {
+                    done(Err(reason));
+                    return;
+                }
+            };
+            let Some(core) = weak.upgrade() else {
+                done(Ok(()));
+                return;
+            };
+            match found {
+                Some(extension) => remove_loaded(&core, id, &extension, done),
+                None => {
+                    {
+                        let mut state = core.borrow_mut();
+                        state.extension_ids.remove(&id);
+                        save_extension_ids(&state);
+                    }
+                    done(Ok(()));
+                }
+            }
+        }),
+    );
+}
+
+/// Parses the id map: one `bowser-id<TAB>webview-id` line per extension. Bad lines are dropped.
+fn parse_extension_ids(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let (bowser, webview) = line.split_once('\t')?;
+            let valid = crate::extensions::is_valid_id(bowser)
+                && !webview.is_empty()
+                && webview.len() <= 128
+                && webview.bytes().all(|b| b.is_ascii_alphanumeric());
+            valid.then(|| (bowser.to_owned(), webview.to_owned()))
+        })
+        .collect()
+}
+
+fn format_extension_ids(ids: &HashMap<String, String>) -> String {
+    let mut lines: Vec<String> = ids
+        .iter()
+        .map(|(bowser, webview)| format!("{bowser}\t{webview}\n"))
+        .collect();
+    lines.sort();
+    lines.concat()
+}
+
+fn load_extension_ids(path: &Path) -> HashMap<String, String> {
+    std::fs::read_to_string(path)
+        .map(|text| parse_extension_ids(&text))
+        .unwrap_or_default()
+}
+
+/// Writes the id map through a temporary file so a crash cannot leave it half written.
+fn save_extension_ids(state: &EngineCore) {
+    let Some(path) = state.extension_ids_file.as_deref() else {
+        return;
+    };
+    let text = format_extension_ids(&state.extension_ids);
+    let temp = path.with_extension("tmp");
+    let written = std::fs::write(&temp, text).and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
 }
 
@@ -595,9 +864,12 @@ fn add_extension(
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
                     if let Some(core) = weak.upgrade() {
-                        core.borrow_mut()
-                            .extensions_loaded
-                            .insert(loaded_id, extension);
+                        let mut state = core.borrow_mut();
+                        if let Some(webview_id) = extension_webview_id(&extension) {
+                            state.extension_ids.insert(loaded_id.clone(), webview_id);
+                        }
+                        state.extensions_loaded.insert(loaded_id, extension);
+                        save_extension_ids(&state);
                     }
                     Ok(())
                 }
@@ -646,7 +918,10 @@ fn remove_loaded(
         let result = status.map_err(|error| format!("{error}"));
         if result.is_ok() {
             if let Some(core) = weak.upgrade() {
-                core.borrow_mut().extensions_loaded.remove(&id);
+                let mut state = core.borrow_mut();
+                state.extensions_loaded.remove(&id);
+                state.extension_ids.remove(&id);
+                save_extension_ids(&state);
             }
         }
         finish_slot(&completion, result);
@@ -736,6 +1011,12 @@ impl WebView2Engine {
         let blocker = extras.blocker;
         let browser_extensions = extras.browser_extensions;
         let startup_extensions = extras.startup_extensions;
+        let known_extensions = extras.known_extensions;
+        let extension_ids_file = extras.extension_ids_file;
+        let extension_ids = extension_ids_file
+            .as_deref()
+            .map(load_extension_ids)
+            .unwrap_or_default();
         let creation_log = events.policy_event.clone();
         if let Some(log) = creation_log.as_ref() {
             log("webview_profile_started");
@@ -850,6 +1131,9 @@ impl WebView2Engine {
                         extension_profile: None,
                         extensions_loaded: HashMap::new(),
                         startup_extensions: startup_extensions.clone(),
+                        known_extensions: known_extensions.clone(),
+                        extension_ids_file: extension_ids_file.clone(),
+                        extension_ids: extension_ids.clone(),
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -938,10 +1222,29 @@ impl EngineAdapter for WebView2Engine {
         id: &str,
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
-        let loaded = self.core.borrow().extensions_loaded.get(id).cloned();
-        match loaded {
-            None => done(Ok(())),
-            Some(extension) => remove_loaded(&self.core, id.to_owned(), &extension, done),
+        let (loaded, profile, webview_id) = {
+            let mut state = self.core.borrow_mut();
+            // An extension being removed must not be added or reconciled back in at startup.
+            state
+                .startup_extensions
+                .retain(|(pending, _)| pending != id);
+            state.known_extensions.retain(|(known, _)| known != id);
+            (
+                state.extensions_loaded.get(id).cloned(),
+                state.extension_profile.clone(),
+                state.extension_ids.get(id).cloned(),
+            )
+        };
+        if let Some(extension) = loaded {
+            remove_loaded(&self.core, id.to_owned(), &extension, done);
+            return;
+        }
+        // Not loaded in this session, but the profile may still hold it from an earlier one.
+        match (profile, webview_id) {
+            (Some(profile), Some(webview_id)) => {
+                remove_unloaded(&self.core, &profile, id.to_owned(), webview_id, done)
+            }
+            _ => done(Ok(())),
         }
     }
 
@@ -1100,25 +1403,32 @@ impl EngineAdapter for WebView2Engine {
             done(false);
             return;
         };
-        // A suspended page runs no script, so wake it for the check. A tab that stays awake
-        // is suspended again straight after the verdict.
+        // A suspended page runs no script, so wake it for the check. The tab is suspended again
+        // once the verdict is in, whatever it was, so the engine and the app agree on its state.
         if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
             let _ = unsafe { webview3.Resume() };
         }
+        let slot: Rc<RefCell<Option<Box<dyn FnOnce(bool)>>>> = Rc::new(RefCell::new(Some(done)));
+        let completion = slot.clone();
         let after = webview.clone();
         let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
-            let blocked = status.is_ok() && result.trim() == "true";
-            if blocked && let Ok(webview3) = after.cast::<ICoreWebView2_3>() {
-                let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
-                let _ = unsafe { webview3.TrySuspend(&handler) };
+            let blocked = sleep_probe_blocks(status.is_ok(), &result);
+            try_suspend(&after);
+            let done = completion.borrow_mut().take();
+            if let Some(done) = done {
+                done(blocked);
             }
-            done(blocked);
             Ok(())
         }));
         let script = CoTaskMemPWSTR::from(SLEEP_BLOCK_SCRIPT);
         if unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
-            // The handler (and `done`) are dropped unanswered; the app's pending-check expiry
-            // lets the tab be retried.
+            // The script never ran, so nothing is known about the page. Keep it awake and let
+            // the app back off, rather than sleeping a tab that may hold unsaved input.
+            try_suspend(&webview);
+            let done = slot.borrow_mut().take();
+            if let Some(done) = done {
+                done(true);
+            }
         }
     }
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
@@ -1172,15 +1482,18 @@ impl EngineAdapter for WebView2Engine {
 }
 
 /// Read-only check run in a tab that is about to sleep. It returns only `true`/`false`; no page
-/// text, field values or URLs leave the page. Top frame only.
-const SLEEP_BLOCK_SCRIPT: &str = r#"(function(){try{
-if(document.pictureInPictureElement)return true;
-var m=document.querySelectorAll('video,audio');
+/// text, field values or URLs leave the page. The top document and same-origin child frames are
+/// checked; a cross-origin frame cannot be read and counts as silent. A contenteditable counts
+/// only when it is focused and has text, because its unedited content cannot be told apart.
+const SLEEP_BLOCK_SCRIPT: &str = r#"(function(){
+function own(w){try{var d=w.document;
+if(d.pictureInPictureElement)return true;
+var m=d.querySelectorAll('video,audio');
 for(var i=0;i<m.length;i++){var v=m[i];
 if(!v.paused&&!v.ended&&v.readyState>2)return true;
 var s=v.srcObject;
 if(s&&s.getTracks&&s.getTracks().some(function(t){return t.readyState==='live'}))return true;}
-var f=document.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
+var f=d.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
 for(var j=0;j<f.length;j++){var e=f[j],n=e.tagName;
 if(n==='TEXTAREA'){if(e.value!==e.defaultValue)return true;continue;}
 if(n==='INPUT'){var t=(e.type||'text').toLowerCase();
@@ -1188,8 +1501,28 @@ if(t==='checkbox'||t==='radio'){if(e.checked!==e.defaultChecked)return true;}
 else if(t!=='hidden'&&t!=='button'&&t!=='submit'&&t!=='reset'&&t!=='image'&&t!=='file'){
 if(e.value!==e.defaultValue)return true;}
 continue;}
-if((e.textContent||'').trim().length>0)return true;}
-return false;}catch(x){return false;}})()"#;
+if(e===d.activeElement&&(e.textContent||'').trim().length>0)return true;}
+return false;}catch(x){return false;}}
+function walk(w,depth){if(own(w))return true;if(depth>8)return false;
+var n=0;try{n=w.frames.length}catch(x){return false}
+for(var k=0;k<n;k++){var c=false;try{c=walk(w.frames[k],depth+1)}catch(x){}
+if(c)return true;}
+return false;}
+try{return walk(window,0)}catch(x){return false}})()"#;
+
+/// Turns the sleep probe's result into the verdict. Only an explicit `false` lets the tab sleep;
+/// a failed script or any other answer keeps it awake.
+fn sleep_probe_blocks(script_ran: bool, result: &str) -> bool {
+    !(script_ran && result.trim() == "false")
+}
+
+/// Asks a tab to suspend again. Engines without the suspend API ignore the call.
+fn try_suspend(webview: &ICoreWebView2) {
+    if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
+        let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+        let _ = unsafe { webview3.TrySuspend(&handler) };
+    }
+}
 
 /// A failed query counts as silent, so an unreadable tab is not kept alive for that reason alone.
 fn webview_playing_audio(webview: &ICoreWebView2) -> bool {
@@ -1289,11 +1622,8 @@ impl EngineAdapter for WebView2Tab {
         Ok(())
     }
     fn suspend(&mut self) {
-        if let Some(webview) = self.webview.as_ref()
-            && let Ok(webview3) = webview.cast::<ICoreWebView2_3>()
-        {
-            let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
-            let _ = unsafe { webview3.TrySuspend(&handler) };
+        if let Some(webview) = self.webview.as_ref() {
+            try_suspend(webview);
         }
     }
     fn set_memory_usage_target(&mut self, target: MemoryUsageTarget) -> Result<MemoryTargetApply> {
@@ -1398,7 +1728,6 @@ unsafe fn configure_controller(
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let block_tab = Rc::new(TabBlockState::default());
-        let navigation_block_tab = block_tab.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         webview.add_NavigationStarting(
@@ -1421,11 +1750,8 @@ unsafe fn configure_controller(
                         .map(|url| navigation_start_policy(url, navigation_file_grant))
                     {
                         Some(NavigationStartPolicy::Allow) => {
-                            if let Some(host) = parsed.as_ref().and_then(Url::host_str) {
-                                let mut top = navigation_block_tab.top_host.borrow_mut();
-                                top.clear();
-                                top.push_str(host);
-                            }
+                            // The first-party host is set when the navigation commits (see
+                            // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;
                             if args.NavigationId(&mut navigation_id).is_ok() {
                                 if let Some(callback) = navigation_started.as_ref() {
@@ -1468,7 +1794,10 @@ unsafe fn configure_controller(
         let content_block_tab = block_tab.clone();
         let content_blocked = events.blocked_changed.clone();
         webview.add_ContentLoading(
-            &ContentLoadingEventHandler::create(Box::new(move |_sender, args| {
+            &ContentLoadingEventHandler::create(Box::new(move |sender, args| {
+                if let Some(sender) = sender.as_ref() {
+                    sync_top_host(sender, &content_block_tab);
+                }
                 if content_block_tab.count.replace(0) != 0
                     && let Some(callback) = content_blocked.as_ref()
                 {
@@ -1549,8 +1878,12 @@ unsafe fn configure_controller(
             &mut token,
         )?;
         let address_changed = events.address_changed.clone();
+        let source_block_tab = block_tab.clone();
         webview.add_SourceChanged(
             &SourceChangedEventHandler::create(Box::new(move |sender, _args| {
+                if let Some(sender) = sender.as_ref() {
+                    sync_top_host(sender, &source_block_tab);
+                }
                 if let (Some(sender), Some(callback)) = (sender, address_changed.as_ref()) {
                     if let Some(url) = current_web_url(&sender) {
                         callback(tab_id, url);
@@ -1739,10 +2072,25 @@ unsafe fn configure_controller(
                 })),
                 &mut token,
             )?;
-            // Subresource kinds only: never Document (main frames and iframes), never Stylesheet
-            // or Font, which could break page layout for little privacy gain.
-            for context in BLOCKABLE_CONTEXTS {
-                webview.AddWebResourceRequestedFilter(w!("*"), context)?;
+            // Subresource contexts only: never Document (main frames and iframes), never Stylesheet
+            // or Font, which could break page layout for little privacy gain. The context list
+            // is what excludes documents; the source-kind filter adds requests made by workers,
+            // which the older call does not see.
+            match webview.cast::<ICoreWebView2_22>() {
+                Ok(webview22) => {
+                    for context in BLOCKABLE_CONTEXTS {
+                        webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                            w!("*"),
+                            context,
+                            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                        )?;
+                    }
+                }
+                Err(_) => {
+                    for context in BLOCKABLE_CONTEXTS {
+                        webview.AddWebResourceRequestedFilter(w!("*"), context)?;
+                    }
+                }
             }
         }
 
@@ -2629,5 +2977,75 @@ mod tests {
             forward(0x25, false, false, true).unwrap().modifier_bits(),
             4
         );
+    }
+
+    #[test]
+    fn sleep_probe_only_sleeps_on_explicit_false() {
+        assert!(!sleep_probe_blocks(true, "false"));
+        assert!(!sleep_probe_blocks(true, " false\n"));
+        assert!(sleep_probe_blocks(true, "true"));
+        assert!(sleep_probe_blocks(true, ""));
+        assert!(sleep_probe_blocks(true, "null"));
+        // A script that failed to run says nothing about the page, so the tab stays awake.
+        assert!(sleep_probe_blocks(false, "false"));
+    }
+
+    #[test]
+    fn top_host_is_set_only_for_web_documents() {
+        assert_eq!(
+            top_host_for_source("https://example.com/a?b=1"),
+            "example.com"
+        );
+        assert_eq!(
+            top_host_for_source("http://news.example.org/"),
+            "news.example.org"
+        );
+        assert_eq!(top_host_for_source("about:blank"), "");
+        assert_eq!(top_host_for_source("data:text/html,hi"), "");
+        assert_eq!(top_host_for_source("file:///C:/x.html"), "");
+        assert_eq!(top_host_for_source("ms-browser-extension://x/"), "");
+        assert_eq!(top_host_for_source("not a url"), "");
+    }
+
+    #[test]
+    fn profile_extensions_follow_bowser_records() {
+        assert_eq!(
+            reconcile_action(None, false),
+            ProfileExtensionAction::Remove
+        );
+        assert_eq!(reconcile_action(None, true), ProfileExtensionAction::Remove);
+        assert_eq!(
+            reconcile_action(Some(false), false),
+            ProfileExtensionAction::Disable
+        );
+        assert_eq!(
+            reconcile_action(Some(false), true),
+            ProfileExtensionAction::Disable
+        );
+        assert_eq!(
+            reconcile_action(Some(true), true),
+            ProfileExtensionAction::Enable
+        );
+        // Enabled in the records but its folder is gone: it cannot run, so unload it.
+        assert_eq!(
+            reconcile_action(Some(true), false),
+            ProfileExtensionAction::Remove
+        );
+    }
+
+    #[test]
+    fn extension_id_file_round_trips_and_drops_bad_lines() {
+        let mut ids = HashMap::new();
+        ids.insert(
+            "ext-0123456789abcdef".to_owned(),
+            "ahbcdefghijklmnopabcdefghijklmnop".to_owned(),
+        );
+        ids.insert("ext-00000000000000ff".to_owned(), "bnopqrs".to_owned());
+        let text = format_extension_ids(&ids);
+        assert_eq!(parse_extension_ids(&text), ids);
+
+        let bad =
+            "../escape\tabc\next-0123456789abcdef\t\next-0123456789abcdef\tab-cd\nno tab here\n";
+        assert!(parse_extension_ids(bad).is_empty());
     }
 }

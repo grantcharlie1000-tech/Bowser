@@ -155,4 +155,10 @@ pub struct EngineExtras {
     pub browser_extensions: bool,
     /// Enabled unpacked extensions, as (id, folder), added once the first page is ready.
     pub startup_extensions: Vec<(String, std::path::PathBuf)>,
+    /// Every installed extension as (id, enabled). Once the profile is ready, extensions the
+    /// profile still holds that are not enabled here are removed or disabled.
+    pub known_extensions: Vec<(String, bool)>,
+    /// File that maps Bowser extension ids to WebView2's ids, which differ. Without it a restart
+    /// cannot tell which profile extension is which.
+    pub extension_ids_file: Option<std::path::PathBuf>,
 }

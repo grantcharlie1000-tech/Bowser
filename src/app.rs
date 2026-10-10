@@ -378,6 +378,12 @@ pub struct App {
     pending_tab: Option<TabId>,
     pub initializing: bool,
     pub closing: bool,
+    /// When the window title last changed for blocked-request counts.
+    title_synced_at: Option<Instant>,
+    /// A blocked-count title change is waiting for the throttle timer.
+    title_dirty: bool,
+    /// The throttle timer is set.
+    title_timer_armed: bool,
     pub loop_shutdown_pending: bool,
     pub user_data_dir: PathBuf,
     pub benchmark_url: Option<url::Url>,
@@ -458,6 +464,22 @@ impl AppTab {
 
 pub type AppRef = Rc<RefCell<App>>;
 
+/// Window timer for the throttled blocked-count title. Timer ids 1 to 4 are taken in win32/mod.rs.
+pub(crate) const BLOCKED_TITLE_TIMER: usize = 5;
+/// Shortest gap between blocked-count title refreshes (about four a second).
+const TITLE_SYNC_INTERVAL: Duration = Duration::from_millis(250);
+/// Name of the file mapping Bowser extension ids to WebView2 ids, beside the records file.
+const EXTENSION_IDS_FILE_NAME: &str = "extension_ids.txt";
+
+/// How long until the next blocked-count title refresh, given the time since the last one.
+/// None means refresh now.
+fn title_wait(since_last: Option<Duration>) -> Option<Duration> {
+    match since_last {
+        Some(elapsed) if elapsed < TITLE_SYNC_INTERVAL => Some(TITLE_SYNC_INTERVAL - elapsed),
+        _ => None,
+    }
+}
+
 /// Extensions to load for a window. Benchmark launches and custom data folders load none, and a
 /// profile without installed extensions gets a plan that costs nothing at engine creation.
 fn extension_startup_plan(
@@ -474,6 +496,30 @@ fn extension_startup_plan(
         return crate::extensions::StartupPlan::default();
     }
     crate::extensions::startup_plan(&profile.extensions_dir(), &profile.extensions_file())
+}
+
+/// Every installed extension as (id, enabled), and the file mapping them to WebView2 ids. None
+/// when this window does not use the profile's extensions, or the records cannot be read.
+fn extension_records(
+    app: &AppRef,
+    user_data_dir: &std::path::Path,
+) -> Option<(Vec<(String, bool)>, std::path::PathBuf)> {
+    if app.borrow().benchmark_url.is_some() {
+        return None;
+    }
+    let profile = crate::profile::active().ok()?;
+    if profile.webview2_dir() != user_data_dir {
+        return None;
+    }
+    let records = crate::extensions::read_records(&profile.extensions_file()).ok()?;
+    let known = records
+        .into_iter()
+        .map(|record| (record.id, record.enabled))
+        .collect();
+    let ids_file = profile
+        .extensions_file()
+        .with_file_name(EXTENSION_IDS_FILE_NAME);
+    Some((known, ids_file))
 }
 
 impl App {
@@ -589,6 +635,56 @@ impl App {
             ),
             crate::blocker::SiteToggle::NoSite => {}
         }
+    }
+
+    /// Refreshes the title for a blocked-count change. Bursts of blocked requests would otherwise
+    /// rewrite the title for every request, so the refresh is at most one per
+    /// `TITLE_SYNC_INTERVAL`: at once when the last one is old, else by a one-shot timer.
+    fn schedule_blocked_title(app: &AppRef) {
+        let (hwnd, wait) = {
+            let mut state = app.borrow_mut();
+            state.title_dirty = true;
+            if state.title_timer_armed {
+                return;
+            }
+            let wait = title_wait(state.title_synced_at.map(|at| at.elapsed()));
+            if wait.is_some() {
+                state.title_timer_armed = true;
+            }
+            (state.hwnd, wait)
+        };
+        match wait {
+            None => Self::flush_blocked_title(app),
+            Some(wait) => unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                    Some(hwnd),
+                    BLOCKED_TITLE_TIMER,
+                    (wait.as_millis() as u32).max(1),
+                    None,
+                );
+            },
+        }
+    }
+
+    /// Runs when the throttle timer fires. It refreshes the title only if a change is waiting.
+    pub(crate) fn blocked_title_timer(app: &AppRef) {
+        let dirty = {
+            let mut state = app.borrow_mut();
+            state.title_timer_armed = false;
+            state.title_dirty
+        };
+        if dirty {
+            Self::flush_blocked_title(app);
+        }
+    }
+
+    fn flush_blocked_title(app: &AppRef) {
+        {
+            let mut state = app.borrow_mut();
+            state.title_dirty = false;
+            state.title_synced_at = Some(Instant::now());
+        }
+        Self::sync_window_title(app);
     }
 
     fn sync_window_title(app: &AppRef) {
@@ -1247,6 +1343,9 @@ impl App {
             pending_tab: None,
             initializing: false,
             closing: false,
+            title_synced_at: None,
+            title_dirty: false,
+            title_timer_armed: false,
             loop_shutdown_pending: false,
             user_data_dir,
             allowed_benchmark_file,
@@ -1752,7 +1851,7 @@ impl App {
                             state.tab_model.active() == tab_id
                         };
                         if active {
-                            Self::sync_window_title(&app);
+                            Self::schedule_blocked_title(&app);
                         }
                     }
                 }))
@@ -1771,10 +1870,19 @@ impl App {
         };
         let allowed_file = app.borrow().allowed_benchmark_file.clone();
         let plan = extension_startup_plan(app, &profile);
+        let records = extension_records(app, &profile);
+        // The id file exists once any extension has loaded into this profile. Its presence means
+        // the profile may still hold extensions, so they are reconciled even when none is enabled.
+        let profile_may_hold_extensions = records
+            .as_ref()
+            .is_some_and(|(_, ids_file)| ids_file.exists());
+        let (known_extensions, extension_ids_file) = records.unzip();
         let extras = engine::EngineExtras {
             blocker,
-            browser_extensions: plan.installed,
+            browser_extensions: plan.installed || profile_may_hold_extensions,
             startup_extensions: plan.enabled,
+            known_extensions: known_extensions.unwrap_or_default(),
+            extension_ids_file,
         };
         let create_result = engine::WebView2Engine::begin_create_with_extras(
             hwnd,
@@ -3835,6 +3943,9 @@ mod tests {
             pending_tab: Some(TabId(0)),
             initializing: true,
             closing: false,
+            title_synced_at: None,
+            title_dirty: false,
+            title_timer_armed: false,
             loop_shutdown_pending: false,
             user_data_dir: PathBuf::new(),
             benchmark_url: None,
@@ -4460,5 +4571,17 @@ mod tests {
         assert_eq!(two.input_width + two.input_x * 2, 500);
         assert_eq!(one.viewport_width, two.viewport_width);
         assert_eq!(one.viewport_y * 2, two.viewport_y);
+    }
+
+    #[test]
+    fn blocked_title_refreshes_at_most_every_interval() {
+        assert_eq!(title_wait(None), None);
+        assert_eq!(title_wait(Some(Duration::from_millis(250))), None);
+        assert_eq!(title_wait(Some(Duration::from_millis(900))), None);
+        assert_eq!(
+            title_wait(Some(Duration::from_millis(100))),
+            Some(Duration::from_millis(150))
+        );
+        assert_eq!(title_wait(Some(Duration::ZERO)), Some(TITLE_SYNC_INTERVAL));
     }
 }

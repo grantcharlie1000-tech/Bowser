@@ -1367,6 +1367,13 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == crate::app::BLOCKED_TITLE_TIMER => {
+                let _ = KillTimer(Some(hwnd), crate::app::BLOCKED_TITLE_TIMER);
+                if let Some(app) = app {
+                    App::blocked_title_timer(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_ANIMATION_TIMER => {
                 let running =
                     with_chrome(hwnd, |s| s.animate(hwnd, Instant::now())).unwrap_or(false);
