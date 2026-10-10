@@ -60,6 +60,13 @@ pub trait EngineAdapter {
     fn tab_playing_audio(&self, _tab: crate::tabs::TabId) -> bool {
         false
     }
+    /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
+    /// form input, playing video, picture-in-picture or a live camera/microphone stream.
+    /// `done(true)` means "keep it awake". It may run later (after the page answers) but never
+    /// reports page data, only the verdict. Engines that cannot ask report `false` at once.
+    fn check_sleep_blocked(&mut self, _tab: crate::tabs::TabId, done: Box<dyn FnOnce(bool)>) {
+        done(false);
+    }
     /// Suspends controllers that have been hidden for at least the supplied duration.
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
         Ok(())
@@ -97,6 +104,8 @@ pub struct EngineEvents {
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
     pub favicon_changed: Option<FaviconChangedCallback>,
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
+    pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }

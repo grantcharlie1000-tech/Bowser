@@ -122,6 +122,16 @@ const MEMORY_PRESSURE_LOAD_PERCENT: u32 = 85;
 const MEMORY_PRESSURE_FREE_BYTES: u64 = 512 * 1024 * 1024;
 /// Cadence for discarding tabs while the window is minimised or in the background.
 const DISCARD_TICK_MS: u32 = 10_000;
+/// A sleep-eligible tab that was kept awake (media, unsaved input) is looked at again this often.
+const SLEEP_RECHECK_MS: u32 = 30_000;
+/// Shortest wait the sleep timer will arm for, so it never spins.
+const SLEEP_MIN_WAIT_MS: u32 = 1_000;
+/// A page that never answers the sleep check is retried after this long.
+const SLEEP_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
+/// After a check keeps a tab awake, the page is not asked again for this long.
+const SLEEP_BLOCKED_BACKOFF: Duration = Duration::from_secs(120);
+/// A tab whose render process crashed again within this window is reported, not reloaded.
+const CRASH_RELOAD_MIN_GAP: Duration = Duration::from_secs(10);
 
 /// Either signal is enough: Windows' load figure lags behind a sudden drop in free memory.
 pub fn memory_pressure(load_percent: u32, available_phys_bytes: u64) -> bool {
@@ -388,6 +398,9 @@ pub struct App {
     tab_model: crate::tabs::TabList,
     group_preferences: crate::tab_groups::GroupPreferences,
     group_preferences_path: Option<PathBuf>,
+    settings: crate::settings::Settings,
+    session: Option<crate::session::SessionStore>,
+    pending_restore: Option<crate::session::Session>,
 }
 
 struct AppTab {
@@ -406,6 +419,13 @@ struct AppTab {
     /// The WebView2 controller was closed under memory pressure. The URL, title and favicon stay,
     /// and the next selection navigates to the URL again.
     discarded: bool,
+    /// A page-side "is it safe to sleep" check is running (answered or timed out after
+    /// [`SLEEP_CHECK_TIMEOUT`]).
+    sleep_check_started: Option<Instant>,
+    /// The last check found unsaved input or media; do not ask again before this.
+    sleep_blocked_until: Option<Instant>,
+    /// Last time a crashed render process was recovered by reloading this tab.
+    last_crash_reload: Option<Instant>,
 }
 
 impl AppTab {
@@ -424,6 +444,9 @@ impl AppTab {
             hidden_since: None,
             suspended: false,
             discarded: false,
+            sleep_check_started: None,
+            sleep_blocked_until: None,
+            last_crash_reload: None,
         }
     }
 }
@@ -1041,13 +1064,20 @@ impl App {
             win32::show_runtime_error(&error);
             return Ok(());
         }
-        win32::run(Self::from_launch_options(
+        // Benchmarks and custom profiles never touch the user's session files.
+        let track_session = options.benchmark_url.is_none() && options.user_data_dir.is_none();
+        let mut app = Self::from_launch_options(
             options,
             user_data_dir,
             provider,
             log,
             Some(app_data.join(crate::tab_groups::FILE_NAME)),
-        ))
+        );
+        app.settings = crate::settings::Settings::load(&app_data.join(crate::settings::FILE_NAME));
+        if track_session {
+            app.init_session(&app_data);
+        }
+        win32::run(app)
     }
 
     fn from_launch_options(
@@ -1093,6 +1123,170 @@ impl App {
                 .map(crate::tab_groups::GroupPreferences::load)
                 .unwrap_or_default(),
             group_preferences_path,
+            settings: crate::settings::Settings::default(),
+            session: None,
+            pending_restore: None,
+        }
+    }
+
+    /// Opens the crash-recovery state and, after a crash, asks whether to restore.
+    fn init_session(&mut self, dir: &std::path::Path) {
+        let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
+            return; // another Bowser is running; leave its files alone
+        };
+        let accepted = offer.filter(|offer| {
+            win32::ask_yes_no(&format!(
+                "Bowser did not close properly last time. Restore your {} open tab{}?",
+                offer.session.tabs.len(),
+                if offer.session.tabs.len() == 1 { "" } else { "s" }
+            ))
+        });
+        store.begin_run(accepted.as_ref());
+        self.pending_restore = accepted.map(|offer| offer.session);
+        self.session = Some(store);
+    }
+
+    /// Rebuilds the tab strip from an accepted crash snapshot. Only the active tab loads now;
+    /// the others are created asleep and load when selected. A bad entry never aborts the rest.
+    pub fn restore_pending_session(app: &AppRef) {
+        let Some(session) = app.borrow_mut().pending_restore.take() else {
+            return;
+        };
+        let mut active_url = None;
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let mut first = true;
+            let mut active_id = None;
+            for (index, saved) in session.tabs.iter().enumerate() {
+                let Ok(url) = url::Url::parse(&saved.url) else {
+                    continue;
+                };
+                let id = if first {
+                    first = false;
+                    state.tab_model.active()
+                } else {
+                    let id = state.tab_model.add(false);
+                    state.tabs.push(AppTab::empty(id));
+                    id
+                };
+                state.tab_model.set_url(id, Some(url.as_str()));
+                state.tab_model.set_title(id, &saved.title);
+                if saved.pinned {
+                    state.tab_model.set_pinned(id, true);
+                }
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+                    tab.url = Some(url.clone());
+                    tab.title.clone_from(&saved.title);
+                    tab.discarded = true;
+                }
+                // The saved active tab wins; otherwise the first tab that restored.
+                if index == session.active || active_id.is_none() {
+                    active_id = Some(id);
+                    active_url = Some(url);
+                }
+            }
+            if let Some(id) = active_id {
+                state.tab_model.select(id);
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+                    tab.discarded = false;
+                }
+            }
+            state.hwnd
+        };
+        let Some(url) = active_url else {
+            return;
+        };
+        let _ = app.borrow().log.record("session_restored");
+        win32::set_input_text(app.borrow().edit, url.as_str());
+        Self::post_tab_changed(hwnd, app.borrow().tab_model.active());
+        Self::sync_window_title(app);
+        Self::submit_url(app, url, None);
+    }
+
+    /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
+    /// timer; further changes before it fires are coalesced.
+    pub fn session_changed(app: &AppRef) -> bool {
+        let mut state = app.borrow_mut();
+        let closing = state.closing;
+        match state.session.as_mut() {
+            Some(store) if !store.save_pending && !closing => {
+                store.save_pending = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn session_snapshot(app: &AppRef) -> Option<crate::session::Session> {
+        let state = app.borrow();
+        let active = state.tab_model.index_of(state.tab_model.active())?;
+        crate::session::Session::from_tabs(
+            state.tab_model.iter().map(|model| {
+                let tab = state.tabs.iter().find(|tab| tab.id == model.id);
+                (
+                    tab.and_then(|tab| tab.url.as_ref()),
+                    tab.map_or("", |tab| tab.title.as_str()),
+                    model.pinned,
+                )
+            }),
+            active,
+        )
+    }
+
+    /// The debounce timer fired: write the snapshot if anything changed.
+    pub fn session_save_now(app: &AppRef) {
+        let snapshot = Self::session_snapshot(app);
+        let mut state = app.borrow_mut();
+        let Some(store) = state.session.as_mut() else {
+            return;
+        };
+        store.save_pending = false;
+        if let Some(snapshot) = snapshot {
+            let _ = store.save(&snapshot);
+        }
+    }
+
+    /// Clean exit: final snapshot and removal of the running marker.
+    pub fn session_finish(app: &AppRef) {
+        let snapshot = Self::session_snapshot(app);
+        let store = app.borrow_mut().session.take();
+        if let Some(mut store) = store {
+            store.finish(snapshot.as_ref());
+        }
+    }
+
+    /// A tab's render process crashed. The active tab reloads; a hidden tab is marked so that it
+    /// navigates afresh when selected. A repeat within [`CRASH_RELOAD_MIN_GAP`] is reported
+    /// instead of reloaded again, so a page that crashes on load cannot loop.
+    pub fn tab_render_failed(app: &AppRef, id: TabId) {
+        let now = Instant::now();
+        let active = {
+            let mut state = app.borrow_mut();
+            if state.closing {
+                return;
+            }
+            let active = state.tab_model.active() == id;
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            if tab
+                .last_crash_reload
+                .is_some_and(|last| now.saturating_duration_since(last) < CRASH_RELOAD_MIN_GAP)
+            {
+                drop(state);
+                win32::show_error_message("WebView2 error: the page process crashed again.");
+                return;
+            }
+            tab.last_crash_reload = Some(now);
+            tab.page_usable = false;
+            if !active {
+                tab.discarded = true;
+            }
+            active
+        };
+        let _ = app.borrow().log.record("tab_render_process_failed");
+        if active {
+            Self::reload(app);
         }
     }
 
@@ -1377,6 +1571,14 @@ impl App {
                             App::new_tab(&app);
                             App::submit_url(&app, url, None);
                         }
+                    }
+                }))
+            },
+            render_process_failed: {
+                let crash_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id| {
+                    if let Some(app) = crash_app.upgrade() {
+                        App::tab_render_failed(&app, tab_id);
                     }
                 }))
             },
@@ -1759,19 +1961,66 @@ impl App {
         under_pressure: impl FnOnce() -> bool,
     ) -> IdleTimerAction {
         let timer = Self::idle_and_suspend_timer(app, idle);
+        // Tab sleep: wake at the moment the earliest hidden tab turns sleep-eligible.
+        let timer = match Self::sleep_wait_ms(app) {
+            Some(wait) => Self::merge_timer(timer, wait),
+            None => timer,
+        };
         if app.borrow().minimized {
             if !Self::has_minimized_discard_candidate(app) || !under_pressure() {
                 return timer;
             }
-            return IdleTimerAction::Arm(DISCARD_TICK_MS);
+            return Self::merge_timer(timer, DISCARD_TICK_MS);
         }
         if Self::next_discard_tab(app, under_pressure).is_none() {
             return timer;
         }
+        Self::merge_timer(timer, DISCARD_TICK_MS)
+    }
+
+    fn merge_timer(timer: IdleTimerAction, wait: u32) -> IdleTimerAction {
         match timer {
-            IdleTimerAction::Kill => IdleTimerAction::Arm(DISCARD_TICK_MS),
-            IdleTimerAction::Arm(wait) => IdleTimerAction::Arm(wait.min(DISCARD_TICK_MS)),
+            IdleTimerAction::Kill => IdleTimerAction::Arm(wait),
+            IdleTimerAction::Arm(current) => IdleTimerAction::Arm(current.min(wait)),
         }
+    }
+
+    /// Milliseconds until the earliest hidden, unpinned web tab reaches the sleep delay, or
+    /// [`SLEEP_RECHECK_MS`] if one is already past it (kept awake by media or unsaved input).
+    /// `None` when tab sleep is off or no tab could ever sleep. This is the only timer tab sleep
+    /// adds; there is no polling of its own.
+    fn sleep_wait_ms(app: &AppRef) -> Option<u32> {
+        let state = app.borrow();
+        if !state.settings.sleep_enabled {
+            return None;
+        }
+        let after = Duration::from_secs(state.settings.sleep_after_secs);
+        let now = Instant::now();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.id != active
+                    && tab.controller_created
+                    && !tab.discarded
+                    && tab
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+                    && !state.tab_model.get(tab.id).is_some_and(|model| model.pinned)
+            })
+            .filter_map(|tab| tab.hidden_since)
+            .map(|since| {
+                let elapsed = now.saturating_duration_since(since);
+                if elapsed >= after {
+                    SLEEP_RECHECK_MS
+                } else {
+                    ((after - elapsed).as_millis().min(u32::MAX as u128) as u32)
+                        .max(SLEEP_MIN_WAIT_MS)
+                }
+            })
+            .min()
     }
 
     /// A minimised window needs periodic checks before its hidden tabs reach the suspension age.
@@ -1843,28 +2092,115 @@ impl App {
     /// one tab goes per tick.
     fn discard_one_hidden_tab_if(app: &AppRef, under_pressure: impl FnOnce() -> bool) {
         if let Some(id) = Self::next_discard_tab(app, under_pressure) {
+            Self::sleep_tab_if_safe(app, id);
+        }
+    }
+
+    /// Asks the page whether sleeping could lose unsaved input or stop media, then sleeps the
+    /// tab if not. Engines that answer at once sleep it before this returns.
+    fn sleep_tab_if_safe(app: &AppRef, id: TabId) {
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.sleep_check_started = Some(Instant::now());
+        }
+        let verdict = Rc::new(std::cell::Cell::new(None));
+        let answered_inline = Rc::new(std::cell::Cell::new(true));
+        let weak = Rc::downgrade(app);
+        let done: Box<dyn FnOnce(bool)> = {
+            let verdict = verdict.clone();
+            let answered_inline = answered_inline.clone();
+            Box::new(move |blocked| {
+                if answered_inline.get() {
+                    verdict.set(Some(blocked));
+                } else if let Some(app) = weak.upgrade() {
+                    Self::finish_sleep_check(&app, id, blocked);
+                }
+            })
+        };
+        let asked = Self::with_engine(app, move |engine| {
+            engine.check_sleep_blocked(id, done);
+            Ok(())
+        });
+        answered_inline.set(false);
+        match (asked, verdict.take()) {
+            (Some(_), Some(blocked)) => Self::finish_sleep_check(app, id, blocked),
+            (Some(_), None) => {} // the page will answer later
+            (None, _) => {
+                if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+                    tab.sleep_check_started = None;
+                }
+            }
+        }
+    }
+
+    fn finish_sleep_check(app: &AppRef, id: TabId, blocked: bool) {
+        {
+            let mut state = app.borrow_mut();
+            if state.closing {
+                return;
+            }
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            tab.sleep_check_started = None;
+            if blocked {
+                tab.sleep_blocked_until = Some(Instant::now() + SLEEP_BLOCKED_BACKOFF);
+            }
+        }
+        if blocked {
+            let _ = app.borrow().log.record("tab_sleep_blocked");
+            return;
+        }
+        // The answer may be late: only sleep a tab that is still hidden and still eligible.
+        let still_eligible = Self::discard_candidate(app, id).is_some_and(|candidate| {
+            tab_discard_eligible(candidate, || Self::tab_playing_audio(app, id))
+        }) && app
+            .borrow()
+            .tabs
+            .iter()
+            .any(|tab| tab.id == id && tab.controller_created && !tab.discarded);
+        if still_eligible {
             Self::discard_tab(app, id);
         }
     }
 
-    /// The tab that the next idle tick would discard. `under_pressure` is evaluated only when a
-    /// suspended hidden tab exists.
+    /// The tab that the next idle tick would discard: a hidden suspended tab that is either past
+    /// the user's sleep delay or hidden while memory is under pressure. `under_pressure` is
+    /// evaluated only when a suspended hidden tab exists.
     fn next_discard_tab(app: &AppRef, under_pressure: impl FnOnce() -> bool) -> Option<TabId> {
-        let mut hidden: Vec<(Instant, TabId)> = {
+        let now = Instant::now();
+        let (mut hidden, sleep_after): (Vec<(Instant, TabId)>, Option<Duration>) = {
             let state = app.borrow();
             let active = state.tab_model.active();
-            state
+            let sleep_after = state
+                .settings
+                .sleep_enabled
+                .then(|| Duration::from_secs(state.settings.sleep_after_secs));
+            let hidden = state
                 .tabs
                 .iter()
-                .filter(|tab| tab.id != active && tab.controller_created && tab.suspended)
+                .filter(|tab| {
+                    tab.id != active && tab.controller_created && tab.suspended && !tab.discarded
+                })
+                .filter(|tab| {
+                    tab.sleep_blocked_until.is_none_or(|until| now >= until)
+                        && tab.sleep_check_started.is_none_or(|started| {
+                            now.saturating_duration_since(started) >= SLEEP_CHECK_TIMEOUT
+                        })
+                })
                 .filter_map(|tab| tab.hidden_since.map(|since| (since, tab.id)))
-                .collect()
+                .collect();
+            (hidden, sleep_after)
         };
-        if hidden.is_empty() || !under_pressure() {
+        if hidden.is_empty() {
             return None;
         }
+        let pressure = under_pressure();
         hidden.sort_by_key(|(since, _)| *since);
-        for (_, id) in hidden {
+        for (since, id) in hidden {
+            let due = sleep_after.is_some_and(|after| now.saturating_duration_since(since) >= after);
+            if !pressure && !due {
+                continue;
+            }
             let Some(candidate) = Self::discard_candidate(app, id) else {
                 continue;
             };
@@ -2361,6 +2697,158 @@ mod tests {
             "the active tab is never discarded"
         );
         assert_eq!(App::tab_count(&app), 3);
+    }
+
+    fn sleeping_app(sleep_after_secs: u64) -> (AppRef, TabId, TabId, Rc<RefCell<Vec<String>>>) {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let hidden = App::active_tab_id(&app);
+        let active = App::new_tab(&app);
+        hidden_web_tab(
+            &app,
+            hidden,
+            "https://hidden.example.test/",
+            Instant::now() - Duration::from_secs(400),
+        );
+        {
+            let mut state = app.borrow_mut();
+            state.settings = crate::settings::Settings {
+                sleep_enabled: true,
+                sleep_after_secs,
+            };
+            state.engine = Some(Box::new(TabRecordingEngine {
+                calls: calls.clone(),
+                playing: Vec::new(),
+            }));
+        }
+        (app, hidden, active, calls)
+    }
+
+    #[test]
+    fn hidden_tab_sleeps_after_the_configured_delay_without_memory_pressure() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
+        assert!(app.borrow().tabs.iter().any(|t| t.id == hidden && t.discarded));
+
+        let (app, _hidden, _active, calls) = sleeping_app(3600);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "not hidden long enough");
+
+        let (app, _hidden, _active, calls) = sleeping_app(300);
+        app.borrow_mut().settings.sleep_enabled = false;
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "sleep disabled");
+    }
+
+    #[test]
+    fn sleep_timer_wakes_for_the_earliest_hidden_tab_only_when_enabled() {
+        let (app, hidden, _active, _calls) = sleeping_app(500);
+        let wait = App::sleep_wait_ms(&app).unwrap();
+        assert!((90_000..=100_000).contains(&wait), "{wait}");
+        app.borrow_mut().settings.sleep_enabled = false;
+        assert_eq!(App::sleep_wait_ms(&app), None);
+        app.borrow_mut().settings.sleep_enabled = true;
+        app.borrow_mut().tab_model.set_pinned(hidden, true);
+        assert_eq!(App::sleep_wait_ms(&app), None, "pinned tabs never sleep");
+    }
+
+    #[test]
+    fn page_with_unsaved_input_or_media_keeps_the_tab_awake_and_is_not_asked_again_soon() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Inline(true));
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty());
+        assert!(app.borrow().tabs.iter().any(|t| t.id == hidden && !t.discarded));
+        let asked = SLEEP_CHECKS_ASKED.with(|asked| asked.get());
+        assert_eq!(asked, 1);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert_eq!(SLEEP_CHECKS_ASKED.with(|a| a.get()), 1, "backed off");
+        assert!(App::sleep_wait_ms(&app).is_some(), "still rechecked later");
+    }
+
+    #[test]
+    fn late_sleep_answer_sleeps_only_a_tab_that_is_still_hidden() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
+        App::discard_one_hidden_tab_if(&app, || false);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert_eq!(SLEEP_CHECKS_ASKED.with(|a| a.get()), 1, "one check in flight");
+        let done = SLEEP_CHECK
+            .with(|check| match &mut *check.borrow_mut() {
+                SleepCheck::Deferred(slot) => slot.take(),
+                SleepCheck::Inline(_) => None,
+            })
+            .unwrap();
+        // The user switches to the tab before the page answers.
+        assert!(App::select_tab(&app, hidden));
+        done(false);
+        assert!(closed_tabs(&calls).is_empty(), "now active, so it stays");
+
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
+        App::discard_one_hidden_tab_if(&app, || false);
+        let done = SLEEP_CHECK
+            .with(|check| match &mut *check.borrow_mut() {
+                SleepCheck::Deferred(slot) => slot.take(),
+                SleepCheck::Inline(_) => None,
+            })
+            .unwrap();
+        done(false);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
+    }
+
+    #[test]
+    fn render_crash_reloads_once_then_reports_and_marks_hidden_tabs() {
+        let (app, hidden, active, _calls) = sleeping_app(300);
+        app.borrow_mut().settings.sleep_enabled = false;
+        App::tab_render_failed(&app, hidden);
+        {
+            let state = app.borrow();
+            let tab = state.tabs.iter().find(|t| t.id == hidden).unwrap();
+            assert!(tab.discarded, "hidden tab navigates afresh when selected");
+            assert!(tab.last_crash_reload.is_some());
+        }
+        App::tab_render_failed(&app, active);
+        assert!(
+            app.borrow()
+                .tabs
+                .iter()
+                .any(|t| t.id == active && t.last_crash_reload.is_some())
+        );
+    }
+
+    #[test]
+    fn restoring_a_session_builds_asleep_tabs_and_skips_bad_entries() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().pending = None;
+        app.borrow_mut().pending_tab = None;
+        app.borrow_mut().initializing = true; // no engine: the active load stays pending
+        let tab = |url: &str, title: &str, pinned: bool| crate::session::SessionTab {
+            url: url.to_owned(),
+            title: title.to_owned(),
+            pinned,
+        };
+        app.borrow_mut().pending_restore = Some(crate::session::Session {
+            tabs: vec![
+                tab("https://a.test/", "A", true),
+                tab("not a url", "bad", false),
+                tab("https://b.test/", "B", false),
+                tab("https://c.test/", "C", false),
+            ],
+            active: 2,
+        });
+        App::restore_pending_session(&app);
+        let state = app.borrow();
+        assert_eq!(state.tab_model.len(), 3);
+        let titles: Vec<_> = state.tab_model.iter().map(|t| t.title.clone()).collect();
+        assert_eq!(titles, ["A", "B", "C"]);
+        assert!(state.tab_model.iter().next().unwrap().pinned);
+        let active = state.tab_model.active();
+        assert_eq!(state.tab_model.index_of(active), Some(1));
+        let asleep: Vec<_> = state.tabs.iter().map(|t| t.discarded).collect();
+        assert_eq!(asleep, [true, false, true]);
+        assert_eq!(state.pending.as_ref().unwrap().as_str(), "https://b.test/");
     }
 
     #[test]
@@ -2981,7 +3469,24 @@ mod tests {
         playing: Vec<TabId>,
     }
 
+    enum SleepCheck {
+        Inline(bool),
+        Deferred(Option<Box<dyn FnOnce(bool)>>),
+    }
+
+    thread_local! {
+        static SLEEP_CHECK: RefCell<SleepCheck> = const { RefCell::new(SleepCheck::Inline(false)) };
+        static SLEEP_CHECKS_ASKED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
     impl EngineAdapter for TabRecordingEngine {
+        fn check_sleep_blocked(&mut self, _tab: TabId, done: Box<dyn FnOnce(bool)>) {
+            SLEEP_CHECKS_ASKED.with(|asked| asked.set(asked.get() + 1));
+            SLEEP_CHECK.with(|check| match &mut *check.borrow_mut() {
+                SleepCheck::Inline(blocked) => done(*blocked),
+                SleepCheck::Deferred(slot) => *slot = Some(done),
+            });
+        }
         fn tab_playing_audio(&self, tab: TabId) -> bool {
             self.playing.contains(&tab)
         }
@@ -3155,6 +3660,13 @@ mod tests {
             tab_model: crate::tabs::TabList::new(),
             group_preferences: crate::tab_groups::GroupPreferences::default(),
             group_preferences_path: None,
+            // Existing tests exercise the memory-pressure path; tab sleep has its own tests.
+            settings: crate::settings::Settings {
+                sleep_enabled: false,
+                ..Default::default()
+            },
+            session: None,
+            pending_restore: None,
         }))
     }
 

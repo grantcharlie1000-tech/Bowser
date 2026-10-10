@@ -6,6 +6,8 @@ pub mod navigation;
 pub mod omnibox;
 pub mod passwords;
 pub mod performance;
+pub mod session;
+pub mod settings;
 pub mod shortcuts;
 pub mod tab_groups;
 pub mod tabs;

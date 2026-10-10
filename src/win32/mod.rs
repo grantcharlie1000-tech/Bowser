@@ -32,6 +32,20 @@ pub fn show_error_message(message: &str) {
     }
 }
 
+/// Native Yes/No question; `true` for Yes.
+pub fn ask_yes_no(message: &str) -> bool {
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            Some(HWND::default()),
+            windows::core::PCWSTR(text.as_ptr()),
+            w!("Bowser"),
+            windows::Win32::UI::WindowsAndMessaging::MB_YESNO
+                | windows::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION,
+        ) == windows::Win32::UI::WindowsAndMessaging::IDYES
+    }
+}
+
 pub(crate) const INPUT_ID: u16 = 100;
 pub(crate) const WM_SUBMIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub(crate) const WM_HISTORY_BACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
@@ -47,6 +61,8 @@ pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
 pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 /// Runs only while a chrome transition is moving; it stops itself once the motion has settled.
 pub(crate) const WM_ANIMATION_TIMER: usize = 3;
+/// One-shot debounce for session snapshots; armed by a tab change, never repeating.
+pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
 
 pub(crate) fn post(
     hwnd: HWND,

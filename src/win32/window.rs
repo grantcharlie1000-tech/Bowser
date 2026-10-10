@@ -1,7 +1,7 @@
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
     WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT,
-    WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
+    WM_SESSION_SAVE_TIMER, WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
@@ -718,6 +718,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             app.borrow().log.record("input_ready").ok();
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
+        App::restore_pending_session(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
@@ -1105,6 +1106,15 @@ unsafe extern "system" fn window_proc(
                     position_edit(hwnd);
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     arm_motion(hwnd);
+                    // Debounced crash-recovery snapshot: one timer, armed only when dirty.
+                    if App::session_changed(app) {
+                        let _ = SetTimer(
+                            Some(hwnd),
+                            WM_SESSION_SAVE_TIMER,
+                            crate::session::SAVE_DEBOUNCE_MS,
+                            None,
+                        );
+                    }
                 }
                 LRESULT(0)
             }
@@ -1343,6 +1353,13 @@ unsafe extern "system" fn window_proc(
                 sync_foreground(hwnd, app);
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_SESSION_SAVE_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
+                if let Some(app) = app {
+                    App::session_save_now(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_ANIMATION_TIMER => {
                 let running =
                     with_chrome(hwnd, |s| s.animate(hwnd, Instant::now())).unwrap_or(false);
@@ -1376,7 +1393,9 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 if let Some(app) = app {
+                    App::session_finish(app);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
                         s.closing = true;

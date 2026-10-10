@@ -13,7 +13,7 @@ use webview2_com::{
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
-    GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+    ExecuteScriptCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     SourceChangedEventHandler, TrySuspendCompletedHandler,
@@ -824,6 +824,36 @@ impl EngineAdapter for WebView2Engine {
         };
         webview.is_some_and(|webview| webview_playing_audio(&webview))
     }
+    fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
+        let webview = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        let Some(webview) = webview else {
+            done(false);
+            return;
+        };
+        // A suspended page runs no script, so wake it for the check. A tab that stays awake
+        // is suspended again straight after the verdict.
+        if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
+            let _ = unsafe { webview3.Resume() };
+        }
+        let after = webview.clone();
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
+            let blocked = status.is_ok() && result.trim() == "true";
+            if blocked && let Ok(webview3) = after.cast::<ICoreWebView2_3>() {
+                let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+                let _ = unsafe { webview3.TrySuspend(&handler) };
+            }
+            done(blocked);
+            Ok(())
+        }));
+        let script = CoTaskMemPWSTR::from(SLEEP_BLOCK_SCRIPT);
+        if unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
+            // The handler (and `done`) are dropped unanswered; the app's pending-check expiry
+            // lets the tab be retried.
+        }
+    }
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
         let mut state = self.core.borrow_mut();
         let now = Instant::now();
@@ -873,6 +903,26 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
 }
+
+/// Read-only check run in a tab that is about to sleep. It returns only `true`/`false`; no page
+/// text, field values or URLs leave the page. Top frame only.
+const SLEEP_BLOCK_SCRIPT: &str = r#"(function(){try{
+if(document.pictureInPictureElement)return true;
+var m=document.querySelectorAll('video,audio');
+for(var i=0;i<m.length;i++){var v=m[i];
+if(!v.paused&&!v.ended&&v.readyState>2)return true;
+var s=v.srcObject;
+if(s&&s.getTracks&&s.getTracks().some(function(t){return t.readyState==='live'}))return true;}
+var f=document.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
+for(var j=0;j<f.length;j++){var e=f[j],n=e.tagName;
+if(n==='TEXTAREA'){if(e.value!==e.defaultValue)return true;continue;}
+if(n==='INPUT'){var t=(e.type||'text').toLowerCase();
+if(t==='checkbox'||t==='radio'){if(e.checked!==e.defaultChecked)return true;}
+else if(t!=='hidden'&&t!=='button'&&t!=='submit'&&t!=='reset'&&t!=='image'&&t!=='file'){
+if(e.value!==e.defaultValue)return true;}
+continue;}
+if((e.textContent||'').trim().length>0)return true;}
+return false;}catch(x){return false;}})()"#;
 
 /// A failed query counts as silent, so an unreadable tab is not kept alive for that reason alone.
 fn webview_playing_audio(webview: &ICoreWebView2) -> bool {
@@ -1387,9 +1437,19 @@ unsafe fn configure_controller(
 
         if let Some(callback) = events.failed.as_ref() {
             let failure_callback = callback.clone();
+            let render_callback = events.render_process_failed.clone();
             webview.add_ProcessFailed(
-                &ProcessFailedEventHandler::create(Box::new(move |_sender, _args| {
-                    failure_callback(Error::from(windows::Win32::Foundation::E_FAIL));
+                &ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
+                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                    let render_exited = args.is_some_and(|args| {
+                        args.ProcessFailedKind(&mut kind).is_ok()
+                            && kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                    });
+                    match render_callback.as_ref() {
+                        // A crashed page process is recoverable by reloading that tab.
+                        Some(render) if render_exited => render(tab_id),
+                        _ => failure_callback(Error::from(windows::Win32::Foundation::E_FAIL)),
+                    }
                     Ok(())
                 })),
                 &mut token,
