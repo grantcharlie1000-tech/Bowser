@@ -42,9 +42,9 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu,
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
-                EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWLP_USERDATA,
-                GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetMessageW, GetWindow,
-                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+                EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE,
+                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetMessageW,
+                GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
                 GetWindowThreadProcessId, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
                 HideCaret, IsIconic, IsZoomed, KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow,
                 NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE,
@@ -56,13 +56,13 @@ use windows::{
                 WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
                 WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN,
                 WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
-                WM_MOUSEMOVE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
-                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-                WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE,
-                WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW,
-                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-                WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-                WS_THICKFRAME, WS_VISIBLE, WVR_REDRAW,
+                WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
+                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE, WM_RBUTTONUP,
+                WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND,
+                WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
+                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+                WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -70,6 +70,8 @@ use windows::{
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
+const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
@@ -557,10 +559,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Default::default(),
             CLASS_NAME,
             w!("Bowser - Search or enter address"),
-            // Bowser paints its own caption and supplies resize hit tests. Keep the
-            // resizable frame and system commands, but omit WS_CAPTION/WS_BORDER so
-            // Windows 10 does not paint a bright non-client outline over the custom chrome.
-            WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1000,
@@ -1173,8 +1172,25 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
-            windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATE
-            | windows::Win32::UI::WindowsAndMessaging::WM_NCACTIVATE => {
+            // A window region disables DWM's non-client frame. Do not let the themed
+            // fallback frame draw over Bowser's custom rounded chrome.
+            WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => LRESULT(0),
+            WM_NCACTIVATE => {
+                // -1 updates activation state without repainting the non-client area.
+                let result = DefWindowProcW(hwnd, message, wparam, LPARAM(-1));
+                sync_foreground(hwnd, app);
+                result
+            }
+            WM_SETTEXT | WM_SETICON => {
+                // DefWindowProc stores the caption text/icon but would also paint it.
+                // Hide only during that synchronous call to suppress non-client painting.
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_VISIBLE.0 as isize));
+                let result = DefWindowProcW(hwnd, message, wparam, lparam);
+                let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+                result
+            }
+            windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATE => {
                 // Activation messages are not trusted on their own; sync_foreground checks the real foreground.
                 let result = DefWindowProcW(hwnd, message, wparam, lparam);
                 sync_foreground(hwnd, app);
