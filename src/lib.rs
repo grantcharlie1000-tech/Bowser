@@ -12,4 +12,5 @@ pub mod shortcuts;
 pub mod tab_groups;
 pub mod tabs;
 pub mod theme;
+pub mod updater;
 pub mod win32;

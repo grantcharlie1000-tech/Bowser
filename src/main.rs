@@ -22,6 +22,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let benchmark = options.benchmark_log.is_some();
+    if bowser::updater::startup(benchmark) == bowser::updater::StartupAction::Relaunch
+        && bowser::updater::relaunch()
+    {
+        return ExitCode::SUCCESS;
+    }
+    bowser::updater::spawn_background(benchmark);
     let log = match PerfLog::new(options.benchmark_log.as_deref()) {
         Ok(log) => Rc::new(log),
         Err(error) => {
