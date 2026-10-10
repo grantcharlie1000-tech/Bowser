@@ -45,6 +45,9 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let result = App::run(options, log.clone());
+    if result.is_ok() {
+        bowser::updater::note_clean_exit();
+    }
     unsafe {
         CoUninitialize();
     }

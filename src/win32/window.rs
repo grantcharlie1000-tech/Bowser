@@ -1892,31 +1892,26 @@ fn install_extension(hwnd: HWND, app: &AppRef, profile: &crate::profile::Profile
     let Some(folder) = pick_extension_folder(hwnd) else {
         return;
     };
-    let inspection = match extensions::inspect_source(&folder) {
-        Ok(inspection) => inspection,
-        Err(error) => {
-            show_error_message(&error.to_string());
-            return;
-        }
-    };
-    let question = format!(
-        "Install \"{}\" version {}?\n\n{}\n\nOnly install extensions you trust. An extension can read and change the pages it has access to.",
-        inspection.manifest.name,
-        inspection.manifest.version,
-        extensions::permission_summary(&inspection.manifest)
-    );
-    if !crate::win32::ask_yes_no(&question) {
-        return;
-    }
-    match extensions::install(
+    let result = extensions::install_confirmed(
         &folder,
         &profile.extensions_dir(),
         &profile.extensions_file(),
-    ) {
-        Ok(record) => match extensions::folder_for(&profile.extensions_dir(), &record.id) {
+        &mut |inspection| {
+            let question = format!(
+                "Install \"{}\" version {}?\n\n{}\n\nOnly install extensions you trust. An extension can read and change the pages it has access to.",
+                inspection.manifest.name,
+                inspection.manifest.version,
+                extensions::permission_summary(&inspection.manifest)
+            );
+            crate::win32::ask_yes_no(&question)
+        },
+    );
+    match result {
+        Ok(Some(record)) => match extensions::folder_for(&profile.extensions_dir(), &record.id) {
             Ok(installed) => App::set_extension_enabled(app, record.id, installed, true),
             Err(error) => show_error_message(&error.to_string()),
         },
+        Ok(None) => {}
         Err(error) => show_error_message(&format!("The extension was not installed. {error}")),
     }
 }
