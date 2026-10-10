@@ -41,6 +41,8 @@ pub(crate) const WM_TABS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging:
 pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
 pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
+/// Runs only while a chrome transition is moving; it stops itself once the motion has settled.
+pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 
 pub(crate) fn post(
     hwnd: HWND,

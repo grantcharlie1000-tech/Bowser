@@ -6,7 +6,7 @@
 //! and the empty viewport all show the same blur and tint that DWM draws for the whole window.
 //! Only the solid fallback paints its own opaque window colour.
 
-use std::{mem::size_of, ptr, slice};
+use std::{mem::size_of, ptr, slice, time::Instant};
 
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT, SIZE},
@@ -27,7 +27,10 @@ use windows::Win32::{
 };
 
 use crate::{
-    chrome::layout::{self, Hit, Layout, Metrics, Rect},
+    chrome::{
+        layout::{self, Hit, Layout, Metrics, Rect},
+        motion::{Departure, Emphasis},
+    },
     favicon::FaviconBitmap,
     theme::{Palette, Rgba},
 };
@@ -36,12 +39,17 @@ use crate::{
 /// make every repaint and every click O(n log n) in GDI.
 const MAX_TEXT_UNITS: usize = 4096;
 
+/// Logical width of the lens edge band, where glass bends light and shows its rim. Only the glass
+/// palettes draw it; the solid fallback stays flat.
+const GLASS_EDGE_WIDTH: i32 = 6;
+
 /// Data needed to paint one tab island. `favicon` is already premultiplied BGRA.
 #[derive(Clone, Copy)]
 pub struct TabView<'a> {
     pub title: &'a str,
     pub loading: bool,
     pub favicon: Option<&'a FaviconBitmap>,
+    pub emphasis: Emphasis,
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -67,6 +75,10 @@ pub struct ChromeView<'a> {
     pub can_back: bool,
     pub can_forward: bool,
     pub omnibox: OmniboxView<'a>,
+    /// The instant every transition is sampled at. Painting is a pure function of it.
+    pub now: Instant,
+    /// Islands of tabs that were just closed, fading out where they stood.
+    pub departures: &'a [Departure],
 }
 
 /// Reusable top-down premultiplied BGRA image. Its height stops at the omnibox row.
@@ -157,6 +169,7 @@ impl ChromeSurface {
         if !view.palette.translucent {
             self.fill_rect(bounds, view.palette.window, dirty);
         }
+        self.paint_departures(view, dirty);
         self.paint_tabs(view, dirty);
         self.paint_new_tab(view, dirty);
         self.paint_nav(view, dirty);
@@ -240,6 +253,100 @@ impl ChromeSurface {
         );
     }
 
+    /// Simulated lens rim for a rounded glass shape: a Fresnel falloff and a directional specular
+    /// highlight, plus a faint dispersion fringe on the outermost pixels. Only the edge band is
+    /// touched. `geometry` is the full shape and `visible` the part that may be painted.
+    fn glass_rim(
+        &mut self,
+        geometry: Rect,
+        visible: Rect,
+        radius: i32,
+        edge: i32,
+        light: Rimlight,
+        dirty: Rect,
+    ) {
+        let bounds = Rect::new(0, 0, self.width, self.height);
+        let clip = visible.intersect(dirty).intersect(bounds);
+        if clip.is_empty() || geometry.is_empty() {
+            return;
+        }
+        let stride = self.stride();
+        let hx = geometry.width() as f32 / 2.0;
+        let hy = geometry.height() as f32 / 2.0;
+        let cx = geometry.left as f32 + hx;
+        let cy = geometry.top as f32 + hy;
+        let r = (radius as f32).min(hx).min(hy).max(0.0);
+        let band = edge.max(1) as f32;
+        // Columns that can fall inside the band in a row away from the top and bottom edges.
+        let side = edge.max(1) + 2;
+        let pixels = self.dib.pixels_mut();
+        for y in clip.top..clip.bottom {
+            let py = y as f32 + 0.5 - cy;
+            let qy = py.abs() - (hy - r);
+            let band_row = py.abs() >= hy - band;
+            // On a straight top or bottom edge the rim depends only on the row, so it is computed
+            // once for the flat middle span.
+            let flat_row = band_row && qy >= 0.0;
+            let flat = if flat_row {
+                rim_at(0.0, py, (hx, hy), r, band, light)
+            } else {
+                None
+            };
+            let flat_half = hx - r;
+            // The flat run of a straight edge takes one constant colour, so it is composited in one
+            // pass instead of per pixel.
+            let (run_from, run_to) = if flat_row {
+                let from = ((cx - flat_half - 0.5).ceil() as i32).max(clip.left);
+                let to = ((cx + flat_half - 0.5).floor() as i32 + 1).min(clip.right);
+                (from, to.max(from))
+            } else {
+                (0, 0)
+            };
+            if let (Some(rim), true) = (flat, run_from < run_to) {
+                let start = y as usize * stride;
+                let run = &mut pixels[start + run_from as usize * 4..start + run_to as usize * 4];
+                over_row(run, Rgba::hex(0xFFFFFF, 255), rim.alpha);
+                if rim.fringe > 0 {
+                    let tint = if rim.lit {
+                        Rgba::hex(0x9FE3FF, 255)
+                    } else {
+                        Rgba::hex(0xFFC2A8, 255)
+                    };
+                    over_row(run, tint, rim.fringe);
+                }
+            }
+            let spans = if band_row {
+                [(clip.left, clip.right), (0, 0)]
+            } else {
+                [
+                    (clip.left, (geometry.left + side).min(clip.right)),
+                    ((geometry.right - side).max(clip.left), clip.right),
+                ]
+            };
+            for (from, to) in spans {
+                for x in from.max(clip.left)..to.min(clip.right) {
+                    if (run_from..run_to).contains(&x) {
+                        continue;
+                    }
+                    let px = x as f32 + 0.5 - cx;
+                    let Some(rim) = rim_at(px, py, (hx, hy), r, band, light) else {
+                        continue;
+                    };
+                    let i = y as usize * stride + x as usize * 4;
+                    blend_pixel(&mut pixels[i..i + 4], Rgba::hex(0xFFFFFF, 255), rim.alpha);
+                    if rim.fringe > 0 {
+                        let tint = if rim.lit {
+                            Rgba::hex(0x9FE3FF, 255)
+                        } else {
+                            Rgba::hex(0xFFC2A8, 255)
+                        };
+                        blend_pixel(&mut pixels[i..i + 4], tint, rim.fringe);
+                    }
+                }
+            }
+        }
+    }
+
     fn border(&mut self, rect: Rect, radius: i32, thickness: f32, colour: Rgba, dirty: Rect) {
         let (width, height, stride) = (self.width, self.height, self.stride());
         raster_round_border(
@@ -255,6 +362,35 @@ impl ChromeSurface {
         );
     }
 
+    /// Closed tabs fade out and shrink slightly on the island they left. They take no input.
+    fn paint_departures(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let m = view.layout.metrics;
+        let radius = m.island_radius();
+        for departure in view.departures {
+            let amount = departure.amount(view.now);
+            if amount <= 0.0 {
+                continue;
+            }
+            let inset = ((1.0 - amount) * m.px(4) as f32).round() as i32;
+            let shown = departure.rect.intersect(view.layout.tab_zone);
+            let rect = Rect::new(
+                shown.left + inset,
+                shown.top + inset,
+                shown.right - inset,
+                shown.bottom - inset,
+            );
+            if rect.is_empty() {
+                continue;
+            }
+            self.round(
+                rect,
+                radius,
+                scale_alpha(view.palette.tab_active, amount),
+                dirty,
+            );
+        }
+    }
+
     fn paint_tabs(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
         for (slot, tab_rect) in view.layout.tabs().enumerate() {
@@ -265,17 +401,29 @@ impl ChromeSurface {
             }
             let active = index == view.active;
             let is_hover = matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == index);
-            let fill = if active {
-                view.palette.tab_active
-            } else if is_hover {
-                view.palette.tab_hover
-            } else {
-                view.palette.tab_inactive
-            };
+            let details = view.tabs.get(index);
+            let (hover, selected) = details.map_or((0.0, 0.0), |t| t.emphasis.amounts(view.now));
+            let fill = mix(
+                mix(view.palette.tab_inactive, view.palette.tab_hover, hover),
+                view.palette.tab_active,
+                selected,
+            );
             let radius = m.island_radius();
             self.round(rect, radius, fill, dirty);
-            if active {
-                self.border(rect, radius, 1.0, view.palette.tab_active_border, dirty);
+            if selected > 0.0 {
+                // Glass keeps only a faint outline on the selected island. Its edge comes from the
+                // rim, so a hard stroke would read as a frame rather than glass.
+                let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
+                let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
+                self.border(rect, radius, 1.0, colour, dirty);
+            }
+            if view.palette.translucent {
+                let edge = m.px(GLASS_EDGE_WIDTH);
+                let light = Rimlight {
+                    outline: (0.35 * hover + 0.2 * selected).min(1.0),
+                    highlight: (0.15 + 0.6 * hover + 0.7 * selected).min(1.0),
+                };
+                self.glass_rim(tab_rect, rect, radius, edge, light, dirty);
             }
             // Flat tabs are separated by a thin divider, hidden beside the active or hovered tab.
             let next = index + 1;
@@ -293,7 +441,6 @@ impl ChromeSurface {
                     dirty,
                 );
             }
-            let details = view.tabs.get(index);
             let parts = view.layout.tab_parts(tab_rect);
             // The last island may be clipped by the tab zone. A part that would be cut off is
             // skipped, so a half-visible close glyph never lands on the "+" button.
@@ -315,11 +462,11 @@ impl ChromeSurface {
             }
             if !parts.title.is_empty() {
                 let title = details.map_or("New tab", |value| value.title);
-                let color = if active {
-                    view.palette.tab_text_active
-                } else {
-                    view.palette.tab_text_inactive
-                };
+                let color = mix(
+                    view.palette.tab_text_inactive,
+                    view.palette.tab_text_active,
+                    selected,
+                );
                 self.draw_text(title, parts.title, color, true, rect, dirty);
             }
             if !rect.contains_rect(parts.close) {
@@ -521,6 +668,14 @@ impl ChromeSurface {
             },
             dirty,
         );
+        if view.palette.translucent {
+            let edge = m.px(GLASS_EDGE_WIDTH);
+            let light = Rimlight {
+                outline: 0.5,
+                highlight: 0.7,
+            };
+            self.glass_rim(rect, rect, radius, edge, light, dirty);
+        }
         let inset = m.px(Metrics::OMNIBOX_TEXT_INSET);
         let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
         let line = self.text.line_height();
@@ -798,6 +953,62 @@ impl ChromeSurface {
     }
 }
 
+/// How strongly a glass edge shows. `outline` is the even Fresnel sheen around the whole band and
+/// `highlight` the directional specular on the side facing the light. Selected and hovered tabs
+/// raise `highlight` first, so the edge reads as light on glass rather than a drawn outline.
+#[derive(Clone, Copy)]
+struct Rimlight {
+    outline: f32,
+    highlight: f32,
+}
+
+/// The lens rim at one pixel of a rounded shape, relative to its centre. `alpha` and `fringe` are
+/// coverages for the white highlight and the dispersion tint. `lit` marks edges that face the light.
+#[derive(Clone, Copy)]
+struct Rim {
+    alpha: u8,
+    fringe: u8,
+    lit: bool,
+}
+
+/// The rim at `(px, py)` for a rounded rect with half sizes `half`, corner radius `r` and edge band
+/// `band`. Returns `None` outside the band.
+fn rim_at(px: f32, py: f32, half: (f32, f32), r: f32, band: f32, light: Rimlight) -> Option<Rim> {
+    let (hx, hy) = half;
+    let qx = px.abs() - (hx - r);
+    let qy = py.abs() - (hy - r);
+    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
+    let outside = (ox * ox + oy * oy).sqrt();
+    let depth = -(outside + qx.max(qy).min(0.0) - r);
+    if !(0.0..=band).contains(&depth) {
+        return None;
+    }
+    let (nx, ny) = if outside > 0.0 {
+        (px.signum() * ox / outside, py.signum() * oy / outside)
+    } else if qx > qy {
+        (px.signum(), 0.0)
+    } else {
+        (0.0, py.signum())
+    };
+    // Unit vector towards the light, which sits above and to the left.
+    let facing_dot = -0.5 * nx - 0.866 * ny;
+    let facing = facing_dot.max(0.0);
+    // 1 at the edge, 0 where the band meets the flat body of the glass.
+    let s = 1.0 - depth / band;
+    let nz = (1.0 - s * s).max(0.0).sqrt();
+    let fresnel = (1.0 - nz).powi(3);
+    let spec = facing * facing * s * s;
+    let alpha = (fresnel * 0.22 * light.outline + spec * 0.42 * light.highlight).clamp(0.0, 1.0);
+    let fringe = ((1.0 - depth).max(0.0) * 0.25 * light.outline).clamp(0.0, 1.0);
+    let rim = Rim {
+        alpha: (alpha * 255.0).round() as u8,
+        fringe: (fringe * 255.0).round() as u8,
+        lit: facing_dot >= 0.0,
+    };
+    // Most of the band is flat glass, where the rim contributes nothing to blend.
+    (rim.alpha > 0 || rim.fringe > 0).then_some(rim)
+}
+
 /// Clamps a client size to the chrome rows that are painted, and a DPI to at least 96.
 fn surface_size(width: i32, height: i32, dpi: u32) -> (i32, i32, u32) {
     let dpi = dpi.max(96);
@@ -908,6 +1119,45 @@ fn blend_pixel(dst: &mut [u8], color: Rgba, coverage: u8) {
     for i in 0..4 {
         dst[i] = (src[i] + div255(u32::from(dst[i]) * inverse)).min(255) as u8;
     }
+}
+
+/// `blend_pixel` applied to every pixel of a run in BGRA order, with one colour and coverage.
+fn over_row(run: &mut [u8], color: Rgba, coverage: u8) {
+    let alpha = div255(u32::from(color.a) * u32::from(coverage));
+    let inverse = 255 - alpha;
+    let src = [
+        div255(u32::from(color.b) * alpha),
+        div255(u32::from(color.g) * alpha),
+        div255(u32::from(color.r) * alpha),
+        alpha,
+    ];
+    for pixel in run.chunks_exact_mut(4) {
+        for (dst, src) in pixel.iter_mut().zip(src) {
+            *dst = (src + div255(u32::from(*dst) * inverse)).min(255) as u8;
+        }
+    }
+}
+
+/// Blends two colours by weighting each with its alpha, so a transparent end adds no tint.
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let (wa, wb) = ((1.0 - t) * f32::from(a.a), t * f32::from(b.a));
+    let alpha = wa + wb;
+    if alpha <= 0.0 {
+        return a;
+    }
+    let channel = |x: u8, y: u8| ((f32::from(x) * wa + f32::from(y) * wb) / alpha).round() as u8;
+    Rgba {
+        r: channel(a.r, b.r),
+        g: channel(a.g, b.g),
+        b: channel(a.b, b.b),
+        a: alpha.round() as u8,
+    }
+}
+
+/// `colour` with its alpha multiplied by `factor`, clamped to `0.0..=1.0`.
+fn scale_alpha(colour: Rgba, factor: f32) -> Rgba {
+    let a = (f32::from(colour.a) * factor.clamp(0.0, 1.0)).round() as u8;
+    Rgba { a, ..colour }
 }
 
 fn over_premultiplied(dst: &mut [u8], src: &[u8]) {
@@ -1378,7 +1628,11 @@ unsafe extern "system" {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::theme::{Appearance, palette};
+    use crate::{
+        chrome::motion::{self, Motion},
+        tabs::TabId,
+        theme::{Appearance, palette},
+    };
     use std::{fs, path::PathBuf, time::Instant};
 
     #[test]
@@ -1454,6 +1708,7 @@ mod tests {
             title: "Tab",
             loading: false,
             favicon: None,
+            emphasis: rest(),
         }];
         let view = ChromeView {
             layout: &layout,
@@ -1473,6 +1728,8 @@ mod tests {
                 completion_suffix: "",
                 progress: None,
             },
+            now: Instant::now(),
+            departures: &[],
         };
         let dirty = Rect::new(0, 0, 240, 84);
         let mut surface = ChromeSurface::new(500, 120, 96);
@@ -1506,6 +1763,10 @@ mod tests {
         assert!(units.iter().all(|&unit| unit == u16::from(b'a')));
     }
 
+    fn rest() -> Emphasis {
+        Emphasis::resting(false, false, Instant::now())
+    }
+
     fn test_view<'a>(
         layout: &'a Layout,
         tabs: &'a [TabView<'a>],
@@ -1523,6 +1784,8 @@ mod tests {
             can_back: true,
             can_forward: false,
             omnibox,
+            now: Instant::now(),
+            departures: &[],
         }
     }
 
@@ -1541,6 +1804,110 @@ mod tests {
         surface.pixels()[y as usize * surface.stride() + x as usize * 4 + 3]
     }
 
+    /// Paints two glass tabs, the first selected, sampled at `now` with the given departures.
+    fn paint_tabs_at(
+        layout: &Layout,
+        emphasis: [Emphasis; 2],
+        now: Instant,
+        departures: &[Departure],
+    ) -> ChromeSurface {
+        let tabs = emphasis.map(|emphasis| TabView {
+            title: "One",
+            loading: false,
+            favicon: None,
+            emphasis,
+        });
+        let view = ChromeView {
+            layout,
+            palette: palette(Appearance::Dark, false),
+            tabs: &tabs,
+            active: 0,
+            hover: Hit::None,
+            pressed: Hit::None,
+            caption_maximised: false,
+            can_back: true,
+            can_forward: false,
+            omnibox: omnibox("", (0, 0), ""),
+            now,
+            departures,
+        };
+        let mut surface = ChromeSurface::new(1000, 120, 96);
+        surface.paint(&view, Rect::new(0, 0, 1000, surface.height()));
+        surface
+    }
+
+    #[test]
+    fn a_settled_hover_paints_exactly_like_a_resting_hover() {
+        let layout = layout::compute(1000, 120, 96, 2, false);
+        let start = Instant::now();
+        let settled = start + std::time::Duration::from_millis(400);
+        let mut fading = Emphasis::resting(false, false, start);
+        fading.retarget(true, false, start, false);
+        let selected = Emphasis::resting(false, true, start);
+        let animated = paint_tabs_at(&layout, [fading, selected], settled, &[]);
+        let resting = paint_tabs_at(
+            &layout,
+            [Emphasis::resting(true, false, start), selected],
+            settled,
+            &[],
+        );
+        assert!(
+            animated.pixels() == resting.pixels(),
+            "a finished transition must not leave a residue"
+        );
+    }
+
+    #[test]
+    fn hover_fades_in_monotonically_from_the_resting_island() {
+        let layout = layout::compute(1000, 120, 96, 2, false);
+        let island = layout.tab(0).unwrap();
+        let (x, y) = center(island);
+        let start = Instant::now();
+        let mut fading = Emphasis::resting(false, false, start);
+        fading.retarget(true, false, start, false);
+        let selected = Emphasis::resting(false, true, start);
+        let at = |millis: u64| {
+            let now = start + std::time::Duration::from_millis(millis);
+            alpha_at(&paint_tabs_at(&layout, [fading, selected], now, &[]), x, y)
+        };
+        let (rest, quarter, half, done) = (at(0), at(40), at(75), at(150));
+        assert_eq!(rest, 0, "the resting glass island has no fill");
+        assert!(
+            rest < quarter && quarter < half && half < done,
+            "fill alpha must rise steadily: {rest} {quarter} {half} {done}"
+        );
+    }
+
+    #[test]
+    fn a_closed_tab_fades_out_over_its_island_and_then_leaves_nothing() {
+        let layout = layout::compute(1000, 120, 96, 2, false);
+        let island = layout.tab(1).unwrap();
+        let (x, y) = center(island);
+        let start = Instant::now();
+        let (a, b) = (TabId(1), TabId(2));
+        let mut motion = Motion::new(false);
+        motion.sync(&[a, b], None, Some(a), |_| None, start);
+        motion.sync(&[a], None, Some(a), |id| (id == b).then_some(island), start);
+        let rest = [Emphasis::resting(false, false, start); 2];
+        let baseline = paint_tabs_at(&layout, rest, start, &[]);
+        let ghost_at = |millis: u64| {
+            let now = start + std::time::Duration::from_millis(millis);
+            paint_tabs_at(&layout, rest, now, motion.departures())
+        };
+        let closing = alpha_at(&ghost_at(0), x, y);
+        let fading = alpha_at(&ghost_at(75), x, y);
+        assert!(closing > 0, "the island is visible as the tab closes");
+        assert!(
+            0 < fading && fading < closing,
+            "{fading} should be between 0 and {closing}"
+        );
+        let finished = ghost_at(motion::TRANSITION.as_millis() as u64);
+        assert!(
+            finished.pixels() == baseline.pixels(),
+            "a finished departure must leave no pixels behind"
+        );
+    }
+
     #[test]
     fn typed_text_with_a_completion_suffix_paints_without_panicking() {
         // The caret used to be measured from a scratch buffer that drawing the suffix had already
@@ -1550,6 +1917,7 @@ mod tests {
             title: "Wikipedia",
             loading: false,
             favicon: None,
+            emphasis: rest(),
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -1569,6 +1937,7 @@ mod tests {
             title: "One",
             loading: false,
             favicon: None,
+            emphasis: rest(),
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -1611,6 +1980,7 @@ mod tests {
             title: "T",
             loading: false,
             favicon: None,
+            emphasis: rest(),
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -1679,7 +2049,8 @@ mod tests {
             TabView {
                 title: "A tab with a title",
                 loading: false,
-                favicon: None
+                favicon: None,
+                emphasis: rest(),
             };
             40
         ];
@@ -1755,12 +2126,13 @@ mod tests {
         for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
             for solid in [false, true] {
                 let pal = palette(appearance, solid);
-                for width in [1000, 768, 1440] {
+                for width in [768, 1024, 1100, 1440] {
                     for count in [1, 5, 12] {
                         for state in 0..3 {
                             let layout =
                                 crate::chrome::layout::compute(width, 120, 96, count, false);
-                            let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None}}).collect::<Vec<_>>();
+                            let now = Instant::now();
+                            let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now)}).collect::<Vec<_>>();
                             let text = match state {
                                 0 => "",
                                 1 => "https://example.com/a-very-long-address",
@@ -1785,6 +2157,8 @@ mod tests {
                                 can_back: true,
                                 can_forward: false,
                                 omnibox: omni,
+                                now,
+                                departures: &[],
                             };
                             let mut surface = ChromeSurface::new(width, 120, 96);
                             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -1806,6 +2180,102 @@ mod tests {
         }
     }
 
+    #[ignore = "set BOWSER_DUMP_MOTION to render transition frames"]
+    #[test]
+    fn dump_motion_frames() {
+        let Ok(dir) = std::env::var("BOWSER_DUMP_MOTION") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        let width = 1440;
+        let layout = crate::chrome::layout::compute(width, 120, 96, 5, false);
+        let tabs = (0..5)
+            .map(|i| TabView {
+                title: "A quiet page",
+                loading: false,
+                favicon: if i % 2 == 0 { Some(&QA_FAVICON) } else { None },
+                emphasis: rest(),
+            })
+            .collect::<Vec<_>>();
+        let start = Instant::now();
+        let mut hovering = Emphasis::resting(false, false, start);
+        hovering.retarget(true, false, start, false);
+        let mut leaving = Emphasis::resting(false, true, start);
+        leaving.retarget(false, false, start, false);
+        let mut arriving = Emphasis::resting(false, false, start);
+        arriving.retarget(false, true, start, false);
+        for (frame, ms) in [0_u64, 40, 75, 150].into_iter().enumerate() {
+            let now = start + std::time::Duration::from_millis(ms);
+            let mut emphasis = [Emphasis::resting(false, false, start); 5];
+            emphasis[2] = hovering;
+            let tabs_hover = tabs
+                .iter()
+                .zip(emphasis)
+                .map(|(tab, emphasis)| TabView { emphasis, ..*tab })
+                .collect::<Vec<_>>();
+            let view = ChromeView {
+                layout: &layout,
+                palette: palette(Appearance::Dark, false),
+                tabs: &tabs_hover,
+                active: 0,
+                hover: Hit::None,
+                pressed: Hit::None,
+                caption_maximised: false,
+                can_back: true,
+                can_forward: false,
+                omnibox: omnibox("", (0, 0), ""),
+                now,
+                departures: &[],
+            };
+            let mut surface = ChromeSurface::new(width, 120, 96);
+            surface.paint(&view, Rect::new(0, 0, width, surface.height()));
+            let rgba =
+                composite_stripes(surface.pixels(), width, surface.height(), surface.stride());
+            write_png(
+                &dir.join(format!("hover-{frame}-{ms}ms.png")),
+                width as u32,
+                surface.height() as u32,
+                &rgba,
+            );
+        }
+        for (frame, ms) in [0_u64, 40, 75, 150].into_iter().enumerate() {
+            let now = start + std::time::Duration::from_millis(ms);
+            let mut emphasis = [Emphasis::resting(false, false, start); 5];
+            emphasis[0] = leaving;
+            emphasis[4] = arriving;
+            let tabs_select = tabs
+                .iter()
+                .zip(emphasis)
+                .map(|(tab, emphasis)| TabView { emphasis, ..*tab })
+                .collect::<Vec<_>>();
+            let view = ChromeView {
+                layout: &layout,
+                palette: palette(Appearance::Dark, false),
+                tabs: &tabs_select,
+                active: 4,
+                hover: Hit::None,
+                pressed: Hit::None,
+                caption_maximised: false,
+                can_back: true,
+                can_forward: false,
+                omnibox: omnibox("", (0, 0), ""),
+                now,
+                departures: &[],
+            };
+            let mut surface = ChromeSurface::new(width, 120, 96);
+            surface.paint(&view, Rect::new(0, 0, width, surface.height()));
+            let rgba =
+                composite_stripes(surface.pixels(), width, surface.height(), surface.stride());
+            write_png(
+                &dir.join(format!("select-{frame}-{ms}ms.png")),
+                width as u32,
+                surface.height() as u32,
+                &rgba,
+            );
+        }
+    }
+
     #[ignore = "explicit performance probe; run in release mode"]
     #[test]
     fn paint_performance_probe() {
@@ -1814,7 +2284,8 @@ mod tests {
             TabView {
                 title: "Fast tab",
                 loading: false,
-                favicon: None
+                favicon: None,
+                emphasis: rest(),
             };
             5
         ];
@@ -1836,6 +2307,8 @@ mod tests {
                 completion_suffix: "",
                 progress: None,
             },
+            now: Instant::now(),
+            departures: &[],
         };
         let mut s = ChromeSurface::new(1000, 800, 96);
         let start = Instant::now();

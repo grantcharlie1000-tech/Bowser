@@ -1,11 +1,13 @@
 use super::{
-    INPUT_ID, WM_CARET_BLINK_TIMER, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER,
-    WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame, glass,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_HISTORY_BACK, WM_HISTORY_FORWARD,
+    WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame,
+    glass,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
     chrome::{
         layout::{self, Hit, Layout, Metrics, Rect},
+        motion::{Emphasis, Motion},
         paint::{self, ChromeSurface, ChromeView, OmniboxView, TabView},
     },
     favicon::{self, FaviconCache},
@@ -14,7 +16,7 @@ use crate::{
     tabs::{FaviconKey, TabId},
     theme::Palette,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -41,9 +43,10 @@ use windows::{
                 HTMINBUTTON, HideCaret, IsZoomed, KillTimer, LoadCursorW, MSG, MoveWindow,
                 NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE,
                 SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
-                SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, WINDOW_STYLE, WM_CHAR,
-                WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+                SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+                WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
                 WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
                 WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
@@ -55,11 +58,13 @@ use windows::{
             },
         },
     },
-    core::w,
+    core::{BOOL, w},
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// Frame interval while chrome transitions run; about 60 frames a second.
+const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
 const SPI_SETNONCLIENTMETRICS: usize = 0x002A;
 struct TabSnapshot {
@@ -93,6 +98,8 @@ struct WindowChrome {
     pressed: Hit,
     drag: Option<(TabId, usize)>,
     dpi: u32,
+    motion: Motion,
+    active_tab: Option<TabId>,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -119,12 +126,16 @@ impl WindowChrome {
             pressed: Hit::None,
             drag: None,
             dpi,
+            motion: Motion::new(!animations_enabled()),
+            active_tab: None,
         }
     }
     fn refresh(&mut self, app: &AppRef) {
+        let now = Instant::now();
         let ids = App::tab_ids(app);
+        let active = App::active_tab_id(app);
         let mut tabs = Vec::with_capacity(ids.len());
-        for id in ids {
+        for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
             let title = App::tab_title(app, id).unwrap_or_default();
             let title = if title.trim().is_empty() {
@@ -168,8 +179,27 @@ impl WindowChrome {
                 favicon: image,
             });
         }
+        // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
+        let hovered = self.hovered_tab();
+        {
+            let (layout, old) = (&self.layout, &self.tabs);
+            self.motion.sync(
+                &ids,
+                hovered,
+                Some(active),
+                |id| {
+                    old.iter()
+                        .position(|t| t.id == id)
+                        .and_then(|i| layout.tab(i))
+                },
+                now,
+            );
+        }
+        self.active_tab = Some(active);
         self.views.clear();
         self.tabs = tabs;
+        let index = hovered.and_then(|id| self.tabs.iter().position(|t| t.id == id));
+        self.hover = moved_hover(self.hover, index);
         if !self.focused {
             self.edit_text.clear();
             if let Some(url) = self.urls.get(&App::active_tab_id(app)) {
@@ -191,6 +221,40 @@ impl WindowChrome {
         self.layout =
             layout::compute_with_active(w, h, self.dpi, self.tabs.len().max(1), i, maximised);
         self.surface.resize(w, h, self.dpi)
+    }
+    /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
+    fn hovered_tab(&self) -> Option<TabId> {
+        match self.hover {
+            Hit::Tab(i) | Hit::TabClose(i) => self.tabs.get(i).map(|t| t.id),
+            _ => None,
+        }
+    }
+    fn retarget_motion(&mut self, now: Instant) {
+        let hovered = self.hovered_tab();
+        self.motion.retarget(hovered, self.active_tab, now);
+    }
+    /// The visible part of a tab's island, or `None` when it is scrolled out of the strip.
+    fn tab_rect(&self, id: TabId) -> Option<Rect> {
+        let index = self.tabs.iter().position(|t| t.id == id)?;
+        self.layout
+            .tab(index)
+            .map(|rect| rect.intersect(self.layout.tab_zone))
+    }
+    /// Repaints only what one animation frame moves: the islands the motion asks for, and the
+    /// ghosts that are fading or finishing. Returns whether another frame is needed.
+    fn animate(&mut self, hwnd: HWND, now: Instant) -> bool {
+        // Repaint ghosts before pruning, so the frame that drops one also clears its pixels.
+        for departure in self.motion.departures() {
+            invalidate(hwnd, departure.rect.intersect(self.layout.tab_zone));
+        }
+        self.motion.prune(now);
+        let running = self.motion.step(now);
+        for &id in self.motion.repaint() {
+            if let Some(rect) = self.tab_rect(id) {
+                invalidate(hwnd, rect);
+            }
+        }
+        running
     }
     fn update_completion(&mut self) {
         self.completion =
@@ -214,6 +278,27 @@ pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
             }
         }
     }
+}
+/// Starts the frame timer if a transition is running. Idle chrome has no timer at all.
+fn arm_motion(hwnd: HWND) {
+    if with_chrome(hwnd, |s| s.motion.animating(Instant::now())).unwrap_or(false) {
+        unsafe {
+            let _ = SetTimer(Some(hwnd), WM_ANIMATION_TIMER, ANIMATION_FRAME_MS, None);
+        }
+    }
+}
+/// Whether Windows allows animation ("Show animations in Windows"). Transitions snap when it does not.
+fn animations_enabled() -> bool {
+    let mut enabled = BOOL(1);
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some((&mut enabled as *mut BOOL).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    read.is_err() || enabled.as_bool()
 }
 fn dpi(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd) }.max(96)
@@ -421,12 +506,20 @@ unsafe extern "system" fn window_proc(
             WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED | WM_THEMECHANGED => {
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
-                let _ = with_chrome(hwnd, |s| {
+                let settled = with_chrome(hwnd, |s| {
                     s.palette = glass::palette();
+                    let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
                     if message == WM_SETTINGCHANGE && wparam.0 == SPI_SETNONCLIENTMETRICS {
                         s.surface.rebuild_fonts();
                     }
-                });
+                    settled
+                })
+                .unwrap_or(false);
+                if settled {
+                    // Reduced motion landed mid-fade, so no frame is needed. The full repaint below
+                    // paints the settled state.
+                    let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                }
                 if message == WM_SETTINGCHANGE && wparam.0 == SPI_SETNONCLIENTMETRICS {
                     if let Some(app) = app {
                         refresh_edit_font(hwnd, app);
@@ -651,6 +744,7 @@ unsafe extern "system" fn window_proc(
                     let _ = with_chrome(hwnd, |s| s.refresh(app));
                     position_edit(hwnd);
                     let _ = InvalidateRect(Some(hwnd), None, false);
+                    arm_motion(hwnd);
                 }
                 LRESULT(0)
             }
@@ -825,6 +919,14 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_ANIMATION_TIMER => {
+                let running =
+                    with_chrome(hwnd, |s| s.animate(hwnd, Instant::now())).unwrap_or(false);
+                if !running {
+                    let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_CARET_BLINK_TIMER => {
                 if app.is_some_and(|a| GetFocus() == a.borrow().edit) {
                     // Only the caret changes, so repaint just its pixels.
@@ -860,6 +962,7 @@ unsafe extern "system" fn window_proc(
             WM_CLOSE => {
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 if let Some(app) = app {
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
@@ -878,6 +981,7 @@ unsafe extern "system" fn window_proc(
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
                     if !s.input_font.is_invalid() {
@@ -936,6 +1040,27 @@ fn invalidate(hwnd: HWND, r: Rect) {
         }
     }
 }
+/// Repaints a hit. A tab's divider hides beside a hovered tab, so its neighbours repaint too.
+fn invalidate_hover(hwnd: HWND, l: &Layout, h: Hit) {
+    match h {
+        Hit::Tab(i) | Hit::TabClose(i) => {
+            for index in i.saturating_sub(1)..=i + 1 {
+                invalidate(hwnd, rect_for(l, Hit::Tab(index)));
+            }
+        }
+        _ => invalidate(hwnd, rect_for(l, h)),
+    }
+}
+/// The hover after the tab list changed. A hover stays on its tab even when the tab moves, and
+/// clears when the tab closes, rather than landing on whichever tab slid into its index.
+fn moved_hover(hover: Hit, index: Option<usize>) -> Hit {
+    match (hover, index) {
+        (Hit::Tab(_), Some(i)) => Hit::Tab(i),
+        (Hit::TabClose(_), Some(i)) => Hit::TabClose(i),
+        (Hit::Tab(_) | Hit::TabClose(_), None) => Hit::None,
+        (other, _) => other,
+    }
+}
 fn invalidate_hit(hwnd: HWND, h: Hit) {
     if let Some(r) = with_chrome(hwnd, |s| rect_for(&s.layout, h)) {
         invalidate(hwnd, r)
@@ -948,12 +1073,14 @@ fn set_hover(hwnd: HWND, h: Hit) {
     let (old, l) = with_chrome(hwnd, |s| {
         let o = s.hover;
         s.hover = h;
+        s.retarget_motion(Instant::now());
         (o, s.layout)
     })
     .unwrap_or((Hit::None, layout::compute(0, 0, 96, 0, false)));
     if old != h {
-        invalidate(hwnd, rect_for(&l, old));
-        invalidate(hwnd, rect_for(&l, h));
+        invalidate_hover(hwnd, &l, old);
+        invalidate_hover(hwnd, &l, h);
+        arm_motion(hwnd);
     }
 }
 fn set_pressed(hwnd: HWND, h: Hit) {
@@ -1036,6 +1163,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let can_back = App::can_go_back(app);
             let can_forward = App::can_go_forward(app);
             let focus = GetFocus() == app.borrow().edit;
+            let now = Instant::now();
             let (mut a, mut b) = (0u32, 0u32);
             let _ = SendMessageW(
                 app.borrow().edit,
@@ -1059,6 +1187,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         title: &t.title,
                         loading: t.loading,
                         favicon: t.favicon.as_ref(),
+                        emphasis: s
+                            .motion
+                            .emphasis(t.id)
+                            .unwrap_or_else(|| Emphasis::resting(false, false, now)),
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
@@ -1094,6 +1226,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         completion_suffix: suffix,
                         progress,
                     },
+                    now,
+                    departures: s.motion.departures(),
                 };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
@@ -1241,6 +1375,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    arm_motion(hwnd);
     true
 }
 
@@ -1431,5 +1566,28 @@ fn selection(hwnd: HWND) -> (usize, usize) {
             Some(LPARAM((&mut b as *mut u32) as isize)),
         );
         (a as usize, b as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hovered_tab_keeps_its_hover_when_its_index_changes() {
+        assert_eq!(moved_hover(Hit::Tab(3), Some(1)), Hit::Tab(1));
+        assert_eq!(moved_hover(Hit::TabClose(3), Some(4)), Hit::TabClose(4));
+    }
+
+    #[test]
+    fn a_hover_on_a_closed_tab_clears_rather_than_moving_to_a_neighbour() {
+        assert_eq!(moved_hover(Hit::Tab(2), None), Hit::None);
+        assert_eq!(moved_hover(Hit::TabClose(2), None), Hit::None);
+    }
+
+    #[test]
+    fn hovers_that_are_not_tabs_are_left_alone() {
+        assert_eq!(moved_hover(Hit::NewTab, Some(0)), Hit::NewTab);
+        assert_eq!(moved_hover(Hit::Omnibox, None), Hit::Omnibox);
     }
 }
