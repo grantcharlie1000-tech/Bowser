@@ -937,19 +937,24 @@ try {
     if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_TWO' $TimeoutSeconds)) { throw 'Alt+Right did not return to the second page.' }
     $results.Add([pscustomobject]@{ test='result_link_and_history'; result='PASS'; detail='Clicked the local result link; Alt+Left and Alt+Right title markers observed.' })
 
-    $currentStep = 'user_popup_same_view'
+    $currentStep = 'user_popup_new_tab'
     Send-Key 0x12; Send-Key 0x25; Send-Key 0x25 $true; Send-Key 0x12 $true
     if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_ONE' $TimeoutSeconds)) { throw 'Could not return to the local test control page.' }
     $window = Find-Window $rootProcessId
     [void](Click-UiaTarget $window.Handle '^Open user initiated popup$')
-    if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_POPUP_USER' $TimeoutSeconds)) { throw 'User-initiated target=_blank popup did not route to the main view.' }
+    if (-not (Wait-EventName $eventLog 'popup_new_tab')) { throw 'User-initiated target=_blank popup was not recorded as popup_new_tab.' }
+    if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_POPUP_USER' $TimeoutSeconds)) { throw 'User-initiated popup destination did not load in the new active tab.' }
+    if (-not (Test-Path -LiteralPath $requestLog -PathType Leaf) -or -not (Select-String -Path $requestLog -Pattern '^/popup-user$' -Quiet)) { throw 'The popup destination request was not observed by the loopback server.' }
     $popupWindow = Find-Window $rootProcessId 'BOWSER_SMOKE_POPUP_USER'
-    if (-not $popupWindow -or $popupWindow.Handle -ne $window.Handle -or -not (Wait-EventName $eventLog 'popup_same_view')) { throw 'Same-view popup routing was not observed on the original HWND and in the event log.' }
-    $results.Add([pscustomobject]@{ test='user_popup_same_view'; result='PASS'; detail='User-initiated target=_blank loaded in the original main HWND; popup_same_view event observed.' })
+    if (-not $popupWindow -or $popupWindow.Handle -ne $window.Handle) { throw 'The user-initiated popup did not open as a tab in the original Bowser HWND.' }
+    # Ctrl+1 selects the first tab. Its title must still be the control page, so the popup did not replace it.
+    Send-Key 0x11; Send-Key 0x31; Send-Key 0x31 $true; Send-Key 0x11 $true
+    if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_ONE' $TimeoutSeconds)) { throw 'Ctrl+1 did not return to the original control page tab after the popup opened.' }
+    $results.Add([pscustomobject]@{ test='user_popup_new_tab'; result='PASS'; detail='User-initiated target=_blank produced popup_new_tab in the original HWND; /popup-user reached the loopback server and BOWSER_SMOKE_POPUP_USER became the active tab title; Ctrl+1 restored the original tab with BOWSER_SMOKE_ONE.' })
 
     $currentStep = 'non_user_popup_blocked'
-    Send-Key 0x12; Send-Key 0x25; Send-Key 0x25 $true; Send-Key 0x12 $true
-    if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_ONE' $TimeoutSeconds)) { throw 'Could not return to the local test control page after popup test.' }
+    # Ctrl+1 left the control page active with its own history, so no Alt+Left is needed here.
+    if (-not (Wait-Title $rootProcessId 'BOWSER_SMOKE_ONE' $TimeoutSeconds)) { throw 'The local test control page was not active before the non-user popup test.' }
     $window = Find-Window $rootProcessId
     [void](Click-UiaTarget $window.Handle '^Open delayed non-user popup$')
     if (-not (Wait-EventName $eventLog 'popup_blocked' 12)) { throw 'Delayed non-user popup was not recorded as blocked.' }
@@ -1174,7 +1179,7 @@ $markdown.Add('## Checks')
 $markdown.Add('')
 foreach ($item in $results) { $markdown.Add(('- **{0}: {1}** — {2}' -f $item.test, $item.result, ($item.detail -replace '\s+', ' '))) }
 $markdown.Add('')
-$markdown.Add('The smoke uses a disposable WebView2 profile and a loopback-only HTTP server. It checks empty startup, native address input, lazy WebView2 startup, a local result link and history, user and non-user popup policy events, geolocation denial, download cancellation, external protocol blocking, and close during a deliberately held local request. `-IncludeWebSearch` additionally uses temporary LOCALAPPDATA with no search-provider override, submits `Rust WebView2` to default Bing, locates and physically clicks a visible result via UI Automation, then requires the WebView source and native address EDIT to agree on the final non-Bing HTTP(S) URL and the Bowser window title to identify the destination page in the same HWND. A Bing redirect intermediary, stale address field, unusable title, or provider/network failure is recorded as a failure.')
+$markdown.Add('The smoke uses a disposable WebView2 profile and a loopback-only HTTP server. It checks empty startup, native address input, lazy WebView2 startup, a local result link and history, a user-initiated popup opening a new tab, a non-user popup being blocked, geolocation denial, download cancellation, external protocol blocking, and close during a deliberately held local request. `-IncludeWebSearch` additionally uses temporary LOCALAPPDATA with no search-provider override, submits `Rust WebView2` to default Bing, locates and physically clicks a visible result via UI Automation, then requires the WebView source and native address EDIT to agree on the final non-Bing HTTP(S) URL and the Bowser window title to identify the destination page in the same HWND. A Bing redirect intermediary, stale address field, unusable title, or provider/network failure is recorded as a failure.')
 $markdown | Set-Content -LiteralPath $markdownPath -Encoding UTF8
 $results | Format-List test,result,detail
 Write-Host "Smoke artifacts: $temp"

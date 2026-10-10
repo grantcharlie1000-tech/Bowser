@@ -28,7 +28,48 @@ Browser cookies/cache remain in %LOCALAPPDATA%\Bowser\WebView2, isolated from Ed
 
 Website permissions are denied, downloads are cancelled, and external application protocols are blocked. User-initiated HTTP(S) links requesting another window navigate in the existing viewport; script popups are blocked. Bowser retains the runtime's sandbox, site isolation, certificate validation and update behavior.
 
-This milestone has no tabs, bookmarks, account management, extensions, settings UI, or download manager. It is an experimental browser and the benchmark report describes its observed behavior and limits.
+Tabs are in progress (see [Tabs and keyboard shortcuts](#tabs-and-keyboard-shortcuts)). Bookmarks, account management, extensions, a settings UI, and a download manager are not included. It is an experimental browser and the benchmark report describes its observed behavior and limits.
+
+## Interface
+
+The window has two rows over a translucent surface:
+
+- **Tab islands:** each tab is its own rounded island with a favicon, title and close button. The active tab is lighter and has a border. A `+` button adds a tab, and the minimise, maximise and close buttons sit at the far right.
+- **Omnibox:** one address and search field spanning nearly the full width below the tabs. There is no toolbar, logo or bookmarks bar.
+
+An empty tab shows the desktop through the window. Real pages render opaque, as before. The tab islands and per-tab engine wiring are still in progress, so this describes the intended layout.
+
+## Glass material and fallback
+
+On Windows 11 (build 22621 or later), the window uses the system transient backdrop. On Windows 10, it uses a tinted acrylic accent; set `BOWSER_GLASS_VARIANT=blur` to use plain blur-behind instead. The development machine runs Windows 10, so the Windows 11 path has not been checked on Windows 11.
+
+Bowser uses an opaque themed fill with no transparency when any of these apply:
+
+- transparency effects are off (`EnableTransparency` is `0` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`);
+- the session is remote;
+- high-contrast mode is on;
+- the system backdrop call fails.
+
+Set `BOWSER_FORCE_SOLID=1` to force the solid fallback regardless of these settings. Light and dark follow the Windows app mode (`AppsUseLightTheme`) and update when the system colour setting changes.
+
+## Tabs and keyboard shortcuts
+
+Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keyboard layouts) never trigger a command. Tab commands are wired to the shortcut handler, but the tab islands are still in progress.
+
+| Action | Shortcut |
+| --- | --- |
+| New tab (focuses the address field) | Ctrl+T |
+| Close tab | Ctrl+W, Ctrl+F4 |
+| Next tab | Ctrl+Tab, Ctrl+Page Down |
+| Previous tab | Ctrl+Shift+Tab, Ctrl+Page Up |
+| Select tab 1 to 8 | Ctrl+1 to Ctrl+8 |
+| Select last tab | Ctrl+9 |
+| Focus address field | Ctrl+L, Alt+D, F6 |
+| Reload | F5, Ctrl+R, browser refresh key |
+| Hard reload | Ctrl+F5, Ctrl+Shift+R |
+| Stop loading | Esc, browser stop key |
+| Back | Alt+Left, browser back key |
+| Forward | Alt+Right, browser forward key |
 
 ## Verification and benchmarks
 

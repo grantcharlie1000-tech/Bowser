@@ -1,21 +1,28 @@
-use std::{cell::RefCell, os::windows::ffi::OsStrExt, path::Path, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    os::windows::ffi::OsStrExt,
+    path::Path,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use url::Url;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DocumentTitleChangedEventHandler, DownloadStartingEventHandler,
-    Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    PermissionRequestedEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
+    AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
+    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
+    GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    SourceChangedEventHandler, TrySuspendCompletedHandler,
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, RECT},
-        UI::{
-            Input::KeyboardAndMouse::{GetKeyState, VK_MENU},
-            WindowsAndMessaging::SetWindowTextW,
-        },
+        Foundation::{HWND, LPARAM, RECT, WPARAM},
+        System::Com::IStream,
+        UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT},
     },
     core::{BOOL, Error, Interface, PCWSTR, PWSTR, Ref, Result, implement},
 };
@@ -23,38 +30,70 @@ use windows::{
 use super::{
     EngineAdapter, EngineEvents, MemoryTargetApply, MemoryUsageTarget, TrackingPreventionLevel,
 };
+use crate::tabs::TabId;
+use crate::{shortcuts, win32};
 
 #[derive(Debug)]
 pub struct RuntimeUnavailable(pub String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PopupDecision {
-    SameView,
+    NewTab,
     Block,
 }
 
 pub fn popup_decision(uri: &Url, user_initiated: bool) -> PopupDecision {
     if user_initiated && matches!(uri.scheme(), "http" | "https") {
-        PopupDecision::SameView
+        PopupDecision::NewTab
     } else {
         PopupDecision::Block
     }
 }
 
-fn history_action(key: u32, kind: COREWEBVIEW2_KEY_EVENT_KIND, alt_pressed: bool) -> Option<bool> {
-    if !alt_pressed
-        || !matches!(
-            kind,
-            COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN | COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN
-        )
-    {
+/// A browser shortcut pressed while a page has focus. The WebView2 accelerator is consumed and the chord is
+/// re-posted to the main window as `WM_SHORTCUT_KEY`, which runs the same command as the omnibox path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShortcutForward {
+    key: u32,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+}
+
+impl ShortcutForward {
+    /// Packs the modifiers for the `WM_SHORTCUT_KEY` LPARAM: ctrl=1, shift=2, alt=4.
+    fn modifier_bits(self) -> isize {
+        (self.ctrl as isize) | ((self.shift as isize) << 1) | ((self.alt as isize) << 2)
+    }
+}
+
+/// Only mapped chords are returned, so typing, clipboard and other page keys always reach the page.
+/// Escape is excluded: it stops a load only while the tab is loading, which this handler cannot see,
+/// so it is left to the page.
+fn shortcut_forward(
+    key: u32,
+    kind: COREWEBVIEW2_KEY_EVENT_KIND,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<ShortcutForward> {
+    if !is_key_down(kind) || key == u32::from(VK_ESCAPE.0) {
         return None;
     }
-    match key as u16 {
-        0x25 => Some(false),
-        0x27 => Some(true),
-        _ => None,
-    }
+    shortcuts::command_for(key, ctrl, shift, alt)?;
+    Some(ShortcutForward {
+        key,
+        ctrl,
+        shift,
+        alt,
+    })
+}
+
+fn is_key_down(kind: COREWEBVIEW2_KEY_EVENT_KIND) -> bool {
+    matches!(
+        kind,
+        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN | COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN
+    )
 }
 
 type ExternalSchemeCallback = Box<
@@ -121,18 +160,68 @@ fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
     web_url_from_source(&CoTaskMemPWSTR::from(source).to_string())
 }
 
+fn read_favicon_stream(stream: IStream) -> Option<Vec<u8>> {
+    const MAX_FAVICON_BYTES: usize = 1024 * 1024;
+    let mut result = Vec::new();
+    loop {
+        let mut chunk = [0u8; 8192];
+        let mut read = 0u32;
+        unsafe {
+            stream
+                .Read(
+                    chunk.as_mut_ptr().cast(),
+                    chunk.len() as u32,
+                    Some(&mut read),
+                )
+                .ok()
+                .ok()?;
+        }
+        if read == 0 {
+            break;
+        }
+        if result.len().saturating_add(read as usize) > MAX_FAVICON_BYTES {
+            return None;
+        }
+        result.extend_from_slice(&chunk[..read as usize]);
+    }
+    Some(result)
+}
+
 impl std::fmt::Display for RuntimeUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-pub struct WebView2Engine {
+struct WebView2Tab {
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
     allowed_file: Option<Url>,
     memory_target_api: Option<MemoryTargetApi>,
+    visible: Rc<Cell<bool>>,
+}
+
+pub struct WebView2Engine {
+    core: Rc<RefCell<EngineCore>>,
+}
+
+struct EngineCore {
+    parent: HWND,
+    bounds: RECT,
+    environment: Option<ICoreWebView2Environment>,
+    allowed_file: Option<Url>,
+    events: EngineEvents,
+    tracking_policy: TrackingPolicy,
+    active_tab: Option<TabId>,
+    target: MemoryUsageTarget,
+    tabs: HashMap<TabId, WebView2Tab>,
+    known_tabs: HashSet<TabId>,
+    creating: HashSet<TabId>,
+    pending: HashMap<TabId, Url>,
+    hidden_since: HashMap<TabId, Instant>,
+    suspended: HashSet<TabId>,
+    closed: bool,
 }
 
 enum MemoryTargetApi {
@@ -144,6 +233,211 @@ enum MemoryTargetApi {
 impl WebView2Engine {
     pub fn availability() -> std::result::Result<String, RuntimeUnavailable> {
         query_runtime(PCWSTR::null())
+    }
+}
+
+impl WebView2Engine {
+    fn request_controller(core: &Rc<RefCell<EngineCore>>, tab_id: TabId) -> Result<()> {
+        let (environment, parent, allowed_file, events, tracking_policy) = {
+            let mut state = core.borrow_mut();
+            if state.closed || !state.known_tabs.contains(&tab_id) {
+                return Ok(());
+            }
+            if state.tabs.contains_key(&tab_id) || !state.creating.insert(tab_id) {
+                return Ok(());
+            }
+            (
+                state
+                    .environment
+                    .clone()
+                    .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?,
+                state.parent,
+                state.allowed_file.clone(),
+                state.events.clone(),
+                state.tracking_policy,
+            )
+        };
+
+        if let Some(log) = events.policy_event.as_ref() {
+            log("webview_controller_requested");
+        }
+        let weak_core = Rc::downgrade(core);
+        let controller_environment = environment.clone();
+        let completion_events = events.clone();
+        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+            move |status, controller| {
+                if let Some(log) = completion_events.policy_event.as_ref() {
+                    log("webview_controller_result");
+                }
+                let controller = match (status, controller) {
+                    (Ok(()), Some(controller)) => controller,
+                    (Err(error), _) => {
+                        if let Some(core) = weak_core.upgrade() {
+                            let mut state = core.borrow_mut();
+                            state.creating.remove(&tab_id);
+                            state.pending.remove(&tab_id);
+                        }
+                        if let Some(failed) = completion_events.failed.as_ref() {
+                            failed(error);
+                        }
+                        return Ok(());
+                    }
+                    _ => {
+                        if let Some(core) = weak_core.upgrade() {
+                            let mut state = core.borrow_mut();
+                            state.creating.remove(&tab_id);
+                            state.pending.remove(&tab_id);
+                        }
+                        if let Some(failed) = completion_events.failed.as_ref() {
+                            failed(Error::from(windows::Win32::Foundation::E_POINTER));
+                        }
+                        return Ok(());
+                    }
+                };
+                let Some(core) = weak_core.upgrade() else {
+                    let _ = unsafe { controller.Close() };
+                    return Ok(());
+                };
+                let (still_open, bounds, visible) = {
+                    let state = core.borrow();
+                    (
+                        !state.closed && state.known_tabs.contains(&tab_id),
+                        state.bounds,
+                        state.active_tab == Some(tab_id),
+                    )
+                };
+                if !still_open {
+                    let _ = unsafe { controller.Close() };
+                    return Ok(());
+                }
+                if let Some(log) = completion_events.policy_event.as_ref() {
+                    log("webview_configure_started");
+                }
+                let cleanup = controller.clone();
+                let configured = unsafe {
+                    configure_controller(
+                        &controller_environment,
+                        controller,
+                        parent,
+                        bounds,
+                        tab_id,
+                        allowed_file.clone(),
+                        completion_events.clone(),
+                        tracking_policy,
+                        visible,
+                    )
+                };
+                if let Some(log) = completion_events.policy_event.as_ref() {
+                    log("webview_configure_finished");
+                }
+                let tab = match configured {
+                    Ok(tab) => tab,
+                    Err(error) => {
+                        let _ = unsafe { cleanup.Close() };
+                        if let Some(core) = weak_core.upgrade() {
+                            let mut state = core.borrow_mut();
+                            state.creating.remove(&tab_id);
+                            state.pending.remove(&tab_id);
+                        }
+                        if let Some(failed) = completion_events.failed.as_ref() {
+                            failed(error);
+                        }
+                        return Ok(());
+                    }
+                };
+                let (pending, target, still_open) = {
+                    let mut state = core.borrow_mut();
+                    state.creating.remove(&tab_id);
+                    let still_open = !state.closed && state.known_tabs.contains(&tab_id);
+                    if still_open {
+                        let active = state.active_tab == Some(tab_id);
+                        if active {
+                            state.hidden_since.remove(&tab_id);
+                        } else {
+                            state
+                                .hidden_since
+                                .entry(tab_id)
+                                .or_insert_with(Instant::now);
+                        }
+                        state.suspended.remove(&tab_id);
+                        (
+                            state.pending.remove(&tab_id),
+                            if active {
+                                state.target
+                            } else {
+                                MemoryUsageTarget::Low
+                            },
+                            true,
+                        )
+                    } else {
+                        state.pending.remove(&tab_id);
+                        (None, MemoryUsageTarget::Low, false)
+                    }
+                };
+                if !still_open {
+                    let mut tab = tab;
+                    let _ = EngineAdapter::close(&mut tab);
+                    return Ok(());
+                }
+                core.borrow_mut().tabs.insert(tab_id, tab);
+                // Navigate raises NavigationStarting synchronously and failure callbacks can pump
+                // messages, so no core borrow may be held across either.
+                let memory_result = core
+                    .borrow_mut()
+                    .tabs
+                    .get_mut(&tab_id)
+                    .map(|tab| EngineAdapter::set_memory_usage_target(tab, target));
+                if let Some(Err(error)) = memory_result
+                    && let Some(failed) = completion_events.failed.as_ref()
+                {
+                    failed(error);
+                }
+                if let Some(url) = pending {
+                    let handles = core
+                        .borrow()
+                        .tabs
+                        .get(&tab_id)
+                        .map(|tab| (tab.webview.clone(), tab.allowed_file.clone()));
+                    if let Some((webview, allowed_file)) = handles
+                        && let Err(error) =
+                            navigate_webview(webview.as_ref(), allowed_file.as_ref(), &url)
+                        && let Some(failed) = completion_events.failed.as_ref()
+                    {
+                        failed(error);
+                    }
+                }
+                Ok(())
+            },
+        ));
+        if let Err(error) = unsafe { environment.CreateCoreWebView2Controller(parent, &handler) } {
+            let mut state = core.borrow_mut();
+            state.creating.remove(&tab_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn navigate_tab_internal(&mut self, tab_id: TabId, url: &Url) -> Result<()> {
+        let should_create = {
+            let mut state = self.core.borrow_mut();
+            if !navigation_scheme_allowed(url) && state.allowed_file.as_ref() != Some(url) {
+                return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+            }
+            if let Some(tab) = state.tabs.get(&tab_id) {
+                let handles = (tab.webview.clone(), tab.allowed_file.clone());
+                drop(state);
+                return navigate_webview(handles.0.as_ref(), handles.1.as_ref(), url);
+            }
+            if state.closed || !state.known_tabs.contains(&tab_id) {
+                return Err(Error::from(windows::Win32::Foundation::E_POINTER));
+            }
+            state.pending.insert(tab_id, url.clone());
+            !state.creating.contains(&tab_id)
+        };
+        if should_create {
+            Self::request_controller(&self.core, tab_id)?;
+        }
+        Ok(())
     }
 }
 
@@ -286,75 +580,30 @@ impl WebView2Engine {
                         return Ok(());
                     }
                 }
-                let completion_ctl = completion_env.clone();
-                let completion_create = completion_env.clone();
-                let handler_events = event_handlers.clone();
-                let requested_tracking_prevention = TrackingPolicy {
-                    level: tracking_prevention,
-                    enabled: tracking_prevention_enabled,
+                let engine = Self {
+                    core: Rc::new(RefCell::new(EngineCore {
+                        parent,
+                        bounds,
+                        environment: Some(environment),
+                        allowed_file: allowed_file.clone(),
+                        events: event_handlers.clone(),
+                        tracking_policy: TrackingPolicy {
+                            level: tracking_prevention,
+                            enabled: tracking_prevention_enabled,
+                        },
+                        active_tab: None,
+                        target: MemoryUsageTarget::Normal,
+                        tabs: HashMap::new(),
+                        known_tabs: HashSet::new(),
+                        creating: HashSet::new(),
+                        pending: HashMap::new(),
+                        hidden_since: HashMap::new(),
+                        suspended: HashSet::new(),
+                        closed: false,
+                    })),
                 };
-                let controller_log = event_handlers.policy_event.clone();
-                let allowed_file = allowed_file.clone();
-                let controller_environment = environment.clone();
-                let controller_handler = CreateCoreWebView2ControllerCompletedHandler::create(
-                    Box::new(move |status, controller| {
-                        if let Some(log) = controller_log.as_ref() {
-                            log("webview_controller_result");
-                        }
-                        let controller = match (status, controller) {
-                            (Ok(()), Some(controller)) => controller,
-                            (Err(error), _) => {
-                                if let Some(f) = completion_ctl.borrow_mut().take() {
-                                    f(Err(error));
-                                }
-                                return Ok(());
-                            }
-                            _ => {
-                                if let Some(f) = completion_ctl.borrow_mut().take() {
-                                    f(Err(Error::from(windows::Win32::Foundation::E_POINTER)));
-                                }
-                                return Ok(());
-                            }
-                        };
-                        let controller_for_cleanup = controller.clone();
-                        if let Some(log) = controller_log.as_ref() {
-                            log("webview_configure_started");
-                        }
-                        let configured = unsafe {
-                            configure_controller(
-                                &controller_environment,
-                                controller,
-                                parent,
-                                bounds,
-                                allowed_file,
-                                handler_events,
-                                requested_tracking_prevention,
-                            )
-                        };
-                        if let Some(log) = controller_log.as_ref() {
-                            log("webview_configure_finished");
-                        }
-                        if configured.is_err() {
-                            let _ = unsafe { controller_for_cleanup.Close() };
-                        }
-                        if let Some(f) = completion_ctl.borrow_mut().take() {
-                            f(configured);
-                        }
-                        Ok(())
-                    }),
-                );
-                if let Some(log) = event_handlers.policy_event.as_ref() {
-                    log("webview_controller_requested");
-                }
-                if let Err(error) =
-                    unsafe { environment.CreateCoreWebView2Controller(parent, &controller_handler) }
-                {
-                    if let Some(log) = event_handlers.policy_event.as_ref() {
-                        log("webview_controller_request_failed");
-                    }
-                    if let Some(f) = completion_create.borrow_mut().take() {
-                        f(Err(error));
-                    }
+                if let Some(f) = completion_env.borrow_mut().take() {
+                    f(Ok(engine));
                 }
                 Ok(())
             },
@@ -395,16 +644,214 @@ impl WebView2Engine {
 
 impl EngineAdapter for WebView2Engine {
     fn navigate(&mut self, url: &Url) -> Result<()> {
-        if !navigation_scheme_allowed(url) && self.allowed_file.as_ref() != Some(url) {
-            return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+        let active = self
+            .core
+            .borrow()
+            .active_tab
+            .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?;
+        self.navigate_tab_internal(active, url)
+    }
+    fn navigate_tab(&mut self, tab: TabId, url: &Url) -> Result<()> {
+        self.navigate_tab_internal(tab, url)
+    }
+    fn can_go_back(&self) -> bool {
+        let state = self.core.borrow();
+        state
+            .active_tab
+            .and_then(|id| state.tabs.get(&id))
+            .is_some_and(EngineAdapter::can_go_back)
+    }
+    fn go_back(&mut self) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::go_back(tab)?;
         }
-        let url = CoTaskMemPWSTR::from(url.as_str());
-        unsafe {
-            self.webview
-                .as_ref()
-                .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
-                .Navigate(*url.as_ref().as_pcwstr())
+        Ok(())
+    }
+    fn can_go_forward(&self) -> bool {
+        let state = self.core.borrow();
+        state
+            .active_tab
+            .and_then(|id| state.tabs.get(&id))
+            .is_some_and(EngineAdapter::can_go_forward)
+    }
+    fn go_forward(&mut self) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::go_forward(tab)?;
         }
+        Ok(())
+    }
+    fn resize(&mut self, bounds: RECT) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        state.bounds = bounds;
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::resize(tab, bounds)?;
+        }
+        Ok(())
+    }
+    fn reload(&mut self) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::reload(tab)?;
+        }
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::stop(tab)?;
+        }
+        Ok(())
+    }
+    fn set_visible(&mut self, visible: bool) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(active) = state.active_tab {
+            if let Some(tab) = state.tabs.get_mut(&active) {
+                EngineAdapter::set_visible(tab, visible)?;
+            }
+            if visible {
+                state.hidden_since.remove(&active);
+                state.suspended.remove(&active);
+            } else {
+                state.hidden_since.insert(active, Instant::now());
+                state.suspended.remove(&active);
+                if let Some(tab) = state.tabs.get_mut(&active) {
+                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                }
+            }
+        }
+        Ok(())
+    }
+    fn select_tab(&mut self, tab_id: TabId) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if state.closed {
+            return Ok(());
+        }
+        state.known_tabs.insert(tab_id);
+        let previous = state.active_tab;
+        if previous != Some(tab_id) {
+            if let Some(previous) = previous {
+                if state.known_tabs.contains(&previous) {
+                    if let Some(tab) = state.tabs.get_mut(&previous) {
+                        EngineAdapter::set_visible(tab, false)?;
+                        let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                    }
+                    state.hidden_since.insert(previous, Instant::now());
+                    state.suspended.remove(&previous);
+                } else {
+                    state.hidden_since.remove(&previous);
+                }
+            }
+            state.active_tab = Some(tab_id);
+        }
+        state.hidden_since.remove(&tab_id);
+        state.suspended.remove(&tab_id);
+        let bounds = state.bounds;
+        let target = state.target;
+        if let Some(tab) = state.tabs.get_mut(&tab_id) {
+            EngineAdapter::resize(tab, bounds)?;
+            EngineAdapter::set_visible(tab, true)?;
+            let _ = EngineAdapter::set_memory_usage_target(tab, target);
+        }
+        Ok(())
+    }
+    fn close_tab(&mut self, tab_id: TabId) -> Result<()> {
+        let removed = {
+            let mut state = self.core.borrow_mut();
+            state.known_tabs.remove(&tab_id);
+            state.creating.remove(&tab_id);
+            state.pending.remove(&tab_id);
+            state.hidden_since.remove(&tab_id);
+            state.suspended.remove(&tab_id);
+            state.tabs.remove(&tab_id)
+        };
+        // Controller teardown can raise events, so it runs without the core borrow.
+        if let Some(mut tab) = removed {
+            EngineAdapter::close(&mut tab)?;
+        }
+        Ok(())
+    }
+    fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        let now = Instant::now();
+        let eligible: Vec<_> = state
+            .hidden_since
+            .iter()
+            .filter(|(id, hidden)| {
+                now.duration_since(**hidden) >= Duration::from_millis(hidden_for_ms)
+                    && !state.suspended.contains(id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in eligible {
+            if let Some(tab) = state.tabs.get_mut(&id) {
+                tab.suspend();
+                state.suspended.insert(id);
+            }
+        }
+        Ok(())
+    }
+    fn set_memory_usage_target(&mut self, target: MemoryUsageTarget) -> Result<MemoryTargetApply> {
+        let mut state = self.core.borrow_mut();
+        state.target = target;
+        if let Some(active) = state.active_tab
+            && let Some(tab) = state.tabs.get_mut(&active)
+        {
+            EngineAdapter::set_memory_usage_target(tab, target)
+        } else {
+            Ok(MemoryTargetApply::Deferred)
+        }
+    }
+    fn close(&mut self) -> Result<()> {
+        let tabs: Vec<WebView2Tab> = {
+            let mut state = self.core.borrow_mut();
+            state.closed = true;
+            state.known_tabs.clear();
+            state.pending.clear();
+            state.creating.clear();
+            state.hidden_since.clear();
+            state.suspended.clear();
+            state.tabs.drain().map(|(_, tab)| tab).collect()
+        };
+        for mut tab in tabs {
+            let _ = EngineAdapter::close(&mut tab);
+        }
+        self.core.borrow_mut().environment = None;
+        Ok(())
+    }
+}
+
+/// Navigates a controller's webview. Callers pass cloned COM handles so no engine borrow is held.
+fn navigate_webview(
+    webview: Option<&ICoreWebView2>,
+    allowed_file: Option<&Url>,
+    url: &Url,
+) -> Result<()> {
+    if !navigation_scheme_allowed(url) && allowed_file != Some(url) {
+        return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+    }
+    let url = CoTaskMemPWSTR::from(url.as_str());
+    unsafe {
+        webview
+            .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
+            .Navigate(*url.as_ref().as_pcwstr())
+    }
+}
+
+impl EngineAdapter for WebView2Tab {
+    fn navigate(&mut self, url: &Url) -> Result<()> {
+        navigate_webview(self.webview.as_ref(), self.allowed_file.as_ref(), url)
     }
     fn can_go_back(&self) -> bool {
         self.webview.as_ref().is_some_and(|w| unsafe {
@@ -440,6 +887,46 @@ impl EngineAdapter for WebView2Engine {
                 .as_ref()
                 .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
                 .SetBounds(bounds)
+        }
+    }
+    fn reload(&mut self) -> Result<()> {
+        unsafe {
+            self.webview
+                .as_ref()
+                .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
+                .Reload()
+        }
+    }
+    fn stop(&mut self) -> Result<()> {
+        unsafe {
+            self.webview
+                .as_ref()
+                .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
+                .Stop()
+        }
+    }
+    fn set_visible(&mut self, visible: bool) -> Result<()> {
+        unsafe {
+            self.controller
+                .as_ref()
+                .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
+                .SetIsVisible(visible)
+        }?;
+        self.visible.set(visible);
+        if visible
+            && let Some(webview) = self.webview.as_ref()
+            && let Ok(webview3) = webview.cast::<ICoreWebView2_3>()
+        {
+            let _ = unsafe { webview3.Resume() };
+        }
+        Ok(())
+    }
+    fn suspend(&mut self) {
+        if let Some(webview) = self.webview.as_ref()
+            && let Ok(webview3) = webview.cast::<ICoreWebView2_3>()
+        {
+            let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+            let _ = unsafe { webview3.TrySuspend(&handler) };
         }
     }
     fn set_memory_usage_target(&mut self, target: MemoryUsageTarget) -> Result<MemoryTargetApply> {
@@ -494,18 +981,21 @@ struct TrackingPolicy {
     enabled: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 unsafe fn configure_controller(
     environment: &ICoreWebView2Environment,
     controller: ICoreWebView2Controller,
     parent: HWND,
     bounds: RECT,
+    tab_id: TabId,
     allowed_file: Option<Url>,
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
-) -> Result<WebView2Engine> {
+    visible: bool,
+) -> Result<WebView2Tab> {
     unsafe {
         controller.SetBounds(bounds)?;
-        controller.SetIsVisible(true)?;
+        controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
         if let Some(level) = tracking_policy.level {
             apply_tracking_prevention(
@@ -534,8 +1024,11 @@ unsafe fn configure_controller(
                         .map(|url| navigation_start_policy(url, allowed_file_for_handler.as_ref()))
                     {
                         Some(NavigationStartPolicy::Allow) => {
-                            if let Some(callback) = navigation_started.as_ref() {
-                                callback();
+                            let mut navigation_id = 0;
+                            if args.NavigationId(&mut navigation_id).is_ok() {
+                                if let Some(callback) = navigation_started.as_ref() {
+                                    callback(tab_id, navigation_id);
+                                }
                             }
                             if let Some(log) = navigation_start_log.as_ref() {
                                 log("navigation_started");
@@ -554,11 +1047,56 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+        let content_progress = events.navigation_progress.clone();
+        webview.add_ContentLoading(
+            &ContentLoadingEventHandler::create(Box::new(move |_sender, args| {
+                if let (Some(args), Some(callback)) = (args, content_progress.as_ref()) {
+                    let mut navigation_id = 0;
+                    if args.NavigationId(&mut navigation_id).is_ok() {
+                        callback(
+                            tab_id,
+                            super::NavigationProgressEvent::ContentLoading(navigation_id),
+                        );
+                    }
+                }
+                Ok(())
+            })),
+            &mut token,
+        )?;
+        if let Ok(webview2_2) = webview.cast::<ICoreWebView2_2>() {
+            let dom_progress = events.navigation_progress.clone();
+            webview2_2.add_DOMContentLoaded(
+                &DOMContentLoadedEventHandler::create(Box::new(move |_sender, args| {
+                    if let (Some(args), Some(callback)) = (args, dom_progress.as_ref()) {
+                        let mut navigation_id = 0;
+                        if args.NavigationId(&mut navigation_id).is_ok() {
+                            callback(
+                                tab_id,
+                                super::NavigationProgressEvent::DomContentLoaded(navigation_id),
+                            );
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
         let navigation_log = events.policy_event.clone();
         let completed_address_changed = events.address_changed.clone();
+        let completed_progress = events.navigation_progress.clone();
+        let completed_page_loaded = events.page_loaded.clone();
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
+                    let mut navigation_id = 0;
+                    if args.NavigationId(&mut navigation_id).is_ok() {
+                        if let Some(callback) = completed_progress.as_ref() {
+                            callback(
+                                tab_id,
+                                super::NavigationProgressEvent::Completed(navigation_id),
+                            );
+                        }
+                    }
                     let mut success = BOOL::default();
                     if args.IsSuccess(&mut success).is_ok() {
                         if let Some(log) = navigation_log.as_ref() {
@@ -569,11 +1107,14 @@ unsafe fn configure_controller(
                             }
                         }
                         if success.as_bool() {
+                            if let Some(callback) = completed_page_loaded.as_ref() {
+                                callback(tab_id);
+                            }
                             if let (Some(sender), Some(callback)) =
                                 (sender.as_ref(), completed_address_changed.as_ref())
                             {
                                 if let Some(url) = current_web_url(sender) {
-                                    callback(url);
+                                    callback(tab_id, url);
                                 }
                             }
                         }
@@ -588,7 +1129,7 @@ unsafe fn configure_controller(
             &SourceChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let (Some(sender), Some(callback)) = (sender, address_changed.as_ref()) {
                     if let Some(url) = current_web_url(&sender) {
-                        callback(url);
+                        callback(tab_id, url);
                     }
                 }
                 Ok(())
@@ -596,23 +1137,21 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
-        let title_parent = parent;
         let page_ready = events.page_usable.clone();
+        let title_changed = events.title_changed.clone();
         webview.add_DocumentTitleChanged(
             &DocumentTitleChangedEventHandler::create(Box::new(move |sender, _| {
                 if let Some(sender) = sender {
                     let mut title = PWSTR::null();
                     if sender.DocumentTitle(&mut title).is_ok() {
                         let title = CoTaskMemPWSTR::from(title);
-                        let mut text: Vec<u16> = title
-                            .to_string()
-                            .encode_utf16()
-                            .chain(std::iter::once(0))
-                            .collect();
-                        let _ = SetWindowTextW(title_parent, PCWSTR(text.as_mut_ptr()));
-                        if title.to_string().contains("BOWSER_BENCH_READY") {
+                        let title_text = title.to_string();
+                        if let Some(callback) = title_changed.as_ref() {
+                            callback(tab_id, title_text.clone());
+                        }
+                        if title_text.contains("BOWSER_BENCH_READY") {
                             if let Some(callback) = page_ready.as_ref() {
-                                callback();
+                                callback(tab_id);
                             }
                         }
                     }
@@ -652,8 +1191,9 @@ unsafe fn configure_controller(
         )?;
 
         let policy_event = events.policy_event.clone();
+        let popup_callback = events.new_window_requested.clone();
         webview.add_NewWindowRequested(
-            &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
+            &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     let mut uri = PWSTR::null();
                     let mut initiated = BOOL::default();
@@ -671,14 +1211,13 @@ unsafe fn configure_controller(
                         .as_ref()
                         .map(|url| popup_decision(url, initiated.as_bool()))
                         .unwrap_or(PopupDecision::Block);
-                    if decision == PopupDecision::SameView {
-                        let url = target.expect("same-view decision requires a parsed target");
-                        let text = CoTaskMemPWSTR::from(url.as_str());
-                        if let Some(sender) = sender.as_ref() {
-                            let _ = sender.Navigate(*text.as_ref().as_pcwstr());
+                    if decision == PopupDecision::NewTab {
+                        let url = target.expect("new-tab decision requires a parsed target");
+                        if let Some(callback) = popup_callback.as_ref() {
+                            callback(tab_id, url);
                         }
                         if let Some(log) = policy_event.as_ref() {
-                            log("popup_same_view");
+                            log("popup_new_tab");
                         }
                     } else if let Some(log) = policy_event.as_ref() {
                         log("popup_blocked");
@@ -705,42 +1244,48 @@ unsafe fn configure_controller(
             .into();
         external_webview.add_LaunchingExternalUriScheme(&external_handler, &mut token)?;
 
+        if let Ok(webview15) = webview.cast::<ICoreWebView2_15>() {
+            let favicon_callback = events.favicon_changed.clone();
+            let favicon_handler = FaviconChangedEventHandler::create(Box::new(move |sender, _| {
+                if let (Some(sender), Some(callback)) = (sender, favicon_callback.as_ref()) {
+                    if let Ok(webview15) = sender.cast::<ICoreWebView2_15>() {
+                        let callback = callback.clone();
+                        let completed =
+                            GetFaviconCompletedHandler::create(Box::new(move |status, stream| {
+                                if status.is_ok() {
+                                    if let Some(bytes) = stream.and_then(read_favicon_stream) {
+                                        callback(tab_id, bytes);
+                                    }
+                                }
+                                Ok(())
+                            }));
+                        let _ =
+                            webview15.GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, &completed);
+                    }
+                }
+                Ok(())
+            }));
+            let _ = webview15.add_FaviconChanged(&favicon_handler, &mut token);
+        }
+
         controller.add_AcceleratorKeyPressed(
-            &AcceleratorKeyPressedEventHandler::create(Box::new(move |sender, args| {
+            &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     let mut key = 0u32;
                     let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
                     let _ = args.VirtualKey(&mut key);
                     let _ = args.KeyEventKind(&mut kind);
-                    let action = history_action(key, kind, GetKeyState(VK_MENU.0 as i32) < 0);
-                    if let Some(forward) = action {
-                        let view = sender
-                            .as_ref()
-                            .and_then(|controller| controller.CoreWebView2().ok());
-                        let handled = match (forward, view.as_ref()) {
-                            (false, Some(view)) => {
-                                let mut can_go = BOOL::default();
-                                if view.CanGoBack(&mut can_go).is_ok() && can_go.as_bool() {
-                                    let _ = view.GoBack();
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            (true, Some(view)) => {
-                                let mut can_go = BOOL::default();
-                                if view.CanGoForward(&mut can_go).is_ok() && can_go.as_bool() {
-                                    let _ = view.GoForward();
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => false,
-                        };
-                        if handled {
-                            let _ = args.SetHandled(true);
-                        }
+                    let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+                    let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                    let alt = GetKeyState(VK_MENU.0 as i32) < 0;
+                    if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt) {
+                        win32::post(
+                            parent,
+                            win32::WM_SHORTCUT_KEY,
+                            WPARAM(forward.key as usize),
+                            LPARAM(forward.modifier_bits()),
+                        );
+                        let _ = args.SetHandled(true);
                     }
                 }
                 Ok(())
@@ -758,12 +1303,13 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
-        Ok(WebView2Engine {
+        Ok(WebView2Tab {
             environment: Some(environment.clone()),
             controller: Some(controller),
             webview: Some(webview),
             allowed_file,
             memory_target_api: None,
+            visible: Rc::new(Cell::new(visible)),
         })
     }
 }
@@ -1226,11 +1772,11 @@ mod tests {
     fn popup_policy_contains_only_user_initiated_http_and_https() {
         assert_eq!(
             popup_decision(&Url::parse("https://example.com").unwrap(), true),
-            PopupDecision::SameView
+            PopupDecision::NewTab
         );
         assert_eq!(
             popup_decision(&Url::parse("http://example.com").unwrap(), true),
-            PopupDecision::SameView
+            PopupDecision::NewTab
         );
         assert_eq!(
             popup_decision(&Url::parse("https://example.com").unwrap(), false),
@@ -1300,26 +1846,161 @@ mod tests {
         }
     }
 
+    fn forward(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<ShortcutForward> {
+        Some(ShortcutForward {
+            key,
+            ctrl,
+            shift,
+            alt,
+        })
+    }
+
     #[test]
     fn history_shortcuts_accept_alt_keydown_and_system_keydown_only() {
         for kind in [
             COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
             COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
         ] {
-            assert_eq!(history_action(0x25, kind, true), Some(false));
-            assert_eq!(history_action(0x27, kind, true), Some(true));
+            assert!(is_key_down(kind));
+            assert_eq!(
+                shortcut_forward(0x25, kind, false, false, true),
+                forward(0x25, false, false, true)
+            );
+            assert_eq!(
+                shortcut_forward(0x27, kind, false, false, true),
+                forward(0x27, false, false, true)
+            );
         }
         assert_eq!(
-            history_action(0x25, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN, false),
+            shortcut_forward(
+                0x25,
+                COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+                false,
+                false,
+                false
+            ),
             None
         );
         assert_eq!(
-            history_action(0x41, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN, true),
+            shortcut_forward(
+                0x41,
+                COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
+                false,
+                false,
+                true
+            ),
             None
         );
         assert_eq!(
-            history_action(0x25, COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP, true),
+            shortcut_forward(0x25, COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP, false, false, true),
             None
+        );
+        assert!(!is_key_down(COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP));
+        assert!(!is_key_down(COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP));
+    }
+
+    #[test]
+    fn shortcut_forward_matches_command_table_on_key_down_only() {
+        for kind in [
+            COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+            COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
+            COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP,
+            COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP,
+        ] {
+            for key in 0..=0xFF_u32 {
+                for modifiers in 0..8_u8 {
+                    let (ctrl, shift, alt) =
+                        (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
+                    let expected = if is_key_down(kind)
+                        && key != u32::from(VK_ESCAPE.0)
+                        && shortcuts::command_for(key, ctrl, shift, alt).is_some()
+                    {
+                        forward(key, ctrl, shift, alt)
+                    } else {
+                        None
+                    };
+                    assert_eq!(
+                        shortcut_forward(key, kind, ctrl, shift, alt),
+                        expected,
+                        "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shortcut_forward_forwards_common_browser_chords() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        assert_eq!(
+            shortcut_forward(0x54, down, true, false, false),
+            forward(0x54, true, false, false)
+        );
+        assert_eq!(
+            shortcut_forward(0x4C, down, true, false, false),
+            forward(0x4C, true, false, false)
+        );
+        assert_eq!(
+            shortcut_forward(0x74, down, false, false, false),
+            forward(0x74, false, false, false)
+        );
+        assert_eq!(
+            shortcut_forward(0x52, down, true, true, false),
+            forward(0x52, true, true, false)
+        );
+    }
+
+    #[test]
+    fn shortcut_forward_never_swallows_page_editing_and_navigation_keys() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        for (key, ctrl, shift, alt) in [
+            (0x43, true, false, false),  // Ctrl+C
+            (0x56, true, false, false),  // Ctrl+V
+            (0x58, true, false, false),  // Ctrl+X
+            (0x5A, true, false, false),  // Ctrl+Z
+            (0x41, true, false, false),  // Ctrl+A
+            (0x46, true, false, false),  // Ctrl+F
+            (0x47, true, false, false),  // Ctrl+G
+            (0x41, false, false, false), // A
+            (0x20, false, false, false), // Space
+            (0x0D, false, false, false), // Enter
+            (0x08, false, false, false), // Backspace
+            (0x2E, false, false, false), // Delete
+            (0x09, false, false, false), // Tab
+            (0x25, false, false, false), // Left
+            (0x26, false, false, false), // Up
+            (0x27, false, false, false), // Right
+            (0x28, false, false, false), // Down
+            (0x25, true, false, false),  // Ctrl+Left, word movement in text fields
+            (0x25, false, true, false),  // Shift+Left, selection
+            (0x21, false, false, false), // Page Up
+            (0x22, false, false, false), // Page Down
+            (0x7B, false, false, false), // F12
+            (0x7B, true, false, false),  // Ctrl+F12
+            (0x1B, false, false, false), // Escape, left to the page
+        ] {
+            assert_eq!(
+                shortcut_forward(key, down, ctrl, shift, alt),
+                None,
+                "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}"
+            );
+        }
+    }
+
+    #[test]
+    fn modifier_bits_follow_the_wm_shortcut_key_layout() {
+        assert_eq!(
+            forward(0x54, false, false, false).unwrap().modifier_bits(),
+            0
+        );
+        assert_eq!(
+            forward(0x54, true, false, false).unwrap().modifier_bits(),
+            1
+        );
+        assert_eq!(forward(0x52, true, true, false).unwrap().modifier_bits(), 3);
+        assert_eq!(
+            forward(0x25, false, false, true).unwrap().modifier_bits(),
+            4
         );
     }
 }

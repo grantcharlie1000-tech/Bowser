@@ -6,6 +6,9 @@ param(
     [ValidateSet('All','Bowser','Edge','Chrome')] [string] $Browser = 'All',
     [ValidateSet('blank-idle','blank-submit','light','demanding')] [string[]] $SelectedWorkloads,
     [string] $BowserExecutable = (Join-Path $PSScriptRoot '..\target\x86_64-pc-windows-msvc\release\bowser.exe'),
+    # Bowser accepts --benchmark-url only for files under the fixture root it was compiled with
+    # (CARGO_MANIFEST_DIR\benchmarks\fixtures). Point this at that build's fixtures for other worktrees.
+    [string] $FixtureRoot = (Join-Path $PSScriptRoot 'fixtures'),
     [AllowNull()] [AllowEmptyString()] [string] $TrackingPrevention,
     [switch] $KeepProfiles
 )
@@ -24,7 +27,7 @@ $OutputDirectory = $runSelection.OutputDirectory
 # Reproducible user-mode benchmark. Windows' standby/file cache is deliberately
 # left alone: cold-profile means a new browser profile, not a cold OS cache.
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$fixtureRoot = (Resolve-Path (Join-Path $PSScriptRoot 'fixtures')).Path
+$fixtureRoot = (Resolve-Path -LiteralPath $FixtureRoot).Path
 $lightFixture = (Join-Path $fixtureRoot 'light.html')
 $demandingFixture = (Join-Path $fixtureRoot 'demanding.html')
 $bowserPath = Resolve-BowserExecutable $BowserExecutable
@@ -114,6 +117,28 @@ function Get-WindowClass([IntPtr] $Handle) {
     return $buffer.ToString()
 }
 
+function Get-ErrorDialogMessage([int] $ProcessId) {
+    # Bowser reports startup/navigation rejections with a modal MessageBox (class #32770) owned by
+    # the process. The main window never appears in that state, so the harness must read the text.
+    $dialogs = @(Get-TopWindows $ProcessId | Where-Object { (Get-WindowClass $_.Handle) -eq '#32770' })
+    if ($dialogs.Count -eq 0) { return $null }
+    $texts = New-Object 'System.Collections.Generic.List[string]'
+    $callback = [BowserBench.Native+EnumWindowsProc] {
+        param([IntPtr] $hWnd, [IntPtr] $unused)
+        $text = Get-WindowText $hWnd
+        if ($text -and $text -ne 'OK') { $texts.Add($text) }
+        return $true
+    }
+    [void][BowserBench.Native]::EnumChildWindows($dialogs[0].Handle, $callback, [IntPtr]::Zero)
+    if ($texts.Count -gt 0) { return ($texts -join ' ') }
+    return $dialogs[0].Title
+}
+
+function Assert-NoErrorDialog([int] $ProcessId) {
+    $message = Get-ErrorDialogMessage $ProcessId
+    if ($message) { throw "Bowser showed an error dialog instead of loading: $message" }
+}
+
 function Find-AddressEdit([IntPtr] $MainWindow) {
     $script:addressEdit = [IntPtr]::Zero
     $callback = [BowserBench.Native+EnumWindowsProc] {
@@ -179,6 +204,7 @@ function Test-WindowResponsive([IntPtr] $Handle) {
 function Wait-VisibleResponsive([int] $ProcessId, [long] $StartedTick, [int] $TimeoutSeconds = 90) {
     $limit = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $limit) {
+        Assert-NoErrorDialog $ProcessId
         $window = Find-MainWindow $ProcessId ''
         if ($window -and (Test-WindowResponsive $window.Handle)) {
             return [pscustomobject]@{ Window=$window; ElapsedMs=(Get-ElapsedMs $StartedTick) }
@@ -191,6 +217,7 @@ function Wait-VisibleResponsive([int] $ProcessId, [long] $StartedTick, [int] $Ti
 function Wait-TitleMarker([int] $ProcessId, [string] $Marker, [int] $TimeoutSeconds = 90) {
     $limit = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $limit) {
+        Assert-NoErrorDialog $ProcessId
         $window = Find-MainWindow $ProcessId $Marker
         if ($window -and (Test-WindowResponsive $window.Handle)) { return [pscustomobject]@{ Window=$window; ElapsedMs=(Get-ElapsedMs $script:activeStartTick) } }
         Start-Sleep -Milliseconds 10
@@ -234,33 +261,45 @@ function Send-TextToEdit([IntPtr] $Edit, [string] $Text) {
 
 function Activate-MainWindow([IntPtr] $MainWindow) {
     [void][BowserBench.Native]::ShowWindow($MainWindow, 9)
-    $foregroundBefore = [BowserBench.Native]::GetForegroundWindow()
-    [uint32] $foregroundPid = 0; [uint32] $targetPid = 0
-    $foregroundThread = if ($foregroundBefore -ne [IntPtr]::Zero) { [BowserBench.Native]::GetWindowThreadProcessId($foregroundBefore, [ref] $foregroundPid) } else { [uint32]0 }
+    [uint32] $targetPid = 0
     $targetThread = [BowserBench.Native]::GetWindowThreadProcessId($MainWindow, [ref] $targetPid)
     $currentThread = [BowserBench.Native]::GetCurrentThreadId()
-    $attachedForeground = $false; $attachedTarget = $false
-    try {
-        if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
-            $attachedForeground = [BowserBench.Native]::AttachThreadInput($currentThread, $foregroundThread, $true)
-        }
-        if ($targetThread -ne 0 -and $targetThread -ne $currentThread -and $targetThread -ne $foregroundThread) {
-            $attachedTarget = [BowserBench.Native]::AttachThreadInput($currentThread, $targetThread, $true)
-        }
-        [void][BowserBench.Native]::BringWindowToTop($MainWindow)
-        $activated = [BowserBench.Native]::SetForegroundWindow($MainWindow)
-        Start-Sleep -Milliseconds 100
-        $foreground = [BowserBench.Native]::GetForegroundWindow()
-        if ($foreground -ne $MainWindow) {
+    $lastDetail = ''
+    # Windows refuses SetForegroundWindow from a process that did not receive the last input event.
+    # Shell surfaces such as the Start/Search flyout can keep that right. Attaching to the current
+    # foreground thread and tapping Alt (which Windows does not treat as a menu command here) gives
+    # this process the foreground right; the attempt is retried a few times and then reported.
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $foregroundBefore = [BowserBench.Native]::GetForegroundWindow()
+        [uint32] $foregroundPid = 0
+        $foregroundThread = if ($foregroundBefore -ne [IntPtr]::Zero) { [BowserBench.Native]::GetWindowThreadProcessId($foregroundBefore, [ref] $foregroundPid) } else { [uint32]0 }
+        $attachedForeground = $false; $attachedTarget = $false
+        try {
+            if ($foregroundThread -ne 0 -and $foregroundThread -ne $currentThread) {
+                $attachedForeground = [BowserBench.Native]::AttachThreadInput($currentThread, $foregroundThread, $true)
+            }
+            if ($targetThread -ne 0 -and $targetThread -ne $currentThread -and $targetThread -ne $foregroundThread) {
+                $attachedTarget = [BowserBench.Native]::AttachThreadInput($currentThread, $targetThread, $true)
+            }
+            [void][BowserBench.Native]::BringWindowToTop($MainWindow)
+            $activated = [BowserBench.Native]::SetForegroundWindow($MainWindow)
+            Start-Sleep -Milliseconds 100
+            $foreground = [BowserBench.Native]::GetForegroundWindow()
+            if ($foreground -eq $MainWindow) { return }
             [uint32] $actualForegroundPid = 0
             if ($foreground -ne [IntPtr]::Zero) { [void][BowserBench.Native]::GetWindowThreadProcessId($foreground, [ref] $actualForegroundPid) }
             $foregroundTitle = Get-WindowText $foreground
-            throw "The benchmark browser window is not foreground (SetForegroundWindow=$activated; target PID=$targetPid; foreground HWND=$foreground PID=$actualForegroundPid title='$foregroundTitle')."
+            $lastDetail = "attempt $attempt; SetForegroundWindow=$activated; target PID=$targetPid; foreground HWND=$foreground PID=$actualForegroundPid title='$foregroundTitle'"
+        } finally {
+            if ($attachedTarget) { [void][BowserBench.Native]::AttachThreadInput($currentThread, $targetThread, $false) }
+            if ($attachedForeground) { [void][BowserBench.Native]::AttachThreadInput($currentThread, $foregroundThread, $false) }
         }
-    } finally {
-        if ($attachedTarget) { [void][BowserBench.Native]::AttachThreadInput($currentThread, $targetThread, $false) }
-        if ($attachedForeground) { [void][BowserBench.Native]::AttachThreadInput($currentThread, $foregroundThread, $false) }
+        if ($attempt -lt 5) {
+            Send-Key 0x12; Send-Key 0x12 $true
+            Start-Sleep -Milliseconds 150
+        }
     }
+    throw "The benchmark browser window is not foreground after 5 activation attempts ($lastDetail)."
 }
 
 function Focus-AddressInput([IntPtr] $MainWindow, [string] $Browser) {
@@ -375,6 +414,38 @@ function Start-OneBrowser([string] $Browser, [string] $UserDataProfile, [string]
     $startedTick = [Diagnostics.Stopwatch]::GetTimestamp()
     $process = [Diagnostics.Process]::Start($psi)
     return [pscustomobject]@{ Process=$process; StartedTick=$startedTick }
+}
+
+function Assert-BowserFixtureAccepted([string] $Workload) {
+    # One short launch per fixture workload: fail fast if this exe will not open the fixture URL,
+    # instead of timing out 120 seconds per run on a modal error dialog.
+    $probeDirectory = Join-Path $profileRoot ('fixture-preflight-' + $Workload)
+    $probeProfile = Join-Path $probeDirectory 'profile'
+    New-Item -ItemType Directory -Force -Path $probeProfile | Out-Null
+    $probeLog = Join-Path $probeDirectory 'preflight-events.csv'
+    $launch = Start-OneBrowser 'Bowser' $probeProfile $Workload $probeLog
+    $rootPid = $launch.Process.Id
+    $accepted = $false; $dialog = $null; $windowReady = $false
+    $limit = [DateTime]::UtcNow.AddSeconds(15)
+    # Wait for the main window as well as the log: the log is created before the window, and WM_CLOSE
+    # posted before a window exists does nothing, which left the probe running.
+    while ([DateTime]::UtcNow -lt $limit -and -not $dialog -and -not ($accepted -and $windowReady)) {
+        Start-Sleep -Milliseconds 200
+        $dialog = Get-ErrorDialogMessage $rootPid
+        $accepted = Test-Path -LiteralPath $probeLog -PathType Leaf
+        $windowReady = ($null -ne (Find-MainWindow $rootPid ''))
+    }
+    $close = Close-Run $rootPid $probeProfile
+    if (-not $close.Exited) {
+        # This probe is ours and disposable: stop its process tree so it cannot hold the GUI or profile.
+        & taskkill.exe /PID $rootPid /T /F | Out-Null
+        Start-Sleep -Seconds 2
+        if (@(Get-ProcessGroup $rootPid $probeProfile).Count -gt 0) { throw "Fixture preflight for $Workload could not stop Bowser PID $rootPid; stop it manually and rerun." }
+    }
+    if ($dialog) {
+        throw "Bowser rejected the $Workload fixture URL with the dialog '$dialog'. Bowser compiles its fixture root into the executable (CARGO_MANIFEST_DIR\benchmarks\fixtures). Pass -FixtureRoot pointing at benchmarks\fixtures in the source tree that built $bowserPath."
+    }
+    if (-not $accepted) { throw "Fixture preflight for $Workload saw neither a Bowser event log nor an error dialog within 15 seconds." }
 }
 
 function Get-FileBytes([string[]] $Paths) {
@@ -514,6 +585,10 @@ New-Item -ItemType Directory -Force -Path $profileRoot | Out-Null
 $allGroupsClosed = $true
 $profilesSafeToCleanup = $true
 $inputPhrase = 'Bowser reproducible browser benchmark'
+
+if ($browsers.Name -contains 'Bowser') {
+    foreach ($fixtureWorkload in @($workloads | Where-Object { $_ -in @('light','demanding') })) { Assert-BowserFixtureAccepted $fixtureWorkload }
+}
 
 $workloadIndex = 0
 foreach ($workload in $workloads) {
@@ -897,7 +972,8 @@ $summary.Add('Each row is calculated from QPC ticks within one Bowser event log.
 $summary.Add('')
 $summary.Add('| Workload | Condition | Phase | Valid samples | Invalid samples | Median ms | Min ms | Max ms |')
 $summary.Add('|---|---|---|---:|---:|---:|---:|---:|')
-foreach ($phaseSummary in (Get-BowserPhaseSummary -Rows @($phaseRows) | Sort-Object workload,launch_condition,phase)) {
+# $phaseRows is a generic List; @($list) throws "Argument types do not match" on Windows PowerShell 5.1.
+foreach ($phaseSummary in (Get-BowserPhaseSummary -Rows $phaseRows.ToArray() | Sort-Object workload,launch_condition,phase)) {
     if ($phaseSummary.MedianMs -eq $null) { $medianText='n/a'; $minText='n/a'; $maxText='n/a' }
     else { $medianText='{0:N3}' -f $phaseSummary.MedianMs; $minText='{0:N3}' -f $phaseSummary.MinMs; $maxText='{0:N3}' -f $phaseSummary.MaxMs }
     $summary.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} |' -f $phaseSummary.workload,$phaseSummary.launch_condition,$phaseSummary.phase,$phaseSummary.ValidCount,$phaseSummary.InvalidCount,$medianText,$minText,$maxText))

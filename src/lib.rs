@@ -1,5 +1,11 @@
 pub mod app;
+pub mod chrome;
 pub mod engine;
+pub mod favicon;
 pub mod navigation;
+pub mod omnibox;
 pub mod performance;
+pub mod shortcuts;
+pub mod tabs;
+pub mod theme;
 pub mod win32;

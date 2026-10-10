@@ -216,6 +216,18 @@ try {
     Assert-True ($fallbackRoot.wmi_pagefileusage_proxy_bytes -eq 2048) 'proxy value stays separately available'
     Assert-True ($fallback.PrivateBytes -eq 2048 -and $fallback.PrivateSource -eq 'wmi_pagefileusage_proxy') 'proxy aggregate retains its explicit source label'
 
+    # run.ps1 collects phase rows in a generic List. Windows PowerShell 5.1 throws "Argument types do not match"
+    # when such a List is wrapped in @(), which broke the summary after the CSV had been written.
+    $phaseList = New-Object 'System.Collections.Generic.List[object]'
+    [void]$phaseList.Add([pscustomobject]@{ browser='Bowser'; workload='blank-idle'; launch_condition='cold-profile'; run=1; phase='shell_ready_to_visible'; duration_ms=10.0; valid=$true; invalid_reason=$null; tracking_prevention_requested=$null; tracking_policy_valid=$null })
+    [void]$phaseList.Add([pscustomobject]@{ browser='Bowser'; workload='blank-idle'; launch_condition='cold-profile'; run=2; phase='shell_ready_to_visible'; duration_ms=20.0; valid=$true; invalid_reason=$null; tracking_prevention_requested=$null; tracking_policy_valid=$null })
+    $listSummary = @(Get-BowserPhaseSummary -Rows $phaseList.ToArray())
+    Assert-True ($listSummary.Count -eq 1 -and $listSummary[0].ValidCount -eq 2 -and $listSummary[0].MedianMs -eq 15.0) 'generic phase List summarized through ToArray gives the expected median'
+    $emptyPhaseList = New-Object 'System.Collections.Generic.List[object]'
+    Assert-True (@(Get-BowserPhaseSummary -Rows $emptyPhaseList.ToArray()).Count -eq 0) 'empty generic phase List summarizes without error'
+    $runnerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Raw
+    Assert-True ($runnerSource -notmatch '@\(\$phaseRows\)') 'runner does not wrap the generic phase List in @()'
+
     Write-Host 'All benchmark measurement tests passed.'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,3 +1,5 @@
+pub mod frame;
+pub mod glass;
 mod window;
 
 pub(crate) use window::schedule_idle_timer;
@@ -10,7 +12,7 @@ use windows::{
     core::w,
 };
 
-pub use window::{dpi_scale, run};
+pub use window::run;
 
 pub fn show_runtime_error(error: &crate::engine::RuntimeUnavailable) {
     show_error_message(&format!("{error}"));
@@ -32,7 +34,13 @@ pub(crate) const INPUT_ID: u16 = 100;
 pub(crate) const WM_SUBMIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub(crate) const WM_HISTORY_BACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
 pub(crate) const WM_HISTORY_FORWARD: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
+pub(crate) const WM_NAVIGATION_PROGRESS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 13;
+/// Posted to the main window when tab state (title, favicon, loading, list) changed; WPARAM = tab id.
+pub(crate) const WM_TABS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
+/// Forwarded page accelerators; WPARAM=virtual key, LPARAM=ctrl/shift/alt bit flags.
+pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
+pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 
 pub(crate) fn post(
     hwnd: HWND,

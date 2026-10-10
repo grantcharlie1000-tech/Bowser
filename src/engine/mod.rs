@@ -4,6 +4,8 @@ pub use webview2::{RuntimeUnavailable, WebView2Engine};
 
 use windows::Win32::Foundation::RECT;
 
+pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrackingPreventionLevel {
     Balanced,
@@ -20,15 +22,45 @@ pub enum MemoryUsageTarget {
 pub enum MemoryTargetApply {
     Applied,
     Unsupported,
+    Deferred,
 }
 
 pub trait EngineAdapter {
     fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()>;
+    fn navigate_tab(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        url: &url::Url,
+    ) -> windows::core::Result<()> {
+        self.navigate(url)
+    }
     fn can_go_back(&self) -> bool;
     fn go_back(&mut self) -> windows::core::Result<()>;
     fn can_go_forward(&self) -> bool;
     fn go_forward(&mut self) -> windows::core::Result<()>;
     fn resize(&mut self, bounds: RECT) -> windows::core::Result<()>;
+    fn reload(&mut self) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn stop(&mut self) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn set_visible(&mut self, _visible: bool) -> windows::core::Result<()> {
+        Ok(())
+    }
+    /// Selects a logical tab, hiding the previous controller and showing/resuming the new one.
+    fn select_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
+        Ok(())
+    }
+    /// Closes the controller owned by one logical tab.
+    fn close_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
+        self.close()
+    }
+    /// Suspends controllers that have been hidden for at least the supplied duration.
+    fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn suspend(&mut self) {}
     fn set_memory_usage_target(
         &mut self,
         target: MemoryUsageTarget,
@@ -36,11 +68,38 @@ pub trait EngineAdapter {
     fn close(&mut self) -> windows::core::Result<()>;
 }
 
+/// Operations against one logical tab. Implementations may share an environment across tabs.
+pub trait TabEngine {
+    fn navigate(&mut self, tab: crate::tabs::TabId, url: &url::Url) -> windows::core::Result<()>;
+    fn reload(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
+    fn stop(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
+    fn go_back(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
+    fn go_forward(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
+    fn can_go_back(&self, tab: crate::tabs::TabId) -> bool;
+    fn can_go_forward(&self, tab: crate::tabs::TabId) -> bool;
+    fn set_visible(&mut self, tab: crate::tabs::TabId, visible: bool) -> windows::core::Result<()>;
+    fn resize(&mut self, tab: crate::tabs::TabId, bounds: RECT) -> windows::core::Result<()>;
+    fn close_tab(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
+}
+
 #[derive(Clone, Default)]
 pub struct EngineEvents {
-    pub address_changed: Option<std::rc::Rc<dyn Fn(url::Url)>>,
-    pub page_usable: Option<std::rc::Rc<dyn Fn()>>,
-    pub navigation_started: Option<std::rc::Rc<dyn Fn()>>,
+    pub address_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    pub title_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, String)>>,
+    pub page_loaded: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
+    pub navigation_progress:
+        Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
+    pub favicon_changed: Option<FaviconChangedCallback>,
+    pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationProgressEvent {
+    ContentLoading(u64),
+    DomContentLoaded(u64),
+    Completed(u64),
 }
