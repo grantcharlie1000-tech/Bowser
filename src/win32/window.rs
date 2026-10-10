@@ -61,7 +61,8 @@ use windows::{
                 WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE,
                 WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW,
                 WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-                WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
+                WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+                WS_THICKFRAME, WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -556,7 +557,10 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Default::default(),
             CLASS_NAME,
             w!("Bowser - Search or enter address"),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            // Bowser paints its own caption and supplies resize hit tests. Keep the
+            // resizable frame and system commands, but omit WS_CAPTION/WS_BORDER so
+            // Windows 10 does not paint a bright non-client outline over the custom chrome.
+            WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1000,

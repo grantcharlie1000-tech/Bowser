@@ -136,6 +136,11 @@ pub fn apply(hwnd: HWND) -> BackdropMode {
     let appearance = appearance();
     let dark = appearance == Appearance::Dark;
     APPLIED_MODE.store(UNKNOWN, Ordering::Relaxed);
+    // Windows 11 otherwise draws its own bright non-client outline around the custom frame.
+    // The region below still clips the actual HWND to Bowser's DPI-scaled pill shape.
+    if os_build() >= 22_000 {
+        unsafe { apply_windows_11_frame_style(hwnd) };
+    }
     if !system_allows_glass() {
         unsafe { apply_solid(hwnd, dark) };
         APPLIED_MODE.store(MODE_SOLID, Ordering::Relaxed);
@@ -325,6 +330,27 @@ unsafe fn apply_windows_11(hwnd: HWND) -> bool {
             (&DWMSBT_TRANSIENTWINDOW as *const i32).cast(),
             4,
         ) >= 0
+    }
+}
+
+unsafe fn apply_windows_11_frame_style(hwnd: HWND) {
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+    const DWMWCP_ROUND: i32 = 2;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            (&DWMWA_COLOR_NONE as *const u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&DWMWCP_ROUND as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
     }
 }
 
