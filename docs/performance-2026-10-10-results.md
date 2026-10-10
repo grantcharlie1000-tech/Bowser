@@ -161,3 +161,20 @@ Run `benchmarks/perf-probe.ps1` against the built executable:
 - `-MemoryPressure` adds `--benchmark-memory-pressure on`. This is a benchmark-only flag that enables the discard arm.
 - Results are written under `benchmarks\results\perf-probe` by default. Use `-OutputDirectory` to change this.
 - Baseline comparison: build `093194b` in a separate worktree and pass its executable with a different `-Label`.
+
+## Bowser vs Chrome vs Edge (partial)
+
+Run with `benchmarks/run.ps1 -Runs 3` against the committed build, on the same machine. The run was stopped after the light fixture's cold and warm profiles because it exceeded its time budget, so there is **no demanding-page result and no memory result** for this comparison. Medians of n=3; Chrome 154.0.8037.98, Edge 154.0.4258.62. Times are the harness's console figures (title marker visible and window responsive); Bowser's own `page_usable` event gave 935.6 ms cold and 820.5 ms warm on a different time base.
+
+| Browser | Profile | Window visible (ms) | Page ready (ms) | CPU % (harness console) |
+|---|---|---:|---:|---:|
+| Bowser | cold | 285 | 1,003 | 0 |
+| Bowser | warm | 268 | 986 | 0 |
+| Chrome | cold | 843 | 1,369 | 5.26 |
+| Chrome | warm | 727 | 1,169 | 0.15 |
+| Edge | cold | 879 | 1,775 | 2.44 |
+| Edge | warm | 792 | 1,470 | 0.06 |
+
+On this fixture Bowser's page was ready about 27% sooner than Chrome cold (1,003 vs 1,369 ms) and 16% sooner warm. Window visibility was about 3× sooner. Bowser's page-ready time is dominated by WebView2 creation, which is shared with Edge, so the gap to Edge is mostly Bowser's lighter shell. The CPU column's basis was not verified. Bowser's memory is the whole process group including WebView2 children (about 113 MB WebView2 private + 3 MB host with one loaded tab in the earlier probe); a like-for-like Chrome memory figure was not taken, so no memory comparison is claimed.
+
+The stock harness could not run Bowser at all before commit `c9cce73`: `--benchmark-url` panicked on a `RefCell` double borrow at startup.
