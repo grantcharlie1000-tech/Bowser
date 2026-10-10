@@ -97,6 +97,8 @@ struct WindowChrome {
     caret: bool,
     /// Whether Bowser was the foreground application at the last `sync_foreground`.
     foreground: bool,
+    /// The address input, kept here so focus checks never need a borrow of the app state.
+    edit: HWND,
     completion: Option<Completion>,
     suppress_completion: bool,
     programmatic_text_update: bool,
@@ -128,6 +130,7 @@ impl WindowChrome {
             focused: false,
             caret: true,
             foreground: false,
+            edit: HWND::default(),
             completion: None,
             suppress_completion: false,
             programmatic_text_update: false,
@@ -424,11 +427,10 @@ fn foreground_is_ours(hwnd: HWND) -> bool {
     }
 }
 
-fn edit_focused(app: Option<&AppRef>) -> bool {
-    let Some(edit) = app
-        .and_then(|app| app.try_borrow().ok())
-        .map(|state| state.edit)
-    else {
+/// Whether the address input has keyboard focus. Reads the handle kept in the chrome, so a borrow of the app
+/// state held by a modal loop cannot make the answer look like "not focused".
+fn edit_focused(hwnd: HWND) -> bool {
+    let Some(edit) = with_chrome(hwnd, |s| s.edit).filter(|edit| !edit.is_invalid()) else {
         return false;
     };
     unsafe { GetFocus() == edit }
@@ -490,7 +492,7 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     let minimised = unsafe { IsIconic(hwnd).as_bool() };
     set_caret_blink(
         hwnd,
-        caret_blink_allowed(foreground, minimised, edit_focused(app)),
+        caret_blink_allowed(foreground, minimised, edit_focused(hwnd)),
     );
     let gained = with_chrome(hwnd, |s| {
         let gained = foreground && !s.foreground;
@@ -812,6 +814,7 @@ unsafe extern "system" fn window_proc(
                     )
                     .unwrap_or_default();
                     let mut s = WindowChrome::new(r.right, r.bottom, dpi(hwnd), overlay);
+                    s.edit = edit;
                     s.refresh(app);
                     WINDOWS.with(|all| {
                         all.borrow_mut().insert(hwnd.0 as isize, s);
@@ -1179,7 +1182,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == WM_CARET_BLINK_TIMER => {
                 let minimised = IsIconic(hwnd).as_bool();
-                if caret_blink_allowed(foreground_is_ours(hwnd), minimised, edit_focused(app)) {
+                if caret_blink_allowed(foreground_is_ours(hwnd), minimised, edit_focused(hwnd)) {
                     // Only the caret changes, so repaint just its pixels.
                     let caret = with_chrome(hwnd, |s| {
                         s.caret = !s.caret;
