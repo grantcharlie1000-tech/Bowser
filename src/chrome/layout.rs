@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! +-------------------------------------------------------------+
-//! | tab strip (30): flat tabs, "+", ...... caption buttons      |
+//! | tab strip (30): outlined tabs, tab list, "+", caption      |
 //! +-------------------------------------------------------------+
 //! | 2 px row gap                                                |
 //! | back, forward, reload, omnibox (28, to 2 px from the edge)  |
@@ -13,9 +13,8 @@
 //! | viewport (page content, to the bottom edge)                 |
 //! ```
 //!
-//! Tab overflow: tabs shrink evenly to a minimum width. Past that, the visible window onto the
-//! row shifts just enough to keep the active tab visible; the "+" button stays pinned just left of
-//! the caption buttons. There is no scrolling UI.
+//! Tab overflow: tabs shrink evenly to favicon circles. The visible window onto the row shifts just
+//! enough to keep the active tab visible; the tab list and "+" buttons stay pinned by the captions.
 
 use windows::Win32::Foundation::RECT;
 
@@ -30,13 +29,14 @@ impl Metrics {
     pub const ISLAND_HEIGHT: i32 = 26;
     /// Space above and below an island inside the strip.
     pub const ISLAND_MARGIN: i32 = 2;
-    /// Gap between neighbouring islands, and between the last island and "+".
-    pub const ISLAND_GAP: i32 = 0;
+    /// Gap between neighbouring islands and the pinned tab controls.
+    pub const ISLAND_GAP: i32 = 4;
     pub const TAB_MAX_WIDTH: i32 = 202;
-    pub const TAB_MIN_WIDTH: i32 = 96;
+    pub const TAB_MIN_WIDTH: i32 = 26;
     /// Titles are hidden in tabs narrower than this.
     pub const TITLE_MIN_TAB_WIDTH: i32 = 120;
     pub const NEW_TAB_SIZE: i32 = 28;
+    pub const TAB_MENU_SIZE: i32 = 26;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;
     pub const OMNIBOX_HEIGHT: i32 = 28;
     /// Inset of the omnibox text from the right edge of the field.
@@ -55,8 +55,8 @@ impl Metrics {
     /// is not maximised. The page is a child window and wins every hit test over its own pixels, so
     /// without the rim there would be nowhere left to grab those three resize edges.
     pub const RESIZE_RIM: i32 = 4;
-    pub const ISLAND_RADIUS: i32 = 6;
-    pub const OMNIBOX_RADIUS: i32 = 6;
+    pub const ISLAND_RADIUS: i32 = 13;
+    pub const OMNIBOX_RADIUS: i32 = 13;
     pub const FAVICON_SIZE: i32 = 16;
     pub const CLOSE_SIZE: i32 = 18;
     /// Inset from the island's left edge to the favicon, and the gap before the title.
@@ -87,6 +87,10 @@ impl Metrics {
 
     pub const fn omnibox_radius(self) -> i32 {
         self.px(Self::OMNIBOX_RADIUS)
+    }
+
+    pub const fn window_radius(self) -> i32 {
+        self.px(Self::ISLAND_RADIUS)
     }
 }
 
@@ -168,6 +172,7 @@ pub struct Layout {
     pub strip: Rect,
     /// Horizontal span that tabs may occupy. Tabs are clipped to it, and anything past it is hidden.
     pub tab_zone: Rect,
+    pub tab_menu_button: Rect,
     pub new_tab_button: Rect,
     /// Reserved for the min / max / close buttons, at the right end of the strip.
     pub caption_area: Rect,
@@ -237,10 +242,11 @@ pub fn compute_with_active(
     let caption_left = (client_w - caption_w).max(0);
     let caption_area = Rect::new(caption_left, 0, client_w, strip_h);
 
-    // Tabs start at the same inset as the omnibox. "+" is pinned to the right of the tab zone,
-    // so it is never clipped even when the tabs overflow.
+    // Tabs start at the same inset as the omnibox. Both controls are pinned beside the captions,
+    // so neither is clipped when the tabs overflow.
     let tabs_left = margin;
-    let zone_right = (caption_left - margin - new_tab_size - gap).max(tabs_left);
+    let menu_size = m.px(Metrics::TAB_MENU_SIZE);
+    let zone_right = (caption_left - margin - new_tab_size - menu_size - 2 * gap).max(tabs_left);
     let tab_zone = Rect::new(tabs_left, 0, zone_right, strip_h);
 
     let n = tab_count as i32;
@@ -253,9 +259,8 @@ pub fn compute_with_active(
     // Keep a final partially clipped island in the tab zone. It remains a usable hit target and
     // gives the active tab the same edge position as it moves through overflow.
     let stride_at_min = min_w + gap;
-    let min_visible =
-        ((zone_right - tabs_left + stride_at_min - 1) / stride_at_min).max(1) as usize;
-    let overflow = tab_count > min_visible && tab_width == min_w;
+    let min_visible = ((zone_right - tabs_left + gap) / stride_at_min).max(0) as usize;
+    let overflow = tab_count > min_visible;
     let visible_count = tab_count.min(min_visible);
     if overflow {
         tab_width = min_w;
@@ -268,18 +273,15 @@ pub fn compute_with_active(
     } else {
         0
     };
-    let stride = tab_width + gap;
-    let row_end = tabs_left
-        + (visible_count as i32 - 1).max(0) * stride
-        + if visible_count > 0 { tab_width } else { 0 };
-
-    let new_tab_left = if tab_count == 0 {
-        tabs_left
-    } else if overflow {
-        zone_right + gap
-    } else {
-        row_end.min(zone_right) + gap
-    };
+    let menu_left = zone_right + gap;
+    let menu_top = (strip_h - menu_size) / 2;
+    let tab_menu_button = Rect::new(
+        menu_left,
+        menu_top,
+        menu_left + menu_size,
+        menu_top + menu_size,
+    );
+    let new_tab_left = menu_left + menu_size + gap;
     let new_tab_top = (strip_h - new_tab_size) / 2;
     let new_tab_button = Rect::new(
         new_tab_left,
@@ -321,6 +323,7 @@ pub fn compute_with_active(
         client,
         strip,
         tab_zone,
+        tab_menu_button,
         new_tab_button,
         caption_area,
         back_button: nav_button(0),
@@ -345,6 +348,7 @@ pub enum Hit {
     Tab(usize),
     TabClose(usize),
     NewTab,
+    TabMenu,
     Back,
     Forward,
     Reload,
@@ -419,11 +423,20 @@ impl Layout {
         let close_size = m.px(Metrics::CLOSE_SIZE);
         let gap = m.px(Metrics::TEXT_GAP);
 
-        let favicon_left = tab.left + m.px(Metrics::TAB_PADDING);
+        let compact = tab.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH);
+        let favicon_left = if compact {
+            tab.left + (tab.width() - favicon_size) / 2
+        } else {
+            tab.left + m.px(Metrics::TAB_PADDING)
+        };
         let favicon = square_in(favicon_left, favicon_size, tab);
 
         let close_left = tab.right - m.px(Metrics::CLOSE_INSET) - close_size;
-        let close = square_in(close_left, close_size, tab);
+        let close = if compact {
+            Rect::default()
+        } else {
+            square_in(close_left, close_size, tab)
+        };
 
         let title_left = favicon.right + gap;
         let title_right = close.left - gap;
@@ -546,6 +559,9 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
     }
     if layout.new_tab_button.contains(x, y) {
         return Hit::NewTab;
+    }
+    if layout.tab_menu_button.contains(x, y) {
+        return Hit::TabMenu;
     }
     let Some(index) = layout.tab_index_at(x) else {
         return Hit::CaptionArea;

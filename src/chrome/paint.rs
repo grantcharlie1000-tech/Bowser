@@ -218,6 +218,7 @@ impl ChromeSurface {
         }
         self.paint_departures(view, dirty);
         self.paint_tabs(view, dirty);
+        self.paint_tab_menu(view, dirty);
         self.paint_new_tab(view, dirty);
         self.paint_nav(view, dirty);
         self.paint_caption(view, dirty);
@@ -485,6 +486,13 @@ impl ChromeSurface {
             );
             let radius = m.island_radius();
             self.round(rect, radius, fill, dirty);
+            self.border(
+                rect,
+                radius,
+                m.dpi() as f32 / 96.0,
+                view.palette.hairline,
+                dirty,
+            );
             if details.is_some_and(|tab| tab.group_size.is_some()) {
                 let accent = scale_alpha(view.palette.tab_active_border, 0.8);
                 self.fill_rect(
@@ -623,6 +631,28 @@ impl ChromeSurface {
         let arm = view.layout.metrics.px(4);
         self.line(x - arm, y, x + arm, y, 1.4, c, dirty);
         self.line(x, y - arm, x, y + arm, 1.4, c, dirty);
+    }
+
+    fn paint_tab_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let rect = view.layout.tab_menu_button;
+        if rect.intersect(dirty).is_empty() {
+            return;
+        }
+        let radius = view.layout.metrics.island_radius();
+        if view.hover == Hit::TabMenu || view.pressed == Hit::TabMenu {
+            self.round(rect, radius, view.palette.caption_hover, dirty);
+        }
+        self.border(
+            rect,
+            radius,
+            view.layout.metrics.dpi() as f32 / 96.0,
+            view.palette.hairline,
+            dirty,
+        );
+        let (x, y) = center(rect);
+        let c = view.palette.caption_glyph;
+        self.line(x - 4, y - 2, x, y + 2, 1.5, c, dirty);
+        self.line(x, y + 2, x + 4, y - 2, 1.5, c, dirty);
     }
 
     /// Back, forward and reload. Back and forward are dimmed and inert when there is no history.

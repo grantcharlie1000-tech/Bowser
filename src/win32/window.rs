@@ -22,8 +22,8 @@ use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, ClientToScreen, CreateRectRgn, DEFAULT_QUALITY, DeleteObject, EndPaint,
-            FillRect, InvalidateRect, PAINTSTRUCT, SetWindowRgn,
+            BeginPaint, ClientToScreen, CreateRectRgn, CreateRoundRectRgn, DEFAULT_QUALITY,
+            DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT, SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
         System::SystemInformation::GetTickCount,
@@ -655,6 +655,7 @@ unsafe extern "system" fn window_proc(
                     Hit::Tab(_)
                         | Hit::TabClose(_)
                         | Hit::NewTab
+                        | Hit::TabMenu
                         | Hit::Back
                         | Hit::Forward
                         | Hit::Reload
@@ -833,6 +834,22 @@ unsafe extern "system" fn window_proc(
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
+                    if IsZoomed(hwnd).as_bool() {
+                        let _ = SetWindowRgn(hwnd, None, true);
+                    } else if r.right > 0 && r.bottom > 0 {
+                        let radius = Metrics::new(dpi(hwnd)).window_radius();
+                        let region = CreateRoundRectRgn(
+                            0,
+                            0,
+                            r.right + 1,
+                            r.bottom + 1,
+                            radius * 2,
+                            radius * 2,
+                        );
+                        if !region.is_invalid() {
+                            let _ = SetWindowRgn(hwnd, Some(region), true);
+                        }
+                    }
                     let active = App::active_tab_id(app);
                     let _ = with_chrome(hwnd, |s| {
                         s.relayout(
@@ -1054,6 +1071,11 @@ unsafe extern "system" fn window_proc(
                         if let Some(app) = app {
                             App::new_tab(app);
                             focus_omni(hwnd, app, true)
+                        }
+                    }
+                    Hit::TabMenu => {
+                        if let Some(app) = app {
+                            show_open_tabs_menu(hwnd, app);
                         }
                     }
                     h @ (Hit::Back
@@ -1381,10 +1403,68 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
 }
+
+fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
+    let ids = App::tab_ids(app);
+    if ids.is_empty() {
+        return;
+    }
+    let menu = unsafe { CreatePopupMenu() };
+    let Ok(menu) = menu else { return };
+    let mut labels = Vec::with_capacity(ids.len());
+    for (index, id) in ids.iter().copied().enumerate() {
+        let mut label = App::tab_title(app, id).unwrap_or_default();
+        if label.trim().is_empty() {
+            label = "New tab".to_owned();
+        }
+        let wide = label.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                index as usize + 1,
+                windows::core::PCWSTR(wide.as_ptr()),
+            )
+        };
+        labels.push(wide);
+    }
+    let mut point = with_chrome(hwnd, |s| {
+        let r = s.layout.tab_menu_button;
+        windows::Win32::Foundation::POINT {
+            x: r.left,
+            y: r.bottom,
+        }
+    })
+    .unwrap_or_default();
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        if let Some(id) = command
+            .checked_sub(1)
+            .and_then(|index| ids.get(index))
+            .copied()
+        {
+            let _ = App::select_tab(app, id);
+        }
+    }
+    let _ = labels;
+}
+
 fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) => l.tab(i).unwrap_or_default(),
         Hit::NewTab => l.new_tab_button,
+        Hit::TabMenu => l.tab_menu_button,
         Hit::Back => l.back_button,
         Hit::Forward => l.forward_button,
         Hit::Reload => l.reload_button,
