@@ -40,10 +40,6 @@ use crate::{
 /// make every repaint and every click O(n log n) in GDI.
 const MAX_TEXT_UNITS: usize = 4096;
 
-/// Logical width of the lens edge band, where glass bends light and shows its rim. Only the glass
-/// palettes draw it; the solid fallback stays flat.
-const GLASS_EDGE_WIDTH: i32 = 6;
-
 /// Data needed to paint one tab island. `favicon` is already premultiplied BGRA.
 #[derive(Clone, Copy)]
 pub struct TabView<'a> {
@@ -339,90 +335,6 @@ impl ChromeSurface {
         );
     }
 
-    /// Simulated lens rim for a rounded glass shape: a Fresnel falloff and a directional specular
-    /// highlight, plus a faint dispersion fringe on the outermost pixels. Only the edge band is
-    /// touched. `geometry` is the full shape and `visible` the part that may be painted.
-    fn glass_rim(
-        &mut self,
-        geometry: Rect,
-        visible: Rect,
-        radius: i32,
-        edge: i32,
-        light: Rimlight,
-        dirty: Rect,
-    ) {
-        let bounds = Rect::new(0, 0, self.width, self.height);
-        let clip = visible.intersect(dirty).intersect(bounds);
-        if clip.is_empty() || geometry.is_empty() {
-            return;
-        }
-        let stride = self.stride();
-        let hx = geometry.width() as f32 / 2.0;
-        let hy = geometry.height() as f32 / 2.0;
-        let cx = geometry.left as f32 + hx;
-        let cy = geometry.top as f32 + hy;
-        let r = (radius as f32).min(hx).min(hy).max(0.0);
-        let band = edge.max(1) as f32;
-        // Columns that can fall inside the band in a row away from the top and bottom edges.
-        let side = edge.max(1) + 2;
-        let pixels = self.dib.pixels_mut();
-        for y in clip.top..clip.bottom {
-            let py = y as f32 + 0.5 - cy;
-            let qy = py.abs() - (hy - r);
-            let band_row = py.abs() >= hy - band;
-            // On a straight top or bottom edge the rim depends only on the row, so it is computed
-            // once for the flat middle span.
-            let flat_row = band_row && qy >= 0.0;
-            let flat = if flat_row {
-                rim_at(0.0, py, (hx, hy), r, band, light)
-            } else {
-                None
-            };
-            let flat_half = hx - r;
-            // The flat run of a straight edge takes one constant colour, so it is composited in one
-            // pass instead of per pixel.
-            let (run_from, run_to) = if flat_row {
-                let from = ((cx - flat_half - 0.5).ceil() as i32).max(clip.left);
-                let to = ((cx + flat_half - 0.5).floor() as i32 + 1).min(clip.right);
-                (from, to.max(from))
-            } else {
-                (0, 0)
-            };
-            if let (Some(rim), true) = (flat, run_from < run_to) {
-                let start = y as usize * stride;
-                let run = &mut pixels[start + run_from as usize * 4..start + run_to as usize * 4];
-                over_row(run, Rgba::hex(0xFFFFFF, 255), rim.alpha);
-                if rim.fringe > 0 {
-                    over_row(run, rim.fringe_colour, rim.fringe);
-                }
-            }
-            let spans = if band_row {
-                [(clip.left, clip.right), (0, 0)]
-            } else {
-                [
-                    (clip.left, (geometry.left + side).min(clip.right)),
-                    ((geometry.right - side).max(clip.left), clip.right),
-                ]
-            };
-            for (from, to) in spans {
-                for x in from.max(clip.left)..to.min(clip.right) {
-                    if (run_from..run_to).contains(&x) {
-                        continue;
-                    }
-                    let px = x as f32 + 0.5 - cx;
-                    let Some(rim) = rim_at(px, py, (hx, hy), r, band, light) else {
-                        continue;
-                    };
-                    let i = y as usize * stride + x as usize * 4;
-                    blend_pixel(&mut pixels[i..i + 4], Rgba::hex(0xFFFFFF, 255), rim.alpha);
-                    if rim.fringe > 0 {
-                        blend_pixel(&mut pixels[i..i + 4], rim.fringe_colour, rim.fringe);
-                    }
-                }
-            }
-        }
-    }
-
     fn border(&mut self, rect: Rect, radius: i32, thickness: f32, colour: Rgba, dirty: Rect) {
         let (width, height, stride) = (self.width, self.height, self.stride());
         raster_round_border(
@@ -476,7 +388,6 @@ impl ChromeSurface {
                 continue;
             }
             let active = index == view.active;
-            let is_hover = matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == index);
             let details = view.tabs.get(index);
             let (hover, selected) = details.map_or((0.0, 0.0), |t| t.emphasis.amounts(view.now));
             let fill = mix(
@@ -493,63 +404,42 @@ impl ChromeSurface {
                 view.palette.hairline,
                 dirty,
             );
+            // Group members share a thin accent underline, kept inside the visible island.
             if details.is_some_and(|tab| tab.group_size.is_some()) {
                 let accent = scale_alpha(view.palette.tab_active_border, 0.8);
-                self.fill_rect(
-                    Rect::new(
-                        rect.left + m.px(8),
-                        rect.bottom - m.px(2),
-                        rect.right - m.px(8),
-                        rect.bottom - m.px(1),
-                    ),
-                    accent,
-                    dirty,
-                );
+                let thickness = m.px(1).max(1);
+                let inset = m.px(Metrics::ISLAND_RADIUS / 2);
+                let line = Rect::new(
+                    tab_rect.left + inset,
+                    tab_rect.bottom - m.px(2) - thickness,
+                    tab_rect.right - inset,
+                    tab_rect.bottom - m.px(2),
+                )
+                .intersect(rect);
+                self.fill_rect(line, accent, dirty);
             }
             if selected > 0.0 {
-                // Glass keeps only a faint outline on the selected island. Its edge comes from the
-                // rim, so a hard stroke would read as a frame rather than glass.
+                // Translucent palettes keep only a faint outline on the selected island, so it
+                // reads as a soft fill rather than a framed box.
                 let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
                 let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
                 self.border(rect, radius, m.dpi() as f32 / 96.0, colour, dirty);
             }
-            if view.palette.translucent {
-                let edge = m.px(GLASS_EDGE_WIDTH);
-                let light = Rimlight {
-                    outline: (0.35 * hover + 0.2 * selected).min(1.0),
-                    highlight: (0.15 + 0.6 * hover + 0.7 * selected).min(1.0),
-                };
-                self.glass_rim(tab_rect, rect, radius, edge, light, dirty);
-            }
-            // Flat tabs are separated by a thin divider, hidden beside the active or hovered tab.
-            let next = index + 1;
-            let beside_highlight = active
-                || is_hover
-                || next == view.active
-                || matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == next);
-            if !beside_highlight && tab_rect.right <= view.layout.tab_zone.right {
-                let (_, cy) = center(tab_rect);
-                let half = m.px(7);
-                let x = tab_rect.right - m.px(1).max(1);
-                self.fill_rect(
-                    Rect::new(x, cy - half, x + m.px(1).max(1), cy + half),
-                    view.palette.hairline,
-                    dirty,
-                );
-            }
+            // Islands are independent rounded shapes with a gap between them, so no divider is drawn.
             let parts = view.layout.tab_parts(tab_rect);
-            // The last island may be clipped by the tab zone. A part that would be cut off is
-            // skipped, so a half-visible close glyph never lands on the "+" button.
-            if details.is_some_and(|tab| tab.group_control) && rect.contains_rect(parts.favicon) {
+            // A part that would be cut off by the tab zone is skipped, so a half-visible close
+            // glyph never lands on a neighbouring control.
+            // The group control shows a small member-count chip, only for a real group.
+            let group_chip =
+                details.and_then(|tab| tab.group_control.then_some(tab.group_size).flatten());
+            if let (Some(count), true) = (group_chip, rect.contains_rect(parts.favicon)) {
                 self.round(
                     parts.favicon,
                     m.px(6),
-                    scale_alpha(view.palette.tab_active_border, 0.88),
+                    scale_alpha(view.palette.tab_active_border, 0.75),
                     dirty,
                 );
-                let count = details
-                    .and_then(|tab| tab.group_size)
-                    .map_or_else(|| String::from("1"), |count| count.to_string());
+                let count = count.to_string();
                 self.draw_text(
                     &count,
                     parts.favicon,
@@ -804,14 +694,6 @@ impl ChromeSurface {
             },
             dirty,
         );
-        if view.palette.translucent {
-            let edge = m.px(GLASS_EDGE_WIDTH);
-            let light = Rimlight {
-                outline: 0.5,
-                highlight: 0.7,
-            };
-            self.glass_rim(rect, rect, radius, edge, light, dirty);
-        }
         let inset = m.px(Metrics::OMNIBOX_TEXT_INSET);
         let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
         let line = self.text.line_height();
@@ -1089,85 +971,6 @@ impl ChromeSurface {
     }
 }
 
-/// How strongly a glass edge shows. `outline` is the even Fresnel sheen around the whole band and
-/// `highlight` the directional specular on the side facing the light. Selected and hovered tabs
-/// raise `highlight` first, so the edge reads as light on glass rather than a drawn outline.
-#[derive(Clone, Copy)]
-struct Rimlight {
-    outline: f32,
-    highlight: f32,
-}
-
-/// The lens rim at one pixel of a rounded shape, relative to its centre. `alpha` and `fringe` are
-/// coverages for the white highlight and the dispersion tint. `lit` marks edges that face the light.
-#[derive(Clone, Copy)]
-struct Rim {
-    alpha: u8,
-    fringe: u8,
-    fringe_colour: Rgba,
-}
-
-/// The rim at `(px, py)` for a rounded rect with half sizes `half`, corner radius `r` and edge band
-/// `band`. Returns `None` outside the band.
-fn rim_at(px: f32, py: f32, half: (f32, f32), r: f32, band: f32, light: Rimlight) -> Option<Rim> {
-    let (hx, hy) = half;
-    let qx = px.abs() - (hx - r);
-    let qy = py.abs() - (hy - r);
-    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
-    let outside = (ox * ox + oy * oy).sqrt();
-    let depth = -(outside + qx.max(qy).min(0.0) - r);
-    // Pixel centres straddling the silhouette contribute fractional coverage. The SDF is in
-    // physical pixels, so this remains one physical pixel wide at every DPI.
-    let coverage = (depth + 0.5).clamp(0.0, 1.0);
-    if depth < -0.5 || depth > band {
-        return None;
-    }
-    let (nx, ny) = if outside > 0.0 {
-        (px.signum() * ox / outside, py.signum() * oy / outside)
-    } else if qx > qy {
-        (px.signum(), 0.0)
-    } else {
-        (0.0, py.signum())
-    };
-    // Unit vector towards the light, which sits above and to the left.
-    let facing_dot = -0.5 * nx - 0.866 * ny;
-    let facing = facing_dot.max(0.0);
-    // 1 at the edge, 0 where the band meets the flat body of the glass.
-    let s = (1.0 - depth / band).clamp(0.0, 1.0);
-    // A bounded grazing falloff avoids the square-root cusp at the silhouette. That cusp made
-    // the brightest samples drop abruptly just inside the analytically covered boundary.
-    let fresnel = s * s * s;
-    let spec = facing * facing * s * s;
-    let alpha = ((fresnel * 0.12 * light.outline + spec * 0.42 * light.highlight) * coverage)
-        .clamp(0.0, 1.0);
-    let fringe_width = (band / 6.0).max(1.0);
-    let fringe = ((1.0 - depth / fringe_width).clamp(0.0, 1.0) * 0.25 * light.outline * coverage)
-        .clamp(0.0, 1.0);
-    // Continuous dispersion follows the light direction: cyan on the lit side, warm at the
-    // opposite edge, with a neutral midpoint instead of a binary tint seam.
-    let alpha = (alpha * 255.0).round() as u8;
-    let fringe = (fringe * 255.0).round() as u8;
-    // Most of the band is flat glass, where the rim contributes nothing to blend.
-    if alpha == 0 && fringe == 0 {
-        return None;
-    }
-    let fringe_colour = if fringe > 0 {
-        let dispersion = ((facing_dot + 1.0) * 0.5).clamp(0.0, 1.0);
-        mix(
-            Rgba::hex(0xFFC2A8, 255),
-            Rgba::hex(0x9FE3FF, 255),
-            dispersion,
-        )
-    } else {
-        Rgba::hex(0xFFFFFF, 255)
-    };
-    Some(Rim {
-        alpha,
-        fringe,
-        fringe_colour,
-    })
-}
-
 /// Clamps a client size to the chrome rows that are painted, and a DPI to at least 96.
 fn surface_size(width: i32, height: i32, dpi: u32) -> (i32, i32, u32) {
     let dpi = dpi.max(96);
@@ -1277,23 +1080,6 @@ fn blend_pixel(dst: &mut [u8], color: Rgba, coverage: u8) {
     ];
     for i in 0..4 {
         dst[i] = (src[i] + div255(u32::from(dst[i]) * inverse)).min(255) as u8;
-    }
-}
-
-/// `blend_pixel` applied to every pixel of a run in BGRA order, with one colour and coverage.
-fn over_row(run: &mut [u8], color: Rgba, coverage: u8) {
-    let alpha = div255(u32::from(color.a) * u32::from(coverage));
-    let inverse = 255 - alpha;
-    let src = [
-        div255(u32::from(color.b) * alpha),
-        div255(u32::from(color.g) * alpha),
-        div255(u32::from(color.r) * alpha),
-        alpha,
-    ];
-    for pixel in run.chunks_exact_mut(4) {
-        for (dst, src) in pixel.iter_mut().zip(src) {
-            *dst = (src + div255(u32::from(*dst) * inverse)).min(255) as u8;
-        }
     }
 }
 
@@ -1930,62 +1716,6 @@ mod tests {
     }
 
     #[test]
-    fn glass_rim_has_fractional_silhouette_coverage_and_continuous_dispersion() {
-        let light = Rimlight {
-            outline: 1.0,
-            highlight: 1.0,
-        };
-        let half = (20.0, 12.0);
-        let outside =
-            rim_at(0.0, -12.25, half, 6.0, 6.0, light).expect("fractionally covered outside pixel");
-        let edge = rim_at(0.0, -11.5, half, 6.0, 6.0, light).expect("edge pixel");
-        assert!(outside.alpha > 0 && outside.alpha < edge.alpha);
-        assert!(outside.fringe > 0 && outside.fringe < edge.fringe);
-
-        let upper = rim_at(0.0, -11.5, half, 6.0, 6.0, light).unwrap();
-        let lower = rim_at(0.0, 11.5, half, 6.0, 6.0, light).unwrap();
-        assert_ne!(upper.fringe_colour, lower.fringe_colour);
-        assert!(upper.fringe_colour.g > lower.fringe_colour.g);
-        // The old binary lit/unlit tint jumped at this normal (30 degrees on the lower-left
-        // corner). Nearby normals must now differ by at most one quantised colour level.
-        let colour_at = |angle: f32| {
-            let (sin, cos) = angle.sin_cos();
-            rim_at(-14.0 - 6.0 * cos, 6.0 + 6.0 * sin, half, 6.0, 6.0, light)
-                .unwrap()
-                .fringe_colour
-        };
-        let a = colour_at(std::f32::consts::PI / 6.0 - 0.001);
-        let b = colour_at(std::f32::consts::PI / 6.0 + 0.001);
-        assert!(a.r.abs_diff(b.r) <= 1 && a.g.abs_diff(b.g) <= 1 && a.b.abs_diff(b.b) <= 1);
-    }
-
-    #[test]
-    fn glass_rim_coverage_is_continuous_and_bounded_at_every_dpi() {
-        let light = Rimlight {
-            outline: 1.0,
-            highlight: 1.0,
-        };
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let half = (30.0 * scale, 14.0 * scale);
-            let radius = 6.0 * scale;
-            let band = 6.0 * scale;
-            let mut previous = 0;
-            for step in 0..=10 {
-                let depth = -0.5 + step as f32 * 0.1;
-                let rim = rim_at(0.0, -half.1 + depth, half, radius, band, light);
-                let alpha = rim.map_or(0, |rim| rim.alpha);
-                assert!(
-                    alpha >= previous,
-                    "non-monotonic silhouette at scale {scale}"
-                );
-                assert!(alpha - previous <= 20, "abrupt silhouette at scale {scale}");
-                previous = alpha;
-            }
-            assert!(rim_at(0.0, -half.1 - 0.51, half, radius, band, light).is_none());
-            assert!(rim_at(0.0, -half.1 + band, half, radius, band, light).is_none());
-        }
-    }
-    #[test]
     fn compositing_preserves_premultiplied_invariant() {
         let mut dst = [0_u8; 4];
         blend_pixel(&mut dst, Rgba::hex(0xFF8040, 128), 128);
@@ -2208,7 +1938,10 @@ mod tests {
             alpha_at(&paint_tabs_at(&layout, [fading, selected], now, &[]), x, y)
         };
         let (rest, quarter, half, done) = (at(0), at(40), at(75), at(150));
-        assert_eq!(rest, 0, "the resting glass island has no fill");
+        assert!(
+            rest > 0 && rest < 0x30,
+            "the resting translucent island has only a subtle fill, got {rest}"
+        );
         assert!(
             rest < quarter && quarter < half && half < done,
             "fill alpha must rise steadily: {rest} {quarter} {half} {done}"
@@ -2405,12 +2138,12 @@ mod tests {
         view.active = 39;
         view.hover = Hit::TabClose(39);
         surface.paint(&view, Rect::new(0, 0, 768, surface.height()));
-        for x in layout.tab_zone.right..layout.new_tab_button.left {
+        for x in layout.tab_zone.right..layout.tab_menu_button.left {
             for y in 0..layout.strip.bottom {
                 assert_eq!(
                     alpha_at(&surface, x, y),
                     0,
-                    "pixel ({x},{y}) between tabs and +"
+                    "pixel ({x},{y}) between tabs and the tab list button"
                 );
             }
         }

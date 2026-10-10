@@ -1,4 +1,5 @@
-//! Palette tokens for the glass chrome (see docs/superpowers/specs/2026-10-09-bowser-glass-ui-design.md).
+//! Palette tokens for the translucent chrome: a see-through header over the DWM backdrop with
+//! restrained island fills, and a fully opaque solid fallback.
 //!
 //! Translucent surfaces are contrast-checked as composites: backdrop, then window tint, then the
 //! surface fill, then the text or glyph drawn on it. The backdrop is arbitrary blurred content, so
@@ -80,7 +81,7 @@ pub struct Palette {
 const LIGHT_GLASS: Palette = Palette {
     translucent: true,
     window: Rgba::hex(0xF4F6F8, 0xCC),
-    tab_inactive: Rgba::hex(0xFFFFFF, 0x00),
+    tab_inactive: Rgba::hex(0xFFFFFF, 0x24),
     tab_hover: Rgba::hex(0xFFFFFF, 0x50),
     tab_active: Rgba::hex(0xFFFFFF, 0x70),
     tab_active_border: Rgba::hex(0x000000, 0x40),
@@ -105,7 +106,7 @@ const LIGHT_GLASS: Palette = Palette {
 const DARK_GLASS: Palette = Palette {
     translucent: true,
     window: Rgba::hex(0x20242C, 0xCC),
-    tab_inactive: Rgba::hex(0x000000, 0x00),
+    tab_inactive: Rgba::hex(0xFFFFFF, 0x0C),
     tab_hover: Rgba::hex(0xFFFFFF, 0x14),
     tab_active: Rgba::hex(0xFFFFFF, 0x20),
     tab_active_border: Rgba::hex(0xFFFFFF, 0x24),
