@@ -40,14 +40,15 @@ use windows::{
                 DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA,
                 GetCaretBlinkTime, GetClientRect, GetMessageW, GetWindowLongPtrW,
                 GetWindowTextLengthW, GetWindowTextW, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON,
-                HTMINBUTTON, HideCaret, IsZoomed, KillTimer, LoadCursorW, MSG, MoveWindow,
-                NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE,
-                SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
-                SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
-                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
-                WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
-                WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+                HTMINBUTTON, HideCaret, IsIconic, IsZoomed, KillTimer, LoadCursorW, MSG,
+                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE,
+                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME,
+                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
+                SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
+                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
+                WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_KEYDOWN, WM_KILLFOCUS,
                 WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
                 WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
                 WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
@@ -265,6 +266,36 @@ impl WindowChrome {
 thread_local! {static WINDOWS:RefCell<HashMap<isize,WindowChrome>>=RefCell::new(HashMap::new());}
 fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<T> {
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
+}
+/// Moves the owned chrome popup with the client origin without repainting its pixels.
+fn sync_overlay_position(hwnd: HWND) {
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            return;
+        }
+        let Some(overlay) = with_chrome(hwnd, |s| s.overlay) else {
+            return;
+        };
+        let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+        let _ = ClientToScreen(hwnd, &mut origin);
+        let _ = SetWindowPos(
+            overlay,
+            None,
+            origin.x,
+            origin.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+fn clear_pointer_state(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |s| {
+        let had_state = s.drag.take().is_some() || s.pressed != Hit::None;
+        s.pressed = Hit::None;
+        had_state
+    })
+    .unwrap_or(false)
 }
 pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
     unsafe {
@@ -605,8 +636,16 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_MOVE => {
-                let _ = InvalidateRect(Some(hwnd), None, false);
+                sync_overlay_position(hwnd);
                 LRESULT(0)
+            }
+            WM_ENTERSIZEMOVE => {
+                glass::set_window_dragging(hwnd, true);
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+            WM_EXITSIZEMOVE => {
+                glass::set_window_dragging(hwnd, false);
+                DefWindowProcW(hwnd, message, wparam, lparam)
             }
             WM_SIZE => {
                 if let Some(app) = app {
@@ -782,20 +821,21 @@ unsafe extern "system" fn window_proc(
                 set_hover(hwnd, Hit::None);
                 LRESULT(0)
             }
-            windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED
-            | windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
-                let had_state = with_chrome(hwnd, |s| {
-                    let had_drag = s.drag.take().is_some();
-                    let had_press = s.pressed != Hit::None;
-                    s.pressed = Hit::None;
-                    had_drag || had_press
-                })
-                .unwrap_or(false);
-                if had_state {
-                    let _ = ReleaseCapture();
+            windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
+                if clear_pointer_state(hwnd) {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
+            }
+            windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
+                glass::set_window_dragging(hwnd, false);
+                if clear_pointer_state(hwnd) {
+                    if GetCapture() == hwnd {
+                        let _ = ReleaseCapture();
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                DefWindowProcW(hwnd, message, wparam, lparam)
             }
             WM_LBUTTONDOWN => {
                 let p = frame::point_from_lparam(lparam);
@@ -1589,5 +1629,17 @@ mod tests {
     fn hovers_that_are_not_tabs_are_left_alone() {
         assert_eq!(moved_hover(Hit::NewTab, Some(0)), Hit::NewTab);
         assert_eq!(moved_hover(Hit::Omnibox, None), Hit::Omnibox);
+    }
+
+    #[test]
+    fn overlay_surface_tracks_chrome_height_across_dpi_changes() {
+        let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
+        for dpi in [96, 120, 144, 192, 96, 120] {
+            s.relayout(1000, 700, dpi, TabId(0), false);
+            let chrome = layout::chrome_height(dpi);
+            assert_eq!(s.surface.height(), chrome, "surface height at dpi {dpi}");
+            assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
+            assert_eq!(s.layout.viewport.top, chrome, "viewport top at dpi {dpi}");
+        }
     }
 }

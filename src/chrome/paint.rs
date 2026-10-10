@@ -307,12 +307,7 @@ impl ChromeSurface {
                 let run = &mut pixels[start + run_from as usize * 4..start + run_to as usize * 4];
                 over_row(run, Rgba::hex(0xFFFFFF, 255), rim.alpha);
                 if rim.fringe > 0 {
-                    let tint = if rim.lit {
-                        Rgba::hex(0x9FE3FF, 255)
-                    } else {
-                        Rgba::hex(0xFFC2A8, 255)
-                    };
-                    over_row(run, tint, rim.fringe);
+                    over_row(run, rim.fringe_colour, rim.fringe);
                 }
             }
             let spans = if band_row {
@@ -335,12 +330,7 @@ impl ChromeSurface {
                     let i = y as usize * stride + x as usize * 4;
                     blend_pixel(&mut pixels[i..i + 4], Rgba::hex(0xFFFFFF, 255), rim.alpha);
                     if rim.fringe > 0 {
-                        let tint = if rim.lit {
-                            Rgba::hex(0x9FE3FF, 255)
-                        } else {
-                            Rgba::hex(0xFFC2A8, 255)
-                        };
-                        blend_pixel(&mut pixels[i..i + 4], tint, rim.fringe);
+                        blend_pixel(&mut pixels[i..i + 4], rim.fringe_colour, rim.fringe);
                     }
                 }
             }
@@ -415,7 +405,7 @@ impl ChromeSurface {
                 // rim, so a hard stroke would read as a frame rather than glass.
                 let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
                 let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
-                self.border(rect, radius, 1.0, colour, dirty);
+                self.border(rect, radius, m.dpi() as f32 / 96.0, colour, dirty);
             }
             if view.palette.translucent {
                 let edge = m.px(GLASS_EDGE_WIDTH);
@@ -660,7 +650,7 @@ impl ChromeSurface {
         self.border(
             rect,
             radius,
-            if view.omnibox.focused { 1.5 } else { 1.0 },
+            (if view.omnibox.focused { 1.5 } else { 1.0 }) * m.dpi() as f32 / 96.0,
             if view.omnibox.focused {
                 view.palette.omnibox_focus_border
             } else {
@@ -968,7 +958,7 @@ struct Rimlight {
 struct Rim {
     alpha: u8,
     fringe: u8,
-    lit: bool,
+    fringe_colour: Rgba,
 }
 
 /// The rim at `(px, py)` for a rounded rect with half sizes `half`, corner radius `r` and edge band
@@ -980,7 +970,10 @@ fn rim_at(px: f32, py: f32, half: (f32, f32), r: f32, band: f32, light: Rimlight
     let (ox, oy) = (qx.max(0.0), qy.max(0.0));
     let outside = (ox * ox + oy * oy).sqrt();
     let depth = -(outside + qx.max(qy).min(0.0) - r);
-    if !(0.0..=band).contains(&depth) {
+    // Pixel centres straddling the silhouette contribute fractional coverage. The SDF is in
+    // physical pixels, so this remains one physical pixel wide at every DPI.
+    let coverage = (depth + 0.5).clamp(0.0, 1.0);
+    if depth < -0.5 || depth > band {
         return None;
     }
     let (nx, ny) = if outside > 0.0 {
@@ -994,19 +987,39 @@ fn rim_at(px: f32, py: f32, half: (f32, f32), r: f32, band: f32, light: Rimlight
     let facing_dot = -0.5 * nx - 0.866 * ny;
     let facing = facing_dot.max(0.0);
     // 1 at the edge, 0 where the band meets the flat body of the glass.
-    let s = 1.0 - depth / band;
-    let nz = (1.0 - s * s).max(0.0).sqrt();
-    let fresnel = (1.0 - nz).powi(3);
+    let s = (1.0 - depth / band).clamp(0.0, 1.0);
+    // A bounded grazing falloff avoids the square-root cusp at the silhouette. That cusp made
+    // the brightest samples drop abruptly just inside the analytically covered boundary.
+    let fresnel = s * s * s;
     let spec = facing * facing * s * s;
-    let alpha = (fresnel * 0.22 * light.outline + spec * 0.42 * light.highlight).clamp(0.0, 1.0);
-    let fringe = ((1.0 - depth).max(0.0) * 0.25 * light.outline).clamp(0.0, 1.0);
-    let rim = Rim {
-        alpha: (alpha * 255.0).round() as u8,
-        fringe: (fringe * 255.0).round() as u8,
-        lit: facing_dot >= 0.0,
-    };
+    let alpha = ((fresnel * 0.12 * light.outline + spec * 0.42 * light.highlight) * coverage)
+        .clamp(0.0, 1.0);
+    let fringe_width = (band / 6.0).max(1.0);
+    let fringe = ((1.0 - depth / fringe_width).clamp(0.0, 1.0) * 0.25 * light.outline * coverage)
+        .clamp(0.0, 1.0);
+    // Continuous dispersion follows the light direction: cyan on the lit side, warm at the
+    // opposite edge, with a neutral midpoint instead of a binary tint seam.
+    let alpha = (alpha * 255.0).round() as u8;
+    let fringe = (fringe * 255.0).round() as u8;
     // Most of the band is flat glass, where the rim contributes nothing to blend.
-    (rim.alpha > 0 || rim.fringe > 0).then_some(rim)
+    if alpha == 0 && fringe == 0 {
+        return None;
+    }
+    let fringe_colour = if fringe > 0 {
+        let dispersion = ((facing_dot + 1.0) * 0.5).clamp(0.0, 1.0);
+        mix(
+            Rgba::hex(0xFFC2A8, 255),
+            Rgba::hex(0x9FE3FF, 255),
+            dispersion,
+        )
+    } else {
+        Rgba::hex(0xFFFFFF, 255)
+    };
+    Some(Rim {
+        alpha,
+        fringe,
+        fringe_colour,
+    })
 }
 
 /// Clamps a client size to the chrome rows that are painted, and a DPI to at least 96.
@@ -1652,6 +1665,63 @@ mod tests {
         assert_eq!(p[59], p[339]);
         assert!(p[47] < p[59]);
     }
+
+    #[test]
+    fn glass_rim_has_fractional_silhouette_coverage_and_continuous_dispersion() {
+        let light = Rimlight {
+            outline: 1.0,
+            highlight: 1.0,
+        };
+        let half = (20.0, 12.0);
+        let outside =
+            rim_at(0.0, -12.25, half, 6.0, 6.0, light).expect("fractionally covered outside pixel");
+        let edge = rim_at(0.0, -11.5, half, 6.0, 6.0, light).expect("edge pixel");
+        assert!(outside.alpha > 0 && outside.alpha < edge.alpha);
+        assert!(outside.fringe > 0 && outside.fringe < edge.fringe);
+
+        let upper = rim_at(0.0, -11.5, half, 6.0, 6.0, light).unwrap();
+        let lower = rim_at(0.0, 11.5, half, 6.0, 6.0, light).unwrap();
+        assert_ne!(upper.fringe_colour, lower.fringe_colour);
+        assert!(upper.fringe_colour.g > lower.fringe_colour.g);
+        // The old binary lit/unlit tint jumped at this normal (30 degrees on the lower-left
+        // corner). Nearby normals must now differ by at most one quantised colour level.
+        let colour_at = |angle: f32| {
+            let (sin, cos) = angle.sin_cos();
+            rim_at(-14.0 - 6.0 * cos, 6.0 + 6.0 * sin, half, 6.0, 6.0, light)
+                .unwrap()
+                .fringe_colour
+        };
+        let a = colour_at(std::f32::consts::PI / 6.0 - 0.001);
+        let b = colour_at(std::f32::consts::PI / 6.0 + 0.001);
+        assert!(a.r.abs_diff(b.r) <= 1 && a.g.abs_diff(b.g) <= 1 && a.b.abs_diff(b.b) <= 1);
+    }
+
+    #[test]
+    fn glass_rim_coverage_is_continuous_and_bounded_at_every_dpi() {
+        let light = Rimlight {
+            outline: 1.0,
+            highlight: 1.0,
+        };
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let half = (30.0 * scale, 14.0 * scale);
+            let radius = 6.0 * scale;
+            let band = 6.0 * scale;
+            let mut previous = 0;
+            for step in 0..=10 {
+                let depth = -0.5 + step as f32 * 0.1;
+                let rim = rim_at(0.0, -half.1 + depth, half, radius, band, light);
+                let alpha = rim.map_or(0, |rim| rim.alpha);
+                assert!(
+                    alpha >= previous,
+                    "non-monotonic silhouette at scale {scale}"
+                );
+                assert!(alpha - previous <= 20, "abrupt silhouette at scale {scale}");
+                previous = alpha;
+            }
+            assert!(rim_at(0.0, -half.1 - 0.51, half, radius, band, light).is_none());
+            assert!(rim_at(0.0, -half.1 + band, half, radius, band, light).is_none());
+        }
+    }
     #[test]
     fn compositing_preserves_premultiplied_invariant() {
         let mut dst = [0_u8; 4];
@@ -2126,53 +2196,56 @@ mod tests {
         for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
             for solid in [false, true] {
                 let pal = palette(appearance, solid);
-                for width in [768, 1024, 1100, 1440] {
-                    for count in [1, 5, 12] {
-                        for state in 0..3 {
-                            let layout =
-                                crate::chrome::layout::compute(width, 120, 96, count, false);
-                            let now = Instant::now();
-                            let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now)}).collect::<Vec<_>>();
-                            let text = match state {
-                                0 => "",
-                                1 => "https://example.com/a-very-long-address",
-                                _ => "https://example.com",
-                            };
-                            let omni = OmniboxView {
-                                text,
-                                selection: if state == 1 { (8, 15) } else { (0, 0) },
-                                caret_visible: state == 2,
-                                focused: state == 2,
-                                completion_suffix: if state == 1 { ".net" } else { "" },
-                                progress: if state == 2 { Some(45) } else { None },
-                            };
-                            let view = ChromeView {
-                                layout: &layout,
-                                palette: pal,
-                                tabs: &tabs,
-                                active: count - 1,
-                                hover: Hit::Tab(0),
-                                pressed: Hit::None,
-                                caption_maximised: false,
-                                can_back: true,
-                                can_forward: false,
-                                omnibox: omni,
-                                now,
-                                departures: &[],
-                            };
-                            let mut surface = ChromeSurface::new(width, 120, 96);
-                            surface.paint(&view, Rect::new(0, 0, width, surface.height()));
-                            let rgba = composite_stripes(
-                                surface.pixels(),
-                                width,
-                                surface.height(),
-                                surface.stride(),
-                            );
-                            let file = dir.join(format!(
-                                "{name}-{}-{width}-tabs{count}-state{state}.png",
-                                if solid { "solid" } else { "glass" }
-                            ));
-                            write_png(&file, width as u32, surface.height() as u32, &rgba);
+                for dpi in [96, 120, 144, 192] {
+                    for width in [768, 1024, 1440] {
+                        for count in [1, 5, 12] {
+                            for state in 0..3 {
+                                let layout =
+                                    crate::chrome::layout::compute(width, 120, dpi, count, false);
+                                let now = Instant::now();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now)}).collect::<Vec<_>>();
+                                let text = match state {
+                                    0 => "",
+                                    1 => "https://example.com/a-very-long-address",
+                                    _ => "https://example.com",
+                                };
+                                let omni = OmniboxView {
+                                    text,
+                                    selection: if state == 1 { (8, 15) } else { (0, 0) },
+                                    caret_visible: state == 2,
+                                    focused: state == 2,
+                                    completion_suffix: if state == 1 { ".net" } else { "" },
+                                    progress: if state == 2 { Some(45) } else { None },
+                                };
+                                let view = ChromeView {
+                                    layout: &layout,
+                                    palette: pal,
+                                    tabs: &tabs,
+                                    active: count - 1,
+                                    hover: Hit::Tab(0),
+                                    pressed: Hit::None,
+                                    caption_maximised: false,
+                                    can_back: true,
+                                    can_forward: false,
+                                    omnibox: omni,
+                                    now,
+                                    departures: &[],
+                                };
+                                let mut surface = ChromeSurface::new(width, 120, dpi);
+                                surface.paint(&view, Rect::new(0, 0, width, surface.height()));
+                                let rgba = composite_on_background(
+                                    surface.pixels(),
+                                    width,
+                                    surface.height(),
+                                    surface.stride(),
+                                    Some([pal.window.r, pal.window.g, pal.window.b]),
+                                );
+                                let file = dir.join(format!(
+                                    "{name}-{}-{width}-dpi{dpi}-tabs{count}-state{state}.png",
+                                    if solid { "solid" } else { "glass" }
+                                ));
+                                write_png(&file, width as u32, surface.height() as u32, &rgba);
+                            }
                         }
                     }
                 }
@@ -2311,6 +2384,18 @@ mod tests {
             departures: &[],
         };
         let mut s = ChromeSurface::new(1000, 800, 96);
+        let full_dirty = Rect::new(0, 0, 1000, s.height());
+        for _ in 0..20 {
+            s.paint(&view, full_dirty);
+        }
+        let mut samples = Vec::with_capacity(201);
+        for _ in 0..201 {
+            let start = Instant::now();
+            s.paint(&view, full_dirty);
+            samples.push(start.elapsed());
+        }
+        samples.sort_unstable();
+        let median = samples[samples.len() / 2];
         let start = Instant::now();
         for _ in 0..100 {
             s.paint(&view, Rect::new(0, 0, 1000, s.height()));
@@ -2337,7 +2422,7 @@ mod tests {
         }
         let caret = start.elapsed() / 1000;
         println!(
-            "full-strip={full:?}; hover-dirty={hover:?}; strip-row={strip:?}; omnibox-row={omnibox:?}; caret-dirty={caret:?}"
+            "median-full={median:?}; full-strip={full:?}; hover-dirty={hover:?}; strip-row={strip:?}; omnibox-row={omnibox:?}; caret-dirty={caret:?}"
         );
     }
 }
@@ -2355,16 +2440,27 @@ static QA_FAVICON: std::sync::LazyLock<FaviconBitmap> =
 
 #[cfg(test)]
 fn composite_stripes(pixels: &[u8], width: i32, height: i32, stride: usize) -> Vec<u8> {
+    composite_on_background(pixels, width, height, stride, None)
+}
+
+#[cfg(test)]
+fn composite_on_background(
+    pixels: &[u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    background: Option<[u8; 3]>,
+) -> Vec<u8> {
     let mut out = vec![0; (width * height * 4) as usize];
     for y in 0..height {
         for x in 0..width {
             let t = ((x + y) / 24) % 4;
-            let back = match t {
+            let back = background.unwrap_or(match t {
                 0 => [45_u8, 30, 220],
                 1 => [220, 70, 20],
                 2 => [25, 190, 30],
                 _ => [220, 200, 20],
-            };
+            });
             let i = y as usize * stride + x as usize * 4;
             let a = u32::from(pixels[i + 3]);
             let o = (y as usize * width as usize + x as usize) * 4;

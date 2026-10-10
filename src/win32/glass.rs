@@ -77,6 +77,7 @@ const UNKNOWN: u8 = 0;
 const MODE_GLASS: u8 = 1;
 const MODE_SOLID: u8 = 2;
 static APPLIED_MODE: AtomicU8 = AtomicU8::new(UNKNOWN);
+static WINDOW_DRAGGING: AtomicU8 = AtomicU8::new(0);
 
 /// Cached system state. The registry is read once, then again after `refresh_system_state`.
 const ALLOWED_YES: u8 = 1;
@@ -166,6 +167,15 @@ pub fn apply(hwnd: HWND) -> BackdropMode {
         unsafe { apply_solid(hwnd, dark) };
         APPLIED_MODE.store(MODE_SOLID, Ordering::Relaxed);
         BackdropMode::Solid
+    }
+}
+
+/// Use the lighter Win10 blur while the native move/size loop is active. The atomic state also
+/// lets theme refreshes reapply the current tint without reverting the drag backdrop.
+pub fn set_window_dragging(hwnd: HWND, dragging: bool) {
+    let next = u8::from(dragging);
+    if WINDOW_DRAGGING.swap(next, Ordering::Relaxed) != next && os_build() < 22_621 {
+        let _ = apply(hwnd);
     }
 }
 
@@ -345,12 +355,19 @@ const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
 /// `tint_abgr` is the accent `GradientColor`, `0xAABBGGRR`.
 unsafe fn apply_windows_10(hwnd: HWND, tint_abgr: u32) -> bool {
-    let state = if blur_variant_requested() {
+    let state = windows_10_accent_state(
+        WINDOW_DRAGGING.load(Ordering::Relaxed) != 0,
+        blur_variant_requested(),
+    );
+    unsafe { set_accent(hwnd, state, tint_abgr) }
+}
+
+fn windows_10_accent_state(dragging: bool, blur_variant: bool) -> u32 {
+    if dragging || blur_variant {
         ACCENT_ENABLE_BLURBEHIND
     } else {
         ACCENT_ENABLE_ACRYLICBLURBEHIND
-    };
-    unsafe { set_accent(hwnd, state, tint_abgr) }
+    }
 }
 
 unsafe fn set_accent(hwnd: HWND, state: u32, gradient_color: u32) -> bool {
@@ -512,5 +529,25 @@ mod tests {
         // 0x00BBGGRR for 0x20242C and 0xF4F6F8.
         assert_eq!(solid_background(Appearance::Dark).0, 0x002C_2420);
         assert_eq!(solid_background(Appearance::Light).0, 0x00F8_F6F4);
+    }
+
+    #[test]
+    fn drag_backdrop_uses_blur_and_restores_selected_normal_variant() {
+        assert_eq!(
+            windows_10_accent_state(true, false),
+            ACCENT_ENABLE_BLURBEHIND
+        );
+        assert_eq!(
+            windows_10_accent_state(false, false),
+            ACCENT_ENABLE_ACRYLICBLURBEHIND
+        );
+        assert_eq!(
+            windows_10_accent_state(true, true),
+            ACCENT_ENABLE_BLURBEHIND
+        );
+        assert_eq!(
+            windows_10_accent_state(false, true),
+            ACCENT_ENABLE_BLURBEHIND
+        );
     }
 }
