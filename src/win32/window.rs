@@ -48,13 +48,12 @@ use windows::{
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
                 SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
                 WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
-                WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_KEYDOWN, WM_KILLFOCUS,
-                WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
-                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-                WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETTINGCHANGE, WM_SIZE,
-                WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CHILD,
-                WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE,
+                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETTINGCHANGE,
+                WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW,
+                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
                 WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
             },
         },
@@ -518,7 +517,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_ERASEBKGND => {
-                // Glass leaves the client untouched so DWM shows the acrylic through it.
+                // Glass leaves the client untouched so DWM shows the native blur through it.
                 if glass::backdrop_mode() == glass::BackdropMode::Solid {
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
@@ -638,14 +637,6 @@ unsafe extern "system" fn window_proc(
             WM_MOVE => {
                 sync_overlay_position(hwnd);
                 LRESULT(0)
-            }
-            WM_ENTERSIZEMOVE => {
-                glass::set_window_dragging(hwnd, true);
-                DefWindowProcW(hwnd, message, wparam, lparam)
-            }
-            WM_EXITSIZEMOVE => {
-                glass::set_window_dragging(hwnd, false);
-                DefWindowProcW(hwnd, message, wparam, lparam)
             }
             WM_SIZE => {
                 if let Some(app) = app {
@@ -828,7 +819,6 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
-                glass::set_window_dragging(hwnd, false);
                 if clear_pointer_state(hwnd) {
                     if GetCapture() == hwnd {
                         let _ = ReleaseCapture();

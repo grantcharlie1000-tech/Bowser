@@ -1,6 +1,6 @@
 //! Window backdrop and system appearance.
 //!
-//! On Windows 10 the whole client area is an accent-policy acrylic window. The chrome is composited
+//! On Windows 10 the whole client area uses the native accent-policy blur. The chrome is composited
 //! on top of it with its own per-pixel alpha (see `chrome::paint`), so every chrome pixel must be
 //! written with `BitBlt(SRCCOPY)` of premultiplied BGRA: DWM then blends the alpha over the blurred
 //! backdrop. `AlphaBlend` onto the window DC does not work here. It makes DWM drop the blur behind
@@ -8,8 +8,7 @@
 //!
 //! Set `BOWSER_FORCE_SOLID=1` to skip glass entirely and use the opaque themed fill. Windows also
 //! falls back to solid on its own when transparency is disabled, in a remote session, or in
-//! high-contrast mode. Debug builds additionally honour `BOWSER_FORCE_THEME=light|dark` and
-//! `BOWSER_GLASS_VARIANT=blur`.
+//! high-contrast mode. Debug builds additionally honour `BOWSER_FORCE_THEME=light|dark`.
 
 use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
 
@@ -77,7 +76,6 @@ const UNKNOWN: u8 = 0;
 const MODE_GLASS: u8 = 1;
 const MODE_SOLID: u8 = 2;
 static APPLIED_MODE: AtomicU8 = AtomicU8::new(UNKNOWN);
-static WINDOW_DRAGGING: AtomicU8 = AtomicU8::new(0);
 
 /// Cached system state. The registry is read once, then again after `refresh_system_state`.
 const ALLOWED_YES: u8 = 1;
@@ -151,7 +149,7 @@ pub fn apply(hwnd: HWND) -> BackdropMode {
             let margins = [-1_i32; 4];
             apply_windows_11(hwnd) && DwmExtendFrameIntoClientArea(hwnd, margins.as_ptr()) >= 0
         } else {
-            // Accent acrylic covers the client uniformly. Extending even a narrow custom frame
+            // Accent blur covers the client uniformly. Extending even a narrow custom frame
             // splits the backdrop into DWM frame and client surfaces, so leave it unextended and
             // draw the chrome in the separate layered overlay.
             apply_windows_10(
@@ -167,15 +165,6 @@ pub fn apply(hwnd: HWND) -> BackdropMode {
         unsafe { apply_solid(hwnd, dark) };
         APPLIED_MODE.store(MODE_SOLID, Ordering::Relaxed);
         BackdropMode::Solid
-    }
-}
-
-/// Use the lighter Win10 blur while the native move/size loop is active. The atomic state also
-/// lets theme refreshes reapply the current tint without reverting the drag backdrop.
-pub fn set_window_dragging(hwnd: HWND, dragging: bool) {
-    let next = u8::from(dragging);
-    if WINDOW_DRAGGING.swap(next, Ordering::Relaxed) != next && os_build() < 22_621 {
-        let _ = apply(hwnd);
     }
 }
 
@@ -224,16 +213,6 @@ fn forced_appearance() -> Option<Appearance> {
 #[cfg(not(debug_assertions))]
 fn forced_appearance() -> Option<Appearance> {
     None
-}
-
-#[cfg(debug_assertions)]
-fn blur_variant_requested() -> bool {
-    std::env::var_os("BOWSER_GLASS_VARIANT").is_some_and(|value| value.eq_ignore_ascii_case("blur"))
-}
-
-#[cfg(not(debug_assertions))]
-fn blur_variant_requested() -> bool {
-    false
 }
 
 fn system_allows_glass() -> bool {
@@ -351,23 +330,10 @@ unsafe fn apply_windows_11(hwnd: HWND) -> bool {
 
 const ACCENT_DISABLED: u32 = 0;
 const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
-const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
 /// `tint_abgr` is the accent `GradientColor`, `0xAABBGGRR`.
 unsafe fn apply_windows_10(hwnd: HWND, tint_abgr: u32) -> bool {
-    let state = windows_10_accent_state(
-        WINDOW_DRAGGING.load(Ordering::Relaxed) != 0,
-        blur_variant_requested(),
-    );
-    unsafe { set_accent(hwnd, state, tint_abgr) }
-}
-
-fn windows_10_accent_state(dragging: bool, blur_variant: bool) -> u32 {
-    if dragging || blur_variant {
-        ACCENT_ENABLE_BLURBEHIND
-    } else {
-        ACCENT_ENABLE_ACRYLICBLURBEHIND
-    }
+    unsafe { set_accent(hwnd, ACCENT_ENABLE_BLURBEHIND, tint_abgr) }
 }
 
 unsafe fn set_accent(hwnd: HWND, state: u32, gradient_color: u32) -> bool {
@@ -529,25 +495,5 @@ mod tests {
         // 0x00BBGGRR for 0x20242C and 0xF4F6F8.
         assert_eq!(solid_background(Appearance::Dark).0, 0x002C_2420);
         assert_eq!(solid_background(Appearance::Light).0, 0x00F8_F6F4);
-    }
-
-    #[test]
-    fn drag_backdrop_uses_blur_and_restores_selected_normal_variant() {
-        assert_eq!(
-            windows_10_accent_state(true, false),
-            ACCENT_ENABLE_BLURBEHIND
-        );
-        assert_eq!(
-            windows_10_accent_state(false, false),
-            ACCENT_ENABLE_ACRYLICBLURBEHIND
-        );
-        assert_eq!(
-            windows_10_accent_state(true, true),
-            ACCENT_ENABLE_BLURBEHIND
-        );
-        assert_eq!(
-            windows_10_accent_state(false, true),
-            ACCENT_ENABLE_BLURBEHIND
-        );
     }
 }
