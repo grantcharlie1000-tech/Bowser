@@ -1717,6 +1717,211 @@ fn open_profile_window(target: &crate::profile::Profile) {
     }
 }
 
+/// Ctrl+Shift+E: native menu for this profile's unpacked extensions. Each row toggles the
+/// extension; failures from the last load show in the row. Removal is under a submenu.
+fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
+    use crate::extensions::{self, Record};
+    const INSTALL: usize = 1;
+    const TOGGLE_BASE: usize = 100;
+    const REMOVE_BASE: usize = 1000;
+    const MAX_LISTED: usize = extensions::MAX_INSTALLED;
+
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    let records: Vec<Record> = match extensions::read_records(&profile.extensions_file()) {
+        Ok(records) => records.into_iter().take(MAX_LISTED).collect(),
+        Err(error) => {
+            show_error_message(&format!("The extensions list could not be read. {error}"));
+            return;
+        }
+    };
+    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+        return;
+    };
+    if records.is_empty() {
+        let _ = unsafe { AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, w!("No extensions installed")) };
+    }
+    for (index, record) in records.iter().enumerate() {
+        let mut label = format!(
+            "{} {} ({})",
+            record.name,
+            record.version,
+            if record.enabled { "enabled" } else { "disabled" }
+        );
+        if let Some(reason) = extensions::load_failure(&record.id) {
+            label.push_str(&format!(" (failed: {reason})"));
+        }
+        let flags = if record.enabled {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let text = windows::core::HSTRING::from(label);
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                flags,
+                TOGGLE_BASE + index,
+                windows::core::PCWSTR(text.as_ptr()),
+            )
+        };
+    }
+    let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()) };
+    if let Ok(submenu) = unsafe { CreatePopupMenu() } {
+        for (index, record) in records.iter().enumerate() {
+            let text = windows::core::HSTRING::from(record.name.as_str());
+            let _ = unsafe {
+                AppendMenuW(
+                    submenu,
+                    MF_STRING,
+                    REMOVE_BASE + index,
+                    windows::core::PCWSTR(text.as_ptr()),
+                )
+            };
+        }
+        let flags = if records.is_empty() {
+            MF_POPUP | MF_GRAYED
+        } else {
+            MF_POPUP
+        };
+        // The submenu handle is owned by `menu` and is destroyed with it.
+        let _ = unsafe { AppendMenuW(menu, flags, submenu.0 as usize, w!("Remove extension…")) };
+    }
+    let _ = unsafe { AppendMenuW(menu, MF_STRING, INSTALL, w!("Install unpacked extension…")) };
+
+    let mut point = windows::Win32::Foundation::POINT { x: 8, y: 8 };
+    let command = unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize
+    };
+    let _ = unsafe { DestroyMenu(menu) };
+
+    match command {
+        INSTALL => install_extension(hwnd, app, &profile),
+        id if (TOGGLE_BASE..TOGGLE_BASE + MAX_LISTED).contains(&id) => {
+            if let Some(record) = records.get(id - TOGGLE_BASE) {
+                toggle_extension(app, &profile, record);
+            }
+        }
+        id if (REMOVE_BASE..REMOVE_BASE + MAX_LISTED).contains(&id) => {
+            if let Some(record) = records.get(id - REMOVE_BASE) {
+                remove_extension(app, &profile, record);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn toggle_extension(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record) {
+    use crate::extensions;
+    let enabled = !record.enabled;
+    if let Err(error) = extensions::set_enabled(&profile.extensions_file(), &record.id, enabled) {
+        show_error_message(&format!("The extension was not changed. {error}"));
+        return;
+    }
+    match extensions::folder_for(&profile.extensions_dir(), &record.id) {
+        Ok(folder) => App::set_extension_enabled(app, record.id.clone(), folder, enabled),
+        Err(error) => show_error_message(&error.to_string()),
+    }
+}
+
+fn remove_extension(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record) {
+    use crate::extensions;
+    let question = format!(
+        "Remove the extension \"{}\" from this profile? Its copied files will be deleted.",
+        record.name
+    );
+    if !crate::win32::ask_yes_no(&question) {
+        return;
+    }
+    let extensions_dir = profile.extensions_dir();
+    let records_file = profile.extensions_file();
+    let id = record.id.clone();
+    App::remove_extension(
+        app,
+        record.id.clone(),
+        Box::new(move |result| match result {
+            Ok(()) => {
+                extensions::record_load_result(&id, Ok(()));
+                if let Err(error) = extensions::uninstall(&extensions_dir, &records_file, &id) {
+                    show_error_message(&format!("The extension was removed from the list, but its files were not deleted. {error}"));
+                }
+            }
+            Err(reason) => {
+                extensions::record_load_result(&id, Err(format!("Remove failed: {reason}")));
+            }
+        }),
+    );
+}
+
+/// Asks for an unpacked extension folder, shows its permissions, then copies it into the profile
+/// and loads it. Nothing is copied before the user agrees.
+fn install_extension(hwnd: HWND, app: &AppRef, profile: &crate::profile::Profile) {
+    use crate::extensions;
+    let Some(folder) = pick_extension_folder(hwnd) else {
+        return;
+    };
+    let inspection = match extensions::inspect_source(&folder) {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            show_error_message(&error.to_string());
+            return;
+        }
+    };
+    let question = format!(
+        "Install \"{}\" version {}?\n\n{}\n\nOnly install extensions you trust. An extension can read and change the pages it has access to.",
+        inspection.manifest.name,
+        inspection.manifest.version,
+        extensions::permission_summary(&inspection.manifest)
+    );
+    if !crate::win32::ask_yes_no(&question) {
+        return;
+    }
+    match extensions::install(&folder, &profile.extensions_dir(), &profile.extensions_file()) {
+        Ok(record) => match extensions::folder_for(&profile.extensions_dir(), &record.id) {
+            Ok(installed) => App::set_extension_enabled(app, record.id, installed, true),
+            Err(error) => show_error_message(&error.to_string()),
+        },
+        Err(error) => show_error_message(&format!("The extension was not installed. {error}")),
+    }
+}
+
+/// Folder picker for an unpacked extension. `None` when cancelled or when the dialog fails.
+fn pick_extension_folder(owner: HWND) -> Option<std::path::PathBuf> {
+    use windows::Win32::{
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
+        UI::Shell::{
+            FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+        },
+    };
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+            .ok()?;
+        dialog
+            .SetTitle(w!("Choose an unpacked extension folder (the one with manifest.json)"))
+            .ok()?;
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let display = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = display.to_string().ok().map(std::path::PathBuf::from);
+        CoTaskMemFree(Some(display.0.cast_const().cast()));
+        path
+    }
+}
+
 fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     let ids = App::tab_ids(app);
     if ids.is_empty() {
@@ -2196,6 +2401,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::Forward => App::history(app, true),
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
+        Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

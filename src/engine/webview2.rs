@@ -2,20 +2,22 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     os::windows::ffi::OsStrExt,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use url::Url;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
+    AcceleratorKeyPressedEventHandler, BrowserExtensionEnableCompletedHandler,
+    BrowserExtensionRemoveCompletedHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
     ExecuteScriptCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
+    ProcessFailedEventHandler, ProfileAddBrowserExtensionCompletedHandler,
     SourceChangedEventHandler, TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
 };
 use windows::{
@@ -282,7 +284,18 @@ struct EngineCore {
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     closed: bool,
+    /// Whether the environment was created with browser extensions enabled.
+    browser_extensions: bool,
+    /// Profile handle used for extension calls; captured from the first page's webview.
+    extension_profile: Option<ICoreWebView2Profile7>,
+    /// Extensions currently added to the profile, by Bowser extension id.
+    extensions_loaded: HashMap<String, ICoreWebView2BrowserExtension>,
+    /// Enabled extensions to add once `extension_profile` is available.
+    startup_extensions: Vec<(String, PathBuf)>,
 }
+
+/// Completion for an extension operation. It runs once, on the UI thread.
+type ExtensionDone = Box<dyn FnOnce(std::result::Result<(), String>)>;
 
 enum MemoryTargetApi {
     Supported(ICoreWebView2_19),
@@ -442,6 +455,14 @@ impl WebView2Engine {
                     return Ok(());
                 }
                 core.borrow_mut().tabs.insert(tab_id, tab);
+                let first_webview = core
+                    .borrow()
+                    .tabs
+                    .get(&tab_id)
+                    .and_then(|tab| tab.webview.clone());
+                if let Some(webview) = first_webview {
+                    capture_extension_profile(&core, &webview);
+                }
                 // Navigate raises NavigationStarting synchronously and failure callbacks can pump
                 // messages, so no core borrow may be held across either.
                 let memory_result = core
@@ -500,6 +521,134 @@ impl WebView2Engine {
             Self::request_controller(&self.core, tab_id)?;
         }
         Ok(())
+    }
+}
+
+/// Holds a completion until WebView2 answers, so it runs at most once even if the request fails
+/// after the handler was created.
+fn once_slot(done: ExtensionDone) -> Rc<RefCell<Option<ExtensionDone>>> {
+    Rc::new(RefCell::new(Some(done)))
+}
+
+fn finish_slot(slot: &Rc<RefCell<Option<ExtensionDone>>>, result: std::result::Result<(), String>) {
+    let done = slot.borrow_mut().take();
+    if let Some(done) = done {
+        done(result);
+    }
+}
+
+/// Records the profile on the first page and adds the extensions that were enabled at startup.
+/// Runs only when the environment was created with browser extensions enabled.
+fn capture_extension_profile(core: &Rc<RefCell<EngineCore>>, webview: &ICoreWebView2) {
+    let (wanted, known) = {
+        let state = core.borrow();
+        (state.browser_extensions, state.extension_profile.is_some())
+    };
+    if !wanted || known {
+        return;
+    }
+    let profile = webview
+        .cast::<ICoreWebView2_13>()
+        .and_then(|webview| unsafe { webview.Profile() })
+        .and_then(|profile| profile.cast::<ICoreWebView2Profile7>());
+    let pending = std::mem::take(&mut core.borrow_mut().startup_extensions);
+    match profile {
+        Ok(profile) => {
+            core.borrow_mut().extension_profile = Some(profile.clone());
+            for (id, folder) in pending {
+                let report = id.clone();
+                add_extension(
+                    core,
+                    &profile,
+                    id,
+                    &folder,
+                    Box::new(move |result| crate::extensions::record_load_result(&report, result)),
+                );
+            }
+        }
+        Err(_) => {
+            for (id, _) in pending {
+                crate::extensions::record_load_result(
+                    &id,
+                    Err("This WebView2 runtime does not support browser extensions.".to_owned()),
+                );
+            }
+        }
+    }
+}
+
+/// Adds an unpacked extension folder to the profile. On success the loaded extension is kept so
+/// it can be enabled, disabled or removed later.
+fn add_extension(
+    core: &Rc<RefCell<EngineCore>>,
+    profile: &ICoreWebView2Profile7,
+    id: String,
+    folder: &Path,
+    done: ExtensionDone,
+) {
+    let slot = once_slot(done);
+    let completion = slot.clone();
+    let weak = Rc::downgrade(core);
+    let loaded_id = id.clone();
+    let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(
+        move |status, extension| {
+            let result = match (status, extension) {
+                (Ok(()), Some(extension)) => {
+                    if let Some(core) = weak.upgrade() {
+                        core.borrow_mut().extensions_loaded.insert(loaded_id, extension);
+                    }
+                    Ok(())
+                }
+                (Ok(()), None) => Err("WebView2 did not return the extension.".to_owned()),
+                (Err(error), _) => Err(format!("{error}")),
+            };
+            finish_slot(&completion, result);
+            Ok(())
+        },
+    ));
+    let path: Vec<u16> = folder
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    if let Err(error) = unsafe { profile.AddBrowserExtension(PCWSTR(path.as_ptr()), &handler) } {
+        finish_slot(&slot, Err(format!("{error}")));
+    }
+}
+
+fn set_loaded_enabled(extension: &ICoreWebView2BrowserExtension, enabled: bool, done: ExtensionDone) {
+    let slot = once_slot(done);
+    let completion = slot.clone();
+    let handler = BrowserExtensionEnableCompletedHandler::create(Box::new(move |status| {
+        finish_slot(&completion, status.map_err(|error| format!("{error}")));
+        Ok(())
+    }));
+    if let Err(error) = unsafe { extension.Enable(enabled, &handler) } {
+        finish_slot(&slot, Err(format!("{error}")));
+    }
+}
+
+fn remove_loaded(
+    core: &Rc<RefCell<EngineCore>>,
+    id: String,
+    extension: &ICoreWebView2BrowserExtension,
+    done: ExtensionDone,
+) {
+    let slot = once_slot(done);
+    let completion = slot.clone();
+    let weak = Rc::downgrade(core);
+    let handler = BrowserExtensionRemoveCompletedHandler::create(Box::new(move |status| {
+        let result = status.map_err(|error| format!("{error}"));
+        if result.is_ok() {
+            if let Some(core) = weak.upgrade() {
+                core.borrow_mut().extensions_loaded.remove(&id);
+            }
+        }
+        finish_slot(&completion, result);
+        Ok(())
+    }));
+    if let Err(error) = unsafe { extension.Remove(&handler) } {
+        finish_slot(&slot, Err(format!("{error}")));
     }
 }
 
@@ -580,6 +729,8 @@ impl WebView2Engine {
         F: FnOnce(Result<Self>) + 'static,
     {
         let blocker = extras.blocker;
+        let browser_extensions = extras.browser_extensions;
+        let startup_extensions = extras.startup_extensions;
         let creation_log = events.policy_event.clone();
         if let Some(log) = creation_log.as_ref() {
             log("webview_profile_started");
@@ -690,6 +841,10 @@ impl WebView2Engine {
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
                         closed: false,
+                        browser_extensions,
+                        extension_profile: None,
+                        extensions_loaded: HashMap::new(),
+                        startup_extensions: startup_extensions.clone(),
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -709,6 +864,16 @@ impl WebView2Engine {
             options2
                 .SetExclusiveUserDataFolderAccess(true)
                 .map_err(request_error)?;
+        }
+        if browser_extensions {
+            // Older runtimes lack the options interface or the setter. Bowser then starts without
+            // extensions, and each extension reports that it could not load.
+            let enabled = options2
+                .cast::<ICoreWebView2EnvironmentOptions6>()
+                .and_then(|options6| unsafe { options6.SetAreBrowserExtensionsEnabled(true) });
+            if enabled.is_err() {
+                event(creation_log.as_ref(), "browser_extensions_unavailable");
+            }
         }
         let options1: ICoreWebView2EnvironmentOptions = options2.cast().map_err(request_error)?;
         if let Some(log) = creation_log.as_ref() {
@@ -733,6 +898,45 @@ impl WebView2Engine {
 }
 
 impl EngineAdapter for WebView2Engine {
+    fn set_extension_enabled(
+        &mut self,
+        id: &str,
+        folder: &Path,
+        enabled: bool,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        let (profile, loaded, extensions_on) = {
+            let state = self.core.borrow();
+            (
+                state.extension_profile.clone(),
+                state.extensions_loaded.get(id).cloned(),
+                state.browser_extensions,
+            )
+        };
+        match (loaded, profile) {
+            (Some(extension), _) => set_loaded_enabled(&extension, enabled, done),
+            (None, _) if !enabled => done(Ok(())),
+            (None, Some(profile)) => {
+                add_extension(&self.core, &profile, id.to_owned(), folder, done)
+            }
+            (None, None) if extensions_on => done(Err(
+                "Bowser is still opening this window. Try again in a moment.".to_owned(),
+            )),
+            (None, None) => done(Err(
+                "This window was started without extensions. Restart Bowser to load it."
+                    .to_owned(),
+            )),
+        }
+    }
+
+    fn remove_extension(&mut self, id: &str, done: Box<dyn FnOnce(std::result::Result<(), String>)>) {
+        let loaded = self.core.borrow().extensions_loaded.get(id).cloned();
+        match loaded {
+            None => done(Ok(())),
+            Some(extension) => remove_loaded(&self.core, id.to_owned(), &extension, done),
+        }
+    }
+
     fn navigate(&mut self, url: &Url) -> Result<()> {
         let active = self
             .core

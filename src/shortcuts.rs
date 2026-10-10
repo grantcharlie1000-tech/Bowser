@@ -26,6 +26,8 @@ pub enum Command {
     ToggleBlocker,
     /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
     ShowProfileMenu,
+    /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
+    ShowExtensionsMenu,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -39,6 +41,7 @@ const VK_8: u32 = 0x38;
 const VK_9: u32 = 0x39;
 const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
+const VK_E: u32 = 0x45;
 const VK_L: u32 = 0x4C;
 const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
@@ -80,6 +83,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
+        (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
         _ => None,
     }
 }
@@ -116,6 +120,7 @@ mod tests {
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
+            (VK_E, true, true, false, Command::ShowExtensionsMenu),
         ];
         for index in 0..8 {
             table.push((

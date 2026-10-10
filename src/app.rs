@@ -458,7 +458,69 @@ impl AppTab {
 
 pub type AppRef = Rc<RefCell<App>>;
 
+/// Extensions to load for a window. Benchmark launches and custom data folders load none, and a
+/// profile without installed extensions gets a plan that costs nothing at engine creation.
+fn extension_startup_plan(
+    app: &AppRef,
+    user_data_dir: &std::path::Path,
+) -> crate::extensions::StartupPlan {
+    if app.borrow().benchmark_url.is_some() {
+        return crate::extensions::StartupPlan::default();
+    }
+    let Ok(profile) = crate::profile::active() else {
+        return crate::extensions::StartupPlan::default();
+    };
+    if profile.webview2_dir() != user_data_dir {
+        return crate::extensions::StartupPlan::default();
+    }
+    crate::extensions::startup_plan(&profile.extensions_dir(), &profile.extensions_file())
+}
+
 impl App {
+    /// Loads an installed extension into the running profile, or unloads it when `enabled` is
+    /// false. The outcome goes to the extension status list, which the extension menu shows.
+    pub fn set_extension_enabled(app: &AppRef, id: String, folder: PathBuf, enabled: bool) {
+        let present = app.borrow().engine.is_some();
+        if !present {
+            // No engine yet: the saved state takes effect when the window starts.
+            let result = if enabled {
+                Err("Bowser is still starting. Restart Bowser to load this extension.".to_owned())
+            } else {
+                Ok(())
+            };
+            crate::extensions::record_load_result(&id, result);
+            return;
+        }
+        let report = id.clone();
+        Self::with_engine(app, move |engine| {
+            engine.set_extension_enabled(
+                &id,
+                &folder,
+                enabled,
+                Box::new(move |result| crate::extensions::record_load_result(&report, result)),
+            );
+            Ok(())
+        });
+    }
+
+    /// Unloads an extension from the running profile, then calls `done` with the outcome. `done`
+    /// runs immediately when no engine is running, because then nothing is loaded.
+    pub fn remove_extension(
+        app: &AppRef,
+        id: String,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        let present = app.borrow().engine.is_some();
+        if !present {
+            done(Ok(()));
+            return;
+        }
+        Self::with_engine(app, move |engine| {
+            engine.remove_extension(&id, done);
+            Ok(())
+        });
+    }
+
     fn with_engine(
         app: &AppRef,
         operation: impl FnOnce(&mut dyn engine::EngineAdapter) -> windows::core::Result<()>,
@@ -1696,7 +1758,12 @@ impl App {
             },
         };
         let allowed_file = app.borrow().allowed_benchmark_file.clone();
-        let extras = engine::EngineExtras { blocker };
+        let plan = extension_startup_plan(app, &profile);
+        let extras = engine::EngineExtras {
+            blocker,
+            browser_extensions: plan.installed,
+            startup_extensions: plan.enabled,
+        };
         let create_result = engine::WebView2Engine::begin_create_with_extras(
             hwnd,
             bounds,

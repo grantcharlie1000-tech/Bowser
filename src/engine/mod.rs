@@ -77,6 +77,26 @@ pub trait EngineAdapter {
         target: MemoryUsageTarget,
     ) -> windows::core::Result<MemoryTargetApply>;
     fn close(&mut self) -> windows::core::Result<()>;
+    /// Loads an installed unpacked extension (`enabled`) or disables a loaded one. `done` receives
+    /// the outcome; it may run later. Engines without extension support report an error when
+    /// enabling and succeed trivially when disabling.
+    fn set_extension_enabled(
+        &mut self,
+        _id: &str,
+        _folder: &std::path::Path,
+        enabled: bool,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        if enabled {
+            done(Err("This browser engine does not support extensions.".to_owned()));
+        } else {
+            done(Ok(()));
+        }
+    }
+    /// Unloads an extension from the running profile. `done` runs once the browser has removed it.
+    fn remove_extension(&mut self, _id: &str, done: Box<dyn FnOnce(Result<(), String>)>) {
+        done(Ok(()));
+    }
 }
 
 /// Operations against one logical tab. Implementations may share an environment across tabs.
@@ -128,4 +148,9 @@ pub type BlockerHandle = std::rc::Rc<std::cell::RefCell<crate::blocker::BlockerS
 pub struct EngineExtras {
     /// When set, subresource requests on every tab are checked against the blocker.
     pub blocker: Option<BlockerHandle>,
+    /// Creates the WebView2 environment with browser extensions enabled. Set only when the
+    /// profile has an installed extension, so profiles without one pay nothing.
+    pub browser_extensions: bool,
+    /// Enabled unpacked extensions, as (id, folder), added once the first page is ready.
+    pub startup_extensions: Vec<(String, std::path::PathBuf)>,
 }

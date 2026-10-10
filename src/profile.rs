@@ -24,6 +24,8 @@ const WEBVIEW2_DIR_NAME: &str = "WebView2";
 const PASSWORDS_FILE_NAME: &str = "Passwords.dat";
 const SEARCH_PROVIDER_FILE_NAME: &str = "search-provider.txt";
 const TAB_GROUPS_FILE_NAME: &str = "tab-groups.txt";
+const EXTENSIONS_DIR_NAME: &str = "Extensions";
+const EXTENSIONS_FILE_NAME: &str = "extensions.txt";
 const SETTINGS_FILE_NAME: &str = "settings.txt";
 const LOCK_FILE_NAME: &str = "running.lock";
 const TRASH_PREFIX: &str = ".trash-";
@@ -153,6 +155,16 @@ impl Profile {
 
     pub fn passwords_file(&self) -> PathBuf {
         self.root.join(PASSWORDS_FILE_NAME)
+    }
+
+    /// Copies of unpacked browser extensions installed into this profile, one folder per id.
+    pub fn extensions_dir(&self) -> PathBuf {
+        self.root.join(EXTENSIONS_DIR_NAME)
+    }
+
+    /// The installed-extension list (`id`, enabled flag, name, version), one line each.
+    pub fn extensions_file(&self) -> PathBuf {
+        self.root.join(EXTENSIONS_FILE_NAME)
     }
 
     /// Suffix for the window title; empty for the default profile.
@@ -449,6 +461,8 @@ mod tests {
             app.join("search-provider.txt")
         );
         assert_eq!(profile.passwords_file(), app.join("Passwords.dat"));
+        assert_eq!(profile.extensions_dir(), app.join("Extensions"));
+        assert_eq!(profile.extensions_file(), app.join("extensions.txt"));
         assert_eq!(profile.title_suffix(), "");
     }
 
@@ -463,6 +477,8 @@ mod tests {
         assert_eq!(profile.webview2_dir(), root.join("WebView2"));
         assert_eq!(profile.session_dir(), root);
         assert_eq!(profile.passwords_file(), root.join("Passwords.dat"));
+        assert_eq!(profile.extensions_dir(), root.join("Extensions"));
+        assert_eq!(profile.extensions_file(), root.join("extensions.txt"));
         assert_eq!(profile.settings_file(), root.join("settings.txt"));
         assert_eq!(profile.title_suffix(), " [Work]");
         assert!(Profile::named(app, "../Work").is_err());
