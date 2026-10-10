@@ -141,8 +141,16 @@ fn is_separator(byte: u8) -> bool {
 /// ADBLOCK-style glob anchored at the start of `text`, with an implicit trailing wildcard.
 /// `pattern` must already be lowercase; `text` is compared case-insensitively.
 fn glob_prefix(pattern: &[u8], text: &[u8]) -> bool {
+    glob_core(pattern, text, true)
+}
+
+/// Single-pass glob matcher (`*` and `^`) with one backtrack point, so the cost is bounded by
+/// `pattern.len() * text.len()` and never grows with the number of wildcards. When `anchored` is
+/// false the match may start at any offset in `text` (a leading `*`).
+fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
-    let mut star: Option<(usize, usize)> = None;
+    // (pattern index just after the last `*`, text index that `*` currently consumes up to)
+    let mut star: Option<(usize, usize)> = (!anchored).then_some((0, 0));
     loop {
         if p == pattern.len() {
             return true;
@@ -190,7 +198,23 @@ fn contains_glob(pattern: &[u8], text: &[u8]) -> bool {
                 .windows(pattern.len())
                 .any(|window| window.eq_ignore_ascii_case(pattern));
     }
-    (0..=text.len()).any(|start| glob_prefix(pattern, &text[start..]))
+    glob_core(pattern, text, false)
+}
+
+/// Longest URL text (in bytes) that substring and path rules are run against. Anything beyond
+/// this is ignored for matching, which keeps every rule's work bounded regardless of input size.
+pub const MAX_MATCH_TEXT_BYTES: usize = 2048;
+
+/// The longest prefix of `text` that is at most `max` bytes and ends on a character boundary.
+fn capped(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Splits an `http(s)` URL into (lowercased host, path+query). `None` for other schemes,
@@ -319,6 +343,7 @@ impl Blocker {
     }
 
     fn matches_parts(&self, host: &str, path: &str, url: &str) -> bool {
+        let path = capped(path, MAX_MATCH_TEXT_BYTES);
         for suffix in host_suffixes(host) {
             if self.hosts.contains(suffix) {
                 return true;
@@ -331,6 +356,7 @@ impl Blocker {
                 return true;
             }
         }
+        let url = capped(url, MAX_MATCH_TEXT_BYTES);
         self.substrings
             .iter()
             .any(|needle| contains_glob(needle.as_bytes(), url.as_bytes()))
@@ -683,5 +709,55 @@ mod tests {
         ] {
             assert!(!s.should_block(ok, "news.example"), "{ok}");
         }
+    }
+
+    #[test]
+    fn glob_matching_is_correct_with_many_wildcards() {
+        assert!(glob_core(b"a*b*c", b"xxaqbqqcxx", false));
+        assert!(!glob_core(b"a*b*c", b"xxaqbqqxx", false));
+        assert!(glob_core(b"a*b", b"ab", true));
+        assert!(!glob_core(b"b*", b"ab", true), "anchored at the start");
+        assert!(glob_core(b"b*", b"ab", false));
+        assert!(glob_core(b"a^b", b"a/b", true));
+        assert!(
+            glob_core(b"a^", b"a", true),
+            "separator matches end of text"
+        );
+        assert!(!glob_core(b"a^b", b"axb", true));
+    }
+
+    #[test]
+    fn huge_urls_are_matched_in_bounded_time() {
+        // A rule whose backtracking would be quadratic on an all-'a' URL, against a 100 KB URL.
+        let s = state("/a*a*a*a*a*a*a*a*b\n||example.net/x*y*z\n", &[]);
+        let long = format!("https://site.test/{}", "a".repeat(100_000));
+        let started = std::time::Instant::now();
+        assert!(!s.should_block(&long, "news.example"));
+        let mut tail = format!("https://site.test/{}", "a".repeat(100_000));
+        tail.push_str("b");
+        assert!(
+            !s.should_block(&tail, "news.example"),
+            "the match lies beyond the cap, so it is not seen"
+        );
+        let path_long = format!("https://example.net/x{}z", "y".repeat(100_000));
+        assert!(
+            !s.should_block(&path_long, "news.example"),
+            "z lies beyond the cap"
+        );
+        assert!(s.should_block("https://example.net/xAyBz", "news.example"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn substring_match_inside_the_cap_still_blocks() {
+        let s = state("/banner-ad/*.gif\n", &[]);
+        let url = format!("https://site.test/{}/banner-ad/x.gif", "p".repeat(500));
+        assert!(s.should_block(&url, "news.example"));
+        let far = format!("https://site.test/{}/banner-ad/x.gif", "p".repeat(3000));
+        assert!(!s.should_block(&far, "news.example"));
     }
 }

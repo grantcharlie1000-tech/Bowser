@@ -13,8 +13,8 @@ use std::{
     collections::{BTreeMap, hash_map::RandomState},
     fs::{self, File},
     hash::{BuildHasher, Hasher},
-    io::{self, Write},
-    os::windows::fs::MetadataExt,
+    io::{self, Read, Write},
+    os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -41,6 +41,8 @@ const ID_PREFIX: &str = "ext-";
 const ID_LEN: usize = ID_PREFIX.len() + 16;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+/// Open a reparse point itself instead of the target it names.
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Limits {
@@ -109,6 +111,10 @@ pub struct Manifest {
     pub manifest_version: u8,
     pub permissions: Vec<String>,
     pub host_permissions: Vec<String>,
+    /// Every `content_scripts[].matches` pattern, in manifest order.
+    pub content_script_matches: Vec<String>,
+    pub optional_permissions: Vec<String>,
+    pub optional_host_permissions: Vec<String>,
 }
 
 /// A folder that passed inspection, with the manifest and the size of its contents.
@@ -184,7 +190,38 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ExtensionError> {
         manifest_version,
         permissions: string_list(&fields, "permissions")?,
         host_permissions: string_list(&fields, "host_permissions")?,
+        content_script_matches: content_script_matches(&fields)?,
+        optional_permissions: string_list(&fields, "optional_permissions")?,
+        optional_host_permissions: string_list(&fields, "optional_host_permissions")?,
     })
+}
+
+/// The `matches` patterns of every content script, combined. Each script's list is checked like any
+/// other list; the combined list has the same cap.
+fn content_script_matches(fields: &[(String, json::Value)]) -> Result<Vec<String>, ExtensionError> {
+    let invalid = ExtensionError::InvalidManifest("content_scripts must be a list of objects.");
+    match json::get(fields, "content_scripts") {
+        None => Ok(Vec::new()),
+        Some(json::Value::Array(scripts)) => {
+            if scripts.len() > MAX_LIST_LEN {
+                return Err(invalid);
+            }
+            let mut matches = Vec::new();
+            for script in scripts {
+                let json::Value::Object(script) = script else {
+                    return Err(invalid);
+                };
+                matches.extend(string_list(script, "matches")?);
+                if matches.len() > MAX_LIST_LEN {
+                    return Err(ExtensionError::InvalidManifest(
+                        "content_scripts has too many match patterns.",
+                    ));
+                }
+            }
+            Ok(matches)
+        }
+        Some(_) => Err(invalid),
+    }
 }
 
 fn string_list(
@@ -282,6 +319,11 @@ fn walk_with_limits(
     let mut pending: Vec<(PathBuf, usize)> = vec![(PathBuf::new(), 0)];
     while let Some((relative, depth)) = pending.pop() {
         let folder = root.join(&relative);
+        // A folder that was a plain directory when its parent was listed may have been replaced by a
+        // junction since; never list through a link.
+        if !relative.as_os_str().is_empty() && !is_plain_dir(&folder) {
+            return Err(ExtensionError::LinkNotAllowed);
+        }
         let entries = fs::read_dir(&folder).map_err(|_| ExtensionError::Io)?;
         for entry in entries {
             let entry = entry.map_err(|_| ExtensionError::Io)?;
@@ -335,35 +377,52 @@ fn is_valid_entry_name(name: &str) -> bool {
         })
 }
 
-/// Copies a checked folder into `<extensions_dir>\<new id>`, appends its record to the list at
-/// `records_file` and returns the record. Nothing is left behind when a step fails. The source is
-/// inspected again just before copying, and the copy reuses the same walk and caps.
+/// Copies a folder into `<extensions_dir>\<new id>` without asking anyone, then records it. Only for
+/// callers that have already confirmed with the user; prefer [`install_confirmed`].
 pub fn install(
     source: &Path,
     extensions_dir: &Path,
     records_file: &Path,
 ) -> Result<Record, ExtensionError> {
+    install_confirmed(source, extensions_dir, records_file, &mut |_| true)?
+        .ok_or(ExtensionError::Io)
+}
+
+/// Copies `source` into `<extensions_dir>\<new id>` first, then inspects that copy and passes its
+/// manifest (including content script, optional and host permissions) to `confirm`. The copy is
+/// the only thing that is ever recorded or loaded, so what the user approved is what runs.
+///
+/// Returns `Ok(None)` when `confirm` declines; the copy is then deleted and nothing is recorded.
+/// Links, reparse points and other unsupported entries are refused during the copy: a file is
+/// opened without following a link, and a folder is re-checked just before it is listed.
+pub fn install_confirmed(
+    source: &Path,
+    extensions_dir: &Path,
+    records_file: &Path,
+    confirm: &mut dyn FnMut(&Inspection) -> bool,
+) -> Result<Option<Record>, ExtensionError> {
     let mut records = read_records(records_file)?;
     if records.len() >= MAX_INSTALLED {
         return Err(ExtensionError::TooManyInstalled);
     }
-    let inspection = inspect_source(source)?;
+    if !is_plain_dir(source) {
+        return Err(ExtensionError::NotAFolder);
+    }
     ensure_plain_dir(extensions_dir)?;
     let id = new_id(&records, extensions_dir)?;
     let target = contained_path(extensions_dir, &id)?;
     fs::create_dir(&target).map_err(|_| ExtensionError::Io)?;
-    let copied = walk_with_limits(source, LIMITS, &mut |relative, kind| {
-        let destination = target.join(relative);
-        match kind {
-            EntryKind::Folder => fs::create_dir(&destination).map_err(|_| ExtensionError::Io),
-            EntryKind::File => fs::copy(source.join(relative), &destination)
-                .map(|_| ())
-                .map_err(|_| ExtensionError::Io),
+    let inspected = copy_tree(source, &target).and_then(|()| inspect_source(&target));
+    let inspection = match inspected {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            let _ = remove_folder(extensions_dir, &id);
+            return Err(error);
         }
-    });
-    if let Err(error) = copied {
-        let _ = fs::remove_dir_all(&target);
-        return Err(error);
+    };
+    if !confirm(&inspection) {
+        let _ = remove_folder(extensions_dir, &id);
+        return Ok(None);
     }
     let record = Record {
         id,
@@ -376,7 +435,45 @@ pub fn install(
         let _ = remove_folder(extensions_dir, &record.id);
         return Err(error);
     }
-    Ok(record)
+    Ok(Some(record))
+}
+
+/// Copies every entry of `source` under `target` using the same walk and caps as inspection.
+fn copy_tree(source: &Path, target: &Path) -> Result<(), ExtensionError> {
+    walk_with_limits(source, LIMITS, &mut |relative, kind| {
+        let destination = target.join(relative);
+        match kind {
+            EntryKind::Folder => fs::create_dir(&destination).map_err(|_| ExtensionError::Io),
+            EntryKind::File => copy_file_no_follow(&source.join(relative), &destination),
+        }
+    })
+    .map(|_| ())
+}
+
+/// Copies one regular file. The entry is opened as itself (`FILE_FLAG_OPEN_REPARSE_POINT`), so a
+/// link swapped in after the walk is refused rather than followed, and no more than the size the
+/// walk saw is copied.
+fn copy_file_no_follow(from: &Path, to: &Path) -> Result<(), ExtensionError> {
+    let mut input = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(from)
+        .map_err(|_| ExtensionError::Io)?;
+    let meta = input.metadata().map_err(|_| ExtensionError::Io)?;
+    if !is_plain_file(&meta) {
+        return Err(ExtensionError::LinkNotAllowed);
+    }
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .map_err(|_| ExtensionError::Io)?;
+    let copied = io::copy(&mut (&mut input).take(meta.len()), &mut output)
+        .map_err(|_| ExtensionError::Io)?;
+    if copied != meta.len() {
+        return Err(ExtensionError::Io);
+    }
+    output.sync_all().map_err(|_| ExtensionError::Io)
 }
 
 /// Sets the enabled flag of one installed extension.
@@ -572,7 +669,9 @@ fn sanitize_text(text: &str) -> String {
         .to_owned()
 }
 
-/// Human-readable summary for the install confirmation.
+/// Human-readable summary for the install confirmation. It lists everything that grants access:
+/// declared and optional permissions, host access, and the pages each content script runs on
+/// (`<all_urls>` included).
 pub fn permission_summary(manifest: &Manifest) -> String {
     let list = |items: &[String]| {
         if items.is_empty() {
@@ -582,10 +681,13 @@ pub fn permission_summary(manifest: &Manifest) -> String {
         }
     };
     format!(
-        "Manifest version {}.\nPermissions: {}\nSite access: {}",
+        "Manifest version {}.\nPermissions: {}\nSite access: {}\nContent scripts run on: {}\nOptional permissions: {}\nOptional site access: {}",
         manifest.manifest_version,
         list(&manifest.permissions),
-        list(&manifest.host_permissions)
+        list(&manifest.host_permissions),
+        list(&manifest.content_script_matches),
+        list(&manifest.optional_permissions),
+        list(&manifest.optional_host_permissions)
     )
 }
 
@@ -1243,5 +1345,111 @@ mod tests {
         let summary = permission_summary(&manifest);
         assert!(summary.contains("storage, tabs"));
         assert!(summary.contains("https://example.com/*"));
+    }
+
+    #[test]
+    fn content_scripts_and_optional_access_are_listed() {
+        let manifest = parse_manifest(&manifest(
+            r#"{"manifest_version": 3, "name": "Injector", "version": "1.0",
+            "content_scripts": [{"matches": ["<all_urls>"], "js": ["a.js"]},
+                                {"matches": ["https://b.test/*"], "js": ["b.js"]}],
+            "optional_permissions": ["cookies"],
+            "optional_host_permissions": ["*://*/*"]}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest.content_script_matches,
+            vec!["<all_urls>", "https://b.test/*"]
+        );
+        let summary = permission_summary(&manifest);
+        assert!(summary.contains("Content scripts run on: <all_urls>, https://b.test/*"));
+        assert!(summary.contains("Optional permissions: cookies"));
+        assert!(summary.contains("Optional site access: *://*/*"));
+    }
+
+    #[test]
+    fn malformed_content_scripts_are_rejected() {
+        for body in [
+            r#"{"manifest_version":3,"name":"x","version":"1","content_scripts":"all"}"#,
+            r#"{"manifest_version":3,"name":"x","version":"1","content_scripts":[1]}"#,
+            r#"{"manifest_version":3,"name":"x","version":"1","content_scripts":[{"matches":"<all_urls>"}]}"#,
+        ] {
+            assert!(parse_manifest(&manifest(body)).is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn declined_install_leaves_nothing_behind() {
+        let dir = temp_dir("declined");
+        let source = dir.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("manifest.json"), MV3).unwrap();
+        let extensions = dir.join("profile").join("Extensions");
+        let file = dir.join("profile").join("extensions.txt");
+        let mut seen = None;
+        let outcome = install_confirmed(&source, &extensions, &file, &mut |copy| {
+            seen = Some(copy.manifest.name.clone());
+            false
+        });
+        assert_eq!(outcome, Ok(None));
+        assert_eq!(seen.as_deref(), Some("Demo"));
+        assert!(read_records(&file).unwrap().is_empty());
+        let leftover = fs::read_dir(&extensions).map_or(0, |entries| entries.count());
+        assert_eq!(leftover, 0, "the copy is deleted when declined");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn confirmed_install_shows_the_copy_and_records_it() {
+        let dir = temp_dir("confirmed");
+        let source = dir.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            r#"{"manifest_version": 3, "name": "Injector", "version": "2.0",
+            "content_scripts": [{"matches": ["<all_urls>"], "js": ["a.js"]}]}"#,
+        )
+        .unwrap();
+        fs::write(source.join("a.js"), "1").unwrap();
+        let extensions = dir.join("profile").join("Extensions");
+        let file = dir.join("profile").join("extensions.txt");
+        let mut prompt = String::new();
+        let record = install_confirmed(&source, &extensions, &file, &mut |copy| {
+            prompt = permission_summary(&copy.manifest);
+            assert_eq!(copy.files, 2);
+            true
+        })
+        .unwrap()
+        .expect("accepted");
+        assert!(prompt.contains("<all_urls>"));
+        assert!(extensions.join(&record.id).join("a.js").is_file());
+        assert_eq!(read_records(&file).unwrap(), vec![record]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn install_refuses_links_during_the_copy_and_keeps_nothing() {
+        let dir = temp_dir("install-links");
+        let outside = temp_dir("install-links-outside");
+        let source = dir.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("manifest.json"), MV3).unwrap();
+        fs::write(outside.join("secret.txt"), "keep").unwrap();
+        make_junction(&source.join("linked"), &outside);
+        let extensions = dir.join("profile").join("Extensions");
+        let file = dir.join("profile").join("extensions.txt");
+        assert_eq!(
+            install_confirmed(&source, &extensions, &file, &mut |_| true),
+            Err(ExtensionError::LinkNotAllowed)
+        );
+        let leftover = fs::read_dir(&extensions).map_or(0, |entries| entries.count());
+        assert_eq!(leftover, 0);
+        assert!(read_records(&file).unwrap().is_empty());
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).unwrap(),
+            "keep"
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
     }
 }

@@ -27,6 +27,13 @@ use std::{
 };
 
 use url::Url;
+use windows::{
+    Win32::{
+        Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0},
+        System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
+    },
+    core::PCWSTR,
+};
 
 /// Compile-time public key (hex of 64-byte X||Y). Unset means the updater can never install.
 pub const COMPILED_PUBLIC_KEY: Option<&str> = option_env!("BOWSER_UPDATE_PUBKEY");
@@ -40,10 +47,12 @@ const MAX_NOTES_CHARS: usize = 2000;
 pub const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const MAX_REDIRECTS: u32 = 5;
-/// Unhealthy launches tolerated after a swap before the previous build is restored.
+/// Crashed launches tolerated after a swap before the previous build is restored.
 const MAX_TRIAL_ATTEMPTS: u32 = 3;
 /// A process that survives this long after start counts as a healthy launch.
 const HEALTHY_AFTER: Duration = Duration::from_secs(45);
+/// Failed swaps of one staged file before it is discarded (each one may rehash up to 256 MB).
+const MAX_APPLY_ATTEMPTS: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateError {
@@ -936,17 +945,59 @@ impl Layout {
     }
 }
 
+fn pending_text(version: Version, digest: &[u8; 32], size: u64, attempts: u32) -> String {
+    format!(
+        "version={version}\nsha256={}\nsize={size}\nattempts={attempts}\n",
+        hex_encode(digest)
+    )
+}
+
 /// Writes the staged-update record after the package has been fully verified.
 fn write_pending(layout: &Layout, manifest: &Manifest) -> Result<(), UpdateError> {
     write_atomic(
         &layout.pending(),
-        &format!(
-            "version={}\nsha256={}\nsize={}\n",
-            manifest.version,
-            hex_encode(&manifest.sha256),
-            manifest.size
-        ),
+        &pending_text(manifest.version, &manifest.sha256, manifest.size, 0),
     )
+}
+
+/// Cross-process lock around the swap, rollback and trial bookkeeping. It is a named mutex, so the
+/// OS releases it if the holder dies. Two Bowser processes starting together never both swap.
+struct SwapLock(HANDLE);
+
+impl SwapLock {
+    /// Waits up to `wait_ms` for the lock; `None` when another process holds it.
+    fn acquire(layout: &Layout, wait_ms: u32) -> Option<Self> {
+        let key = layout.updates.to_string_lossy();
+        // FNV-1a: stable across builds, so every Bowser build locks the same name.
+        let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let name: Vec<u16> = format!("Local\\BowserUpdate-{hash:016x}")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `name` is NUL-terminated and outlives the call; the returned handle is owned by us.
+        let handle = unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }.ok()?;
+        // SAFETY: `handle` is a valid mutex handle created above.
+        let wait = unsafe { WaitForSingleObject(handle, wait_ms) };
+        if wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED {
+            Some(Self(handle))
+        } else {
+            // SAFETY: we own `handle` and did not acquire the mutex.
+            let _ = unsafe { CloseHandle(handle) };
+            None
+        }
+    }
+}
+
+impl Drop for SwapLock {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned by this guard and the mutex is held by this thread.
+        unsafe {
+            let _ = ReleaseMutex(self.0);
+            let _ = CloseHandle(self.0);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -968,7 +1019,9 @@ fn discard_staged(layout: &Layout, version: Option<Version>) {
 
 /// Applies a staged update, re-verifying the staged file against the pending record first.
 /// Swap order: copy staged next to the exe, rename exe to `bowser.old.exe`, rename the copy into place.
-/// On any failure after the first rename the old exe is restored.
+/// On any failure after the first rename the old exe is restored. A failed attempt is counted in
+/// `pending.txt`; after [`MAX_APPLY_ATTEMPTS`] the staged file is discarded.
+/// Callers must hold the [`SwapLock`].
 pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
     let Some(pairs) = read_kv(&layout.pending()) else {
         return ApplyResult::Nothing;
@@ -976,6 +1029,9 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
     let version = kv(&pairs, "version").and_then(Version::parse);
     let digest = kv(&pairs, "sha256").and_then(hex_decode::<32>);
     let size = kv(&pairs, "size").and_then(|s| s.parse::<u64>().ok());
+    let attempts = kv(&pairs, "attempts")
+        .and_then(|a| a.parse::<u32>().ok())
+        .unwrap_or(0);
     let (Some(version), Some(digest), Some(size)) = (version, digest, size) else {
         discard_staged(layout, None);
         return ApplyResult::Failed("pending record is malformed".into());
@@ -985,9 +1041,22 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
         return ApplyResult::Nothing;
     }
     let staged = layout.staged_exe(version);
-    match sha256_file(&staged) {
-        Ok((actual, length)) if actual == digest && length == size && size <= MAX_PACKAGE_BYTES => {
+    let fail =
+        |message: String| record_failed_apply(layout, version, &digest, size, attempts, message);
+    // Cheap size check first, so a wrong-sized file is never hashed.
+    match fs::metadata(&staged) {
+        Ok(meta) if meta.len() == size && size <= MAX_PACKAGE_BYTES => {}
+        Ok(_) => {
+            discard_staged(layout, Some(version));
+            return ApplyResult::Failed("staged file does not match its record; discarded".into());
         }
+        Err(error) => {
+            discard_staged(layout, Some(version));
+            return ApplyResult::Failed(format!("staged file unreadable: {error}"));
+        }
+    }
+    match sha256_file(&staged) {
+        Ok((actual, length)) if actual == digest && length == size => {}
         Ok(_) => {
             discard_staged(layout, Some(version));
             return ApplyResult::Failed("staged file does not match its record; discarded".into());
@@ -1001,32 +1070,64 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
     let _ = fs::remove_file(&incoming);
     if let Err(error) = fs::copy(&staged, &incoming) {
         let _ = fs::remove_file(&incoming);
-        return ApplyResult::Failed(format!("cannot copy next to executable: {error}"));
+        return fail(format!("cannot copy next to executable: {error}"));
     }
     if old.exists() {
         if let Err(error) = fs::remove_file(&old) {
             let _ = fs::remove_file(&incoming);
-            return ApplyResult::Failed(format!("cannot clear previous rollback copy: {error}"));
+            return fail(format!("cannot clear previous rollback copy: {error}"));
         }
     }
     if let Err(error) = fs::rename(&layout.exe, &old) {
         let _ = fs::remove_file(&incoming);
-        return ApplyResult::Failed(format!("cannot move running executable aside: {error}"));
+        return fail(format!("cannot move running executable aside: {error}"));
     }
     if let Err(error) = fs::rename(&incoming, &layout.exe) {
         let _ = fs::rename(&old, &layout.exe);
         let _ = fs::remove_file(&incoming);
-        return ApplyResult::Failed(format!("cannot move new executable into place: {error}"));
+        return fail(format!("cannot move new executable into place: {error}"));
     }
-    let _ = write_atomic(&layout.trial(), &format!("version={version}\nattempts=0\n"));
+    let _ = write_trial(
+        layout,
+        Trial {
+            version,
+            attempts: 0,
+            running: false,
+        },
+    );
     discard_staged(layout, Some(version));
     ApplyResult::Swapped(version)
+}
+
+/// Counts one failed swap in `pending.txt`, or discards the staged file once the limit is reached.
+fn record_failed_apply(
+    layout: &Layout,
+    version: Version,
+    digest: &[u8; 32],
+    size: u64,
+    attempts: u32,
+    message: String,
+) -> ApplyResult {
+    let attempts = attempts.saturating_add(1);
+    if attempts >= MAX_APPLY_ATTEMPTS {
+        discard_staged(layout, Some(version));
+        return ApplyResult::Failed(format!("{message}; discarded after {attempts} attempts"));
+    }
+    let _ = write_atomic(
+        &layout.pending(),
+        &pending_text(version, digest, size, attempts),
+    );
+    ApplyResult::Failed(message)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Trial {
     pub version: Version,
+    /// Crashed launches so far.
     pub attempts: u32,
+    /// A launch of this version has started and has not yet exited cleanly or been marked healthy.
+    /// Seen at the next start, it means that launch crashed.
+    pub running: bool,
 }
 
 fn read_trial(layout: &Layout) -> Option<Trial> {
@@ -1036,33 +1137,54 @@ fn read_trial(layout: &Layout) -> Option<Trial> {
         attempts: kv(&pairs, "attempts")
             .and_then(|a| a.parse().ok())
             .unwrap_or(MAX_TRIAL_ATTEMPTS),
+        running: kv(&pairs, "running") == Some("1"),
     })
+}
+
+fn write_trial(layout: &Layout, trial: Trial) -> Result<(), UpdateError> {
+    write_atomic(
+        &layout.trial(),
+        &format!(
+            "version={}\nattempts={}\nrunning={}\n",
+            trial.version,
+            trial.attempts,
+            u8::from(trial.running)
+        ),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrialAction {
     /// No trial in progress.
     None,
-    /// Record one more launch and continue.
+    /// Record a new launch with this many crashed launches so far.
     Count(u32),
-    /// The trial build never became healthy; restore the previous build.
+    /// The trial build keeps crashing; restore the previous build.
     Rollback,
     /// The trial record is stale (a different build is running); clear it.
     Clear,
 }
 
-/// Pure rollback decision for each start. A launch is "healthy" once the process has survived
-/// [`HEALTHY_AFTER`], at which point the trial record is removed.
+/// Pure rollback decision for each start. Only crashed launches count: a launch whose process
+/// exited cleanly (see [`note_clean_exit`]) or survived [`HEALTHY_AFTER`] clears the `running`
+/// flag, so quick clean closes never lead to a rollback.
 pub fn decide_trial(trial: Option<Trial>, running: Version) -> TrialAction {
     match trial {
         None => TrialAction::None,
         Some(t) if t.version != running => TrialAction::Clear,
-        Some(t) if t.attempts >= MAX_TRIAL_ATTEMPTS => TrialAction::Rollback,
-        Some(t) => TrialAction::Count(t.attempts + 1),
+        Some(t) => {
+            let crashed = t.attempts.saturating_add(u32::from(t.running));
+            if crashed >= MAX_TRIAL_ATTEMPTS {
+                TrialAction::Rollback
+            } else {
+                TrialAction::Count(crashed)
+            }
+        }
     }
 }
 
 /// Restores `bowser.old.exe` over the current executable and remembers the rejected version.
+/// Callers must hold the [`SwapLock`].
 pub fn rollback(layout: &Layout, bad: Version) -> Result<(), UpdateError> {
     let old = layout.old_exe();
     let _ = fs::remove_file(layout.trial());
@@ -1104,28 +1226,86 @@ pub fn startup(benchmark: bool) -> StartupAction {
     if !layout.updates.is_dir() {
         return StartupAction::Continue;
     }
+    // Never wait here: if another process is swapping, this one simply starts the build it has.
+    let Some(_lock) = SwapLock::acquire(&layout, 0) else {
+        return StartupAction::Continue;
+    };
     let running = Version::current();
-    match decide_trial(read_trial(&layout), running) {
-        TrialAction::None => {}
-        TrialAction::Clear => {
-            let _ = fs::remove_file(layout.trial());
-        }
-        TrialAction::Count(attempts) => {
-            let _ = write_atomic(
-                &layout.trial(),
-                &format!("version={running}\nattempts={attempts}\n"),
-            );
-        }
-        TrialAction::Rollback => {
-            return match rollback(&layout, running) {
-                Ok(()) => StartupAction::Relaunch,
-                Err(_) => StartupAction::Continue,
-            };
-        }
+    if let TrialAction::Rollback = begin_launch(&layout, running) {
+        return match rollback(&layout, running) {
+            Ok(()) => StartupAction::Relaunch,
+            Err(_) => StartupAction::Continue,
+        };
     }
     match apply_pending(&layout, running) {
         ApplyResult::Swapped(_) => StartupAction::Relaunch,
         ApplyResult::Nothing | ApplyResult::Failed(_) => StartupAction::Continue,
+    }
+}
+
+/// Records the start of a launch of `running` in the trial record and returns the decision.
+/// Callers must hold the [`SwapLock`].
+fn begin_launch(layout: &Layout, running: Version) -> TrialAction {
+    let action = decide_trial(read_trial(layout), running);
+    match action {
+        TrialAction::None | TrialAction::Rollback => {}
+        TrialAction::Clear => {
+            let _ = fs::remove_file(layout.trial());
+        }
+        TrialAction::Count(attempts) => {
+            let _ = write_trial(
+                layout,
+                Trial {
+                    version: running,
+                    attempts,
+                    running: true,
+                },
+            );
+        }
+    }
+    action
+}
+
+/// Called on a normal shutdown. The launch is then not counted as a crash, so quick clean closes
+/// never lead to a rollback. Best effort: if the lock is busy the launch is simply counted.
+pub fn note_clean_exit() {
+    let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
+        return;
+    };
+    let layout = Layout::new(exe, &root);
+    if !layout.updates.is_dir() {
+        return;
+    }
+    let Some(_lock) = SwapLock::acquire(&layout, 1_000) else {
+        return;
+    };
+    mark_clean_exit(&layout, Version::current());
+}
+
+/// Clears the `running` flag of this build's trial record. Callers must hold the [`SwapLock`].
+fn mark_clean_exit(layout: &Layout, running: Version) {
+    if let Some(trial) = read_trial(layout)
+        && trial.version == running
+        && trial.running
+    {
+        let _ = write_trial(
+            layout,
+            Trial {
+                running: false,
+                ..trial
+            },
+        );
+    }
+}
+
+/// Ends the trial once this build has survived [`HEALTHY_AFTER`]. Only removes a record for the
+/// build that is actually running.
+fn mark_healthy(layout: &Layout, running: Version) {
+    let Some(_lock) = SwapLock::acquire(layout, 5_000) else {
+        return;
+    };
+    if read_trial(layout).is_some_and(|trial| trial.version == running) {
+        let _ = fs::remove_file(layout.trial());
     }
 }
 
@@ -1188,6 +1368,10 @@ pub fn check_and_stage(
         let _ = fs::remove_file(&partial);
         return Err(error);
     }
+    // Publish the staged file and its record under the lock so a starting process never pairs them
+    // half-way through.
+    let _lock =
+        SwapLock::acquire(layout, 5_000).ok_or(UpdateError::Io("update lock is busy".into()))?;
     let staged = layout.staged_exe(manifest.version);
     let _ = fs::remove_file(&staged);
     fs::rename(&partial, &staged)?;
@@ -1245,7 +1429,7 @@ pub fn spawn_background(benchmark: bool) {
                 return;
             };
             let layout = Layout::new(exe, &root);
-            let _ = fs::remove_file(layout.trial());
+            mark_healthy(&layout, Version::current());
             let last = fs::read_to_string(layout.last_check())
                 .ok()
                 .and_then(|t| t.trim().parse().ok());
@@ -1629,50 +1813,130 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    fn trial(version: Version, attempts: u32, running: bool) -> Option<Trial> {
+        Some(Trial {
+            version,
+            attempts,
+            running,
+        })
+    }
+
     #[test]
     fn trial_decisions() {
         let new = Version(0, 2, 0);
         assert_eq!(decide_trial(None, new), TrialAction::None);
+        // Fresh swap: the first launch is not yet a crash.
         assert_eq!(
-            decide_trial(
-                Some(Trial {
-                    version: new,
-                    attempts: 0
-                }),
-                new
-            ),
+            decide_trial(trial(new, 0, false), new),
+            TrialAction::Count(0)
+        );
+        // That launch never reported back, so the next start counts it as a crash.
+        assert_eq!(
+            decide_trial(trial(new, 0, true), new),
             TrialAction::Count(1)
         );
         assert_eq!(
-            decide_trial(
-                Some(Trial {
-                    version: new,
-                    attempts: 2
-                }),
-                new
-            ),
-            TrialAction::Count(3)
+            decide_trial(trial(new, 1, true), new),
+            TrialAction::Count(2)
         );
         assert_eq!(
-            decide_trial(
-                Some(Trial {
-                    version: new,
-                    attempts: MAX_TRIAL_ATTEMPTS
-                }),
-                new
-            ),
+            decide_trial(trial(new, 2, true), new),
+            TrialAction::Rollback,
+            "three crashed launches"
+        );
+        assert_eq!(
+            decide_trial(trial(new, MAX_TRIAL_ATTEMPTS, false), new),
             TrialAction::Rollback
         );
         assert_eq!(
-            decide_trial(
-                Some(Trial {
-                    version: new,
-                    attempts: 1
-                }),
-                Version(0, 0, 1)
-            ),
+            decide_trial(trial(new, 1, true), Version(0, 0, 1)),
             TrialAction::Clear
         );
+    }
+
+    #[test]
+    fn clean_exits_are_never_counted_as_crashes() {
+        let new = Version(0, 2, 0);
+        let f = fixture("clean");
+        stage(&f, new, b"NEW BUILD");
+        assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Swapped(new));
+        // Many quick launches that each exit cleanly: none may roll back.
+        for _ in 0..10 {
+            assert_eq!(begin_launch(&f.layout, new), TrialAction::Count(0));
+            mark_clean_exit(&f.layout, new);
+        }
+        assert_eq!(read_trial(&f.layout), trial(new, 0, false));
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn healthy_marker_only_clears_the_matching_build() {
+        let f = fixture("healthy");
+        let new = Version(0, 2, 0);
+        write_trial(
+            &f.layout,
+            Trial {
+                version: new,
+                attempts: 1,
+                running: true,
+            },
+        )
+        .unwrap();
+        mark_healthy(&f.layout, Version(0, 3, 0));
+        assert!(
+            read_trial(&f.layout).is_some(),
+            "another build's trial stays"
+        );
+        mark_healthy(&f.layout, new);
+        assert!(read_trial(&f.layout).is_none());
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn swap_lock_is_exclusive_across_threads() {
+        let f = fixture("lock");
+        let held = SwapLock::acquire(&f.layout, 0).expect("first holder");
+        let layout = f.layout.clone();
+        let contender = std::thread::spawn(move || SwapLock::acquire(&layout, 0).is_some())
+            .join()
+            .unwrap();
+        assert!(!contender, "a second holder must be refused");
+        drop(held);
+        let layout = f.layout.clone();
+        let later = std::thread::spawn(move || SwapLock::acquire(&layout, 0).is_some())
+            .join()
+            .unwrap();
+        assert!(later, "released by the holder");
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn failed_swaps_are_counted_then_discarded() {
+        let f = fixture("failcount");
+        let new = Version(0, 2, 0);
+        stage(&f, new, b"NEW BUILD");
+        // A directory where the rollback copy should go makes the swap fail.
+        fs::create_dir_all(f.layout.old_exe()).unwrap();
+        assert!(matches!(
+            apply_pending(&f.layout, CURRENT),
+            ApplyResult::Failed(_)
+        ));
+        assert!(
+            f.layout.pending().exists(),
+            "first failure is kept for a retry"
+        );
+        assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
+        assert!(matches!(
+            apply_pending(&f.layout, CURRENT),
+            ApplyResult::Failed(_)
+        ));
+        assert!(
+            !f.layout.pending().exists(),
+            "discarded after the second failure"
+        );
+        assert!(!f.layout.staged_exe(new).exists());
+        assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Nothing);
+        let _ = fs::remove_dir_all(f.dir);
     }
 
     struct Fixture {
@@ -1712,13 +1976,7 @@ mod tests {
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"NEW BUILD");
         assert_eq!(fs::read(f.layout.old_exe()).unwrap(), b"OLD BUILD");
         assert!(!f.layout.pending().exists() && !f.layout.staged_exe(new).exists());
-        assert_eq!(
-            read_trial(&f.layout),
-            Some(Trial {
-                version: new,
-                attempts: 0
-            })
-        );
+        assert_eq!(read_trial(&f.layout), trial(new, 0, false));
         assert_eq!(apply_pending(&f.layout, new), ApplyResult::Nothing);
         let _ = fs::remove_dir_all(f.dir);
     }
@@ -1766,20 +2024,11 @@ mod tests {
         let new = Version(0, 2, 0);
         stage(&f, new, b"NEW BUILD");
         assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Swapped(new));
-        // Three launches that never reach "healthy".
-        for expected in 1..=MAX_TRIAL_ATTEMPTS {
-            let action = decide_trial(read_trial(&f.layout), new);
-            assert_eq!(action, TrialAction::Count(expected));
-            write_atomic(
-                &f.layout.trial(),
-                &format!("version={new}\nattempts={expected}\n"),
-            )
-            .unwrap();
+        // Launches that crash without ever reaching "healthy" or a clean exit.
+        for expected in 0..MAX_TRIAL_ATTEMPTS {
+            assert_eq!(begin_launch(&f.layout, new), TrialAction::Count(expected));
         }
-        assert_eq!(
-            decide_trial(read_trial(&f.layout), new),
-            TrialAction::Rollback
-        );
+        assert_eq!(begin_launch(&f.layout, new), TrialAction::Rollback);
         rollback(&f.layout, new).unwrap();
         assert_eq!(fs::read(&f.layout.exe).unwrap(), b"OLD BUILD");
         assert_eq!(fs::read(f.layout.bad_exe()).unwrap(), b"NEW BUILD");

@@ -3,11 +3,13 @@
 //! Files in `%LOCALAPPDATA%\Bowser`:
 //! * `session.txt`     - latest snapshot (atomic temp + rename, size capped).
 //! * `session.prev`    - the snapshot that existed when this run first saved (one-step backup).
-//! * `session.crashed` - a snapshot set aside by the crash-loop guard; never deleted by Bowser.
+//! * `session.crashed-<unix>` - a snapshot set aside by the crash-loop guard. Never overwritten;
+//!   only the newest [`MAX_CRASHED_KEPT`] are kept. A legacy `session.crashed` is left alone.
 //! * `running.lock`    - created at start, removed on clean exit. Its presence at start means
 //!   the previous run ended unexpectedly. It holds the number of consecutive crashed runs and is
 //!   kept open with no sharing, so a second live instance can tell it apart from a stale marker
-//!   (and then leaves the session files alone).
+//!   (and then leaves the session files alone). The count is reset to 0 after the first
+//!   successful save of a run, so one crash long after a restore is not a crash loop.
 //!
 //! Only committed `http`/`https` URLs without embedded credentials are stored, together with the
 //! title, pinned flag and active tab. Per-tab back/forward history is not stored. Bowser has no
@@ -17,7 +19,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
@@ -27,6 +29,8 @@ use url::Url;
 pub const FILE_NAME: &str = "session.txt";
 pub const PREV_NAME: &str = "session.prev";
 pub const CRASHED_NAME: &str = "session.crashed";
+pub const CRASHED_PREFIX: &str = "session.crashed-";
+pub const MAX_CRASHED_KEPT: usize = 3;
 pub const LOCK_NAME: &str = "running.lock";
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 pub const MAX_TABS: usize = 200;
@@ -54,17 +58,20 @@ pub struct Session {
 }
 
 /// The URL text to persist, or `None` for anything that must not be stored: non-web schemes,
-/// `about:blank`, URLs with userinfo, host-less or oversized URLs.
+/// `about:blank`, URLs with userinfo, host-less or oversized URLs. The fragment (`#...`) is
+/// dropped: it can carry tokens or other page state that has no place on disk.
 pub fn persistable_url(url: &Url) -> Option<String> {
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none_or(str::is_empty)
         || !url.username().is_empty()
         || url.password().is_some()
-        || url.as_str().len() > MAX_URL_BYTES
     {
         return None;
     }
-    Some(url.as_str().to_owned())
+    let mut url = url.clone();
+    url.set_fragment(None);
+    let text = url.as_str();
+    (text.len() <= MAX_URL_BYTES).then(|| text.to_owned())
 }
 
 impl Session {
@@ -238,10 +245,78 @@ pub struct Offer {
 pub struct SessionStore {
     dir: PathBuf,
     lock: Option<File>,
+    /// Crash count currently recorded in the running marker.
+    lock_count: u32,
     rotated: bool,
     last_text: Option<String>,
     /// A one-shot save timer is armed; further changes do not re-arm it.
     pub save_pending: bool,
+}
+
+/// Moves `session.txt` to a new `session.crashed-<unix>` name (never overwriting an existing
+/// file), then keeps only the newest [`MAX_CRASHED_KEPT`] set-aside snapshots.
+fn set_aside_crashed(dir: &Path) {
+    let path = dir.join(FILE_NAME);
+    if !path.exists() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    for n in 0u32..1000 {
+        let name = if n == 0 {
+            format!("{CRASHED_PREFIX}{now}")
+        } else {
+            format!("{CRASHED_PREFIX}{now}-{n}")
+        };
+        let target = dir.join(name);
+        // Reserve the name exclusively: rename would silently replace an existing file.
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(_) => {
+                if fs::rename(&path, &target).is_err() {
+                    let _ = fs::remove_file(&target);
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(_) => break,
+        }
+    }
+    prune_crashed(dir);
+}
+
+/// Sort key for `session.crashed-<unix>[-<n>]`; `None` for any other name (never deleted).
+fn crashed_key(name: &str) -> Option<(u64, u32)> {
+    let rest = name.strip_prefix(CRASHED_PREFIX)?;
+    let mut parts = rest.splitn(2, '-');
+    let stamp = parts.next()?.parse().ok()?;
+    let n = match parts.next() {
+        Some(suffix) => suffix.parse().ok()?,
+        None => 0,
+    };
+    Some((stamp, n))
+}
+
+fn prune_crashed(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut kept: Vec<((u64, u32), PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let key = crashed_key(entry.file_name().to_str()?)?;
+            Some((key, entry.path()))
+        })
+        .collect();
+    kept.sort();
+    let excess = kept.len().saturating_sub(MAX_CRASHED_KEPT);
+    for (_, path) in kept.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 impl SessionStore {
@@ -262,6 +337,7 @@ impl SessionStore {
         let store = Self {
             dir: dir.to_owned(),
             lock: None,
+            lock_count: 0,
             rotated: false,
             last_text: None,
             save_pending: false,
@@ -275,11 +351,8 @@ impl SessionStore {
                 })
             }
             StartDecision::CrashLoop => {
-                // Set aside, never delete; a bad or missing file is simply left alone.
-                let path = dir.join(FILE_NAME);
-                if path.exists() {
-                    let _ = fs::rename(&path, dir.join(CRASHED_NAME));
-                }
+                // Set aside, never overwrite; a bad or missing file is simply left alone.
+                set_aside_crashed(dir);
                 None
             }
         };
@@ -310,6 +383,25 @@ impl SessionStore {
             let _ = write!(file, "bowser-lock {count}");
             let _ = file.flush();
             self.lock = Some(file);
+            self.lock_count = count;
+        }
+    }
+
+    /// Rewrites the running marker with a zero crash count, through the handle already held.
+    fn reset_crash_count(&mut self) {
+        if self.lock_count == 0 {
+            return;
+        }
+        if let Some(lock) = self.lock.as_mut() {
+            let rewritten = (|| -> io::Result<()> {
+                lock.set_len(0)?;
+                lock.seek(SeekFrom::Start(0))?;
+                write!(lock, "bowser-lock 0")?;
+                lock.flush()
+            })();
+            if rewritten.is_ok() {
+                self.lock_count = 0;
+            }
         }
     }
 
@@ -340,6 +432,7 @@ impl SessionStore {
             let _ = fs::remove_file(&temp);
         } else {
             self.last_text = Some(text);
+            self.reset_crash_count();
         }
         written
     }
@@ -386,7 +479,15 @@ mod tests {
 
     #[test]
     fn only_plain_web_urls_are_persisted() {
-        assert!(persistable_url(&url("https://example.com/p?q=1#f")).is_some());
+        assert_eq!(
+            persistable_url(&url("https://example.com/p?q=1#f")).as_deref(),
+            Some("https://example.com/p?q=1"),
+            "fragments are never persisted"
+        );
+        assert_eq!(
+            persistable_url(&url("https://example.com/#access_token=secret")).as_deref(),
+            Some("https://example.com/")
+        );
         assert!(persistable_url(&url("about:blank")).is_none());
         assert!(persistable_url(&url("file:///C:/secret.txt")).is_none());
         assert!(persistable_url(&url("javascript:alert(1)")).is_none());
@@ -405,6 +506,15 @@ mod tests {
         let parsed = Session::parse(&session.serialize()).unwrap();
         assert_eq!(parsed, session);
         assert_eq!(parsed.tabs[0].title, "Tab\twith\\odd\nchars");
+        assert_eq!(parsed.tabs[0].url, "https://example.com/a?x=1");
+        assert!(!session.serialize().contains('#'));
+    }
+
+    #[test]
+    fn fragments_in_an_old_file_are_dropped_on_parse() {
+        let text = "bowser-session 1\nactive 0\ntab\t0\thttps://a.test/p#token=abc\tA\n";
+        let parsed = Session::parse(text).unwrap();
+        assert_eq!(parsed.tabs[0].url, "https://a.test/p");
     }
 
     #[test]
@@ -496,7 +606,7 @@ mod tests {
 
         let (mut store, offer) = SessionStore::open(&dir).unwrap();
         assert!(offer.is_none(), "crash loop starts fresh");
-        assert!(dir.join(CRASHED_NAME).exists());
+        assert_eq!(crashed_files(&dir).len(), 1);
         assert!(!dir.join(FILE_NAME).exists());
         store.begin_run(None);
         store.finish(None);
@@ -556,6 +666,85 @@ mod tests {
         assert_ne!(fs::read_to_string(dir.join(FILE_NAME)).unwrap(), first);
         assert!(!dir.join("session.txt.tmp").exists());
         store.finish(None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn crashed_files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with(CRASHED_PREFIX))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Writes a session file and a stale running marker that records `count` crashed runs.
+    fn crashed_session(dir: &Path, count: u32) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(FILE_NAME), sample().serialize()).unwrap();
+        fs::write(dir.join(LOCK_NAME), format!("bowser-lock {count}")).unwrap();
+    }
+
+    #[test]
+    fn set_aside_snapshots_are_timestamped_never_overwritten_and_capped() {
+        let dir = temp_dir("aside");
+        for round in 0..5 {
+            crashed_session(&dir, CRASH_LOOP_LIMIT - 1);
+            // Pre-existing name for the same second must not be overwritten.
+            fs::write(dir.join(format!("{CRASHED_PREFIX}9999999999")), "keep").unwrap();
+            let (mut store, offer) = SessionStore::open(&dir).unwrap();
+            assert!(offer.is_none(), "round {round} is a crash loop");
+            store.finish(None);
+        }
+        assert_eq!(
+            fs::read_to_string(dir.join(format!("{CRASHED_PREFIX}9999999999"))).unwrap(),
+            "keep"
+        );
+        let names = crashed_files(&dir);
+        assert!(names.len() <= MAX_CRASHED_KEPT, "{names:?}");
+        assert!(names.iter().all(|n| crashed_key(n).is_some()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_crashed_file_is_never_pruned() {
+        let dir = temp_dir("legacy");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(CRASHED_NAME), "old").unwrap();
+        for _ in 0..(MAX_CRASHED_KEPT + 2) {
+            crashed_session(&dir, CRASH_LOOP_LIMIT - 1);
+            let (mut store, _) = SessionStore::open(&dir).unwrap();
+            store.finish(None);
+        }
+        assert_eq!(fs::read_to_string(dir.join(CRASHED_NAME)).unwrap(), "old");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn successful_save_resets_the_crash_count() {
+        let dir = temp_dir("reset");
+        {
+            let (mut store, _) = SessionStore::open(&dir).unwrap();
+            store.begin_run(None);
+            store.save(&sample()).unwrap();
+        }
+        {
+            // Crash once, get offered a restore, and this time the run saves.
+            let (mut store, offer) = SessionStore::open(&dir).unwrap();
+            let offer = offer.expect("first crash is offered");
+            assert_eq!(offer.consecutive, 1);
+            store.begin_run(Some(&offer));
+            store.save(&sample()).unwrap();
+            // Crashes again, much later: this is the first crash of a new streak. (The marker is
+            // held open without sharing, so its count is checked through the next start below.)
+        }
+        let (mut store, offer) = SessionStore::open(&dir).unwrap();
+        let offer = offer.expect("a later single crash is still offered, not a crash loop");
+        assert_eq!(offer.consecutive, 1);
+        store.begin_run(Some(&offer));
+        store.finish(None);
+        assert!(crashed_files(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
