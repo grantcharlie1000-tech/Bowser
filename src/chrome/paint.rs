@@ -13,15 +13,16 @@ use windows::Win32::{
     Graphics::Gdi::{
         AC_SRC_ALPHA, ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS,
         BLENDFUNCTION, CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DIB_RGB_COLORS,
-        DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, GetDC,
+        DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject,
         GetTextExtentPoint32W, GetTextMetricsW, HBITMAP, HDC, HFONT, HGDIOBJ, IntersectClipRect,
-        LOGFONTW, PatBlt, ReleaseDC, SelectClipRgn, SelectObject, SetBkColor, SetBkMode,
-        SetTextColor, TEXTMETRICW, TRANSPARENT,
+        LOGFONTW, PatBlt, SelectClipRgn, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+        TEXTMETRICW, TRANSPARENT,
     },
     UI::{
         HiDpi::SystemParametersInfoForDpi,
         WindowsAndMessaging::{
-            NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, ULW_ALPHA, UpdateLayeredWindow,
+            NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, ULW_ALPHA, UPDATELAYEREDWINDOWINFO,
+            UpdateLayeredWindow, UpdateLayeredWindowIndirect,
         },
     },
 };
@@ -99,6 +100,49 @@ pub struct ChromeSurface {
     /// Where the caret goes in the focused omnibox, whether or not it is currently drawn. Empty
     /// when the omnibox is not focused.
     caret_rect: Rect,
+    last_presented: Option<PresentedSurface>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PresentedSurface {
+    width: i32,
+    height: i32,
+    dpi: u32,
+    origin: (i32, i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Upload {
+    Skip,
+    Full,
+    Dirty(Rect),
+}
+
+fn upload_decision(
+    previous: Option<PresentedSurface>,
+    current: PresentedSurface,
+    dirty: Rect,
+) -> Upload {
+    if dirty.is_empty() {
+        Upload::Skip
+    } else if previous != Some(current) {
+        Upload::Full
+    } else {
+        Upload::Dirty(dirty)
+    }
+}
+
+fn last_presented_after_upload(
+    previous: Option<PresentedSurface>,
+    current: PresentedSurface,
+    upload: Upload,
+    success: bool,
+) -> Option<PresentedSurface> {
+    match upload {
+        Upload::Skip => previous,
+        Upload::Full | Upload::Dirty(_) if success => Some(current),
+        Upload::Full | Upload::Dirty(_) => None,
+    }
 }
 
 impl ChromeSurface {
@@ -115,6 +159,7 @@ impl ChromeSurface {
             text: TextCache::new(width, height, dpi),
             omnibox_scroll: 0,
             caret_rect: Rect::default(),
+            last_presented: None,
         }
     }
 
@@ -180,12 +225,22 @@ impl ChromeSurface {
     }
 
     /// Updates the layered chrome surface using its premultiplied per-pixel alpha.
-    pub fn present(&self, overlay: HWND, origin: POINT) {
+    pub fn present(&mut self, overlay: HWND, origin: POINT, dirty: Rect) {
         if self.width <= 0 || self.height <= 0 || self.dib.bits.is_null() {
             return;
         }
+        let dirty = dirty.intersect(Rect::new(0, 0, self.width, self.height));
+        let presented = PresentedSurface {
+            width: self.width,
+            height: self.height,
+            dpi: self.dpi,
+            origin: (origin.x, origin.y),
+        };
+        let upload = upload_decision(self.last_presented, presented, dirty);
+        if upload == Upload::Skip {
+            return;
+        }
         unsafe {
-            let screen = GetDC(None);
             let size = SIZE {
                 cx: self.width,
                 cy: self.height,
@@ -197,18 +252,46 @@ impl ChromeSurface {
                 SourceConstantAlpha: 255,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
-            let _ = UpdateLayeredWindow(
-                overlay,
-                Some(screen),
-                Some(&origin),
-                Some(&size),
-                Some(self.dib.dc),
-                Some(&source),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            );
-            let _ = ReleaseDC(None, screen);
+            let dirty_rect = match upload {
+                Upload::Dirty(r) => RECT {
+                    left: r.left,
+                    top: r.top,
+                    right: r.right,
+                    bottom: r.bottom,
+                },
+                Upload::Full | Upload::Skip => RECT::default(),
+            };
+            let info = UPDATELAYEREDWINDOWINFO {
+                cbSize: size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+                hdcDst: HDC::default(),
+                pptDst: &origin,
+                psize: &size,
+                hdcSrc: self.dib.dc,
+                pptSrc: &source,
+                crKey: COLORREF(0),
+                pblend: &blend,
+                dwFlags: ULW_ALPHA,
+                prcDirty: if matches!(upload, Upload::Dirty(_)) {
+                    &dirty_rect
+                } else {
+                    ptr::null()
+                },
+            };
+            let success = UpdateLayeredWindowIndirect(overlay, &info).as_bool()
+                || UpdateLayeredWindow(
+                    overlay,
+                    None,
+                    Some(&origin),
+                    Some(&size),
+                    Some(self.dib.dc),
+                    Some(&source),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                )
+                .is_ok();
+            self.last_presented =
+                last_presented_after_upload(self.last_presented, presented, upload, success);
         }
     }
 
@@ -1664,6 +1747,41 @@ pub fn create_message_font(
     }
 }
 
+/// Realizes the chrome's antialiased message font once, off the UI thread. GDI's first draw
+/// with a font loads and rasterizes it (5–15 ms measured); the realization is shared
+/// process-wide, so doing it while the main thread creates the window shortens the first paint.
+pub fn prewarm_text(dpi: u32) {
+    let dib = Dib::new(64, 16);
+    if dib.bits.is_null() {
+        return;
+    }
+    let font = create_message_font(dpi, ANTIALIASED_QUALITY);
+    if font.0.is_null() {
+        return;
+    }
+    let sample: Vec<u16> = "New tab Search or enter address".encode_utf16().collect();
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 64,
+        bottom: 16,
+    };
+    unsafe {
+        let previous = SelectObject(dib.dc, font.into());
+        let _ = SetTextColor(dib.dc, COLORREF(0x00FF_FFFF));
+        let _ = SetBkMode(dib.dc, TRANSPARENT);
+        draw_text_raw(
+            dib.dc,
+            sample.as_ptr(),
+            sample.len() as i32,
+            &mut rect,
+            (DT_SINGLELINE | DT_NOPREFIX).0,
+        );
+        let _ = SelectObject(dib.dc, previous);
+        let _ = DeleteObject(font.into());
+    }
+}
+
 #[link(name = "user32")]
 unsafe extern "system" {
     #[link_name = "DrawTextW"]
@@ -1680,6 +1798,88 @@ mod tests {
         theme::{Appearance, palette},
     };
     use std::{fs, path::PathBuf, time::Instant};
+
+    fn surface(origin: (i32, i32), width: i32, height: i32, dpi: u32) -> PresentedSurface {
+        PresentedSurface {
+            width,
+            height,
+            dpi,
+            origin,
+        }
+    }
+
+    #[test]
+    fn upload_decision_requires_full_surface_on_first_present() {
+        assert_eq!(
+            upload_decision(None, surface((10, 20), 400, 100, 96), Rect::new(1, 2, 3, 4)),
+            Upload::Full
+        );
+    }
+
+    #[test]
+    fn upload_decision_uses_dirty_region_for_unchanged_surface() {
+        let current = surface((10, 20), 400, 100, 96);
+        let dirty = Rect::new(1, 2, 3, 4);
+        assert_eq!(
+            upload_decision(Some(current), current, dirty),
+            Upload::Dirty(dirty)
+        );
+    }
+
+    #[test]
+    fn upload_decision_requires_full_surface_after_size_or_dpi_change() {
+        let previous = surface((10, 20), 400, 100, 96);
+        let dirty = Rect::new(1, 2, 3, 4);
+        assert_eq!(
+            upload_decision(Some(previous), surface((10, 20), 401, 100, 96), dirty),
+            Upload::Full
+        );
+        assert_eq!(
+            upload_decision(Some(previous), surface((10, 20), 400, 100, 120), dirty),
+            Upload::Full
+        );
+    }
+
+    #[test]
+    fn upload_decision_requires_full_surface_after_origin_change() {
+        let previous = surface((10, 20), 400, 100, 96);
+        assert_eq!(
+            upload_decision(
+                Some(previous),
+                surface((11, 20), 400, 100, 96),
+                Rect::new(1, 2, 3, 4)
+            ),
+            Upload::Full
+        );
+    }
+
+    #[test]
+    fn upload_decision_skips_empty_dirty_region() {
+        let current = surface((10, 20), 400, 100, 96);
+        assert_eq!(
+            upload_decision(None, current, Rect::default()),
+            Upload::Skip
+        );
+    }
+
+    #[test]
+    fn successful_upload_records_the_presented_surface() {
+        let current = surface((10, 20), 400, 100, 96);
+        assert_eq!(
+            last_presented_after_upload(None, current, Upload::Full, true),
+            Some(current)
+        );
+    }
+
+    #[test]
+    fn failed_upload_clears_presented_surface_so_the_next_upload_is_full() {
+        let current = surface((10, 20), 400, 100, 96);
+        let dirty = Rect::new(1, 2, 3, 4);
+        let previous =
+            last_presented_after_upload(Some(current), current, Upload::Dirty(dirty), false);
+        assert_eq!(previous, None);
+        assert_eq!(upload_decision(previous, current, dirty), Upload::Full);
+    }
 
     #[test]
     fn rounded_rect_coverage_is_symmetric_and_bounded() {

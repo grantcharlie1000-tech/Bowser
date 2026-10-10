@@ -6,7 +6,11 @@ use std::{
 };
 
 use windows::{
-    Win32::{Foundation::HWND, Graphics::Gdi::HFONT},
+    Win32::{
+        Foundation::HWND,
+        Graphics::Gdi::HFONT,
+        System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+    },
     core::{PCWSTR, Result},
 };
 
@@ -112,6 +116,50 @@ fn controller_close_plan(
 
 fn hidden_tab_suspend_eligible(hidden_for: Duration) -> bool {
     hidden_for >= Duration::from_secs(30)
+}
+
+const MEMORY_PRESSURE_LOAD_PERCENT: u32 = 85;
+const MEMORY_PRESSURE_FREE_BYTES: u64 = 512 * 1024 * 1024;
+/// Cadence for discarding tabs while the window is minimised or in the background.
+const DISCARD_TICK_MS: u32 = 10_000;
+
+/// Either signal is enough: Windows' load figure lags behind a sudden drop in free memory.
+pub fn memory_pressure(load_percent: u32, available_phys_bytes: u64) -> bool {
+    load_percent >= MEMORY_PRESSURE_LOAD_PERCENT
+        || available_phys_bytes < MEMORY_PRESSURE_FREE_BYTES
+}
+
+fn system_memory_pressure() -> bool {
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GlobalMemoryStatusEx(&mut status) }.is_err() {
+        return false;
+    }
+    memory_pressure(status.dwMemoryLoad, status.ullAvailPhys)
+}
+
+/// What the discard decision knows about a tab before asking WebView2 anything.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiscardCandidate {
+    pub active: bool,
+    pub pinned: bool,
+    pub suspended: bool,
+    /// Set from navigation start until completion, which also covers a navigation still waiting
+    /// for its controller to be created.
+    pub loading: bool,
+    pub committed_web_url: bool,
+}
+
+/// `audible` is queried last because it crosses into WebView2, and most tabs fail an earlier check.
+pub fn tab_discard_eligible(tab: DiscardCandidate, audible: impl FnOnce() -> bool) -> bool {
+    !tab.active
+        && !tab.pinned
+        && tab.suspended
+        && !tab.loading
+        && tab.committed_web_url
+        && !audible()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +278,19 @@ pub struct IdleMemoryDecision {
     pub timer: IdleTimerAction,
 }
 
+/// While another application is in the foreground, a loaded page is idle and needs no polling.
+pub fn background_memory_decision(minimized: bool, page_loaded: bool) -> IdleMemoryDecision {
+    let target = if minimized || page_loaded {
+        MemoryUsageTarget::Low
+    } else {
+        MemoryUsageTarget::Normal
+    };
+    IdleMemoryDecision {
+        target,
+        timer: IdleTimerAction::Kill,
+    }
+}
+
 pub fn idle_memory_decision(
     minimized: bool,
     page_loaded: bool,
@@ -312,6 +373,7 @@ pub struct App {
     pub benchmark_url: Option<url::Url>,
     pub allowed_benchmark_file: Option<url::Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
+    pub benchmark_memory_pressure: bool,
     pub provider: SearchProvider,
     pub log: Rc<PerfLog>,
     pub minimized: bool,
@@ -341,6 +403,9 @@ struct AppTab {
     controller_created: bool,
     hidden_since: Option<Instant>,
     suspended: bool,
+    /// The WebView2 controller was closed under memory pressure. The URL, title and favicon stay,
+    /// and the next selection navigates to the URL again.
+    discarded: bool,
 }
 
 impl AppTab {
@@ -358,6 +423,7 @@ impl AppTab {
             controller_created: false,
             hidden_since: None,
             suspended: false,
+            discarded: false,
         }
     }
 }
@@ -515,6 +581,9 @@ impl App {
             }
             closed
         });
+        if was_active {
+            Self::restore_discarded_tab(app, active);
+        }
         if last_tab {
             app.borrow_mut().page_loaded = false;
         }
@@ -582,6 +651,7 @@ impl App {
             let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
             Ok(())
         });
+        Self::restore_discarded_tab(app, id);
         Self::post_tab_changed(hwnd, id);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
@@ -657,6 +727,7 @@ impl App {
             let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
             Ok(())
         });
+        Self::restore_discarded_tab(app, next);
         Self::post_tab_changed(hwnd, next);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
@@ -994,6 +1065,7 @@ impl App {
             allowed_benchmark_file,
             benchmark_url,
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
+            benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
             log,
             minimized: false,
@@ -1623,7 +1695,10 @@ impl App {
         app.borrow_mut().navigation_progress.reset()
     }
 
-    pub fn idle_timer_fired(app: &AppRef, idle_ms: u32) -> IdleTimerAction {
+    /// `foreground` is false while another application is active. System-wide input then says
+    /// nothing about this window, so the page trims at once and input polling stops until the
+    /// window is activated again.
+    pub fn idle_timer_fired(app: &AppRef, idle_ms: u32, foreground: bool) -> IdleTimerAction {
         let now = Instant::now();
         let _ = Self::with_engine(app, |engine| engine.suspend_hidden_tabs(30_000));
         {
@@ -1641,20 +1716,91 @@ impl App {
                 }
             }
         }
+        let forced = app.borrow().benchmark_memory_pressure;
+        Self::discard_one_hidden_tab_if(app, || forced || system_memory_pressure());
         let decision = {
             let state = app.borrow();
-            idle_memory_decision(
-                state.minimized,
-                state.page_loaded,
-                idle_ms,
-                state.desired_memory_target,
-            )
+            if foreground {
+                idle_memory_decision(
+                    state.minimized,
+                    state.page_loaded,
+                    idle_ms,
+                    state.desired_memory_target,
+                )
+            } else {
+                background_memory_decision(state.minimized, state.page_loaded)
+            }
         };
         Self::apply_idle_decision(app, decision);
         Self::combine_idle_and_suspend_timers(app, decision.timer)
     }
 
     fn combine_idle_and_suspend_timers(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
+        let forced = app.borrow().benchmark_memory_pressure;
+        Self::combine_with_discard_tick(app, idle, || forced || system_memory_pressure())
+    }
+
+    /// Minimised and background windows stop the idle timer, which would leave a discard pending
+    /// while other applications are using the memory. While a discard is possible the timer keeps
+    /// ticking at the discard cadence.
+    fn combine_with_discard_tick(
+        app: &AppRef,
+        idle: IdleTimerAction,
+        under_pressure: impl FnOnce() -> bool,
+    ) -> IdleTimerAction {
+        let timer = Self::idle_and_suspend_timer(app, idle);
+        if app.borrow().minimized {
+            if !Self::has_minimized_discard_candidate(app) || !under_pressure() {
+                return timer;
+            }
+            return IdleTimerAction::Arm(DISCARD_TICK_MS);
+        }
+        if Self::next_discard_tab(app, under_pressure).is_none() {
+            return timer;
+        }
+        match timer {
+            IdleTimerAction::Kill => IdleTimerAction::Arm(DISCARD_TICK_MS),
+            IdleTimerAction::Arm(wait) => IdleTimerAction::Arm(wait.min(DISCARD_TICK_MS)),
+        }
+    }
+
+    /// A minimised window needs periodic checks before its hidden tabs reach the suspension age.
+    /// This lightweight check avoids sampling system memory when no live hidden controller could
+    /// ever be discarded.
+    fn has_minimized_discard_candidate(app: &AppRef) -> bool {
+        let candidates: Vec<TabId> = {
+            let state = app.borrow();
+            let active = state.tab_model.active();
+            state
+                .tabs
+                .iter()
+                .filter(|tab| {
+                    tab.id != active
+                        && tab.controller_created
+                        && !tab.discarded
+                        && tab.hidden_since.is_some()
+                        && !state
+                            .tab_model
+                            .get(tab.id)
+                            .is_some_and(|model| model.pinned)
+                })
+                .map(|tab| tab.id)
+                .collect()
+        };
+        candidates.into_iter().any(|id| {
+            Self::discard_candidate(app, id).is_some_and(|candidate| {
+                tab_discard_eligible(
+                    DiscardCandidate {
+                        suspended: true,
+                        ..candidate
+                    },
+                    || Self::tab_playing_audio(app, id),
+                )
+            })
+        })
+    }
+
+    fn idle_and_suspend_timer(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
         let state = app.borrow();
         if state.minimized {
             return IdleTimerAction::Kill;
@@ -1681,6 +1827,111 @@ impl App {
             (IdleTimerAction::Arm(idle), Some(wait)) => IdleTimerAction::Arm(idle.min(wait)),
             (idle, None) => idle,
         }
+    }
+
+    /// Under memory pressure, closes the controller of the longest-hidden suspended tab. At most
+    /// one tab goes per tick.
+    fn discard_one_hidden_tab_if(app: &AppRef, under_pressure: impl FnOnce() -> bool) {
+        if let Some(id) = Self::next_discard_tab(app, under_pressure) {
+            Self::discard_tab(app, id);
+        }
+    }
+
+    /// The tab that the next idle tick would discard. `under_pressure` is evaluated only when a
+    /// suspended hidden tab exists.
+    fn next_discard_tab(app: &AppRef, under_pressure: impl FnOnce() -> bool) -> Option<TabId> {
+        let mut hidden: Vec<(Instant, TabId)> = {
+            let state = app.borrow();
+            let active = state.tab_model.active();
+            state
+                .tabs
+                .iter()
+                .filter(|tab| tab.id != active && tab.controller_created && tab.suspended)
+                .filter_map(|tab| tab.hidden_since.map(|since| (since, tab.id)))
+                .collect()
+        };
+        if hidden.is_empty() || !under_pressure() {
+            return None;
+        }
+        hidden.sort_by_key(|(since, _)| *since);
+        for (_, id) in hidden {
+            let Some(candidate) = Self::discard_candidate(app, id) else {
+                continue;
+            };
+            if tab_discard_eligible(candidate, || Self::tab_playing_audio(app, id)) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    fn discard_candidate(app: &AppRef, id: TabId) -> Option<DiscardCandidate> {
+        let state = app.borrow();
+        let tab = state.tabs.iter().find(|tab| tab.id == id)?;
+        Some(DiscardCandidate {
+            active: state.tab_model.active() == id,
+            pinned: state.tab_model.get(id).is_some_and(|model| model.pinned),
+            suspended: tab.suspended,
+            loading: tab.loading,
+            committed_web_url: tab
+                .url
+                .as_ref()
+                .is_some_and(|url| matches!(url.scheme(), "http" | "https")),
+        })
+    }
+
+    fn tab_playing_audio(app: &AppRef, id: TabId) -> bool {
+        let mut audible = false;
+        Self::with_engine(app, |engine| {
+            audible = engine.tab_playing_audio(id);
+            Ok(())
+        });
+        audible
+    }
+
+    fn discard_tab(app: &AppRef, id: TabId) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let hwnd = state.hwnd;
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            tab.controller_created = false;
+            tab.discarded = true;
+            tab.page_usable = false;
+            tab.progress = NavigationProgress::default();
+            tab.can_back = false;
+            tab.can_forward = false;
+            tab.hidden_since = None;
+            tab.suspended = false;
+            hwnd
+        };
+        // The engine forgets the tab before closing its controller, so later selections cannot
+        // reach a stale controller and a second close of this tab is a no-op.
+        Self::with_engine(app, |engine| engine.close_tab(id));
+        let _ = app.borrow().log.record("tab_discarded");
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// Recreates a discarded tab's controller through the normal navigation path, to its last
+    /// committed URL. Back and forward history is not restored.
+    fn restore_discarded_tab(app: &AppRef, id: TabId) {
+        let url = {
+            let mut state = app.borrow_mut();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            if !tab.discarded {
+                return;
+            }
+            tab.discarded = false;
+            tab.url.clone()
+        };
+        let Some(url) = url else {
+            return;
+        };
+        let _ = app.borrow().log.record("tab_restored");
+        Self::navigate_tab(app, id, &url);
     }
 
     fn schedule_tab_idle_timer(app: &AppRef) {
@@ -1964,6 +2215,518 @@ mod tests {
     }
 
     #[test]
+    fn memory_pressure_needs_high_load_or_under_512_mib_free() {
+        const MIB: u64 = 1024 * 1024;
+        assert!(!memory_pressure(84, 600 * MIB));
+        assert!(memory_pressure(85, 600 * MIB));
+        assert!(memory_pressure(0, 511 * MIB));
+        assert!(!memory_pressure(0, 512 * MIB));
+        assert!(memory_pressure(100, 0));
+    }
+
+    #[test]
+    fn discard_requires_a_suspended_inactive_unpinned_idle_web_tab_that_is_silent() {
+        let eligible = DiscardCandidate {
+            active: false,
+            pinned: false,
+            suspended: true,
+            loading: false,
+            committed_web_url: true,
+        };
+        assert!(tab_discard_eligible(eligible, || false));
+        let excluded = [
+            (
+                "active",
+                DiscardCandidate {
+                    active: true,
+                    ..eligible
+                },
+            ),
+            (
+                "pinned",
+                DiscardCandidate {
+                    pinned: true,
+                    ..eligible
+                },
+            ),
+            (
+                "not suspended",
+                DiscardCandidate {
+                    suspended: false,
+                    ..eligible
+                },
+            ),
+            (
+                "loading",
+                DiscardCandidate {
+                    loading: true,
+                    ..eligible
+                },
+            ),
+            (
+                "no committed web URL",
+                DiscardCandidate {
+                    committed_web_url: false,
+                    ..eligible
+                },
+            ),
+        ];
+        for (name, tab) in excluded {
+            let mut audio_queried = false;
+            assert!(
+                !tab_discard_eligible(tab, || {
+                    audio_queried = true;
+                    false
+                }),
+                "{name} tabs must be kept"
+            );
+            assert!(!audio_queried, "{name} is decided before the audio query");
+        }
+        assert!(
+            !tab_discard_eligible(eligible, || true),
+            "audible tabs must be kept"
+        );
+    }
+
+    fn hidden_web_tab(app: &AppRef, id: TabId, address: &str, hidden_since: Instant) {
+        let mut state = app.borrow_mut();
+        let tab = state.tabs.iter_mut().find(|tab| tab.id == id).unwrap();
+        tab.url = Some(url::Url::parse(address).unwrap());
+        tab.controller_created = true;
+        tab.hidden_since = Some(hidden_since);
+        tab.suspended = true;
+    }
+
+    fn closed_tabs(calls: &Rc<RefCell<Vec<String>>>) -> Vec<String> {
+        calls
+            .borrow()
+            .iter()
+            .filter(|call| call.starts_with("close:"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn memory_pressure_discards_the_longest_hidden_tab_once_per_tick() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let older = App::active_tab_id(&app);
+        let newer = App::new_tab(&app);
+        let _active = App::new_tab(&app);
+        let base = Instant::now();
+        hidden_web_tab(&app, older, "https://older.example.test/", base);
+        hidden_web_tab(
+            &app,
+            newer,
+            "https://newer.example.test/",
+            base + Duration::from_secs(5),
+        );
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().benchmark_memory_pressure = true;
+
+        App::idle_timer_fired(&app, 0, true);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", older.0)]);
+        {
+            let state = app.borrow();
+            let tab = state.tabs.iter().find(|tab| tab.id == older).unwrap();
+            assert!(tab.discarded && !tab.controller_created && !tab.suspended);
+            assert_eq!(
+                tab.url.as_ref().map(url::Url::as_str),
+                Some("https://older.example.test/")
+            );
+        }
+
+        App::idle_timer_fired(&app, 0, true);
+        assert_eq!(
+            closed_tabs(&calls),
+            [format!("close:{}", older.0), format!("close:{}", newer.0)]
+        );
+        App::idle_timer_fired(&app, 0, true);
+        assert_eq!(
+            closed_tabs(&calls).len(),
+            2,
+            "the active tab is never discarded"
+        );
+        assert_eq!(App::tab_count(&app), 3);
+    }
+
+    #[test]
+    fn discard_skips_pinned_audible_and_loading_tabs_for_the_next_eligible_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let pinned = App::active_tab_id(&app);
+        let audible = App::new_tab(&app);
+        let loading = App::new_tab(&app);
+        let eligible = App::new_tab(&app);
+        let _active = App::new_tab(&app);
+        assert!(App::set_tab_pinned(&app, pinned, true));
+        let base = Instant::now();
+        hidden_web_tab(&app, pinned, "https://pinned.example.test/", base);
+        hidden_web_tab(
+            &app,
+            audible,
+            "https://audible.example.test/",
+            base + Duration::from_secs(1),
+        );
+        hidden_web_tab(
+            &app,
+            loading,
+            "https://loading.example.test/",
+            base + Duration::from_secs(2),
+        );
+        hidden_web_tab(
+            &app,
+            eligible,
+            "https://eligible.example.test/",
+            base + Duration::from_secs(3),
+        );
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == loading)
+            .unwrap()
+            .loading = true;
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: vec![audible],
+        }));
+        app.borrow_mut().benchmark_memory_pressure = true;
+
+        App::idle_timer_fired(&app, 0, true);
+
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", eligible.0)]);
+    }
+
+    #[test]
+    fn without_memory_pressure_no_suspended_tab_is_discarded() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let hidden = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+
+        App::discard_one_hidden_tab_if(&app, || false);
+
+        assert!(closed_tabs(&calls).is_empty());
+        assert!(
+            app.borrow()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == hidden)
+                .unwrap()
+                .controller_created
+        );
+    }
+
+    #[test]
+    fn minimised_window_keeps_the_discard_tick_only_under_pressure_with_an_eligible_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let hidden = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == hidden)
+            .unwrap()
+            .suspended = false;
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().minimized = true;
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || true),
+            IdleTimerAction::Arm(DISCARD_TICK_MS)
+        );
+        assert!(
+            closed_tabs(&calls).is_empty(),
+            "arming never discards by itself"
+        );
+    }
+
+    #[test]
+    fn a_shorter_visible_arm_is_kept_under_pressure() {
+        let app = app_with_pending(rect(800, 600));
+        let hidden = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Arm(3_000), || true),
+            IdleTimerAction::Arm(3_000)
+        );
+    }
+
+    #[test]
+    fn minimised_window_without_pressure_stays_killed() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let hidden = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(&app, hidden, "https://hidden.example.test/", Instant::now());
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().minimized = true;
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || false),
+            IdleTimerAction::Kill
+        );
+    }
+
+    #[test]
+    fn pressure_without_an_eligible_tab_leaves_the_minimised_window_killed() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let audible = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(
+            &app,
+            audible,
+            "https://audible.example.test/",
+            Instant::now(),
+        );
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: vec![audible],
+        }));
+        app.borrow_mut().minimized = true;
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || true),
+            IdleTimerAction::Kill
+        );
+        assert!(closed_tabs(&calls).is_empty());
+    }
+
+    #[test]
+    fn minimised_window_with_only_the_active_tab_stays_killed_under_pressure() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().minimized = true;
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || panic!(
+                "memory must not be sampled without a hidden candidate"
+            )),
+            IdleTimerAction::Kill
+        );
+    }
+
+    #[test]
+    fn minimised_hidden_tab_is_suspended_then_discarded_on_following_pressure_tick() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let hidden = App::active_tab_id(&app);
+        let _active = App::new_tab(&app);
+        let hidden_since = Instant::now() - Duration::from_secs(29);
+        hidden_web_tab(&app, hidden, "https://hidden.example.test/", hidden_since);
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == hidden)
+            .unwrap()
+            .suspended = false;
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().minimized = true;
+        app.borrow_mut().benchmark_memory_pressure = true;
+
+        assert_eq!(
+            App::idle_timer_fired(&app, 0, false),
+            IdleTimerAction::Arm(DISCARD_TICK_MS)
+        );
+        assert!(
+            app.borrow()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == hidden)
+                .unwrap()
+                .controller_created
+        );
+        assert!(
+            !app.borrow()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == hidden)
+                .unwrap()
+                .suspended
+        );
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == hidden)
+            .unwrap()
+            .hidden_since = Some(Instant::now() - Duration::from_secs(31));
+
+        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                "suspend:30000".to_owned(),
+                "suspend:30000".to_owned(),
+                format!("close:{}", hidden.0),
+            ]
+        );
+        let state = app.borrow();
+        let tab = state.tabs.iter().find(|tab| tab.id == hidden).unwrap();
+        assert!(tab.discarded);
+        assert!(!tab.controller_created);
+    }
+
+    #[test]
+    fn pressure_is_not_sampled_without_a_suspended_hidden_tab() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().minimized = true;
+
+        assert_eq!(
+            App::combine_with_discard_tick(&app, IdleTimerAction::Kill, || panic!(
+                "memory must not be sampled"
+            )),
+            IdleTimerAction::Kill
+        );
+    }
+
+    #[test]
+    fn background_window_discards_under_pressure_and_stops_once_nothing_is_eligible() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let older = App::active_tab_id(&app);
+        let newer = App::new_tab(&app);
+        let _active = App::new_tab(&app);
+        let base = Instant::now();
+        hidden_web_tab(&app, older, "https://older.example.test/", base);
+        hidden_web_tab(
+            &app,
+            newer,
+            "https://newer.example.test/",
+            base + Duration::from_secs(5),
+        );
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().benchmark_memory_pressure = true;
+
+        assert_eq!(
+            App::idle_timer_fired(&app, 0, false),
+            IdleTimerAction::Arm(DISCARD_TICK_MS)
+        );
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", older.0)]);
+
+        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
+        assert_eq!(
+            closed_tabs(&calls),
+            [format!("close:{}", older.0), format!("close:{}", newer.0)]
+        );
+    }
+
+    #[test]
+    fn selecting_a_discarded_tab_restores_its_committed_url_and_logs_both_transitions() {
+        let path =
+            std::env::temp_dir().join(format!("bowser-discard-restore-{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let log = Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().log = log.clone();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let second = App::new_tab(&app);
+        let _active = App::new_tab(&app);
+        hidden_web_tab(
+            &app,
+            second,
+            "https://second.example.test/page",
+            Instant::now(),
+        );
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == second)
+            .unwrap()
+            .title = "Second page".to_owned();
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().benchmark_memory_pressure = true;
+        App::idle_timer_fired(&app, 0, true);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", second.0)]);
+        calls.borrow_mut().clear();
+
+        assert!(App::select_tab(&app, second));
+
+        assert_eq!(
+            *calls.borrow(),
+            [
+                format!("select:{}", second.0),
+                format!("navigate:{}:https://second.example.test/page", second.0),
+            ]
+        );
+        assert_eq!(App::tab_title(&app, second).as_deref(), Some("Second page"));
+        assert_eq!(
+            App::tab_committed_url(&app, second).unwrap().as_str(),
+            "https://second.example.test/page"
+        );
+        assert!(App::tab_loading(&app, second));
+        assert!(!App::tab_can_go_back(&app, second));
+        {
+            let state = app.borrow();
+            let tab = state.tabs.iter().find(|tab| tab.id == second).unwrap();
+            assert!(tab.controller_created && !tab.discarded);
+            assert!(tab.hidden_since.is_none());
+        }
+        drop(app);
+        drop(log);
+
+        let events = std::fs::read_to_string(&path).unwrap();
+        assert!(events.contains("tab_discarded,"));
+        assert!(events.contains("tab_restored,"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn closing_the_active_tab_restores_a_discarded_neighbour_it_activates() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        assert!(App::select_tab(&app, first));
+        hidden_web_tab(&app, second, "https://second.example.test/", Instant::now());
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        app.borrow_mut().benchmark_memory_pressure = true;
+        App::idle_timer_fired(&app, 0, true);
+        calls.borrow_mut().clear();
+
+        assert!(App::close_tab(&app, first));
+
+        assert_eq!(App::active_tab_id(&app), second);
+        assert_eq!(
+            *calls.borrow(),
+            [
+                format!("close:{}", first.0),
+                format!("select:{}", second.0),
+                format!("navigate:{}:https://second.example.test/", second.0),
+            ]
+        );
+    }
+
+    #[test]
     fn tab_lifecycle_selects_wraps_and_reorders_without_losing_identity() {
         let app = app_with_pending(rect(800, 600));
         let first = App::active_tab_id(&app);
@@ -2205,9 +2968,13 @@ mod tests {
 
     struct TabRecordingEngine {
         calls: Rc<RefCell<Vec<String>>>,
+        playing: Vec<TabId>,
     }
 
     impl EngineAdapter for TabRecordingEngine {
+        fn tab_playing_audio(&self, tab: TabId) -> bool {
+            self.playing.contains(&tab)
+        }
         fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()> {
             self.calls.borrow_mut().push(format!("navigate:{url}"));
             Ok(())
@@ -2267,6 +3034,7 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
             calls: calls.clone(),
+            playing: Vec::new(),
         }));
         let first = App::active_tab_id(&app);
         let second = App::new_tab(&app);
@@ -2281,7 +3049,7 @@ mod tests {
         assert!(App::close_tab(&app, second));
         assert!(App::close_tab(&app, first));
         assert_eq!(App::active_tab_id(&app), third);
-        App::idle_timer_fired(&app, 0);
+        App::idle_timer_fired(&app, 0, true);
 
         assert_eq!(
             *calls.borrow(),
@@ -2362,6 +3130,7 @@ mod tests {
             benchmark_url: None,
             allowed_benchmark_file: None,
             benchmark_tracking_prevention: None,
+            benchmark_memory_pressure: false,
             provider: SearchProvider::from_config(Path::new("missing-search-provider.txt")),
             log: Rc::new(PerfLog::new(None).unwrap()),
             minimized: false,
@@ -2432,6 +3201,7 @@ mod tests {
             &app,
             Box::new(TabRecordingEngine {
                 calls: calls.clone(),
+                playing: Vec::new(),
             }),
         );
 
@@ -2807,6 +3577,23 @@ mod tests {
     }
 
     #[test]
+    fn background_policy_trims_loaded_pages_without_polling() {
+        for (minimized, loaded, target) in [
+            (false, true, MemoryUsageTarget::Low),
+            (true, false, MemoryUsageTarget::Low),
+            (false, false, MemoryUsageTarget::Normal),
+        ] {
+            assert_eq!(
+                background_memory_decision(minimized, loaded),
+                IdleMemoryDecision {
+                    target,
+                    timer: IdleTimerAction::Kill,
+                }
+            );
+        }
+    }
+
+    #[test]
     fn idle_policy_restores_after_activity_and_preserves_minimize_priority() {
         assert_eq!(
             idle_memory_decision(false, true, 999, MemoryUsageTarget::Low),
@@ -2841,18 +3628,24 @@ mod tests {
         }
 
         assert_eq!(
-            App::idle_timer_fired(&app, 3_000),
+            App::idle_timer_fired(&app, 3_000, true),
             IdleTimerAction::Arm(1_000)
         );
         assert_eq!(
-            App::idle_timer_fired(&app, 2_000),
+            App::idle_timer_fired(&app, 2_000, true),
             IdleTimerAction::Arm(1_000)
         );
         assert_eq!(
-            App::idle_timer_fired(&app, 1_000),
+            App::idle_timer_fired(&app, 1_000, true),
             IdleTimerAction::Arm(3_000)
         );
         assert_eq!(*calls.borrow(), ["target:Low", "target:Normal"]);
+        // Recent system-wide input in another application neither restores nor keeps polling.
+        assert_eq!(App::idle_timer_fired(&app, 0, false), IdleTimerAction::Kill);
+        assert_eq!(
+            calls.borrow().last().map(String::as_str),
+            Some("target:Low")
+        );
         drop(app);
         drop(log);
 

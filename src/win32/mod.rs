@@ -41,6 +41,8 @@ pub(crate) const WM_NAVIGATION_PROGRESS: u32 = windows::Win32::UI::WindowsAndMes
 pub(crate) const WM_TABS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
 /// Forwarded page accelerators; WPARAM=virtual key, LPARAM=ctrl/shift/alt bit flags.
 pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
+/// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
+pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
 pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 /// Runs only while a chrome transition is moving; it stops itself once the motion has settled.

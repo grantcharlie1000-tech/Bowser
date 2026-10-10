@@ -817,6 +817,13 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn tab_playing_audio(&self, tab_id: TabId) -> bool {
+        let webview = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        webview.is_some_and(|webview| webview_playing_audio(&webview))
+    }
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
         let mut state = self.core.borrow_mut();
         let now = Instant::now();
@@ -865,6 +872,14 @@ impl EngineAdapter for WebView2Engine {
         self.core.borrow_mut().environment = None;
         Ok(())
     }
+}
+
+/// A failed query counts as silent, so an unreadable tab is not kept alive for that reason alone.
+fn webview_playing_audio(webview: &ICoreWebView2) -> bool {
+    webview.cast::<ICoreWebView2_8>().is_ok_and(|webview| {
+        let mut playing = BOOL::default();
+        unsafe { webview.IsDocumentPlayingAudio(&mut playing) }.is_ok() && playing.as_bool()
+    })
 }
 
 /// Navigates a controller's webview. Callers pass cloned COM handles so no engine borrow is held.

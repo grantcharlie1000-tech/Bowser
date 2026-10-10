@@ -14,6 +14,7 @@ pub struct LaunchOptions {
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
+    pub benchmark_memory_pressure: bool,
 }
 
 impl LaunchOptions {
@@ -62,6 +63,7 @@ impl LaunchOptions {
                     | "--benchmark-user-data-dir"
                     | "--benchmark-url"
                     | "--benchmark-tracking-prevention"
+                    | "--benchmark-memory-pressure"
             ) {
                 return Err(format!("Unknown argument: {flag}"));
             }
@@ -106,6 +108,15 @@ impl LaunchOptions {
                         return Err("Duplicate benchmark tracking prevention argument".into());
                     }
                 }
+                "--benchmark-memory-pressure" => {
+                    if value != "on" {
+                        return Err("Benchmark memory pressure must be on".into());
+                    }
+                    if options.benchmark_memory_pressure {
+                        return Err("Duplicate benchmark memory pressure argument".into());
+                    }
+                    options.benchmark_memory_pressure = true;
+                }
                 _ => {
                     if raw_url.replace(value).is_some() {
                         return Err("Duplicate benchmark URL argument".into());
@@ -122,6 +133,9 @@ impl LaunchOptions {
         }
         if options.benchmark_tracking_prevention.is_some() && options.user_data_dir.is_none() {
             return Err("Benchmark tracking prevention requires --benchmark-user-data-dir".into());
+        }
+        if options.benchmark_memory_pressure && options.benchmark_log.is_none() {
+            return Err("Benchmark memory pressure requires --benchmark-log".into());
         }
         if options
             .user_data_dir
@@ -550,6 +564,64 @@ mod tests {
             .is_err()
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_pressure_is_opt_in_and_accepted_only_with_logging() {
+        let fixtures = Path::new("missing");
+        assert!(
+            !LaunchOptions::parse_from(Vec::<String>::new(), fixtures)
+                .unwrap()
+                .benchmark_memory_pressure
+        );
+        let options = LaunchOptions::parse_from(
+            args(&[
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-memory-pressure",
+                "on",
+            ]),
+            fixtures,
+        )
+        .unwrap();
+        assert!(options.benchmark_memory_pressure);
+
+        assert!(
+            LaunchOptions::parse_from(args(&["--benchmark-memory-pressure", "on"]), fixtures)
+                .is_err(),
+            "memory pressure must require --benchmark-log"
+        );
+    }
+
+    #[test]
+    fn memory_pressure_rejects_missing_invalid_and_duplicate_values() {
+        let fixtures = Path::new("missing");
+        for values in [
+            vec![
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-memory-pressure",
+            ],
+            vec![
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-memory-pressure",
+                "off",
+            ],
+            vec![
+                "--benchmark-log",
+                "events.csv",
+                "--benchmark-memory-pressure",
+                "on",
+                "--benchmark-memory-pressure",
+                "on",
+            ],
+        ] {
+            assert!(
+                LaunchOptions::parse_from(args(&values), fixtures).is_err(),
+                "arguments should be rejected: {values:?}"
+            );
+        }
     }
 
     #[test]

@@ -80,6 +80,8 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Forward | Alt+Right, browser forward key |
 | Passwords & Passkeys | Ctrl+, |
 
+Under system memory pressure, a tab that has been hidden for 30 seconds or more may be unloaded to free memory. It stays in the tab strip with its title, favicon and group, and it reloads its last address when you select it again. Its back and forward history is lost when this happens. Pinned tabs, tabs playing audio and tabs that are still loading are never unloaded.
+
 ## Verification and benchmarks
 
     cargo test --locked

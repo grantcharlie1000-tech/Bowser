@@ -1,7 +1,7 @@
 use super::{
-    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_HISTORY_BACK, WM_HISTORY_FORWARD,
-    WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame,
-    glass, passwords_panel, show_error_message,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
+    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SHORTCUT_KEY, WM_SUBMIT,
+    WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
@@ -27,7 +27,9 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         System::SystemInformation::GetTickCount,
+        System::Threading::GetCurrentProcessId,
         UI::{
+            Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
             Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
@@ -39,25 +41,26 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu,
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
-                EN_CHANGE, ES_AUTOHSCROLL, GWLP_USERDATA, GetCaretBlinkTime, GetClientRect,
-                GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU,
-                HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IsIconic, IsZoomed,
+                EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWLP_USERDATA,
+                GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetMessageW, GetWindow,
+                GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+                HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IsIconic, IsZoomed,
                 KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow, NCCALCSIZE_PARAMS,
                 PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
                 SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
                 SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
                 SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE, WM_CHAR, WM_CLOSE,
-                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE,
-                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS,
-                WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER,
-                WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-                WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
-                WVR_REDRAW,
+                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE,
+                WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
+                WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN,
+                WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
+                WM_MOUSEMOVE, WM_MOVE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
+                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
+                WM_NCMOUSEMOVE, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS, WM_SETTINGCHANGE,
+                WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW,
+                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_EX_TRANSPARENT, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -92,6 +95,8 @@ struct WindowChrome {
     edit_text: String,
     focused: bool,
     caret: bool,
+    /// Whether Bowser was the foreground application at the last `sync_foreground`.
+    foreground: bool,
     completion: Option<Completion>,
     suppress_completion: bool,
     programmatic_text_update: bool,
@@ -104,6 +109,7 @@ struct WindowChrome {
     dpi: u32,
     motion: Motion,
     active_tab: Option<TabId>,
+    first_paint_logged: bool,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -121,6 +127,7 @@ impl WindowChrome {
             edit_text: String::with_capacity(256),
             focused: false,
             caret: true,
+            foreground: false,
             completion: None,
             suppress_completion: false,
             programmatic_text_update: false,
@@ -133,6 +140,7 @@ impl WindowChrome {
             dpi,
             motion: Motion::new(!animations_enabled()),
             active_tab: None,
+            first_paint_logged: false,
         }
     }
     fn refresh(&mut self, app: &AppRef) {
@@ -392,7 +400,140 @@ fn refresh_edit_font(hwnd: HWND, app: &AppRef) {
     }
 }
 
+thread_local! {static MAIN_WINDOW: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };}
+
+/// The caret blinks only while Bowser is the foreground application, is not minimised, and the address
+/// input has keyboard focus. Otherwise it stays solid, so it cannot be left hidden.
+fn caret_blink_allowed(foreground: bool, minimised: bool, edit_focused: bool) -> bool {
+    foreground && !minimised && edit_focused
+}
+
+/// A foreground window belongs to Bowser when this process owns it, or when it is a top-level window owned
+/// by the main window (a WebView2 popup can live in another process).
+fn belongs_to_app(foreground_pid: u32, own_pid: u32, foreground_owner: isize, main: isize) -> bool {
+    foreground_pid == own_pid || (main != 0 && foreground_owner == main)
+}
+
+fn foreground_is_ours(hwnd: HWND) -> bool {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(foreground, Some(&mut pid));
+        let owner = GetWindow(foreground, GW_OWNER).map_or(0, |owner| owner.0 as isize);
+        belongs_to_app(pid, GetCurrentProcessId(), owner, hwnd.0 as isize)
+    }
+}
+
+fn edit_focused(app: Option<&AppRef>) -> bool {
+    let Some(edit) = app
+        .and_then(|app| app.try_borrow().ok())
+        .map(|state| state.edit)
+    else {
+        return false;
+    };
+    unsafe { GetFocus() == edit }
+}
+
+/// Starts or stops the caret blink. Stopping leaves the caret visible and solid.
+fn set_caret_blink(hwnd: HWND, on: bool) {
+    if on {
+        unsafe {
+            SetTimer(
+                Some(hwnd),
+                WM_CARET_BLINK_TIMER,
+                GetCaretBlinkTime().max(100),
+                None,
+            );
+        }
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
+    }
+    let caret = with_chrome(hwnd, |s| {
+        if s.caret {
+            None
+        } else {
+            s.caret = true;
+            Some(s.surface.caret_rect())
+        }
+    })
+    .flatten();
+    if let Some(caret) = caret {
+        invalidate_caret(hwnd, caret);
+    }
+}
+
+/// Repaints only the caret's pixels, or the whole omnibox when the caret has no rectangle.
+fn invalidate_caret(hwnd: HWND, caret: Rect) {
+    if caret.is_empty() {
+        invalidate_omni(hwnd)
+    } else {
+        invalidate(
+            hwnd,
+            Rect::new(
+                caret.left - 1,
+                caret.top - 1,
+                caret.right + 1,
+                caret.bottom + 1,
+            ),
+        )
+    }
+}
+
+/// Brings the caret and the idle memory timer into line with whether Bowser is the foreground application.
+/// It runs on every activation message and on the foreground hook, because a window launched behind another
+/// one can miss the activation message when it is brought forward. Checking GetForegroundWindow is what
+/// makes the result reliable.
+fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
+    let foreground = foreground_is_ours(hwnd);
+    let minimised = unsafe { IsIconic(hwnd).as_bool() };
+    set_caret_blink(
+        hwnd,
+        caret_blink_allowed(foreground, minimised, edit_focused(app)),
+    );
+    let gained = with_chrome(hwnd, |s| {
+        let gained = foreground && !s.foreground;
+        s.foreground = foreground;
+        gained
+    })
+    .unwrap_or(false);
+    // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
+    // that stopped while another application was active. Activation can arrive from a modal loop that already
+    // holds the app state, so the borrow is checked first.
+    if let Some(app) = app.filter(|app| gained && app.try_borrow_mut().is_ok()) {
+        schedule_idle_timer(hwnd, App::idle_timer_fired(app, 0, true));
+    }
+}
+
+/// Runs on the UI thread when the foreground window changes. It only posts a message, so the state change
+/// happens in the window procedure and never re-enters a message handler.
+unsafe extern "system" fn foreground_changed(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    let main = MAIN_WINDOW.with(|m| m.get());
+    if main != 0 {
+        super::post(
+            HWND(main as *mut _),
+            WM_FOREGROUND_SYNC,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    }
+}
+
 pub fn run(app: App) -> windows::core::Result<()> {
+    // Overlaps font realization with window creation; the first paint otherwise waits for it.
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
+    let _ = std::thread::Builder::new()
+        .name("text-prewarm".into())
+        .spawn(move || paint::prewarm_text(dpi));
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
         let class = WNDCLASSW {
@@ -424,6 +565,16 @@ pub fn run(app: App) -> windows::core::Result<()> {
         )?;
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
+        MAIN_WINDOW.with(|m| m.set(hwnd.0 as isize));
+        let foreground_hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
         let _ = ShowWindow(hwnd, SW_SHOW);
         app.borrow().log.record("window_visible").ok();
         if !app.borrow().edit.is_invalid() {
@@ -443,6 +594,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
                 }
             }
         }
+        let _ = UnhookWinEvent(foreground_hook);
         Ok(())
     }
 }
@@ -663,12 +815,7 @@ unsafe extern "system" fn window_proc(
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
                     let _ = SetFocus(Some(edit));
-                    let _ = SetTimer(
-                        Some(hwnd),
-                        WM_CARET_BLINK_TIMER,
-                        GetCaretBlinkTime().max(100),
-                        None,
-                    );
+                    sync_foreground(hwnd, Some(app));
                 }
                 LRESULT(0)
             }
@@ -706,6 +853,8 @@ unsafe extern "system" fn window_proc(
                     if !min {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
+                    // Minimising stops the blink and restoring resumes it when Bowser is also in front.
+                    sync_foreground(hwnd, Some(app));
                 }
                 LRESULT(0)
             }
@@ -1002,8 +1151,20 @@ unsafe extern "system" fn window_proc(
                     } else {
                         0
                     };
-                    schedule_idle_timer(hwnd, App::idle_timer_fired(app, idle));
+                    let foreground = foreground_is_ours(hwnd);
+                    schedule_idle_timer(hwnd, App::idle_timer_fired(app, idle, foreground));
                 }
+                LRESULT(0)
+            }
+            windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATE
+            | windows::Win32::UI::WindowsAndMessaging::WM_NCACTIVATE => {
+                // Activation messages are not trusted on their own; sync_foreground checks the real foreground.
+                let result = DefWindowProcW(hwnd, message, wparam, lparam);
+                sync_foreground(hwnd, app);
+                result
+            }
+            WM_FOREGROUND_SYNC => {
+                sync_foreground(hwnd, app);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_ANIMATION_TIMER => {
@@ -1015,28 +1176,17 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_CARET_BLINK_TIMER => {
-                if app.is_some_and(|a| GetFocus() == a.borrow().edit) {
+                let minimised = IsIconic(hwnd).as_bool();
+                if caret_blink_allowed(foreground_is_ours(hwnd), minimised, edit_focused(app)) {
                     // Only the caret changes, so repaint just its pixels.
                     let caret = with_chrome(hwnd, |s| {
                         s.caret = !s.caret;
                         s.surface.caret_rect()
                     })
                     .unwrap_or_default();
-                    if caret.is_empty() {
-                        invalidate_omni(hwnd)
-                    } else {
-                        invalidate(
-                            hwnd,
-                            Rect::new(
-                                caret.left - 1,
-                                caret.top - 1,
-                                caret.right + 1,
-                                caret.bottom + 1,
-                            ),
-                        )
-                    }
+                    invalidate_caret(hwnd, caret);
                 } else {
-                    let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
+                    set_caret_blink(hwnd, false);
                 }
                 LRESULT(0)
             }
@@ -1366,6 +1516,7 @@ fn position_edit(hwnd: HWND) {
     }
 }
 fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
+    static PAINT_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
@@ -1465,9 +1616,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
                 let _ = ClientToScreen(hwnd, &mut origin);
-                s.surface.present(s.overlay, origin);
+                s.surface.present(s.overlay, origin, dirty);
                 let t2 = std::time::Instant::now();
-                if std::env::var_os("BOWSER_PAINT_LOG").is_some() {
+                if !s.first_paint_logged {
+                    s.first_paint_logged = true;
+                    let _ = app.borrow().log.record("chrome_painted");
+                }
+                if *PAINT_LOG_ENABLED.get_or_init(|| std::env::var_os("BOWSER_PAINT_LOG").is_some())
+                {
                     use std::io::Write;
                     if let Ok(mut f) = std::fs::OpenOptions::new()
                         .create(true)
@@ -1550,14 +1706,7 @@ fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
         s.completion = None;
         s.suppress_completion = false;
     });
-    unsafe {
-        let _ = SetTimer(
-            Some(hwnd),
-            WM_CARET_BLINK_TIMER,
-            GetCaretBlinkTime().max(100),
-            None,
-        );
-    }
+    sync_foreground(hwnd, Some(app));
     invalidate_omni(hwnd)
 }
 fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {
@@ -1663,18 +1812,13 @@ unsafe extern "system" fn edit_subclass(
             // The chrome paints its own caret. The EDIT's system caret would be drawn at its
             // stale position over the glass.
             let _ = HideCaret(Some(hwnd));
-            let _ = SetTimer(
-                Some(main),
-                WM_CARET_BLINK_TIMER,
-                GetCaretBlinkTime().max(100),
-                None,
-            );
             let _ = with_chrome(main, |s| {
                 s.focused = true;
                 s.caret = true;
                 s.update_completion()
             });
             invalidate_omni(main);
+            sync_foreground(main, app);
             return r;
         }
         if msg == WM_KILLFOCUS {
@@ -1703,6 +1847,8 @@ unsafe extern "system" fn edit_subclass(
             return r;
         }
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+            // Typing means Bowser is in front, so this also recovers the caret if no activation message arrived.
+            sync_foreground(main, app);
             if w.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                 && GetCapture() == main
             {
@@ -1827,6 +1973,24 @@ mod tests {
     fn hovers_that_are_not_tabs_are_left_alone() {
         assert_eq!(moved_hover(Hit::NewTab, Some(0)), Hit::NewTab);
         assert_eq!(moved_hover(Hit::Omnibox, None), Hit::Omnibox);
+    }
+
+    #[test]
+    fn the_caret_blinks_only_in_front_restored_and_with_the_address_input_focused() {
+        assert!(caret_blink_allowed(true, false, true));
+        assert!(!caret_blink_allowed(false, false, true));
+        assert!(!caret_blink_allowed(true, true, true));
+        assert!(!caret_blink_allowed(true, false, false));
+    }
+
+    #[test]
+    fn a_foreground_window_is_ours_when_this_process_or_the_main_window_owns_it() {
+        const OWN_PID: u32 = 100;
+        const MAIN: isize = 0x500;
+        assert!(belongs_to_app(OWN_PID, OWN_PID, 0, MAIN));
+        assert!(belongs_to_app(200, OWN_PID, MAIN, MAIN));
+        assert!(!belongs_to_app(200, OWN_PID, 0x900, MAIN));
+        assert!(!belongs_to_app(200, OWN_PID, 0, 0));
     }
 
     #[test]

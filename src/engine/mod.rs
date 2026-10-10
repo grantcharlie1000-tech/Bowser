@@ -56,6 +56,10 @@ pub trait EngineAdapter {
     fn close_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         self.close()
     }
+    /// Reports whether a tab's document is playing audio. Unknown counts as silent.
+    fn tab_playing_audio(&self, _tab: crate::tabs::TabId) -> bool {
+        false
+    }
     /// Suspends controllers that have been hidden for at least the supplied duration.
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
         Ok(())
