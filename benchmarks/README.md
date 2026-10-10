@@ -41,3 +41,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks\perf-probe.ps1 -B
 Read host and WebView2 numbers separately. **Host** is the Bowser process itself: its working set and private MB reflect the Rust shell, its native windows and its WebView2 controller bookkeeping. **WV** (WebView2) is the sum of child processes (renderers, GPU, utility) and grows with the number of loaded sites, so it is the figure to watch for per-tab cost. Working set counts resident pages, including shared pages, so it overstates per-process cost; private MB is the closer measure of memory committed to each side. Idle CPU in the 40 to 50 s window is the steady-state cost once background tabs have settled; a large host figure with a small WV figure points at the shell, and the reverse points at page or renderer work.
 
 The script shuts Bowser down with `WM_CLOSE` and waits for the process group (the process, its descendants and any process whose command line names its profile) to exit. It never kills processes. If a group does not exit, the profile is kept and the run is marked as unclean. Profiles live under `%TEMP%` and are removed after a clean exit.
+
+## Baseline and regression check (`baseline.json`, `compare-baseline.ps1`)
+
+`benchmarks\baseline.json` records 12 medians from one real run of the probe on the copied release exe (`target\release\bowser.exe`, SHA-256 `1B5A4620…6DE4`, source commit `12717fc` plus uncommitted working-tree edits, so it may not match the tree exactly). Machine: Intel i5-7300HQ, 15.9 GiB, Windows 10 Home. Recorded 2026-10-10. Startup used 5 pairs, idle one run, tabs 1 and 5 tabs, tab switch 20 presses.
+
+| Metric | Median |
+| --- | --- |
+| Fresh / warm window visible (ms) | 87.5 / 113.6 |
+| Fresh / warm outer launch to visible (ms) | 434.1 / 394.5 |
+| Idle empty private (MB) / CPU per 20 s (ms) | 2.5 / 0 |
+| Idle loaded private (MB) / CPU per 20 s (ms) | 115.6 / 312.5 |
+| 1 tab private (MB) / idle 10 s CPU (ms) | 113.2 / 125 |
+| 5 tab private (MB) | 144.1 |
+| Tab switch (ms) | 27 |
+
+Not in the baseline: 5-tab idle CPU. The one run gave -31.2 ms because a WebView2 child exited inside the window; the reducer now omits negative sums. Startup spread is wide (fresh p25 to p75 about 107 to 232 ms in the earlier partial run), so the tolerances are loose.
+
+`compare-baseline.ps1 -BowserExecutable <exe>` re-measures (startup, idle, tabs 1,5, switch) and compares; `-ResultsDirectory <dir>` compares an existing probe output. A metric fails when `current > baseline*(1+pct/100)+floor`: `*cpu*` 100%+50, `*_ms` 50%+20, `*_mb` 15%+5. Exit 0 = within tolerance, 1 = regression or missing metric, 2 = could not compare. Tested: unchanged results exit 0; a baseline with a tightened startup value exits 1 and names the metric; a missing baseline exits 2. `test-measurements.ps1` passes.
+
+**Browser comparison (Bowser vs Chrome vs Edge, light fixture, `run.ps1 -Runs 3 -IdleSeconds 5`, output in `results\compare-browsers-ws7-20261010`).** Only one pair per cell is valid: the other two Bowser and Chrome/Edge pairs were marked `shutdown_unconfirmed` or otherwise invalid, so these are single samples, not medians. Single valid cold-profile samples: visible / page usable (ms), idle private (MiB): Bowser 451 / 1195, 110; Chrome 924 / 1991, 263 (idle CPU 10.6%); Edge 1281 / 2052, 253. Warm: Bowser 897 / 1856; Chrome 1336 / 2106; Edge 666 / 1464. Firefox is not installed and `run.ps1` does not support it, so it is not measured. Not measured: any demanding-fixture comparison and any real-site comparison. The harness reports `visible` on a different clock from the probe (`window_visible`), so the two sets of numbers are not interchangeable.
+
+Known limit: `run.ps1` takes its `-FixtureRoot` and `-OutputDirectory` defaults from `$PSScriptRoot` inside `param()`, which was empty under `powershell.exe -File` here; pass `-FixtureRoot` explicitly until that is fixed. (`compare-baseline.ps1` now resolves its defaults in the body.)

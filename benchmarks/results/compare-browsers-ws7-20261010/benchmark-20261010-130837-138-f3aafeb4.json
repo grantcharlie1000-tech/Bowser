@@ -53,5 +53,20 @@
     "input_method":  "Windows Forms SendKeys.SendWait after focusing the browser address UI. Bowser EDIT text is read back; if synthetic virtual-key/SendKeys entry does not populate it, verified WM_SETTEXT fallback is recorded before Enter. Chromium address bar content is submitted through its focused UI.",
     "selected_workloads":  [
                                "light"
-                           ]
+                           ],
+    "input_sha256_after":  {
+                               "bowser_executable":  "1b5a46205ca5e75963ca2539005bcd96e7988152e76ef2afdb4796c09cb06de4",
+                               "run_harness":  "1dcab61c175375eba4ea466dba0d2a9fe7b429dacb9d1ddcc43d58ba6b7152f6",
+                               "measurement_module":  "f7c3de05dbcb95b251a7a9a6fa851503323026c0437a2f254b194ce8c966c226",
+                               "edge_executable":  "4bb4545b4ab80a3cf463a588ce570ca42de38fe6db16e3baeb0798ac75b4648b",
+                               "chrome_executable":  "6849d2982038de9f9489a7b3858f3b785b7fec06a842c93c517281d21995c8ca",
+                               "fixture/demanding.html":  "4e70b7d15a5aad62402a5448407bef399a587cb36e56a1fd42d9d5ba8be544b7",
+                               "fixture/light.html":  "f41a4c2a2daf518fe5dc16eb9516a84a950a4272ca8d6970062ee4a7c8ee7f29",
+                               "fixture/minimized-lifecycle.html":  "9ff9b0ee52db500fdb2dddbb434211bd1a802807d72f6f63c358b5ce73ef556f",
+                               "fixture/tracking-policy.html":  "56c21e8114217e61fdb7ba4ca0739b27525c16709f7a5c5b222ee17f330e14c2"
+                           },
+    "inputs_unchanged":  true,
+    "changed_inputs":  [
+
+                       ]
 }
