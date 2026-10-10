@@ -23,7 +23,8 @@ use windows::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, ClientToScreen, CreateRectRgn, CreateRoundRectRgn, DEFAULT_QUALITY,
-            DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT, SetWindowRgn,
+            DeleteObject, EndPaint, FillRect, GetMonitorInfoW, InvalidateRect,
+            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, PAINTSTRUCT, SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
         System::SystemInformation::GetTickCount,
@@ -43,11 +44,11 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
                 EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWLP_USERDATA,
                 GetCaretBlinkTime, GetClientRect, GetForegroundWindow, GetMessageW, GetWindow,
-                GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-                HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IsIconic, IsZoomed,
-                KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow, NCCALCSIZE_PARAMS,
-                PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
-                SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
+                GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+                GetWindowThreadProcessId, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
+                HideCaret, IsIconic, IsZoomed, KillTimer, LoadCursorW, MF_STRING, MSG, MoveWindow,
+                NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_MAXIMIZE,
+                SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME,
                 SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetTimer, SetWindowLongPtrW,
                 SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
@@ -834,22 +835,7 @@ unsafe extern "system" fn window_proc(
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
-                    if IsZoomed(hwnd).as_bool() {
-                        let _ = SetWindowRgn(hwnd, None, true);
-                    } else if r.right > 0 && r.bottom > 0 {
-                        let radius = Metrics::new(dpi(hwnd)).window_radius();
-                        let region = CreateRoundRectRgn(
-                            0,
-                            0,
-                            r.right + 1,
-                            r.bottom + 1,
-                            radius * 2,
-                            radius * 2,
-                        );
-                        if !region.is_invalid() {
-                            let _ = SetWindowRgn(hwnd, Some(region), true);
-                        }
-                    }
+                    apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
                     let active = App::active_tab_id(app);
                     let _ = with_chrome(hwnd, |s| {
                         s.relayout(
@@ -1460,6 +1446,41 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     let _ = labels;
 }
 
+fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximised: bool) {
+    let radius = Metrics::new(dpi(hwnd)).window_radius();
+    let (left, top, right, bottom) = if maximised {
+        let mut window = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut window) }.is_err() {
+            return;
+        }
+        let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if monitor.is_invalid() || !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            return;
+        }
+        (
+            (info.rcWork.left - window.left).clamp(0, window.right - window.left),
+            (info.rcWork.top - window.top).clamp(0, window.bottom - window.top),
+            (info.rcWork.right - window.left).clamp(0, window.right - window.left),
+            (info.rcWork.bottom - window.top).clamp(0, window.bottom - window.top),
+        )
+    } else {
+        (0, 0, client_width, client_height)
+    };
+    if right <= left || bottom <= top {
+        return;
+    }
+    let region = unsafe { CreateRoundRectRgn(left, top, right, bottom, radius * 2, radius * 2) };
+    if !region.is_invalid() {
+        unsafe {
+            let _ = SetWindowRgn(hwnd, Some(region), true);
+        }
+    }
+}
+
 fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) => l.tab(i).unwrap_or_default(),
@@ -1607,6 +1628,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
         let dc = BeginPaint(hwnd, &mut ps);
         if let Some(app) = app {
             let active = App::active_tab_id(app);
+            let active_has_controller = App::active_tab_has_controller(app);
             let progress = App::tab_progress_percent(app, active);
             let can_back = App::can_go_back(app);
             let can_forward = App::can_go_forward(app);
@@ -1725,10 +1747,18 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         );
                     }
                 }
-                if !s.palette.translucent {
-                    // Solid mode owns every pixel. The overlaid chrome uses the matching solid
-                    // palette, and this host fill keeps the viewport and row gaps seamless.
-                    let fill = dirty.intersect(Rect::new(0, 0, s.client.0, s.client.1));
+                if !s.palette.translucent || !active_has_controller {
+                    // Solid mode owns every pixel. In glass mode an untouched viewport is
+                    // transparent too, so back blank tabs with the page surface to avoid
+                    // revealing arbitrary windows behind Bowser.
+                    let owned = if s.palette.translucent {
+                        s.layout.viewport
+                    } else {
+                        Rect::new(0, 0, s.client.0, s.client.1)
+                    };
+                    let fill = dirty
+                        .intersect(Rect::new(0, 0, s.client.0, s.client.1))
+                        .intersect(owned);
                     if !fill.is_empty() {
                         let r = RECT {
                             left: fill.left,

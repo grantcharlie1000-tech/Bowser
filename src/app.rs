@@ -918,6 +918,16 @@ impl App {
         app.borrow().tab_model.active()
     }
 
+    pub fn active_tab_has_controller(app: &AppRef) -> bool {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .is_some_and(|tab| tab.controller_created)
+    }
+
     pub fn tab_title(app: &AppRef, id: TabId) -> Option<String> {
         app.borrow()
             .tabs
