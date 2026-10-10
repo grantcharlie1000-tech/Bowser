@@ -14,9 +14,10 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreatePen, CreateSolidBrush, DRAW_TEXT_FORMAT, DT_CENTER, DT_LEFT,
-            DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, Ellipse,
-            EndPaint, FillRect, FrameRect, HDC, InvalidateRect, PAINTSTRUCT, PS_SOLID, RoundRect,
+            BeginPaint, CreateFontIndirectW, CreatePen, CreateSolidBrush, DRAW_TEXT_FORMAT,
+            DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject,
+            DrawTextW, Ellipse, EndPaint, FillRect, FrameRect, GetObjectW, HDC, HFONT,
+            InvalidateRect, LOGFONTW, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, RoundRect,
             SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
         },
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
@@ -96,9 +97,13 @@ enum Style {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
-    Provider { selected: bool },
+    Provider {
+        selected: bool,
+    },
     Secondary,
     Primary,
+    /// A square glyph button; the label is the accessible name and is not drawn.
+    Icon,
 }
 
 struct Control {
@@ -182,16 +187,12 @@ fn build(flow: &Flow, width: i32, height: i32, dpi: u32) -> Scene {
     let mut scene = Scene::default();
     let mut y = s(PAD);
 
-    scene.text(
-        rect(x0, y + s(6), x1 - s(96), y + s(34)),
-        TITLE,
-        Style::Heading,
-    );
+    scene.text(rect(x0, y, x1 - s(44), y + s(32)), TITLE, Style::Heading);
     scene.control(
         Target::Close,
-        rect(x1 - s(88), y, x1, y + s(BUTTON_HEIGHT)),
+        rect(x1 - s(32), y, x1, y + s(32)),
         "Close",
-        Role::Secondary,
+        Role::Icon,
         true,
     );
     y += s(44);
@@ -367,6 +368,32 @@ fn error_message(error: ImportError) -> &'static str {
     }
 }
 
+/// Linear blend of two opaque palette colours, for hover and pressed fills.
+fn mix_toward(from: Rgba, to: Rgba, t: f32) -> Rgba {
+    let lerp = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+    Rgba {
+        r: lerp(from.r, to.r),
+        g: lerp(from.g, to.g),
+        b: lerp(from.b, to.b),
+        a: 0xFF,
+    }
+}
+
+/// The body font made larger and semibold, for the panel title.
+unsafe fn create_heading_font(body: HFONT) -> HFONT {
+    unsafe {
+        let mut logfont = LOGFONTW::default();
+        GetObjectW(
+            body.into(),
+            size_of::<LOGFONTW>() as i32,
+            Some((&mut logfont as *mut LOGFONTW).cast()),
+        );
+        logfont.lfHeight = logfont.lfHeight * 13 / 10;
+        logfont.lfWeight = 600;
+        CreateFontIndirectW(&logfont)
+    }
+}
+
 fn colorref(colour: Rgba) -> COLORREF {
     COLORREF(u32::from(colour.r) | (u32::from(colour.g) << 8) | (u32::from(colour.b) << 16))
 }
@@ -431,6 +458,7 @@ unsafe fn paint(hwnd: HWND) {
                 dpi,
                 windows::Win32::Graphics::Gdi::CLEARTYPE_QUALITY,
             );
+            let heading_font = create_heading_font(font);
             let old_font = SelectObject(dc, font.into());
             SetBkMode(dc, TRANSPARENT);
             let scene = build(&panel.flow, client.right, client.bottom, dpi);
@@ -443,6 +471,18 @@ unsafe fn paint(hwnd: HWND) {
                     Style::Body => palette.omnibox_text,
                     Style::Muted => palette.omnibox_placeholder,
                 };
+                if text.style == Style::Heading {
+                    SelectObject(dc, heading_font.into());
+                    draw_text(
+                        dc,
+                        text.rect,
+                        &text.text,
+                        colour,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                    );
+                    SelectObject(dc, font.into());
+                    continue;
+                }
                 draw_text(
                     dc,
                     text.rect,
@@ -452,23 +492,35 @@ unsafe fn paint(hwnd: HWND) {
                 );
             }
             for control in &scene.controls {
-                paint_control(dc, control, panel.hover, palette);
+                paint_control(dc, control, panel.hover, panel.pressed, palette);
             }
             SelectObject(dc, old_font);
             let _ = DeleteObject(font.into());
+            let _ = DeleteObject(heading_font.into());
         }
         let _ = EndPaint(hwnd, &ps);
     }
 }
 
-unsafe fn paint_control(dc: HDC, control: &Control, hover: Target, palette: &theme::Palette) {
+unsafe fn paint_control(
+    dc: HDC,
+    control: &Control,
+    hover: Target,
+    pressed: Target,
+    palette: &theme::Palette,
+) {
     unsafe {
         let hovered = control.enabled && control.target == hover;
+        let held = hovered && control.target == pressed;
         let bounds = control.rect;
         match control.role {
             Role::Provider { selected } => {
                 let (fill, border) = if selected {
                     (palette.tab_active, palette.omnibox_focus_border)
+                } else if held {
+                    (palette.tab_active, palette.omnibox_border)
+                } else if hovered {
+                    (palette.tab_hover, palette.omnibox_border)
                 } else {
                     (palette.omnibox_fill, palette.omnibox_border)
                 };
@@ -513,10 +565,58 @@ unsafe fn paint_control(dc: HDC, control: &Control, hover: Target, palette: &the
                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
                 );
             }
+            Role::Icon => {
+                if hovered {
+                    round_rect(
+                        dc,
+                        bounds,
+                        if held {
+                            palette.tab_active
+                        } else {
+                            palette.tab_hover
+                        },
+                        if held {
+                            palette.tab_active
+                        } else {
+                            palette.tab_hover
+                        },
+                    );
+                }
+                let (cx, cy) = (
+                    (bounds.left + bounds.right) / 2,
+                    (bounds.top + bounds.bottom) / 2,
+                );
+                let arm = (bounds.right - bounds.left) / 6;
+                let pen = CreatePen(
+                    PS_SOLID,
+                    ((bounds.right - bounds.left) / 20).max(1),
+                    colorref(if hovered {
+                        palette.tab_text_active
+                    } else {
+                        palette.tab_text_inactive
+                    }),
+                );
+                let old_pen = SelectObject(dc, pen.into());
+                let _ = MoveToEx(dc, cx - arm, cy - arm, None);
+                let _ = LineTo(dc, cx + arm + 1, cy + arm + 1);
+                let _ = MoveToEx(dc, cx - arm, cy + arm, None);
+                let _ = LineTo(dc, cx + arm + 1, cy - arm - 1);
+                SelectObject(dc, old_pen);
+                let _ = DeleteObject(pen.into());
+            }
             Role::Secondary | Role::Primary => {
                 let primary = control.role == Role::Primary;
                 let (fill, text) = match (primary, control.enabled) {
+                    (true, true) if held => (
+                        mix_toward(palette.progress_fill, palette.window, 0.25),
+                        palette.window,
+                    ),
+                    (true, true) if hovered => (
+                        mix_toward(palette.progress_fill, palette.tab_text_active, 0.18),
+                        palette.window,
+                    ),
                     (true, true) => (palette.progress_fill, palette.window),
+                    (false, true) if held => (palette.tab_active, palette.omnibox_text),
                     (true, false) => (palette.omnibox_fill, palette.omnibox_placeholder),
                     (false, true) if hovered => (palette.tab_hover, palette.omnibox_text),
                     (false, true) => (palette.omnibox_fill, palette.omnibox_text),

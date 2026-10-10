@@ -54,18 +54,18 @@ use windows::{
                 SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-                TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR, WM_CLOSE,
-                WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE,
-                WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
-                WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE,
-                WM_RBUTTONUP, WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE,
-                WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION,
-                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-                WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-                WS_VISIBLE, WVR_REDRAW,
+                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON,
+                TPM_TOPALIGN, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR,
+                WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+                WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+                WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
+                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
+                WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS,
+                WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN,
+                WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+                WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -1560,12 +1560,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     let mut point = windows::Win32::Foundation::POINT { x, y };
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        let command = TrackPopupMenu(
+        let command = super::menu_theme::track(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON,
             point.x,
             point.y,
-            None,
             hwnd,
             None,
         )
@@ -1743,15 +1742,14 @@ fn show_profile_menu(hwnd: HWND) {
         return;
     };
     profiles.append_to(menu);
-    let mut point = windows::Win32::Foundation::POINT { x: 8, y: 8 };
+    let mut point = main_menu_anchor(hwnd);
     let command = unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        TrackPopupMenu(
+        super::menu_theme::track(
             menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
             point.x,
             point.y,
-            None,
             hwnd,
             None,
         )
@@ -1807,7 +1805,6 @@ fn open_settings_file() {
 /// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
 /// settings. It is a native popup, so it follows the system menu look and keyboard handling.
 fn show_main_menu(hwnd: HWND, app: &AppRef) {
-    use windows::Win32::UI::WindowsAndMessaging::{TPM_RIGHTALIGN, TPM_TOPALIGN};
     const NEW_TAB: usize = 5001;
     const EXTENSIONS: usize = 5002;
     const PASSWORDS: usize = 5003;
@@ -1879,23 +1876,15 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     append(MF_STRING, EXIT, "Exit\tAlt+F4");
 
     // Right-aligned under the button, so the menu grows leftwards and stays on screen.
-    let mut point = with_chrome(hwnd, |s| {
-        let r = s.layout.main_menu_button;
-        windows::Win32::Foundation::POINT {
-            x: r.right,
-            y: r.bottom + 2,
-        }
-    })
-    .unwrap_or_default();
+    let mut point = main_menu_anchor(hwnd);
     set_pressed(hwnd, Hit::MainMenu);
     let command = unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        TrackPopupMenu(
+        super::menu_theme::track(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
             point.x,
             point.y,
-            None,
             hwnd,
             None,
         )
@@ -2027,15 +2016,14 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
     }
     let _ = unsafe { AppendMenuW(menu, MF_STRING, INSTALL, w!("Install unpacked extension…")) };
 
-    let mut point = windows::Win32::Foundation::POINT { x: 8, y: 8 };
+    let mut point = main_menu_anchor(hwnd);
     let command = unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        TrackPopupMenu(
+        super::menu_theme::track(
             menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
             point.x,
             point.y,
-            None,
             hwnd,
             None,
         )
@@ -2205,12 +2193,11 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     .unwrap_or_default();
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        let command = TrackPopupMenu(
+        let command = super::menu_theme::track(
             menu,
             TPM_RETURNCMD | TPM_RIGHTBUTTON,
             point.x,
             point.y,
-            None,
             hwnd,
             None,
         )
@@ -2904,4 +2891,16 @@ mod tests {
             assert_eq!(s.layout.viewport.top, chrome, "viewport top at dpi {dpi}");
         }
     }
+}
+
+/// Client-space point under the main-menu button, where every top-level menu opens from.
+fn main_menu_anchor(hwnd: HWND) -> windows::Win32::Foundation::POINT {
+    with_chrome(hwnd, |s| {
+        let r = s.layout.main_menu_button;
+        windows::Win32::Foundation::POINT {
+            x: r.right,
+            y: r.bottom + 2,
+        }
+    })
+    .unwrap_or_default()
 }

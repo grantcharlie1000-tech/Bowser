@@ -1,5 +1,6 @@
 pub mod frame;
 pub mod glass;
+mod menu_theme;
 pub mod passwords_import;
 mod passwords_panel;
 mod window;
