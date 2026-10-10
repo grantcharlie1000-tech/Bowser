@@ -1,0 +1,4 @@
+﻿mode startup exit 0
+mode idle exit 0
+mode tabs exit 0
+mode switch exit 0

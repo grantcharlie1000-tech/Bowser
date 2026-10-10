@@ -48,7 +48,8 @@ use windows::{
                 GetWindowTextW, GetWindowThreadProcessId, HMENU, HTBOTTOM, HTBOTTOMLEFT,
                 HTBOTTOMRIGHT, HTCAPTION, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT,
                 HTTOP, HTTOPLEFT, HTTOPRIGHT, HideCaret, IsIconic, IsZoomed, KillTimer,
-                LoadCursorW, MF_STRING, MSG, MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage,
+                LoadCursorW, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage,
                 RegisterClassW, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED,
                 SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW,
                 SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -684,10 +685,16 @@ pub fn run(app: App) -> windows::core::Result<()> {
             return Err(windows::core::Error::from_thread());
         }
         let app = Rc::new(RefCell::new(app));
+        let window_title = windows::core::HSTRING::from(format!(
+            "Bowser - Search or enter address{}",
+            crate::profile::active()
+                .map(|profile| profile.title_suffix())
+                .unwrap_or_default()
+        ));
         let hwnd = CreateWindowExW(
             Default::default(),
             CLASS_NAME,
-            w!("Bowser - Search or enter address"),
+            windows::core::PCWSTR(window_title.as_ptr()),
             // The system sizing frame also forces WS_EX_WINDOWEDGE on this HWND. Bowser
             // handles the resize loop itself so its rounded region can stay edge-free.
             WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
@@ -1573,6 +1580,143 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     }
 }
 
+/// Ctrl+Shift+P: native menu to switch, create or delete profiles. Switching starts a new Bowser
+/// process for that profile (WebView2 allows one browser process per data folder); the current
+/// window stays open.
+fn show_profile_menu(hwnd: HWND) {
+    use crate::profile::{self, Profile};
+    const NEW: usize = 1;
+    const SWITCH_BASE: usize = 100;
+    const DELETE_BASE: usize = 1000;
+    const MAX_LISTED: usize = 300;
+
+    let Some(app_data) = profile::app_data_dir() else {
+        show_error_message("Bowser could not find this user's LocalAppData directory.");
+        return;
+    };
+    let Ok(current) = profile::active() else {
+        return;
+    };
+    let names: Vec<String> = profile::list(&app_data)
+        .into_iter()
+        .take(MAX_LISTED)
+        .collect();
+    let current_name = current.listed_name().to_owned();
+    let is_current = |name: &str| name.eq_ignore_ascii_case(&current_name);
+    let is_default = |name: &str| name.eq_ignore_ascii_case(profile::DEFAULT_NAME);
+    let label = |name: &str| {
+        let text = if is_default(name) { "Default" } else { name };
+        windows::core::HSTRING::from(text)
+    };
+
+    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+        return;
+    };
+    for (index, name) in names.iter().enumerate() {
+        let flags = if is_current(name) {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let text = label(name);
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                flags,
+                SWITCH_BASE + index,
+                windows::core::PCWSTR(text.as_ptr()),
+            )
+        };
+    }
+    let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()) };
+    let _ = unsafe { AppendMenuW(menu, MF_STRING, NEW, w!("New profile")) };
+    let deletable: Vec<usize> = names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| !is_default(name) && !is_current(name))
+        .map(|(index, _)| index)
+        .collect();
+    if let Ok(submenu) = unsafe { CreatePopupMenu() } {
+        for &index in &deletable {
+            let text = label(&names[index]);
+            let _ = unsafe {
+                AppendMenuW(
+                    submenu,
+                    MF_STRING,
+                    DELETE_BASE + index,
+                    windows::core::PCWSTR(text.as_ptr()),
+                )
+            };
+        }
+        let flags = if deletable.is_empty() {
+            MF_POPUP | MF_GRAYED
+        } else {
+            MF_POPUP
+        };
+        // The submenu handle is owned by `menu` and is destroyed with it.
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                flags,
+                submenu.0 as usize,
+                w!("Delete profile…"),
+            )
+        };
+    }
+
+    let mut point = windows::Win32::Foundation::POINT { x: 8, y: 8 };
+    let command = unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize
+    };
+    let _ = unsafe { DestroyMenu(menu) };
+
+    match command {
+        NEW => match profile::create_auto(&app_data) {
+            Ok(created) => open_profile_window(&created),
+            Err(error) => show_error_message(&format!("The new profile was not created. {error}")),
+        },
+        id if (SWITCH_BASE..SWITCH_BASE + MAX_LISTED).contains(&id) => {
+            if let Some(name) = names.get(id - SWITCH_BASE).filter(|name| !is_current(name)) {
+                match Profile::for_listed_name(&app_data, name) {
+                    Ok(target) => open_profile_window(&target),
+                    Err(error) => show_error_message(&error.to_string()),
+                }
+            }
+        }
+        id if (DELETE_BASE..DELETE_BASE + MAX_LISTED).contains(&id) => {
+            if let Some(name) = names.get(id - DELETE_BASE) {
+                let question = format!(
+                    "Delete the Bowser profile \"{name}\"? Its cookies, site data, saved passwords, settings and session will be permanently removed."
+                );
+                if crate::win32::ask_yes_no(&question) {
+                    if let Err(error) = profile::delete(&app_data, name, &current) {
+                        show_error_message(&format!(
+                            "The profile \"{name}\" was not deleted. {error}"
+                        ));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn open_profile_window(target: &crate::profile::Profile) {
+    if !crate::profile::spawn_window(target) {
+        show_error_message("Bowser could not start a window for that profile.");
+    }
+}
+
 fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     let ids = App::tab_ids(app);
     if ids.is_empty() {
@@ -2051,6 +2195,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::Back => App::history(app, false),
         Command::Forward => App::history(app, true),
         Command::ToggleBlocker => App::toggle_blocker(app),
+        Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

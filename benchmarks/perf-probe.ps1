@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)] [string] $BowserExecutable,
     [string] $Label = 'current',
-    [ValidateSet('startup','tabs','idle')] [string] $Mode = 'startup',
+    [ValidateSet('startup','tabs','idle','switch')] [string] $Mode = 'startup',
+    [ValidateRange(1,200)] [int] $Switches = 20,
     [ValidateRange(1,100)] [int] $Runs = 9,
     [ValidateRange(1,200)] [int[]] $TabCounts = @(1,5,10,25),
     [ValidateRange(0,65535)] [int] $Port = 0,
@@ -31,6 +32,10 @@ public static class Native {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessageW")] public static extern IntPtr SendText(IntPtr h, uint m, IntPtr w, string l);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessageW")] public static extern IntPtr SendGet(IntPtr h, uint m, IntPtr w, StringBuilder l);
+  public static string GetEditText(IntPtr h) { var sb = new StringBuilder(2048); SendGet(h, 0x000D, (IntPtr)2048, sb); return sb.ToString(); }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  public static string GetTitle(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, 512); return sb.ToString(); }
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -147,6 +152,7 @@ public sealed class FixtureServer {
 $WM_CLOSE = 0x0010
 $WM_SETTEXT = 0x000C
 $WM_SUBMIT = 0x8000 + 10
+$WM_SHORTCUT_KEY = 0x8000 + 15
 $exe = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($BowserExecutable)
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Bowser executable not found: $exe" }
 $exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -261,9 +267,9 @@ function Start-Fixtures {
 }
 function Send-NewTab([IntPtr] $Main) {
     Start-Sleep -Milliseconds 50
-    if (-not [BowserPerfProbe.Native]::ForceForeground($Main)) { throw 'Bowser is not the foreground window; refusing to send Ctrl+T to another application.' }
-    [BowserPerfProbe.Native]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero); [BowserPerfProbe.Native]::keybd_event(0x54, 0, 0, [UIntPtr]::Zero)
-    [BowserPerfProbe.Native]::keybd_event(0x54, 0, 2, [UIntPtr]::Zero); [BowserPerfProbe.Native]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+    # Posts Bowser's own WM_SHORTCUT_KEY (WM_APP+15; wparam = virtual key, lparam bit 0 = Ctrl) to its main window.
+    # This reaches the same command dispatch as the keyboard path without needing foreground or taking over the desktop.
+    [void][BowserPerfProbe.Native]::PostMessage($Main, $WM_SHORTCUT_KEY, [IntPtr]0x54, [IntPtr]1)
     Start-Sleep -Milliseconds 150
 }
 function Submit-Address([IntPtr] $Main, [string] $Url) {
@@ -454,7 +460,63 @@ function Invoke-IdleMode {
     Write-Report (Join-Path $out "$safeLabel-idle-$stamp.md") $lines
 }
 
+function Send-CtrlTab([IntPtr] $Main) {
+    [void][BowserPerfProbe.Native]::PostMessage($Main, $WM_SHORTCUT_KEY, [IntPtr]0x09, [IntPtr]1)
+}
+
+# Tab-switch latency, measured from outside: with two loaded tabs on distinct hosts, press Ctrl+Tab and poll the
+# native address EDIT until it shows the other tab's host. This is key-injection to address-bar-updated, an upper
+# bound on the time until the new tab's address is shown; it does not prove the new tab's pixels are presented.
+function Invoke-SwitchMode {
+    $server = Start-Fixtures
+    $profile = Join-Path $work 'switch'
+    $log = Join-Path $logDir 'switch.csv'
+    $fixtureFor = @{ 1 = 'light.html'; 2 = 'demanding.html' }
+    $samples = New-Object 'System.Collections.Generic.List[double]'
+    $failed = 0
+    try {
+        $b = Start-Bowser $profile $log
+        try {
+            if ($null -eq $b.Main -or $b.Main.ToInt64() -eq 0) { throw 'Bowser window was not found (switch).' }
+            Start-Sleep -Milliseconds 800
+            foreach ($t in 1..2) {
+                if ($t -gt 1) { Send-NewTab $b.Main }
+                Submit-Address $b.Main "http://127.0.0.$t`:$($server.Port)/$($fixtureFor[$t])"
+                [void](Wait-Until { (Count-Event $log 'page_usable') -ge $t } 30000)
+            }
+            Start-Sleep -Seconds 2
+            $markers = @{ 1 = "BOWSER_BENCH_READY_LIGHT"; 2 = "BOWSER_BENCH_READY_DEMANDING" }
+            # Two tabs: tab 2 is active, so the first Ctrl+Tab lands on tab 1, then alternates.
+            $target = 1
+            for ($i = 0; $i -lt $Switches; $i++) {
+                $needle = $markers[$target]
+                $sw = [Diagnostics.Stopwatch]::StartNew()
+                Send-CtrlTab $b.Main
+                $seen = $false
+                while ($sw.ElapsedMilliseconds -lt 3000) {
+                    if ([BowserPerfProbe.Native]::GetTitle($b.Main).Contains($needle)) { $seen = $true; break }
+                    Start-Sleep -Milliseconds 1
+                }
+                if ($seen) { $samples.Add($sw.Elapsed.TotalMilliseconds) } else { $failed++ }
+                $target = 3 - $target
+                Start-Sleep -Milliseconds 300
+            }
+        } finally { $clean = Stop-Bowser $b $profile; if ($clean) { Remove-Profile $profile } }
+    } finally { $server.Stop() }
+    $rows = @($samples | ForEach-Object { [pscustomobject]@{ switch_ms = [math]::Round($_, 1) } })
+    $csv = Join-Path $out "$safeLabel-switch-$stamp.csv"
+    if ($rows.Count -gt 0) { $rows | Export-Csv -LiteralPath $csv -NoTypeInformation } else { Set-Content -LiteralPath $csv -Value 'switch_ms' }
+    $lines = @(Report-Header 'tab switch')
+    $lines += '| Metric | Median (p25 to p75, n) | Failed to observe |'
+    $lines += '| --- | --- | --- |'
+    $lines += "| Ctrl+Tab to window title shows other tab (ms) | $(Format-Stat (Get-ColumnStat $rows 'switch_ms')) | $failed |"
+    $lines += ''
+    $lines += "Raw rows: $csv. Polling interval is about 1 ms plus PowerShell overhead; the main-window title (active tab title: light vs demanding fixture) is polled, not a frame presentation."
+    Write-Report (Join-Path $out "$safeLabel-switch-$stamp.md") $lines
+}
+
 switch ($Mode) {
+    'switch' { Invoke-SwitchMode }
     'startup' { Invoke-StartupMode }
     'tabs' { Invoke-TabsMode }
     'idle' { Invoke-IdleMode }

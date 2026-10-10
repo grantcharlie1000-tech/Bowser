@@ -1,0 +1,45 @@
+﻿{
+    "recorded":  "2026-10-10T13:07:30",
+    "build":  {
+                  "source_commit":  "d83a9bb",
+                  "working_tree":  "uncommitted src/ edits from other agents present",
+                  "exe":  "target\\release\\bowser.exe (copied to temp)",
+                  "exe_sha256":  "1B5A46205CA5E75963CA2539005BCD96E7988152E76EF2AFDB4796C09CB06DE4",
+                  "exe_built":  "2026-10-10T13:00:50"
+              },
+    "machine":  {
+                    "cpu":  "Intel(R) Core(TM) i5-7300HQ CPU @ 2.50GHz",
+                    "ram_gb":  15.9,
+                    "os":  "Microsoft Windows 10 Home",
+                    "host":  "LAPTOP-EMHV4OCC"
+                },
+    "method":  "benchmarks/perf-probe.ps1 modes startup(5 runs per profile kind), idle, tabs(1,5), switch(20); medians from measurements.psm1 Get-BowserProbeMetrics",
+    "metrics":  {
+                    "startup_fresh_window_visible_ms":  87.5,
+                    "startup_fresh_outer_visible_ms":  434.1,
+                    "startup_warm_window_visible_ms":  113.6,
+                    "startup_warm_outer_visible_ms":  394.5,
+                    "idle_empty_private_mb":  2.5,
+                    "idle_empty_cpu_ms_20s":  0,
+                    "idle_loaded_private_mb":  115.6,
+                    "idle_loaded_cpu_ms_20s":  312.5,
+                    "tabs1_private_mb":  113.2,
+                    "tabs1_idle10s_cpu_ms":  125,
+                    "tabs5_private_mb":  144.1,
+                    "tab_switch_ms":  27
+                },
+    "tolerances":  {
+                       "*cpu*":  {
+                                     "pct":  100,
+                                     "floor":  50
+                                 },
+                       "*_ms":  {
+                                    "pct":  50,
+                                    "floor":  20
+                                },
+                       "*_mb":  {
+                                    "pct":  15,
+                                    "floor":  5
+                                }
+                   }
+}

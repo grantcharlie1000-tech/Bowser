@@ -5,7 +5,7 @@
 
 use std::{
     fmt, fs, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -120,10 +120,10 @@ impl From<io::Error> for PasswordError {
 }
 
 impl PasswordStore {
-    /// Open the per-user Bowser vault under `%LOCALAPPDATA%`. DPAPI uses current-user scope only.
+    /// Open the vault of the running profile (`profile::active`). DPAPI uses current-user scope only.
     pub fn open_default() -> Result<Self, PasswordError> {
-        let base = std::env::var_os("LOCALAPPDATA").ok_or(PasswordError::Io)?;
-        Self::open(Path::new(&base).join("Bowser").join("Passwords.dat"))
+        let profile = crate::profile::active().map_err(|_| PasswordError::Io)?;
+        Self::open(profile.passwords_file())
     }
 
     /// Open a vault at an explicit local path (useful for isolated app profiles and tests).

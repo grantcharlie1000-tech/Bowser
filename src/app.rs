@@ -534,7 +534,13 @@ impl App {
                 .map(|tab| tab.title.trim())
                 .filter(|title| !title.is_empty())
                 .unwrap_or("Bowser");
-            (state.hwnd, format!("{title}{}", Self::blocker_suffix(&state)))
+            let profile_suffix = crate::profile::active()
+                .map(|profile| profile.title_suffix())
+                .unwrap_or_default();
+            (
+                state.hwnd,
+                format!("{title}{}{profile_suffix}", Self::blocker_suffix(&state)),
+            )
         };
         let mut title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
@@ -1102,18 +1108,29 @@ impl App {
                 return Ok(());
             }
         }
-        let Some(app_data) = local_app_data_dir() else {
+        let Some(app_data) = crate::profile::app_data_dir() else {
             win32::show_error_message(
                 "Bowser could not find this user's LocalAppData directory, which is required for its private WebView2 profile.",
             );
             return Ok(());
         };
-        let provider = SearchProvider::from_config(&app_data.join("search-provider.txt"));
+        let profile = match options.profile.as_deref() {
+            None => crate::profile::Profile::default_in(&app_data),
+            Some(name) => match crate::profile::Profile::named(&app_data, name) {
+                Ok(profile) => profile,
+                Err(error) => {
+                    win32::show_error_message(&error.to_string());
+                    return Ok(());
+                }
+            },
+        };
+        crate::profile::set_active(profile.clone());
+        let provider = SearchProvider::from_config(&profile.search_provider_file());
         let user_data_dir = options
             .user_data_dir
             .as_ref()
             .cloned()
-            .unwrap_or_else(|| app_data.join("WebView2"));
+            .unwrap_or_else(|| profile.webview2_dir());
         if let Err(error) = engine::WebView2Engine::availability() {
             win32::show_runtime_error(&error);
             return Ok(());
@@ -1125,16 +1142,17 @@ impl App {
             user_data_dir,
             provider,
             log,
-            Some(app_data.join(crate::tab_groups::FILE_NAME)),
+            Some(profile.tab_groups_file()),
         );
-        app.settings = crate::settings::Settings::load(&app_data.join(crate::settings::FILE_NAME));
+        app.settings = crate::settings::Settings::load(&profile.settings_file());
         if track_session && app.settings.blocker_enabled {
-            let mut state = crate::blocker::BlockerState::load(&app_data, &app.settings.blocker_allow);
+            let mut state =
+                crate::blocker::BlockerState::load(&profile.blocker_dir(), &app.settings.blocker_allow);
             state.enabled = true;
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
         if track_session {
-            app.init_session(&app_data);
+            app.init_session(&profile.session_dir());
         }
         win32::run(app)
     }
@@ -2526,12 +2544,6 @@ fn chrome_viewport_bounds(
         right: viewport.right,
         bottom: viewport.bottom,
     }
-}
-
-fn local_app_data_dir() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("Bowser"))
 }
 
 #[cfg(test)]

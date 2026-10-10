@@ -1,0 +1,4 @@
+"tabs","loaded","tab_discarded","memory_pressure","processes","host_ws_mb","host_priv_mb","wv_ws_settle_mb","wv_priv_settle_mb","wv_ws_50s_mb","wv_priv_50s_mb","idle10s_host_cpu_ms","idle10s_wv_cpu_ms"
+"1","1","0","False","7","16.24","3.25","229.1","118","44.6","115.9","0","31.2"
+"5","5","0","False","11","16.43","3.38","288.4","243.5","96.8","243.9","0","125"
+"10","10","4","False","12","16.91","3.56","370","388.4","123.8","273.3","0","218.8"

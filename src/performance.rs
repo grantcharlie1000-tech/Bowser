@@ -15,6 +15,8 @@ pub struct LaunchOptions {
     pub benchmark_url: Option<Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
+    /// `--profile <name>`: a named profile; `None` is the default profile.
+    pub profile: Option<String>,
 }
 
 impl LaunchOptions {
@@ -64,6 +66,7 @@ impl LaunchOptions {
                     | "--benchmark-url"
                     | "--benchmark-tracking-prevention"
                     | "--benchmark-memory-pressure"
+                    | "--profile"
             ) {
                 return Err(format!("Unknown argument: {flag}"));
             }
@@ -117,6 +120,12 @@ impl LaunchOptions {
                     }
                     options.benchmark_memory_pressure = true;
                 }
+                "--profile" => {
+                    crate::profile::validate_name(&value).map_err(|error| error.to_string())?;
+                    if options.profile.replace(value).is_some() {
+                        return Err("Duplicate profile argument".into());
+                    }
+                }
                 _ => {
                     if raw_url.replace(value).is_some() {
                         return Err("Duplicate benchmark URL argument".into());
@@ -130,6 +139,9 @@ impl LaunchOptions {
                 || options.benchmark_tracking_prevention.is_some())
         {
             return Err("Benchmark profile and URL require --benchmark-log".into());
+        }
+        if options.profile.is_some() && options.benchmark_log.is_some() {
+            return Err("--profile cannot be combined with benchmark options".into());
         }
         if options.benchmark_tracking_prevention.is_some() && options.user_data_dir.is_none() {
             return Err("Benchmark tracking prevention requires --benchmark-user-data-dir".into());
@@ -167,7 +179,8 @@ impl LaunchOptions {
                 let local_app_data = local_app_data.ok_or_else(|| {
                     "Cannot safely compare the benchmark profile without LOCALAPPDATA".to_owned()
                 })?;
-                let production_profile = local_app_data.join("Bowser").join("WebView2");
+                let production_profile =
+                    crate::profile::Profile::default_in(&local_app_data.join("Bowser")).webview2_dir();
                 let requested = canonicalize_for_comparison(profile)?;
                 let production = canonicalize_for_comparison(&production_profile)?;
                 if windows_path_keys_equal_paths(&requested, &production) {
@@ -345,6 +358,33 @@ mod tests {
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
     }
+    #[test]
+    fn profile_flag_accepts_only_valid_names_and_not_with_benchmarks() {
+        let options =
+            LaunchOptions::parse_from(args(&["--profile", "Work-1"]), Path::new("missing")).unwrap();
+        assert_eq!(options.profile.as_deref(), Some("Work-1"));
+        assert!(LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing"))
+            .unwrap()
+            .profile
+            .is_none());
+        for bad in ["..", "a/b", "CON", "default", "x y"] {
+            assert!(
+                LaunchOptions::parse_from(args(&["--profile", bad]), Path::new("missing")).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(LaunchOptions::parse_from(
+            args(&["--profile", "A", "--profile", "B"]),
+            Path::new("missing")
+        )
+        .is_err());
+        assert!(LaunchOptions::parse_from(
+            args(&["--profile", "A", "--benchmark-log", "x.csv"]),
+            Path::new("missing")
+        )
+        .is_err());
+    }
+
     #[test]
     fn ordinary_launch_has_no_instrumentation() {
         let options =

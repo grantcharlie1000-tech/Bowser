@@ -490,4 +490,76 @@ function Add-BowserSelectionMetadata {
     return $result
 }
 
-Export-ModuleMember -Function Resolve-BowserExecutable,Get-BowserEventIntervals,Get-NativeProcessMemory,Get-ProcessInventory,Get-ProcessGroupMembers,Get-ProcessGroupSnapshot,Get-MeasurementInputHashes,Assert-MeasurementInputHashesUnchanged,Get-BowserPhaseSummary,Test-BowserProfileReuseAllowed,Resolve-BowserWorkloadSelection,Resolve-BowserTrackingPrevention,Resolve-BowserRunSelection,Add-BowserSelectionMetadata
+
+function Get-BowserMedian([double[]] $Values) {
+    $s = @($Values | Sort-Object)
+    if ($s.Count -eq 0) { return $null }
+    $mid = [int][math]::Floor($s.Count / 2)
+    if ($s.Count % 2 -eq 1) { return [double]$s[$mid] }
+    return ([double]$s[$mid - 1] + [double]$s[$mid]) / 2.0
+}
+
+function Get-BowserProbeMetrics {
+    # Reads the newest perf-probe CSV of each mode in $Directory and reduces it to named medians.
+    # Modes that were not run simply contribute no metrics.
+    param([Parameter(Mandatory)] [string] $Directory)
+    $metrics = [ordered]@{}
+    $latest = { param($mode) Get-ChildItem -LiteralPath $Directory -Filter "*-$mode-*.csv" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1 }
+    $num = { param($rows, $col) @($rows | Where-Object { $null -ne $_.$col -and "$($_.$col)" -ne '' } | ForEach-Object { [double]::Parse("$($_.$col)", [Globalization.CultureInfo]::InvariantCulture) }) }
+    $startup = & $latest 'startup'
+    if ($startup) {
+        $rows = @(Import-Csv -LiteralPath $startup.FullName)
+        foreach ($kind in 'fresh','warm') {
+            $sub = @($rows | Where-Object { $_.kind -eq $kind })
+            $m = Get-BowserMedian (& $num $sub 'window_visible_ms'); if ($null -ne $m) { $metrics["startup_${kind}_window_visible_ms"] = [math]::Round($m, 1) }
+            $m = Get-BowserMedian (& $num $sub 'outer_visible_ms'); if ($null -ne $m) { $metrics["startup_${kind}_outer_visible_ms"] = [math]::Round($m, 1) }
+        }
+    }
+    $idle = & $latest 'idle'
+    if ($idle) {
+        foreach ($r in @(Import-Csv -LiteralPath $idle.FullName)) {
+            $tag = if ($r.state -eq 'loaded_page') { 'idle_loaded' } else { 'idle_empty' }
+            $metrics["${tag}_private_mb"] = [math]::Round([double]::Parse($r.host_priv_mb, [Globalization.CultureInfo]::InvariantCulture) + [double]::Parse($r.wv_priv_mb, [Globalization.CultureInfo]::InvariantCulture), 1)
+            $metrics["${tag}_cpu_ms_20s"] = [math]::Round([double]::Parse($r.host_cpu_20s_ms, [Globalization.CultureInfo]::InvariantCulture) + [double]::Parse($r.wv_cpu_20s_ms, [Globalization.CultureInfo]::InvariantCulture), 1)
+        }
+    }
+    $tabs = & $latest 'tabs'
+    if ($tabs) {
+        foreach ($r in @(Import-Csv -LiteralPath $tabs.FullName)) {
+            $metrics["tabs$($r.tabs)_private_mb"] = [math]::Round([double]::Parse($r.host_priv_mb, [Globalization.CultureInfo]::InvariantCulture) + [double]::Parse($r.wv_priv_50s_mb, [Globalization.CultureInfo]::InvariantCulture), 1)
+            # A negative sum means a WebView2 child exited during the window and its CPU left the snapshot; that
+            # run has no valid idle CPU figure, so the metric is omitted (reported as missing) rather than recorded.
+            $idleCpu = [double]::Parse($r.idle10s_host_cpu_ms, [Globalization.CultureInfo]::InvariantCulture) + [double]::Parse($r.idle10s_wv_cpu_ms, [Globalization.CultureInfo]::InvariantCulture)
+            if ($idleCpu -ge 0) { $metrics["tabs$($r.tabs)_idle10s_cpu_ms"] = [math]::Round($idleCpu, 1) }
+        }
+    }
+    $switch = & $latest 'switch'
+    if ($switch) {
+        $m = Get-BowserMedian (& $num @(Import-Csv -LiteralPath $switch.FullName) 'switch_ms')
+        if ($null -ne $m) { $metrics['tab_switch_ms'] = [math]::Round($m, 1) }
+    }
+    $metrics
+}
+
+function Compare-BowserBaseline {
+    # $Baseline: object with .metrics (name -> value) and .tolerances (wildcard -> {pct, floor}).
+    # A metric fails when current > baseline * (1 + pct/100) + floor. Lower is better for every metric.
+    # A baseline metric absent from $Current fails as 'missing'; extra current metrics are ignored.
+    param([Parameter(Mandatory)] $Baseline, [Parameter(Mandatory)] [System.Collections.IDictionary] $Current)
+    $tolerances = @($Baseline.tolerances.PSObject.Properties)
+    foreach ($p in $Baseline.metrics.PSObject.Properties) {
+        $tol = $tolerances | Where-Object { $p.Name -like $_.Name } | Select-Object -First 1
+        if (-not $tol) { throw "No tolerance configured for baseline metric '$($p.Name)'." }
+        $base = [double]$p.Value
+        # Computed as base*(100+pct)/100 so a value exactly at the limit is not lost to binary rounding; 9 decimals keeps float noise out of the comparison.
+        $limit = [math]::Round($base * (100.0 + [double]$tol.Value.pct) / 100.0 + [double]$tol.Value.floor, 9)
+        if (-not $Current.Contains($p.Name)) {
+            [pscustomobject]@{ metric = $p.Name; baseline = $base; current = $null; limit = [math]::Round($limit, 1); status = 'missing' }
+            continue
+        }
+        $cur = [double]$Current[$p.Name]
+        [pscustomobject]@{ metric = $p.Name; baseline = $base; current = $cur; limit = [math]::Round($limit, 1); status = $(if ($cur -gt $limit) { 'FAIL' } else { 'ok' }) }
+    }
+}
+
+Export-ModuleMember -Function Resolve-BowserExecutable,Get-BowserEventIntervals,Get-NativeProcessMemory,Get-ProcessInventory,Get-ProcessGroupMembers,Get-ProcessGroupSnapshot,Get-MeasurementInputHashes,Assert-MeasurementInputHashesUnchanged,Get-BowserPhaseSummary,Test-BowserProfileReuseAllowed,Resolve-BowserWorkloadSelection,Resolve-BowserTrackingPrevention,Resolve-BowserRunSelection,Add-BowserSelectionMetadata,Get-BowserMedian,Get-BowserProbeMetrics,Compare-BowserBaseline

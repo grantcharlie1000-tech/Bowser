@@ -228,6 +228,41 @@ try {
     $runnerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Raw
     Assert-True ($runnerSource -notmatch '@\(\$phaseRows\)') 'runner does not wrap the generic phase List in @()'
 
+    # Baseline comparison: tolerance arithmetic, regressions, improvements, missing metrics.
+    $baseline = [pscustomobject]@{
+        metrics = [pscustomobject]@{ startup_warm_window_visible_ms = 100.0; tabs5_private_mb = 400.0; tab_switch_ms = 30.0; idle_loaded_cpu_ms_20s = 300.0 }
+        tolerances = [pscustomobject]@{
+            '*_ms' = [pscustomobject]@{ pct = 50; floor = 20 }
+            '*_mb' = [pscustomobject]@{ pct = 15; floor = 5 }
+            '*cpu*' = [pscustomobject]@{ pct = 100; floor = 50 }
+        }
+    }
+    $same = @(Compare-BowserBaseline -Baseline $baseline -Current ([ordered]@{ startup_warm_window_visible_ms = 100.0; tabs5_private_mb = 400.0; tab_switch_ms = 30.0; idle_loaded_cpu_ms_20s = 300.0 }))
+    Assert-True (@($same | Where-Object { $_.status -ne 'ok' }).Count -eq 0) 'identical metrics pass'
+    $edge = @(Compare-BowserBaseline -Baseline $baseline -Current ([ordered]@{ startup_warm_window_visible_ms = 170.0; tabs5_private_mb = 465.0; tab_switch_ms = 65.0; idle_loaded_cpu_ms_20s = 650.0 }))
+    Assert-True (@($edge | Where-Object { $_.status -ne 'ok' }).Count -eq 0) 'values exactly at the tolerance limit pass'
+    $bad = @(Compare-BowserBaseline -Baseline $baseline -Current ([ordered]@{ startup_warm_window_visible_ms = 171.0; tabs5_private_mb = 466.0; tab_switch_ms = 66.0; idle_loaded_cpu_ms_20s = 651.0 }))
+    Assert-True (@($bad | Where-Object { $_.status -eq 'FAIL' }).Count -eq 4) 'values just over the limit all fail'
+    $better = @(Compare-BowserBaseline -Baseline $baseline -Current ([ordered]@{ startup_warm_window_visible_ms = 10.0; tabs5_private_mb = 100.0; tab_switch_ms = 1.0; idle_loaded_cpu_ms_20s = 0.0 }))
+    Assert-True (@($better | Where-Object { $_.status -ne 'ok' }).Count -eq 0) 'improvements pass'
+    $missing = @(Compare-BowserBaseline -Baseline $baseline -Current ([ordered]@{ tab_switch_ms = 30.0 }))
+    Assert-True (@($missing | Where-Object { $_.status -eq 'missing' }).Count -eq 3) 'baseline metrics absent from the run are reported missing'
+    Assert-Throws { Compare-BowserBaseline -Baseline ([pscustomobject]@{ metrics = [pscustomobject]@{ unknown_thing = 1 }; tolerances = $baseline.tolerances }) -Current ([ordered]@{}) | Out-Null } 'metric without a tolerance rule is a configuration error'
+    Assert-True ((Get-BowserMedian @(3.0, 1.0, 2.0)) -eq 2.0 -and (Get-BowserMedian @(4.0, 1.0)) -eq 2.5 -and $null -eq (Get-BowserMedian @())) 'median helper'
+
+    # Probe CSV reduction.
+    $probeDir = Join-Path $tempRoot 'probe'
+    New-Item -ItemType Directory -Force $probeDir | Out-Null
+    @([pscustomobject]@{ kind='fresh'; run=0; outer_visible_ms=300; window_visible_ms=150 }, [pscustomobject]@{ kind='fresh'; run=1; outer_visible_ms=320; window_visible_ms=170 }, [pscustomobject]@{ kind='warm'; run=0; outer_visible_ms=310; window_visible_ms=80 }) | Export-Csv -LiteralPath (Join-Path $probeDir 'x-startup-1.csv') -NoTypeInformation
+    @([pscustomobject]@{ state='empty_focused_omnibox'; host_cpu_20s_ms=0; wv_cpu_20s_ms=0; host_priv_mb=2.5; wv_priv_mb=0 }, [pscustomobject]@{ state='loaded_page'; host_cpu_20s_ms=10; wv_cpu_20s_ms=90; host_priv_mb=3.5; wv_priv_mb=100 }) | Export-Csv -LiteralPath (Join-Path $probeDir 'x-idle-1.csv') -NoTypeInformation
+    @([pscustomobject]@{ tabs=5; host_priv_mb=4; wv_priv_50s_mb=300; idle10s_host_cpu_ms=1; idle10s_wv_cpu_ms=2 }) | Export-Csv -LiteralPath (Join-Path $probeDir 'x-tabs-1.csv') -NoTypeInformation
+    @([pscustomobject]@{ switch_ms=20 }, [pscustomobject]@{ switch_ms=40 }, [pscustomobject]@{ switch_ms=30 }) | Export-Csv -LiteralPath (Join-Path $probeDir 'x-switch-1.csv') -NoTypeInformation
+    $reduced = Get-BowserProbeMetrics -Directory $probeDir
+    Assert-True ($reduced['startup_fresh_window_visible_ms'] -eq 160.0 -and $reduced['startup_warm_window_visible_ms'] -eq 80.0) 'startup medians per profile kind'
+    Assert-True ($reduced['idle_loaded_private_mb'] -eq 103.5 -and $reduced['idle_empty_private_mb'] -eq 2.5 -and $reduced['idle_loaded_cpu_ms_20s'] -eq 100.0) 'idle RAM and CPU reduce host plus WebView2'
+    Assert-True ($reduced['tabs5_private_mb'] -eq 304.0 -and $reduced['tabs5_idle10s_cpu_ms'] -eq 3.0) 'multi-tab metrics reduce host plus WebView2'
+    Assert-True ($reduced['tab_switch_ms'] -eq 30.0) 'tab switch median'
+
     Write-Host 'All benchmark measurement tests passed.'
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

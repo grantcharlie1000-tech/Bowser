@@ -24,6 +24,8 @@ pub enum Command {
     OpenPasswords,
     /// Ctrl+Shift+B switches the ad/tracker blocker off or on for the current site.
     ToggleBlocker,
+    /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
+    ShowProfileMenu,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -38,6 +40,7 @@ const VK_9: u32 = 0x39;
 const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_L: u32 = 0x4C;
+const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
@@ -76,6 +79,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         }
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
+        (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         _ => None,
     }
 }
@@ -111,6 +115,7 @@ mod tests {
             (VK_BROWSER_FORWARD, false, false, false, Command::Forward),
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
             (VK_B, true, true, false, Command::ToggleBlocker),
+            (VK_P, true, true, false, Command::ShowProfileMenu),
         ];
         for index in 0..8 {
             table.push((
