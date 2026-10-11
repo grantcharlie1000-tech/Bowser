@@ -335,7 +335,11 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         right: origin.x + anchor.right,
         bottom: origin.y + anchor.bottom,
     };
-    let square = hover_square::square(trigger, screen, Metrics::new(dpi).px(hover_square::TOLERANCE));
+    let square = hover_square::square(
+        trigger,
+        screen,
+        Metrics::new(dpi).px(hover_square::TOLERANCE),
+    );
     let existing = STATE.with(|state| state.borrow().open.as_ref().map(|open| open.hwnd));
     let (hwnd, created) = match existing {
         Some(hwnd) => {
@@ -472,11 +476,11 @@ fn check_leave(main: HWND) {
     }
     let (in_card, in_square) = pointer_position().unwrap_or((false, false));
     match hover_square::on_leave(in_card, in_square, false) {
-        Leave::Keep => stop_watch(main),
-        Leave::Watch => unsafe {
+        hover_square::Leave::Keep => stop_watch(main),
+        hover_square::Leave::Watch => unsafe {
             let _ = SetTimer(Some(main), WATCH_TIMER, WATCH_INTERVAL_MS, None);
         },
-        Leave::Close => dismiss(main),
+        hover_square::Leave::Close => dismiss(main),
     }
 }
 

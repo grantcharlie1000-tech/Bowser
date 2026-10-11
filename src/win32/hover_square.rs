@@ -71,10 +71,7 @@ mod tests {
     #[test]
     fn the_square_encloses_trigger_gap_and_popup_with_tolerance() {
         let (trigger, popup) = trigger_and_popup();
-        assert_eq!(
-            square(trigger, popup, TOLERANCE),
-            rect(96, -4, 364, 232)
-        );
+        assert_eq!(square(trigger, popup, TOLERANCE), rect(96, -4, 364, 232));
     }
 
     #[test]

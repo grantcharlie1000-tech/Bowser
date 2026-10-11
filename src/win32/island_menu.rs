@@ -4,8 +4,9 @@
 //! The popup is owned by the main window and is activated only by a click inside it, so hovering
 //! never takes focus from the address field. The name is a native EDIT child, which gives real caret,
 //! selection, clipboard, and IME handling. Enter commits the name and closes; Escape reverts it and
-//! closes. Opening waits [`HOVER_DELAY_MS`] after the pointer reaches the bar. Leaving the bar or the
-//! popup starts a short [`LEAVE_GRACE_MS`] timer, so the pointer can cross the gap between them.
+//! closes. Opening waits [`HOVER_DELAY_MS`] after the pointer reaches the bar. The menu stays open
+//! while the pointer is inside its square (the bar, the gap, and the popup) or a field in it has
+//! focus. Outside the square it closes, and a one-shot check re-runs while the pointer sits in the gap.
 //!
 //! Everything runs on the UI thread, and no `STATE` borrow is held across a Win32 call, because
 //! those calls can send messages straight back into this module.
@@ -49,7 +50,7 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-use super::{frame, glass, smooth};
+use super::{frame, glass, hover_square, smooth};
 use crate::{
     app::{App, AppRef},
     chrome::{
@@ -67,11 +68,13 @@ use crate::{
 const CLASS_NAME: PCWSTR = w!("BowserIslandMenu");
 /// How long the pointer must rest on a bar before its menu opens.
 pub(crate) const HOVER_DELAY_MS: u32 = 300;
-/// How long after the pointer leaves the bar and the menu before the menu closes.
-const LEAVE_GRACE_MS: u32 = 200;
+/// Re-check interval while the pointer is in the square but off the menu, such as in the gap.
+const CHECK_INTERVAL_MS: u32 = 150;
 /// One-shot timers. Ids stay below the tab card's hover timer range.
 const OPEN_TIMER: usize = 0x7000;
 const CLOSE_TIMER: usize = 0x7001;
+/// `EN_KILLFOCUS` notification code, sent from the name field when it loses the keyboard.
+const EN_KILLFOCUS: u32 = 0x0200;
 /// Posted from the name field to the popup: `wparam` is 1 to commit the name and 0 to revert it.
 const WM_FINISH: u32 = WM_APP + 0x31;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -101,6 +104,8 @@ struct Open {
     tab: TabId,
     /// Popup rectangle in screen coordinates, for the pointer-in-popup test.
     screen: RECT,
+    /// The bar and the gap and the popup, in screen coordinates. The menu stays open inside it.
+    square: RECT,
     model: IslandModel,
     /// Member tab ids, in the same order as `model.rows`.
     ids: Vec<TabId>,
@@ -134,10 +139,12 @@ pub(crate) fn bar_hover(main: HWND, bar: Option<(TabId, Rect)>) {
     }
     unsafe {
         let _ = KillTimer(Some(main), OPEN_TIMER);
-        let _ = KillTimer(Some(main), CLOSE_TIMER);
     }
     match bar {
         Some((tab, _)) => {
+            unsafe {
+                let _ = KillTimer(Some(main), CLOSE_TIMER);
+            }
             if open_tab == Some(tab) {
                 // Back on the bar of the open menu: keep it open.
                 return;
@@ -146,13 +153,7 @@ pub(crate) fn bar_hover(main: HWND, bar: Option<(TabId, Rect)>) {
                 let _ = SetTimer(Some(main), OPEN_TIMER, HOVER_DELAY_MS, None);
             }
         }
-        None => {
-            if is_open() {
-                unsafe {
-                    let _ = SetTimer(Some(main), CLOSE_TIMER, LEAVE_GRACE_MS, None);
-                }
-            }
-        }
+        None => check_leave(main),
     }
 }
 
@@ -178,12 +179,7 @@ pub(crate) fn timer(
                 show(main, app, tab, rect);
             }
         }
-        CLOSE_TIMER => {
-            let on_bar = STATE.with(|state| state.borrow().bar.is_some());
-            if !on_bar && !pointer_in_menu() {
-                close();
-            }
-        }
+        CLOSE_TIMER => check_leave(main),
         _ => {}
     }
 }
@@ -192,10 +188,50 @@ pub(crate) fn is_timer(timer: usize) -> bool {
     timer == OPEN_TIMER || timer == CLOSE_TIMER
 }
 
-/// The main window's pointer left it. The menu stays open while the pointer is over it, and
-/// otherwise closes after the grace period.
+/// The main window's pointer left it. Moving onto the page or onto the menu takes the pointer out of
+/// the window, so the menu decides from the pointer's position.
 pub(crate) fn pointer_left(main: HWND) {
-    bar_hover(main, None);
+    STATE.with(|state| state.borrow_mut().bar = None);
+    check_leave(main);
+}
+
+/// Where the pointer is relative to the open menu: over the menu, and inside its square. `None` when
+/// no menu is open or the pointer cannot be read.
+fn pointer_position() -> Option<(bool, bool)> {
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return None;
+    }
+    STATE.with(|state| {
+        state.borrow().open.as_ref().map(|open| {
+            (
+                hover_square::contains(open.screen, cursor),
+                hover_square::contains(open.square, cursor),
+            )
+        })
+    })
+}
+
+/// Decides, from where the pointer and the keyboard focus are now, whether the open menu stays, waits
+/// for another check in the gap, or closes. A focused name field keeps it open.
+fn check_leave(main: HWND) {
+    let Some(edit) = STATE.with(|state| state.borrow().open.as_ref().map(|open| open.edit)) else {
+        unsafe {
+            let _ = KillTimer(Some(main), CLOSE_TIMER);
+        }
+        return;
+    };
+    let (in_menu, in_square) = pointer_position().unwrap_or((false, false));
+    let focused = unsafe { GetFocus() } == edit;
+    match hover_square::on_leave(in_menu, in_square, focused) {
+        hover_square::Leave::Keep => unsafe {
+            let _ = KillTimer(Some(main), CLOSE_TIMER);
+        },
+        hover_square::Leave::Watch => unsafe {
+            let _ = SetTimer(Some(main), CLOSE_TIMER, CHECK_INTERVAL_MS, None);
+        },
+        hover_square::Leave::Close => finish(true),
+    }
 }
 
 /// Keeps the menu in step with the tab list: it follows the island's bar, refreshes its contents,
@@ -270,21 +306,6 @@ fn edit_text(edit: HWND) -> String {
     }
 }
 
-fn pointer_in_menu() -> bool {
-    let mut cursor = POINT::default();
-    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
-        return false;
-    }
-    STATE.with(|state| {
-        state.borrow().open.as_ref().is_some_and(|open| {
-            cursor.x >= open.screen.left
-                && cursor.x < open.screen.right
-                && cursor.y >= open.screen.top
-                && cursor.y < open.screen.bottom
-        })
-    })
-}
-
 /// Opens the menu for `tab`'s island, or refreshes it in place when it is already open for that
 /// island (keeping any text the user is typing). Nothing is activated.
 fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
@@ -313,6 +334,17 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         right: origin.x + card.right,
         bottom: origin.y + card.bottom,
     };
+    let trigger = RECT {
+        left: origin.x + anchor.left,
+        top: origin.y + anchor.top,
+        right: origin.x + anchor.right,
+        bottom: origin.y + anchor.bottom,
+    };
+    let square = hover_square::square(
+        trigger,
+        screen,
+        Metrics::new(dpi).px(hover_square::TOLERANCE),
+    );
 
     let existing = STATE.with(|state| {
         state
@@ -326,6 +358,7 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         STATE.with(|state| {
             if let Some(open) = state.borrow_mut().open.as_mut() {
                 open.screen = screen;
+                open.square = square;
                 open.committed = model.name.clone();
                 open.model = model.clone();
                 open.ids = ids;
@@ -363,6 +396,7 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         app: app.clone(),
         tab,
         screen,
+        square,
         committed: model.name.clone(),
         model,
         ids,
@@ -579,20 +613,22 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
-/// The pointer left the popup. Closing after the grace period lets a return to the bar keep it open.
-fn popup_left(hwnd: HWND) {
-    let main = STATE.with(|state| {
+/// The main window that owns the open popup `hwnd`, which is where its timers live.
+fn main_of(hwnd: HWND) -> Option<HWND> {
+    STATE.with(|state| {
         state
             .borrow()
             .open
             .as_ref()
             .filter(|open| open.hwnd == hwnd)
             .map(|open| open.main)
-    });
-    if let Some(main) = main {
-        unsafe {
-            let _ = SetTimer(Some(main), CLOSE_TIMER, LEAVE_GRACE_MS, None);
-        }
+    })
+}
+
+/// The pointer left the popup. It stays while the pointer is in the square, such as in the gap.
+fn popup_left(hwnd: HWND) {
+    if let Some(main) = main_of(hwnd) {
+        check_leave(main);
     }
 }
 
@@ -679,6 +715,14 @@ unsafe extern "system" fn island_proc(
             // or disappear with the text.
             WM_COMMAND if (wparam.0 >> 16) as u32 == EN_CHANGE => {
                 let _ = InvalidateRect(Some(hwnd), None, false);
+                LRESULT(0)
+            }
+            // Losing the keyboard can leave the pointer outside the square, so the menu re-checks on
+            // the owner's timer rather than closing from inside the field's notification.
+            WM_COMMAND if (wparam.0 >> 16) as u32 == EN_KILLFOCUS => {
+                if let Some(main) = main_of(hwnd) {
+                    let _ = SetTimer(Some(main), CLOSE_TIMER, CHECK_INTERVAL_MS, None);
+                }
                 LRESULT(0)
             }
             WM_FINISH => {

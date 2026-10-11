@@ -1741,8 +1741,14 @@ mod tests {
         let parent = [rect(0, 0, 320, 400)];
         let inside_parent = POINT { x: 10, y: 10 };
         let outside_all = POINT { x: 400, y: 10 };
-        assert_eq!(outside_press(&parent, inside_parent), OutsidePress::CloseFlyout);
-        assert_eq!(outside_press(&parent, outside_all), OutsidePress::CloseChain);
+        assert_eq!(
+            outside_press(&parent, inside_parent),
+            OutsidePress::CloseFlyout
+        );
+        assert_eq!(
+            outside_press(&parent, outside_all),
+            OutsidePress::CloseChain
+        );
     }
 
     #[test]
