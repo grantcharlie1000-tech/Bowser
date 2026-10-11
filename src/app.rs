@@ -2519,6 +2519,17 @@ impl App {
                 return Ok(());
             }
         };
+        // A plain launch while another live Bowser has this profile open would share its WebView2
+        // folder and session. Refuse before any window, workspace or session state is loaded.
+        let new_window = options.new_window;
+        let tracked = options.benchmark_url.is_none() && options.user_data_dir.is_none();
+        let lock = crate::session::lock_state(&profile.session_dir());
+        if crate::session::decide_launch(lock, profile.is_guest(), tracked, new_window)
+            == crate::session::LaunchDecision::RefuseAlreadyOpen
+        {
+            win32::show_error_message("Bowser is already open for this profile.");
+            return Ok(());
+        }
         let _guest_session = if profile.is_guest() {
             match crate::profile::GuestSession::start(&profile) {
                 Ok(session) => Some(session),
@@ -2578,8 +2589,15 @@ impl App {
                 &profile.privacy_stats_file(),
             ));
         }
-        if track_session {
-            app.init_session(&profile.session_dir());
+        if track_session
+            && !app.init_session(&profile.session_dir())
+            && !new_window
+            && crate::session::lock_state(&profile.session_dir())
+                == crate::session::LockState::HeldByLiveInstance
+        {
+            // Another instance took the marker after the early check above (a double-click).
+            win32::show_error_message("Bowser is already open for this profile.");
+            return Ok(());
         }
         win32::run(app)
     }
@@ -2661,13 +2679,14 @@ impl App {
     }
 
     /// Opens the crash-recovery state and, after a crash, asks whether to restore.
-    fn init_session(&mut self, dir: &std::path::Path) {
+    /// Returns `false` when the session could not be opened because another Bowser holds it.
+    fn init_session(&mut self, dir: &std::path::Path) -> bool {
         let workspace_path = self.workspaces_path.clone().unwrap_or_else(|| dir.join(crate::workspaces::FILE_NAME));
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
         let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
-            return; // another Bowser is running; leave its files alone
+            return false; // another Bowser is running; leave its files alone
         };
         let accepted = offer.filter(|offer| {
             win32::ask_yes_no(&format!(
@@ -2687,6 +2706,7 @@ impl App {
             self.workspaces.reconcile(&[active], active);
         }
         self.session = crate::session::SessionWriter::new(store).ok();
+        true
     }
 
     /// Rebuilds the tab strip from an accepted crash snapshot. Only the active tab loads now;

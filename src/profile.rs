@@ -744,6 +744,10 @@ fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
         return false;
     };
     let mut command = std::process::Command::new(exe);
+    // Both callers open a window for a profile that is already open, on purpose. The new window
+    // intentionally shares that profile's session and WebView2 folder, so the launch path must not
+    // refuse it as a duplicate. `--new-window` is what tells it so.
+    command.arg("--new-window");
     if let Some(name) = profile.name() {
         command.arg("--profile").arg(name);
     }

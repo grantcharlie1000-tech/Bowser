@@ -21,6 +21,9 @@ pub struct LaunchOptions {
     pub open_url: Option<Url>,
     /// `--guest`: a fresh, disposable browser data directory with no profile identity.
     pub guest: bool,
+    /// `--new-window`: a window started on purpose for a profile that is already open. Skips the
+    /// single-instance refusal; see `session::decide_launch`.
+    pub new_window: bool,
 }
 
 impl LaunchOptions {
@@ -63,6 +66,13 @@ impl LaunchOptions {
         let mut raw_url = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            if flag == "--new-window" {
+                if options.new_window {
+                    return Err("Duplicate new window argument".into());
+                }
+                options.new_window = true;
+                continue;
+            }
             if flag == "--guest" {
                 if options.guest {
                     return Err("Duplicate guest argument".into());
@@ -451,6 +461,19 @@ mod tests {
         assert!(options.guest);
         assert!(LaunchOptions::parse_from(args(&["--guest", "--guest"]), Path::new("missing")).is_err());
         assert!(LaunchOptions::parse_from(args(&["--guest", "--profile", "Work"]), Path::new("missing")).is_err());
+    }
+    #[test]
+    fn new_window_flag_is_standalone_and_duplicate_is_rejected() {
+        let plain = LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing")).unwrap();
+        assert!(!plain.new_window);
+        let options = LaunchOptions::parse_from(
+            args(&["--new-window", "--profile", "Work"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert!(options.new_window);
+        assert_eq!(options.profile.as_deref(), Some("Work"));
+        assert!(LaunchOptions::parse_from(args(&["--new-window", "--new-window"]), Path::new("missing")).is_err());
     }
     #[test]
     fn measurement_flags_require_log() {

@@ -287,6 +287,64 @@ pub fn decide_start(lock: Option<u32>) -> StartDecision {
     }
 }
 
+/// Whether this profile's running marker belongs to a live Bowser. A live instance holds the
+/// marker open with no sharing, so it cannot be opened; a marker that can be read is a leftover
+/// from a crashed run and does not count as open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockState {
+    Free,
+    HeldByLiveInstance,
+}
+
+/// Reads the crash count from a leftover marker: `Ok(None)` when there is no marker, and `Err`
+/// when it is held open by a live instance.
+fn read_lock_marker(dir: &Path) -> Result<Option<u32>, ()> {
+    let lock_path = dir.join(LOCK_NAME);
+    if !lock_path.exists() {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    match File::open(&lock_path).and_then(|file| file.take(256).read_to_string(&mut text)) {
+        Ok(_) => Ok(Some(parse_lock(&text))),
+        Err(_) => Err(()),
+    }
+}
+
+pub fn lock_state(dir: &Path) -> LockState {
+    match read_lock_marker(dir) {
+        Ok(_) => LockState::Free,
+        Err(()) => LockState::HeldByLiveInstance,
+    }
+}
+
+/// What a launch does when its profile may already be open in another Bowser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchDecision {
+    Open,
+    /// Another live Bowser has this profile open. Show a message and exit without a window.
+    RefuseAlreadyOpen,
+}
+
+/// A plain launch of a tracked profile is refused while a live Bowser holds its marker. A stale
+/// marker from a crash still opens, so crash restore is unchanged. `new_window` is passed by
+/// "Move tab to new window" and "open profile window": that window intentionally shares the
+/// profile with the one that is already open, so it is never refused. Guests and benchmark or
+/// custom-directory launches are not tracked and always open.
+pub fn decide_launch(
+    lock: LockState,
+    is_guest: bool,
+    is_tracked: bool,
+    new_window: bool,
+) -> LaunchDecision {
+    if is_guest || !is_tracked || new_window {
+        return LaunchDecision::Open;
+    }
+    match lock {
+        LockState::Free => LaunchDecision::Open,
+        LockState::HeldByLiveInstance => LaunchDecision::RefuseAlreadyOpen,
+    }
+}
+
 fn parse_lock(text: &str) -> u32 {
     text.trim()
         .strip_prefix("bowser-lock ")
@@ -437,15 +495,8 @@ impl SessionStore {
     /// then neither restores nor writes session files.
     pub fn open(dir: &Path) -> Option<(Self, Option<Offer>)> {
         fs::create_dir_all(dir).ok()?;
-        let lock_path = dir.join(LOCK_NAME);
-        let prior = if lock_path.exists() {
-            let mut text = String::new();
-            match File::open(&lock_path).and_then(|file| file.take(256).read_to_string(&mut text)) {
-                Ok(_) => Some(parse_lock(&text)),
-                Err(_) => return None, // held open by a live instance
-            }
-        } else {
-            None
+        let Ok(prior) = read_lock_marker(dir) else {
+            return None; // held open by a live instance
         };
         let store = Self {
             dir: dir.to_owned(),
@@ -913,5 +964,63 @@ mod tests {
         assert!(offer.is_none());
         assert!(dir.join(FILE_NAME).exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_state_is_held_only_while_a_live_instance_has_the_marker_open() {
+        let dir = temp_dir("lockstate");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(lock_state(&dir), LockState::Free, "no marker");
+        fs::write(dir.join(LOCK_NAME), "bowser-lock 0").unwrap();
+        assert_eq!(lock_state(&dir), LockState::Free, "stale marker left by a crash");
+        let live = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .share_mode(0)
+            .open(dir.join(LOCK_NAME))
+            .unwrap();
+        assert_eq!(lock_state(&dir), LockState::HeldByLiveInstance);
+        drop(live);
+        assert_eq!(lock_state(&dir), LockState::Free, "marker released on exit");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_lock_from_a_crash_does_not_refuse_the_launch() {
+        assert_eq!(
+            decide_launch(LockState::Free, false, true, false),
+            LaunchDecision::Open
+        );
+    }
+
+    #[test]
+    fn plain_launch_is_refused_when_a_live_instance_owns_a_tracked_profile() {
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, false, true, false),
+            LaunchDecision::RefuseAlreadyOpen
+        );
+    }
+
+    #[test]
+    fn new_window_launch_opens_even_when_the_profile_is_already_open() {
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, false, true, true),
+            LaunchDecision::Open
+        );
+    }
+
+    #[test]
+    fn guest_and_untracked_launches_always_open() {
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, true, true, false),
+            LaunchDecision::Open,
+            "guest"
+        );
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, false, false, false),
+            LaunchDecision::Open,
+            "benchmark or custom user-data directory"
+        );
     }
 }
