@@ -8,6 +8,7 @@ use super::{
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
     app::{App, AppRef, IdleTimerAction},
+    profile,
     chrome::{
         group_ui::{self, GroupGeometry},
         layout::{self, Hit, Layout, Metrics, Rect},
@@ -1999,6 +2000,35 @@ unsafe extern "system" fn window_proc(
                 crate::win32::passwords_panel::clear_password_clipboard_timer(hwnd);
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
+                let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
+                if let Some(app) = app {
+                    if !App::active_tab_is_usable(app) {
+                        let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 500, None);
+                        return LRESULT(0);
+                    }
+                } else {
+                    return LRESULT(0);
+                }
+                if let Ok(profile) = profile::active() {
+                    if profile.import_offer_pending() {
+                        let selected = menu::track(hwnd, main_menu_anchor(hwnd), Menu {
+                            header: None,
+                            entries: vec![
+                                Entry::Item(Item::new(1, "Import", Icon::Grid)),
+                                Entry::Item(Item::new(2, "Not now", Icon::Close)),
+                                Entry::Item(Item::new(3, "Don't ask again", Icon::Close)),
+                            ],
+                            footer: "Import bookmarks and supported search settings from another browser. You can also import later from the main menu.".into(),
+                        });
+                        let _ = profile.remember_import_offer_choice();
+                        if selected.is_some_and(|item| item.id == 1) {
+                            let _ = import_panel::open(hwnd);
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_IDLE_TRIM_TIMER => {
                 if let Some(app) = app {
                     let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
@@ -2147,6 +2177,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
+                let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
                     let _ = App::privacy_stats_save_now(app);
@@ -2172,6 +2203,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
+                let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
@@ -4209,6 +4241,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 if !s.first_paint_logged {
                     s.first_paint_logged = true;
                     let _ = app.borrow().log.record("chrome_painted");
+                    let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1800, None);
                 }
                 if *PAINT_LOG_ENABLED.get_or_init(|| std::env::var_os("BOWSER_PAINT_LOG").is_some())
                 {

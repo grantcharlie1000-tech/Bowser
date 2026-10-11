@@ -2124,6 +2124,16 @@ impl App {
             .is_some_and(|tab| tab.controller_created)
     }
 
+    pub fn active_tab_is_usable(app: &AppRef) -> bool {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .is_some_and(|tab| tab.page_usable)
+    }
+
     pub fn tab_has_controller(app: &AppRef, id: TabId) -> bool {
         app.borrow().tabs.iter().find(|tab| tab.id == id).is_some_and(|tab| tab.controller_created)
     }
