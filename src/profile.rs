@@ -343,6 +343,16 @@ impl Profile {
         self.root.join(PASSWORDS_FILE_NAME)
     }
 
+    /// Imported bookmarks (`title<TAB>url<TAB>folder`, one UTF-8 entry per line).
+    pub fn bookmarks_file(&self) -> PathBuf {
+        self.root.join("bookmarks.txt")
+    }
+
+    /// Imported history (`unix_ts<TAB>url<TAB>title`, one UTF-8 entry per line).
+    pub fn history_file(&self) -> PathBuf {
+        self.root.join("history.txt")
+    }
+
     /// Per-site camera, microphone, location and notification decisions.
     pub fn permissions_file(&self) -> PathBuf {
         self.root.join(crate::permissions::FILE_NAME)
@@ -836,6 +846,8 @@ mod tests {
             app.join("search-provider.txt")
         );
         assert_eq!(profile.passwords_file(), app.join("Passwords.dat"));
+        assert_eq!(profile.bookmarks_file(), app.join("bookmarks.txt"));
+        assert_eq!(profile.history_file(), app.join("history.txt"));
         assert_eq!(profile.extensions_dir(), app.join("Extensions"));
         assert_eq!(profile.extensions_file(), app.join("extensions.txt"));
         assert_eq!(profile.title_suffix(), "");

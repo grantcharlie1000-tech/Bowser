@@ -2,7 +2,7 @@ use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
     WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
-    menu, passwords_panel, settings_panel, show_error_message, site_info,
+    import_panel, menu, passwords_panel, settings_panel, show_error_message, site_info,
 };
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
@@ -2450,6 +2450,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
     const PROFILE: usize = 5007;
+    const IMPORT: usize = 5008;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -2471,6 +2472,11 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             .shortcut("Ctrl+,")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
     ));
+    entries.push(Entry::Item(Item::new(
+        IMPORT,
+        "Import from another browser…",
+        Icon::Grid,
+    )));
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
         .shortcut("Ctrl+Shift+B")
@@ -2519,6 +2525,13 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 if let Err(error) = passwords_panel::open(hwnd) {
                     show_error_message(&format!(
                         "Passwords & Passkeys could not be opened: {error}"
+                    ));
+                }
+            }
+            IMPORT => {
+                if let Err(error) = import_panel::open(hwnd) {
+                    show_error_message(&format!(
+                        "Browser import could not be opened: {error}"
                     ));
                 }
             }

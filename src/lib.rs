@@ -4,6 +4,7 @@ pub mod chrome;
 pub mod engine;
 pub mod extensions;
 pub mod favicon;
+pub mod import;
 pub mod navigation;
 pub mod omnibox;
 pub mod passwords;

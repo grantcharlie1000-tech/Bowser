@@ -1,6 +1,7 @@
 mod card;
 mod hover_square;
 mod island_menu;
+mod import_panel;
 mod menu;
 mod settings_panel;
 mod site_info;
