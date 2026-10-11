@@ -3,6 +3,7 @@
 //! Pure: no Win32. History lives in memory for the session only. URL-or-search classification is
 //! `navigation::resolve_input`, not repeated here.
 
+use std::time::{Duration, Instant};
 use url::Url;
 
 pub const HISTORY_LIMIT: usize = 500;
@@ -168,6 +169,43 @@ pub fn display_form(url: &Url) -> String {
         _ => rest,
     };
     format!("{scheme}{rest}")
+}
+
+/// Whether a navigation may replace the address text with the page's URL. While the field has keyboard
+/// focus the text and selection belong to the user, so the URL is only remembered until focus leaves.
+pub fn should_sync_displayed_url(field_focused: bool) -> bool {
+    !field_focused
+}
+
+/// The UTF-16 range `(start, end)` of the word under `index`, for a double-click. A word is a run of
+/// alphanumeric characters or `_`. Any other run, such as punctuation or spaces, is selected as one unit.
+/// An index past the end selects the last run.
+pub fn word_range(text: &str, index: usize) -> (usize, usize) {
+    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+    let mut offset = 0;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        let word = ch.is_alphanumeric() || ch == '_';
+        match runs.last_mut() {
+            Some(run) if run.2 == word => run.1 = offset + width,
+            _ => runs.push((offset, offset + width, word)),
+        }
+        offset += width;
+    }
+    runs.iter()
+        .find(|(_, end, _)| index < *end)
+        .or(runs.last())
+        .map_or((0, 0), |&(start, end, _)| (start, end))
+}
+
+/// The click count of a press at `now`, given the previous press and its count. A press within `window`
+/// of the previous one continues its run, so the second press selects a word and the third selects the
+/// field. A fourth quick press starts again at one.
+pub fn click_count(previous: Option<(Instant, u8)>, now: Instant, window: Duration) -> u8 {
+    match previous {
+        Some((at, count)) if now.saturating_duration_since(at) <= window => count % 3 + 1,
+        _ => 1,
+    }
 }
 
 fn strip_typed_prefixes(typed: &str) -> (SchemeFilter, &str) {
@@ -466,6 +504,56 @@ mod tests {
         assert_eq!(suffix(&history, "wіkipedia"), None);
         assert_eq!(suffix(&history, "wikipediа"), None);
         assert_eq!(suffix(&history, "wiki\u{0301}"), None);
+    }
+
+    #[test]
+    fn navigation_never_replaces_the_text_while_the_field_has_focus() {
+        assert!(!should_sync_displayed_url(true));
+        assert!(should_sync_displayed_url(false));
+    }
+
+    #[test]
+    fn double_click_selects_the_word_under_the_pointer() {
+        let text = "https://en.wikipedia.org/wiki/Rust";
+        assert_eq!(word_range(text, 0), (0, 5), "https");
+        assert_eq!(word_range(text, 10), (10, 11), "the dot is its own run");
+        assert_eq!(word_range(text, 12), (11, 20), "wikipedia");
+        assert_eq!(word_range(text, 26), (25, 29), "wiki");
+        assert_eq!(word_range(text, 29), (29, 30), "the slash before Rust");
+        assert_eq!(word_range(text, 100), (30, 34), "past the end selects the last run");
+    }
+
+    #[test]
+    fn word_ranges_use_utf16_offsets_and_keep_underscores_together() {
+        let text = "é😀 foo_bar";
+        // 'é' is one unit, the emoji two units, the space one more, so "foo_bar" starts at unit 4.
+        assert_eq!(word_range(text, 0), (0, 1));
+        // The emoji and the space are both non-word, so they form one run.
+        assert_eq!(word_range(text, 1), (1, 4));
+        assert_eq!(word_range(text, 3), (1, 4));
+        assert_eq!(word_range(text, 5), (4, 11));
+        assert_eq!(word_range("", 0), (0, 0));
+    }
+
+    #[test]
+    fn quick_presses_count_up_to_three_then_restart() {
+        let window = Duration::from_millis(500);
+        let start = Instant::now();
+        assert_eq!(click_count(None, start, window), 1);
+        let second = click_count(Some((start, 1)), start + Duration::from_millis(100), window);
+        assert_eq!(second, 2);
+        let third = click_count(Some((start, second)), start + Duration::from_millis(200), window);
+        assert_eq!(third, 3);
+        let fourth = click_count(Some((start, third)), start + Duration::from_millis(300), window);
+        assert_eq!(fourth, 1);
+    }
+
+    #[test]
+    fn a_slow_press_starts_a_new_run() {
+        let window = Duration::from_millis(500);
+        let start = Instant::now();
+        let late = start + Duration::from_millis(501);
+        assert_eq!(click_count(Some((start, 2)), late, window), 1);
     }
 
     #[test]
