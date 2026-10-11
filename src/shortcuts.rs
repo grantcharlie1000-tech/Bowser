@@ -43,6 +43,7 @@ pub enum Command {
     ShowCommandPalette,
     ToggleNotes,
     AddBookmark,
+    ToggleTabLayout,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -67,6 +68,7 @@ const VK_W: u32 = 0x57;
 const VK_Y: u32 = 0x59;
 const VK_Z: u32 = 0x5A;
 const VK_DELETE: u32 = 0x2E;
+const VK_V: u32 = 0x56;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_OEM_5: u32 = 0xDC;
@@ -116,6 +118,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_LEFT, true, true, false) => Some(Command::FocusSplitLeft),
         (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
+        (VK_V, true, true, false) => Some(Command::ToggleTabLayout),
         _ => None,
     }
 }
@@ -164,6 +167,7 @@ mod tests {
             (VK_LEFT, true, true, false, Command::FocusSplitLeft),
             (VK_RIGHT, true, true, false, Command::FocusSplitRight),
             (VK_W, true, true, false, Command::CloseSplitPane),
+            (VK_V, true, true, false, Command::ToggleTabLayout),
         ];
         for index in 0..8 {
             table.push((
@@ -236,7 +240,6 @@ mod tests {
             (VK_1, false, false, true),
             (VK_N, true, true, true),
             (0x58, true, true, false), // Ctrl+Shift+X is not bound.
-            (0x56, true, true, false), // Ctrl+Shift+V is reserved for vertical tabs.
         ] {
             assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");
         }

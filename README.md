@@ -72,7 +72,9 @@ Tab organisation rules:
 - **Picture in picture:** right-click a tab with a visible, playing video and choose **Picture in picture**, or press **Ctrl+Shift+Y** for the active tab. Bowser requests Chromium's native WebView2 video PiP; the command appears only when a compatible video is found. PiP availability and window behavior depend on the installed WebView2 Runtime and the website's video. Pausing or ending the video, Bowser's Stop command, page navigation and tab closure request PiP exit.
 - **Settings:** open the main menu and choose Settings to configure sleeping tabs, the blocker, and automatic tab grouping. Save writes to the active profile's human-editable `settings.txt`, preserving comments and unknown keys. The search engine applies to the next search; other changes apply on the next launch. The window also provides Open settings file and Reset to defaults.
 
-An empty tab shows the desktop through the window. Real pages render opaque, as before. The tab islands and per-tab engine wiring are still in progress, so this describes the intended layout.
+Tab layout is selected with Ctrl+Shift+V or the main menu. `tab_layout=horizontal|vertical` and `sidebar_width=180..360` are stored per profile; the vertical viewport accounts for the sidebar at the current display DPI. In vertical mode, drag the sidebar edge to resize, use the mouse wheel to scroll, and use the workspace name at the top to switch, create, rename, or delete workspaces. The main menu also contains a Workspaces submenu. Tabs belong to one workspace and horizontal mode shows only the active workspace's tabs. Other workspaces use the existing hidden-tab sleep lifecycle; restored tabs load when selected. Guest workspaces stay in memory for that guest session.
+
+An empty tab shows the desktop through the window. Real pages render opaque, as before. Horizontal tab islands keep their existing visuals; vertical tabs render as a sidebar list with group headers.
 
 ## Glass material and fallback
 
@@ -106,6 +108,7 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Back | Alt+Left, browser back key |
 | Forward | Alt+Right, browser forward key |
 | Passwords & Passkeys | Ctrl+, |
+| Toggle horizontal/vertical tabs | Ctrl+Shift+V |
 | Fill saved password | Ctrl+Shift+L |
 | Undo tab organisation (group, ungroup, move and rename steps) | Ctrl+Shift+Z |
 | Toggle split view | Ctrl+Shift+\ |

@@ -498,6 +498,8 @@ pub struct App {
     in_flight_domains: InFlightDomains,
     /// Group preference and placement steps for Undo tab organisation. Collapse is not a step.
     organisation_undo: UndoStack<Snapshot>,
+    workspaces: crate::workspaces::WorkspaceSet,
+    workspaces_path: Option<PathBuf>,
     settings: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
     session_save_pending: bool,
@@ -728,6 +730,138 @@ impl App {
         Some(!blocker.borrow().site_allowed(host))
     }
 
+    pub fn tab_layout(app: &AppRef) -> crate::settings::TabLayout {
+        app.borrow().settings.tab_layout
+    }
+
+    pub fn sidebar_width(app: &AppRef) -> u16 {
+        app.borrow().settings.sidebar_width
+    }
+
+    pub fn set_sidebar_width(app: &AppRef, width: u16) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            state.settings.sidebar_width = width.clamp(
+                crate::settings::MIN_SIDEBAR_WIDTH,
+                crate::settings::MAX_SIDEBAR_WIDTH,
+            );
+            state.hwnd
+        };
+        let bounds = app.borrow_mut().latest_viewport_bounds();
+        Self::resize_current(app, bounds);
+        Self::post_tab_changed(hwnd, Self::active_tab_id(app));
+    }
+
+    pub fn save_settings(app: &AppRef) {
+        if let Ok(profile) = crate::profile::active() {
+            let settings = app.borrow().settings.clone();
+            if let Err(error) = crate::settings::save(&profile.settings_file(), &settings) {
+                win32::show_error_message(&format!("Settings could not be saved: {error}"));
+            }
+        }
+    }
+
+    pub fn workspaces(app: &AppRef) -> crate::workspaces::WorkspaceSet {
+        app.borrow().workspaces.clone()
+    }
+
+    pub fn switch_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId) -> bool {
+        let selected = {
+            let mut state = app.borrow_mut();
+            match state.workspaces.switch_to(id) {
+                Ok(transition) => transition.selected,
+                Err(_) => return false,
+            }
+        };
+        let switched = Self::select_tab(app, selected);
+        if switched {
+            Self::save_workspaces(app);
+            Self::schedule_tab_idle_timer(app);
+        }
+        switched
+    }
+
+    pub fn create_workspace(app: &AppRef, name: &str) -> std::result::Result<crate::workspaces::WorkspaceId, crate::workspaces::WorkspaceError> {
+        let tab = Self::new_tab(app);
+        let id = {
+            let mut state = app.borrow_mut();
+            state.workspaces.remove_tab(tab)?;
+            match state.workspaces.create(name, tab) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = state.workspaces.add_tab(tab);
+                    let _ = state.workspaces.select_tab(tab);
+                    return Err(error);
+                }
+            }
+        };
+        let _ = Self::switch_workspace(app, id);
+        Self::save_workspaces(app);
+        Ok(id)
+    }
+
+    pub fn rename_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId, name: &str) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+        app.borrow_mut().workspaces.rename(id, name)?;
+        Self::save_workspaces(app);
+        Self::post_tab_changed(app.borrow().hwnd, Self::active_tab_id(app));
+        Ok(())
+    }
+
+    pub fn delete_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+        let (removed, selected) = {
+            let mut state = app.borrow_mut();
+            let removed = state.workspaces.remove_workspace(id)?;
+            (removed, state.workspaces.active().active_tab())
+        };
+        let _ = Self::select_tab(app, selected);
+        for tab in removed { let _ = Self::close_tab(app, tab); }
+        Self::save_workspaces(app);
+        Ok(())
+    }
+
+    fn save_workspaces(app: &AppRef) {
+        let (path, workspaces) = {
+            let state = app.borrow();
+            let order = state.tab_model.iter().filter_map(|model| {
+                let url = state.tabs.iter().find(|tab| tab.id == model.id)?.url.as_ref()?;
+                crate::session::persistable_url(url).map(|_| model.id)
+            }).take(crate::session::MAX_TABS).collect::<Vec<_>>();
+            let mut workspaces = state.workspaces.clone();
+            workspaces.set_session_order(&order);
+            (state.workspaces_path.clone(), workspaces)
+        };
+        if let Some(path) = path {
+            if let Err(error) = workspaces.save(&path) {
+                win32::show_error_message(&format!("Workspaces could not be saved: {error}"));
+            }
+        }
+    }
+
+    pub fn toggle_tab_layout(app: &AppRef) -> crate::settings::TabLayout {
+        let layout = match Self::tab_layout(app) {
+            crate::settings::TabLayout::Horizontal => crate::settings::TabLayout::Vertical,
+            crate::settings::TabLayout::Vertical => crate::settings::TabLayout::Horizontal,
+        };
+        Self::apply_tab_layout_settings(app, layout, Self::sidebar_width(app));
+        Self::save_settings(app);
+        layout
+    }
+
+    pub fn apply_tab_layout_settings(app: &AppRef, layout: crate::settings::TabLayout, width: u16) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            state.settings.tab_layout = layout;
+            state.settings.sidebar_width = width.clamp(
+                crate::settings::MIN_SIDEBAR_WIDTH,
+                crate::settings::MAX_SIDEBAR_WIDTH,
+            );
+            state.hwnd
+        };
+        let bounds = app.borrow_mut().latest_viewport_bounds();
+        Self::resize_current(app, bounds);
+        Self::post_tab_changed(hwnd, Self::active_tab_id(app));
+    }
+
     /// Ctrl+Shift+B: switches blocking off or on for the active tab's site, then reloads it.
     pub fn toggle_blocker(app: &AppRef) {
         let (blocker, host) = {
@@ -877,6 +1011,8 @@ impl App {
                 .is_some_and(|tab| tab.controller_created);
             let id = state.tab_model.add(false);
             state.tab_model.select(id);
+            let _ = state.workspaces.add_tab(id);
+            let _ = state.workspaces.select_tab(id);
             if let Some(mut split) = state.split_view {
                 let _ = split.replace_focused(id);
                 state.split_view = Some(split);
@@ -890,6 +1026,7 @@ impl App {
         if in_split {
             Self::apply_visible_panes(app);
             Self::post_tab_changed(hwnd, id);
+            Self::save_workspaces(app);
             Self::sync_window_title(app);
             Self::schedule_tab_idle_timer(app);
             return id;
@@ -913,6 +1050,7 @@ impl App {
             Ok(())
         });
         Self::post_tab_changed(hwnd, id);
+        Self::save_workspaces(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         id
@@ -934,6 +1072,7 @@ impl App {
             }
             if state.tabs.len() == 1 {
                 let outcome = state.tab_model.close(id);
+                let _ = state.workspaces.replace_tab(id, outcome.new_active);
                 state.tabs[0] = AppTab::empty(outcome.new_active);
                 state.navigation_progress.reset();
                 state.pending = None;
@@ -944,19 +1083,33 @@ impl App {
             } else {
                 let was_active = state.tab_model.active() == id;
                 let outcome = state.tab_model.close(id);
+                if let Some(workspace_id) = state.workspaces.workspace_for(id) {
+                    let is_last_member = state.workspaces.get(workspace_id).is_some_and(|workspace| workspace.tabs().len() == 1);
+                    if is_last_member && state.workspaces.workspace_count() > 1 {
+                        let _ = state.workspaces.remove_workspace(workspace_id);
+                    } else {
+                        let _ = state.workspaces.remove_tab(id);
+                    }
+                }
                 state.tabs.remove(index);
+                let active = if was_active {
+                    state.workspaces.active().active_tab()
+                } else {
+                    outcome.new_active
+                };
+                if was_active { let _ = state.tab_model.select(active); }
                 if was_active {
                     let (progress, page_usable) = state
                         .tabs
                         .iter()
-                        .find(|tab| tab.id == outcome.new_active)
+                        .find(|tab| tab.id == active)
                         .map(|tab| (tab.progress, tab.page_usable))
                         .unwrap();
                     state.navigation_progress = progress;
                     state.page_loaded = page_usable;
                     state.desired_memory_target = MemoryUsageTarget::Normal;
                 }
-                (true, state.hwnd, outcome.new_active, was_active, false)
+                (true, state.hwnd, active, was_active, false)
             }
         };
         let next_has_controller = app
@@ -999,6 +1152,7 @@ impl App {
             Self::post_tab_changed(hwnd, active);
         }
         Self::release_unused_site_rules(app);
+        Self::save_workspaces(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         changed
@@ -1012,10 +1166,14 @@ impl App {
         let (hwnd, previous, old_has_controller, new_has_controller) = {
             let mut state = app.borrow_mut();
             let previous = state.tab_model.active();
+            if let Some(workspace_id) = state.workspaces.workspace_for(id) {
+                let _ = state.workspaces.switch_to(workspace_id);
+            }
             let was_active = state.tab_model.active() == id;
             if !state.tab_model.select(id) {
                 return false;
             }
+            let _ = state.workspaces.select_tab(id);
             if was_active {
                 return true;
             }
@@ -1065,6 +1223,7 @@ impl App {
         });
         Self::restore_discarded_tab(app, id);
         Self::post_tab_changed(hwnd, id);
+        Self::save_workspaces(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         true
@@ -1114,70 +1273,11 @@ impl App {
     }
 
     fn select_relative(app: &AppRef, delta: isize) -> TabId {
-        let (next, hwnd, previous, old_has_controller, new_has_controller) = {
-            let mut state = app.borrow_mut();
-            let previous = state.tab_model.active();
-            if delta > 0 {
-                state.tab_model.select_next();
-            } else {
-                state.tab_model.select_prev();
-            }
-            let id = state.tab_model.active();
-            state.navigation_progress =
-                state.tabs.iter().find(|tab| tab.id == id).unwrap().progress;
-            let (page_usable, new_has_controller) = state
-                .tabs
-                .iter()
-                .find(|tab| tab.id == id)
-                .map(|tab| (tab.page_usable, tab.controller_created))
-                .unwrap();
-            state.page_loaded = page_usable;
-            state.desired_memory_target = MemoryUsageTarget::Normal;
-            let old_has_controller = state
-                .tabs
-                .iter()
-                .find(|tab| tab.id == previous)
-                .is_some_and(|tab| tab.controller_created);
-            (
-                id,
-                state.hwnd,
-                previous,
-                old_has_controller,
-                new_has_controller,
-            )
-        };
-        let actions =
-            controller_visibility_plan((previous, old_has_controller), (next, new_has_controller));
-        let now = Instant::now();
-        {
-            let mut state = app.borrow_mut();
-            for action in actions {
-                match action {
-                    ControllerVisibilityAction::Hide(hidden) => {
-                        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == hidden) {
-                            tab.hidden_since = Some(now);
-                            tab.suspended = false;
-                        }
-                    }
-                    ControllerVisibilityAction::Show(shown) => {
-                        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == shown) {
-                            tab.hidden_since = None;
-                            tab.suspended = false;
-                        }
-                    }
-                    ControllerVisibilityAction::Close(_) => {}
-                }
-            }
-        }
-        Self::with_engine(app, |engine| {
-            engine.select_tab(next)?;
-            let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
-            Ok(())
-        });
-        Self::restore_discarded_tab(app, next);
-        Self::post_tab_changed(hwnd, next);
-        Self::sync_window_title(app);
-        Self::schedule_tab_idle_timer(app);
+        let ids = Self::tab_ids(app);
+        let active = Self::active_tab_id(app);
+        let index = ids.iter().position(|id| *id == active).unwrap_or(0);
+        let next = ids[(index as isize + delta).rem_euclid(ids.len().max(1) as isize) as usize];
+        if next != active { let _ = Self::select_tab(app, next); }
         next
     }
 
@@ -1187,7 +1287,26 @@ impl App {
             let Some(index) = state.tabs.iter().position(|tab| tab.id == id) else {
                 return false;
             };
-            if !state.tab_model.move_tab(id, new_index) {
+            if state.workspaces.move_tab(id, new_index).is_err() {
+                return false;
+            }
+            let ordered = state.workspaces.active().tabs();
+            let target = ordered
+                .iter()
+                .position(|tab| *tab == id)
+                .and_then(|position| {
+                    ordered
+                        .get(position + 1)
+                        .and_then(|next| state.tab_model.index_of(*next))
+                        .or_else(|| {
+                            position
+                                .checked_sub(1)
+                                .and_then(|previous| state.tab_model.index_of(ordered[previous]))
+                                .map(|previous| previous + 1)
+                        })
+                })
+                .unwrap_or(0);
+            if !state.tab_model.move_tab(id, target) {
                 return false;
             }
             let tab = state.tabs.remove(index);
@@ -1200,6 +1319,7 @@ impl App {
             state.hwnd
         };
         Self::post_tab_changed(hwnd, id);
+        Self::save_workspaces(app);
         true
     }
 
@@ -1221,9 +1341,12 @@ impl App {
                 .unwrap_or(from)
                 .min(state.tabs.len());
             state.tabs.insert(target, tab);
+            let ordered = state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
+            state.workspaces.sync_order(&ordered);
             state.hwnd
         };
         Self::post_tab_changed(hwnd, id);
+        Self::save_workspaces(app);
         true
     }
 
@@ -2274,7 +2397,7 @@ impl App {
     }
 
     pub fn tab_ids(app: &AppRef) -> Vec<TabId> {
-        app.borrow().tab_model.iter().map(|tab| tab.id).collect()
+        app.borrow().workspaces.active().tabs().to_vec()
     }
 
     pub fn tab_opener(app: &AppRef, id: TabId) -> Option<TabId> {
@@ -2463,6 +2586,10 @@ impl App {
         let allowed_benchmark_file = benchmark_url.clone();
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
+        let workspaces_path = crate::profile::active()
+            .ok()
+            .filter(|profile| !profile.is_guest())
+            .map(|profile| profile.workspaces_file());
         Self {
             hwnd: HWND::default(),
             edit: HWND::default(),
@@ -2508,6 +2635,8 @@ impl App {
             memberships: HashMap::new(),
             in_flight_domains: InFlightDomains::default(),
             organisation_undo: UndoStack::default(),
+            workspaces: crate::workspaces::WorkspaceSet::new("Default", initial_tab),
+            workspaces_path,
             settings: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
@@ -2523,6 +2652,10 @@ impl App {
 
     /// Opens the crash-recovery state and, after a crash, asks whether to restore.
     fn init_session(&mut self, dir: &std::path::Path) {
+        let workspace_path = self.workspaces_path.clone().unwrap_or_else(|| dir.join(crate::workspaces::FILE_NAME));
+        if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
+            self.workspaces = workspaces;
+        }
         let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
             return; // another Bowser is running; leave its files alone
         };
@@ -2539,6 +2672,10 @@ impl App {
         });
         store.begin_run(accepted.as_ref());
         self.pending_restore = accepted.map(|offer| offer.session);
+        if self.pending_restore.is_none() {
+            let active = self.tab_model.active();
+            self.workspaces.reconcile(&[active], active);
+        }
         self.session = crate::session::SessionWriter::new(store).ok();
     }
 
@@ -2610,6 +2747,10 @@ impl App {
                 }
                 active_url = state.tabs.iter().find(|tab| tab.id == split.focused_tab()).and_then(|tab| tab.url.clone());
             }
+            let ids = state.tab_model.iter().map(|tab| tab.id).collect::<Vec<_>>();
+            let active = state.tab_model.active();
+            state.workspaces.remap_session_order(&ids);
+            state.workspaces.reconcile(&ids, active);
             state.hwnd
         };
         let Some(url) = active_url else {
@@ -2701,6 +2842,8 @@ impl App {
                 state.last_session_snapshot = Some(snapshot);
             }
         }
+        drop(state);
+        Self::save_workspaces(app);
     }
 
     /// Clean exit: final snapshot and removal of the running marker.
@@ -2710,6 +2853,7 @@ impl App {
         if let Some(store) = store {
             store.finish(snapshot);
         }
+        Self::save_workspaces(app);
     }
 
     /// A tab's render process crashed. The active tab reloads; a hidden tab is marked so that it
@@ -4060,6 +4204,8 @@ impl App {
             dpi,
             self.tabs.len(),
             maximised,
+            self.settings.tab_layout,
+            self.settings.sidebar_width,
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -4068,7 +4214,15 @@ impl App {
             if let Some(bounds) = self.last_valid_viewport_bounds {
                 bounds
             } else {
-                let fallback = chrome_viewport_bounds(1000, 720, dpi, self.tabs.len(), maximised);
+                let fallback = chrome_viewport_bounds(
+                    1000,
+                    720,
+                    dpi,
+                    self.tabs.len(),
+                    maximised,
+                    self.settings.tab_layout,
+                    self.settings.sidebar_width,
+                );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
             }
@@ -4082,8 +4236,22 @@ fn chrome_viewport_bounds(
     dpi: u32,
     _tab_count: usize,
     maximised: bool,
+    tab_layout: crate::settings::TabLayout,
+    sidebar_width: u16,
 ) -> windows::Win32::Foundation::RECT {
-    let viewport = crate::chrome::layout::content_rect(width, height, dpi, maximised);
+    let viewport = match tab_layout {
+        crate::settings::TabLayout::Horizontal => {
+            crate::chrome::layout::content_rect(width, height, dpi, maximised)
+        }
+        crate::settings::TabLayout::Vertical => crate::vertical_tabs::SidebarLayout::compute(
+            width,
+            height,
+            dpi,
+            i32::from(sidebar_width),
+            maximised,
+        )
+        .viewport,
+    };
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
@@ -5543,6 +5711,8 @@ mod tests {
             memberships: HashMap::new(),
             in_flight_domains: InFlightDomains::default(),
             organisation_undo: UndoStack::default(),
+            workspaces: crate::workspaces::WorkspaceSet::new("Default", TabId(0)),
+            workspaces_path: None,
             // Existing tests exercise the memory-pressure path; tab sleep has its own tests.
             settings: crate::settings::Settings {
                 sleep_enabled: false,
@@ -6098,7 +6268,15 @@ mod tests {
 
     #[test]
     fn webview_bounds_match_chrome_viewport_in_physical_pixels() {
-        let bounds = chrome_viewport_bounds(1200, 800, 144, 3, true);
+        let bounds = chrome_viewport_bounds(
+            1200,
+            800,
+            144,
+            3,
+            true,
+            crate::settings::TabLayout::Horizontal,
+            crate::settings::DEFAULT_SIDEBAR_WIDTH,
+        );
         let viewport = crate::chrome::layout::compute(1200, 800, 144, 3, true).viewport;
         assert_eq!(
             bounds,
@@ -6110,6 +6288,25 @@ mod tests {
             }
         );
         assert!(bounds.top > crate::win32::frame::content_top_inset(144));
+    }
+
+    #[test]
+    fn vertical_webview_bounds_reserve_the_sidebar_at_supported_dpis() {
+        for dpi in [96, 120, 144, 192] {
+            let bounds = chrome_viewport_bounds(
+                1600,
+                1000,
+                dpi,
+                3,
+                true,
+                crate::settings::TabLayout::Vertical,
+                260,
+            );
+            let sidebar = crate::vertical_tabs::SidebarLayout::compute(1600, 1000, dpi, 260, true);
+            assert_eq!(bounds.left, sidebar.viewport.left, "dpi={dpi}");
+            assert_eq!(bounds.right, sidebar.viewport.right, "dpi={dpi}");
+            assert!(valid_viewport_bounds(bounds), "dpi={dpi}");
+        }
     }
 
     #[test]

@@ -20,6 +20,16 @@ use windows::Win32::{
 
 use crate::theme::Rgba;
 
+/// Eases a sidebar scroll offset toward its target without overshooting.
+pub fn approach_scroll(current: i32, target: i32) -> i32 {
+    let distance = target.saturating_sub(current);
+    if distance.abs() <= 1 {
+        target
+    } else {
+        current.saturating_add((distance as f32 * 0.32).round() as i32)
+    }
+}
+
 type Status = i32;
 const OK: Status = 0;
 const SMOOTHING_ANTIALIAS: i32 = 4;

@@ -11,6 +11,8 @@
 //! blocker_allow=example.com,other.org
 //! search_engine=google
 //! automatic_tab_grouping=true
+//! tab_layout=horizontal
+//! sidebar_width=260
 //! ```
 
 use std::{
@@ -24,6 +26,8 @@ use crate::navigation::SearchEngine;
 pub const FILE_NAME: &str = "settings.txt";
 /// Starter file written by "Open settings file" when none exists. Every setting is commented out.
 pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n\
+    # tab_layout=horizontal\r\n\
+    # sidebar_width=260\r\n\
     # sleep_enabled=true\r\n\
     # sleep_after_secs=300\r\n\
     # blocker_enabled=true\r\n\
@@ -40,8 +44,32 @@ pub const MAX_SLEEP_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 /// Most `blocker_allow` entries kept; the rest of a longer list is ignored.
 pub const MAX_BLOCKER_ALLOW: usize = 500;
 
+/// Arrangement of the browser's tab list.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TabLayout {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
+impl TabLayout {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Horizontal => "horizontal",
+            Self::Vertical => "vertical",
+        }
+    }
+}
+
+pub const MIN_SIDEBAR_WIDTH: u16 = 180;
+pub const MAX_SIDEBAR_WIDTH: u16 = 360;
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 260;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Settings {
+    pub tab_layout: TabLayout,
+    /// Sidebar width in logical 96 DPI pixels.
+    pub sidebar_width: u16,
     /// Whether hidden tabs sleep (are discarded) after `sleep_after_secs` even without memory
     /// pressure. Under memory pressure the long-hidden tabs are discarded regardless.
     pub sleep_enabled: bool,
@@ -61,6 +89,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            tab_layout: TabLayout::Horizontal,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
             blocker_enabled: true,
@@ -92,6 +122,18 @@ impl Settings {
             };
             let (key, value) = (key.trim(), value.trim());
             match key {
+                "tab_layout" => {
+                    settings.tab_layout = match value.to_ascii_lowercase().as_str() {
+                        "horizontal" => TabLayout::Horizontal,
+                        "vertical" => TabLayout::Vertical,
+                        _ => settings.tab_layout,
+                    };
+                }
+                "sidebar_width" => {
+                    if let Ok(width) = value.parse::<u16>() {
+                        settings.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                    }
+                }
                 "sleep_enabled" => {
                     if let Some(on) = parse_bool(value) {
                         settings.sleep_enabled = on;
@@ -201,7 +243,9 @@ fn bool_text(on: bool) -> &'static str {
 /// engine removes its line, so the file falls back to `search-provider.txt` or the default.
 pub fn render_updated(existing: &str, settings: &Settings) -> String {
     let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
-    let values: [(&str, Option<String>); 6] = [
+    let values: [(&str, Option<String>); 8] = [
+        ("tab_layout", Some(settings.tab_layout.key().to_owned())),
+        ("sidebar_width", Some(settings.sidebar_width.to_string())),
         ("sleep_enabled", Some(bool_text(settings.sleep_enabled).to_owned())),
         ("sleep_after_secs", Some(settings.sleep_after_secs.to_string())),
         ("blocker_enabled", Some(bool_text(settings.blocker_enabled).to_owned())),
@@ -212,7 +256,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             Some(bool_text(settings.automatic_tab_grouping).to_owned()),
         ),
     ];
-    let mut written = [false; 6];
+    let mut written = [false; 8];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -345,6 +389,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_layout_and_clamps_sidebar_width() {
+        let settings = Settings::parse("tab_layout=VERTICAL\nsidebar_width=400\n");
+        assert_eq!(settings.tab_layout, TabLayout::Vertical);
+        assert_eq!(settings.sidebar_width, MAX_SIDEBAR_WIDTH);
+        assert_eq!(Settings::parse("tab_layout=sideways").tab_layout, TabLayout::Horizontal);
+        assert_eq!(Settings::parse("sidebar_width=30").sidebar_width, MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
     fn invalid_values_keep_defaults_and_do_not_affect_other_keys() {
         let s = Settings::parse("sleep_enabled=maybe\nsleep_after_secs=soon\n");
         assert_eq!(s, Settings::default());
@@ -394,6 +447,8 @@ mod tests {
 
     fn sample() -> Settings {
         Settings {
+            tab_layout: TabLayout::Vertical,
+            sidebar_width: 300,
             sleep_enabled: false,
             sleep_after_secs: 900,
             blocker_enabled: false,
@@ -503,13 +558,14 @@ mod tests {
 
     #[test]
     fn render_keeps_comments_unknown_keys_and_crlf() {
-        let existing = "# my notes\r\nfoo=bar\r\nsleep_enabled=true\r\n# blocker_allow=old.com\r\n";
+        let existing = "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=true\r\n# blocker_allow=old.com\r\n";
         let text = render_updated(existing, &sample());
         assert_eq!(
             text,
-            "# my notes\r\nfoo=bar\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
-             sleep_after_secs=900\r\nblocker_enabled=false\r\nblocker_allow=a.com,b.org\r\n\
-             search_engine=duckduckgo\r\nautomatic_tab_grouping=false\r\n"
+            "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
+             tab_layout=vertical\r\nsidebar_width=300\r\nsleep_after_secs=900\r\n\
+             blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
+             automatic_tab_grouping=false\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

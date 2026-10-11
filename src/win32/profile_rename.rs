@@ -60,11 +60,7 @@ struct Dialog {
 
 thread_local! { static REGISTERED: Cell<bool> = const { Cell::new(false) }; }
 
-pub(crate) fn prompt(owner: HWND, current: &str) -> Option<String> {
-    prompt_with_title(owner, current, "Rename profile", "Save")
-}
-
-pub(crate) fn prompt_with_title(owner: HWND, current: &str, caption: &str, save_label: &str) -> Option<String> {
+pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) -> Option<String> {
     register_class()?;
     let mut state = Box::new(Dialog {
         edit: HWND::default(),
@@ -75,7 +71,7 @@ pub(crate) fn prompt_with_title(owner: HWND, current: &str, caption: &str, save_
                 theme::palette(glass::appearance(), true).omnibox_fill,
             ))
         },
-        caption: caption.to_owned(),
+        caption: title.to_owned(),
         save_label: save_label.to_owned(),
     });
     let mut owner_rect = RECT::default();
@@ -91,7 +87,7 @@ pub(crate) fn prompt_with_title(owner: HWND, current: &str, caption: &str, save_
         match CreateWindowExW(
             WS_EX_TOOLWINDOW,
             CLASS,
-            w!("Rename profile"),
+            PCWSTR(wide(title).as_ptr()),
             WS_POPUP | WS_VISIBLE,
             x,
             y,

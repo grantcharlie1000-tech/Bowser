@@ -369,6 +369,11 @@ impl Profile {
         self.root.join(TAB_GROUPS_FILE_NAME)
     }
 
+    /// Per-profile workspace membership and active workspace.
+    pub fn workspaces_file(&self) -> PathBuf {
+        self.root.join(crate::workspaces::FILE_NAME)
+    }
+
     pub fn search_provider_file(&self) -> PathBuf {
         self.root.join(SEARCH_PROVIDER_FILE_NAME)
     }
