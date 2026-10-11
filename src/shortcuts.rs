@@ -32,6 +32,8 @@ pub enum Command {
     ShowExtensionsMenu,
     /// Ctrl+Shift+Z undoes the latest tab group or tab placement change.
     UndoTabOrganisation,
+    /// Ctrl+Shift+Y toggles native video picture-in-picture.
+    TogglePictureInPicture,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -51,6 +53,7 @@ const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
+const VK_Y: u32 = 0x59;
 const VK_Z: u32 = 0x5A;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
@@ -91,6 +94,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
         (VK_Z, true, true, false) => Some(Command::UndoTabOrganisation),
+        (VK_Y, true, true, false) => Some(Command::TogglePictureInPicture),
         _ => None,
     }
 }
@@ -130,6 +134,7 @@ mod tests {
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
             (VK_Z, true, true, false, Command::UndoTabOrganisation),
+            (VK_Y, true, true, false, Command::TogglePictureInPicture),
         ];
         for index in 0..8 {
             table.push((

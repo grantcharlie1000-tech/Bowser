@@ -9,6 +9,7 @@ pub mod navigation;
 pub mod omnibox;
 pub mod passwords;
 pub mod performance;
+pub mod pip;
 pub mod permissions;
 pub mod profile;
 pub mod session;
