@@ -85,6 +85,7 @@ const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
@@ -169,6 +170,13 @@ struct WindowChrome {
     palette: &'static Palette,
     tabs: Vec<TabSnapshot>,
     slots: Vec<StripSlot>,
+    sidebar: Option<crate::vertical_tabs::SidebarLayout>,
+    sidebar_rows: Vec<crate::chrome::vertical_paint::SidebarRow>,
+    sidebar_scroll: i32,
+    sidebar_scroll_target: i32,
+    sidebar_hover_row: Option<usize>,
+    sidebar_resizing: bool,
+    vertical_drag: Option<TabId>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
     failed: VecDeque<(FaviconKey, u32)>,
@@ -207,6 +215,13 @@ impl WindowChrome {
             palette: glass::palette(),
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
+            sidebar: None,
+            sidebar_rows: Vec::new(),
+            sidebar_scroll: 0,
+            sidebar_scroll_target: 0,
+            sidebar_hover_row: None,
+            sidebar_resizing: false,
+            vertical_drag: None,
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
             failed: VecDeque::new(),
@@ -248,6 +263,7 @@ impl WindowChrome {
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
         let mut group_inputs = Vec::with_capacity(ids.len());
+        let mut sidebar_tabs = Vec::with_capacity(ids.len());
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
@@ -259,17 +275,16 @@ impl WindowChrome {
             };
             let loading = App::tab_loading(app, id);
             let pinned = App::tab_pinned(app, id);
-            if reproject {
-                let domain = App::tab_committed_url(app, id)
-                    .as_ref()
-                    .and_then(tab_groups::DomainKey::from_url);
-                group_inputs.push(TabGroupInput {
-                    id,
-                    domain,
-                    pinned,
-                    opener: App::tab_opener(app, id),
-                });
-            }
+            let domain = App::tab_committed_url(app, id)
+                .as_ref()
+                .and_then(tab_groups::DomainKey::from_url);
+            group_inputs.push(TabGroupInput {
+                id,
+                domain,
+                pinned,
+                opener: App::tab_opener(app, id),
+            });
+            sidebar_tabs.push((id, title.clone(), pinned, loading));
             let key = App::tab_favicon_key(app, id);
             let image = if old.is_some_and(|t| {
                 t.favicon_key == key
@@ -320,6 +335,13 @@ impl WindowChrome {
             }
             _ => self.slots.clone(),
         };
+        if reproject {
+            self.sidebar_rows = crate::chrome::vertical_paint::rows(
+                &sidebar_tabs,
+                &group_inputs,
+                preferences.as_ref().expect("preferences loaded for reprojection"),
+            );
+        }
         // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
         let hovered = self.hovered_tab();
         if structural {
@@ -362,10 +384,21 @@ impl WindowChrome {
                 self.dpi,
                 App::active_tab_id(app),
                 self.layout.maximised,
+                App::tab_layout(app),
+                App::sidebar_width(app),
             );
         }
     }
-    fn relayout(&mut self, w: i32, h: i32, dpi: u32, active: TabId, maximised: bool) {
+    fn relayout(
+        &mut self,
+        w: i32,
+        h: i32,
+        dpi: u32,
+        active: TabId,
+        maximised: bool,
+        tab_layout: crate::settings::TabLayout,
+        sidebar_width: u16,
+    ) {
         self.client = (w, h);
         self.dpi = dpi.max(96);
         let i = self
@@ -380,6 +413,24 @@ impl WindowChrome {
         self.layout =
             layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised)
                 .with_compact_slots(self.slots.iter().map(|slot| slot.marker_only));
+        if tab_layout == crate::settings::TabLayout::Vertical {
+            let sidebar = crate::vertical_tabs::SidebarLayout::compute(
+                w,
+                h,
+                self.dpi,
+                i32::from(sidebar_width),
+                maximised,
+            )
+            .with_tab_count(self.sidebar_rows.len(), self.dpi);
+            self.layout.viewport = sidebar.viewport;
+            self.layout.tab_zone = Rect::default();
+            self.layout.tab_row = Rect::default();
+            self.sidebar_scroll = self.sidebar_scroll.clamp(0, sidebar.max_scroll);
+            self.sidebar_scroll_target = self.sidebar_scroll_target.clamp(0, sidebar.max_scroll);
+            self.sidebar = Some(sidebar);
+        } else {
+            self.sidebar = None;
+        }
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.surface.resize(w, h, self.dpi)
     }
@@ -463,7 +514,11 @@ fn sync_overlay_position(hwnd: HWND) {
 }
 fn clear_pointer_state(hwnd: HWND) -> bool {
     with_chrome(hwnd, |s| {
-        let had_state = s.drag.take().is_some() || s.pressed != Hit::None || std::mem::take(&mut s.split_dragging);
+        let had_state = s.drag.take().is_some()
+            || s.vertical_drag.take().is_some()
+            || s.pressed != Hit::None
+            || std::mem::take(&mut s.split_dragging)
+            || std::mem::take(&mut s.sidebar_resizing);
         s.pressed = Hit::None;
         had_state
     })
@@ -794,16 +849,19 @@ unsafe extern "system" fn window_proc(
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
-                let l = with_chrome(hwnd, |s| s.layout).unwrap_or_else(|| {
-                    layout::compute(r.right, r.bottom, dpi(hwnd), 1, IsZoomed(hwnd).as_bool())
-                });
                 let ih = matches!(
-                    layout::hit_test(&l, p.x, p.y),
+                    hit(hwnd, p.x, p.y),
                     Hit::Tab(_)
                         | Hit::TabClose(_)
                         | Hit::NewTab
                         | Hit::TabMenu
                         | Hit::MainMenu
+                        | Hit::SidebarWorkspace
+                        | Hit::SidebarNewTab
+                        | Hit::SidebarGroup(_)
+                        | Hit::SidebarTab(_)
+                        | Hit::SidebarTabClose(_)
+                        | Hit::SidebarResize
                         | Hit::Back
                         | Hit::Forward
                         | Hit::Reload
@@ -1002,6 +1060,8 @@ unsafe extern "system" fn window_proc(
                             dpi(hwnd),
                             active,
                             IsZoomed(hwnd).as_bool(),
+                            App::tab_layout(app),
+                            App::sidebar_width(app),
                         );
                     });
                     position_edit(hwnd);
@@ -1056,6 +1116,8 @@ unsafe extern "system" fn window_proc(
                             dpi(hwnd),
                             App::active_tab_id(app),
                             IsZoomed(hwnd).as_bool(),
+                            App::tab_layout(app),
+                            App::sidebar_width(app),
                         );
                         s.refresh(app, true)
                     });
@@ -1246,15 +1308,25 @@ unsafe extern "system" fn window_proc(
             }
             WM_MOUSEMOVE => {
                 if GetCapture() == hwnd {
+                    let p = frame::point_from_lparam(lparam);
+                    let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
+                    if resizing {
+                        if let Some(app) = app {
+                            let width = ((p.x * 96) / dpi(hwnd).max(96) as i32)
+                                .clamp(i32::from(crate::settings::MIN_SIDEBAR_WIDTH), i32::from(crate::settings::MAX_SIDEBAR_WIDTH));
+                            App::set_sidebar_width(app, width as u16);
+                        }
+                    } else {
                     let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
                     if dragging
-                        && let Some(panes) = split_rects(hwnd, Some(frame::point_from_lparam(lparam).x))
+                        && let Some(panes) = split_rects(hwnd, Some(p.x))
                         && let Some(app) = app
                     {
                         let divider = panes.0.right;
                         let _ = with_chrome(hwnd, |s| s.split_divider = divider);
                         App::update_split_bounds(app, panes);
                         let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
                     }
                 } else {
                     let p = frame::point_from_lparam(lparam);
@@ -1264,6 +1336,14 @@ unsafe extern "system" fn window_proc(
                         if let Ok(cursor) = cursor { let _ = SetCursor(Some(cursor)); }
                     }
                     set_hover(hwnd, h);
+                    let row = match h {
+                        Hit::SidebarTab(index) | Hit::SidebarTabClose(index) | Hit::SidebarGroup(index) => Some(index),
+                        _ => None,
+                    };
+                    let row_changed = with_chrome(hwnd, |s| {
+                        if s.sidebar_hover_row == row { false } else { s.sidebar_hover_row = row; true }
+                    }).unwrap_or(false);
+                    if row_changed { let _ = InvalidateRect(Some(hwnd), None, false); }
                     if let Some(app) = app {
                         card::hover_changed(hwnd, app, hit_tab(hwnd, h));
                     }
@@ -1281,6 +1361,26 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            windows::Win32::UI::WindowsAndMessaging::WM_MOUSEWHEEL => {
+                let mut point = frame::point_from_lparam(lparam);
+                let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
+                let in_sidebar = with_chrome(hwnd, |s| s.sidebar.is_some_and(|side| side.sidebar.contains(point.x, point.y))).unwrap_or(false);
+                if in_sidebar {
+                    let delta = ((wparam.0 >> 16) as i16 as i32).signum();
+                    let changed = with_chrome(hwnd, |s| {
+                        let Some(sidebar) = s.sidebar else { return false };
+                        let row_height = crate::chrome::layout::Metrics::new(s.dpi).px(crate::vertical_tabs::TAB_ROW_HEIGHT).max(1);
+                        s.sidebar_scroll_target = s.sidebar_scroll_target
+                            .saturating_sub(delta * row_height * 3)
+                            .clamp(0, sidebar.max_scroll);
+                        s.sidebar_scroll != s.sidebar_scroll_target
+                    }).unwrap_or(false);
+                    if changed {
+                        let _ = SetTimer(Some(hwnd), WM_SIDEBAR_SCROLL_TIMER, 16, None);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_MOUSELEAVE => {
                 set_hover(hwnd, Hit::None);
                 card::pointer_left(hwnd);
@@ -1289,6 +1389,7 @@ unsafe extern "system" fn window_proc(
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
                 card::cancel(hwnd);
+                if let Some(app) = app { App::save_settings(app); }
                 if clear_pointer_state(hwnd) {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -1337,6 +1438,40 @@ unsafe extern "system" fn window_proc(
                                 invalidate_hit(hwnd, Hit::Tab(i));
                             }
                         }
+                    }
+                    Hit::SidebarWorkspace => {
+                        if let Some(app) = app { show_workspaces_menu(hwnd, app); }
+                    }
+                    Hit::SidebarNewTab => {
+                        if let Some(app) = app { App::new_tab(app); focus_omni(hwnd, app, true); }
+                    }
+                    Hit::SidebarResize => {
+                        let _ = with_chrome(hwnd, |s| s.sidebar_resizing = true);
+                        let _ = SetCapture(hwnd);
+                    }
+                    Hit::SidebarGroup(index) => {
+                        if let Some(app) = app {
+                            let group = with_chrome(hwnd, |s| s.sidebar_rows.get(index).and_then(|row| match row {
+                                crate::chrome::vertical_paint::SidebarRow::Group { representative, collapsed, .. } => Some((*representative, *collapsed)),
+                                _ => None,
+                            })).flatten();
+                            if let Some((id, collapsed)) = group {
+                                let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+                                let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        }
+                    }
+                    Hit::SidebarTab(index) => {
+                        if let Some(app) = app && let Some(id) = sidebar_tab_id(hwnd, index) {
+                            let _ = App::select_tab(app, id);
+                            let _ = with_chrome(hwnd, |s| { s.pressed = Hit::SidebarTab(index); s.vertical_drag = Some(id); });
+                            let _ = SetCapture(hwnd);
+                        }
+                    }
+                    Hit::SidebarTabClose(index) => {
+                        set_pressed(hwnd, Hit::SidebarTabClose(index));
+                        let _ = SetCapture(hwnd);
                     }
                     Hit::TabClose(i) => {
                         set_pressed(hwnd, Hit::TabClose(i));
@@ -1402,8 +1537,32 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
+                let was_sidebar_resize = with_chrome(hwnd, |s| std::mem::take(&mut s.sidebar_resizing)).unwrap_or(false);
+                if was_sidebar_resize {
+                    if let Some(app) = app { App::save_settings(app); }
+                    let _ = ReleaseCapture();
+                    return LRESULT(0);
+                }
                 let was_split_drag = with_chrome(hwnd, |s| std::mem::take(&mut s.split_dragging)).unwrap_or(false);
                 if was_split_drag {
+                    let _ = ReleaseCapture();
+                } else if let Some(id) = with_chrome(hwnd, |s| s.vertical_drag.take()).flatten() {
+                    if let Some(app) = app {
+                        let target = match hit(hwnd, p.x, p.y) {
+                            Hit::SidebarTab(index) | Hit::SidebarTabClose(index) => sidebar_tab_id(hwnd, index),
+                            Hit::SidebarGroup(index) => with_chrome(hwnd, |s| match s.sidebar_rows.get(index) {
+                                Some(crate::chrome::vertical_paint::SidebarRow::Group { representative, .. }) => Some(*representative),
+                                _ => None,
+                            }).flatten(),
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            if let Some(index) = App::tab_ids(app).iter().position(|tab| *tab == target) {
+                                let _ = App::move_tab(app, id, index);
+                            }
+                        }
+                    }
+                    set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
                 } else if let Some((id, from)) = with_chrome(hwnd, |s| s.drag.take()).flatten() {
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
@@ -1424,6 +1583,11 @@ unsafe extern "system" fn window_proc(
                                 if let Some(id) = slot_tab_id(hwnd, i) {
                                     let _ = App::close_tab(app, id);
                                 }
+                            }
+                        }
+                        if let Hit::SidebarTabClose(i) = was {
+                            if let Some(app) = app {
+                                if let Some(id) = sidebar_tab_id(hwnd, i) { let _ = App::close_tab(app, id); }
                             }
                         }
                         if let (Hit::Back | Hit::Forward | Hit::Reload, Some(app)) = (was, app) {
@@ -1456,22 +1620,25 @@ unsafe extern "system" fn window_proc(
             }
             WM_MBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
-                if let Hit::Tab(i) | Hit::TabClose(i) = hit(hwnd, p.x, p.y) {
+                let target = match hit(hwnd, p.x, p.y) {
+                    Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
+                    Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+                    _ => None,
+                };
+                if let Some(id) = target {
                     card::cancel(hwnd);
-                    if let Some(app) = app {
-                        if let Some(id) = slot_tab_id(hwnd, i) {
-                            let _ = App::close_tab(app, id);
-                        }
-                    }
+                    if let Some(app) = app { let _ = App::close_tab(app, id); }
                 }
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
-                if let Hit::Tab(i) | Hit::TabClose(i) = hit(hwnd, p.x, p.y)
-                    && let Some(app) = app
-                    && let Some(id) = slot_tab_id(hwnd, i)
-                {
+                let target = match hit(hwnd, p.x, p.y) {
+                    Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
+                    Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+                    _ => None,
+                };
+                if let Some(id) = target && let Some(app) = app {
                     card::cancel(hwnd);
                     show_tab_context_menu(hwnd, app, id, p.x, p.y);
                 }
@@ -1506,6 +1673,17 @@ unsafe extern "system" fn window_proc(
                     let foreground = foreground_is_ours(hwnd);
                     schedule_idle_timer(hwnd, App::idle_timer_fired(app, idle, foreground));
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_SIDEBAR_SCROLL_TIMER => {
+                let moving = with_chrome(hwnd, |s| {
+                    s.sidebar_scroll = super::smooth::approach_scroll(s.sidebar_scroll, s.sidebar_scroll_target);
+                    s.sidebar_scroll != s.sidebar_scroll_target
+                }).unwrap_or(false);
+                if !moving {
+                    let _ = KillTimer(Some(hwnd), WM_SIDEBAR_SCROLL_TIMER);
+                }
+                let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
             // A window region disables DWM's non-client frame. Do not let the themed
@@ -1663,6 +1841,24 @@ unsafe extern "system" fn window_proc(
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
+        if let Some(sidebar) = s.sidebar
+            && let Some(sidebar_hit) = crate::chrome::vertical_paint::hit_test(
+                &sidebar,
+                &s.sidebar_rows,
+                x,
+                y,
+                s.sidebar_scroll,
+            )
+        {
+            return match sidebar_hit {
+                crate::vertical_tabs::SidebarHit::Workspace => Hit::SidebarWorkspace,
+                crate::vertical_tabs::SidebarHit::NewTab => Hit::SidebarNewTab,
+                crate::vertical_tabs::SidebarHit::Resize => Hit::SidebarResize,
+                crate::vertical_tabs::SidebarHit::Group(index) => Hit::SidebarGroup(index),
+                crate::vertical_tabs::SidebarHit::Tab(index) => Hit::SidebarTab(index),
+                crate::vertical_tabs::SidebarHit::TabClose(index) => Hit::SidebarTabClose(index),
+            };
+        }
         let hit = match layout::hit_test(&s.layout, x, y) {
             Hit::TabClose(index) if s.slots.get(index).is_some_and(|slot| slot.marker_only) => {
                 Hit::Tab(index)
@@ -1700,8 +1896,17 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
 fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
+        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
         _ => None,
     }
+}
+
+fn sidebar_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
+    with_chrome(hwnd, |s| match s.sidebar_rows.get(index)? {
+        crate::chrome::vertical_paint::SidebarRow::Tab { id, .. } => Some(*id),
+        crate::chrome::vertical_paint::SidebarRow::Group { .. } => None,
+    })
+    .flatten()
 }
 /// A tab's visible rectangle in main-client coordinates, or `None` when it is scrolled out.
 fn tab_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
@@ -2440,6 +2645,91 @@ fn show_profile_menu(hwnd: HWND) {
     }
 }
 
+const WORKSPACE_SELECT_BASE: usize = 6100;
+const WORKSPACE_CREATE: usize = 6300;
+const WORKSPACE_RENAME: usize = 6301;
+const WORKSPACE_DELETE: usize = 6302;
+
+fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
+    let workspaces = App::workspaces(app);
+    let active = workspaces.active_id();
+    let mut entries = workspaces
+        .all()
+        .iter()
+        .enumerate()
+        .map(|(index, workspace)| {
+            Entry::Item(
+                Item::new(WORKSPACE_SELECT_BASE + index, workspace.name(), Icon::Grid)
+                    .checked(workspace.id() == active),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(Item::new(WORKSPACE_CREATE, "New workspace…", Icon::Plus)));
+    entries.push(Entry::Item(Item::new(WORKSPACE_RENAME, "Rename current workspace…", Icon::Person)));
+    entries.push(Entry::Item(Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close).disabled_if(workspaces.workspace_count() == 1)));
+    entries
+}
+
+fn show_workspaces_menu(hwnd: HWND, app: &AppRef) {
+    let mut point = main_menu_anchor(hwnd);
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let menu = Menu {
+        header: None,
+        entries: workspace_menu_entries(app),
+        footer: "Tabs stay in their workspace".to_owned(),
+    };
+    if let Some(chosen) = menu::track(hwnd, point, menu) {
+        run_workspace_action(hwnd, app, chosen.id);
+    }
+}
+
+fn run_workspace_action(hwnd: HWND, app: &AppRef, command: usize) {
+    let workspaces = App::workspaces(app);
+    if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + workspaces.all().len()).contains(&command) {
+        if let Some(workspace) = workspaces.all().get(command - WORKSPACE_SELECT_BASE) {
+            let _ = App::switch_workspace(app, workspace.id());
+        }
+        return;
+    }
+    let active = workspaces.active();
+    match command {
+        WORKSPACE_CREATE => {
+            if let Some(name) = super::profile_rename::prompt_named(hwnd, "New workspace", "") {
+                if let Err(error) = App::create_workspace(app, &name) {
+                    show_profile_notice(hwnd, &format!("Workspace could not be created: {error:?}"));
+                }
+            }
+        }
+        WORKSPACE_RENAME => {
+            if let Some(name) = super::profile_rename::prompt_named(hwnd, "Rename workspace", active.name())
+                && let Err(error) = App::rename_workspace(app, active.id(), &name)
+            {
+                show_profile_notice(hwnd, &format!("Workspace could not be renamed: {error:?}"));
+            }
+        }
+        WORKSPACE_DELETE => {
+            let confirm = Menu {
+                header: None,
+                entries: vec![
+                    Entry::SectionHeader(format!("Delete {} and close its tabs?", active.name())),
+                    Entry::Item(Item::new(1, "Delete workspace", Icon::Close)),
+                    Entry::Item(Item::new(2, "Keep workspace", Icon::Person)),
+                ],
+                footer: "This cannot be undone".to_owned(),
+            };
+            let mut point = main_menu_anchor(hwnd);
+            unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+            if menu::track(hwnd, point, confirm).is_some_and(|chosen| chosen.id == 1)
+                && let Err(error) = App::delete_workspace(app, active.id())
+            {
+                show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
 /// settings. A custom panel in the chrome palette; the profile rows open as the themed native menu.
 fn show_main_menu(hwnd: HWND, app: &AppRef) {
@@ -2450,6 +2740,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
     const PROFILE: usize = 5007;
+    const TAB_LAYOUT: usize = 5008;
+    const WORKSPACES: usize = 5009;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -2470,6 +2762,16 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key)
             .shortcut("Ctrl+,")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
+    ));
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(
+        Item::new(TAB_LAYOUT, "Vertical tabs", Icon::Grid)
+            .shortcut("Ctrl+Shift+V")
+            .checked(App::tab_layout(app) == crate::settings::TabLayout::Vertical),
+    ));
+    entries.push(Entry::Item(
+        Item::new(WORKSPACES, "Workspaces", Icon::Grid)
+            .submenu_with(workspace_menu_entries(app)),
     ));
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
@@ -2514,6 +2816,12 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 focus_omni(hwnd, app, true);
             }
             PROFILE => {}
+            TAB_LAYOUT => {
+                let _ = App::toggle_tab_layout(app);
+                let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            }
+            WORKSPACES => show_workspaces_menu(hwnd, app),
             EXTENSIONS => show_extensions_menu(hwnd, app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -2524,7 +2832,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
             BLOCKER => App::toggle_blocker(app),
             SETTINGS => {
-                if let Err(error) = settings_panel::open(hwnd) {
+                if let Err(error) = settings_panel::open(hwnd, app) {
                     show_error_message(&format!("Settings could not be opened: {error}"));
                 }
             }
@@ -2557,6 +2865,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     profiles.run(PROFILE_NEW, hwnd);
                 }
             }
+            id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
+                || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) => run_workspace_action(hwnd, app, id),
             _ => {}
         }
     }
@@ -3121,6 +3431,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let can_back = App::tab_can_go_back(app, active);
             let can_forward = App::tab_can_go_forward(app, active);
             let site = App::site_security(app);
+            let workspace_name = App::workspaces(app).active().name().to_owned();
             let focus = GetFocus() == app.borrow().edit;
             let now = Instant::now();
             let (mut a, mut b) = (0u32, 0u32);
@@ -3234,6 +3545,18 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 s.surface.set_page_regions(page_regions);
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
+                if let Some(sidebar) = s.sidebar {
+                    s.surface.paint_vertical_sidebar(
+                        &sidebar,
+                        &s.sidebar_rows,
+                        &workspace_name,
+                        active,
+                        s.sidebar_scroll,
+                        s.sidebar_hover_row,
+                        dirty,
+                        p,
+                    );
+                }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
                 let _ = ClientToScreen(hwnd, &mut origin);
@@ -3386,6 +3709,10 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::ToggleTabLayout => {
+            let _ = App::toggle_tab_layout(app);
+            let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+        }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(
@@ -3695,7 +4022,7 @@ mod tests {
     fn overlay_surface_tracks_full_client_height_across_dpi_changes() {
         let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
         for dpi in [96, 120, 144, 192, 96, 120] {
-            s.relayout(1000, 700, dpi, TabId(0), false);
+            s.relayout(1000, 700, dpi, TabId(0), false, crate::settings::TabLayout::Horizontal, 260);
             let chrome = layout::chrome_height(dpi);
             assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
             assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");

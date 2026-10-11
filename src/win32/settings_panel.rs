@@ -67,6 +67,8 @@ const SLEEP_HELP: &str = "Hidden tabs are discarded to free memory once they hav
 const SLEEP_LABEL: &str = "Sleep after (seconds)";
 const SLEEP_UNIT: &str = "30 to 604800 seconds (7 days)";
 const BLOCKER_HEADING: &str = "Ad and tracker blocker";
+const LAYOUT_HEADING: &str = "Tab layout";
+const LAYOUT_HELP: &str = "Choose a horizontal strip or vertical sidebar. Sidebar width is measured in logical pixels.";
 const BLOCKER_TOGGLE: &str = "Block ads and trackers";
 const BLOCKER_HELP: &str = "Blocks known ad and tracking requests on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
@@ -76,7 +78,7 @@ const SAVED_STATUS: &str = "Saved. Search applies now; restart Bowser for other 
 const RADIUS: i32 = 10;
 /// Logical (96 DPI) client size. Every other measurement is scaled from these values.
 const CLIENT_WIDTH: i32 = 600;
-const CLIENT_HEIGHT: i32 = 674;
+const CLIENT_HEIGHT: i32 = 766;
 
 const ID_SLEEP_ENABLED: i32 = 201;
 const ID_SLEEP_SECS: i32 = 202;
@@ -87,6 +89,8 @@ const ID_RESET: i32 = 206;
 const ID_SAVE: i32 = 207;
 const ID_CLOSE: i32 = 208;
 const ID_SEARCH_ENGINE: i32 = 209;
+const ID_TAB_LAYOUT: i32 = 210;
+const ID_SIDEBAR_WIDTH: i32 = 211;
 
 thread_local! {
     /// The open window, so reopening the menu item focuses it rather than stacking another.
@@ -150,6 +154,7 @@ impl Drop for Resources {
 }
 
 struct Panel {
+    app: crate::app::AppRef,
     path: PathBuf,
     palette: &'static theme::Palette,
     res: Resources,
@@ -159,6 +164,8 @@ struct Panel {
     blocker_enabled: bool,
     /// The saved engine choice, or `None` when searches use `search-provider.txt` or the default.
     search_engine: Option<SearchEngine>,
+    tab_layout: settings::TabLayout,
+    sidebar_width: u16,
     /// What the selector shows when `search_engine` is `None`.
     search_fallback: &'static str,
     /// Control ID of the text field that has keyboard focus, or 0. Drives the teal ring.
@@ -176,6 +183,12 @@ struct Layout {
     search_label: RECT,
     search_button: RECT,
     search_help: RECT,
+    layout_heading: RECT,
+    layout_card: RECT,
+    layout_toggle: RECT,
+    layout_width_label: RECT,
+    layout_width: RECT,
+    layout_help: RECT,
     sleep_heading: RECT,
     sleep_card: RECT,
     sleep_toggle: RECT,
@@ -202,8 +215,8 @@ struct Layout {
 fn layout(dpi: u32) -> Layout {
     let s = |v: i32| scaled(v, dpi);
     let r = |l: i32, t: i32, right: i32, b: i32| rect(s(l), s(t), s(right), s(b));
-    let sleep_field = r(224, 330, 328, 360);
-    let allow_field = r(44, 516, 556, 546);
+    let sleep_field = r(224, 412, 328, 442);
+    let allow_field = r(44, 598, 556, 628);
     Layout {
         title: r(28, 20, 572, 56),
         subtitle: r(28, 56, 572, 76),
@@ -212,27 +225,33 @@ fn layout(dpi: u32) -> Layout {
         search_label: r(44, 132, 220, 158),
         search_button: r(224, 128, 420, 162),
         search_help: r(44, 170, 556, 204),
-        sleep_heading: r(28, 226, 572, 248),
-        sleep_card: r(28, 252, 572, 374),
-        sleep_toggle: r(44, 264, 556, 288),
-        sleep_help: r(44, 292, 556, 326),
-        sleep_label: r(44, 334, 220, 356),
+        layout_heading: r(28, 226, 572, 248),
+        layout_card: r(28, 252, 572, 324),
+        layout_toggle: r(44, 262, 286, 296),
+        layout_width_label: r(314, 262, 440, 296),
+        layout_width: r(448, 262, 548, 296),
+        layout_help: r(44, 300, 556, 318),
+        sleep_heading: r(28, 336, 572, 358),
+        sleep_card: r(28, 364, 572, 486),
+        sleep_toggle: r(44, 376, 556, 400),
+        sleep_help: r(44, 404, 556, 438),
+        sleep_label: r(44, 446, 220, 468),
         sleep_field,
         sleep_edit: inset(sleep_field, s(8), s(5)),
-        sleep_unit: r(340, 334, 556, 356),
-        blocker_heading: r(28, 382, 572, 404),
-        blocker_card: r(28, 410, 572, 586),
-        blocker_toggle: r(44, 422, 556, 446),
-        blocker_help: r(44, 450, 556, 484),
-        allow_label: r(44, 492, 556, 512),
+        sleep_unit: r(340, 446, 556, 468),
+        blocker_heading: r(28, 494, 572, 516),
+        blocker_card: r(28, 522, 572, 698),
+        blocker_toggle: r(44, 534, 556, 558),
+        blocker_help: r(44, 562, 556, 596),
+        allow_label: r(44, 604, 556, 624),
         allow_field,
         allow_edit: inset(allow_field, s(8), s(5)),
-        allow_help: r(44, 552, 556, 570),
-        status: r(28, 592, 572, 612),
-        open_file: r(28, 620, 198, 654),
-        reset: r(210, 620, 342, 654),
-        save: r(354, 620, 458, 654),
-        close: r(470, 620, 572, 654),
+        allow_help: r(44, 634, 556, 652),
+        status: r(28, 704, 572, 724),
+        open_file: r(28, 732, 198, 766),
+        reset: r(210, 732, 342, 766),
+        save: r(354, 732, 458, 766),
+        close: r(470, 732, 572, 766),
     }
 }
 
@@ -338,6 +357,7 @@ unsafe fn paint(hwnd: HWND) {
             SetBkMode(dc, TRANSPARENT);
 
             round_rect(dc, l.search_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
+            round_rect(dc, l.layout_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.sleep_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.blocker_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
 
@@ -347,12 +367,15 @@ unsafe fn paint(hwnd: HWND) {
             draw_text(dc, l.title, TITLE, p.tab_text_active, single);
             SelectObject(dc, res.section.into());
             draw_text(dc, l.search_heading, SEARCH_HEADING, p.tab_text_active, single);
+            draw_text(dc, l.layout_heading, LAYOUT_HEADING, p.tab_text_active, single);
             draw_text(dc, l.sleep_heading, SLEEP_HEADING, p.tab_text_active, single);
             draw_text(dc, l.blocker_heading, BLOCKER_HEADING, p.tab_text_active, single);
             SelectObject(dc, res.font.into());
             draw_text(dc, l.subtitle, SUBTITLE, p.omnibox_placeholder, single);
             draw_text(dc, l.search_label, SEARCH_LABEL, p.omnibox_text, single);
             draw_text(dc, l.search_help, SEARCH_HELP, p.omnibox_placeholder, wrapped);
+            draw_text(dc, l.layout_help, LAYOUT_HELP, p.omnibox_placeholder, single);
+            draw_text(dc, l.layout_width_label, "Sidebar width", p.omnibox_text, single);
             draw_text(dc, l.sleep_help, SLEEP_HELP, p.omnibox_placeholder, wrapped);
             draw_text(dc, l.sleep_label, SLEEP_LABEL, p.omnibox_text, single);
             draw_text(dc, l.sleep_unit, SLEEP_UNIT, p.omnibox_placeholder, single);
@@ -361,7 +384,7 @@ unsafe fn paint(hwnd: HWND) {
             draw_text(dc, l.allow_help, ALLOW_HELP, p.omnibox_placeholder, wrapped);
 
             // The field frames sit outside the edit controls, so the teal ring is drawn here.
-            for (id, field) in [(ID_SLEEP_SECS, l.sleep_field), (ID_BLOCKER_ALLOW, l.allow_field)] {
+            for (id, field) in [(ID_SLEEP_SECS, l.sleep_field), (ID_BLOCKER_ALLOW, l.allow_field), (ID_SIDEBAR_WIDTH, l.layout_width)] {
                 let focused = panel.focus == id;
                 let (border, width) = if focused {
                     (p.omnibox_focus_border, scaled(2, dpi))
@@ -443,7 +466,7 @@ unsafe fn draw_item(hwnd: HWND, lparam: LPARAM) {
                     FrameRect(dc, &rc, res.focus);
                 }
             }
-            ID_SEARCH_ENGINE => {
+            ID_SEARCH_ENGINE | ID_TAB_LAYOUT => {
                 let s = |v: i32| scaled(v, dpi);
                 // Sits on the card, so clear the corners before the rounded field.
                 FillRect(dc, &rc, res.card);
@@ -514,6 +537,8 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
         let edit_text = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
         let children = [
             (ID_SEARCH_ENGINE, "", l.search_button, button, ButtonKind::Owner),
+            (ID_TAB_LAYOUT, "", l.layout_toggle, button, ButtonKind::Owner),
+            (ID_SIDEBAR_WIDTH, "", l.layout_width, edit_number, ButtonKind::Edit),
             (ID_SLEEP_ENABLED, SLEEP_TOGGLE, l.sleep_toggle, button, ButtonKind::Owner),
             (ID_SLEEP_SECS, "", l.sleep_edit, edit_number, ButtonKind::Edit),
             (ID_BLOCKER_ENABLED, BLOCKER_TOGGLE, l.blocker_toggle, button, ButtonKind::Owner),
@@ -575,13 +600,25 @@ fn populate(hwnd: HWND, settings: &Settings) {
         panel.sleep_enabled = settings.sleep_enabled;
         panel.blocker_enabled = settings.blocker_enabled;
         panel.search_engine = settings.search_engine;
+        panel.tab_layout = settings.tab_layout;
+        panel.sidebar_width = settings.sidebar_width;
     }
     refresh_search_text(hwnd);
+    refresh_layout_text(hwnd);
     invalidate_child(hwnd, ID_SLEEP_ENABLED);
     invalidate_child(hwnd, ID_BLOCKER_ENABLED);
     set_text(hwnd, ID_SLEEP_SECS, &settings.sleep_after_secs.to_string());
+    set_text(hwnd, ID_SIDEBAR_WIDTH, &settings.sidebar_width.to_string());
     set_text(hwnd, ID_BLOCKER_ALLOW, &settings.blocker_allow.join(", "));
     invalidate(hwnd);
+}
+
+fn refresh_layout_text(hwnd: HWND) {
+    let (text, width) = state(hwnd).map_or(("Horizontal tabs", 260), |panel| {
+        (match panel.tab_layout { settings::TabLayout::Horizontal => "Horizontal tabs", settings::TabLayout::Vertical => "Vertical tabs" }, panel.sidebar_width)
+    });
+    set_text(hwnd, ID_TAB_LAYOUT, text);
+    set_text(hwnd, ID_SIDEBAR_WIDTH, &width.to_string());
 }
 
 fn search_text(panel: &Panel) -> &'static str {
@@ -690,12 +727,20 @@ fn save_form(hwnd: HWND) {
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    let (sleep_enabled, blocker_enabled, search_engine) = state(hwnd).map_or(
-        (true, true, None),
-        |panel| (panel.sleep_enabled, panel.blocker_enabled, panel.search_engine),
+    let (sleep_enabled, blocker_enabled, search_engine, tab_layout) = state(hwnd).map_or(
+        (true, true, None, settings::TabLayout::Horizontal),
+        |panel| (panel.sleep_enabled, panel.blocker_enabled, panel.search_engine, panel.tab_layout),
     );
     let sleep = parse_sleep_after_secs(&window_text_of(hwnd, ID_SLEEP_SECS));
     let allow = parse_blocker_allow(&window_text_of(hwnd, ID_BLOCKER_ALLOW));
+    let sidebar_width = window_text_of(hwnd, ID_SIDEBAR_WIDTH).parse::<u16>()
+        .ok()
+        .filter(|width| (settings::MIN_SIDEBAR_WIDTH..=settings::MAX_SIDEBAR_WIDTH).contains(width));
+    let Some(sidebar_width) = sidebar_width else {
+        focus_field(hwnd, ID_SIDEBAR_WIDTH);
+        set_status(hwnd, "Sidebar width must be between 180 and 360.", true);
+        return;
+    };
     let (sleep_after_secs, blocker_allow) = match (sleep, allow) {
         (Ok(secs), Ok(sites)) => (secs, sites),
         (Err(message), _) => {
@@ -710,6 +755,8 @@ fn save_form(hwnd: HWND) {
         }
     };
     let settings = Settings {
+        tab_layout,
+        sidebar_width,
         sleep_enabled,
         sleep_after_secs,
         blocker_enabled,
@@ -719,6 +766,10 @@ fn save_form(hwnd: HWND) {
     match settings::save(&path, &settings) {
         Ok(()) => {
             populate(hwnd, &settings);
+            let app = state(hwnd).map(|panel| panel.app.clone());
+            if let Some(app) = app {
+                crate::app::App::apply_tab_layout_settings(&app, settings.tab_layout, settings.sidebar_width);
+            }
             set_status(hwnd, SAVED_STATUS, false);
         }
         Err(error) => set_status(hwnd, save_error(&error), true),
@@ -742,6 +793,14 @@ fn reset(hwnd: HWND) {
     match settings::save(&path, &Settings::default()) {
         Ok(()) => {
             populate(hwnd, &Settings::default());
+            let app = state(hwnd).map(|panel| panel.app.clone());
+            if let Some(app) = app {
+                crate::app::App::apply_tab_layout_settings(
+                    &app,
+                    Settings::default().tab_layout,
+                    Settings::default().sidebar_width,
+                );
+            }
             set_status(
                 hwnd,
                 "Defaults saved. Search applies now; restart Bowser for other changes.",
@@ -808,13 +867,13 @@ fn command(hwnd: HWND, wparam: WPARAM) {
     let code = ((wparam.0 >> 16) & 0xFFFF) as u32;
     match (id, code) {
         (ID_SLEEP_ENABLED | ID_BLOCKER_ENABLED, BN_CLICKED) => toggle(hwnd, id),
-        (ID_SLEEP_SECS | ID_BLOCKER_ALLOW, EN_SETFOCUS) => {
+        (ID_SLEEP_SECS | ID_BLOCKER_ALLOW | ID_SIDEBAR_WIDTH, EN_SETFOCUS) => {
             if let Some(panel) = state(hwnd) {
                 panel.focus = id;
             }
             invalidate(hwnd);
         }
-        (ID_SLEEP_SECS | ID_BLOCKER_ALLOW, EN_KILLFOCUS) => {
+        (ID_SLEEP_SECS | ID_BLOCKER_ALLOW | ID_SIDEBAR_WIDTH, EN_KILLFOCUS) => {
             if let Some(panel) = state(hwnd) {
                 if panel.focus == id {
                     panel.focus = 0;
@@ -823,6 +882,16 @@ fn command(hwnd: HWND, wparam: WPARAM) {
             invalidate(hwnd);
         }
         (ID_SEARCH_ENGINE, BN_CLICKED) => choose_search_engine(hwnd),
+        (ID_TAB_LAYOUT, BN_CLICKED) => {
+            if let Some(panel) = state(hwnd) {
+                panel.tab_layout = match panel.tab_layout {
+                    settings::TabLayout::Horizontal => settings::TabLayout::Vertical,
+                    settings::TabLayout::Vertical => settings::TabLayout::Horizontal,
+                };
+            }
+            refresh_layout_text(hwnd);
+            invalidate_child(hwnd, ID_TAB_LAYOUT);
+        }
         (ID_OPEN_FILE, BN_CLICKED) => open_file(hwnd),
         (ID_RESET, BN_CLICKED) => reset(hwnd),
         (ID_SAVE, BN_CLICKED) => save_form(hwnd),
@@ -840,7 +909,7 @@ fn command(hwnd: HWND, wparam: WPARAM) {
 /// Opens the Settings window over `owner`, or focuses the one already open. The settings file is
 /// the active profile's, read when the window opens. Unreadable files show the reason in the status
 /// line and leave the controls at defaults, so Save reports the problem instead of overwriting it.
-pub(crate) fn open(owner: HWND) -> windows::core::Result<()> {
+pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Result<()> {
     unsafe {
         let existing = OPEN.with(Cell::get);
         if existing != 0 && IsWindow(Some(HWND(existing as *mut c_void))).as_bool() {
@@ -891,12 +960,15 @@ pub(crate) fn open(owner: HWND) -> windows::core::Result<()> {
             SEARCH_CUSTOM
         };
         let panel = Box::into_raw(Box::new(Panel {
+            app: app.clone(),
             path,
             palette,
             res: Resources::new(dpi, palette),
             sleep_enabled: initial.sleep_enabled,
             blocker_enabled: initial.blocker_enabled,
             search_engine: initial.search_engine,
+            tab_layout: initial.tab_layout,
+            sidebar_width: initial.sidebar_width,
             search_fallback,
             focus: 0,
             status: IDLE_STATUS.to_owned(),
@@ -978,7 +1050,7 @@ pub(crate) fn process_message(msg: &MSG) -> bool {
         if key == VK_RETURN.0 {
             let focus = unsafe { GetFocus() };
             let id = unsafe { GetDlgCtrlID(focus) };
-            if id == ID_SLEEP_SECS || id == ID_BLOCKER_ALLOW {
+            if id == ID_SLEEP_SECS || id == ID_BLOCKER_ALLOW || id == ID_SIDEBAR_WIDTH {
                 save_form(hwnd);
                 return true;
             }

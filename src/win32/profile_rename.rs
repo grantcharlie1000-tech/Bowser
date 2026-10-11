@@ -51,6 +51,7 @@ const CANCEL: RECT = RECT {
 
 struct Dialog {
     edit: HWND,
+    title: String,
     result: Option<String>,
     done: bool,
     brush: HBRUSH,
@@ -59,9 +60,14 @@ struct Dialog {
 thread_local! { static REGISTERED: Cell<bool> = const { Cell::new(false) }; }
 
 pub(crate) fn prompt(owner: HWND, current: &str) -> Option<String> {
+    prompt_named(owner, "Rename profile", current)
+}
+
+pub(crate) fn prompt_named(owner: HWND, title: &str, current: &str) -> Option<String> {
     register_class()?;
     let mut state = Box::new(Dialog {
         edit: HWND::default(),
+        title: title.to_owned(),
         result: None,
         done: false,
         brush: unsafe {
@@ -83,7 +89,7 @@ pub(crate) fn prompt(owner: HWND, current: &str) -> Option<String> {
         match CreateWindowExW(
             WS_EX_TOOLWINDOW,
             CLASS,
-            w!("Rename profile"),
+            PCWSTR(wide(title).as_ptr()),
             WS_POPUP | WS_VISIBLE,
             x,
             y,
@@ -343,7 +349,7 @@ fn paint(hwnd: HWND) {
                 right: scale(396, hwnd),
                 bottom: scale(44, hwnd),
             },
-            "Rename profile",
+            dialog(hwnd).map_or("Rename profile", |state| state.title.as_str()),
             palette.tab_text_active,
         );
         fill_button(dc, CANCEL, "Cancel", &palette, hwnd);

@@ -50,7 +50,9 @@ The window has two rows over a translucent surface:
 - **Toolbar:** navigation controls sit beside a centred address pill, with the main menu, new-tab button, and window controls at the right. The pill's left icon shows the connection state (padlock for HTTPS, open padlock for HTTP, warning for a certificate problem, info for local or unknown pages); clicking it opens Site information with the connection, per-site permissions, cookies and blocker state.
 - **Settings:** open the main menu and choose Settings to configure sleeping tabs and the blocker. Save writes to the active profile's human-editable `settings.txt`, preserving comments and unknown keys. The search engine applies to the next search; other changes apply on the next launch. The window also provides Open settings file and Reset to defaults.
 
-An empty tab shows the desktop through the window. Real pages render opaque, as before. The tab islands and per-tab engine wiring are still in progress, so this describes the intended layout.
+Tab layout is selected with Ctrl+Shift+V or the main menu. `tab_layout=horizontal|vertical` and `sidebar_width=180..360` are stored per profile; the vertical viewport accounts for the sidebar at the current display DPI. In vertical mode, drag the sidebar edge to resize, use the mouse wheel to scroll, and use the workspace name at the top to switch, create, rename, or delete workspaces. The main menu also contains a Workspaces submenu. Tabs belong to one workspace and horizontal mode shows only the active workspace's tabs. Other workspaces use the existing hidden-tab sleep lifecycle; restored tabs load when selected. Guest workspaces stay in memory for that guest session.
+
+An empty tab shows the desktop through the window. Real pages render opaque, as before. Horizontal tab islands keep their existing visuals; vertical tabs render as a sidebar list with group headers.
 
 ## Glass material and fallback
 
@@ -84,6 +86,7 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Back | Alt+Left, browser back key |
 | Forward | Alt+Right, browser forward key |
 | Passwords & Passkeys | Ctrl+, |
+| Toggle horizontal/vertical tabs | Ctrl+Shift+V |
 
 Under system memory pressure, a tab that has been hidden for 30 seconds or more may be unloaded to free memory. It stays in the tab strip with its title, favicon and group, and it reloads its last address when you select it again. Its back and forward history is lost when this happens. Pinned tabs, tabs playing audio and tabs that are still loading are never unloaded.
 

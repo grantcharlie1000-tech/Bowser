@@ -281,6 +281,75 @@ impl ChromeSurface {
         self.height
     }
 
+    /// Draws the independent vertical list into the same layered surface as the toolbar.
+    pub fn paint_vertical_sidebar(
+        &mut self,
+        layout: &crate::vertical_tabs::SidebarLayout,
+        rows: &[crate::chrome::vertical_paint::SidebarRow],
+        workspace: &str,
+        active: crate::tabs::TabId,
+        scroll: i32,
+        hover_row: Option<usize>,
+        dirty: Rect,
+        palette: &Palette,
+    ) {
+        let clip = layout.sidebar.intersect(dirty);
+        if clip.is_empty() {
+            return;
+        }
+        let m = Metrics::new(self.dpi);
+        self.fill_rect(layout.sidebar, palette.window, dirty);
+        self.fill_rect(layout.handle, palette.hairline, dirty);
+        self.draw_text(
+            workspace,
+            Rect::new(layout.header.left + m.px(14), layout.header.top, layout.new_tab_button().left - m.px(6), layout.header.bottom),
+            palette.tab_text_active,
+            true,
+            layout.header,
+            dirty,
+        );
+        let plus = layout.new_tab_button();
+        self.round(plus, plus.width() / 2, palette.tab_hover, dirty);
+        self.draw_text("+", plus, palette.tab_text_active, false, layout.header, dirty);
+
+        let row_height = m.px(crate::vertical_tabs::TAB_ROW_HEIGHT).max(1);
+        for (index, row) in rows.iter().enumerate() {
+            let top = layout.rows.top + index as i32 * row_height - scroll.max(0);
+            let bounds = Rect::new(layout.rows.left + m.px(7), top + m.px(2), layout.handle.left - m.px(7), top + row_height - m.px(2));
+            if bounds.bottom <= layout.rows.top || bounds.top >= layout.rows.bottom {
+                continue;
+            }
+            match row {
+                crate::chrome::vertical_paint::SidebarRow::Group { name, colour, collapsed, .. } => {
+                    let dot = Rect::new(bounds.left + m.px(8), top + (row_height - m.px(8)) / 2, bounds.left + m.px(16), top + (row_height + m.px(8)) / 2);
+                    let token = colour.and_then(|id| crate::theme::ISLAND_COLOURS.get(usize::from(id)).copied()).unwrap_or(palette.omnibox_focus_border);
+                    self.round(dot, dot.width() / 2, token, dirty);
+                    let label = if *collapsed { format!("›  {name}") } else { format!("⌄  {name}") };
+                    self.draw_text(&label, Rect::new(dot.right + m.px(7), bounds.top, bounds.right - m.px(8), bounds.bottom), palette.tab_text_active, true, layout.rows, dirty);
+                }
+                crate::chrome::vertical_paint::SidebarRow::Tab { id, title, pinned, loading } => {
+                    let selected = *id == active;
+                    let fill = if selected { palette.tab_active } else if hover_row == Some(index) { palette.tab_hover } else { palette.tab_inactive };
+                    self.round(bounds, m.px(7), fill, dirty);
+                    if selected {
+                        self.border(bounds, m.px(7), 1.0, palette.tab_active_border, dirty);
+                    }
+                    let mut label = String::new();
+                    if *pinned { label.push('◆'); label.push(' '); }
+                    label.push_str(title);
+                    self.draw_text(&label, Rect::new(bounds.left + m.px(10), bounds.top, bounds.right - m.px(28), bounds.bottom), if selected { palette.tab_text_active } else { palette.tab_text_inactive }, true, layout.rows, dirty);
+                    if *loading {
+                        let progress = Rect::new(bounds.left + m.px(10), bounds.bottom - m.px(2), bounds.right - m.px(10), bounds.bottom - m.px(1));
+                        self.fill_rect(progress, palette.progress_fill, dirty);
+                    }
+                    if hover_row == Some(index) {
+                        self.draw_text("×", Rect::new(bounds.right - m.px(24), bounds.top, bounds.right - m.px(3), bounds.bottom), palette.tab_text_active, false, layout.rows, dirty);
+                    }
+                }
+            }
+        }
+    }
+
     /// Renders only pixels intersecting `dirty`; the caller owns invalidation and scheduling.
     pub fn paint(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let bounds = Rect::new(0, 0, self.width, self.height);

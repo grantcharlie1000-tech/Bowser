@@ -60,6 +60,8 @@ pub struct WorkspaceSet {
     workspaces: Vec<Workspace>,
     active: WorkspaceId,
     next_id: u32,
+    /// Session-persisted tab IDs in the same order as `session.txt`.
+    session_order: Vec<TabId>,
 }
 
 impl WorkspaceSet {
@@ -74,6 +76,7 @@ impl WorkspaceSet {
             }],
             active: WorkspaceId(0),
             next_id: 1,
+            session_order: Vec::new(),
         }
     }
 
@@ -82,6 +85,15 @@ impl WorkspaceSet {
     }
     pub fn active_id(&self) -> WorkspaceId {
         self.active
+    }
+    pub fn workspace_for(&self, tab: TabId) -> Option<WorkspaceId> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.tabs.contains(&tab))
+            .map(|workspace| workspace.id)
+    }
+    pub fn workspace_count(&self) -> usize {
+        self.workspaces.len()
     }
     pub fn active(&self) -> &Workspace {
         self.get(self.active).expect("active workspace invariant")
@@ -133,6 +145,112 @@ impl WorkspaceSet {
             workspace.active_tab = workspace.tabs[0];
         }
         Ok(())
+    }
+
+    pub fn replace_tab(&mut self, old: TabId, new: TabId) -> Result<(), WorkspaceError> {
+        if self.contains_tab(new) {
+            return Err(WorkspaceError::DuplicateTab);
+        }
+        let workspace = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.tabs.contains(&old))
+            .ok_or(WorkspaceError::NotFound)?;
+        for member in &mut workspace.tabs {
+            if *member == old {
+                *member = new;
+            }
+        }
+        if workspace.active_tab == old {
+            workspace.active_tab = new;
+        }
+        Ok(())
+    }
+
+    pub fn move_tab(&mut self, tab: TabId, new_index: usize) -> Result<(), WorkspaceError> {
+        let workspace = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.tabs.contains(&tab))
+            .ok_or(WorkspaceError::NotFound)?;
+        let old_index = workspace.tabs.iter().position(|member| *member == tab).unwrap();
+        let tab = workspace.tabs.remove(old_index);
+        workspace.tabs.insert(new_index.min(workspace.tabs.len()), tab);
+        Ok(())
+    }
+
+    pub fn sync_order(&mut self, ordered: &[TabId]) {
+        for workspace in &mut self.workspaces {
+            workspace.tabs.sort_by_key(|tab| {
+                ordered.iter().position(|candidate| candidate == tab).unwrap_or(usize::MAX)
+            });
+        }
+    }
+
+    pub fn set_session_order(&mut self, ordered: &[TabId]) {
+        self.session_order = ordered.to_vec();
+    }
+
+    /// Remaps persisted process-local tab IDs to IDs allocated while restoring the session.
+    pub fn remap_session_order(&mut self, restored: &[TabId]) {
+        if self.session_order.is_empty() {
+            return;
+        }
+        let remap = self
+            .session_order
+            .iter()
+            .copied()
+            .zip(restored.iter().copied())
+            .collect::<std::collections::HashMap<_, _>>();
+        for workspace in &mut self.workspaces {
+            for tab in &mut workspace.tabs {
+                if let Some(mapped) = remap.get(tab) { *tab = *mapped; }
+            }
+            if let Some(mapped) = remap.get(&workspace.active_tab) {
+                workspace.active_tab = *mapped;
+            }
+        }
+        self.session_order = restored.to_vec();
+    }
+
+    /// Drops stale restored ids and assigns any unclaimed session tabs to the active workspace.
+    pub fn reconcile(&mut self, tabs: &[TabId], active_tab: TabId) {
+        let valid = tabs.iter().copied().collect::<HashSet<_>>();
+        for workspace in &mut self.workspaces {
+            workspace.tabs.retain(|tab| valid.contains(tab));
+            if !workspace.tabs.contains(&workspace.active_tab) {
+                workspace.active_tab = workspace.tabs.first().copied().unwrap_or(active_tab);
+            }
+        }
+        self.workspaces.retain(|workspace| !workspace.tabs.is_empty());
+        if self.workspaces.is_empty() {
+            *self = Self::new("Default", active_tab);
+            return;
+        }
+        if !self.workspaces.iter().any(|workspace| workspace.id == self.active) {
+            self.active = self.workspaces[0].id;
+        }
+        let assigned = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.tabs.iter().copied())
+            .collect::<HashSet<_>>();
+        if let Ok(workspace) = self.get_mut(self.active) {
+            workspace
+                .tabs
+                .extend(tabs.iter().copied().filter(|tab| !assigned.contains(tab)));
+        }
+        if valid.contains(&active_tab)
+            && let Some(workspace_id) = self.workspace_for(active_tab)
+        {
+            self.active = workspace_id;
+            if let Ok(workspace) = self.get_mut(workspace_id) {
+                workspace.active_tab = active_tab;
+            }
+        }
+        if !self.active().tabs.contains(&self.active().active_tab) {
+            self.workspaces[0].active_tab = self.workspaces[0].tabs[0];
+        }
     }
 
     pub fn create(&mut self, name: &str, first_tab: TabId) -> Result<WorkspaceId, WorkspaceError> {
@@ -213,6 +331,11 @@ impl WorkspaceSet {
 
     pub fn serialize(&self) -> String {
         let mut out = format!("active={}\n", self.active.0);
+        if !self.session_order.is_empty() {
+            out.push_str("order=");
+            out.push_str(&self.session_order.iter().map(|id| id.0.to_string()).collect::<Vec<_>>().join(","));
+            out.push('\n');
+        }
         for workspace in &self.workspaces {
             let tabs = workspace
                 .tabs
@@ -240,6 +363,7 @@ impl WorkspaceSet {
         let mut ids = HashSet::new();
         let mut tabs = HashSet::new();
         let mut next_id = 0_u32;
+        let mut session_order = Vec::new();
         for line in text
             .lines()
             .map(str::trim)
@@ -249,6 +373,14 @@ impl WorkspaceSet {
                 active = value.parse::<u32>().ok().map(WorkspaceId);
                 if active.is_none() {
                     return Err(WorkspaceError::InvalidFile);
+                }
+                continue;
+            }
+            if let Some(value) = line.strip_prefix("order=") {
+                for id in value.split(',').filter(|id| !id.is_empty()) {
+                    let id = TabId(id.parse::<u32>().map_err(|_| WorkspaceError::InvalidFile)?);
+                    if session_order.contains(&id) { return Err(WorkspaceError::InvalidFile); }
+                    session_order.push(id);
                 }
                 continue;
             }
@@ -308,10 +440,14 @@ impl WorkspaceSet {
         let active = active
             .filter(|id| ids.contains(id))
             .ok_or(WorkspaceError::InvalidFile)?;
+        if session_order.iter().any(|tab| !tabs.contains(tab)) {
+            return Err(WorkspaceError::InvalidFile);
+        }
         Ok(Self {
             workspaces,
             active,
             next_id,
+            session_order,
         })
     }
 
@@ -415,6 +551,49 @@ mod tests {
         assert_eq!(transition.shown, vec![TabId(3)]);
         assert_eq!(transition.selected, TabId(3));
         assert_eq!(workspaces.active().tabs(), &[TabId(3)]);
+    }
+
+    #[test]
+    fn workspace_reconcile_keeps_saved_membership_and_assigns_restored_tabs_once() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        workspaces.add_tab(TabId(2)).unwrap();
+        let research = workspaces.create("Research", TabId(3)).unwrap();
+        workspaces.switch_to(research).unwrap();
+
+        workspaces.reconcile(&[TabId(1), TabId(3), TabId(4)], TabId(3));
+
+        assert_eq!(workspaces.active_id(), research);
+        assert_eq!(workspaces.active().tabs(), &[TabId(3), TabId(4)]);
+        assert_eq!(workspaces.get(WorkspaceId(0)).unwrap().tabs(), &[TabId(1)]);
+        assert_eq!(workspaces.workspace_for(TabId(4)), Some(research));
+    }
+
+    #[test]
+    fn persisted_session_order_remaps_process_local_ids_on_restore() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(17));
+        workspaces.add_tab(TabId(42)).unwrap();
+        workspaces.set_session_order(&[TabId(42), TabId(17)]);
+        let mut restored = WorkspaceSet::parse(&workspaces.serialize()).unwrap();
+
+        restored.remap_session_order(&[TabId(0), TabId(1)]);
+        restored.reconcile(&[TabId(0), TabId(1)], TabId(1));
+
+        assert_eq!(restored.active().tabs(), &[TabId(1), TabId(0)]);
+        assert_eq!(restored.active().active_tab(), TabId(1));
+    }
+
+    #[test]
+    fn switching_back_selects_the_last_active_tab_and_hides_all_old_members() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        workspaces.add_tab(TabId(2)).unwrap();
+        let research = workspaces.create("Research", TabId(3)).unwrap();
+        workspaces.select_tab(TabId(2)).unwrap();
+        workspaces.switch_to(research).unwrap();
+        let transition = workspaces.switch_to(WorkspaceId(0)).unwrap();
+
+        assert_eq!(transition.hidden, vec![TabId(3)]);
+        assert_eq!(transition.shown, vec![TabId(1), TabId(2)]);
+        assert_eq!(transition.selected, TabId(2));
     }
 
     #[test]
