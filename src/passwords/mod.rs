@@ -226,14 +226,17 @@ impl PasswordStore {
     /// Open a vault at an explicit local path (useful for isolated app profiles and tests).
     fn open(path: impl Into<PathBuf>) -> Result<Self, PasswordError> {
         let path = path.into();
-        if !path.exists() {
-            return Ok(Self {
-                path,
-                records: Vec::new(),
-                never_sites: Vec::new(),
-            });
-        }
-        let encrypted = fs::read(&path)?;
+        let encrypted = match fs::read(&path) {
+            Ok(encrypted) => encrypted,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    path,
+                    records: Vec::new(),
+                    never_sites: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
         if encrypted.len() > MAX_STORE_BYTES {
             return Err(PasswordError::InvalidStore);
         }
@@ -550,7 +553,7 @@ impl PasswordStore {
     }
 
     fn persist(&self) -> Result<(), PasswordError> {
-        let plain = Zeroizing::new(encode_store(&self.records, &self.never_sites)?);
+        let plain = encode_store(&self.records, &self.never_sites)?;
         let encrypted = dpapi_protect(&plain)?;
         let parent = self.path.parent().ok_or(PasswordError::Io)?;
         fs::create_dir_all(parent)?;
@@ -775,7 +778,7 @@ fn expect_json_byte(json: &str, at: &mut usize, expected: u8) -> Option<()> {
 fn parse_json_string(json: &str, at: &mut usize) -> Option<Zeroizing<String>> {
     let bytes = json.as_bytes();
     expect_json_byte(json, at, b'"')?;
-    let mut output = Zeroizing::new(String::new());
+    let mut output = Zeroizing::new(String::with_capacity(json.len().saturating_sub(*at)));
     while *at < bytes.len() {
         match bytes[*at] {
             b'"' => {
@@ -849,13 +852,17 @@ fn parse_json_hex_unit(bytes: &[u8], at: &mut usize) -> Option<u16> {
 
 /// Builds a top-document-only fill script. The output itself is a zeroizing secret buffer because
 /// it contains the password until WebView2 copies the script for execution.
-pub(crate) fn password_fill_script(username: &str, password: &str) -> Zeroizing<String> {
-    let mut script = Zeroizing::new(String::with_capacity(username.len() + password.len() + 640));
-    script.push_str("(()=>{const v=e=>e&&e.getClientRects().length>0;const p=[...document.querySelectorAll('input[type=password]')].find(v);if(!p)return false;const u=[...document.querySelectorAll('input[autocomplete=username],input[type=email],input[name*=user i],input[type=text]')].find(v);const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;if(u){s.call(u,");
+pub(crate) fn password_fill_script(origin: &str, username: &str, password: &str) -> Zeroizing<String> {
+    let capacity = origin.len().saturating_add(username.len()).saturating_add(password.len())
+        .saturating_mul(6).saturating_add(1200);
+    let mut script = Zeroizing::new(String::with_capacity(capacity));
+    script.push_str("(()=>{if(window.top!==window)return false;if(location.origin!==");
+    append_js_string(&mut script, origin);
+    script.push_str(")return false;const v=e=>{if(!e||e.hidden||e.disabled||e.readOnly)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)>0};const p=[...document.querySelectorAll('input[type=password]')].find(e=>e.type==='password'&&v(e));if(!p)return false;const sel='input[autocomplete=username],input[type=email],input[type=text]';const before=e=>!!(e.compareDocumentPosition(p)&Node.DOCUMENT_POSITION_FOLLOWING);const isUser=e=>(e.type==='text'||e.type==='email')&&e!==p&&v(e);const u=p.form?[...p.form.querySelectorAll(sel)].filter(e=>isUser(e)&&before(e)).at(-1):p.parentElement?[...p.parentElement.querySelectorAll('input[type=email],input[type=text]')].filter(e=>isUser(e)&&before(e)).at(-1):null;const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;if(u){s.call(u,");
     append_js_string(&mut script, username);
     script.push_str(");u.dispatchEvent(new Event('input',{bubbles:true}));u.dispatchEvent(new Event('change',{bubbles:true}));}s.call(p,");
     append_js_string(&mut script, password);
-    script.push_str(");p.dispatchEvent(new Event('input',{bubbles:true}));p.dispatchEvent(new Event('change',{bubbles:true}));p.focus();return true})()");
+    script.push_str(");p.dispatchEvent(new Event('input',{bubbles:true}));p.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
     script
 }
 
@@ -1035,11 +1042,29 @@ fn parse_csv(input: &[u8]) -> Result<Vec<Vec<String>>, PasswordError> {
     Ok(std::mem::take(&mut *rows))
 }
 
-fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Vec<u8>, PasswordError> {
+fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Zeroizing<Vec<u8>>, PasswordError> {
     if records.len() > MAX_IMPORT_ROWS || never_sites.len() > MAX_NEVER_SITES {
         return Err(PasswordError::InvalidStore);
     }
-    let mut out = MAGIC.to_vec();
+    let mut capacity = 20usize;
+    for record in records {
+        for value in [&record.url, &record.username, &record.password] {
+            u32::try_from(value.len()).map_err(|_| PasswordError::InvalidStore)?;
+            capacity = capacity.checked_add(4 + value.len()).ok_or(PasswordError::InvalidStore)?;
+        }
+    }
+    for site in never_sites {
+        if secure_origin(site).as_deref() != Some(site.as_str()) {
+            return Err(PasswordError::InvalidStore);
+        }
+        u32::try_from(site.len()).map_err(|_| PasswordError::InvalidStore)?;
+        capacity = capacity.checked_add(4 + site.len()).ok_or(PasswordError::InvalidStore)?;
+    }
+    if capacity > MAX_STORE_BYTES {
+        return Err(PasswordError::InvalidStore);
+    }
+    let mut out = Zeroizing::new(Vec::with_capacity(capacity));
+    out.extend_from_slice(MAGIC);
     out.extend(VERSION.to_le_bytes());
     out.extend(
         u32::try_from(records.len())
@@ -1062,9 +1087,6 @@ fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Vec<u8>, P
             .to_le_bytes(),
     );
     for site in never_sites {
-        if secure_origin(site).as_deref() != Some(site.as_str()) {
-            return Err(PasswordError::InvalidStore);
-        }
         out.extend(
             u32::try_from(site.len())
                 .map_err(|_| PasswordError::InvalidStore)?
@@ -1342,6 +1364,36 @@ mod tests {
         let mut bad = bytes;
         bad.push(0);
         assert_eq!(decode_store(&bad).unwrap_err(), PasswordError::InvalidStore);
+    }
+
+    #[test]
+    fn fill_script_checks_origin_and_only_uses_a_safe_same_form_username_field() {
+        let script = password_fill_script("https://example.test", "alice\";alert(1)//", "synthetic-pass");
+        assert!(script.starts_with("(()=>{if(window.top!==window)return false;if(location.origin!==\"https://example.test\")return false;"));
+        assert!(script.contains("alice\\\";alert(1)//"));
+        assert!(script.contains("e.type==='password'"));
+        assert!(script.contains("p.form.querySelectorAll(sel)"));
+        assert!(script.contains("p.parentElement.querySelectorAll('input[type=email],input[type=text]')"));
+        assert!(script.contains("getBoundingClientRect"));
+        assert!(script.contains("getComputedStyle"));
+        assert!(script.contains("e.type==='text'||e.type==='email'"));
+        assert!(!script.contains("input[type=search]"));
+        assert!(!script.contains("p.focus()"));
+    }
+
+    #[test]
+    fn opening_a_non_file_vault_path_fails_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "bowser-vault-dir-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+
+        assert!(matches!(PasswordStore::open(&root), Err(PasswordError::Io)));
+        assert!(root.is_dir(), "an unreadable vault path must not be replaced");
+
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn canonical_origin_and_sequential_import_duplicates() {

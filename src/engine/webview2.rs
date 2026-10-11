@@ -215,6 +215,10 @@ fn password_autosave_disabled(enabled: bool) -> bool {
     !enabled
 }
 
+pub(crate) fn password_login_messages_enabled(vault_enabled: bool, guest_profile: bool) -> bool {
+    vault_enabled && !guest_profile
+}
+
 fn navigation_start_policy(uri: &Url, allowed_file: Option<&Url>) -> NavigationStartPolicy {
     match uri.scheme() {
         "http" | "https" => NavigationStartPolicy::Allow,
@@ -1659,11 +1663,11 @@ impl EngineAdapter for WebView2Engine {
         if live_origin != expected_origin {
             return Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED));
         }
-        let script = Zeroizing::new(
-            script.encode_utf16().chain(Some(0)).collect::<Vec<u16>>(),
-        );
+        let mut wide_script = Zeroizing::new(Vec::with_capacity(script.encode_utf16().count() + 1));
+        wide_script.extend(script.encode_utf16());
+        wide_script.push(0);
         let completed = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
-        unsafe { webview.ExecuteScript(PCWSTR(script.as_ptr()), &completed) }
+        unsafe { webview.ExecuteScript(PCWSTR(wide_script.as_ptr()), &completed) }
     }
     fn picture_in_picture_eligible(
         &mut self,
@@ -2307,6 +2311,8 @@ unsafe fn configure_controller(
             Err(error) if error.code() == windows::Win32::Foundation::E_NOINTERFACE => {}
             Err(error) => return Err(error),
         }
+        // Password login messages are opt-in per active profile: the app supplies this callback
+        // only when its vault opens successfully and the profile is not a guest.
         apply_controller_security_policy(|setting| match setting {
             ControllerSecuritySetting::WebMessages => settings.SetIsWebMessageEnabled(false),
             ControllerSecuritySetting::HostObjects => settings.SetAreHostObjectsAllowed(false),
@@ -3251,6 +3257,13 @@ mod tests {
     #[test]
     fn password_autosave_policy_fails_if_setting_cannot_be_disabled() {
         assert!(!password_autosave_disabled(true));
+    }
+
+    #[test]
+    fn login_message_policy_requires_an_enabled_non_guest_vault() {
+        assert!(password_login_messages_enabled(true, false));
+        assert!(!password_login_messages_enabled(false, false));
+        assert!(!password_login_messages_enabled(true, true));
     }
 
     #[test]

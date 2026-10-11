@@ -236,6 +236,14 @@ fn selectable(entry: &Entry) -> bool {
     matches!(entry, Entry::Item(item) if item.enabled)
 }
 
+fn initial_item_index(entries: &[Entry], item_id: Option<usize>) -> Option<usize> {
+    item_id.and_then(|id| {
+        entries
+            .iter()
+            .position(|entry| matches!(entry, Entry::Item(item) if item.id == id && item.enabled))
+    })
+}
+
 /// Next selectable entry after `from` in the given direction, wrapping at the ends. With no
 /// selection, Down starts at the first entry and Up at the last. `None` when nothing can be chosen.
 pub(crate) fn step(entries: &[Entry], from: Option<usize>, forward: bool) -> Option<usize> {
@@ -473,8 +481,18 @@ struct RichBitmap {
 /// Shows the menu with its top-right corner at `anchor` (screen coordinates) and returns the item
 /// the user activated, or `None` when it was dismissed. Blocks until then.
 pub(crate) fn track(owner: HWND, anchor: POINT, menu: Menu) -> Option<Chosen> {
+    track_with_default(owner, anchor, menu, None)
+}
+
+/// Shows a popup with an initial keyboard selection for the requested item id.
+pub(crate) fn track_with_default(
+    owner: HWND,
+    anchor: POINT,
+    menu: Menu,
+    default_item_id: Option<usize>,
+) -> Option<Chosen> {
     loop {
-        match track_placed(owner, anchor, menu.clone(), false, false, &[]) {
+        match track_placed(owner, anchor, menu.clone(), false, false, &[], default_item_id) {
             MenuResult::Chosen(chosen) => return Some(chosen),
             MenuResult::Back => continue,
             MenuResult::Dismissed => return None,
@@ -485,7 +503,7 @@ pub(crate) fn track(owner: HWND, anchor: POINT, menu: Menu) -> Option<Chosen> {
 /// Shows a context or list popup at its top-left anchor, flipping when the work area requires it.
 pub(crate) fn track_below(owner: HWND, anchor: POINT, menu: Menu) -> Option<Chosen> {
     loop {
-        match track_placed(owner, anchor, menu.clone(), false, true, &[]) {
+        match track_placed(owner, anchor, menu.clone(), false, true, &[], None) {
             MenuResult::Chosen(chosen) => return Some(chosen),
             MenuResult::Back => continue,
             MenuResult::Dismissed => return None,
@@ -504,6 +522,7 @@ fn track_placed(
     submenu: bool,
     below: bool,
     ancestors: &[RECT],
+    default_item_id: Option<usize>,
 ) -> MenuResult {
     let dpi = dpi_of(owner);
     let work = work_area(anchor);
@@ -520,13 +539,14 @@ fn track_placed(
     let body = crate::chrome::paint::create_message_font(dpi, CLEARTYPE_QUALITY);
     let heading = unsafe { create_heading_font(body) };
     let rich_bitmaps = unsafe { create_rich_bitmaps(&menu) };
+    let initial_item = initial_item_index(&menu.entries, default_item_id);
     let state = Box::into_raw(Box::new(State {
         menu,
         layout,
         body,
         heading,
         rich_bitmaps,
-        current: Cell::new(None),
+        current: Cell::new(initial_item),
         scroll: Cell::new(0),
         pressed: Cell::new(None),
         chosen: Cell::new(None),
@@ -571,6 +591,7 @@ fn track_placed(
                 true,
                 false,
                 &chain,
+                None,
             );
             state_ref.child_open.set(false);
             match after_flyout(child) {
@@ -1633,6 +1654,14 @@ mod tests {
             item(2, false),
             item(3, true),
         ]
+    }
+
+    #[test]
+    fn initial_selection_uses_only_the_requested_enabled_item() {
+        let entries = sample();
+        assert_eq!(initial_item_index(&entries, Some(3)), Some(3));
+        assert_eq!(initial_item_index(&entries, Some(2)), None);
+        assert_eq!(initial_item_index(&entries, None), None);
     }
 
     #[test]

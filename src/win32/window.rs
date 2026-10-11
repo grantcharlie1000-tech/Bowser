@@ -1771,6 +1771,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                passwords_panel::clear_password_clipboard_timer(hwnd);
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
@@ -1988,12 +1989,13 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE},
         System::{
-            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData},
             Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
         },
     };
+    use windows::core::w;
 
-    let wide = zeroize::Zeroizing::new(
+    let mut wide = zeroize::Zeroizing::new(
         text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>(),
     );
     unsafe {
@@ -2004,7 +2006,35 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
             let _ = CloseClipboard();
             return false;
         }
+        for (name, value) in [
+            (w!("ExcludeClipboardContentFromMonitorProcessing"), 1u32),
+            (w!("CanIncludeInClipboardHistory"), 0u32),
+            (w!("CanUploadToCloudClipboard"), 0u32),
+        ] {
+            let format = RegisterClipboardFormatW(name);
+            let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, std::mem::size_of::<u32>()) else {
+                let _ = EmptyClipboard();
+                let _ = CloseClipboard();
+                return false;
+            };
+            let destination = GlobalLock(memory).cast::<u32>();
+            if destination.is_null() {
+                let _ = GlobalFree(Some(memory));
+                let _ = EmptyClipboard();
+                let _ = CloseClipboard();
+                return false;
+            }
+            *destination = value;
+            let _ = GlobalUnlock(memory);
+            if SetClipboardData(format, Some(HANDLE(memory.0))).is_err() {
+                let _ = GlobalFree(Some(memory));
+                let _ = EmptyClipboard();
+                let _ = CloseClipboard();
+                return false;
+            }
+        }
         let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * std::mem::size_of::<u16>()) else {
+            let _ = EmptyClipboard();
             let _ = CloseClipboard();
             return false;
         };
@@ -2015,9 +2045,11 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
             return false;
         }
         std::ptr::copy_nonoverlapping(wide.as_ptr(), destination, wide.len());
+        zeroize::Zeroize::zeroize(&mut *wide);
         let _ = GlobalUnlock(memory);
         if SetClipboardData(13, Some(HANDLE(memory.0))).is_err() {
             let _ = GlobalFree(Some(memory));
+            let _ = EmptyClipboard();
             let _ = CloseClipboard();
             return false;
         }
