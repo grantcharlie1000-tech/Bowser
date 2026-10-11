@@ -191,9 +191,9 @@ fn panel(snapshot: &Snapshot) -> Menu {
         )));
     }
     let blocker_label = match snapshot.blocking {
-        Some(true) => format!("Ad and tracker blocker: on ({} blocked here)", snapshot.blocked),
-        Some(false) => "Ad and tracker blocker: off for this site".to_owned(),
-        None => "Ad and tracker blocker: unavailable".to_owned(),
+        Some(true) => format!("Blocker: on ({} blocked requests here)", snapshot.blocked),
+        Some(false) => "Blocker: off for this site".to_owned(),
+        None => "Blocker: unavailable".to_owned(),
     };
     entries.push(Entry::Item(
         Item::new(BLOCKER, blocker_label, Icon::Shield)

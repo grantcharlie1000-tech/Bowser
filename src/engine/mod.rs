@@ -25,6 +25,21 @@ pub enum MemoryTargetApply {
     Deferred,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowsingDataKind {
+    SiteData,
+    Cache,
+    History,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowsingDataRange {
+    LastHour,
+    LastDay,
+    LastSevenDays,
+    AllTime,
+}
+
 pub trait EngineAdapter {
     fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()>;
     fn navigate_tab(
@@ -155,9 +170,23 @@ pub trait EngineAdapter {
     ) {
         done(Err("This browser engine cannot clear cookies.".to_owned()));
     }
+    /// Clears one category from the active engine profile. Saved passwords are never included.
+    fn clear_browsing_data(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _kind: BrowsingDataKind,
+        _range: BrowsingDataRange,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err("This browser engine cannot clear browsing data.".to_owned()));
+    }
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {
+        None
+    }
+    /// Current WebView2 reputation-checking setting, or `None` when the runtime cannot report it.
+    fn smart_screen_enabled(&self, _tab: crate::tabs::TabId) -> Option<bool> {
         None
     }
 }
@@ -192,9 +221,8 @@ pub struct EngineEvents {
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
-    /// The blocker stopped a request on this tab; the argument is the running count for the
-    /// current page.
-    pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32)>>,
+    /// A blocker stopped a request; includes the current-page count and page host when known.
+    pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>>,
     /// A top-level navigation in this tab finished with an error. The flag is true for certificate
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,

@@ -9,6 +9,7 @@ pub mod glass;
 pub mod passwords_import;
 mod passwords_panel;
 mod profile_rename;
+pub(crate) mod privacy_panel;
 mod smooth;
 mod window;
 
@@ -73,6 +74,8 @@ pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 /// One-shot debounce for session snapshots; armed by a tab change, never repeating.
 pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
+/// Debounces the small host-only privacy statistics file after blocked requests.
+pub(crate) const WM_PRIVACY_STATS_TIMER: usize = 7;
 /// Advances the address bar navigation progress transition while it is visible.
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 

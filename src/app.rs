@@ -494,6 +494,9 @@ pub struct App {
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
+    privacy_stats: Option<crate::privacy_stats::PrivacyStats>,
+    privacy_stats_path: Option<PathBuf>,
+    privacy_session_blocked: u64,
     /// Ad/tracker blocker shared with the engine; `None` for benchmark launches or when disabled.
     blocker: Option<engine::BlockerHandle>,
     /// Stored per-site permission decisions; `None` for benchmark launches, which deny every request.
@@ -1913,6 +1916,75 @@ impl App {
             .map_or(0, |tab| tab.blocked)
     }
 
+    pub fn privacy_stats_snapshot(
+        app: &AppRef,
+    ) -> (crate::privacy_stats::PrivacyStats, u64) {
+        let state = app.borrow();
+        (
+            state.privacy_stats.clone().unwrap_or_default(),
+            state.privacy_session_blocked,
+        )
+    }
+
+    pub fn privacy_settings_snapshot(app: &AppRef) -> (bool, bool, u64) {
+        let state = app.borrow();
+        (
+            state.settings.blocker_enabled,
+            state.settings.sleep_enabled,
+            state.settings.sleep_after_secs,
+        )
+    }
+
+    /// Counts only a request already rejected by the blocker. Called from the existing request
+    /// event, so there is no timer or polling path for collection.
+    pub fn record_blocked_request(app: &AppRef, site_host: &str) {
+        let (hwnd, should_write) = {
+            let mut state = app.borrow_mut();
+            state.privacy_session_blocked = state.privacy_session_blocked.saturating_add(1);
+            if let Some(stats) = state.privacy_stats.as_mut() {
+                stats.record_blocked(crate::privacy_stats::today_utc().as_str(), site_host);
+            }
+            (state.hwnd, state.privacy_stats_path.is_some())
+        };
+        if should_write {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                    Some(hwnd),
+                    win32::WM_PRIVACY_STATS_TIMER,
+                    1_500,
+                    None,
+                );
+            }
+        }
+    }
+
+    pub fn privacy_stats_save_now(app: &AppRef) -> std::io::Result<()> {
+        let (path, stats) = {
+            let state = app.borrow();
+            (state.privacy_stats_path.clone(), state.privacy_stats.clone())
+        };
+        match (path, stats) {
+            (Some(path), Some(stats)) => stats.save(&path),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn clear_privacy_statistics(app: &AppRef) -> std::io::Result<()> {
+        let mut state = app.borrow_mut();
+        let Some(path) = state.privacy_stats_path.clone() else {
+            return Ok(());
+        };
+        let Some(stats) = state.privacy_stats.as_mut() else { return Ok(()); };
+        let previous = stats.clone();
+        stats.clear();
+        if let Err(error) = stats.save(&path) {
+            *stats = previous;
+            return Err(error);
+        }
+        state.privacy_session_blocked = 0;
+        Ok(())
+    }
+
     pub fn permissions_handle(app: &AppRef) -> Option<engine::PermissionsHandle> {
         app.borrow().permissions.clone()
     }
@@ -2076,6 +2148,7 @@ impl App {
         let track_session = options.benchmark_url.is_none()
             && options.user_data_dir.is_none()
             && !profile.is_guest();
+        let track_privacy = options.benchmark_url.is_none() && options.user_data_dir.is_none();
         let mut app = Self::from_launch_options(
             options,
             user_data_dir,
@@ -2084,7 +2157,7 @@ impl App {
             Some(profile.tab_groups_file()),
         );
         app.settings = settings;
-        if track_session && app.settings.blocker_enabled {
+        if track_privacy && app.settings.blocker_enabled {
             let mut state = crate::blocker::BlockerState::load(
                 &profile.blocker_dir(),
                 &app.settings.blocker_allow,
@@ -2092,10 +2165,14 @@ impl App {
             state.enabled = true;
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
-        if track_session {
+        if track_privacy {
             app.permissions = Some(Rc::new(RefCell::new(
                 crate::permissions::PermissionStore::load(&profile.permissions_file()),
             )));
+            app.privacy_stats_path = Some(profile.privacy_stats_file());
+            app.privacy_stats = Some(crate::privacy_stats::PrivacyStats::load(
+                &profile.privacy_stats_file(),
+            ));
         }
         if track_session {
             app.init_session(&profile.session_dir());
@@ -2161,6 +2238,9 @@ impl App {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            privacy_stats: None,
+            privacy_stats_path: None,
+            privacy_session_blocked: 0,
             blocker: None,
             permissions: None,
         }
@@ -2730,7 +2810,7 @@ impl App {
             },
             blocked_changed: {
                 let blocked_app = Rc::downgrade(app);
-                Some(Rc::new(move |tab_id, count| {
+                Some(Rc::new(move |tab_id, count, site_host| {
                     if let Some(app) = blocked_app.upgrade() {
                         let active = {
                             let mut state = app.borrow_mut();
@@ -2741,6 +2821,9 @@ impl App {
                         };
                         if active {
                             Self::schedule_blocked_title(&app);
+                        }
+                        if count != 0 {
+                            Self::record_blocked_request(&app, &site_host);
                         }
                     }
                 }))
@@ -4914,6 +4997,9 @@ mod tests {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            privacy_stats: None,
+            privacy_stats_path: None,
+            privacy_session_blocked: 0,
             blocker: None,
             permissions: None,
         }))

@@ -2,7 +2,7 @@ use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
     WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
-    menu, passwords_panel, settings_panel, show_error_message, site_info,
+    menu, passwords_panel, privacy_panel, settings_panel, show_error_message, site_info,
 };
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
@@ -1555,6 +1555,13 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == crate::win32::WM_PRIVACY_STATS_TIMER => {
+                let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
+                if let Some(app) = app {
+                    let _ = App::privacy_stats_save_now(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == crate::app::BLOCKED_TITLE_TIMER => {
                 let _ = KillTimer(Some(hwnd), crate::app::BLOCKED_TITLE_TIMER);
                 if let Some(app) = app {
@@ -1609,8 +1616,10 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
+                let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
+                    let _ = App::privacy_stats_save_now(app);
                     App::session_finish(app);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
@@ -2450,6 +2459,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
     const PROFILE: usize = 5007;
+    const PRIVACY: usize = 5008;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -2481,6 +2491,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     }));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(Item::new(SETTINGS, "Settings…", Icon::Gear)));
+    entries.push(Entry::Item(
+        Item::new(PRIVACY, "Privacy dashboard", Icon::Shield).shortcut("Ctrl+Shift+Del"),
+    ));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
         Item::new(EXIT, "Exit", Icon::Close).shortcut("Alt+F4"),
@@ -2528,6 +2541,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     show_error_message(&format!("Settings could not be opened: {error}"));
                 }
             }
+            PRIVACY => privacy_panel::open(hwnd, app),
             EXIT => unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                     Some(hwnd),
@@ -3393,6 +3407,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
                 ));
             }
         }
+        Command::OpenPrivacyDashboard => privacy_panel::open(hwnd, app),
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
