@@ -355,6 +355,7 @@ impl WindowChrome {
                 &sidebar_tabs,
                 &group_inputs,
                 preferences.as_ref().expect("preferences loaded for reprojection"),
+                active,
             );
         }
         // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
@@ -1531,10 +1532,12 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = app {
                         card::hover_changed(hwnd, app, hit_tab(hwnd, h));
                     }
-                    island_menu::ball_hover(
-                        hwnd,
-                        island_ball_at(hwnd, p.x, p.y).map(|ball| (ball.tab, ball.rect)),
-                    );
+                    let ball = match h {
+                        Hit::SidebarGroup(index) => sidebar_group_ball(hwnd, index)
+                            .filter(|(_, rect)| rect.contains(p.x, p.y)),
+                        _ => island_ball_at(hwnd, p.x, p.y).map(|ball| (ball.tab, ball.rect)),
+                    };
+                    island_menu::ball_hover(hwnd, ball);
                     let mut t = TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1946,6 +1949,12 @@ unsafe extern "system" fn window_proc(
                                 );
                             }
                         }
+                        Hit::SidebarGroup(i) => {
+                            card::cancel(hwnd);
+                            if let Some((id, anchor)) = sidebar_group_ball(hwnd, i) {
+                                island_menu::open_now(hwnd, app, id, anchor);
+                            }
+                        }
                         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
                             if let Some(id) = sidebar_tab_id(hwnd, i) {
                                 card::cancel(hwnd);
@@ -2287,6 +2296,22 @@ fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
         _ => None,
     }
+}
+
+/// The ball hit rectangle of a sidebar group header and the group's leading tab, in client
+/// coordinates, or `None` when `index` is not a group header.
+fn sidebar_group_ball(hwnd: HWND, index: usize) -> Option<(TabId, Rect)> {
+    with_chrome(hwnd, |s| {
+        let layout = s.sidebar?;
+        let metrics = Metrics::new(s.dpi);
+        let id = match s.sidebar_rows.get(index)? {
+            crate::chrome::vertical_paint::SidebarRow::Group { representative, .. } => *representative,
+            crate::chrome::vertical_paint::SidebarRow::Tab { .. } => return None,
+        };
+        let geometry = crate::chrome::vertical_paint::header_ball(&layout, &s.sidebar_rows, index, s.sidebar_scroll, metrics)?;
+        Some((id, geometry.hit_rect))
+    })
+    .flatten()
 }
 
 fn sidebar_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {

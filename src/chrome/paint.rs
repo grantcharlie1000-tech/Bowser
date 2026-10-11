@@ -292,22 +292,24 @@ impl ChromeSurface {
         self.round(plus, plus.width() / 2, palette.tab_hover, dirty);
         self.draw_text("+", plus, palette.tab_text_active, false, layout.header, dirty);
 
-        let row_height = m.px(crate::vertical_tabs::TAB_ROW_HEIGHT).max(1);
         for (index, row) in rows.iter().enumerate() {
-            let top = layout.rows.top + index as i32 * row_height - scroll.max(0);
-            let bounds = Rect::new(layout.rows.left + m.px(7), top + m.px(2), layout.handle.left - m.px(7), top + row_height - m.px(2));
+            let bounds = crate::chrome::vertical_paint::row_bounds(layout, index, m, scroll);
             if bounds.bottom <= layout.rows.top || bounds.top >= layout.rows.bottom {
                 continue;
             }
             match row {
-                crate::chrome::vertical_paint::SidebarRow::Group { name, colour, collapsed, .. } => {
-                    let dot = Rect::new(bounds.left + m.px(8), top + (row_height - m.px(8)) / 2, bounds.left + m.px(16), top + (row_height + m.px(8)) / 2);
-                    let token = colour.and_then(|id| crate::theme::ISLAND_COLOURS.get(usize::from(id)).copied()).unwrap_or(palette.omnibox_focus_border);
-                    self.round(dot, dot.width() / 2, token, dirty);
-                    let label = if *collapsed { format!("›  {name}") } else { format!("⌄  {name}") };
-                    self.draw_text(&label, Rect::new(dot.right + m.px(7), bounds.top, bounds.right - m.px(8), bounds.bottom), palette.tab_text_active, true, layout.rows, dirty);
+                crate::chrome::vertical_paint::SidebarRow::Group { name, colour, .. } => {
+                    let Some(geometry) = crate::chrome::vertical_paint::header_ball(layout, rows, index, scroll, m) else {
+                        continue;
+                    };
+                    let accent = island_colour(*colour, palette.tab_group_accent);
+                    let brighten = if hover_row == Some(index) { 0.12 } else { 0.0 };
+                    self.paint_ball_stack(&geometry, accent, brighten, dirty);
+                    let label_left = crate::chrome::vertical_paint::header_label_left(&geometry, m);
+                    self.draw_text(name, Rect::new(label_left, bounds.top, bounds.right - m.px(8), bounds.bottom), palette.tab_text_active, true, layout.rows, dirty);
                 }
-                crate::chrome::vertical_paint::SidebarRow::Tab { id, title, pinned, loading } => {
+                crate::chrome::vertical_paint::SidebarRow::Tab { id, title, pinned, loading, grouped } => {
+                    let bounds = if *grouped { crate::chrome::vertical_paint::member_bounds(bounds, m) } else { bounds };
                     let selected = *id == active;
                     let fill = if selected { palette.tab_active } else if hover_row == Some(index) { palette.tab_hover } else { palette.tab_inactive };
                     self.round(bounds, m.px(7), fill, dirty);
@@ -940,6 +942,18 @@ impl ChromeSurface {
         let hovered = view.hover == Hit::GroupBall(index);
         let pressed = view.pressed == Hit::GroupBall(index);
         let brighten = if pressed { 0.22 } else if hovered { 0.12 } else { 0.0 };
+        self.paint_ball_stack(geometry, colour, brighten, dirty);
+    }
+
+    /// Draws a group's fanned balls, leading ball last so it stays on top. `brighten` lifts the
+    /// base colour toward white for hover and press. The vertical sidebar reuses this too.
+    pub(crate) fn paint_ball_stack(
+        &mut self,
+        geometry: &GroupGeometry,
+        colour: Rgba,
+        brighten: f32,
+        dirty: Rect,
+    ) {
         for ball_index in (0..geometry.ball_rects.len()).rev() {
             let ball = geometry.ball_rects[ball_index];
             if ball.intersect(dirty).is_empty() {
