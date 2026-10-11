@@ -1,3 +1,4 @@
+mod card;
 pub mod frame;
 pub mod glass;
 mod menu_theme;
@@ -64,6 +65,8 @@ pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 /// One-shot debounce for session snapshots; armed by a tab change, never repeating.
 pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
+/// One-shot hover delay for the tab card; armed when the pointer settles on an inactive tab.
+pub(crate) const WM_CARD_HOVER_TIMER: usize = 5;
 
 pub(crate) fn post(
     hwnd: HWND,

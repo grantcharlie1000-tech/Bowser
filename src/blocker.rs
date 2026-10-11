@@ -427,16 +427,13 @@ impl BlockerState {
 
     /// The decision for one subresource request made by a page on `top_host`.
     pub fn should_block(&self, request_url: &str, top_host: &str) -> bool {
-        if !self.enabled {
+        if !self.enabled || self.site_allowed(top_host) {
             return false;
         }
         let Some((host, path)) = split_url(request_url) else {
             return false;
         };
         if !top_host.is_empty() && same_site(&host, top_host) {
-            return false;
-        }
-        if self.site_allowed(top_host) {
             return false;
         }
         self.matcher.matches_parts(&host, path, request_url)

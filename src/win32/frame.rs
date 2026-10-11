@@ -219,12 +219,14 @@ mod tests {
         assert_eq!(hit(400, 20, ChromeHit::None), FrameHit::Caption);
         assert_eq!(hit(400, 20, ChromeHit::Interactive), FrameHit::Client);
         assert_eq!(hit(790, 20, ChromeHit::None), FrameHit::Close);
+        let strip = caption_strip_height(96);
+        assert_eq!(strip, 34, "the strip is 34 px at 96 dpi");
         assert_eq!(
-            hit(730, 29, ChromeHit::None),
+            hit(730, strip - 1, ChromeHit::None),
             FrameHit::Maximize,
-            "the caption button hit target covers the full 30 px strip"
+            "the caption button hit target covers the full 34 px strip"
         );
-        assert_eq!(hit(730, 30, ChromeHit::None), FrameHit::Client);
+        assert_eq!(hit(730, strip, ChromeHit::None), FrameHit::Client);
     }
 
     #[test]
@@ -263,6 +265,6 @@ mod tests {
             frame_hit_test(p(200, 80), (1600, 900), 192, true, ChromeHit::None),
             FrameHit::Client
         );
-        assert_eq!(caption_strip_height(120), 38, "37.5 rounds up");
+        assert_eq!(caption_strip_height(120), 43, "42.5 rounds up");
     }
 }

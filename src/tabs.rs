@@ -17,6 +17,8 @@ pub struct FaviconKey(pub u64);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tab {
     pub id: TabId,
+    /// Tab that opened this tab through a page new-window request, if any.
+    pub opener: Option<TabId>,
     pub pinned: bool,
     pub title: String,
     /// Display form of the current address. `None` until the tab first has a page.
@@ -29,6 +31,7 @@ impl Tab {
     pub fn new(id: TabId) -> Self {
         Self {
             id,
+            opener: None,
             pinned: false,
             title: String::new(),
             url: None,
@@ -124,6 +127,11 @@ impl TabList {
         }
 
         self.tabs.remove(index);
+        for tab in &mut self.tabs {
+            if tab.opener == Some(id) {
+                tab.opener = None;
+            }
+        }
         if id == self.active {
             // After removal the right neighbour sits at `index`. Otherwise the tab closed was
             // the rightmost, so the new last tab is the left neighbour.
@@ -230,6 +238,18 @@ impl TabList {
 
     pub fn get_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         self.tabs.iter_mut().find(|tab| tab.id == id)
+    }
+
+    /// Records the page tab that opened `id`. Unknown tabs and self-links are rejected.
+    pub fn set_opener(&mut self, id: TabId, opener: TabId) -> bool {
+        if id == opener || self.index_of(opener).is_none() {
+            return false;
+        }
+        let Some(tab) = self.get_mut(id) else {
+            return false;
+        };
+        tab.opener = Some(opener);
+        true
     }
 
     /// Returns `true` if the title changed. Unchanged titles are not reallocated.
@@ -415,6 +435,18 @@ mod tests {
         assert_eq!(outcome.new_active, TabId(2));
         assert_eq!(list.active(), TabId(2));
         assert_eq!(ids(&list), vec![TabId(0), TabId(2)]);
+    }
+
+    #[test]
+    fn closing_opener_clears_children_opener_links() {
+        let mut list = list_of(3);
+        list.set_opener(TabId(1), TabId(0));
+        list.set_opener(TabId(2), TabId(0));
+
+        list.close(TabId(0));
+
+        assert_eq!(list.get(TabId(1)).unwrap().opener, None);
+        assert_eq!(list.get(TabId(2)).unwrap().opener, None);
     }
 
     #[test]

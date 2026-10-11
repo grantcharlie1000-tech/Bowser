@@ -29,6 +29,7 @@ pub struct FaviconCache {
 
 struct CacheEntry {
     key: FaviconKey,
+    size: u32,
     /// Full SHA-256 of the source bytes. A key match alone is not a hit.
     digest: [u8; 32],
     bitmap: FaviconBitmap,
@@ -37,9 +38,9 @@ struct CacheEntry {
 impl FaviconCache {
     /// Stores `bitmap` as the decoding of `source`. Only an entry with the same key and digest is
     /// replaced, so a colliding favicon cannot evict another site's bitmap.
-    pub fn insert(&mut self, key: FaviconKey, source: &[u8], bitmap: FaviconBitmap) {
+    pub fn insert(&mut self, key: FaviconKey, size: u32, source: &[u8], bitmap: FaviconBitmap) {
         let digest = sha256(source);
-        if let Some(index) = self.position(key, &digest) {
+        if let Some(index) = self.position(key, size, &digest) {
             self.entries.remove(index);
         }
         if self.entries.len() == MAX_CACHE_ENTRIES {
@@ -47,15 +48,16 @@ impl FaviconCache {
         }
         self.entries.push(CacheEntry {
             key,
+            size,
             digest,
             bitmap,
         });
     }
 
     /// Returns the bitmap for `source` only when both its key and its full digest match.
-    pub fn get(&mut self, key: FaviconKey, source: &[u8]) -> Option<&FaviconBitmap> {
+    pub fn get(&mut self, key: FaviconKey, size: u32, source: &[u8]) -> Option<&FaviconBitmap> {
         let digest = sha256(source);
-        let index = self.position(key, &digest)?;
+        let index = self.position(key, size, &digest)?;
         let entry = self.entries.remove(index);
         self.entries.push(entry);
         self.entries.last().map(|entry| &entry.bitmap)
@@ -69,10 +71,10 @@ impl FaviconCache {
         self.entries.retain(|entry| entry.key != key);
     }
 
-    fn position(&self, key: FaviconKey, digest: &[u8; 32]) -> Option<usize> {
+    fn position(&self, key: FaviconKey, size: u32, digest: &[u8; 32]) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| entry.key == key && entry.digest == *digest)
+            .position(|entry| entry.key == key && entry.size == size && entry.digest == *digest)
     }
 }
 
@@ -322,7 +324,7 @@ mod tests {
 
     fn first_byte(cache: &mut FaviconCache, key: FaviconKey, source: &[u8]) -> Option<u8> {
         cache
-            .get(key, source)
+            .get(key, 16, source)
             .map(|bitmap| bitmap.bgra_premultiplied[0])
     }
 
@@ -378,28 +380,28 @@ mod tests {
     fn cache_is_bounded_and_evicts_least_recently_used() {
         let mut cache = FaviconCache::default();
         for n in 0..65_u8 {
-            cache.insert(FaviconKey(u64::from(n)), &[n], bitmap(n));
+            cache.insert(FaviconKey(u64::from(n)), 16, &[n], bitmap(n));
         }
-        assert!(cache.get(FaviconKey(0), &[0]).is_none());
+        assert!(cache.get(FaviconKey(0), 16, &[0]).is_none());
         assert_eq!(first_byte(&mut cache, FaviconKey(1), &[1]), Some(1));
-        cache.get(FaviconKey(2), &[2]);
-        cache.insert(FaviconKey(65), &[65], bitmap(65));
-        assert!(cache.get(FaviconKey(3), &[3]).is_none());
-        assert!(cache.get(FaviconKey(1), &[1]).is_some());
-        assert!(cache.get(FaviconKey(2), &[2]).is_some());
+        cache.get(FaviconKey(2), 16, &[2]);
+        cache.insert(FaviconKey(65), 16, &[65], bitmap(65));
+        assert!(cache.get(FaviconKey(3), 16, &[3]).is_none());
+        assert!(cache.get(FaviconKey(1), 16, &[1]).is_some());
+        assert!(cache.get(FaviconKey(2), 16, &[2]).is_some());
     }
 
     #[test]
     fn cache_replacing_removing_and_clearing() {
         let mut cache = FaviconCache::default();
-        cache.insert(FaviconKey(1), b"one", bitmap(1));
-        cache.insert(FaviconKey(1), b"one", bitmap(2));
+        cache.insert(FaviconKey(1), 16, b"one", bitmap(1));
+        cache.insert(FaviconKey(1), 16, b"one", bitmap(2));
         assert_eq!(first_byte(&mut cache, FaviconKey(1), b"one"), Some(2));
         cache.remove(FaviconKey(1));
-        assert!(cache.get(FaviconKey(1), b"one").is_none());
-        cache.insert(FaviconKey(2), b"two", bitmap(2));
+        assert!(cache.get(FaviconKey(1), 16, b"one").is_none());
+        cache.insert(FaviconKey(2), 16, b"two", bitmap(2));
         cache.clear();
-        assert!(cache.get(FaviconKey(2), b"two").is_none());
+        assert!(cache.get(FaviconKey(2), 16, b"two").is_none());
     }
 
     #[test]
@@ -408,18 +410,18 @@ mod tests {
         // The key is an explicit argument, so no test-only hook is needed.
         let shared = FaviconKey(7);
         let mut cache = FaviconCache::default();
-        cache.insert(shared, b"genuine icon", bitmap(1));
+        cache.insert(shared, 16, b"genuine icon", bitmap(1));
 
-        assert!(cache.get(shared, b"forged icon").is_none());
+        assert!(cache.get(shared, 16, b"forged icon").is_none());
         assert_eq!(first_byte(&mut cache, shared, b"genuine icon"), Some(1));
 
-        cache.insert(shared, b"forged icon", bitmap(2));
+        cache.insert(shared, 16, b"forged icon", bitmap(2));
         assert_eq!(first_byte(&mut cache, shared, b"forged icon"), Some(2));
         assert_eq!(first_byte(&mut cache, shared, b"genuine icon"), Some(1));
 
         cache.remove(shared);
-        assert!(cache.get(shared, b"genuine icon").is_none());
-        assert!(cache.get(shared, b"forged icon").is_none());
+        assert!(cache.get(shared, 16, b"genuine icon").is_none());
+        assert!(cache.get(shared, 16, b"forged icon").is_none());
     }
 
     #[cfg(windows)]
@@ -481,5 +483,16 @@ mod tests {
         assert!(decode(b"garbage", 16).is_none());
         assert!(decode(&[137, 80, 78], 16).is_none());
         assert!(decode(&vec![0; 256 * 1024 + 1], 16).is_none());
+    }
+
+    #[test]
+    fn decoded_cache_identity_includes_requested_size() {
+        let mut cache = FaviconCache::default();
+        let source = b"same source";
+        let key = key_for(source);
+        cache.insert(key, 16, source, bitmap(16));
+
+        assert!(cache.get(key, 16, source).is_some());
+        assert!(cache.get(key, 32, source).is_none());
     }
 }

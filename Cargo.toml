@@ -17,3 +17,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gd
 name = "bowser"
 path = "src/main.rs"
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+

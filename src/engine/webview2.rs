@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
@@ -280,6 +280,8 @@ struct WebView2Tab {
     allowed_file: Option<Url>,
     memory_target_api: Option<MemoryTargetApi>,
     visible: Rc<Cell<bool>>,
+    /// Bounds last accepted by `controller`, so an unchanged resize skips the SetBounds call.
+    applied_bounds: Option<RECT>,
 }
 
 pub struct WebView2Engine {
@@ -299,6 +301,9 @@ struct EngineCore {
     tabs: HashMap<TabId, WebView2Tab>,
     known_tabs: HashSet<TabId>,
     creating: HashSet<TabId>,
+    prewarming: HashSet<TabId>,
+    prewarm_waiting: Option<TabId>,
+    waiting_controllers: VecDeque<TabId>,
     pending: HashMap<TabId, Url>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
@@ -335,14 +340,71 @@ impl WebView2Engine {
 }
 
 impl WebView2Engine {
-    fn request_controller(core: &Rc<RefCell<EngineCore>>, tab_id: TabId) -> Result<()> {
+    fn start_waiting_prewarm(core: &Rc<RefCell<EngineCore>>) {
+        let (next, prewarm) = {
+            let mut state = core.borrow_mut();
+            if !state.creating.is_empty() {
+                return;
+            }
+            let waiting = state.prewarm_waiting.take();
+            let waiting = waiting.filter(|tab| {
+                !state.closed
+                    && state.active_tab == Some(*tab)
+                    && state.known_tabs.contains(tab)
+                    && !state.tabs.contains_key(tab)
+            });
+            if let Some(tab) = waiting {
+                (Some(tab), true)
+            } else {
+                let next = loop {
+                    let Some(tab) = state.waiting_controllers.pop_front() else {
+                        break None;
+                    };
+                    if !state.closed
+                        && state.known_tabs.contains(&tab)
+                        && !state.tabs.contains_key(&tab)
+                    {
+                        break Some(tab);
+                    }
+                };
+                (next, false)
+            }
+        };
+        if let Some(tab) = next {
+            let _ = Self::request_controller(core, tab, prewarm);
+        }
+    }
+
+    fn request_controller(
+        core: &Rc<RefCell<EngineCore>>,
+        tab_id: TabId,
+        prewarm: bool,
+    ) -> Result<()> {
         let (environment, parent, allowed_file, events, tracking_policy, blocker) = {
             let mut state = core.borrow_mut();
             if state.closed || !state.known_tabs.contains(&tab_id) {
                 return Ok(());
             }
-            if state.tabs.contains_key(&tab_id) || !state.creating.insert(tab_id) {
+            if state.tabs.contains_key(&tab_id) || state.creating.contains(&tab_id) {
                 return Ok(());
+            }
+            if !state.creating.is_empty() {
+                if prewarm {
+                    if state.active_tab == Some(tab_id) {
+                        state.prewarm_waiting = Some(tab_id);
+                    }
+                } else if !state.waiting_controllers.contains(&tab_id) {
+                    state.waiting_controllers.push_back(tab_id);
+                }
+                return Ok(());
+            }
+            state.creating.insert(tab_id);
+            if prewarm {
+                if state.creating.len() > 1 {
+                    state.creating.remove(&tab_id);
+                    return Ok(());
+                }
+                state.prewarming.insert(tab_id);
             }
             (
                 state
@@ -372,9 +434,13 @@ impl WebView2Engine {
                     (Ok(()), Some(controller)) => controller,
                     (Err(error), _) => {
                         if let Some(core) = weak_core.upgrade() {
-                            let mut state = core.borrow_mut();
-                            state.creating.remove(&tab_id);
-                            state.pending.remove(&tab_id);
+                            {
+                                let mut state = core.borrow_mut();
+                                state.creating.remove(&tab_id);
+                                state.pending.remove(&tab_id);
+                                state.prewarming.remove(&tab_id);
+                            }
+                            Self::start_waiting_prewarm(&core);
                         }
                         if let Some(failed) = completion_events.failed.as_ref() {
                             failed(error);
@@ -383,9 +449,13 @@ impl WebView2Engine {
                     }
                     _ => {
                         if let Some(core) = weak_core.upgrade() {
-                            let mut state = core.borrow_mut();
-                            state.creating.remove(&tab_id);
-                            state.pending.remove(&tab_id);
+                            {
+                                let mut state = core.borrow_mut();
+                                state.creating.remove(&tab_id);
+                                state.pending.remove(&tab_id);
+                                state.prewarming.remove(&tab_id);
+                            }
+                            Self::start_waiting_prewarm(&core);
                         }
                         if let Some(failed) = completion_events.failed.as_ref() {
                             failed(Error::from(windows::Win32::Foundation::E_POINTER));
@@ -400,13 +470,24 @@ impl WebView2Engine {
                 let (still_open, bounds, visible) = {
                     let state = core.borrow();
                     (
-                        !state.closed && state.known_tabs.contains(&tab_id),
+                        !state.closed
+                            && state.known_tabs.contains(&tab_id)
+                            && (!state.prewarming.contains(&tab_id)
+                                || state.active_tab == Some(tab_id)
+                                || state.pending.contains_key(&tab_id)),
                         state.bounds,
                         state.active_tab == Some(tab_id),
                     )
                 };
                 if !still_open {
+                    {
+                        let mut state = core.borrow_mut();
+                        state.creating.remove(&tab_id);
+                        state.prewarming.remove(&tab_id);
+                        state.pending.remove(&tab_id);
+                    }
                     let _ = unsafe { controller.Close() };
+                    Self::start_waiting_prewarm(&core);
                     return Ok(());
                 }
                 if let Some(log) = completion_events.policy_event.as_ref() {
@@ -435,9 +516,13 @@ impl WebView2Engine {
                     Err(error) => {
                         let _ = unsafe { cleanup.Close() };
                         if let Some(core) = weak_core.upgrade() {
-                            let mut state = core.borrow_mut();
-                            state.creating.remove(&tab_id);
-                            state.pending.remove(&tab_id);
+                            {
+                                let mut state = core.borrow_mut();
+                                state.creating.remove(&tab_id);
+                                state.pending.remove(&tab_id);
+                                state.prewarming.remove(&tab_id);
+                            }
+                            Self::start_waiting_prewarm(&core);
                         }
                         if let Some(failed) = completion_events.failed.as_ref() {
                             failed(error);
@@ -448,6 +533,7 @@ impl WebView2Engine {
                 let (pending, target, still_open) = {
                     let mut state = core.borrow_mut();
                     state.creating.remove(&tab_id);
+                    state.prewarming.remove(&tab_id);
                     let still_open = !state.closed && state.known_tabs.contains(&tab_id);
                     if still_open {
                         let active = state.active_tab == Some(tab_id);
@@ -477,9 +563,16 @@ impl WebView2Engine {
                 if !still_open {
                     let mut tab = tab;
                     let _ = EngineAdapter::close(&mut tab);
+                    Self::start_waiting_prewarm(&core);
                     return Ok(());
                 }
                 core.borrow_mut().tabs.insert(tab_id, tab);
+                if let Some(callback) = completion_events.controller_ready.as_ref() {
+                    callback(tab_id);
+                }
+                if let Some(log) = completion_events.policy_event.as_ref() {
+                    log("controller_ready");
+                }
                 let first_webview = core
                     .borrow()
                     .tabs
@@ -500,6 +593,7 @@ impl WebView2Engine {
                 {
                     failed(error);
                 }
+                Self::start_waiting_prewarm(&core);
                 if let Some(url) = pending {
                     let handles = core
                         .borrow()
@@ -507,8 +601,12 @@ impl WebView2Engine {
                         .get(&tab_id)
                         .map(|tab| (tab.webview.clone(), tab.allowed_file.clone()));
                     if let Some((webview, allowed_file)) = handles
-                        && let Err(error) =
-                            navigate_webview(webview.as_ref(), allowed_file.as_ref(), &url)
+                        && let Err(error) = navigate_with_timing(
+                            &completion_events,
+                            webview.as_ref(),
+                            allowed_file.as_ref(),
+                            &url,
+                        )
                         && let Some(failed) = completion_events.failed.as_ref()
                     {
                         failed(error);
@@ -520,6 +618,9 @@ impl WebView2Engine {
         if let Err(error) = unsafe { environment.CreateCoreWebView2Controller(parent, &handler) } {
             let mut state = core.borrow_mut();
             state.creating.remove(&tab_id);
+            state.prewarming.remove(&tab_id);
+            drop(state);
+            Self::start_waiting_prewarm(core);
             return Err(error);
         }
         Ok(())
@@ -534,7 +635,12 @@ impl WebView2Engine {
             if let Some(tab) = state.tabs.get(&tab_id) {
                 let handles = (tab.webview.clone(), tab.allowed_file.clone());
                 drop(state);
-                return navigate_webview(handles.0.as_ref(), handles.1.as_ref(), url);
+                return navigate_with_timing(
+                    &self.core.borrow().events,
+                    handles.0.as_ref(),
+                    handles.1.as_ref(),
+                    url,
+                );
             }
             if state.closed || !state.known_tabs.contains(&tab_id) {
                 return Err(Error::from(windows::Win32::Foundation::E_POINTER));
@@ -543,7 +649,7 @@ impl WebView2Engine {
             !state.creating.contains(&tab_id)
         };
         if should_create {
-            Self::request_controller(&self.core, tab_id)?;
+            Self::request_controller(&self.core, tab_id, false)?;
         }
         Ok(())
     }
@@ -1123,6 +1229,9 @@ impl WebView2Engine {
                         tabs: HashMap::new(),
                         known_tabs: HashSet::new(),
                         creating: HashSet::new(),
+                        prewarming: HashSet::new(),
+                        prewarm_waiting: None,
+                        waiting_controllers: VecDeque::new(),
                         pending: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
@@ -1259,6 +1368,30 @@ impl EngineAdapter for WebView2Engine {
     fn navigate_tab(&mut self, tab: TabId, url: &Url) -> Result<()> {
         self.navigate_tab_internal(tab, url)
     }
+    fn prewarm_tab(&mut self, tab: TabId) -> Result<()> {
+        let eligible = {
+            let mut state = self.core.borrow_mut();
+            if state.active_tab != Some(tab)
+                || !state.known_tabs.contains(&tab)
+                || state.tabs.contains_key(&tab)
+                || state.closed
+            {
+                return Ok(());
+            }
+            if !state.creating.is_empty() {
+                if !state.creating.contains(&tab) {
+                    state.prewarm_waiting = Some(tab);
+                }
+                return Ok(());
+            }
+            state.prewarm_waiting = None;
+            true
+        };
+        if eligible {
+            Self::request_controller(&self.core, tab, true)?;
+        }
+        Ok(())
+    }
     fn can_go_back(&self) -> bool {
         let state = self.core.borrow();
         state
@@ -1375,7 +1508,10 @@ impl EngineAdapter for WebView2Engine {
         let removed = {
             let mut state = self.core.borrow_mut();
             state.known_tabs.remove(&tab_id);
-            state.creating.remove(&tab_id);
+            state.waiting_controllers.retain(|queued| *queued != tab_id);
+            if state.prewarm_waiting == Some(tab_id) {
+                state.prewarm_waiting = None;
+            }
             state.pending.remove(&tab_id);
             state.hidden_since.remove(&tab_id);
             state.suspended.remove(&tab_id);
@@ -1549,6 +1685,22 @@ fn navigate_webview(
     }
 }
 
+fn navigate_with_timing(
+    events: &EngineEvents,
+    webview: Option<&ICoreWebView2>,
+    allowed_file: Option<&Url>,
+    url: &Url,
+) -> Result<()> {
+    if let Some(log) = events.policy_event.as_ref() {
+        log("navigate_called");
+    }
+    let result = navigate_webview(webview, allowed_file, url);
+    if let Some(log) = events.policy_event.as_ref() {
+        log("navigate_returned");
+    }
+    result
+}
+
 impl EngineAdapter for WebView2Tab {
     fn navigate(&mut self, url: &Url) -> Result<()> {
         navigate_webview(self.webview.as_ref(), self.allowed_file.as_ref(), url)
@@ -1582,12 +1734,17 @@ impl EngineAdapter for WebView2Tab {
         }
     }
     fn resize(&mut self, bounds: RECT) -> Result<()> {
+        if self.applied_bounds == Some(bounds) {
+            return Ok(());
+        }
         unsafe {
             self.controller
                 .as_ref()
                 .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
-                .SetBounds(bounds)
+                .SetBounds(bounds)?;
         }
+        self.applied_bounds = Some(bounds);
+        Ok(())
     }
     fn reload(&mut self) -> Result<()> {
         unsafe {
@@ -1791,6 +1948,7 @@ unsafe fn configure_controller(
             &mut token,
         )?;
         let content_progress = events.navigation_progress.clone();
+        let content_log = events.policy_event.clone();
         let content_block_tab = block_tab.clone();
         let content_blocked = events.blocked_changed.clone();
         webview.add_ContentLoading(
@@ -1810,6 +1968,9 @@ unsafe fn configure_controller(
                             tab_id,
                             super::NavigationProgressEvent::ContentLoading(navigation_id),
                         );
+                        if let Some(log) = content_log.as_ref() {
+                            log("content_loading");
+                        }
                     }
                 }
                 Ok(())
@@ -1848,6 +2009,9 @@ unsafe fn configure_controller(
                                 tab_id,
                                 super::NavigationProgressEvent::Completed(navigation_id),
                             );
+                        }
+                        if let Some(log) = navigation_log.as_ref() {
+                            log("navigation_completed");
                         }
                     }
                     let mut success = BOOL::default();
@@ -2146,6 +2310,7 @@ unsafe fn configure_controller(
             allowed_file,
             memory_target_api: None,
             visible: Rc::new(Cell::new(visible)),
+            applied_bounds: Some(bounds),
         })
     }
 }

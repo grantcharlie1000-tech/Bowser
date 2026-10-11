@@ -286,7 +286,8 @@ pub struct PerfLog {
 }
 struct ActiveLog {
     start: Instant,
-    output: RefCell<File>,
+    path: PathBuf,
+    output: RefCell<Vec<u8>>,
     failure: RefCell<Option<String>>,
 }
 impl PerfLog {
@@ -295,11 +296,11 @@ impl PerfLog {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)?;
             }
-            let mut file = File::create(path)?;
-            writeln!(file, "event,elapsed_ms,qpc_ticks")?;
+            let _file = File::create(path)?;
             Some(ActiveLog {
                 start: Instant::now(),
-                output: RefCell::new(file),
+                path: path.to_owned(),
+                output: RefCell::new(b"event,elapsed_ms,qpc_ticks\n".to_vec()),
                 failure: RefCell::new(None),
             })
         } else {
@@ -330,15 +331,12 @@ impl PerfLog {
             // QPC is a system-wide monotonic timestamp shared with the harness.
             unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut tick) }
                 .map_err(io::Error::other)?;
-            {
-                let mut file = active.output.borrow_mut();
-                writeln!(
-                    file,
-                    "{event},{:.6},{tick}",
-                    active.start.elapsed().as_secs_f64() * 1000.0
-                )?;
-                file.flush()?;
-            }
+            let mut output = active.output.borrow_mut();
+            writeln!(
+                output,
+                "{event},{:.6},{tick}",
+                active.start.elapsed().as_secs_f64() * 1000.0
+            )?;
             Ok(())
         })();
         if let Err(error) = &result {
@@ -350,6 +348,23 @@ impl PerfLog {
             }
         }
         result
+    }
+}
+
+impl Drop for PerfLog {
+    fn drop(&mut self) {
+        let Some(active) = &mut self.active else {
+            return;
+        };
+        let bytes = active.output.get_mut();
+        if let Ok(mut file) = File::create(&active.path)
+            && let Err(error) = file.write_all(bytes)
+        {
+            let mut failure = active.failure.borrow_mut();
+            if failure.is_none() {
+                *failure = Some(format!("Benchmark log could not be flushed: {error}"));
+            }
+        }
     }
 }
 
@@ -842,6 +857,22 @@ mod tests {
         assert_eq!(a[0], "window_visible");
         assert_eq!(b[0], "input_ready");
         assert!(b[1].parse::<f64>().unwrap() >= a[1].parse::<f64>().unwrap());
+    }
+
+    #[test]
+    fn records_are_buffered_until_log_drop() {
+        let path =
+            std::env::temp_dir().join(format!("bowser-buffered-events-{}.csv", std::process::id()));
+        let log = PerfLog::new(Some(&path)).unwrap();
+        log.record("enter_received").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        drop(log);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("enter_received,")
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

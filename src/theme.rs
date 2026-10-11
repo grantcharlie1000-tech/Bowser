@@ -58,6 +58,7 @@ pub struct Palette {
     pub tab_hover: Rgba,
     pub tab_active: Rgba,
     pub tab_active_border: Rgba,
+    pub tab_group_accent: Rgba,
     pub tab_text_inactive: Rgba,
     pub tab_text_active: Rgba,
     pub omnibox_fill: Rgba,
@@ -78,6 +79,16 @@ pub struct Palette {
     pub hairline: Rgba,
 }
 
+/// Solid dots for the five tab markers, in `tab_card::MARKERS` order. GDI cannot draw colour emoji,
+/// so each marker is a flat colour; the set is kept distinct on both light and dark surfaces.
+pub const MARKER_COLOURS: [Rgba; 5] = [
+    Rgba::hex(0xE0457B, 0xFF),
+    Rgba::hex(0xF08A24, 0xFF),
+    Rgba::hex(0x2E9E5B, 0xFF),
+    Rgba::hex(0x1FA2C7, 0xFF),
+    Rgba::hex(0x7B5CD6, 0xFF),
+];
+
 const LIGHT_GLASS: Palette = Palette {
     translucent: true,
     window: Rgba::hex(0xF4F6F8, 0xCC),
@@ -85,6 +96,7 @@ const LIGHT_GLASS: Palette = Palette {
     tab_hover: Rgba::hex(0xFFFFFF, 0x50),
     tab_active: Rgba::hex(0xFFFFFF, 0x9C),
     tab_active_border: Rgba::hex(0x000000, 0x40),
+    tab_group_accent: Rgba::hex(0xE74F5F, 0xFF),
     tab_text_inactive: Rgba::hex(0x3A4048, 0xFF),
     tab_text_active: Rgba::hex(0x14181D, 0xFF),
     omnibox_fill: Rgba::hex(0xFFFFFF, 0x50),
@@ -110,6 +122,7 @@ const DARK_GLASS: Palette = Palette {
     tab_hover: Rgba::hex(0xFFFFFF, 0x14),
     tab_active: Rgba::hex(0xFFFFFF, 0x2E),
     tab_active_border: Rgba::hex(0xFFFFFF, 0x48),
+    tab_group_accent: Rgba::hex(0xE74F5F, 0xFF),
     tab_text_inactive: Rgba::hex(0xE4E8EE, 0xFF),
     tab_text_active: Rgba::hex(0xFFFFFF, 0xFF),
     omnibox_fill: Rgba::hex(0xFFFFFF, 0x1C),
@@ -135,6 +148,7 @@ const LIGHT_SOLID: Palette = Palette {
     tab_hover: Rgba::hex(0xEEF1F4, 0xFF),
     tab_active: Rgba::hex(0xFFFFFF, 0xFF),
     tab_active_border: Rgba::hex(0xBFC5CC, 0xFF),
+    tab_group_accent: Rgba::hex(0xE74F5F, 0xFF),
     tab_text_inactive: Rgba::hex(0x3A4048, 0xFF),
     tab_text_active: Rgba::hex(0x14181D, 0xFF),
     omnibox_fill: Rgba::hex(0xFFFFFF, 0xFF),
@@ -160,6 +174,7 @@ const DARK_SOLID: Palette = Palette {
     tab_hover: Rgba::hex(0x32353D, 0xFF),
     tab_active: Rgba::hex(0x2C3F44, 0xFF),
     tab_active_border: Rgba::hex(0x777D86, 0xFF),
+    tab_group_accent: Rgba::hex(0xE74F5F, 0xFF),
     tab_text_inactive: Rgba::hex(0xE4E8EE, 0xFF),
     tab_text_active: Rgba::hex(0xFFFFFF, 0xFF),
     omnibox_fill: Rgba::hex(0x2A3A3E, 0xFF),

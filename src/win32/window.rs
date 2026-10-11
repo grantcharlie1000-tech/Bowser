@@ -1,7 +1,8 @@
 use super::{
-    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
-    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS, WM_SESSION_SAVE_TIMER,
-    WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, frame, glass, passwords_panel, show_error_message,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARD_HOVER_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC,
+    WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
+    WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass,
+    passwords_panel, show_error_message,
 };
 use crate::{
     app::{App, AppRef, IdleTimerAction},
@@ -9,6 +10,7 @@ use crate::{
         layout::{self, Hit, Layout, Metrics, Rect},
         motion::{Emphasis, Motion},
         paint::{self, ChromeSurface, ChromeView, OmniboxView, TabView},
+        tab_card::Marker,
     },
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
@@ -17,7 +19,12 @@ use crate::{
     tabs::{FaviconKey, TabId},
     theme::Palette,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+    time::Instant,
+};
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -36,7 +43,7 @@ use windows::{
             Input::KeyboardAndMouse::{
                 GetCapture, GetFocus, GetKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture,
                 SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
-                VK_CONTROL, VK_MENU, VK_SHIFT,
+                VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
@@ -85,7 +92,8 @@ struct TabSnapshot {
     title: String,
     loading: bool,
     favicon_key: Option<FaviconKey>,
-    favicon: Option<favicon::FaviconBitmap>,
+    favicon: Option<Rc<favicon::FaviconBitmap>>,
+    marker: Option<Marker>,
 }
 struct WindowChrome {
     surface: ChromeSurface,
@@ -98,7 +106,7 @@ struct WindowChrome {
     slots: Vec<StripSlot>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
-    failed: Vec<FaviconKey>,
+    failed: VecDeque<(FaviconKey, u32)>,
     edit_text: String,
     focused: bool,
     caret: bool,
@@ -132,7 +140,7 @@ impl WindowChrome {
             slots: Vec::with_capacity(8),
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
-            failed: Vec::new(),
+            failed: VecDeque::new(),
             edit_text: String::with_capacity(256),
             focused: false,
             caret: true,
@@ -153,11 +161,12 @@ impl WindowChrome {
             first_paint_logged: false,
         }
     }
-    fn refresh(&mut self, app: &AppRef) {
+    fn refresh(&mut self, app: &AppRef, structural: bool) {
         let now = Instant::now();
         let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
-        let preferences = App::tab_group_preferences(app);
+        let preferences = structural.then(|| App::tab_group_preferences(app));
+        let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
         let mut group_inputs = Vec::with_capacity(ids.len());
         for &id in &ids {
@@ -170,31 +179,46 @@ impl WindowChrome {
             };
             let loading = App::tab_loading(app, id);
             let pinned = App::tab_pinned(app, id);
-            let domain = App::tab_committed_url(app, id)
-                .as_ref()
-                .and_then(tab_groups::DomainKey::from_url);
-            group_inputs.push(TabGroupInput { domain, pinned });
-            let bytes = App::tab_favicon(app, id);
-            let key = bytes.as_deref().map(favicon::key_for);
-            let image = match (key, bytes.as_deref(), old) {
-                (Some(k), _, Some(t)) if t.favicon_key == Some(k) => t.favicon.clone(),
-                (Some(k), Some(b), _) => {
-                    if let Some(x) = self.favicons.get(k, b) {
-                        Some(x.clone())
-                    } else if self.failed.contains(&k) {
-                        None
+            if structural {
+                let domain = App::tab_committed_url(app, id)
+                    .as_ref()
+                    .and_then(tab_groups::DomainKey::from_url);
+                group_inputs.push(TabGroupInput {
+                    id,
+                    domain,
+                    pinned,
+                    opener: App::tab_opener(app, id),
+                });
+            }
+            let key = App::tab_favicon_key(app, id);
+            let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
+            let image = if old.is_some_and(|t| {
+                t.favicon_key == key
+                    && (key.is_none()
+                        || t.favicon
+                            .as_ref()
+                            .is_some_and(|image| image.width == size && image.height == size))
+            }) {
+                old.and_then(|tab| tab.favicon.clone())
+            } else if let (Some(k), Some(bytes)) = (key, App::tab_favicon(app, id)) {
+                if let Some(cached) = self.favicons.get(k, size, &bytes) {
+                    Some(Rc::new(cached.clone()))
+                } else if self.failed.contains(&(k, size)) {
+                    None
+                } else {
+                    let decoded = favicon::decode(&bytes, size);
+                    if let Some(bitmap) = &decoded {
+                        self.favicons.insert(k, size, &bytes, bitmap.clone());
                     } else {
-                        let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1);
-                        let d = favicon::decode(b, size as u32);
-                        if let Some(x) = &d {
-                            self.favicons.insert(k, b, x.clone())
-                        } else {
-                            self.failed.push(k)
+                        if self.failed.len() == 64 {
+                            self.failed.pop_front();
                         }
-                        d
+                        self.failed.push_back((k, size));
                     }
+                    decoded.map(Rc::new)
                 }
-                _ => None,
+            } else {
+                None
             };
             if old.is_some_and(|t| t.loading) && !loading {
                 if let Some(url) = self.pending_history.remove(&id) {
@@ -207,13 +231,18 @@ impl WindowChrome {
                 loading,
                 favicon_key: key,
                 favicon: image,
+                marker: markers.get(&id).copied(),
             });
         }
         let active_index = ids.iter().position(|&id| id == active).unwrap_or(0);
-        let slots = tab_groups::project_strip(&group_inputs, active_index, &preferences);
+        let slots = if structural {
+            tab_groups::project_strip(&group_inputs, active_index, preferences.as_ref().unwrap())
+        } else {
+            self.slots.clone()
+        };
         // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
         let hovered = self.hovered_tab();
-        {
+        if structural {
             let (layout, old, old_slots) = (&self.layout, &self.tabs, &self.slots);
             self.motion.sync(
                 &ids,
@@ -246,13 +275,15 @@ impl WindowChrome {
                 self.edit_text.push_str(url)
             }
         }
-        self.relayout(
-            self.client.0,
-            self.client.1,
-            self.dpi,
-            App::active_tab_id(app),
-            self.layout.maximised,
-        );
+        if structural {
+            self.relayout(
+                self.client.0,
+                self.client.1,
+                self.dpi,
+                App::active_tab_id(app),
+                self.layout.maximised,
+            );
+        }
     }
     fn relayout(&mut self, w: i32, h: i32, dpi: u32, active: TabId, maximised: bool) {
         self.client = (w, h);
@@ -961,7 +992,7 @@ unsafe extern "system" fn window_proc(
                     .unwrap_or_default();
                     let mut s = WindowChrome::new(r.right, r.bottom, dpi(hwnd), overlay);
                     s.edit = edit;
-                    s.refresh(app);
+                    s.refresh(app, true);
                     WINDOWS.with(|all| {
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
@@ -972,9 +1003,11 @@ unsafe extern "system" fn window_proc(
             }
             WM_MOVE => {
                 sync_overlay_position(hwnd);
+                card::close();
                 LRESULT(0)
             }
             WM_SIZE => {
+                card::close();
                 if let Some(app) = app {
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
@@ -1040,7 +1073,7 @@ unsafe extern "system" fn window_proc(
                             App::active_tab_id(app),
                             IsZoomed(hwnd).as_bool(),
                         );
-                        s.refresh(app)
+                        s.refresh(app, true)
                     });
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
@@ -1068,8 +1101,11 @@ unsafe extern "system" fn window_proc(
                     let prewarm = with_chrome(hwnd, |s| {
                         s.edit_text.clear();
                         s.edit_text.push_str(&text);
-                        s.update_completion();
-                        !s.programmatic_text_update
+                        let programmatic = s.programmatic_text_update;
+                        if !programmatic {
+                            s.update_completion();
+                        }
+                        !programmatic
                     })
                     .unwrap_or(false);
                     if prewarm {
@@ -1110,12 +1146,29 @@ unsafe extern "system" fn window_proc(
             }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
-                    let _ = with_chrome(hwnd, |s| s.refresh(app));
-                    position_edit(hwnd);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    arm_motion(hwnd);
+                    let (structural, persisted) = App::take_tab_change_flags();
+                    let strips = with_chrome(hwnd, |s| {
+                        s.refresh(app, structural);
+                        (s.layout.strip, s.layout.tab_row)
+                    });
+                    card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
+                    if structural {
+                        position_edit(hwnd);
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        arm_motion(hwnd);
+                    } else if let Some((toolbar, tabs)) = strips {
+                        for strip in [toolbar, tabs] {
+                            let rect = windows::Win32::Foundation::RECT {
+                                left: strip.left,
+                                top: strip.top,
+                                right: strip.right,
+                                bottom: strip.bottom,
+                            };
+                            let _ = InvalidateRect(Some(hwnd), Some(&rect), false);
+                        }
+                    }
                     // Debounced crash-recovery snapshot: one timer, armed only when dirty.
-                    if App::session_changed(app) {
+                    if persisted && App::session_changed(app) {
                         let _ = SetTimer(
                             Some(hwnd),
                             WM_SESSION_SAVE_TIMER,
@@ -1150,6 +1203,9 @@ unsafe extern "system" fn window_proc(
                     let p = frame::point_from_lparam(lparam);
                     let h = hit(hwnd, p.x, p.y);
                     set_hover(hwnd, h);
+                    if let Some(app) = app {
+                        card::hover_changed(hwnd, app, hit_tab(hwnd, h));
+                    }
                     let mut t = TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1162,6 +1218,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_MOUSELEAVE => {
                 set_hover(hwnd, Hit::None);
+                card::pointer_left(hwnd);
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
@@ -1184,6 +1241,8 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONDOWN => {
                 let p = frame::point_from_lparam(lparam);
+                // Pressing the strip dismisses a hover card; the press then acts on the strip.
+                card::close();
                 match hit(hwnd, p.x, p.y) {
                     Hit::Tab(i) => {
                         if let Some((id, collapsed)) = group_toggle_target(hwnd, i, p.x, p.y) {
@@ -1277,7 +1336,7 @@ unsafe extern "system" fn window_proc(
                                 Hit::Forward => App::history(app, true),
                                 _ => App::reload(app),
                             }
-                            let _ = with_chrome(hwnd, |s| s.refresh(app));
+                            let _ = with_chrome(hwnd, |s| s.refresh(app, true));
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         }
                         caption_command(hwnd, was)
@@ -1314,6 +1373,10 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
+                if wparam.0 == VK_ESCAPE.0 as usize && card::is_open() {
+                    card::close();
+                    return LRESULT(0);
+                }
                 if let Some(app) = app {
                     if dispatch_current(hwnd, app, wparam.0 as u32) {
                         return LRESULT(0);
@@ -1366,6 +1429,12 @@ unsafe extern "system" fn window_proc(
                 sync_foreground(hwnd, app);
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_CARD_HOVER_TIMER => {
+                if let Some(app) = app {
+                    card::hover_timer(hwnd, app, |id| tab_anchor(hwnd, id));
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_SESSION_SAVE_TIMER => {
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 if let Some(app) = app {
@@ -1414,6 +1483,8 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
+                card::close();
                 if let Some(app) = app {
                     App::session_finish(app);
                     let (mut engine, log) = {
@@ -1434,6 +1505,8 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
+                card::close();
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
                     if !s.input_font.is_invalid() {
@@ -1467,6 +1540,28 @@ unsafe extern "system" fn window_proc(
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| layout::hit_test(&s.layout, x, y)).unwrap_or(Hit::None)
 }
+/// The tab a strip hit lands on. Its close button counts as the tab itself for hover.
+fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
+    match h {
+        Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
+        _ => None,
+    }
+}
+/// A tab's visible rectangle in main-client coordinates, or `None` when it is scrolled out.
+fn tab_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
+    with_chrome(hwnd, |s| s.tab_rect(id)).flatten()
+}
+fn overflow_tab_ids(layout: &Layout, slots: &[StripSlot], tabs: &[TabSnapshot]) -> Vec<TabId> {
+    layout
+        .hidden_tab_indices()
+        .filter_map(|index| {
+            slots
+                .get(index)
+                .and_then(|slot| tabs.get(slot.tab_index))
+                .map(|tab| tab.id)
+        })
+        .collect()
+}
 fn slot_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
     with_chrome(hwnd, |s| {
         s.slots
@@ -1487,11 +1582,17 @@ fn group_toggle_target(hwnd: HWND, slot_index: usize, x: i32, y: i32) -> Option<
         }
         let tab = s.tabs.get(slot.tab_index)?;
         let island = s.layout.tab(slot_index)?;
-        s.layout
-            .tab_parts(island)
-            .favicon
-            .contains(x, y)
-            .then_some((tab.id, !slot.collapsed))
+        let mut favicon = s.layout.tab_parts(island).favicon;
+        if slot.group_control
+            && slot.domain.is_some()
+            && island.width() >= s.layout.metrics.px(Metrics::TITLE_MIN_TAB_WIDTH)
+        {
+            // The group leader's marker occupies the original leading part of the favicon area.
+            let shift = s.layout.metrics.px(Metrics::GROUP_MARKER_SHIFT);
+            favicon.left += shift;
+            favicon.right += shift;
+        }
+        favicon.contains(x, y).then_some((tab.id, !slot.collapsed))
     })
     .flatten()
 }
@@ -1922,7 +2023,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
         }
     }
-    let _ = with_chrome(hwnd, |s| s.refresh(app));
+    let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
@@ -2160,7 +2261,8 @@ fn pick_extension_folder(owner: HWND) -> Option<std::path::PathBuf> {
 }
 
 fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
-    let ids = App::tab_ids(app);
+    let ids =
+        with_chrome(hwnd, |s| overflow_tab_ids(&s.layout, &s.slots, &s.tabs)).unwrap_or_default();
     if ids.is_empty() {
         return;
     }
@@ -2399,8 +2501,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let active = App::active_tab_id(app);
             let active_has_controller = App::active_tab_has_controller(app);
             let progress = App::tab_progress_percent(app, active);
-            let can_back = App::can_go_back(app);
-            let can_forward = App::can_go_forward(app);
+            let can_back = App::tab_can_go_back(app, active);
+            let can_forward = App::tab_can_go_forward(app, active);
             let focus = GetFocus() == app.borrow().edit;
             let now = Instant::now();
             let (mut a, mut b) = (0u32, 0u32);
@@ -2434,13 +2536,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             &t.title
                         },
                         loading: t.loading,
-                        favicon: t.favicon.as_ref(),
+                        favicon: t.favicon.as_deref(),
                         emphasis: s
                             .motion
                             .emphasis(t.id)
                             .unwrap_or_else(|| Emphasis::resting(false, false, now)),
-                        group_size: slot.domain.as_ref().map(|_| slot.group_size),
+                        group_size: slot.group_key.as_ref().map(|_| slot.group_size),
                         group_control: slot.group_control,
+                        marker: t.marker,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
@@ -2647,7 +2750,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             }
         }
     }
-    let _ = with_chrome(hwnd, |s| s.refresh(app));
+    let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     arm_motion(hwnd);
     true
@@ -2689,7 +2792,6 @@ unsafe extern "system" fn edit_subclass(
                     s.urls.insert(id, display.clone());
                 }
                 s.edit_text.clone_from(&display);
-                s.update_completion();
             });
             invalidate_omni(main);
             return result;
@@ -2776,6 +2878,9 @@ unsafe extern "system" fn edit_subclass(
             }
         }
         if msg == WM_CHAR && w.0 == 0x0d {
+            if let Some(app) = app {
+                let _ = app.borrow().log.record("enter_received");
+            }
             super::post(main, WM_SUBMIT, WPARAM(0), LPARAM(0));
             return LRESULT(0);
         }
@@ -2843,6 +2948,37 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflow_menu_contains_only_tabs_outside_the_visible_window() {
+        let tabs = (0..40)
+            .map(|id| TabSnapshot {
+                id: TabId(id),
+                title: String::new(),
+                loading: false,
+                favicon_key: None,
+                favicon: None,
+            })
+            .collect::<Vec<_>>();
+        let slots = (0..40)
+            .map(|index| StripSlot {
+                tab_index: index,
+                domain: None,
+                group_key: None,
+                group_size: 1,
+                group_control: false,
+                collapsed: false,
+            })
+            .collect::<Vec<_>>();
+        let overflow = layout::compute_with_active(768, 700, 96, 40, 39, false);
+        assert_eq!(
+            overflow_tab_ids(&overflow, &slots, &tabs),
+            (0..14).map(TabId).collect::<Vec<_>>()
+        );
+
+        let fitting = layout::compute(1024, 700, 96, 8, false);
+        assert!(overflow_tab_ids(&fitting, &slots[..8], &tabs[..8]).is_empty());
+    }
 
     #[test]
     fn a_hovered_tab_keeps_its_hover_when_its_index_changes() {

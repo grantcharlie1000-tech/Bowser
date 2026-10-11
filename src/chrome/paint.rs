@@ -31,10 +31,14 @@ use crate::{
     chrome::{
         layout::{self, Hit, Layout, Metrics, Rect},
         motion::{Departure, Emphasis},
+        tab_card::Marker,
     },
     favicon::FaviconBitmap,
-    theme::{Palette, Rgba},
+    theme::{MARKER_COLOURS, Palette, Rgba},
 };
+
+/// Logical diameter of a tab's marker dot.
+const MARKER_DOT: i32 = 8;
 
 /// Longest omnibox text, in UTF-16 units, that is measured and drawn. A pasted megabyte must not
 /// make every repaint and every click O(n log n) in GDI.
@@ -49,6 +53,8 @@ pub struct TabView<'a> {
     pub emphasis: Emphasis,
     pub group_size: Option<usize>,
     pub group_control: bool,
+    /// Marker dot drawn over the start of the favicon area.
+    pub marker: Option<Marker>,
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -354,7 +360,7 @@ impl ChromeSurface {
     /// Closed tabs fade out and shrink slightly on the island they left. They take no input.
     fn paint_departures(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
-        let radius = m.island_radius();
+        let radius = m.tab_radius();
         for departure in view.departures {
             let amount = departure.amount(view.now);
             if amount <= 0.0 {
@@ -382,6 +388,80 @@ impl ChromeSurface {
 
     fn paint_tabs(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
+        let visible_start = view.layout.first_visible_tab();
+        let visible_end = visible_start + view.layout.tabs().count();
+        let mut group_spans = Vec::new();
+        let mut index = visible_start;
+        while index < visible_end {
+            if !view
+                .tabs
+                .get(index)
+                .is_some_and(|tab| tab.group_size.is_some())
+            {
+                index += 1;
+                continue;
+            }
+            let start = index;
+            index += 1;
+            while index < visible_end
+                && view
+                    .tabs
+                    .get(index)
+                    .is_some_and(|tab| tab.group_size.is_some() && !tab.group_control)
+            {
+                index += 1;
+            }
+            let Some(first) = view.layout.tab(start) else {
+                continue;
+            };
+            let Some(last) = view.layout.tab(index - 1) else {
+                continue;
+            };
+            let compact = first.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH);
+            let leading = if compact {
+                0
+            } else {
+                m.px(Metrics::CLOSE_INSET + Metrics::CLOSE_SIZE + Metrics::TEXT_GAP)
+            };
+            let shell = Rect::new(first.left + leading, first.top, last.right, last.bottom)
+                .intersect(view.layout.tab_zone);
+            if !shell.is_empty() {
+                let has_marker =
+                    !compact && view.tabs.get(start).is_some_and(|tab| tab.group_control);
+                group_spans.push((start, index, shell, has_marker));
+            }
+        }
+
+        // A group is one shared pill, with small separators between its tab faces and one color
+        // marker at the leading edge. The first tab keeps its close target outside that pill.
+        let group_fill = mix(view.palette.tab_inactive, view.palette.tab_active, 0.30);
+        for &(start, end, shell, _) in &group_spans {
+            self.round(shell, m.tab_radius(), group_fill, dirty);
+            self.border(
+                shell,
+                m.tab_radius(),
+                m.dpi() as f32 / 96.0,
+                scale_alpha(view.palette.hairline, 0.8),
+                dirty,
+            );
+            for member in start + 1..end {
+                let Some(previous) = view.layout.tab(member - 1) else {
+                    continue;
+                };
+                let Some(next) = view.layout.tab(member) else {
+                    continue;
+                };
+                let x = (previous.right + next.left) / 2;
+                let divider = Rect::new(
+                    x,
+                    shell.top + m.px(5),
+                    x + m.px(1).max(1),
+                    shell.bottom - m.px(5),
+                );
+                self.fill_rect(divider, view.palette.hairline, dirty);
+            }
+        }
+
         for (slot, tab_rect) in view.layout.tabs().enumerate() {
             let index = view.layout.first_visible_tab() + slot;
             let rect = tab_rect.intersect(view.layout.tab_zone);
@@ -396,60 +476,98 @@ impl ChromeSurface {
                 view.palette.tab_active,
                 selected,
             );
-            let radius = m.island_radius();
-            self.round(rect, radius, fill, dirty);
-            self.border(
-                rect,
-                radius,
-                m.dpi() as f32 / 96.0,
-                view.palette.hairline,
-                dirty,
-            );
-            // Group members share a thin accent underline, kept inside the visible island.
-            if details.is_some_and(|tab| tab.group_size.is_some()) {
-                let accent = scale_alpha(view.palette.tab_active_border, 0.8);
-                let thickness = m.px(1).max(1);
-                let inset = m.px(Metrics::ISLAND_RADIUS / 2);
-                let line = Rect::new(
-                    tab_rect.left + inset,
-                    tab_rect.bottom - m.px(2) - thickness,
-                    tab_rect.right - inset,
-                    tab_rect.bottom - m.px(2),
-                )
-                .intersect(rect);
-                self.fill_rect(line, accent, dirty);
+            let radius = m.tab_radius();
+            let grouped = details.is_some_and(|tab| tab.group_size.is_some());
+            let mut grouped_face = None;
+            if grouped {
+                if hover > 0.0 || selected > 0.0 {
+                    let shell_left = group_spans
+                        .iter()
+                        .find(|(start, end, _, _)| *start <= index && index < *end)
+                        .map_or(rect.left, |(_, _, shell, _)| shell.left.max(rect.left));
+                    let selected_rect = Rect::new(
+                        shell_left + m.px(1),
+                        rect.top + m.px(1),
+                        rect.right - m.px(1),
+                        rect.bottom - m.px(1),
+                    );
+                    self.round(selected_rect, m.px(6), fill, dirty);
+                    grouped_face = Some(selected_rect);
+                }
+            } else {
+                self.round(rect, radius, fill, dirty);
+                // Resting tabs are flat; the outline only appears as a tab warms up or is selected.
+                self.border(
+                    rect,
+                    radius,
+                    m.dpi() as f32 / 96.0,
+                    scale_alpha(view.palette.hairline, hover.max(selected)),
+                    dirty,
+                );
             }
             if selected > 0.0 {
                 // Translucent palettes keep only a faint outline on the selected island, so it
                 // reads as a soft fill rather than a framed box.
                 let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
                 let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
-                self.border(rect, radius, m.dpi() as f32 / 96.0, colour, dirty);
+                let active_rect = grouped_face.unwrap_or(rect);
+                self.border(
+                    active_rect,
+                    if grouped { m.px(6) } else { radius },
+                    m.dpi() as f32 / 96.0,
+                    colour,
+                    dirty,
+                );
             }
             // Islands are independent rounded shapes with a gap between them, so no divider is drawn.
-            let parts = view.layout.tab_parts(tab_rect);
+            let mut parts = view.layout.tab_parts(tab_rect);
+            if !parts.title.is_empty() {
+                // The favicon and title sit centred in the tab, as a group.
+                let label = details.map_or("New tab", |value| value.title);
+                let length = encode_into(&mut self.label_units, label);
+                let text_width = self.text.measure(&self.label_units[..length], length);
+                let gap = m.px(Metrics::TEXT_GAP);
+                let shown = text_width.min(parts.title.width());
+                let group = parts.favicon.width() + gap + shown;
+                let area_left = parts.favicon.left;
+                let area_right = parts.title.right;
+                let start = ((area_left + area_right - group) / 2).max(area_left);
+                let shift = start - area_left;
+                parts.favicon.left += shift;
+                parts.favicon.right += shift;
+                parts.title.left += shift;
+            }
             // A part that would be cut off by the tab zone is skipped, so a half-visible close
             // glyph never lands on a neighbouring control.
-            // The group control shows a small member-count chip, only for a real group.
-            let group_chip =
-                details.and_then(|tab| tab.group_control.then_some(tab.group_size).flatten());
-            if let (Some(count), true) = (group_chip, rect.contains_rect(parts.favicon)) {
-                self.round(
-                    parts.favicon,
-                    m.px(6),
-                    scale_alpha(view.palette.tab_active_border, 0.75),
-                    dirty,
-                );
-                let count = count.to_string();
-                self.draw_text(
-                    &count,
-                    parts.favicon,
-                    view.palette.tab_text_active,
-                    true,
-                    rect,
-                    dirty,
-                );
-            } else if rect.contains_rect(parts.favicon) {
+            let group_leader = group_spans
+                .iter()
+                .any(|(start, _, _, has_marker)| *start == index && *has_marker);
+            if group_leader {
+                if let Some((_, _, shell, _)) = group_spans
+                    .iter()
+                    .find(|(start, _, _, has_marker)| *start == index && *has_marker)
+                {
+                    let marker_width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
+                    let marker_height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
+                    let marker = Rect::new(
+                        shell.left + m.px(Metrics::GROUP_MARKER_INSET),
+                        (shell.top + shell.bottom - marker_height) / 2,
+                        shell.left + m.px(Metrics::GROUP_MARKER_INSET) + marker_width,
+                        (shell.top + shell.bottom + marker_height) / 2,
+                    );
+                    self.round(
+                        marker,
+                        marker_width / 2,
+                        view.palette.tab_group_accent,
+                        dirty,
+                    );
+                }
+                let shift = m.px(Metrics::GROUP_MARKER_SHIFT);
+                parts.favicon.left += shift;
+                parts.favicon.right += shift;
+                parts.title.left += shift;
+            }
+            if rect.contains_rect(parts.favicon) {
                 if let Some(Some(favicon)) = details.map(|value| value.favicon) {
                     self.blit_favicon(parts.favicon, favicon, dirty);
                 } else {
@@ -464,6 +582,20 @@ impl ChromeSurface {
                     self.line(cx - 2, cy, cx + 2, cy, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
                     self.line(cx, cy - 2, cx, cy + 2, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
                 }
+                // The marker sits on the favicon's top-left corner, so it never moves the title.
+                if let Some(marker) = details.and_then(|value| value.marker) {
+                    let size = m.px(MARKER_DOT).max(4);
+                    let inset = size / 4;
+                    let dot = Rect::new(
+                        parts.favicon.left - inset,
+                        parts.favicon.top - inset,
+                        parts.favicon.left - inset + size,
+                        parts.favicon.top - inset + size,
+                    );
+                    if rect.contains_rect(dot) {
+                        self.round(dot, size / 2, MARKER_COLOURS[usize::from(marker.id())], dirty);
+                    }
+                }
             }
             if !parts.title.is_empty() {
                 let title = details.map_or("New tab", |value| value.title);
@@ -477,9 +609,11 @@ impl ChromeSurface {
             if !rect.contains_rect(parts.close) {
                 continue;
             }
-            // Layout hit testing exposes close hit targets across the full tab; draw each close glyph.
-            let close_hover = matches!(view.hover, Hit::TabClose(i) if i == index);
+            let close_hover = matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == index);
             let close_pressed = matches!(view.pressed, Hit::TabClose(i) if i == index);
+            if !close_hover && !close_pressed {
+                continue;
+            }
             if close_hover || close_pressed {
                 self.round(
                     parts.close,
@@ -724,7 +858,8 @@ impl ChromeSurface {
         let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let origin = Rect::new(rect.left + left_inset, top, rect.right - inset, top + line);
+        let text_area = Rect::new(rect.left + left_inset, top, rect.right - inset, top + line);
+        let origin = text_area;
         // Thin magnifier, left aligned and vertically centred in the field.
         let lens = m.px(10);
         let lens_rect = Rect::new(
@@ -744,7 +879,7 @@ impl ChromeSurface {
         let handle = m.px(3) as f32;
         self.line_f(lx, ly, lx + handle, ly + handle, 1.2, placeholder, dirty);
         // Text, selection and caret never leave the field, however far the text is scrolled.
-        let field = Rect::new(origin.left, rect.top, origin.right, rect.bottom);
+        let field = Rect::new(text_area.left, rect.top, text_area.right, rect.bottom);
         let caret_width = m.px(1).max(1);
         let value = view.omnibox.text;
         self.caret_rect = Rect::default();
@@ -758,9 +893,24 @@ impl ChromeSurface {
                     origin.bottom - 1,
                 );
             }
+            let placeholder = "Search or enter address";
+            let placeholder_width = self.text.measure(
+                &placeholder.encode_utf16().collect::<Vec<_>>(),
+                placeholder.encode_utf16().count(),
+            );
+            let placeholder_origin = if view.omnibox.focused {
+                origin
+            } else {
+                Rect::new(
+                    centred_text_left(text_area.left, text_area.right, placeholder_width),
+                    origin.top,
+                    text_area.right,
+                    origin.bottom,
+                )
+            };
             self.draw_text(
-                "Search or enter address",
-                origin,
+                placeholder,
+                placeholder_origin,
                 view.palette.omnibox_placeholder,
                 false,
                 field,
@@ -795,7 +945,11 @@ impl ChromeSurface {
             } else {
                 0
             };
-            let text_left = origin.left - self.omnibox_scroll;
+            let text_left = if view.omnibox.focused {
+                origin.left - self.omnibox_scroll
+            } else {
+                centred_text_left(text_area.left, text_area.right, text_width)
+            };
             if end > start {
                 let selected = Rect::new(
                     text_left + start_px,
@@ -1066,6 +1220,12 @@ fn nearest_boundary(text: &[u16], x: i32, width_of: impl Fn(usize) -> i32) -> us
 
 /// The new horizontal scroll offset that keeps `anchor` (a pixel offset into the text) visible in
 /// a field `field` pixels wide, starting from `scroll`. Never scrolls past the end of the text.
+/// Left edge that centres `text_width` between `field_left` and `field_right`.
+/// Text wider than the field stays left aligned, so its start remains visible.
+fn centred_text_left(field_left: i32, field_right: i32, text_width: i32) -> i32 {
+    (field_left + (field_right - field_left - text_width) / 2).max(field_left)
+}
+
 fn scroll_to_keep_visible(
     scroll: i32,
     anchor: i32,
@@ -1659,6 +1819,27 @@ mod tests {
     }
 
     #[test]
+    fn centred_text_left_centres_text_within_field() {
+        // Field 100..200 is 100 wide; a 40-wide text starts 30 in.
+        assert_eq!(centred_text_left(100, 200, 40), 130);
+        // Odd slack rounds down, so the text sits one pixel left of true centre.
+        assert_eq!(centred_text_left(100, 200, 41), 129);
+    }
+
+    #[test]
+    fn centred_text_left_falls_back_to_field_left_when_text_overflows() {
+        assert_eq!(centred_text_left(100, 200, 100), 100);
+        assert_eq!(centred_text_left(100, 200, 150), 100);
+        assert_eq!(centred_text_left(100, 200, 500), 100);
+    }
+
+    #[test]
+    fn centred_text_left_handles_empty_text() {
+        assert_eq!(centred_text_left(100, 200, 0), 150);
+        assert_eq!(centred_text_left(100, 100, 0), 100);
+    }
+
+    #[test]
     fn upload_decision_uses_dirty_region_for_unchanged_surface() {
         let current = surface((10, 20), 400, 100, 96);
         let dirty = Rect::new(1, 2, 3, 4);
@@ -1800,6 +1981,7 @@ mod tests {
             emphasis: rest(),
             group_size: None,
             group_control: false,
+            marker: None,
         }];
         let view = ChromeView {
             layout: &layout,
@@ -1909,6 +2091,7 @@ mod tests {
             emphasis,
             group_size: None,
             group_control: false,
+            marker: None,
         });
         let view = ChromeView {
             layout,
@@ -1954,7 +2137,8 @@ mod tests {
     fn hover_fades_in_monotonically_from_the_resting_island() {
         let layout = layout::compute(1000, 120, 96, 2, false);
         let island = layout.tab(0).unwrap();
-        let (x, y) = center(island);
+        // Sample the fill near the leading edge, clear of the title centered in the tab.
+        let (x, y) = (island.left + 12, (island.top + island.bottom) / 2);
         let start = Instant::now();
         let mut fading = Emphasis::resting(false, false, start);
         fading.retarget(true, false, start, false);
@@ -1978,7 +2162,8 @@ mod tests {
     fn a_closed_tab_fades_out_over_its_island_and_then_leaves_nothing() {
         let layout = layout::compute(1000, 120, 96, 2, false);
         let island = layout.tab(1).unwrap();
-        let (x, y) = center(island);
+        // Avoid the centered title so this tracks only the fading tab fill.
+        let (x, y) = (island.left + 12, (island.top + island.bottom) / 2);
         let start = Instant::now();
         let (a, b) = (TabId(1), TabId(2));
         let mut motion = Motion::new(false);
@@ -2016,6 +2201,7 @@ mod tests {
             emphasis: rest(),
             group_size: None,
             group_control: false,
+            marker: None,
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -2038,6 +2224,7 @@ mod tests {
             emphasis: rest(),
             group_size: None,
             group_control: false,
+            marker: None,
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -2046,8 +2233,18 @@ mod tests {
             &test_view(&layout, &tabs, glass, omnibox("", (0, 0), "")),
             dirty,
         );
-        // Left margin, right of the last tab, the gap above the omnibox and below it.
-        for (x, y) in [(0, 20), (600, 20), (500, 31), (500, 61)] {
+        // The toolbar is intentionally transparent outside controls. Check its left margin,
+        // the gap between navigation buttons, the row gap, and the margin below the tab row.
+        let nav_gap_x = (layout.back_button.right + layout.forward_button.left) / 2;
+        for (x, y) in [
+            (0, 20),
+            (
+                nav_gap_x,
+                (layout.back_button.top + layout.back_button.bottom) / 2,
+            ),
+            (500, layout.strip.bottom - 1),
+            (500, layout.tab_row.bottom),
+        ] {
             assert_eq!(
                 alpha_at(&surface, x, y),
                 0,
@@ -2083,6 +2280,7 @@ mod tests {
             emphasis: rest(),
             group_size: None,
             group_control: false,
+            marker: None,
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -2155,6 +2353,7 @@ mod tests {
                 emphasis: rest(),
                 group_size: None,
                 group_control: false,
+                marker: None,
             };
             40
         ];
@@ -2173,6 +2372,133 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tab_close_glyph_appears_when_hovering_the_tab_body() {
+        let layout = layout::compute(768, 700, 96, 1, false);
+        let tabs = [TabView {
+            title: "A tab with a title",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+        }];
+        let palette = palette(Appearance::Dark, false);
+        let dirty = Rect::new(0, 0, 768, 64);
+        let mut resting = ChromeSurface::new(768, 64, 96);
+        let mut hovered = ChromeSurface::new(768, 64, 96);
+        let resting_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        let mut hovered_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        hovered_view.hover = Hit::Tab(0);
+
+        resting.paint(&resting_view, dirty);
+        hovered.paint(&hovered_view, dirty);
+
+        let close = layout.tab_parts(layout.tab(0).unwrap()).close;
+        let differs = (close.top..close.bottom).any(|y| {
+            let start = y as usize * resting.stride() + close.left as usize * 4;
+            let end = y as usize * resting.stride() + close.right as usize * 4;
+            resting.pixels()[start..end] != hovered.pixels()[start..end]
+        });
+        assert!(differs, "hovering a tab body should reveal its close glyph");
+    }
+
+    #[test]
+    fn compact_tab_close_glyph_appears_when_hovering_the_tab_body() {
+        let layout = layout::compute(768, 700, 96, 40, false);
+        let tabs = [TabView {
+            title: "A tab with a title",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+        }; 40];
+        let palette = palette(Appearance::Dark, false);
+        let mut resting = ChromeSurface::new(768, 64, 96);
+        let mut hovered = ChromeSurface::new(768, 64, 96);
+        let resting_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        let mut hovered_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        hovered_view.hover = Hit::Tab(0);
+
+        resting.paint(&resting_view, Rect::new(0, 0, 768, 64));
+        hovered.paint(&hovered_view, Rect::new(0, 0, 768, 64));
+
+        let close = layout.tab_parts(layout.tab(0).unwrap()).close;
+        let differs = (close.top..close.bottom).any(|y| {
+            let start = y as usize * resting.stride() + close.left as usize * 4;
+            let end = y as usize * resting.stride() + close.right as usize * 4;
+            resting.pixels()[start..end] != hovered.pixels()[start..end]
+        });
+        assert!(
+            differs,
+            "hovering a compact tab should reveal its close glyph"
+        );
+    }
+
+    #[test]
+    fn grouped_tabs_share_a_shell_and_show_the_group_accent() {
+        let layout = layout::compute(1024, 700, 96, 3, false);
+        let tabs = [
+            TabView {
+                title: "Get Started | Docker",
+                loading: false,
+                favicon: None,
+                emphasis: rest(),
+                group_size: Some(2),
+                group_control: true,
+                marker: None,
+            },
+            TabView {
+                title: "Install Docker Desktop",
+                loading: false,
+                favicon: None,
+                emphasis: rest(),
+                group_size: Some(2),
+                group_control: false,
+                marker: None,
+            },
+            TabView {
+                title: "Opera",
+                loading: false,
+                favicon: None,
+                emphasis: rest(),
+                group_size: None,
+                group_control: false,
+                marker: None,
+            },
+        ];
+        let palette = palette(Appearance::Dark, false);
+        let mut surface = ChromeSurface::new(1024, 64, 96);
+        surface.paint(
+            &test_view(&layout, &tabs, palette, omnibox("", (0, 0), "")),
+            Rect::new(0, 0, 1024, 64),
+        );
+
+        let first = layout.tab(0).unwrap();
+        let second = layout.tab(1).unwrap();
+        let x_in_join = first.right + 1;
+        let y = (first.top + first.bottom) / 2;
+        assert!(
+            alpha_at(&surface, x_in_join, y) > 0,
+            "the shared group shell fills the gap between member tabs"
+        );
+
+        let accent_x = first.left
+            + Metrics::new(96).px(Metrics::CLOSE_INSET)
+            + Metrics::new(96).px(Metrics::CLOSE_SIZE)
+            + Metrics::new(96).px(Metrics::TEXT_GAP)
+            + 6;
+        let pixel = y as usize * surface.stride() + accent_x as usize * 4;
+        assert!(
+            surface.pixels()[pixel + 2] > surface.pixels()[pixel],
+            "the group marker uses the warm red accent"
+        );
+        assert!(second.left > first.right);
     }
 
     #[test]
@@ -2237,7 +2563,7 @@ mod tests {
                                 let layout =
                                     crate::chrome::layout::compute(width, 120, dpi, count, false);
                                 let now = Instant::now();
-                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false}).collect::<Vec<_>>();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None}).collect::<Vec<_>>();
                                 let text = match state {
                                     0 => "",
                                     1 => "https://example.com/a-very-long-address",
@@ -2305,6 +2631,7 @@ mod tests {
                 emphasis: rest(),
                 group_size: None,
                 group_control: false,
+                marker: None,
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -2397,6 +2724,7 @@ mod tests {
                 emphasis: rest(),
                 group_size: None,
                 group_control: false,
+                marker: None,
             };
             5
         ];

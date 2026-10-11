@@ -22,6 +22,8 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Sender},
+    thread::{self, JoinHandle},
 };
 
 use url::Url;
@@ -249,8 +251,63 @@ pub struct SessionStore {
     lock_count: u32,
     rotated: bool,
     last_text: Option<String>,
-    /// A one-shot save timer is armed; further changes do not re-arm it.
-    pub save_pending: bool,
+}
+
+enum SessionCommand {
+    Save(Session),
+    Finish(Option<Session>),
+}
+
+/// Serializes session snapshots on a worker so durability writes never block the UI thread.
+pub struct SessionWriter {
+    sender: Sender<SessionCommand>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl SessionWriter {
+    pub fn new(mut store: SessionStore) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("bowser-session-writer".into())
+            .spawn(move || {
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        SessionCommand::Save(snapshot) => {
+                            let _ = store.save(&snapshot);
+                        }
+                        SessionCommand::Finish(snapshot) => {
+                            store.finish(snapshot.as_ref());
+                            return;
+                        }
+                    }
+                }
+                store.finish(None);
+            })?;
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
+    }
+
+    pub fn save(&self, snapshot: Session) {
+        let _ = self.sender.send(SessionCommand::Save(snapshot));
+    }
+
+    pub fn finish(mut self, snapshot: Option<Session>) {
+        let _ = self.sender.send(SessionCommand::Finish(snapshot));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for SessionWriter {
+    fn drop(&mut self) {
+        let _ = self.sender.send(SessionCommand::Finish(None));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// Moves `session.txt` to a new `session.crashed-<unix>` name (never overwriting an existing
@@ -340,7 +397,6 @@ impl SessionStore {
             lock_count: 0,
             rotated: false,
             last_text: None,
-            save_pending: false,
         };
         let offer = match decide_start(prior) {
             StartDecision::Clean => None,
@@ -475,6 +531,23 @@ mod tests {
             2,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn writer_processes_snapshots_in_order_and_flushes_final_state_on_finish() {
+        let dir = temp_dir("writer-order");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        let writer = SessionWriter::new(store).unwrap();
+        let first = sample();
+        writer.save(first.clone());
+        let mut final_state = sample();
+        final_state.active = 0;
+        writer.finish(Some(final_state.clone()));
+        let saved = Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(saved, final_state);
+        assert!(!dir.join(LOCK_NAME).exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

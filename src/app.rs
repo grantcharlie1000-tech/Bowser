@@ -1,9 +1,21 @@
 use std::{
     cell::RefCell,
+    collections::HashMap,
+    hash::Hash,
     path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
 };
+
+use crate::{
+    chrome::tab_card::{self, CardModel, CardRow, Marker, TabCardInput},
+    tab_groups::{self, TabGroupKey},
+};
+
+thread_local! {
+    static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 
 use windows::{
     Win32::{
@@ -116,6 +128,65 @@ fn controller_close_plan(
 
 fn hidden_tab_suspend_eligible(hidden_for: Duration) -> bool {
     hidden_for >= Duration::from_secs(30)
+}
+
+/// Marker a tab shows. A grouped tab uses only its group's entry, so every member agrees; a tab in
+/// no group uses its own entry. A tab that leaves a group shows its own entry again.
+fn resolve_marker(
+    key: Option<&TabGroupKey>,
+    id: TabId,
+    groups: &HashMap<TabGroupKey, Marker>,
+    tabs: &HashMap<TabId, Marker>,
+) -> Option<Marker> {
+    match key {
+        Some(key) => groups.get(key).copied(),
+        None => tabs.get(&id).copied(),
+    }
+}
+
+/// Stores or clears one marker entry. Returns whether the stored value changed.
+fn set_entry<K: Eq + Hash>(map: &mut HashMap<K, Marker>, key: K, marker: Option<Marker>) -> bool {
+    match marker {
+        Some(marker) => map.insert(key, marker) != Some(marker),
+        None => map.remove(&key).is_some(),
+    }
+}
+
+/// One tab as the hover card reads it.
+struct CardTab<'a> {
+    id: TabId,
+    title: &'a str,
+    opener: Option<TabId>,
+    has_favicon: bool,
+}
+
+/// Rows of a hover card: every other tab in the hovered tab's group, in model order. Empty when the
+/// hovered tab is in no group. A row is linked when one of the two tabs opened the other.
+fn card_rows(
+    tabs: &[CardTab],
+    keys: &[Option<TabGroupKey>],
+    hovered: usize,
+    active: usize,
+) -> Vec<CardRow> {
+    let Some(key) = keys.get(hovered).and_then(Option::as_ref) else {
+        return Vec::new();
+    };
+    let hovered_tab = &tabs[hovered];
+    tabs.iter()
+        .enumerate()
+        .filter(|(index, _)| *index != hovered && keys[*index].as_ref() == Some(key))
+        .map(|(index, tab)| CardRow {
+            tab_index: index,
+            title: if tab.title.trim().is_empty() {
+                tab_card::NEW_TAB_TITLE.to_owned()
+            } else {
+                tab.title.to_owned()
+            },
+            favicon_present: tab.has_favicon,
+            active: index == active,
+            linked: tab.opener == Some(hovered_tab.id) || hovered_tab.opener == Some(tab.id),
+        })
+        .collect()
 }
 
 const MEMORY_PRESSURE_LOAD_PERCENT: u32 = 85;
@@ -377,6 +448,7 @@ pub struct App {
     pub pending: Option<url::Url>,
     pending_tab: Option<TabId>,
     pub initializing: bool,
+    prewarm_requested: bool,
     pub closing: bool,
     /// When the window title last changed for blocked-request counts.
     title_synced_at: Option<Instant>,
@@ -404,8 +476,14 @@ pub struct App {
     tab_model: crate::tabs::TabList,
     group_preferences: crate::tab_groups::GroupPreferences,
     group_preferences_path: Option<PathBuf>,
+    /// Marker per tab group, keyed by group identity. In memory only: markers are not persisted.
+    group_markers: HashMap<TabGroupKey, Marker>,
+    /// Marker per tab that is in no group. In memory only, and dropped when the tab closes.
+    tab_markers: HashMap<crate::tabs::TabId, Marker>,
     settings: crate::settings::Settings,
-    session: Option<crate::session::SessionStore>,
+    session: Option<crate::session::SessionWriter>,
+    session_save_pending: bool,
+    last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
     /// Ad/tracker blocker shared with the engine; `None` for benchmark launches or when disabled.
     blocker: Option<engine::BlockerHandle>,
@@ -418,6 +496,7 @@ struct AppTab {
     loading: bool,
     progress: NavigationProgress,
     favicon: Option<Vec<u8>>,
+    favicon_key: Option<crate::tabs::FaviconKey>,
     can_back: bool,
     can_forward: bool,
     page_usable: bool,
@@ -447,6 +526,7 @@ impl AppTab {
             loading: false,
             progress: NavigationProgress::default(),
             favicon: None,
+            favicon_key: None,
             can_back: false,
             can_forward: false,
             page_usable: false,
@@ -731,12 +811,30 @@ impl App {
     }
 
     fn post_tab_changed(hwnd: HWND, id: TabId) {
-        win32::post(
-            hwnd,
-            win32::WM_TABS_CHANGED,
-            windows::Win32::Foundation::WPARAM(id.0 as usize),
-            windows::Win32::Foundation::LPARAM(0),
-        );
+        Self::post_tab_changed_kind(hwnd, id, true, true);
+    }
+
+    fn post_tab_changed_kind(hwnd: HWND, id: TabId, structural: bool, persisted: bool) -> bool {
+        let flags = u32::from(structural) | (u32::from(persisted) << 1);
+        let should_post = TAB_CHANGE_POSTED.with(|posted| {
+            TAB_CHANGE_FLAGS.with(|pending| pending.set(pending.get() | flags));
+            if posted.replace(true) { false } else { true }
+        });
+        if should_post {
+            win32::post(
+                hwnd,
+                win32::WM_TABS_CHANGED,
+                windows::Win32::Foundation::WPARAM(id.0 as usize),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+        }
+        should_post
+    }
+
+    pub fn take_tab_change_flags() -> (bool, bool) {
+        TAB_CHANGE_POSTED.with(|posted| posted.set(false));
+        let flags = TAB_CHANGE_FLAGS.with(|pending| pending.replace(0));
+        (flags & 1 != 0, flags & 2 != 0)
     }
 
     pub fn new_tab(app: &AppRef) -> TabId {
@@ -786,6 +884,7 @@ impl App {
             let Some(index) = state.tabs.iter().position(|tab| tab.id == id) else {
                 return false;
             };
+            state.tab_markers.remove(&id);
             if state.tabs.len() == 1 {
                 let outcome = state.tab_model.close(id);
                 state.tabs[0] = AppTab::empty(outcome.new_active);
@@ -1077,7 +1176,7 @@ impl App {
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed(hwnd, active);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
         }
         changed
     }
@@ -1101,7 +1200,7 @@ impl App {
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed(hwnd, active);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
         }
         changed
     }
@@ -1132,7 +1231,7 @@ impl App {
         };
         if changed {
             Self::save_group_preferences(app);
-            Self::post_tab_changed(hwnd, active);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
         }
         changed
     }
@@ -1144,6 +1243,153 @@ impl App {
         {
             let _ = state.log.record("tab_groups_preferences_save_failed");
         }
+    }
+
+    /// Inputs for the group projection, in model order, from the same state the strip reads.
+    fn group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
+        self.tab_model
+            .iter()
+            .map(|tab| tab_groups::TabGroupInput {
+                id: tab.id,
+                domain: self
+                    .mirror(tab.id)
+                    .and_then(|mirror| mirror.url.as_ref())
+                    .and_then(tab_groups::DomainKey::from_url),
+                pinned: tab.pinned,
+                opener: tab.opener,
+            })
+            .collect()
+    }
+
+    fn mirror(&self, id: TabId) -> Option<&AppTab> {
+        self.tabs.iter().find(|tab| tab.id == id)
+    }
+
+    /// Group identity of one tab under the current projection, or `None` when it is in no group.
+    fn group_key_of(&self, id: TabId) -> Option<TabGroupKey> {
+        let inputs = self.group_inputs();
+        let index = inputs.iter().position(|input| input.id == id)?;
+        tab_groups::group_keys(&inputs, &self.group_preferences)
+            .into_iter()
+            .nth(index)
+            .flatten()
+    }
+
+    /// Stores a marker change, then posts a non-structural tab change so the strip repaints.
+    fn change_markers(app: &AppRef, change: impl FnOnce(&mut App) -> bool) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            let changed = change(&mut state);
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::post_tab_changed_kind(hwnd, active, false, false);
+        }
+        changed
+    }
+
+    /// Marker shared by every tab of a group. Markers are in memory only.
+    pub fn group_marker(app: &AppRef, key: &TabGroupKey) -> Option<Marker> {
+        app.borrow().group_markers.get(key).copied()
+    }
+
+    pub fn set_group_marker(app: &AppRef, key: TabGroupKey, marker: Option<Marker>) -> bool {
+        Self::change_markers(app, |state| {
+            set_entry(&mut state.group_markers, key, marker)
+        })
+    }
+
+    /// Marker a tab shows: its group's marker when it is in a group, otherwise its own. A click
+    /// on any tab of a group therefore marks the whole group.
+    pub fn tab_marker(app: &AppRef, id: TabId) -> Option<Marker> {
+        let state = app.borrow();
+        let keys = tab_groups::group_keys(&state.group_inputs(), &state.group_preferences);
+        let index = state.tab_model.index_of(id)?;
+        resolve_marker(
+            keys.get(index).and_then(Option::as_ref),
+            id,
+            &state.group_markers,
+            &state.tab_markers,
+        )
+    }
+
+    /// Sets or clears the marker for a tab's group, or for the tab itself when it is in no group.
+    pub fn set_tab_marker(app: &AppRef, id: TabId, marker: Option<Marker>) -> bool {
+        Self::change_markers(app, |state| {
+            if state.tab_model.get(id).is_none() {
+                return false;
+            }
+            match state.group_key_of(id) {
+                Some(key) => set_entry(&mut state.group_markers, key, marker),
+                None => set_entry(&mut state.tab_markers, id, marker),
+            }
+        })
+    }
+
+    /// Effective marker of every tab that shows one, for the strip painter.
+    pub fn tab_markers(app: &AppRef) -> HashMap<TabId, Marker> {
+        let state = app.borrow();
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        inputs
+            .iter()
+            .zip(&keys)
+            .filter_map(|(input, key)| {
+                resolve_marker(
+                    key.as_ref(),
+                    input.id,
+                    &state.group_markers,
+                    &state.tab_markers,
+                )
+                .map(|marker| (input.id, marker))
+            })
+            .collect()
+    }
+
+    /// Hover card for a tab, with the tab ids of its rows in the same order as `model.rows`.
+    /// `None` when the tab is not open.
+    pub fn tab_card_model(app: &AppRef, id: TabId) -> Option<(CardModel, Vec<TabId>)> {
+        let state = app.borrow();
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let hovered = inputs.iter().position(|input| input.id == id)?;
+        let active = state.tab_model.index_of(state.tab_model.active()).unwrap_or(0);
+        let card_tabs: Vec<CardTab> = inputs
+            .iter()
+            .map(|input| {
+                let mirror = state.mirror(input.id);
+                CardTab {
+                    id: input.id,
+                    title: mirror.map_or("", |tab| tab.title.as_str()),
+                    opener: input.opener,
+                    has_favicon: mirror.is_some_and(|tab| tab.favicon_key.is_some()),
+                }
+            })
+            .collect();
+        let rows = card_rows(&card_tabs, &keys, hovered, active);
+        let hovered_mirror = state.mirror(id);
+        let marker = resolve_marker(
+            keys[hovered].as_ref(),
+            id,
+            &state.group_markers,
+            &state.tab_markers,
+        );
+        let model = tab_card::build(
+            &TabCardInput {
+                title: hovered_mirror.map_or_else(String::new, |tab| tab.title.clone()),
+                domain: hovered_mirror
+                    .and_then(|tab| tab.url.as_ref())
+                    .and_then(|url| url.host_str())
+                    .map(str::to_owned),
+                marker,
+            },
+            &rows,
+        );
+        let row_ids = rows
+            .iter()
+            .map(|row| card_tabs[row.tab_index].id)
+            .collect();
+        Some((model, row_ids))
     }
 
     pub fn tab_count(app: &AppRef) -> usize {
@@ -1226,6 +1472,10 @@ impl App {
         app.borrow().tab_model.iter().map(|tab| tab.id).collect()
     }
 
+    pub fn tab_opener(app: &AppRef, id: TabId) -> Option<TabId> {
+        app.borrow().tab_model.get(id).and_then(|tab| tab.opener)
+    }
+
     pub fn tab_progress_percent(app: &AppRef, id: TabId) -> Option<u8> {
         app.borrow()
             .tabs
@@ -1240,6 +1490,14 @@ impl App {
             .iter()
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.favicon.clone())
+    }
+
+    pub fn tab_favicon_key(app: &AppRef, id: TabId) -> Option<crate::tabs::FaviconKey> {
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.favicon_key)
     }
 
     fn apply_tab_progress(app: &AppRef, id: TabId, event: NavigationProgressEvent) -> bool {
@@ -1357,6 +1615,7 @@ impl App {
             pending: None,
             pending_tab: None,
             initializing: false,
+            prewarm_requested: false,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -1384,8 +1643,12 @@ impl App {
                 .map(crate::tab_groups::GroupPreferences::load)
                 .unwrap_or_default(),
             group_preferences_path,
+            group_markers: HashMap::new(),
+            tab_markers: HashMap::new(),
             settings: crate::settings::Settings::default(),
             session: None,
+            session_save_pending: false,
+            last_session_snapshot: None,
             pending_restore: None,
             blocker: None,
         }
@@ -1409,7 +1672,7 @@ impl App {
         });
         store.begin_run(accepted.as_ref());
         self.pending_restore = accepted.map(|offer| offer.session);
-        self.session = Some(store);
+        self.session = crate::session::SessionWriter::new(store).ok();
     }
 
     /// Rebuilds the tab strip from an accepted crash snapshot. Only the active tab loads now;
@@ -1472,14 +1735,21 @@ impl App {
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
     /// timer; further changes before it fires are coalesced.
     pub fn session_changed(app: &AppRef) -> bool {
+        let snapshot = Self::session_snapshot(app);
         let mut state = app.borrow_mut();
-        let closing = state.closing;
-        match state.session.as_mut() {
-            Some(store) if !store.save_pending && !closing => {
-                store.save_pending = true;
-                true
-            }
-            _ => false,
+        if snapshot == state.last_session_snapshot {
+            state.session_save_pending = false;
+            return false;
+        }
+        if state.session.is_some()
+            && snapshot != state.last_session_snapshot
+            && !state.session_save_pending
+            && !state.closing
+        {
+            state.session_save_pending = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -1503,12 +1773,17 @@ impl App {
     pub fn session_save_now(app: &AppRef) {
         let snapshot = Self::session_snapshot(app);
         let mut state = app.borrow_mut();
-        let Some(store) = state.session.as_mut() else {
+        if state.session.is_none() {
             return;
-        };
-        store.save_pending = false;
+        }
+        state.session_save_pending = false;
         if let Some(snapshot) = snapshot {
-            let _ = store.save(&snapshot);
+            if state.last_session_snapshot.as_ref() != Some(&snapshot)
+                && let Some(store) = state.session.as_ref()
+            {
+                store.save(snapshot.clone());
+                state.last_session_snapshot = Some(snapshot);
+            }
         }
     }
 
@@ -1516,8 +1791,8 @@ impl App {
     pub fn session_finish(app: &AppRef) {
         let snapshot = Self::session_snapshot(app);
         let store = app.borrow_mut().session.take();
-        if let Some(mut store) = store {
-            store.finish(snapshot.as_ref());
+        if let Some(store) = store {
+            store.finish(snapshot);
         }
     }
 
@@ -1619,20 +1894,36 @@ impl App {
     }
 
     pub fn prewarm(app: &AppRef, text: &str) {
-        {
+        let start_environment = {
             let mut state = app.borrow_mut();
-            if !should_prewarm(
-                state.engine.is_some(),
-                state.initializing,
-                state.closing,
-                text,
-            ) {
+            if state.closing || !text.chars().any(|character| !character.is_whitespace()) {
                 return;
             }
+            let active = state.tab_model.active();
+            let has_controller = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == active)
+                .is_some_and(|tab| tab.controller_created);
+            if has_controller {
+                return;
+            }
+            if state.engine.is_some() {
+                drop(state);
+                Self::with_engine(app, |engine| engine.prewarm_tab(active));
+                return;
+            }
+            if !should_prewarm(false, state.initializing, state.closing, text) {
+                return;
+            }
+            state.prewarm_requested = true;
             state.initializing = true;
             let _ = state.log.record("engine_prewarm_started");
+            true
+        };
+        if start_environment {
+            Self::start_engine_creation(app);
         }
-        Self::start_engine_creation(app);
     }
 
     fn start_engine_creation(app: &AppRef) {
@@ -1708,7 +1999,7 @@ impl App {
                         if active {
                             Self::sync_window_title(&app);
                         }
-                        Self::post_tab_changed(hwnd, tab_id);
+                        Self::post_tab_changed_kind(hwnd, tab_id, false, true);
                     }
                 }
             })),
@@ -1717,6 +2008,20 @@ impl App {
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = loaded_events_app.upgrade() {
                         App::tab_page_loaded(&app, tab_id);
+                    }
+                }))
+            },
+            controller_ready: {
+                let events_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id| {
+                    if let Some(app) = events_app.upgrade() {
+                        let mut state = app.borrow_mut();
+                        let active = state.tab_model.active() == tab_id;
+                        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                            tab.controller_created = true;
+                            tab.hidden_since = (!active).then(Instant::now);
+                            tab.suspended = false;
+                        }
                     }
                 }))
             },
@@ -1743,7 +2048,7 @@ impl App {
                             let action = App::combine_idle_and_suspend_timers(&app, action);
                             win32::schedule_idle_timer(app.borrow().hwnd, action);
                         } else {
-                            Self::post_tab_changed(app.borrow().hwnd, tab_id);
+                            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                         }
                     }
                 }))
@@ -1779,7 +2084,7 @@ impl App {
                             win32::schedule_idle_timer(app.borrow().hwnd, action);
                         }
                         if found {
-                            Self::post_tab_changed(app.borrow().hwnd, tab_id);
+                            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                         }
                     }
                 }))
@@ -1813,7 +2118,7 @@ impl App {
                         );
                     }
                     if found {
-                        Self::post_tab_changed(app.borrow().hwnd, tab_id);
+                        Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                     }
                 }
             })),
@@ -1825,13 +2130,14 @@ impl App {
                         .iter_mut()
                         .find(|tab| tab.id == tab_id)
                     {
+                        tab.favicon_key = Some(crate::favicon::key_for(&bytes));
                         tab.favicon = Some(bytes);
                         true
                     } else {
                         false
                     };
                     if found {
-                        Self::post_tab_changed(app.borrow().hwnd, tab_id);
+                        Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                     }
                 }
             })),
@@ -1840,7 +2146,8 @@ impl App {
                 Some(Rc::new(move |source_tab, url| {
                     if let Some(app) = popup_app.upgrade() {
                         if app.borrow().tabs.iter().any(|tab| tab.id == source_tab) {
-                            App::new_tab(&app);
+                            let child = App::new_tab(&app);
+                            let _ = app.borrow_mut().tab_model.set_opener(child, source_tab);
                             App::submit_url(&app, url, None);
                         }
                     }
@@ -1950,7 +2257,7 @@ impl App {
     }
 
     fn complete_engine_creation(app: &AppRef, mut engine: Box<dyn EngineAdapter>) {
-        let (bounds, target, pending, pending_tab, active_tab, tab_ids) = {
+        let (bounds, target, pending, pending_tab, active_tab, tab_ids, prewarm_requested) = {
             let mut state = app.borrow_mut();
             state.initializing = false;
             if state.closing {
@@ -1972,6 +2279,7 @@ impl App {
                 state.pending_tab.take(),
                 state.tab_model.active(),
                 state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+                std::mem::take(&mut state.prewarm_requested),
             )
         };
         if let Some(bounds) = bounds {
@@ -2012,6 +2320,8 @@ impl App {
         drop(state);
         if let Some(pending) = pending {
             Self::navigate_tab(app, pending_tab.unwrap_or(active_tab), &pending);
+        } else if prewarm_requested {
+            let _ = Self::with_engine(app, |engine| engine.prewarm_tab(active_tab));
         }
     }
 
@@ -2158,7 +2468,7 @@ impl App {
             let action = Self::combine_idle_and_suspend_timers(app, decision.timer);
             win32::schedule_idle_timer(app.borrow().hwnd, action);
         } else {
-            Self::post_tab_changed(app.borrow().hwnd, tab_id);
+            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
         }
     }
 
@@ -3818,6 +4128,10 @@ mod tests {
                 .push(format!("navigate:{}:{url}", tab.0));
             Ok(())
         }
+        fn prewarm_tab(&mut self, tab: TabId) -> windows::core::Result<()> {
+            self.calls.borrow_mut().push(format!("prewarm:{}", tab.0));
+            Ok(())
+        }
         fn can_go_back(&self) -> bool {
             false
         }
@@ -3957,6 +4271,7 @@ mod tests {
             pending: Some(url::Url::parse("https://example.test/first").unwrap()),
             pending_tab: Some(TabId(0)),
             initializing: true,
+            prewarm_requested: false,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -3981,12 +4296,16 @@ mod tests {
             tab_model: crate::tabs::TabList::new(),
             group_preferences: crate::tab_groups::GroupPreferences::default(),
             group_preferences_path: None,
+            group_markers: HashMap::new(),
+            tab_markers: HashMap::new(),
             // Existing tests exercise the memory-pressure path; tab sleep has its own tests.
             settings: crate::settings::Settings {
                 sleep_enabled: false,
                 ..Default::default()
             },
             session: None,
+            session_save_pending: false,
+            last_session_snapshot: None,
             pending_restore: None,
             blocker: None,
         }))
@@ -4568,6 +4887,41 @@ mod tests {
     }
 
     #[test]
+    fn tab_change_posts_coalesce_and_merge_structural_persistence_flags() {
+        assert!(App::post_tab_changed_kind(
+            HWND::default(),
+            TabId(1),
+            false,
+            false
+        ));
+        assert!(!App::post_tab_changed_kind(
+            HWND::default(),
+            TabId(2),
+            true,
+            true
+        ));
+        assert_eq!(App::take_tab_change_flags(), (true, true));
+    }
+
+    #[test]
+    fn typing_prewarm_requests_only_the_active_controller_without_navigation() {
+        let app = app_with_pending(windows::Win32::Foundation::RECT::default());
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        {
+            let mut state = app.borrow_mut();
+            state.initializing = false;
+            state.pending = None;
+            state.pending_tab = None;
+            state.engine = Some(Box::new(TabRecordingEngine {
+                calls: calls.clone(),
+                playing: Vec::new(),
+            }));
+        }
+        App::prewarm(&app, "example");
+        assert_eq!(*calls.borrow(), ["prewarm:0"]);
+    }
+
+    #[test]
     fn tiny_layout_never_has_negative_dimensions() {
         let l = layout_client(2, 1, 1);
         assert_eq!((l.input_height, l.viewport_height), (0, 0));
@@ -4598,5 +4952,132 @@ mod tests {
             Some(Duration::from_millis(150))
         );
         assert_eq!(title_wait(Some(Duration::ZERO)), Some(TITLE_SYNC_INTERVAL));
+    }
+}
+
+#[cfg(test)]
+mod tab_marker_tests {
+    use super::*;
+    use crate::chrome::tab_card::Marker;
+    use url::Url;
+
+    fn domain(text: &str) -> tab_groups::DomainKey {
+        tab_groups::DomainKey::from_url(&Url::parse(&format!("https://{text}/")).unwrap()).unwrap()
+    }
+
+    fn group(text: &str) -> TabGroupKey {
+        TabGroupKey::Domain(domain(text))
+    }
+
+    #[test]
+    fn grouped_tab_shows_only_its_group_entry() {
+        let key = group("alpha.example");
+        let mut groups = HashMap::new();
+        let mut tabs = HashMap::new();
+        groups.insert(key.clone(), Marker::Heart);
+        // A stale per-tab entry must not show through while the tab is in a group.
+        tabs.insert(TabId(1), Marker::Eyes);
+
+        assert_eq!(
+            resolve_marker(Some(&key), TabId(1), &groups, &tabs),
+            Some(Marker::Heart)
+        );
+        assert_eq!(
+            resolve_marker(Some(&key), TabId(2), &groups, &tabs),
+            Some(Marker::Heart)
+        );
+    }
+
+    #[test]
+    fn ungrouped_tab_shows_its_own_entry_and_never_a_group_entry() {
+        let mut groups = HashMap::new();
+        let mut tabs = HashMap::new();
+        groups.insert(group("alpha.example"), Marker::Heart);
+        tabs.insert(TabId(3), Marker::Bag);
+
+        assert_eq!(resolve_marker(None, TabId(3), &groups, &tabs), Some(Marker::Bag));
+        assert_eq!(resolve_marker(None, TabId(4), &groups, &tabs), None);
+    }
+
+    #[test]
+    fn group_without_entry_has_no_marker() {
+        let groups = HashMap::new();
+        let tabs = HashMap::new();
+        let key = group("beta.example");
+        assert_eq!(resolve_marker(Some(&key), TabId(1), &groups, &tabs), None);
+    }
+
+    #[test]
+    fn set_entry_reports_only_real_changes() {
+        let mut map = HashMap::new();
+        assert!(set_entry(&mut map, TabId(1), Some(Marker::Flame)));
+        assert!(!set_entry(&mut map, TabId(1), Some(Marker::Flame)));
+        assert!(set_entry(&mut map, TabId(1), Some(Marker::Palm)));
+        assert_eq!(map.get(&TabId(1)), Some(&Marker::Palm));
+        assert!(set_entry(&mut map, TabId(1), None));
+        assert!(!set_entry(&mut map, TabId(1), None));
+        assert!(map.is_empty());
+    }
+
+    fn card_tab(id: u32, title: &str, opener: Option<u32>, favicon: bool) -> CardTab<'_> {
+        CardTab {
+            id: TabId(id),
+            title,
+            opener: opener.map(TabId),
+            has_favicon: favicon,
+        }
+    }
+
+    #[test]
+    fn card_rows_list_only_other_members_of_the_hovered_group() {
+        let tabs = [
+            card_tab(1, "Alpha one", None, true),
+            card_tab(2, "Beta", None, false),
+            card_tab(3, "Alpha two", None, true),
+            card_tab(4, "Alpha three", None, false),
+        ];
+        let keys = [Some(group("alpha.example")), None, Some(group("alpha.example")), Some(group("alpha.example"))];
+
+        let rows = card_rows(&tabs, &keys, 0, 1);
+
+        assert_eq!(rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(rows[0].title, "Alpha two");
+        assert!(rows[0].favicon_present);
+        assert!(!rows[1].favicon_present);
+        assert!(rows.iter().all(|row| !row.active && !row.linked));
+    }
+
+    #[test]
+    fn card_rows_are_empty_for_a_tab_in_no_group() {
+        let tabs = [card_tab(1, "Solo", None, true), card_tab(2, "Other", None, true)];
+        let keys = [None, None];
+        assert!(card_rows(&tabs, &keys, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn card_rows_mark_the_active_tab_and_opener_links() {
+        let tabs = [
+            card_tab(10, "Parent", None, true),
+            card_tab(11, "Child", Some(10), true),
+            card_tab(12, "Unrelated sibling", None, true),
+        ];
+        let key = Some(TabGroupKey::Opener(TabId(10)));
+        let keys = [key.clone(), key.clone(), key];
+
+        let rows = card_rows(&tabs, &keys, 0, 2);
+
+        assert_eq!(rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(), [1, 2]);
+        assert!(rows[0].linked, "child was opened by the hovered tab");
+        assert!(rows[0].linked && !rows[0].active);
+        assert!(rows[1].active);
+        assert!(!rows[1].linked);
+    }
+
+    #[test]
+    fn card_rows_name_blank_titles_as_new_tab() {
+        let tabs = [card_tab(1, "Hovered", None, true), card_tab(2, "  ", None, false)];
+        let keys = [Some(group("gamma.example")), Some(group("gamma.example"))];
+        let rows = card_rows(&tabs, &keys, 0, 0);
+        assert_eq!(rows[0].title, tab_card::NEW_TAB_TITLE);
     }
 }

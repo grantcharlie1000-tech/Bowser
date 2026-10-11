@@ -34,6 +34,10 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         self.navigate(url)
     }
+    /// Creates the active tab's controller without starting a navigation.
+    fn prewarm_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
+        Ok(())
+    }
     fn can_go_back(&self) -> bool;
     fn go_back(&mut self) -> windows::core::Result<()>;
     fn can_go_forward(&self) -> bool;
@@ -121,6 +125,7 @@ pub struct EngineEvents {
     pub title_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, String)>>,
     pub page_loaded: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
     pub navigation_progress:
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
