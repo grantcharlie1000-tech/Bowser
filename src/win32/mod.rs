@@ -85,6 +85,8 @@ pub(crate) const WM_PRIVACY_STATS_TIMER: usize = 7;
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 /// Coalesces split divider moves to one controller bounds update per frame.
 pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
+/// Delays the first-run import offer until after the first chrome paint.
+pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
 
 pub(crate) fn post(
     hwnd: HWND,

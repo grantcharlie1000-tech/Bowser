@@ -2,6 +2,7 @@
 
 pub mod bookmarks_html;
 pub mod chromium;
+pub mod firefox;
 pub mod store;
 
 use std::{fs, path::PathBuf};
@@ -387,5 +388,55 @@ mod tests {
             "A\thttps://example.com/\tBar\nC\thttps://example.org/\tOther\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn firefox_lz4_decoder_handles_literals_and_matches_and_rejects_bad_blocks() {
+        use firefox::decompress_lz4_block;
+
+        assert_eq!(
+            decompress_lz4_block(&[0x50, b'h', b'e', b'l', b'l', b'o'], 5).unwrap(),
+            b"hello"
+        );
+        // "abcabcabc": three literals followed by a six-byte match at offset three.
+        assert_eq!(
+            decompress_lz4_block(&[0x32, b'a', b'b', b'c', 3, 0], 9).unwrap(),
+            b"abcabcabc"
+        );
+        assert!(decompress_lz4_block(&[0x10, b'a'], 2).is_err());
+        assert!(decompress_lz4_block(&[0x00, 0, 0], 4).is_err());
+        assert!(decompress_lz4_block(&[0x00, 1, 0], 4).is_err());
+        assert!(decompress_lz4_block(&[0x00], 16 * 1024 * 1024 + 1).is_err());
+        assert_eq!(firefox::decompress_mozlz4(b"mozLz40\0\x02\0\0\0\x20[]").unwrap(), b"[]");
+        assert!(firefox::decompress_mozlz4(b"bad-header").is_err());
+        assert!(firefox::decompress_mozlz4(b"mozLz40\0\x01\0\0\x01").is_err());
+    }
+
+    #[test]
+    fn firefox_places_have_folder_paths_and_reject_non_http_urls() {
+        let json = r#"{"type":"text/x-moz-place-container","children":[{"type":"text/x-moz-place-container","title":"Toolbar","children":[{"type":"text/x-moz-place","title":"Example","uri":"https://example.com"},{"type":"text/x-moz-place","title":"Unsafe","uri":"javascript:alert(1)"}]}]}"#;
+        let (items, skipped) = firefox::parse_bookmarks(json).unwrap();
+        assert_eq!(
+            items,
+            vec![Bookmark::new("Example", "https://example.com/", "Toolbar")]
+        );
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn chromium_preferences_only_map_google_or_duckduckgo_search_providers() {
+        use crate::navigation::SearchEngine;
+        let google = r#"{"default_search_provider":{"enabled":true,"keyword":"google.com","search_url":"https://www.google.com/search?q={searchTerms}"}}"#;
+        assert_eq!(
+            chromium::parse_search_preference(google),
+            (Some(SearchEngine::Google), false)
+        );
+        let ddg = r#"{"default_search_provider":{"keyword":"DuckDuckGo","search_url":"https://duckduckgo.com/?q={searchTerms}"}}"#;
+        assert_eq!(
+            chromium::parse_search_preference(ddg),
+            (Some(SearchEngine::DuckDuckGo), false)
+        );
+        let unsupported = r#"{"default_search_provider":{"keyword":"bing.com","search_url":"https://www.bing.com/search?q={searchTerms}"}}"#;
+        assert_eq!(chromium::parse_search_preference(unsupported), (None, true));
     }
 }

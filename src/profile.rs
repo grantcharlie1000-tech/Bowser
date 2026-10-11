@@ -31,6 +31,7 @@ const EXTENSIONS_FILE_NAME: &str = "extensions.txt";
 const SETTINGS_FILE_NAME: &str = "settings.txt";
 const METADATA_FILE_NAME: &str = "profile.txt";
 const LAST_PROFILE_FILE_NAME: &str = "last-profile.txt";
+const IMPORT_OFFER_FILE_NAME: &str = "import-offer.txt";
 const GUEST_DIR_NAME: &str = "Guest";
 const LOCK_FILE_NAME: &str = "running.lock";
 const TRASH_PREFIX: &str = ".trash-";
@@ -307,6 +308,17 @@ impl Profile {
     }
     pub fn bookmarks_file(&self) -> PathBuf {
         self.root.join("bookmarks.txt")
+    }
+
+    /// Whether the first-run migration offer has not been answered for this profile.
+    pub fn import_offer_pending(&self) -> bool {
+        !self.is_guest() && !self.root.join(IMPORT_OFFER_FILE_NAME).exists()
+    }
+
+    /// Stores any first-run offer choice inside this profile. The marker contains no user data.
+    pub fn remember_import_offer_choice(&self) -> io::Result<()> {
+        if self.is_guest() { return Ok(()); }
+        fs::write(self.root.join(IMPORT_OFFER_FILE_NAME), "answered\n")
     }
     pub fn history_enabled_file(&self) -> PathBuf {
         self.root.join("history-enabled.txt")
@@ -1166,6 +1178,22 @@ mod tests {
             startup_profile(&app, None, true).unwrap(),
             Profile::default_in(&app)
         );
+        let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn import_offer_choice_is_per_profile_and_guest_never_persists() {
+        let app = temp_root("import-offer");
+        let default = Profile::default_in(&app);
+        assert!(default.import_offer_pending());
+        default.remember_import_offer_choice().unwrap();
+        assert!(!default.import_offer_pending());
+        let named = create_named(&app, "Work").unwrap();
+        assert!(named.import_offer_pending());
+        let guest = Profile::guest_in(&app).unwrap();
+        guest.remember_import_offer_choice().unwrap();
+        assert!(!guest.root().join(IMPORT_OFFER_FILE_NAME).exists());
+        assert!(default.root().join(IMPORT_OFFER_FILE_NAME).exists());
         let _ = fs::remove_dir_all(&app);
     }
 }
