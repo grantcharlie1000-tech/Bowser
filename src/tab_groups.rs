@@ -246,6 +246,22 @@ impl GroupPreferences {
         self.update(key, |entry| entry.collapsed = collapsed)
     }
 
+    /// These preferences, but with the collapsed flag of every domain taken from `current`. Undo
+    /// restores names, colours and modes without reverting a collapse or expand made since.
+    pub fn with_collapse_from(&self, current: &Self) -> Self {
+        let mut merged = self.clone();
+        let domains: std::collections::BTreeSet<&DomainKey> =
+            self.entries.keys().chain(current.entries.keys()).collect();
+        for domain in domains {
+            let mut entry = merged.entries.remove(domain).unwrap_or_default();
+            entry.collapsed = current.is_collapsed(domain);
+            if !entry.is_default() {
+                merged.entries.insert(domain.clone(), entry);
+            }
+        }
+        merged
+    }
+
     /// Sets the island name after [`clean_name`]. A blank name clears it.
     pub fn set_name(&mut self, key: &DomainKey, name: &str) -> Result<bool, PreferencesError> {
         let name = clean_name(name);
@@ -453,6 +469,9 @@ pub struct TabGroupInput {
     pub pinned: bool,
     /// Immediate opener, when this tab was created from a page's new-window request.
     pub opener: Option<TabId>,
+    /// Placed into this domain's group by the user. Such a member keeps the group formed even when
+    /// it is below the mode's threshold, unless the domain is `Never`.
+    pub manual: bool,
 }
 
 /// Identity of a projected tab group.
@@ -665,7 +684,11 @@ fn domain_groups(
     }
     members
         .into_iter()
-        .filter(|(domain, indices)| preferences.forms_group(domain, indices.len()))
+        .filter(|(domain, indices)| {
+            preferences.forms_group(domain, indices.len())
+                || (preferences.mode(domain) != GroupMode::Never
+                    && indices.iter().any(|&index| tabs[index].manual))
+        })
         .map(|(domain, indices)| (TabGroupKey::Domain(domain), indices))
         .collect()
 }
@@ -717,6 +740,7 @@ mod tests {
             }),
             pinned,
             opener: None,
+            manual: false,
         }
     }
 
@@ -728,7 +752,54 @@ mod tests {
             ),
             pinned,
             opener: opener.map(crate::tabs::TabId),
+            manual: false,
         }
+    }
+
+    #[test]
+    fn manual_member_keeps_its_group_below_the_auto_threshold() {
+        let mut tabs = [
+            input(Some("alpha.example.com"), false),
+            input(Some("beta.example.net"), false),
+        ];
+        tabs[0].manual = true;
+
+        let slots = project_strip(&tabs, 0, &GroupPreferences::default());
+
+        assert_eq!(slots[0].group_size, 1);
+        assert_eq!(slots[0].group_key, Some(TabGroupKey::Domain(key("example.com"))));
+        assert_eq!(slots[1].group_key, None);
+    }
+
+    #[test]
+    fn never_mode_ignores_manual_members() {
+        let mut tabs = [input(Some("alpha.example.com"), false)];
+        tabs[0].manual = true;
+        let mut preferences = GroupPreferences::default();
+        preferences
+            .set_mode(&key("example.com"), GroupMode::Never)
+            .unwrap();
+
+        assert_eq!(group_keys(&tabs, &preferences), vec![None]);
+    }
+
+    #[test]
+    fn with_collapse_from_takes_only_the_collapsed_flags() {
+        let example = key("example.com");
+        let mut before = GroupPreferences::default();
+        before.set_name(&example, "Work").unwrap();
+        before.set_colour(&example, Some(2)).unwrap();
+        let mut now = before.clone();
+        now.set_collapsed(&example, true).unwrap();
+        let mut restored_from = before.clone();
+        restored_from.set_name(&example, "Renamed").unwrap();
+
+        let merged = restored_from.with_collapse_from(&now);
+
+        assert_eq!(merged.name(&example), Some("Renamed"));
+        assert_eq!(merged.colour(&example), Some(2));
+        assert!(merged.is_collapsed(&example));
+        assert!(!now.with_collapse_from(&GroupPreferences::default()).is_collapsed(&example));
     }
 
     #[test]

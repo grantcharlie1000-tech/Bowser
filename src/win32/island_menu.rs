@@ -498,10 +498,10 @@ fn create_edit(popup: HWND, dpi: u32, model: &IslandModel) -> Option<HWND> {
         let name = model.name.clone().unwrap_or_default();
         let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let _ = SetWindowTextW(edit, PCWSTR(wide.as_ptr()));
-        let placeholder: Vec<u16> = menu::PLACEHOLDER
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        // An unnamed island hints its suggested name. The hint is never stored, so committing an
+        // empty field leaves the island unnamed.
+        let hint = model.suggested_name.as_deref().unwrap_or(menu::PLACEHOLDER);
+        let placeholder: Vec<u16> = hint.encode_utf16().chain(std::iter::once(0)).collect();
         // EM_SETCUEBANNER with wParam 1 keeps the placeholder visible while the field has focus.
         windows::Win32::UI::WindowsAndMessaging::SendMessageW(
             edit,

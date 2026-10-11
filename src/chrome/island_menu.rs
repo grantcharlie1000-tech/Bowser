@@ -63,6 +63,8 @@ pub struct IslandRow {
 pub struct IslandModel {
     /// Cleaned island name, or `None` when the island has no name yet.
     pub name: Option<String>,
+    /// Name suggested from the site while the island is unnamed. Shown as a hint only, never stored.
+    pub suggested_name: Option<String>,
     /// Stored colour id, or `None` for the theme accent.
     pub colour: Option<u8>,
     /// Every member, in model order. Rows beyond [`MAX_ROWS`] are not drawn.
@@ -450,6 +452,7 @@ mod tests {
     fn model_close_label_counts_every_member() {
         let model = IslandModel {
             name: None,
+            suggested_name: None,
             colour: None,
             rows: (0..4)
                 .map(|i| IslandRow {

@@ -16,7 +16,7 @@ use crate::{
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
     shortcuts::{self, Command},
-    tab_groups::{self, StripSlot, TabGroupInput},
+    tab_groups::{self, StripSlot},
     tabs::{FaviconKey, TabId},
     theme::Palette,
 };
@@ -247,7 +247,8 @@ impl WindowChrome {
         let preferences = reproject.then(|| App::tab_group_preferences(app));
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
-        let mut group_inputs = Vec::with_capacity(ids.len());
+        // The app's own projection inputs, so manual placement and the settle rule apply to the strip.
+        let group_inputs = if reproject { App::tab_group_inputs(app) } else { Vec::new() };
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
@@ -258,18 +259,6 @@ impl WindowChrome {
                 title
             };
             let loading = App::tab_loading(app, id);
-            let pinned = App::tab_pinned(app, id);
-            if reproject {
-                let domain = App::tab_committed_url(app, id)
-                    .as_ref()
-                    .and_then(tab_groups::DomainKey::from_url);
-                group_inputs.push(TabGroupInput {
-                    id,
-                    domain,
-                    pinned,
-                    opener: App::tab_opener(app, id),
-                });
-            }
             let key = App::tab_favicon_key(app, id);
             let image = if old.is_some_and(|t| {
                 t.favicon_key == key
@@ -1410,7 +1399,7 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = app {
                         let to = layout::reorder_target(&l, from, p.x);
                         let model_to = slot_model_index(hwnd, to).unwrap_or(to);
-                        let _ = App::move_tab(app, id, model_to);
+                        let _ = App::drop_tab(app, id, model_to);
                     }
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
@@ -1974,6 +1963,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     const GROUP: usize = 3;
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
+    const UNGROUP: usize = 16;
+    const UNDO_ORGANISE: usize = 17;
     const RELOAD: usize = 4;
     const DUPLICATE: usize = 5;
     const PIN: usize = 6;
@@ -2046,6 +2037,14 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             .disabled_if(!has_group),
         ));
     }
+    entries.push(Entry::Item(
+        Item::new(UNGROUP, "Remove from group", Icon::None)
+            .disabled_if(!App::tab_is_grouped(app, id)),
+    ));
+    entries.push(Entry::Item(
+        Item::new(UNDO_ORGANISE, "Undo tab organisation", Icon::None)
+            .disabled_if(!App::can_undo_tab_organisation(app)),
+    ));
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
@@ -2118,6 +2117,12 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             }
             value if value == GROUP_AUTO + 1 && has_group => {
                 let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+            }
+            UNGROUP => {
+                let _ = App::remove_tab_from_group(app, id);
+            }
+            UNDO_ORGANISE => {
+                let _ = App::undo_tab_organisation(app);
             }
             COPY_URL => {
                 if let Some(url) = url.as_ref() {
@@ -3386,6 +3391,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::UndoTabOrganisation => {
+            let _ = App::undo_tab_organisation(app);
+        }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(
