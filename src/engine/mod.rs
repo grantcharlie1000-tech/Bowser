@@ -34,6 +34,17 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         self.navigate(url)
     }
+    /// Executes a native-requested script only if the live top-level origin still matches.
+    fn execute_script_for_origin(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _origin: &str,
+        _script: &str,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
     /// Creates the active tab's controller without starting a navigation.
     fn prewarm_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())
@@ -189,6 +200,10 @@ pub struct EngineEvents {
     pub navigation_progress:
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
     pub favicon_changed: Option<FaviconChangedCallback>,
+    /// Validated top-frame credential-submit data; never generated from a payload origin claim.
+    pub login_message: Option<
+        std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::passwords::LoginMessage)>,
+    >,
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,

@@ -8,8 +8,10 @@ use std::{
 };
 
 use url::Url;
+use zeroize::{Zeroize, Zeroizing};
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, BrowserExtensionEnableCompletedHandler,
+    AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
+    BrowserExtensionEnableCompletedHandler,
     BrowserExtensionRemoveCompletedHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
@@ -19,7 +21,8 @@ use webview2_com::{
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
-    SourceChangedEventHandler, TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
+    SourceChangedEventHandler, TrySuspendCompletedHandler, WebMessageReceivedEventHandler,
+    WebResourceRequestedEventHandler,
 };
 use windows::{
     Win32::{
@@ -194,10 +197,64 @@ fn web_url_from_source(source: &str) -> Option<Url> {
     matches!(url.scheme(), "http" | "https").then_some(url)
 }
 
+/// Bounded, page-side detection only: no credential data is exposed from native code to JS.
+const LOGIN_DETECTION_SCRIPT: &str = r#"(()=>{if(window.top!==window||!window.chrome?.webview)return;let sent=false;const visible=e=>e&&e.getClientRects().length>0;document.addEventListener('focusin',e=>{const p=e.target;if(p instanceof HTMLInputElement&&p.type==='password'&&visible(p)&&!sent){sent=true;window.chrome.webview.postMessage({kind:'login-form-seen'})}},true);document.addEventListener('submit',e=>{const f=e.target;if(!(f instanceof HTMLFormElement))return;const p=[...f.querySelectorAll('input[type=password]')].find(visible);if(!p)return;const u=f.querySelector('input[autocomplete=username],input[type=email],input[name*=user i],input[type=text]');window.chrome.webview.postMessage({kind:'login-submitted',user:u?.value||'',pass:p.value})},true)})();"#;
+
+unsafe fn bounded_wide_len(value: PWSTR, max_units: usize) -> Option<usize> {
+    if value.is_null() {
+        return None;
+    }
+    for index in 0..=max_units {
+        if unsafe { *value.0.add(index) } == 0 {
+            return Some(index);
+        }
+    }
+    None
+}
+
+struct ZeroizingWebMessage<'a> {
+    _allocation: CoTaskMemPWSTR<'a>,
+    pointer: PWSTR,
+    zeroize_units: usize,
+    within_limit: bool,
+}
+
+impl ZeroizingWebMessage<'_> {
+    fn new(value: PWSTR, max_units: usize) -> Self {
+        let length = unsafe { bounded_wide_len(value, max_units) };
+        Self {
+            _allocation: CoTaskMemPWSTR::from(value),
+            pointer: value,
+            zeroize_units: length.map_or(max_units.saturating_add(1), |length| length + 1),
+            within_limit: length.is_some(),
+        }
+    }
+
+    fn to_string(&self) -> String {
+        self._allocation.to_string()
+    }
+}
+
+impl Drop for ZeroizingWebMessage<'_> {
+    fn drop(&mut self) {
+        let pointer = self.pointer.0;
+        if !pointer.is_null() {
+            unsafe {
+                std::slice::from_raw_parts_mut(pointer, self.zeroize_units).zeroize();
+            }
+        }
+    }
+}
+
 fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
     let mut source = PWSTR::null();
     unsafe { webview.Source(&mut source) }.ok()?;
-    web_url_from_source(&CoTaskMemPWSTR::from(source).to_string())
+    let source_pointer = source;
+    let source = CoTaskMemPWSTR::from(source);
+    if unsafe { bounded_wide_len(source_pointer, 4096) }.is_none() {
+        return None;
+    }
+    web_url_from_source(&source.to_string())
 }
 
 /// The blocker's first-party host for a document: the host of an http(s) source, or empty for
@@ -1439,6 +1496,31 @@ impl EngineAdapter for WebView2Engine {
     fn navigate_tab(&mut self, tab: TabId, url: &Url) -> Result<()> {
         self.navigate_tab_internal(tab, url)
     }
+    fn execute_script_for_origin(
+        &mut self,
+        tab: TabId,
+        expected_origin: &str,
+        script: &str,
+    ) -> Result<()> {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone())
+            .ok_or_else(|| Error::from(windows::Win32::Foundation::E_ABORT))?;
+        let live_origin = current_web_url(&webview)
+            .and_then(|url| crate::passwords::secure_origin(url.as_str()))
+            .ok_or_else(|| Error::from(windows::Win32::Foundation::E_ACCESSDENIED))?;
+        if live_origin != expected_origin {
+            return Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED));
+        }
+        let script = Zeroizing::new(
+            script.encode_utf16().chain(Some(0)).collect::<Vec<u16>>(),
+        );
+        let completed = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+        unsafe { webview.ExecuteScript(PCWSTR(script.as_ptr()), &completed) }
+    }
     fn prewarm_tab(&mut self, tab: TabId) -> Result<()> {
         let eligible = {
             let mut state = self.core.borrow_mut();
@@ -2038,6 +2120,93 @@ unsafe fn configure_controller(
             ControllerSecuritySetting::WebMessages => settings.SetIsWebMessageEnabled(false),
             ControllerSecuritySetting::HostObjects => settings.SetAreHostObjectsAllowed(false),
         })?;
+        if let Some(login_callback) = events.login_message.clone() {
+            settings.SetIsWebMessageEnabled(true)?;
+            let mut web_messages_enabled = BOOL::default();
+            settings.IsWebMessageEnabled(&mut web_messages_enabled)?;
+            if !web_messages_enabled.as_bool() {
+                return Err(Error::new(
+                    windows::core::HRESULT(0x80070005u32 as i32),
+                    "WebView2 login message handling could not be enabled",
+                ));
+            }
+
+            let script_webview = webview.clone();
+            AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+                Box::new(move |handler| {
+                    let script = CoTaskMemPWSTR::from(LOGIN_DETECTION_SCRIPT);
+                    script_webview
+                        .AddScriptToExecuteOnDocumentCreated(
+                            *script.as_ref().as_pcwstr(),
+                            &handler,
+                        )
+                        .map_err(webview2_com::Error::WindowsError)
+                }),
+                Box::new(|error_code, _id| error_code),
+            )
+            .map_err(|_| Error::from(windows::Win32::Foundation::E_FAIL))?;
+
+            let last_form_seen = Rc::new(Cell::new(None::<Instant>));
+            let last_login_submitted = Rc::new(Cell::new(None::<Instant>));
+            let mut token = 0;
+            webview.add_WebMessageReceived(
+                &WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
+                    let (Some(sender), Some(args)) = (sender, args) else {
+                        return Ok(());
+                    };
+                    let mut raw_message = PWSTR::null();
+                    if args.WebMessageAsJson(&mut raw_message).is_err() {
+                        return Ok(());
+                    }
+                    let raw_message = ZeroizingWebMessage::new(
+                        raw_message,
+                        crate::passwords::MAX_PAGE_MESSAGE_BYTES,
+                    );
+                    if !raw_message.within_limit {
+                        return Ok(());
+                    }
+                    let json = Zeroizing::new(raw_message.to_string());
+                    let mut source = PWSTR::null();
+                    if args.Source(&mut source).is_err() {
+                        return Ok(());
+                    }
+                    if bounded_wide_len(source, 4096).is_none() {
+                        drop(CoTaskMemPWSTR::from(source));
+                        return Ok(());
+                    }
+                    let source = CoTaskMemPWSTR::from(source).to_string();
+                    let Some(top_url) = current_web_url(&sender) else {
+                        return Ok(());
+                    };
+                    // This handler is ICoreWebView2::WebMessageReceived, which receives top-frame
+                    // messages. FrameWebMessageReceived is intentionally not registered.
+                    let Some(message) = crate::passwords::validate_login_message(
+                        &json,
+                        &source,
+                        top_url.as_str(),
+                        true,
+                    ) else {
+                        return Ok(());
+                    };
+                    drop(json);
+                    drop(raw_message);
+                    let now = Instant::now();
+                    let last = match message.kind {
+                        crate::passwords::LoginMessageKind::FormSeen => &last_form_seen,
+                        crate::passwords::LoginMessageKind::Submitted => &last_login_submitted,
+                    };
+                    if last.get().is_some_and(|previous| {
+                        now.duration_since(previous) < Duration::from_secs(2)
+                    }) {
+                        return Ok(());
+                    }
+                    last.set(Some(now));
+                    login_callback(tab_id, message);
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         if let Some(level) = tracking_policy.level {
             apply_tracking_prevention(

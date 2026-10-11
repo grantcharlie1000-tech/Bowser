@@ -1,5 +1,5 @@
 use super::{
-    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_LOGIN_MESSAGE, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
     WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
     menu, passwords_panel, settings_panel, show_error_message, site_info,
@@ -1172,6 +1172,14 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_LOGIN_MESSAGE => {
+                if let Some(app) = app {
+                    for (tab_id, message) in App::take_login_messages(app) {
+                        passwords_panel::handle_login_message(hwnd, app, tab_id, message);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
                     let (structural, persisted) = App::take_tab_change_flags();
@@ -1490,6 +1498,10 @@ unsafe extern "system" fn window_proc(
                     }
                 }
                 DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+            WM_TIMER if wparam.0 == crate::win32::passwords_panel::CLIPBOARD_CLEAR_TIMER => {
+                crate::win32::passwords_panel::clear_password_clipboard_timer(hwnd);
+                LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_IDLE_TRIM_TIMER => {
                 if let Some(app) = app {
@@ -1839,7 +1851,7 @@ fn collapsed_group_target(hwnd: HWND, slot_index: usize) -> Option<TabId> {
     .flatten()
 }
 
-fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
+pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE},
         System::{
@@ -1848,7 +1860,9 @@ fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
         },
     };
 
-    let wide = text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let wide = zeroize::Zeroizing::new(
+        text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>(),
+    );
     unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
             return false;
@@ -3393,6 +3407,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
                 ));
             }
         }
+        Command::FillPassword => passwords_panel::offer_fill(hwnd, app),
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };

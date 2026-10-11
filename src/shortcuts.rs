@@ -22,6 +22,8 @@ pub enum Command {
     Forward,
     /// Ctrl+, opens Passwords & Passkeys.
     OpenPasswords,
+    /// Ctrl+Shift+L offers credentials for the current exact origin.
+    FillPassword,
     /// Ctrl+Shift+B switches the ad/tracker blocker off or on for the current site.
     ToggleBlocker,
     /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
@@ -81,6 +83,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
             Some(Command::Forward)
         }
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
+        (VK_L, true, true, false) => Some(Command::FillPassword),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
@@ -118,6 +121,7 @@ mod tests {
             (VK_RIGHT, false, false, true, Command::Forward),
             (VK_BROWSER_FORWARD, false, false, false, Command::Forward),
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
+            (VK_L, true, true, false, Command::FillPassword),
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
@@ -132,6 +136,14 @@ mod tests {
             ));
         }
         table
+    }
+
+    #[test]
+    fn ctrl_shift_l_requests_password_fill() {
+        assert_eq!(
+            command_for(VK_L, true, true, false),
+            Some(Command::FillPassword)
+        );
     }
 
     #[test]

@@ -450,6 +450,7 @@ pub struct App {
     pub edit: HWND,
     pub input_font: HFONT,
     pub engine: Option<Box<dyn engine::EngineAdapter>>,
+    pending_login_messages: Vec<(TabId, crate::passwords::LoginMessage)>,
     pub pending: Option<url::Url>,
     pending_tab: Option<TabId>,
     pub initializing: bool,
@@ -1222,6 +1223,53 @@ impl App {
             .iter()
             .find(|tab| tab.id == id)
             .and_then(|tab| tab.url.clone())
+    }
+
+    pub fn queue_login_message(app: &AppRef, tab: TabId, message: crate::passwords::LoginMessage) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            if state.closing || state.pending_login_messages.len() >= 32 {
+                return;
+            }
+            state.pending_login_messages.push((tab, message));
+            state.hwnd
+        };
+        win32::post(
+            hwnd,
+            win32::WM_LOGIN_MESSAGE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    }
+
+    pub fn take_login_messages(app: &AppRef) -> Vec<(TabId, crate::passwords::LoginMessage)> {
+        std::mem::take(&mut app.borrow_mut().pending_login_messages)
+    }
+
+    /// Sends an explicit user-triggered fill to the matching tab. The engine rechecks its live
+    /// WebView2 source immediately before execution to reject navigations racing this call.
+    pub fn execute_script_for_origin(
+        app: &AppRef,
+        id: TabId,
+        origin: &str,
+        script: &str,
+    ) -> windows::core::Result<()> {
+        let Some(url) = Self::tab_committed_url(app, id) else {
+            return Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_ABORT,
+            ));
+        };
+        if crate::passwords::secure_origin(url.as_str()).as_deref() != Some(origin) {
+            return Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_ACCESSDENIED,
+            ));
+        }
+        Self::with_engine(app, |engine| engine.execute_script_for_origin(id, origin, script))
+            .unwrap_or_else(|| {
+                Err(windows::core::Error::from(
+                    windows::Win32::Foundation::E_ABORT,
+                ))
+            })
     }
 
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
@@ -2120,6 +2168,7 @@ impl App {
             edit: HWND::default(),
             input_font: HFONT::default(),
             engine: None,
+            pending_login_messages: Vec::new(),
             pending: None,
             pending_tab: None,
             initializing: false,
@@ -2490,6 +2539,7 @@ impl App {
         let title_events_app = Rc::downgrade(app);
         let nav_progress_events_app = Rc::downgrade(app);
         let favicon_events_app = Rc::downgrade(app);
+        let login_events_app = Rc::downgrade(app);
         let progress_hwnd = hwnd;
         let events = engine::EngineEvents {
             address_changed: Some(Rc::new(move |tab_id, url| {
@@ -2767,6 +2817,11 @@ impl App {
             },
             failed: Some(Rc::new(|error| {
                 win32::show_error_message(&format!("WebView2 error: {error}"))
+            })),
+            login_message: Some(Rc::new(move |tab_id, message| {
+                if let Some(app) = login_events_app.upgrade() {
+                    App::queue_login_message(&app, tab_id, message);
+                }
             })),
             policy_event: {
                 let log = app.borrow().log.clone();
@@ -4872,6 +4927,7 @@ mod tests {
             edit: HWND::default(),
             input_font: HFONT::default(),
             engine: None,
+            pending_login_messages: Vec::new(),
             pending: Some(url::Url::parse("https://example.test/first").unwrap()),
             pending_tab: Some(TabId(0)),
             initializing: true,
