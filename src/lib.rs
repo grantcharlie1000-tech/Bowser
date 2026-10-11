@@ -16,6 +16,7 @@ pub mod shortcuts;
 pub mod site_security;
 pub mod split_view;
 pub mod tab_groups;
+pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;
 pub mod updater;

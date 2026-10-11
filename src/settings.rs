@@ -10,6 +10,7 @@
 //! blocker_enabled=true
 //! blocker_allow=example.com,other.org
 //! search_engine=google
+//! automatic_tab_grouping=true
 //! ```
 
 use std::{
@@ -27,7 +28,8 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # sleep_after_secs=300\r\n\
     # blocker_enabled=true\r\n\
     # blocker_allow=example.com,other.org\r\n\
-    # search_engine=google\r\n";
+    # search_engine=google\r\n\
+    # automatic_tab_grouping=true\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -51,6 +53,9 @@ pub struct Settings {
     /// `search_engine=google` or `search_engine=duckduckgo`. `None` means no choice was saved, so
     /// `search-provider.txt` or the Bing default applies.
     pub search_engine: Option<SearchEngine>,
+    /// `automatic_tab_grouping`: whether tabs are grouped by site without being asked (default on).
+    /// Read at startup. When off, no new automatic groups form; explicit groups still work.
+    pub automatic_tab_grouping: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +66,7 @@ impl Default for Settings {
             blocker_enabled: true,
             blocker_allow: Vec::new(),
             search_engine: None,
+            automatic_tab_grouping: true,
         }
     }
 }
@@ -114,6 +120,11 @@ impl Settings {
                 "search_engine" => {
                     if let Some(engine) = SearchEngine::parse(value) {
                         settings.search_engine = Some(engine);
+                    }
+                }
+                "automatic_tab_grouping" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.automatic_tab_grouping = on;
                     }
                 }
                 _ => {}
@@ -190,14 +201,18 @@ fn bool_text(on: bool) -> &'static str {
 /// engine removes its line, so the file falls back to `search-provider.txt` or the default.
 pub fn render_updated(existing: &str, settings: &Settings) -> String {
     let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
-    let values: [(&str, Option<String>); 5] = [
+    let values: [(&str, Option<String>); 6] = [
         ("sleep_enabled", Some(bool_text(settings.sleep_enabled).to_owned())),
         ("sleep_after_secs", Some(settings.sleep_after_secs.to_string())),
         ("blocker_enabled", Some(bool_text(settings.blocker_enabled).to_owned())),
         ("blocker_allow", Some(settings.blocker_allow.join(","))),
         ("search_engine", settings.search_engine.map(|engine| engine.key().to_owned())),
+        (
+            "automatic_tab_grouping",
+            Some(bool_text(settings.automatic_tab_grouping).to_owned()),
+        ),
     ];
-    let mut written = [false; 5];
+    let mut written = [false; 6];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -383,6 +398,7 @@ mod tests {
             sleep_after_secs: 900,
             blocker_enabled: false,
             blocker_allow: vec!["a.com".to_owned(), "b.org".to_owned()],
+            automatic_tab_grouping: false,
             search_engine: Some(SearchEngine::DuckDuckGo),
         }
     }
@@ -459,6 +475,26 @@ mod tests {
     }
 
     #[test]
+    fn automatic_tab_grouping_defaults_on_and_reads_off() {
+        assert!(Settings::default().automatic_tab_grouping);
+        assert!(Settings::parse("").automatic_tab_grouping);
+        assert!(!Settings::parse("automatic_tab_grouping=off").automatic_tab_grouping);
+        assert!(Settings::parse("automatic_tab_grouping=maybe").automatic_tab_grouping);
+        assert!(TEMPLATE.contains("# automatic_tab_grouping=true\r\n"));
+    }
+
+    #[test]
+    fn automatic_tab_grouping_is_written_and_read_back() {
+        let off = Settings {
+            automatic_tab_grouping: false,
+            ..Settings::default()
+        };
+        let text = render_updated("sleep_enabled=true\r\n", &off);
+        assert!(text.contains("automatic_tab_grouping=false\r\n"));
+        assert!(!Settings::parse(&text).automatic_tab_grouping);
+    }
+
+    #[test]
     fn render_into_empty_text_roundtrips() {
         let text = render_updated("", &sample());
         assert_eq!(Settings::parse(&text), sample());
@@ -473,7 +509,7 @@ mod tests {
             text,
             "# my notes\r\nfoo=bar\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
              sleep_after_secs=900\r\nblocker_enabled=false\r\nblocker_allow=a.com,b.org\r\n\
-             search_engine=duckduckgo\r\n"
+             search_engine=duckduckgo\r\nautomatic_tab_grouping=false\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

@@ -13,6 +13,7 @@ use crate::{
         tab_card::{self, CardModel, CardRow, Marker, TabCardInput},
     },
     tab_groups::{self, TabGroupKey},
+    tab_organisation::{self, InFlightDomains, Membership, Snapshot, UndoStack},
 };
 
 thread_local! {
@@ -490,6 +491,13 @@ pub struct App {
     group_markers: HashMap<TabGroupKey, Marker>,
     /// Marker per tab that is in no group. In memory only, and dropped when the tab closes.
     tab_markers: HashMap<crate::tabs::TabId, Marker>,
+    /// Manual placement of tabs into or out of domain groups. In memory only: tab ids do not
+    /// survive a restart, and the per-domain preferences above are what persist.
+    memberships: HashMap<TabId, Membership>,
+    /// Pre-navigation domain of tabs whose navigation is in flight; see `InFlightDomains`.
+    in_flight_domains: InFlightDomains,
+    /// Group preference and placement steps for Undo tab organisation. Collapse is not a step.
+    organisation_undo: UndoStack<Snapshot>,
     settings: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
     session_save_pending: bool,
@@ -914,6 +922,8 @@ impl App {
                 return false;
             };
             state.tab_markers.remove(&id);
+            state.memberships.remove(&id);
+            state.in_flight_domains.finish(id);
             if let Some(remaining) = state.split_view.and_then(|split| split.remove(id)) {
                 state.split_view = None;
                 state.split_bounds = None;
@@ -985,6 +995,7 @@ impl App {
         if changed {
             Self::post_tab_changed(hwnd, active);
         }
+        Self::release_unused_site_rules(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         changed
@@ -1276,6 +1287,11 @@ impl App {
         app.borrow().group_preferences.clone()
     }
 
+    /// Projection inputs for the tab strip, in model order, with manual placement applied.
+    pub fn tab_group_inputs(app: &AppRef) -> Vec<tab_groups::TabGroupInput> {
+        app.borrow().group_inputs()
+    }
+
     pub fn set_tab_group_mode(app: &AppRef, id: TabId, mode: crate::tab_groups::GroupMode) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
@@ -1288,9 +1304,11 @@ impl App {
             else {
                 return false;
             };
+            let before = state.organisation_snapshot();
             let Ok(changed) = state.group_preferences.set_mode(&key, mode) else {
                 return false;
             };
+            state.record_organisation_step(before, changed);
             (state.hwnd, state.tab_model.active(), changed)
         };
         if changed {
@@ -1324,6 +1342,86 @@ impl App {
         changed
     }
 
+    /// Moves a dragged tab to model index `to_index`, then places it: a tab dropped between two
+    /// members of a domain group joins that group, and a grouped tab dropped elsewhere leaves it.
+    /// Returns whether the tab moved.
+    pub fn drop_tab(app: &AppRef, id: TabId, to_index: usize) -> bool {
+        let current = app.borrow().group_key_of(id);
+        if !Self::move_tab(app, id, to_index) {
+            return false;
+        }
+        let placement = {
+            let state = app.borrow();
+            let Some(index) = state.tab_model.index_of(id) else {
+                return true;
+            };
+            let keys = tab_groups::group_keys(&state.group_inputs(), &state.group_preferences);
+            let left = index
+                .checked_sub(1)
+                .and_then(|left| keys.get(left))
+                .and_then(Option::as_ref);
+            let right = keys.get(index + 1).and_then(Option::as_ref);
+            tab_organisation::drop_membership(current.as_ref(), left, right)
+        };
+        if let Some(placement) = placement {
+            let (hwnd, active, changed) = {
+                let mut state = app.borrow_mut();
+                let changed = state.place_tab(id, placement);
+                (state.hwnd, state.tab_model.active(), changed)
+            };
+            if changed {
+                Self::post_tab_changed_kind(hwnd, active, true, false);
+            }
+        }
+        true
+    }
+
+    /// Takes a tab out of its group so automatic grouping leaves it alone. Returns whether it changed.
+    pub fn remove_tab_from_group(app: &AppRef, id: TabId) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            if state.group_key_of(id).is_none() {
+                return false;
+            }
+            let changed = state.place_tab(id, Membership::Ungrouped);
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::post_tab_changed_kind(hwnd, active, true, false);
+        }
+        changed
+    }
+
+    /// Whether the tab is in any group, so "Remove from group" has something to remove.
+    pub fn tab_is_grouped(app: &AppRef, id: TabId) -> bool {
+        app.borrow().group_key_of(id).is_some()
+    }
+
+    pub fn can_undo_tab_organisation(app: &AppRef) -> bool {
+        !app.borrow().organisation_undo.is_empty()
+    }
+
+    /// Undoes the latest group or placement change. Collapse and expand are not steps, so the
+    /// current collapsed state is kept. Returns whether there was a step to undo.
+    pub fn undo_tab_organisation(app: &AppRef) -> bool {
+        let (hwnd, active) = {
+            let mut state = app.borrow_mut();
+            let Some(snapshot) = state.organisation_undo.pop() else {
+                return false;
+            };
+            state.group_preferences = snapshot
+                .preferences
+                .with_collapse_from(&state.group_preferences);
+            state.memberships = snapshot.memberships;
+            (state.hwnd, state.tab_model.active())
+        };
+        Self::save_group_preferences(app);
+        Self::post_tab_changed_kind(hwnd, active, true, false);
+        // The snapshot may predate the site's last tab closing, so release its rule again.
+        Self::release_unused_site_rules(app);
+        true
+    }
+
     /// Island menu for the domain island that `id` belongs to: its name, colour and member rows in
     /// model order, with the member tab ids in the same order. `None` for a tab that is not in a
     /// domain island, so opener-only islands have no menu.
@@ -1352,6 +1450,7 @@ impl App {
         }
         let model = IslandModel {
             name: state.group_preferences.name(&key).map(str::to_owned),
+            suggested_name: Some(tab_organisation::suggested_name(&key)),
             colour: state.group_preferences.colour(&key),
             rows,
         };
@@ -1393,9 +1492,11 @@ impl App {
             let Some(key) = state.domain_island_of(id) else {
                 return false;
             };
+            let before = state.organisation_snapshot();
             let Ok(changed) = change(&mut state.group_preferences, &key) else {
                 return false;
             };
+            state.record_organisation_step(before, changed);
             (state.hwnd, state.tab_model.active(), changed)
         };
         if changed {
@@ -1436,6 +1537,23 @@ impl App {
         changed
     }
 
+    /// Drops `Always` rules for sites with no open unpinned tab, then saves and repaints when that
+    /// changed anything. A navigation still waiting for the engine counts as open, since its site is
+    /// about to be shown.
+    pub fn release_unused_site_rules(app: &AppRef) {
+        let (hwnd, active, released) = {
+            let mut state = app.borrow_mut();
+            let mut live = tab_groups::live_domains(&state.group_inputs());
+            live.extend(state.pending.as_ref().and_then(tab_groups::DomainKey::from_url));
+            let released = state.group_preferences.release_unused_always(&live);
+            (state.hwnd, state.tab_model.active(), released)
+        };
+        if released {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
+        }
+    }
+
     fn save_group_preferences(app: &AppRef) {
         let state = app.borrow();
         if let Some(path) = &state.group_preferences_path
@@ -1447,18 +1565,69 @@ impl App {
 
     /// Inputs for the group projection, in model order, from the same state the strip reads.
     fn group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
-        self.tab_model
+        let mut inputs: Vec<_> = self
+            .tab_model
             .iter()
-            .map(|tab| tab_groups::TabGroupInput {
-                id: tab.id,
-                domain: self
+            .map(|tab| {
+                let committed = self
                     .mirror(tab.id)
                     .and_then(|mirror| mirror.url.as_ref())
-                    .and_then(tab_groups::DomainKey::from_url),
-                pinned: tab.pinned,
-                opener: tab.opener,
+                    .and_then(tab_groups::DomainKey::from_url);
+                tab_groups::TabGroupInput {
+                    id: tab.id,
+                    domain: self.in_flight_domains.domain_for(tab.id, committed),
+                    pinned: tab.pinned,
+                    opener: tab.opener,
+                    manual: false,
+                }
             })
-            .collect()
+            .collect();
+        tab_organisation::apply_membership(
+            &mut inputs,
+            &self.memberships,
+            &self.group_preferences,
+            self.settings.automatic_tab_grouping,
+        );
+        inputs
+    }
+
+    fn organisation_snapshot(&self) -> Snapshot {
+        Snapshot {
+            preferences: self.group_preferences.clone(),
+            memberships: self.memberships.clone(),
+        }
+    }
+
+    /// Records `before` as an undo step when the change it precedes actually changed something.
+    fn record_organisation_step(&mut self, before: Snapshot, changed: bool) {
+        if changed {
+            self.organisation_undo.push(before);
+        }
+    }
+
+    /// Stores a tab's placement, dropping the entry when it is back to automatic. Returns whether
+    /// the placement changed.
+    fn place_tab(&mut self, id: TabId, placement: Membership) -> bool {
+        let before = self.organisation_snapshot();
+        let changed = self.memberships.get(&id).cloned().unwrap_or_default() != placement;
+        if changed {
+            if placement == Membership::Automatic {
+                self.memberships.remove(&id);
+            } else {
+                self.memberships.insert(id, placement);
+            }
+        }
+        self.record_organisation_step(before, changed);
+        changed
+    }
+
+    /// Keeps a tab grouped by the domain it had before a navigation that is about to start.
+    fn begin_navigation_grouping(&mut self, id: TabId) {
+        let before = self
+            .mirror(id)
+            .and_then(|tab| tab.url.as_ref())
+            .and_then(tab_groups::DomainKey::from_url);
+        self.in_flight_domains.begin(id, before);
     }
 
     fn mirror(&self, id: TabId) -> Option<&AppTab> {
@@ -2023,6 +2192,11 @@ impl App {
     fn apply_tab_progress(app: &AppRef, id: TabId, event: NavigationProgressEvent) -> bool {
         let mut state = app.borrow_mut();
         let active = state.tab_model.active() == id;
+        match event {
+            NavigationProgressEvent::Started(_) => state.begin_navigation_grouping(id),
+            NavigationProgressEvent::Completed(_) => state.in_flight_domains.finish(id),
+            NavigationProgressEvent::Advanced(_, _) => {}
+        }
         let (changed, progress, loading) = {
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
                 return false;
@@ -2038,6 +2212,11 @@ impl App {
         state.tab_model.set_loading(id, loading);
         if active {
             state.navigation_progress = progress;
+        }
+        drop(state);
+        if matches!(event, NavigationProgressEvent::Completed(_)) {
+            // The new site is committed now, so a rule for the site the tab left may be unused.
+            Self::release_unused_site_rules(app);
         }
         changed
     }
@@ -2205,6 +2384,9 @@ impl App {
             group_preferences_path,
             group_markers: HashMap::new(),
             tab_markers: HashMap::new(),
+            memberships: HashMap::new(),
+            in_flight_domains: InFlightDomains::default(),
+            organisation_undo: UndoStack::default(),
             settings: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
@@ -2454,6 +2636,7 @@ impl App {
             let _ = state.log.record("submitted");
             if state.engine.is_some() {
                 let active_tab = state.tab_model.active();
+                state.begin_navigation_grouping(active_tab);
                 if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active_tab) {
                     tab.url = Some(url.clone());
                     tab.controller_created = tab_needs_controller(Some(&url));
@@ -2978,6 +3161,9 @@ impl App {
         let (mut engine, closing) = {
             let mut state = app.borrow_mut();
             let is_background = state.tab_model.active() != tab_id;
+            if state.engine.is_some() {
+                state.begin_navigation_grouping(tab_id);
+            }
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                 tab.url = Some(url.clone());
                 tab.controller_created = tab_needs_controller(Some(url));
@@ -3011,6 +3197,8 @@ impl App {
         }
         drop(state);
         if let Err(error) = result {
+            // A navigation that never started will not report completion, so release its domain.
+            app.borrow_mut().in_flight_domains.finish(tab_id);
             win32::show_error_message(&format!("Navigation failed: {error}"));
         }
         Self::schedule_tab_idle_timer(app);
@@ -4657,6 +4845,162 @@ mod tests {
         ));
     }
 
+    /// Sets committed addresses directly, the way the engine's address events do.
+    fn set_addresses(app: &AppRef, addresses: &[(TabId, &str)]) {
+        let mut state = app.borrow_mut();
+        for &(id, address) in addresses {
+            let url = url::Url::parse(address).unwrap();
+            state.tab_model.set_url(id, Some(address));
+            state.tabs.iter_mut().find(|tab| tab.id == id).unwrap().url = Some(url);
+        }
+    }
+
+    fn tab_domain(app: &AppRef, id: TabId) -> Option<String> {
+        App::tab_group_inputs(app)
+            .into_iter()
+            .find(|input| input.id == id)
+            .and_then(|input| input.domain)
+            .map(|domain| domain.as_str().to_owned())
+    }
+
+    #[test]
+    fn dropping_a_tab_between_two_members_of_a_group_joins_it_and_leaving_ungroups_it() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        // Model order: first and third share a site; second is another site, between them.
+        set_addresses(
+            &app,
+            &[
+                (first, "https://a.example.com/"),
+                (second, "https://other.example.net/"),
+                (third, "https://b.example.com/"),
+            ],
+        );
+        assert!(App::move_tab(&app, second, 2));
+        assert!(!App::tab_is_grouped(&app, second));
+
+        // Drop the middle tab between the two members of its neighbours' group.
+        assert!(App::drop_tab(&app, second, 1));
+        assert_eq!(tab_domain(&app, second).as_deref(), Some("example.com"));
+        assert!(App::tab_is_grouped(&app, second));
+
+        // Moving it to the end, away from the group, takes it out and it stays out.
+        assert!(App::drop_tab(&app, second, 2));
+        assert!(!App::tab_is_grouped(&app, second));
+        assert_eq!(tab_domain(&app, second), None, "an ungrouped tab has no group domain");
+        // The first and third tabs still share a site, so their own group is untouched.
+        assert!(App::tab_is_grouped(&app, first));
+    }
+
+    #[test]
+    fn remove_from_group_is_undoable_and_undo_restores_the_group() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+        );
+        assert!(App::tab_is_grouped(&app, first));
+        assert!(!App::can_undo_tab_organisation(&app));
+
+        assert!(App::remove_tab_from_group(&app, first));
+        assert!(!App::tab_is_grouped(&app, first));
+        assert!(!App::remove_tab_from_group(&app, first), "already out");
+        assert!(App::can_undo_tab_organisation(&app));
+
+        assert!(App::undo_tab_organisation(&app));
+        assert!(App::tab_is_grouped(&app, first));
+        assert!(!App::can_undo_tab_organisation(&app));
+        assert!(!App::undo_tab_organisation(&app));
+    }
+
+    #[test]
+    fn undo_restores_names_but_keeps_a_collapse_made_since() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+        );
+        let example = crate::tab_groups::DomainKey::parse("example.com").unwrap();
+
+        assert!(App::set_tab_group_name(&app, first, "Work"));
+        assert!(App::set_tab_group_collapsed(&app, first, true));
+        assert!(App::undo_tab_organisation(&app));
+
+        let preferences = App::tab_group_preferences(&app);
+        assert_eq!(preferences.name(&example), None);
+        assert!(preferences.is_collapsed(&example));
+    }
+
+    #[test]
+    fn automatic_grouping_off_forms_no_new_domain_groups() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+        );
+        assert!(App::tab_is_grouped(&app, first));
+
+        app.borrow_mut().settings.automatic_tab_grouping = false;
+
+        assert_eq!(tab_domain(&app, first), None);
+        assert!(!App::tab_is_grouped(&app, second));
+    }
+
+    #[test]
+    fn a_redirect_while_loading_does_not_regroup_the_tab_until_the_navigation_completes() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+        );
+        assert!(App::apply_tab_progress(
+            &app,
+            first,
+            NavigationProgressEvent::Started(4)
+        ));
+
+        // A redirect to an unrelated site commits while the navigation is still loading.
+        set_addresses(&app, &[(first, "https://login.other.example.net/")]);
+        assert_eq!(tab_domain(&app, first).as_deref(), Some("example.com"));
+
+        assert!(App::apply_tab_progress(
+            &app,
+            first,
+            NavigationProgressEvent::Completed(4)
+        ));
+        assert_eq!(tab_domain(&app, first).as_deref(), Some("example.net"));
+    }
+
+    #[test]
+    fn unnamed_islands_suggest_a_name_without_storing_it() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[(first, "https://chatgpt.com/"), (second, "https://chatgpt.com/c/1")],
+        );
+
+        let (model, _) = App::island_menu(&app, first).expect("two tabs form an island");
+
+        assert_eq!(model.name, None);
+        assert_eq!(model.suggested_name.as_deref(), Some("ChatGPT"));
+        assert_eq!(
+            App::tab_group_preferences(&app).name(&crate::tab_groups::DomainKey::parse("chatgpt.com").unwrap()),
+            None
+        );
+    }
+
     #[test]
     fn progress_is_per_tab_and_callbacks_for_closed_tabs_are_ignored() {
         let app = app_with_pending(rect(800, 600));
@@ -4962,6 +5306,9 @@ mod tests {
             group_preferences_path: None,
             group_markers: HashMap::new(),
             tab_markers: HashMap::new(),
+            memberships: HashMap::new(),
+            in_flight_domains: InFlightDomains::default(),
+            organisation_undo: UndoStack::default(),
             // Existing tests exercise the memory-pressure path; tab sleep has its own tests.
             settings: crate::settings::Settings {
                 sleep_enabled: false,

@@ -16,7 +16,7 @@ use crate::{
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
     shortcuts::{self, Command},
-    tab_groups::{self, StripSlot, TabGroupInput},
+    tab_groups::{self, StripSlot},
     tabs::{FaviconKey, TabId},
     theme::Palette,
 };
@@ -253,7 +253,8 @@ impl WindowChrome {
         let preferences = reproject.then(|| App::tab_group_preferences(app));
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
-        let mut group_inputs = Vec::with_capacity(ids.len());
+        // The app's own projection inputs, so manual placement and the settle rule apply to the strip.
+        let group_inputs = if reproject { App::tab_group_inputs(app) } else { Vec::new() };
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
@@ -264,18 +265,6 @@ impl WindowChrome {
                 title
             };
             let loading = App::tab_loading(app, id);
-            let pinned = App::tab_pinned(app, id);
-            if reproject {
-                let domain = App::tab_committed_url(app, id)
-                    .as_ref()
-                    .and_then(tab_groups::DomainKey::from_url);
-                group_inputs.push(TabGroupInput {
-                    id,
-                    domain,
-                    pinned,
-                    opener: App::tab_opener(app, id),
-                });
-            }
             let key = App::tab_favicon_key(app, id);
             let image = if old.is_some_and(|t| {
                 t.favicon_key == key
@@ -724,6 +713,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         App::restore_pending_session(&app);
         App::submit_initial_url(&app);
+        // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
+        App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
@@ -1434,7 +1425,7 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = app {
                         let to = layout::reorder_target(&l, from, p.x);
                         let model_to = slot_model_index(hwnd, to).unwrap_or(to);
-                        let _ = App::move_tab(app, id, model_to);
+                        let _ = App::drop_tab(app, id, model_to);
                     }
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
@@ -2011,6 +2002,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     const GROUP: usize = 3;
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
+    const GROUP_NEVER: usize = 33;
+    const UNGROUP: usize = 16;
+    const UNDO_ORGANISE: usize = 17;
     const RELOAD: usize = 4;
     const DUPLICATE: usize = 5;
     const PIN: usize = 6;
@@ -2060,10 +2054,26 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
         Entry::Separator,
     ];
     if let Some(key) = &key {
+        // The site's standing mode is marked with a check, as the other choice lists do.
+        let mode = App::tab_group_preferences(app).mode(key);
+        let mode_icon = |active: bool| if active { Icon::Check } else { Icon::None };
         entries.push(Entry::Item(
             Item::new(GROUP, "Add tab to group", Icon::Grid).submenu_with(vec![
-                Entry::Item(Item::new(GROUP_NEW, "New group for this site", Icon::Plus)),
-                Entry::Item(Item::new(GROUP_AUTO, "Group automatically", Icon::Grid)),
+                Entry::Item(Item::new(
+                    GROUP_NEW,
+                    "Always group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Always),
+                )),
+                Entry::Item(Item::new(
+                    GROUP_AUTO,
+                    "Group this site automatically",
+                    mode_icon(mode == tab_groups::GroupMode::Auto),
+                )),
+                Entry::Item(Item::new(
+                    GROUP_NEVER,
+                    "Never group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Never),
+                )),
             ]),
         ));
         (has_group, collapsed) = with_chrome(hwnd, |state| {
@@ -2083,6 +2093,14 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             .disabled_if(!has_group),
         ));
     }
+    entries.push(Entry::Item(
+        Item::new(UNGROUP, "Remove from group", Icon::None)
+            .disabled_if(!App::tab_is_grouped(app, id)),
+    ));
+    entries.push(Entry::Item(
+        Item::new(UNDO_ORGANISE, "Undo tab organisation", Icon::None)
+            .disabled_if(!App::can_undo_tab_organisation(app)),
+    ));
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
@@ -2153,8 +2171,17 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             GROUP_AUTO => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Auto);
             }
+            GROUP_NEVER => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Never);
+            }
             value if value == GROUP_AUTO + 1 && has_group => {
                 let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+            }
+            UNGROUP => {
+                let _ = App::remove_tab_from_group(app, id);
+            }
+            UNDO_ORGANISE => {
+                let _ = App::undo_tab_organisation(app);
             }
             COPY_URL => {
                 if let Some(url) = url.as_ref() {
@@ -3455,6 +3482,10 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let Some(cmd) = shortcuts::command_for(key, ctrl, shift, alt) else {
         return false;
     };
+    // While the address field has focus, the field's own redo keeps Ctrl+Shift+Z.
+    if cmd == Command::UndoTabOrganisation && edit_focused(hwnd) {
+        return false;
+    }
     match cmd {
         Command::NewTab => {
             App::new_tab(app);
@@ -3491,6 +3522,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::UndoTabOrganisation => {
+            let _ = App::undo_tab_organisation(app);
+        }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

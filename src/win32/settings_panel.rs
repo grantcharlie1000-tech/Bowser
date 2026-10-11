@@ -71,12 +71,15 @@ const BLOCKER_TOGGLE: &str = "Block ads and trackers";
 const BLOCKER_HELP: &str = "Blocks known ad and tracking requests on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
 const ALLOW_HELP: &str = "Separate sites with commas, for example example.com, other.org.";
+const TAB_GROUPS_HEADING: &str = "Tab groups";
+const TAB_GROUPS_TOGGLE: &str = "Group tabs from the same site automatically";
+const TAB_GROUPS_HELP: &str = "Tabs from one site share an island. Turn this off to stop new automatic groups. Groups you made by hand stay. Applies after a restart.";
 const IDLE_STATUS: &str = "Search applies on the next search. Other changes need a restart.";
 const SAVED_STATUS: &str = "Saved. Search applies now; restart Bowser for other changes.";
 const RADIUS: i32 = 10;
 /// Logical (96 DPI) client size. Every other measurement is scaled from these values.
 const CLIENT_WIDTH: i32 = 600;
-const CLIENT_HEIGHT: i32 = 674;
+const CLIENT_HEIGHT: i32 = 794;
 
 const ID_SLEEP_ENABLED: i32 = 201;
 const ID_SLEEP_SECS: i32 = 202;
@@ -87,6 +90,7 @@ const ID_RESET: i32 = 206;
 const ID_SAVE: i32 = 207;
 const ID_CLOSE: i32 = 208;
 const ID_SEARCH_ENGINE: i32 = 209;
+const ID_TAB_GROUPS: i32 = 210;
 
 thread_local! {
     /// The open window, so reopening the menu item focuses it rather than stacking another.
@@ -157,6 +161,7 @@ struct Panel {
     /// `BM_GETCHECK`/`BM_SETCHECK`. Native clicks and Space still arrive as `BN_CLICKED`.
     sleep_enabled: bool,
     blocker_enabled: bool,
+    automatic_tab_grouping: bool,
     /// The saved engine choice, or `None` when searches use `search-provider.txt` or the default.
     search_engine: Option<SearchEngine>,
     /// What the selector shows when `search_engine` is `None`.
@@ -192,6 +197,10 @@ struct Layout {
     allow_field: RECT,
     allow_edit: RECT,
     allow_help: RECT,
+    tab_groups_heading: RECT,
+    tab_groups_card: RECT,
+    tab_groups_toggle: RECT,
+    tab_groups_help: RECT,
     status: RECT,
     open_file: RECT,
     reset: RECT,
@@ -228,11 +237,15 @@ fn layout(dpi: u32) -> Layout {
         allow_field,
         allow_edit: inset(allow_field, s(8), s(5)),
         allow_help: r(44, 552, 556, 570),
-        status: r(28, 592, 572, 612),
-        open_file: r(28, 620, 198, 654),
-        reset: r(210, 620, 342, 654),
-        save: r(354, 620, 458, 654),
-        close: r(470, 620, 572, 654),
+        tab_groups_heading: r(28, 596, 572, 618),
+        tab_groups_card: r(28, 622, 572, 702),
+        tab_groups_toggle: r(44, 634, 556, 658),
+        tab_groups_help: r(44, 662, 556, 696),
+        status: r(28, 712, 572, 732),
+        open_file: r(28, 740, 198, 774),
+        reset: r(210, 740, 342, 774),
+        save: r(354, 740, 458, 774),
+        close: r(470, 740, 572, 774),
     }
 }
 
@@ -340,6 +353,7 @@ unsafe fn paint(hwnd: HWND) {
             round_rect(dc, l.search_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.sleep_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.blocker_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
+            round_rect(dc, l.tab_groups_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
 
             let single = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
             let wrapped = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX;
@@ -349,6 +363,7 @@ unsafe fn paint(hwnd: HWND) {
             draw_text(dc, l.search_heading, SEARCH_HEADING, p.tab_text_active, single);
             draw_text(dc, l.sleep_heading, SLEEP_HEADING, p.tab_text_active, single);
             draw_text(dc, l.blocker_heading, BLOCKER_HEADING, p.tab_text_active, single);
+            draw_text(dc, l.tab_groups_heading, TAB_GROUPS_HEADING, p.tab_text_active, single);
             SelectObject(dc, res.font.into());
             draw_text(dc, l.subtitle, SUBTITLE, p.omnibox_placeholder, single);
             draw_text(dc, l.search_label, SEARCH_LABEL, p.omnibox_text, single);
@@ -359,6 +374,7 @@ unsafe fn paint(hwnd: HWND) {
             draw_text(dc, l.blocker_help, BLOCKER_HELP, p.omnibox_placeholder, wrapped);
             draw_text(dc, l.allow_label, ALLOW_LABEL, p.omnibox_text, single);
             draw_text(dc, l.allow_help, ALLOW_HELP, p.omnibox_placeholder, wrapped);
+            draw_text(dc, l.tab_groups_help, TAB_GROUPS_HELP, p.omnibox_placeholder, wrapped);
 
             // The field frames sit outside the edit controls, so the teal ring is drawn here.
             for (id, field) in [(ID_SLEEP_SECS, l.sleep_field), (ID_BLOCKER_ALLOW, l.allow_field)] {
@@ -402,11 +418,11 @@ unsafe fn draw_item(hwnd: HWND, lparam: LPARAM) {
         SetBkMode(dc, TRANSPARENT);
         let id = item.CtlID as i32;
         match id {
-            ID_SLEEP_ENABLED | ID_BLOCKER_ENABLED => {
-                let checked = if id == ID_SLEEP_ENABLED {
-                    panel.sleep_enabled
-                } else {
-                    panel.blocker_enabled
+            ID_SLEEP_ENABLED | ID_BLOCKER_ENABLED | ID_TAB_GROUPS => {
+                let checked = match id {
+                    ID_SLEEP_ENABLED => panel.sleep_enabled,
+                    ID_BLOCKER_ENABLED => panel.blocker_enabled,
+                    _ => panel.automatic_tab_grouping,
                 };
                 let s = |v: i32| scaled(v, dpi);
                 FillRect(dc, &rc, res.card);
@@ -517,6 +533,7 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
             (ID_SLEEP_ENABLED, SLEEP_TOGGLE, l.sleep_toggle, button, ButtonKind::Owner),
             (ID_SLEEP_SECS, "", l.sleep_edit, edit_number, ButtonKind::Edit),
             (ID_BLOCKER_ENABLED, BLOCKER_TOGGLE, l.blocker_toggle, button, ButtonKind::Owner),
+            (ID_TAB_GROUPS, TAB_GROUPS_TOGGLE, l.tab_groups_toggle, button, ButtonKind::Owner),
             (ID_BLOCKER_ALLOW, "", l.allow_edit, edit_text, ButtonKind::Edit),
             (ID_OPEN_FILE, "Open settings file", l.open_file, button, ButtonKind::Owner),
             (ID_RESET, "Reset to defaults", l.reset, button, ButtonKind::Owner),
@@ -574,11 +591,13 @@ fn populate(hwnd: HWND, settings: &Settings) {
     if let Some(panel) = state(hwnd) {
         panel.sleep_enabled = settings.sleep_enabled;
         panel.blocker_enabled = settings.blocker_enabled;
+        panel.automatic_tab_grouping = settings.automatic_tab_grouping;
         panel.search_engine = settings.search_engine;
     }
     refresh_search_text(hwnd);
     invalidate_child(hwnd, ID_SLEEP_ENABLED);
     invalidate_child(hwnd, ID_BLOCKER_ENABLED);
+    invalidate_child(hwnd, ID_TAB_GROUPS);
     set_text(hwnd, ID_SLEEP_SECS, &settings.sleep_after_secs.to_string());
     set_text(hwnd, ID_BLOCKER_ALLOW, &settings.blocker_allow.join(", "));
     invalidate(hwnd);
@@ -690,10 +709,15 @@ fn save_form(hwnd: HWND) {
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    let (sleep_enabled, blocker_enabled, search_engine) = state(hwnd).map_or(
-        (true, true, None),
-        |panel| (panel.sleep_enabled, panel.blocker_enabled, panel.search_engine),
-    );
+    let (sleep_enabled, blocker_enabled, search_engine, automatic_tab_grouping) = state(hwnd)
+        .map_or((true, true, None, true), |panel| {
+            (
+                panel.sleep_enabled,
+                panel.blocker_enabled,
+                panel.search_engine,
+                panel.automatic_tab_grouping,
+            )
+        });
     let sleep = parse_sleep_after_secs(&window_text_of(hwnd, ID_SLEEP_SECS));
     let allow = parse_blocker_allow(&window_text_of(hwnd, ID_BLOCKER_ALLOW));
     let (sleep_after_secs, blocker_allow) = match (sleep, allow) {
@@ -715,6 +739,7 @@ fn save_form(hwnd: HWND) {
         blocker_enabled,
         blocker_allow,
         search_engine,
+        automatic_tab_grouping,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {
@@ -794,10 +819,10 @@ fn open_file(hwnd: HWND) {
 /// `BN_CLICKED`, so keyboard and mouse use the same path.
 fn toggle(hwnd: HWND, id: i32) {
     if let Some(panel) = state(hwnd) {
-        if id == ID_SLEEP_ENABLED {
-            panel.sleep_enabled = !panel.sleep_enabled;
-        } else {
-            panel.blocker_enabled = !panel.blocker_enabled;
+        match id {
+            ID_SLEEP_ENABLED => panel.sleep_enabled = !panel.sleep_enabled,
+            ID_BLOCKER_ENABLED => panel.blocker_enabled = !panel.blocker_enabled,
+            _ => panel.automatic_tab_grouping = !panel.automatic_tab_grouping,
         }
     }
     invalidate_child(hwnd, id);
@@ -807,7 +832,7 @@ fn command(hwnd: HWND, wparam: WPARAM) {
     let id = (wparam.0 & 0xFFFF) as i32;
     let code = ((wparam.0 >> 16) & 0xFFFF) as u32;
     match (id, code) {
-        (ID_SLEEP_ENABLED | ID_BLOCKER_ENABLED, BN_CLICKED) => toggle(hwnd, id),
+        (ID_SLEEP_ENABLED | ID_BLOCKER_ENABLED | ID_TAB_GROUPS, BN_CLICKED) => toggle(hwnd, id),
         (ID_SLEEP_SECS | ID_BLOCKER_ALLOW, EN_SETFOCUS) => {
             if let Some(panel) = state(hwnd) {
                 panel.focus = id;
@@ -896,6 +921,7 @@ pub(crate) fn open(owner: HWND) -> windows::core::Result<()> {
             res: Resources::new(dpi, palette),
             sleep_enabled: initial.sleep_enabled,
             blocker_enabled: initial.blocker_enabled,
+            automatic_tab_grouping: initial.automatic_tab_grouping,
             search_engine: initial.search_engine,
             search_fallback,
             focus: 0,
