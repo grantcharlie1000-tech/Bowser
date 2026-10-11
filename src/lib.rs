@@ -19,4 +19,6 @@ pub mod tab_groups;
 pub mod tabs;
 pub mod theme;
 pub mod updater;
+pub mod vertical_tabs;
 pub mod win32;
+pub mod workspaces;
