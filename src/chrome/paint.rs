@@ -72,23 +72,31 @@ pub struct TabView<'a> {
     pub marker_only: bool,
 }
 
-/// The coloured bar centred in a marker box.
-fn bar_in_box(marker_box: Rect, m: Metrics) -> Rect {
+/// The coloured bar centred horizontally between `left` (the marker box's outer edge) and `right`
+/// (the near edge of the tab face beside it), and vertically in `band`.
+fn bar_between(left: i32, right: i32, band: Rect, m: Metrics) -> Rect {
     let width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
     let height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
-    let left = marker_box.left + (marker_box.width() - width) / 2;
+    let bar_left = left + (right - left - width) / 2;
     Rect::new(
-        left,
-        (marker_box.top + marker_box.bottom - height) / 2,
-        left + width,
-        (marker_box.top + marker_box.bottom + height) / 2,
+        bar_left,
+        (band.top + band.bottom - height) / 2,
+        bar_left + width,
+        (band.top + band.bottom + height) / 2,
     )
+}
+
+/// Radius of the corners that face the bar, on both the marker box and the tab face beside it:
+/// the bar's own corner radius plus a pixel, so the bar sits in a notch that follows its profile.
+pub fn marker_facing_radius(m: Metrics) -> i32 {
+    m.px(Metrics::GROUP_MARKER_WIDTH).max(3) / 2 + m.px(1).max(1)
 }
 
 /// The standalone marker of a collapsed group with no active member, centred in its compact slot,
 /// which is itself the marker's box.
 pub fn marker_only_bar(slot: Rect, m: Metrics) -> Rect {
-    bar_in_box(slot, m)
+    // The chip's edges are the bar's two neighbours, so the bar is centred between them.
+    bar_between(slot.left, slot.right, slot, m)
 }
 
 /// Colour of a group bar: the island's chosen colour, or the theme accent when none is set.
@@ -111,7 +119,13 @@ pub fn group_marker_box(shell: Rect, m: Metrics) -> Rect {
 
 /// The group bar drawn inside the marker box at the leading edge of a group's shell.
 pub fn group_bar_rect(shell: Rect, m: Metrics) -> Rect {
-    bar_in_box(group_marker_box(shell, m), m)
+    // Centred between the box's outer edge and the tab face, which starts `GROUP_MARKER_SHIFT` in.
+    bar_between(
+        shell.left,
+        shell.left + m.px(Metrics::GROUP_MARKER_SHIFT),
+        shell,
+        m,
+    )
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -481,6 +495,45 @@ impl ChromeSurface {
         );
     }
 
+    /// Rounded fill with separate left and right corner radii.
+    fn round_sides(&mut self, rect: Rect, left: i32, right: i32, colour: Rgba, dirty: Rect) {
+        let (width, height, stride) = (self.width, self.height, self.stride());
+        raster_rounded_rect_sides(
+            self.dib.pixels_mut(),
+            width,
+            height,
+            stride,
+            rect,
+            (left as f32, right as f32),
+            colour,
+            dirty,
+        );
+    }
+
+    /// Rounded outline with separate left and right corner radii.
+    fn border_sides(
+        &mut self,
+        rect: Rect,
+        left: i32,
+        right: i32,
+        thickness: f32,
+        colour: Rgba,
+        dirty: Rect,
+    ) {
+        let (width, height, stride) = (self.width, self.height, self.stride());
+        raster_round_border_sides(
+            self.dib.pixels_mut(),
+            width,
+            height,
+            stride,
+            rect,
+            (left as f32, right as f32),
+            thickness,
+            colour,
+            dirty,
+        );
+    }
+
     fn border(&mut self, rect: Rect, radius: i32, thickness: f32, colour: Rgba, dirty: Rect) {
         let (width, height, stride) = (self.width, self.height, self.stride());
         raster_round_border(
@@ -610,11 +663,17 @@ impl ChromeSurface {
                     details.and_then(|tab| tab.group_colour),
                     view.palette.tab_group_accent,
                 );
-                // The slot is the group's compact marker box, laid out like a tab of its own.
-                self.round(rect, m.tab_radius(), view.palette.tab_inactive, dirty);
-                self.border(
+                // The slot is the group's compact marker box, laid out like a tab of its own. A side
+                // with a tab beside it has small corners that follow the bar's profile.
+                let facing = marker_facing_radius(m);
+                let outer = m.tab_radius();
+                let left_r = if index > view.layout.first_visible_tab() { facing } else { outer };
+                let right_r = if view.layout.tab(index + 1).is_some() { facing } else { outer };
+                self.round_sides(rect, left_r, right_r, view.palette.tab_inactive, dirty);
+                self.border_sides(
                     rect,
-                    m.tab_radius(),
+                    left_r,
+                    right_r,
                     1.0,
                     scale_alpha(view.palette.hairline, 0.62),
                     dirty,
@@ -630,6 +689,21 @@ impl ChromeSurface {
                 selected,
             );
             let radius = m.tab_radius();
+            // A tab beside a compact marker chip has its facing corners shaped to the bar.
+            let beside_marker = |slot: Option<usize>| {
+                slot.and_then(|slot| view.tabs.get(slot))
+                    .is_some_and(|tab| tab.marker_only)
+            };
+            let face_left = if beside_marker(index.checked_sub(1)) {
+                marker_facing_radius(m)
+            } else {
+                radius
+            };
+            let face_right = if beside_marker(Some(index + 1)) {
+                marker_facing_radius(m)
+            } else {
+                radius
+            };
             let grouped = details.is_some_and(|tab| tab.group_size.is_some());
             if grouped {
                 if hover > 0.0 || selected > 0.0 {
@@ -647,13 +721,15 @@ impl ChromeSurface {
                         rect.right - m.px(1),
                         rect.bottom - m.px(1),
                     );
-                    self.round(selected_rect, m.px(6), fill, dirty);
+                    let face_left = if leader { marker_facing_radius(m) } else { m.px(6) };
+                    self.round_sides(selected_rect, face_left, m.px(6), fill, dirty);
                 }
             } else {
-                self.round(rect, radius, fill, dirty);
-                self.border(
+                self.round_sides(rect, face_left, face_right, fill, dirty);
+                self.border_sides(
                     rect,
-                    radius,
+                    face_left,
+                    face_right,
                     1.0,
                     scale_alpha(view.palette.hairline, 0.62),
                     dirty,
@@ -664,13 +740,7 @@ impl ChromeSurface {
                 // reads as a soft fill rather than a framed box.
                 let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
                 let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
-                self.border(
-                    rect,
-                    radius,
-                    1.0,
-                    colour,
-                    dirty,
-                );
+                self.border_sides(rect, face_left, face_right, 1.0, colour, dirty);
             }
             // Group members share the shell outline; their faces use fills and dividers.
             let group_leader = group_spans
@@ -709,7 +779,13 @@ impl ChromeSurface {
                         view.palette.tab_group_accent,
                     );
                     let marker_box = group_marker_box(*shell, m);
-                    self.round(marker_box, m.tab_radius(), view.palette.tab_inactive, dirty);
+                    self.round_sides(
+                        marker_box,
+                        m.tab_radius(),
+                        marker_facing_radius(m),
+                        view.palette.tab_inactive,
+                        dirty,
+                    );
                     let bar = group_bar_rect(*shell, m);
                     self.round(bar, bar.width() / 2, colour, dirty);
                 }
@@ -1591,6 +1667,98 @@ fn rounded_distance(x: f32, y: f32, rect: Rect, radius: f32) -> f32 {
         ox.hypot(oy)
     };
     outside + qx.max(qy).min(0.0) - r
+}
+
+/// Signed distance to a rounded rectangle whose left and right corner pairs have their own radii.
+/// Radii that cannot both fit across the width are scaled down together.
+fn rounded_distance_sides(x: f32, y: f32, rect: Rect, radii: (f32, f32)) -> f32 {
+    let width = rect.width() as f32;
+    let half_height = (rect.height() as f32 / 2.0).max(0.0);
+    let (mut left_r, mut right_r) = (radii.0.max(0.0), radii.1.max(0.0));
+    let sum = left_r + right_r;
+    if sum > width && sum > 0.0 {
+        let k = width / sum;
+        left_r *= k;
+        right_r *= k;
+    }
+    left_r = left_r.min(half_height);
+    right_r = right_r.min(half_height);
+    let (left, right) = (rect.left as f32, rect.right as f32);
+    let (r, cx) = if x < left + left_r {
+        (left_r, left + left_r)
+    } else if x > right - right_r {
+        (right_r, right - right_r)
+    } else {
+        (0.0, x)
+    };
+    let qy = (y - (rect.top as f32 + half_height)).abs() - (half_height - r);
+    if r <= 0.0 {
+        // Between the corners only the top and bottom edges matter.
+        qy
+    } else {
+        (x - cx).abs().hypot(qy.max(0.0)) - r
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raster_rounded_rect_sides(
+    pixels: &mut [u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    rect: Rect,
+    radii: (f32, f32),
+    color: Rgba,
+    dirty: Rect,
+) {
+    if rect.is_empty() || width <= 0 || height <= 0 {
+        return;
+    }
+    let bounds = rect
+        .intersect(dirty)
+        .intersect(Rect::new(0, 0, width, height));
+    for y in bounds.top..bounds.bottom {
+        for x in bounds.left..bounds.right {
+            let d = rounded_distance_sides(x as f32 + 0.5, y as f32 + 0.5, rect, radii);
+            let cov = ((0.5 - d).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            if cov > 0 {
+                let i = y as usize * stride + x as usize * 4;
+                blend_pixel(&mut pixels[i..i + 4], color, cov);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn raster_round_border_sides(
+    pixels: &mut [u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    rect: Rect,
+    radii: (f32, f32),
+    thickness: f32,
+    color: Rgba,
+    dirty: Rect,
+) {
+    if rect.is_empty() || thickness <= 0.0 {
+        return;
+    }
+    let bounds = rect
+        .intersect(dirty)
+        .intersect(Rect::new(0, 0, width, height));
+    for y in bounds.top..bounds.bottom {
+        for x in bounds.left..bounds.right {
+            let d = rounded_distance_sides(x as f32 + 0.5, y as f32 + 0.5, rect, radii);
+            let outer = (0.5 - d).clamp(0.0, 1.0);
+            let inner = (0.5 - (d + thickness)).clamp(0.0, 1.0);
+            let cov = ((outer - inner).max(0.0) * 255.0 + 0.5) as u8;
+            if cov > 0 {
+                let i = y as usize * stride + x as usize * 4;
+                blend_pixel(&mut pixels[i..i + 4], color, cov);
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -497,6 +497,23 @@ mod tests {
     }
 
     #[test]
+    fn bar_is_centred_between_its_box_edge_and_the_tab_face() {
+        use crate::chrome::paint::{marker_facing_radius, marker_only_bar};
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
+            let bar = group_bar_rect(island, m);
+            let face_left = island.left + m.px(Metrics::GROUP_MARKER_SHIFT);
+            let (before, after) = (bar.left - island.left, face_left - bar.right);
+            assert!((before - after).abs() <= 1, "dpi {dpi}: {before} vs {after}");
+            let slot = Rect::new(50, 4, 50 + m.px(Metrics::GROUP_MARKER_BOX_WIDTH), 28);
+            let bar = marker_only_bar(slot, m);
+            assert!(((bar.left - slot.left) - (slot.right - bar.right)).abs() <= 1);
+            assert!(marker_facing_radius(m) >= bar.width() / 2);
+        }
+    }
+
+    #[test]
     fn collapsed_marker_slots_are_compact_boxes_beside_full_tabs() {
         let m = Metrics::new(96);
         let plain = crate::chrome::layout::compute(1024, 700, 96, 4, false);
