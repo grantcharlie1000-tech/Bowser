@@ -994,6 +994,7 @@ impl App {
         if changed {
             Self::post_tab_changed(hwnd, active);
         }
+        Self::release_unused_site_rules(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         changed
@@ -1368,6 +1369,8 @@ impl App {
         };
         Self::save_group_preferences(app);
         Self::post_tab_changed_kind(hwnd, active, true, false);
+        // The snapshot may predate the site's last tab closing, so release its rule again.
+        Self::release_unused_site_rules(app);
         true
     }
 
@@ -1484,6 +1487,23 @@ impl App {
             Self::post_tab_changed_kind(hwnd, active, true, false);
         }
         changed
+    }
+
+    /// Drops `Always` rules for sites with no open unpinned tab, then saves and repaints when that
+    /// changed anything. A navigation still waiting for the engine counts as open, since its site is
+    /// about to be shown.
+    pub fn release_unused_site_rules(app: &AppRef) {
+        let (hwnd, active, released) = {
+            let mut state = app.borrow_mut();
+            let mut live = tab_groups::live_domains(&state.group_inputs());
+            live.extend(state.pending.as_ref().and_then(tab_groups::DomainKey::from_url));
+            let released = state.group_preferences.release_unused_always(&live);
+            (state.hwnd, state.tab_model.active(), released)
+        };
+        if released {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
+        }
     }
 
     fn save_group_preferences(app: &AppRef) {
@@ -2144,6 +2164,11 @@ impl App {
         state.tab_model.set_loading(id, loading);
         if active {
             state.navigation_progress = progress;
+        }
+        drop(state);
+        if matches!(event, NavigationProgressEvent::Completed(_)) {
+            // The new site is committed now, so a rule for the site the tab left may be unused.
+            Self::release_unused_site_rules(app);
         }
         changed
     }

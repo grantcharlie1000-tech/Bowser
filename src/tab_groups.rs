@@ -281,6 +281,25 @@ impl GroupPreferences {
         self.update(key, |entry| entry.colour = colour)
     }
 
+    /// Resets an `Always` rule to `Auto` for every domain with no live tab in `live`. A standing rule
+    /// only applies while its site is open; kept longer, it would turn a later lone tab of that site
+    /// into a group. Name, colour and collapsed state are kept. Returns whether anything changed.
+    pub fn release_unused_always(&mut self, live: &std::collections::BTreeSet<DomainKey>) -> bool {
+        let stale: Vec<DomainKey> = self
+            .entries
+            .iter()
+            .filter(|(key, entry)| entry.mode == GroupMode::Always && !live.contains(*key))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut changed = false;
+        for key in &stale {
+            changed |= self
+                .update(key, |entry| entry.mode = GroupMode::Auto)
+                .unwrap_or(false);
+        }
+        changed
+    }
+
     fn update(
         &mut self,
         key: &DomainKey,
@@ -619,6 +638,15 @@ pub fn group_members(keys: &[Option<TabGroupKey>], key: &TabGroupKey) -> Vec<usi
         .enumerate()
         .filter(|(_, member)| member.as_ref() == Some(key))
         .map(|(index, _)| index)
+        .collect()
+}
+
+/// Domains of the unpinned tabs in `tabs`. A pinned tab never joins a group, so a domain held only by
+/// pinned tabs is not live for [`GroupPreferences::release_unused_always`].
+pub fn live_domains(tabs: &[TabGroupInput]) -> std::collections::BTreeSet<DomainKey> {
+    tabs.iter()
+        .filter(|tab| !tab.pinned)
+        .filter_map(|tab| tab.domain.clone())
         .collect()
 }
 
@@ -1154,6 +1182,85 @@ mod tests {
         assert!(prefs.set_mode(&example, GroupMode::Auto).unwrap());
         assert!(prefs.set_collapsed(&example, false).unwrap());
         assert_eq!(prefs, GroupPreferences::default());
+    }
+
+    #[test]
+    fn auto_never_groups_a_lone_tab() {
+        let tabs = [input(Some("google.com"), false)];
+
+        assert!(!GroupMode::Auto.forms_group(1));
+        assert_eq!(group_keys(&tabs, &GroupPreferences::default()), vec![None]);
+    }
+
+    #[test]
+    fn release_unused_always_resets_mode_when_no_live_tab_has_domain() {
+        let google = key("google.com");
+        let mut prefs = GroupPreferences::default();
+        prefs.set_mode(&google, GroupMode::Always).unwrap();
+
+        assert!(prefs.release_unused_always(&std::collections::BTreeSet::new()));
+
+        assert_eq!(prefs.mode(&google), GroupMode::Auto);
+        assert_eq!(prefs.serialize(), "bowser-tab-groups 2\n");
+        assert!(!prefs.release_unused_always(&std::collections::BTreeSet::new()));
+    }
+
+    #[test]
+    fn release_unused_always_keeps_mode_while_a_member_is_live() {
+        let google = key("google.com");
+        let mut prefs = GroupPreferences::default();
+        prefs.set_mode(&google, GroupMode::Always).unwrap();
+        let tabs = [input(Some("mail.google.com"), false)];
+
+        assert!(!prefs.release_unused_always(&live_domains(&tabs)));
+
+        assert_eq!(prefs.mode(&google), GroupMode::Always);
+        let slots = project_strip(&tabs, 0, &prefs);
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].group_control);
+    }
+
+    #[test]
+    fn release_keeps_name_colour_collapsed() {
+        let google = key("google.com");
+        let mut prefs = GroupPreferences::default();
+        prefs.set_mode(&google, GroupMode::Always).unwrap();
+        prefs.set_name(&google, "Search").unwrap();
+        prefs.set_colour(&google, Some(3)).unwrap();
+        prefs.set_collapsed(&google, true).unwrap();
+
+        assert!(prefs.release_unused_always(&std::collections::BTreeSet::new()));
+
+        assert_eq!(prefs.mode(&google), GroupMode::Auto);
+        assert_eq!(prefs.name(&google), Some("Search"));
+        assert_eq!(prefs.colour(&google), Some(3));
+        assert!(prefs.is_collapsed(&google));
+    }
+
+    #[test]
+    fn release_ignores_pinned_only_domains() {
+        let google = key("google.com");
+        let mut prefs = GroupPreferences::default();
+        prefs.set_mode(&google, GroupMode::Always).unwrap();
+        let tabs = [input(Some("google.com"), true)];
+
+        assert!(!live_domains(&tabs).contains(&google));
+        assert!(prefs.release_unused_always(&live_domains(&tabs)));
+        assert_eq!(prefs.mode(&google), GroupMode::Auto);
+    }
+
+    #[test]
+    fn parse_then_release_drops_stale_always() {
+        let mut prefs =
+            GroupPreferences::parse("bowser-tab-groups 2\ngoogle.com always expanded -\n").unwrap();
+
+        assert!(prefs.release_unused_always(&std::collections::BTreeSet::new()));
+
+        assert_eq!(prefs.serialize(), "bowser-tab-groups 2\n");
+        let tabs = [input(Some("www.google.com"), false)];
+        let slots = project_strip(&tabs, 0, &prefs);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].group_key, None);
     }
 
     #[test]

@@ -707,6 +707,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         App::restore_pending_session(&app);
         App::submit_initial_url(&app);
+        // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
+        App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
@@ -1963,6 +1965,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     const GROUP: usize = 3;
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
+    const GROUP_NEVER: usize = 33;
     const UNGROUP: usize = 16;
     const UNDO_ORGANISE: usize = 17;
     const RELOAD: usize = 4;
@@ -2014,10 +2017,26 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
         Entry::Separator,
     ];
     if let Some(key) = &key {
+        // The site's standing mode is marked with a check, as the other choice lists do.
+        let mode = App::tab_group_preferences(app).mode(key);
+        let mode_icon = |active: bool| if active { Icon::Check } else { Icon::None };
         entries.push(Entry::Item(
             Item::new(GROUP, "Add tab to group", Icon::Grid).submenu_with(vec![
-                Entry::Item(Item::new(GROUP_NEW, "New group for this site", Icon::Plus)),
-                Entry::Item(Item::new(GROUP_AUTO, "Group automatically", Icon::Grid)),
+                Entry::Item(Item::new(
+                    GROUP_NEW,
+                    "Always group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Always),
+                )),
+                Entry::Item(Item::new(
+                    GROUP_AUTO,
+                    "Group this site automatically",
+                    mode_icon(mode == tab_groups::GroupMode::Auto),
+                )),
+                Entry::Item(Item::new(
+                    GROUP_NEVER,
+                    "Never group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Never),
+                )),
             ]),
         ));
         (has_group, collapsed) = with_chrome(hwnd, |state| {
@@ -2114,6 +2133,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             }
             GROUP_AUTO => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Auto);
+            }
+            GROUP_NEVER => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Never);
             }
             value if value == GROUP_AUTO + 1 && has_group => {
                 let _ = App::set_tab_group_collapsed(app, id, !collapsed);
@@ -3355,6 +3377,10 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let Some(cmd) = shortcuts::command_for(key, ctrl, shift, alt) else {
         return false;
     };
+    // While the address field has focus, the field's own redo keeps Ctrl+Shift+Z.
+    if cmd == Command::UndoTabOrganisation && edit_focused(hwnd) {
+        return false;
+    }
     match cmd {
         Command::NewTab => {
             App::new_tab(app);
