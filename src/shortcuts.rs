@@ -26,8 +26,11 @@ pub enum Command {
     ToggleBlocker,
     /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
     ShowProfileMenu,
-    /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
+    /// Ctrl+Shift+X opens the extensions menu (enable, disable, remove, install).
     ShowExtensionsMenu,
+    ShowCommandPalette,
+    ToggleNotes,
+    AddBookmark,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -42,11 +45,13 @@ const VK_9: u32 = 0x39;
 const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
+const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
 const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
+const VK_X: u32 = 0x58;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_F5: u32 = 0x74;
@@ -83,7 +88,10 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
-        (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
+        (VK_K, true, true, false) => Some(Command::ShowCommandPalette),
+        (VK_E, true, true, false) => Some(Command::ToggleNotes),
+        (VK_D, true, false, false) => Some(Command::AddBookmark),
+        (VK_X, true, true, false) => Some(Command::ShowExtensionsMenu),
         _ => None,
     }
 }
@@ -120,7 +128,10 @@ mod tests {
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
-            (VK_E, true, true, false, Command::ShowExtensionsMenu),
+            (VK_K, true, true, false, Command::ShowCommandPalette),
+            (VK_E, true, true, false, Command::ToggleNotes),
+            (VK_D, true, false, false, Command::AddBookmark),
+            (VK_X, true, true, false, Command::ShowExtensionsMenu),
         ];
         for index in 0..8 {
             table.push((
@@ -174,7 +185,7 @@ mod tests {
             (VK_T, true, false, true),
             (VK_W, false, false, false),
             (VK_L, false, false, false),
-            (VK_D, true, false, false),
+            (VK_D, true, true, false),
             (VK_LEFT, false, false, false),
             (VK_F5, false, true, false),
             (VK_9, false, false, false),
@@ -198,5 +209,13 @@ mod tests {
             command_for(VK_9, true, false, false),
             Some(Command::SelectLastTab)
         );
+    }
+
+    #[test]
+    fn productivity_chords_do_not_collide_with_existing_commands() {
+        assert_eq!(command_for(0x4B, true, true, false), Some(Command::ShowCommandPalette));
+        assert_eq!(command_for(VK_E, true, true, false), Some(Command::ToggleNotes));
+        assert_eq!(command_for(VK_D, true, false, false), Some(Command::AddBookmark));
+        assert_eq!(command_for(0x58, true, true, false), Some(Command::ShowExtensionsMenu));
     }
 }

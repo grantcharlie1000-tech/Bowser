@@ -95,6 +95,8 @@ pub fn browser_commands() -> CommandRegistry {
             "Save the open tabs as a named session",
             "save-session",
         ),
+        ("Saved sessions", "Restore or delete a saved session", "sessions"),
+        ("Add bookmark", "Save the current page", "add-bookmark"),
         ("Reload", "Reload the current page", "reload"),
         ("Back", "Go back", "back"),
         ("Forward", "Go forward", "forward"),
@@ -102,6 +104,10 @@ pub fn browser_commands() -> CommandRegistry {
         commands.register(label, detail, action);
     }
     commands
+}
+
+pub fn profile_allows_productivity(profile: &crate::profile::Profile) -> bool {
+    !profile.is_guest()
 }
 
 /// Scores exact/prefix matches above ordered fuzzy subsequences, then sorts stably by label.
@@ -432,14 +438,96 @@ pub fn write_sessions(path: &Path, sessions: &[SavedSession]) -> std::io::Result
 }
 
 pub fn add_history_entry(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
-    append_url_title(path, "bowser-history-v1", MAX_HISTORY, url, title)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    add_history_entry_at(path, timestamp, url, title)
+}
+
+pub fn add_history_entry_at(
+    path: &Path,
+    timestamp: u64,
+    url: &str,
+    title: &str,
+) -> std::io::Result<()> {
+    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let mut entries = read_history(path);
+    entries.retain(|(_, existing, _)| existing != &url);
+    entries.push((timestamp, url, title.chars().take(256).collect::<String>()));
+    if entries.len() > MAX_HISTORY {
+        entries.drain(..entries.len() - MAX_HISTORY);
+    }
+    let mut out = String::new();
+    for (timestamp, url, title) in entries {
+        out.push_str(&format!("{timestamp}\t{}\t{}\n", escape(&url), escape(&title)));
+    }
+    atomic_write(path, out.as_bytes())
 }
 
 pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
-    append_url_title(path, "bowser-bookmarks-v1", MAX_BOOKMARKS, url, title)
+    add_bookmark_in_folder(path, url, title, "")
+}
+
+pub fn add_bookmark_in_folder(
+    path: &Path,
+    url: &str,
+    title: &str,
+    folder: &str,
+) -> std::io::Result<()> {
+    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let mut entries = read_bookmarks(path);
+    entries.retain(|(_, existing, _)| existing != &url);
+    entries.push((title.chars().take(256).collect(), url, folder.chars().take(128).collect()));
+    if entries.len() > MAX_BOOKMARKS {
+        entries.drain(..entries.len() - MAX_BOOKMARKS);
+    }
+    let out = entries
+        .iter()
+        .map(|(title, url, folder)| format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder)))
+        .collect::<String>();
+    atomic_write(path, out.as_bytes())
+}
+
+pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
+    read_bounded(path).map_or_else(Vec::new, |text| {
+        text.lines()
+            .take(MAX_BOOKMARKS)
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let title = unescape(fields.next()?);
+                let url = valid_http_url(&unescape(fields.next()?))?;
+                let folder = unescape(fields.next().unwrap_or(""));
+                Some((title, url, folder))
+            })
+            .collect()
+    })
+}
+
+pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
+    read_bounded(path).map_or_else(Vec::new, |text| {
+        text.lines()
+            .take(MAX_HISTORY)
+            .filter_map(|line| {
+                let mut fields = line.splitn(3, '\t');
+                let timestamp = fields.next()?.parse().ok()?;
+                let url = valid_http_url(&unescape(fields.next()?))?;
+                let title = unescape(fields.next()?);
+                Some((timestamp, url, title))
+            })
+            .collect()
+    })
 }
 
 pub fn read_url_titles(path: &Path, header: &str, limit: usize) -> Vec<(String, String)> {
+    if header == "bowser-history-v1" {
+        return read_history(path)
+            .into_iter()
+            .rev()
+            .take(limit)
+            .map(|(_, url, title)| (url, title))
+            .collect();
+    }
     read_bounded(path).map_or_else(Vec::new, |text| {
         let mut lines = text.lines();
         if lines.next() != Some(header) {
@@ -455,33 +543,11 @@ pub fn read_url_titles(path: &Path, header: &str, limit: usize) -> Vec<(String, 
     })
 }
 
-fn append_url_title(
-    path: &Path,
-    header: &str,
-    limit: usize,
-    url: &str,
-    title: &str,
-) -> std::io::Result<()> {
-    let url = valid_http_url(url).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "only credential-free HTTP(S) URLs can be stored",
-        )
-    })?;
-    let mut entries = read_url_titles(path, header, limit);
-    entries.retain(|(existing, _)| existing != &url);
-    entries.push((url, title.chars().take(256).collect()));
-    if entries.len() > limit {
-        entries.drain(..entries.len() - limit);
-    }
-    let mut out = format!("{header}\n");
-    for (url, title) in entries {
-        out.push_str(&escape(&url));
-        out.push('\t');
-        out.push_str(&escape(&title));
-        out.push('\n');
-    }
-    atomic_write(path, out.as_bytes())
+fn invalid_url_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "only credential-free HTTP(S) URLs can be stored",
+    )
 }
 
 fn read_bounded(path: &Path) -> Option<String> {
@@ -614,6 +680,27 @@ mod tests {
     }
 
     #[test]
+    fn browser_registry_exposes_core_productivity_and_browser_actions() {
+        let registry = browser_commands();
+        let actions: Vec<_> = registry.commands().iter().map(|item| item.action.as_str()).collect();
+        for action in ["new-tab", "close-tab", "settings", "passwords", "profiles", "toggle-sidebar", "save-session", "sessions", "add-bookmark"] {
+            assert!(actions.contains(&action), "missing command {action}");
+        }
+    }
+
+    #[test]
+    fn guest_profiles_are_gated_from_productivity_persistence() {
+        let root = std::env::temp_dir().join(format!("bowser-guest-gate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let guest = crate::profile::Profile::guest_in(&root).unwrap();
+        let regular = crate::profile::Profile::default_in(&root);
+        assert!(!profile_allows_productivity(&guest));
+        assert!(profile_allows_productivity(&regular));
+        let _ = crate::profile::cleanup_guest(&guest);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn profile_files_round_trip_and_reject_credentials() {
         let root = std::env::temp_dir().join(format!("bowser-productivity-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -632,6 +719,21 @@ mod tests {
         let notes = root.join("notes.txt");
         write_notes(&notes, "hello\n").unwrap();
         assert_eq!(read_notes(&notes), "hello\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_and_bookmarks_use_importer_formats_and_dedupe_by_url() {
+        let root = std::env::temp_dir().join(format!("bowser-productivity-formats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let history = root.join("history.txt");
+        add_history_entry_at(&history, 1_700_000_000, "https://example.com/", "Example").unwrap();
+        assert_eq!(fs::read_to_string(&history).unwrap(), "1700000000\thttps://example.com/\tExample\n");
+        let bookmarks = root.join("bookmarks.txt");
+        add_bookmark_in_folder(&bookmarks, "https://example.com/", "First", "Reading").unwrap();
+        add_bookmark_in_folder(&bookmarks, "https://example.com/", "Latest", "Work").unwrap();
+        assert_eq!(fs::read_to_string(&bookmarks).unwrap(), "Latest\thttps://example.com/\tWork\n");
+        assert_eq!(read_bookmarks(&bookmarks), vec![("Latest".into(), "https://example.com/".into(), "Work".into())]);
         let _ = fs::remove_dir_all(root);
     }
 

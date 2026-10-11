@@ -2,7 +2,7 @@ use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
     WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
-    menu, passwords_panel, settings_panel, show_error_message, site_info,
+    menu, notes_panel, command_palette, passwords_panel, settings_panel, show_error_message, site_info,
 };
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
@@ -199,6 +199,14 @@ struct WindowChrome {
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
+        let mut history = History::default();
+        if let Ok(profile) = crate::profile::active() {
+            if crate::productivity::profile_allows_productivity(&profile) && profile.history_enabled() {
+                for (_, url, title) in crate::productivity::read_history(&profile.history_file()) {
+                    history.record(&url, &title);
+                }
+            }
+        }
         Self {
             surface: ChromeSurface::new(width, height, dpi),
             overlay,
@@ -218,7 +226,7 @@ impl WindowChrome {
             completion: None,
             suppress_completion: false,
             programmatic_text_update: false,
-            history: History::default(),
+            history,
             urls: HashMap::with_capacity(8),
             pending_history: HashMap::with_capacity(8),
             hover: Hit::None,
@@ -2451,6 +2459,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
     const PROFILE: usize = 5007;
+    const NOTES: usize = 5008;
+    const PALETTE: usize = 5009;
+    const BOOKMARK: usize = 5010;
+    const SESSIONS: usize = 5011;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -2465,8 +2477,15 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         ));
     }
     entries.push(Entry::Item(
-        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E"),
+        Item::new(NOTES, "Notes & Tasks…", Icon::Info).shortcut("Ctrl+Shift+E")
+            .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
     ));
+    entries.push(Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).shortcut("Ctrl+Shift+K")));
+    entries.push(Entry::Item(Item::new(BOOKMARK, "Bookmark this page", Icon::Plus).shortcut("Ctrl+D")
+        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
+    entries.push(Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check)
+        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
+    entries.push(Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+X")));
     entries.push(Entry::Item(
         Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key)
             .shortcut("Ctrl+,")
@@ -2515,6 +2534,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 focus_omni(hwnd, app, true);
             }
             PROFILE => {}
+            NOTES => notes_panel::open(hwnd),
+            PALETTE => run_command_palette(hwnd, app),
+            BOOKMARK => add_current_bookmark(hwnd, app),
+            SESSIONS => show_sessions(hwnd, app),
             EXTENSIONS => show_extensions_menu(hwnd, app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -2563,6 +2586,121 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+fn run_command_palette(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    let Some(query) = super::profile_rename::prompt_with_title(hwnd, "", "Search Bowser", "Search") else { return; };
+    let tabs: Vec<_> = App::tab_ids(app).into_iter().map(|id| {
+        (App::tab_title(app, id).unwrap_or_else(|| "New tab".into()), App::tab_committed_url(app, id).map_or_else(String::new, |url| url.to_string()))
+    }).collect();
+    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) { Vec::new() } else { crate::productivity::read_bookmarks(&profile.bookmarks_file()) };
+    let history = if !crate::productivity::profile_allows_productivity(&profile) || !profile.history_enabled() { Vec::new() } else { crate::productivity::read_history(&profile.history_file()) };
+    let results = command_palette::search(&query, &tabs, &bookmarks, &history, &crate::productivity::browser_commands());
+    if results.is_empty() {
+        let mut point = main_menu_anchor(hwnd);
+        unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+        let _ = menu::track(hwnd, point, Menu { header: None, entries: vec![Entry::Item(Item::new(0, "No matching results", Icon::Info).disabled())], footer: "Command palette".into() });
+        return;
+    }
+    let entries = results.iter().enumerate().map(|(i, item)| {
+        Entry::Item(Item::new(i + 1, item.label.clone(), Icon::None))
+    }).collect();
+    let mut point = main_menu_anchor(hwnd);
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Command palette".into() }) else { return; };
+    let Some(item) = results.get(chosen.id.saturating_sub(1)) else { return; };
+    if let Some(index) = item.action.strip_prefix("tab:").and_then(|s| s.parse::<usize>().ok()) {
+        if let Some(id) = App::tab_ids(app).get(index) { let _ = App::select_tab(app, *id); }
+    } else if let Some(url) = item.action.strip_prefix("url:").and_then(|s| url::Url::parse(s).ok()) {
+        App::navigate_current(app, &url);
+    } else {
+        run_palette_command(hwnd, app, &item.action);
+    }
+}
+
+fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
+    match action {
+        "new-tab" => { App::new_tab(app); focus_omni(hwnd, app, true); }
+        "close-tab" => { let _ = App::close_tab(app, App::active_tab_id(app)); }
+        "settings" => { let _ = settings_panel::open(hwnd); }
+        "toggle-sidebar" => notes_panel::open(hwnd),
+        "passwords" => { let _ = passwords_panel::open(hwnd); }
+        "profiles" => show_profile_menu(hwnd),
+        "save-session" | "sessions" => show_sessions(hwnd, app),
+        "add-bookmark" => add_current_bookmark(hwnd, app),
+        "reload" => App::reload(app),
+        "back" => navigate_back_for_focused_pane(app),
+        "forward" => navigate_forward_for_focused_pane(app),
+        _ => {}
+    }
+}
+
+fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let id = App::active_tab_id(app);
+    let Some(url) = App::tab_committed_url(app, id) else { return; };
+    let title = App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    if let Err(error) = crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title) {
+        show_error_message(&format!("Bookmark could not be saved: {error}"));
+    } else {
+        let _ = menu::track(hwnd, main_menu_anchor(hwnd), Menu { header: None, entries: vec![Entry::Item(Item::new(0, "Bookmark saved", Icon::Check).disabled())], footer: "Bookmarks".into() });
+    }
+}
+
+fn show_sessions(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let sessions = crate::productivity::read_sessions(&profile.saved_sessions_file());
+    const SAVE: usize = 1;
+    const RESTORE_BASE: usize = 100;
+    const DELETE_BASE: usize = 200;
+    let mut entries = vec![Entry::Item(Item::new(SAVE, "Save current tabs…", Icon::Plus))];
+    if !sessions.is_empty() { entries.push(Entry::Separator); }
+    for (index, session) in sessions.iter().enumerate() {
+        let restore = RESTORE_BASE + index;
+        let delete = DELETE_BASE + index;
+        entries.push(Entry::Item(Item::new(restore, session.name.clone(), Icon::Check).submenu_with(vec![
+            Entry::Item(Item::new(restore, format!("Restore {} tabs", session.urls.len()), Icon::Check)),
+            Entry::Item(Item::new(delete, "Delete session", Icon::Close)),
+        ])));
+    }
+    let mut point = main_menu_anchor(hwnd);
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Saved sessions".into() }) else { return; };
+    if chosen.id == SAVE {
+        let Some(name) = super::profile_rename::prompt_with_title(hwnd, "", "Save session", "Save") else { return; };
+        let active_id = App::active_tab_id(app);
+        let entries: Vec<_> = App::tab_ids(app).into_iter()
+            .filter_map(|id| App::tab_committed_url(app, id).map(|url| (id, url.to_string())))
+            .filter(|(_, value)| matches!(url::Url::parse(value).map(|u| u.scheme().to_owned()).as_deref(), Ok("http" | "https")))
+            .collect();
+        let urls: Vec<_> = entries.iter().map(|(_, url)| url.clone()).collect();
+        if urls.is_empty() { return; }
+        let active = entries.iter().position(|(id, _)| *id == active_id).unwrap_or(0);
+        if let Err(error) = crate::productivity::save_session(&profile.saved_sessions_file(), crate::productivity::SavedSession { name, urls, active }) {
+            show_error_message(&format!("Session could not be saved: {error}"));
+        }
+    } else if (RESTORE_BASE..DELETE_BASE).contains(&chosen.id) {
+        let Some(session) = sessions.get(chosen.id - RESTORE_BASE) else { return; };
+        if !super::ask_yes_no("Replace the open tabs with this saved session?") { return; }
+        for id in App::tab_ids(app) { let _ = App::close_tab(app, id); }
+        let mut ids = vec![App::active_tab_id(app)];
+        for value in &session.urls {
+            if let Ok(url) = url::Url::parse(value) { App::navigate_current(app, &url); }
+            if ids.len() < session.urls.len() {
+                ids.push(App::new_tab(app));
+                let _ = App::select_tab(app, *ids.last().unwrap());
+            }
+        }
+        if let Some(id) = ids.get(session.active) { let _ = App::select_tab(app, *id); }
+    } else if (DELETE_BASE..DELETE_BASE + sessions.len()).contains(&chosen.id) {
+        let index = chosen.id - DELETE_BASE;
+        if let Some(session) = sessions.get(index) {
+            if super::ask_yes_no("Delete this saved session?") { let _ = crate::productivity::delete_session(&profile.saved_sessions_file(), &session.name); }
+        }
+    }
 }
 
 fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
@@ -3387,6 +3525,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::ShowCommandPalette => run_command_palette(hwnd, app),
+        Command::ToggleNotes => notes_panel::open(hwnd),
+        Command::AddBookmark => add_current_bookmark(hwnd, app),
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(
@@ -3405,11 +3546,9 @@ fn persist_profile_history(url: String, title: String) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
-    std::thread::spawn(move || {
-        if profile.history_enabled() {
-            let _ = crate::productivity::add_history_entry(&profile.history_file(), &url, &title);
-        }
-    });
+    if crate::productivity::profile_allows_productivity(&profile) && profile.history_enabled() {
+        let _ = crate::productivity::add_history_entry(&profile.history_file(), &url, &title);
+    }
 }
 
 unsafe extern "system" fn edit_subclass(
