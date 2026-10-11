@@ -738,7 +738,7 @@ fn is_plain_dir(path: &Path) -> bool {
 
 /// A small strict JSON reader. It rejects anything outside RFC 8259 plus duplicate object keys,
 /// and it caps nesting depth. Numbers are kept as their source text.
-mod json {
+pub(crate) mod json {
     use super::MAX_JSON_DEPTH;
 
     #[derive(Debug, Clone, PartialEq)]
