@@ -28,6 +28,10 @@ pub enum Command {
     ShowProfileMenu,
     /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
     ShowExtensionsMenu,
+    ToggleSplit,
+    FocusSplitLeft,
+    FocusSplitRight,
+    CloseSplitPane,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -49,6 +53,7 @@ const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
+const VK_OEM_5: u32 = 0xDC;
 const VK_F5: u32 = 0x74;
 const VK_F6: u32 = 0x75;
 const VK_BROWSER_BACK: u32 = 0xA6;
@@ -84,6 +89,10 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
+        (VK_OEM_5, true, true, false) => Some(Command::ToggleSplit),
+        (VK_LEFT, true, true, false) => Some(Command::FocusSplitLeft),
+        (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
+        (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         _ => None,
     }
 }
@@ -121,6 +130,10 @@ mod tests {
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
+            (VK_OEM_5, true, true, false, Command::ToggleSplit),
+            (VK_LEFT, true, true, false, Command::FocusSplitLeft),
+            (VK_RIGHT, true, true, false, Command::FocusSplitRight),
+            (VK_W, true, true, false, Command::CloseSplitPane),
         ];
         for index in 0..8 {
             table.push((

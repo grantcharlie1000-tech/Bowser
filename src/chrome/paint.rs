@@ -274,6 +274,27 @@ impl ChromeSurface {
     ) {
         self.page_regions = content;
     }
+
+    /// Paints a themed viewport-half target while a tab is being dragged into split view.
+    pub fn paint_split_drop(
+        &mut self,
+        viewport: Rect,
+        pane: crate::split_view::Pane,
+        palette: &Palette,
+        dirty: Rect,
+    ) {
+        let mid = viewport.left + viewport.width() / 2;
+        let target = match pane {
+            crate::split_view::Pane::Left => Rect::new(viewport.left, viewport.top, mid, viewport.bottom),
+            crate::split_view::Pane::Right => Rect::new(mid, viewport.top, viewport.right, viewport.bottom),
+        };
+        let tint = Rgba {
+            a: if palette.translucent { 58 } else { 34 },
+            ..palette.omnibox_focus_border
+        };
+        self.fill_rect(target, tint, dirty);
+        self.border(target, 10, 2.0, palette.omnibox_focus_border, dirty);
+    }
     pub fn width(&self) -> i32 {
         self.width
     }

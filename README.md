@@ -84,6 +84,11 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Back | Alt+Left, browser back key |
 | Forward | Alt+Right, browser forward key |
 | Passwords & Passkeys | Ctrl+, |
+| Toggle split view | Ctrl+Shift+\ |
+| Focus left / right split pane | Ctrl+Shift+Left / Ctrl+Shift+Right |
+| Close focused split pane | Ctrl+Shift+W |
+
+Drag a tab to the left or right half of the page to open it beside the selected tab. Drag the divider to resize panes; double-click it to restore equal widths. Split focus, pane selection, and divider ratio are included in crash recovery, which restores only the active page and the two visible split pages.
 
 Under system memory pressure, a tab that has been hidden for 30 seconds or more may be unloaded to free memory. It stays in the tab strip with its title, favicon and group, and it reloads its last address when you select it again. Its back and forward history is lost when this happens. Pinned tabs, tabs playing audio and tabs that are still loading are never unloaded.
 

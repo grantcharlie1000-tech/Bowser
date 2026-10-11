@@ -1,7 +1,7 @@
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
-    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
+    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
     menu, passwords_panel, settings_panel, show_error_message, site_info,
 };
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
@@ -188,6 +188,8 @@ struct WindowChrome {
     hover: Hit,
     pressed: Hit,
     drag: Option<(TabId, usize)>,
+    split_drag_companion: Option<TabId>,
+    split_drop: Option<crate::split_view::Pane>,
     dpi: u32,
     motion: Motion,
     active_tab: Option<TabId>,
@@ -196,6 +198,7 @@ struct WindowChrome {
     split_active: bool,
     split_dragging: bool,
     split_divider: i32,
+    pending_split_bounds: Option<(RECT, RECT)>,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -224,6 +227,8 @@ impl WindowChrome {
             hover: Hit::None,
             pressed: Hit::None,
             drag: None,
+            split_drag_companion: None,
+            split_drop: None,
             dpi,
             motion: Motion::new(!animations_enabled()),
             active_tab: None,
@@ -232,6 +237,7 @@ impl WindowChrome {
             split_active: false,
             split_dragging: false,
             split_divider: width / 2,
+            pending_split_bounds: None,
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -463,7 +469,11 @@ fn sync_overlay_position(hwnd: HWND) {
 }
 fn clear_pointer_state(hwnd: HWND) -> bool {
     with_chrome(hwnd, |s| {
-        let had_state = s.drag.take().is_some() || s.pressed != Hit::None || std::mem::take(&mut s.split_dragging);
+        let had_state = s.drag.take().is_some()
+            || s.pressed != Hit::None
+            || std::mem::take(&mut s.split_dragging)
+            || s.split_drop.take().is_some();
+        s.split_drag_companion = None;
         s.pressed = Hit::None;
         had_state
     })
@@ -717,6 +727,12 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         App::restore_pending_session(&app);
+        sync_split_ratio(hwnd, App::split_view(&app));
+        if App::split_view(&app).is_some()
+            && let Some(panes) = split_rects(hwnd, None)
+        {
+            App::update_split_bounds(&app, panes);
+        }
         App::submit_initial_url(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
         if let Some(url) = benchmark_url {
@@ -1004,10 +1020,14 @@ unsafe extern "system" fn window_proc(
                             IsZoomed(hwnd).as_bool(),
                         );
                     });
+                    sync_split_ratio(hwnd, App::split_view(app));
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     if let Some(panes) = split_rects(hwnd, None) {
-                        App::update_split_bounds(app, panes);
+                        queue_split_bounds(hwnd, panes);
+                    } else {
+                        cancel_split_bounds(hwnd);
+                        App::clear_split_bounds(app);
                     }
                     App::window_size_changed(
                         app,
@@ -1059,11 +1079,15 @@ unsafe extern "system" fn window_proc(
                         );
                         s.refresh(app, true)
                     });
+                    sync_split_ratio(hwnd, App::split_view(app));
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     if let Some(panes) = split_rects(hwnd, None) {
                         App::update_split_bounds(app, panes);
+                    } else {
+                        cancel_split_bounds(hwnd);
+                        App::clear_split_bounds(app);
                     }
                     App::window_size_changed(
                         app,
@@ -1253,8 +1277,35 @@ unsafe extern "system" fn window_proc(
                     {
                         let divider = panes.0.right;
                         let _ = with_chrome(hwnd, |s| s.split_divider = divider);
-                        App::update_split_bounds(app, panes);
+                        if let Some(viewport) = with_chrome(hwnd, |s| s.layout.viewport) {
+                            let ratio = (((divider + 3 - viewport.left) * 100)
+                                / viewport.width().max(1))
+                                .clamp(20, 80) as u8;
+                            App::set_split_ratio(app, ratio);
+                        }
+                        queue_split_bounds(hwnd, panes);
                         let _ = InvalidateRect(Some(hwnd), None, false);
+                    } else {
+                        let point = frame::point_from_lparam(lparam);
+                        let target = with_chrome(hwnd, |s| {
+                            let dragging_tab = s.drag.is_some();
+                            let viewport = s.layout.viewport;
+                            (dragging_tab && viewport.contains(point.x, point.y)).then_some(
+                                if point.x < viewport.left + viewport.width() / 2 {
+                                    crate::split_view::Pane::Left
+                                } else {
+                                    crate::split_view::Pane::Right
+                                },
+                            )
+                        }).flatten();
+                        let changed = with_chrome(hwnd, |s| {
+                            let changed = s.split_drop != target;
+                            s.split_drop = target;
+                            changed
+                        }).unwrap_or(false);
+                        if changed {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
                     }
                 } else {
                     let p = frame::point_from_lparam(lparam);
@@ -1328,10 +1379,12 @@ unsafe extern "system" fn window_proc(
                             }
                         } else if let Some(app) = app {
                             if let Some(id) = slot_tab_id(hwnd, i) {
+                                let companion = App::active_tab_id(app);
                                 let _ = App::select_tab(app, id);
                                 let _ = with_chrome(hwnd, |s| {
                                     s.pressed = Hit::Tab(i);
                                     s.drag = Some((id, i));
+                                    s.split_drag_companion = (companion != id).then_some(companion);
                                 });
                                 let _ = SetCapture(hwnd);
                                 invalidate_hit(hwnd, Hit::Tab(i));
@@ -1405,13 +1458,39 @@ unsafe extern "system" fn window_proc(
                 let was_split_drag = with_chrome(hwnd, |s| std::mem::take(&mut s.split_dragging)).unwrap_or(false);
                 if was_split_drag {
                     let _ = ReleaseCapture();
+                    if let Some(app) = app {
+                        App::split_state_changed(app);
+                    }
                 } else if let Some((id, from)) = with_chrome(hwnd, |s| s.drag.take()).flatten() {
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
+                    let (drop, companion) = with_chrome(hwnd, |s| {
+                        (s.split_drop.take(), s.split_drag_companion.take())
+                    }).unwrap_or((None, None));
                     if let Some(app) = app {
-                        let to = layout::reorder_target(&l, from, p.x);
-                        let model_to = slot_model_index(hwnd, to).unwrap_or(to);
-                        let _ = App::move_tab(app, id, model_to);
+                        if let Some(pane) = drop {
+                            let other = companion
+                                .filter(|tab| *tab != id)
+                                .or_else(|| App::tab_ids(app).into_iter().find(|tab| *tab != id));
+                            if let Some(other) = other
+                                && let Some(bounds) = split_rects(hwnd, None)
+                            {
+                                let (left, right) = match pane {
+                                    crate::split_view::Pane::Left => (id, other),
+                                    crate::split_view::Pane::Right => (other, id),
+                                };
+                                let _ = App::open_split_view(app, left, right, pane, bounds);
+                                sync_split_ratio(hwnd, App::split_view(app));
+                                if let Some(panes) = split_rects(hwnd, None) {
+                                    App::update_split_bounds(app, panes);
+                                }
+                            }
+                        } else {
+                            let to = layout::reorder_target(&l, from, p.x);
+                            let model_to = slot_model_index(hwnd, to).unwrap_or(to);
+                            let _ = App::move_tab(app, id, model_to);
+                        }
                     }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
                 } else {
@@ -1449,7 +1528,16 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONDBLCLK => {
                 let p = frame::point_from_lparam(lparam);
-                if hit(hwnd, p.x, p.y) == Hit::CaptionArea {
+                if hit(hwnd, p.x, p.y) == Hit::SplitDivider {
+                    if let Some(app) = app {
+                        App::set_split_ratio(app, 50);
+                        App::split_state_changed(app);
+                        sync_split_ratio(hwnd, App::split_view(app));
+                        if let Some(panes) = split_rects(hwnd, None) {
+                            App::update_split_bounds(app, panes);
+                        }
+                    }
+                } else if hit(hwnd, p.x, p.y) == Hit::CaptionArea {
                     toggle_max(hwnd)
                 }
                 LRESULT(0)
@@ -1582,6 +1670,16 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_SPLIT_BOUNDS_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
+                if let (Some(app), Some(bounds)) = (
+                    app,
+                    with_chrome(hwnd, |s| s.pending_split_bounds.take()).flatten(),
+                ) {
+                    App::update_split_bounds(app, bounds);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_CARET_BLINK_TIMER => {
                 let minimised = IsIconic(hwnd).as_bool();
                 if caret_blink_allowed(foreground_is_ours(hwnd), minimised, edit_focused(hwnd)) {
@@ -1608,6 +1706,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
@@ -1631,6 +1730,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
@@ -1895,6 +1995,32 @@ fn split_rects(
         RECT { left: panes.left.left, top: panes.left.top, right: panes.left.right, bottom: panes.left.bottom },
         RECT { left: panes.right.left, top: panes.right.top, right: panes.right.right, bottom: panes.right.bottom },
     ))
+}
+
+fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::SplitView>) {
+    let Some(split) = split else { return };
+    let _ = with_chrome(hwnd, |state| {
+        let viewport = state.layout.viewport;
+        state.split_divider = viewport.left
+            + viewport.width() * i32::from(split.ratio) / 100
+            - state.layout.metrics.px(3);
+    });
+}
+
+fn queue_split_bounds(hwnd: HWND, bounds: (RECT, RECT)) {
+    let should_arm = with_chrome(hwnd, |s| {
+        let should_arm = s.pending_split_bounds.is_none();
+        s.pending_split_bounds = Some(bounds);
+        should_arm
+    }).unwrap_or(false);
+    if should_arm {
+        unsafe { let _ = SetTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER, ANIMATION_FRAME_MS, None); }
+    }
+}
+
+fn cancel_split_bounds(hwnd: HWND) {
+    unsafe { let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER); }
+    let _ = with_chrome(hwnd, |s| s.pending_split_bounds = None);
 }
 
 fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
@@ -3234,6 +3360,9 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 s.surface.set_page_regions(page_regions);
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
+                if let Some(pane) = s.split_drop {
+                    s.surface.paint_split_drop(l.viewport, pane, p, dirty);
+                }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
                 let _ = ClientToScreen(hwnd, &mut origin);
@@ -3386,6 +3515,26 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::ToggleSplit => {
+            if let Some(split) = App::split_view(app) {
+                let _ = App::close_split_pane(app, split.focused);
+            } else {
+                let tabs = App::tab_ids(app);
+                let active = App::active_tab_id(app);
+                if let Some(other) = tabs.into_iter().find(|id| *id != active)
+                    && let Some(bounds) = split_rects(hwnd, None)
+                {
+                    let _ = App::open_split_view(app, active, other, crate::split_view::Pane::Right, bounds);
+                }
+            }
+        }
+        Command::FocusSplitLeft => { let _ = App::focus_split_pane(app, crate::split_view::Pane::Left); }
+        Command::FocusSplitRight => { let _ = App::focus_split_pane(app, crate::split_view::Pane::Right); }
+        Command::CloseSplitPane => {
+            if let Some(split) = App::split_view(app) {
+                let _ = App::close_split_pane(app, split.focused);
+            }
+        }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

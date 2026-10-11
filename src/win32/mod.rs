@@ -75,6 +75,8 @@ pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
 /// Advances the address bar navigation progress transition while it is visible.
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
+/// Coalesces split divider moves to one controller bounds update per frame.
+pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
 
 pub(crate) fn post(
     hwnd: HWND,
