@@ -86,10 +86,10 @@ fn bar_between(left: i32, right: i32, band: Rect, m: Metrics) -> Rect {
     )
 }
 
-/// Radius of the corners that face the bar, on both the marker box and the tab face beside it:
-/// the bar's own corner radius plus a pixel, so the bar sits in a notch that follows its profile.
+/// Corner radius of the marker box, on all four corners, and of the tab face edge beside it: a flat
+/// chip with slightly curved edges that follows the bar's own rounding.
 pub fn marker_facing_radius(m: Metrics) -> i32 {
-    m.px(Metrics::GROUP_MARKER_WIDTH).max(3) / 2 + m.px(1).max(1)
+    m.px(3).max(2)
 }
 
 /// The standalone marker of a collapsed group with no active member, centred in its compact slot,
@@ -106,26 +106,22 @@ pub fn island_colour(chosen: Option<u8>, accent: Rgba) -> Rgba {
         .unwrap_or(accent)
 }
 
-/// The marker box at the leading edge of a group's shell: as tall as a tab, with a tab's corner
+/// The marker box at the leading edge of a group's first tab: as tall as a tab, with a tab's corner
 /// radius. Painting and hit testing both use this.
-pub fn group_marker_box(shell: Rect, m: Metrics) -> Rect {
+pub fn group_marker_box(island: Rect, m: Metrics) -> Rect {
     Rect::new(
-        shell.left,
-        shell.top,
-        shell.left + m.px(Metrics::GROUP_MARKER_BOX_WIDTH),
-        shell.bottom,
+        island.left,
+        island.top,
+        island.left + m.px(Metrics::GROUP_MARKER_BOX_WIDTH),
+        island.bottom,
     )
 }
 
 /// The group bar drawn inside the marker box at the leading edge of a group's shell.
-pub fn group_bar_rect(shell: Rect, m: Metrics) -> Rect {
-    // Centred between the box's outer edge and the tab face, which starts `GROUP_MARKER_SHIFT` in.
-    bar_between(
-        shell.left,
-        shell.left + m.px(Metrics::GROUP_MARKER_SHIFT),
-        shell,
-        m,
-    )
+pub fn group_bar_rect(island: Rect, m: Metrics) -> Rect {
+    // Centred between the box's two edges.
+    let marker_box = group_marker_box(island, m);
+    bar_between(marker_box.left, marker_box.right, island, m)
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -610,11 +606,14 @@ impl ChromeSurface {
                 continue;
             };
             let compact = first.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH);
-            let shell = Rect::new(first.left, first.top, last.right, last.bottom)
+            let has_marker = !compact && view.tabs.get(start).is_some_and(|tab| tab.group_control);
+            // The marker is a box of its own at the leading edge; the shell wraps only the tabs,
+            // starting just after it, so there is one box around the bar and not two.
+            let shell_left = first.left
+                + if has_marker { m.px(Metrics::GROUP_MARKER_SHIFT) } else { 0 };
+            let shell = Rect::new(shell_left, first.top, last.right, last.bottom)
                 .intersect(view.layout.tab_zone);
             if !shell.is_empty() {
-                let has_marker =
-                    !compact && view.tabs.get(start).is_some_and(|tab| tab.group_control);
                 group_spans.push((start, index, shell, has_marker));
             }
         }
@@ -623,10 +622,12 @@ impl ChromeSurface {
         // faces and its colour marker in a small box of its own at the leading edge. The first
         // tab's close target stays inside its face, right of that box.
         let group_fill = mix(view.palette.tab_inactive, view.palette.tab_active, 0.30);
-        for &(start, end, shell, _) in &group_spans {
-            self.round(shell, m.tab_radius(), group_fill, dirty);
-            self.border(
+        for &(start, end, shell, has_marker) in &group_spans {
+            let shell_left = if has_marker { marker_facing_radius(m) } else { m.tab_radius() };
+            self.round_sides(shell, shell_left, m.tab_radius(), group_fill, dirty);
+            self.border_sides(
                 shell,
+                shell_left,
                 m.tab_radius(),
                 1.0,
                 scale_alpha(view.palette.hairline, 0.8),
@@ -663,12 +664,10 @@ impl ChromeSurface {
                     details.and_then(|tab| tab.group_colour),
                     view.palette.tab_group_accent,
                 );
-                // The slot is the group's compact marker box, laid out like a tab of its own. A side
-                // with a tab beside it has small corners that follow the bar's profile.
-                let facing = marker_facing_radius(m);
-                let outer = m.tab_radius();
-                let left_r = if index > view.layout.first_visible_tab() { facing } else { outer };
-                let right_r = if view.layout.tab(index + 1).is_some() { facing } else { outer };
+                // The slot is the group's compact marker box: a flat chip with the same small
+                // corners on both sides.
+                let left_r = marker_facing_radius(m);
+                let right_r = left_r;
                 self.round_sides(rect, left_r, right_r, view.palette.tab_inactive, dirty);
                 self.border_sides(
                     rect,
@@ -716,7 +715,8 @@ impl ChromeSurface {
                     });
                     let shift = m.px(Metrics::GROUP_MARKER_SHIFT);
                     let selected_rect = Rect::new(
-                        if leader { rect.left + shift } else { rect.left + m.px(1) },
+                        // The leader's shell edge already sits at `shift`.
+                        rect.left + if leader { shift } else { 0 } + m.px(1),
                         rect.top + m.px(1),
                         rect.right - m.px(1),
                         rect.bottom - m.px(1),
@@ -770,23 +770,28 @@ impl ChromeSurface {
             // A part that would be cut off by the tab zone is skipped, so a half-visible close
             // glyph never lands on a neighbouring control.
             if group_leader {
-                if let Some((_, _, shell, _)) = group_spans
-                    .iter()
-                    .find(|(start, _, _, has_marker)| *start == index && *has_marker)
                 {
                     let colour = island_colour(
                         details.and_then(|tab| tab.group_colour),
                         view.palette.tab_group_accent,
                     );
-                    let marker_box = group_marker_box(*shell, m);
+                    let marker_box = group_marker_box(tab_rect, m);
                     self.round_sides(
                         marker_box,
-                        m.tab_radius(),
+                        marker_facing_radius(m),
                         marker_facing_radius(m),
                         view.palette.tab_inactive,
                         dirty,
                     );
-                    let bar = group_bar_rect(*shell, m);
+                    self.border_sides(
+                        marker_box,
+                        marker_facing_radius(m),
+                        marker_facing_radius(m),
+                        1.0,
+                        scale_alpha(view.palette.hairline, 0.8),
+                        dirty,
+                    );
+                    let bar = group_bar_rect(tab_rect, m);
                     self.round(bar, bar.width() / 2, colour, dirty);
                 }
             }
@@ -915,8 +920,8 @@ impl ChromeSurface {
         self.line(x, y + 2, x + 4, y - 2, 1.5, c, dirty);
     }
 
-    /// Three stacked dots in a bubble right of the address pill; the main menu opens from here. The
-    /// bubble has the back / forward pill's fill and outline.
+    /// A three-line menu glyph in a bubble right of the address pill; the main menu opens from
+    /// here. The bubble has the back / forward pill's fill and outline.
     fn paint_main_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let rect = view.layout.main_menu_button;
         if rect.intersect(dirty).is_empty() {
@@ -934,13 +939,9 @@ impl ChromeSurface {
             self.round(rect, radius, colour, dirty);
         }
         self.border(rect, radius, m.dpi() as f32 / 96.0, view.palette.hairline, dirty);
-        let (cx, cy) = center(rect);
-        let size = m.px(3).max(2);
-        let pitch = m.px(6);
-        for step in -1..=1 {
-            let top = cy + step * pitch - size / 2;
-            let dot = Rect::new(cx - size / 2, top, cx - size / 2 + size, top + size);
-            self.round(dot, size / 2, view.palette.caption_glyph, dirty);
+        let colour = view.palette.caption_glyph;
+        for (left, right, y) in main_menu_bars(rect, m) {
+            self.line_f(left, y, right, y, NAV_STROKE, colour, dirty);
         }
     }
 
@@ -986,7 +987,7 @@ impl ChromeSurface {
             let (cx, cy) = (cx as f32, cy as f32);
             let half = m.px(7) as f32;
             let head = m.px(4) as f32;
-            let w = 1.3;
+            let w = NAV_STROKE;
             match hit {
                 Hit::Back | Hit::Forward => {
                     // Forward is the mirror image of back.
@@ -1595,6 +1596,23 @@ fn scroll_to_keep_visible(
 
 fn center(rect: Rect) -> (i32, i32) {
     ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
+}
+
+/// Stroke width of the toolbar glyphs: back, forward, reload and the main menu.
+const NAV_STROKE: f32 = 1.3;
+
+/// The main menu glyph's three bars as `(left, right, y)` stroke centrelines, top to bottom.
+///
+/// Each bar sits on a pixel-row centre so it rasterises as one solid row rather than two
+/// half-covered ones, and the bars share an integer pitch so all three look identical. The glyph
+/// is centred horizontally; on an even-height button the middle bar takes the row just above the
+/// centre line.
+fn main_menu_bars(rect: Rect, m: Metrics) -> [(f32, f32, f32); 3] {
+    let cx = (rect.left + rect.right) as f32 / 2.0;
+    let middle = ((rect.top + rect.bottom) as f32 / 2.0 + 0.5).floor() - 0.5;
+    let half = m.px(6) as f32;
+    let pitch = m.px(4) as f32;
+    [-1.0, 0.0, 1.0].map(|step| (cx - half, cx + half, middle + step * pitch))
 }
 
 /// Source-over in premultiplied BGRA. `coverage` modulates the source alpha.
@@ -2993,6 +3011,245 @@ mod tests {
         assert_eq!(scroll_to_keep_visible(900, 400, 400, 100, 1), 301);
         assert_eq!(scroll_to_keep_visible(50, 10, 60, 100, 1), 0);
         assert_eq!(scroll_to_keep_visible(5, 5, 400, 0, 1), 0);
+    }
+
+    #[test]
+    fn main_menu_bars_are_pixel_aligned_centred_and_inside_the_bubble() {
+        for dpi in [96u32, 120, 144, 168, 192, 288] {
+            let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
+            let rect = layout.main_menu_button;
+            assert!(!rect.is_empty(), "dpi {dpi}");
+            let bars = main_menu_bars(rect, layout.metrics);
+            let centre_x = (rect.left + rect.right) as f32 / 2.0;
+            let centre_y = (rect.top + rect.bottom) as f32 / 2.0;
+            let pitch = bars[1].2 - bars[0].2;
+            assert_eq!(pitch, bars[2].2 - bars[1].2, "equal spacing at dpi {dpi}");
+            assert_eq!(pitch.fract(), 0.0, "integer pitch at dpi {dpi}");
+            assert!(pitch >= NAV_STROKE + 2.0, "bars stay distinct at dpi {dpi}");
+            assert!((bars[1].2 - centre_y).abs() <= 0.5, "middle bar centred at dpi {dpi}");
+            for (left, right, y) in bars {
+                assert_eq!(y.fract(), 0.5, "bar on a pixel-row centre at dpi {dpi}");
+                assert_eq!((left + right) / 2.0, centre_x, "centred at dpi {dpi}");
+                assert_eq!(right - left, bars[0].1 - bars[0].0, "equal bars at dpi {dpi}");
+                // Stroke and round caps keep clear of the outline.
+                let reach = NAV_STROKE / 2.0 + 2.0;
+                assert!(left - reach >= rect.left as f32, "dpi {dpi}");
+                assert!(right + reach <= rect.right as f32, "dpi {dpi}");
+                assert!(y - reach >= rect.top as f32, "dpi {dpi}");
+                assert!(y + reach <= rect.bottom as f32, "dpi {dpi}");
+            }
+            // The glyph is wider than tall, like the arrows beside it.
+            assert!(bars[0].1 - bars[0].0 > bars[2].2 - bars[0].2, "dpi {dpi}");
+        }
+    }
+
+    #[test]
+    fn main_menu_paints_three_identical_solid_bars() {
+        let pal = palette(Appearance::Dark, true);
+        for dpi in [96u32, 144] {
+            let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
+            let tabs = [TabView {
+                title: "Tab",
+                loading: false,
+                favicon: None,
+                emphasis: rest(),
+                group_size: None,
+                group_control: false,
+                marker: None,
+                group_colour: None,
+                marker_only: false,
+            }];
+            let view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
+            let mut surface = ChromeSurface::new(1024, 700, dpi);
+            surface.paint(&view, Rect::new(0, 0, 1024, surface.height()));
+            let stride = surface.stride();
+            let pixels = surface.pixels();
+            let at = |x: i32, y: i32| {
+                let i = y as usize * stride + x as usize * 4;
+                [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+            };
+            let bars = main_menu_bars(layout.main_menu_button, layout.metrics);
+            // Sample a quarter of the way along, clear of the centre column and the caps.
+            let x = ((bars[0].0 * 3.0 + bars[0].1) / 4.0) as i32;
+            let rows = bars.map(|(_, _, y)| y.floor() as i32);
+            let ink = at(x, rows[0]);
+            assert_eq!(at(x, rows[1]), ink, "dpi {dpi}");
+            assert_eq!(at(x, rows[2]), ink, "dpi {dpi}");
+            let gap = (rows[0] + rows[1]) / 2;
+            assert_ne!(at(x, gap), ink, "gap between bars is unpainted at dpi {dpi}");
+        }
+    }
+
+    #[ignore = "set BOWSER_DUMP_MENU_BUTTON to render the main menu button states"]
+    #[test]
+    fn dump_main_menu_button() {
+        let Ok(dir) = std::env::var("BOWSER_DUMP_MENU_BUTTON") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        let tabs = [TabView {
+            title: "Tab",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+            group_colour: None,
+            marker_only: false,
+        }];
+        for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+            for solid in [false, true] {
+                let pal = palette(appearance, solid);
+                for dpi in [96u32, 120, 144, 192] {
+                    let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
+                    // Crop from the reload button through the menu bubble, one strip per state.
+                    let menu = layout.main_menu_button;
+                    let nav = layout.forward_button;
+                    let crops = [
+                        Rect::new(nav.left - 4, menu.top - 4, nav.right + 4, menu.bottom + 4),
+                        Rect::new(menu.left - 4, menu.top - 4, menu.right + 4, menu.bottom + 4),
+                    ];
+                    let scale = 6usize;
+                    let states = [
+                        (Hit::None, Hit::None),
+                        (Hit::MainMenu, Hit::None),
+                        (Hit::MainMenu, Hit::MainMenu),
+                    ];
+                    let crop_w: i32 = crops.iter().map(|crop| crop.width()).sum::<i32>() * states.len() as i32;
+                    let crop_h = crops[0].height();
+                    let (out_w, out_h) = (crop_w as usize * scale, crop_h as usize * scale);
+                    let mut out = vec![0u8; out_w * out_h * 4];
+                    let mut origin = 0usize;
+                    for (hover, pressed) in states {
+                        let mut view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
+                        view.hover = hover;
+                        view.pressed = pressed;
+                        let mut surface = ChromeSurface::new(1024, 700, dpi);
+                        surface.paint(&view, Rect::new(0, 0, 1024, surface.height()));
+                        let rgba = composite_on_background(
+                            surface.pixels(),
+                            1024,
+                            surface.height(),
+                            surface.stride(),
+                            Some([pal.window.r, pal.window.g, pal.window.b]),
+                        );
+                        for crop in crops {
+                            for y in 0..crop_h as usize * scale {
+                                for x in 0..crop.width() as usize * scale {
+                                    let sx = crop.left as usize + x / scale;
+                                    let sy = crop.top as usize + y / scale;
+                                    let src = (sy * 1024 + sx) * 4;
+                                    let dst = (y * out_w + origin + x) * 4;
+                                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                                }
+                            }
+                            origin += crop.width() as usize * scale;
+                        }
+                    }
+                    write_png(
+                        &dir.join(format!(
+                            "{name}-{}-dpi{dpi}.png",
+                            if solid { "solid" } else { "glass" }
+                        )),
+                        out_w as u32,
+                        out_h as u32,
+                        &out,
+                    );
+                }
+            }
+        }
+    }
+
+    #[ignore = "set BOWSER_DUMP_GROUPS to render the group marker scenarios"]
+    #[test]
+    fn dump_group_marker_scenarios() {
+        let Ok(dir) = std::env::var("BOWSER_DUMP_GROUPS") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        let pal = palette(Appearance::Dark, true);
+        for dpi in [96u32, 144] {
+            for scenario in 0..3 {
+                let now = Instant::now();
+                let view_tab = |title: &'static str, size: Option<usize>, control: bool, only: bool| TabView {
+                    title,
+                    loading: false,
+                    favicon: Some(&QA_FAVICON),
+                    emphasis: Emphasis::resting(false, false, now),
+                    group_size: size,
+                    group_control: control,
+                    marker: None,
+                    group_colour: Some(0),
+                    marker_only: only,
+                };
+                let (tabs, compact) = match scenario {
+                    0 => (
+                        vec![
+                            view_tab("Get Started", Some(2), true, false),
+                            view_tab("Install Docker", Some(2), false, false),
+                            view_tab("Plain tab", None, false, false),
+                        ],
+                        [false, false, false],
+                    ),
+                    1 => (
+                        vec![
+                            view_tab("Plain tab", None, false, false),
+                            view_tab("Hidden group", None, true, true),
+                            view_tab("Other tab", None, false, false),
+                        ],
+                        [false, true, false],
+                    ),
+                    _ => (
+                        vec![
+                            view_tab("Get Started", Some(2), true, false),
+                            view_tab("Plain tab", None, false, false),
+                            view_tab("Other tab", None, false, false),
+                        ],
+                        [false, false, false],
+                    ),
+                };
+                let layout = crate::chrome::layout::compute(420, 120, dpi, 3, false)
+                    .with_compact_slots(compact);
+                let mut view = test_view(
+                    &layout,
+                    &tabs,
+                    pal,
+                    omnibox("", (0, 0), ""),
+                );
+                view.active = 0;
+                let mut surface = ChromeSurface::new(420, 120, dpi);
+                surface.paint(&view, Rect::new(0, 0, 420, surface.height()));
+                let rgba = composite_on_background(
+                    surface.pixels(),
+                    420,
+                    surface.height(),
+                    surface.stride(),
+                    Some([pal.window.r, pal.window.g, pal.window.b]),
+                );
+                // Crop the tab row's left 280px and upscale 6x with nearest sampling.
+                let top = layout.tab_row.top as usize;
+                let rows = layout.tab_row.height() as usize;
+                let cols = 420usize;
+                let scale = 4usize;
+                let mut out = vec![0u8; cols * scale * rows * scale * 4];
+                for y in 0..rows * scale {
+                    for x in 0..cols * scale {
+                        let src = ((top + y / scale) * 420 + x / scale) * 4;
+                        let dst = (y * cols * scale + x) * 4;
+                        out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                    }
+                }
+                write_png(
+                    &dir.join(format!("scenario{scenario}-dpi{dpi}.png")),
+                    (cols * scale) as u32,
+                    (rows * scale) as u32,
+                    &out,
+                );
+            }
+        }
     }
 
     #[ignore = "set BOWSER_DUMP_CHROME to render the offline visual QA matrix"]

@@ -30,7 +30,11 @@ pub const MAX_ROWS: usize = 12;
 pub const CARD_WIDTH: i32 = 280;
 pub const CARD_RADIUS: i32 = 12;
 pub const PAD: i32 = 10;
-pub const FIELD_HEIGHT: i32 = 30;
+/// One text line tall: the field is a single-line input, not a multi-line box.
+pub const FIELD_HEIGHT: i32 = 28;
+/// Height of the native EDIT: one line of the message font. It is centred vertically in the field,
+/// because a single-line EDIT draws its text from the top of its own rectangle.
+pub const EDIT_LINE_HEIGHT: i32 = 16;
 /// Left inset of the text inside the name field, and the gap kept before the clear button.
 pub const FIELD_TEXT_INSET: i32 = 10;
 pub const CLEAR_SIZE: i32 = 18;
@@ -170,11 +174,13 @@ pub fn layout(anchor: Rect, client_width: i32, dpi: u32, row_count: usize) -> Is
         clear_left + clear_size,
         clear_top + clear_size,
     );
+    let line = m.px(EDIT_LINE_HEIGHT).min(field_height);
+    let edit_top = field.top + (field_height - line) / 2;
     let edit = Rect::new(
         field.left + m.px(FIELD_TEXT_INSET),
-        field.top,
+        edit_top,
         (clear.left - m.px(CLEAR_INSET)).max(field.left),
-        field.bottom,
+        edit_top + line,
     );
 
     // Swatch row: default plus one per colour, left-aligned and non-overlapping.
@@ -379,6 +385,11 @@ mod tests {
         assert_eq!(hit_test(&l, x, y), IslandHit::Row(1));
         // Inside the field but left of the clear button is the field itself.
         let (x, y) = (l.edit.left + 2, centre(l.field).1);
+        assert_eq!(
+            (l.edit.top + l.edit.bottom) / 2,
+            (l.field.top + l.field.bottom) / 2,
+            "the one-line edit is centred in the field"
+        );
         assert_eq!(hit_test(&l, x, y), IslandHit::Field);
     }
 
@@ -497,19 +508,19 @@ mod tests {
     }
 
     #[test]
-    fn bar_is_centred_between_its_box_edge_and_the_tab_face() {
+    fn bar_is_centred_in_its_box() {
         use crate::chrome::paint::{marker_facing_radius, marker_only_bar};
         for dpi in DPIS {
             let m = Metrics::new(dpi);
             let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
             let bar = group_bar_rect(island, m);
-            let face_left = island.left + m.px(Metrics::GROUP_MARKER_SHIFT);
-            let (before, after) = (bar.left - island.left, face_left - bar.right);
+            let box_edges = group_marker_box(island, m);
+            let (before, after) = (bar.left - box_edges.left, box_edges.right - bar.right);
             assert!((before - after).abs() <= 1, "dpi {dpi}: {before} vs {after}");
             let slot = Rect::new(50, 4, 50 + m.px(Metrics::GROUP_MARKER_BOX_WIDTH), 28);
             let bar = marker_only_bar(slot, m);
             assert!(((bar.left - slot.left) - (slot.right - bar.right)).abs() <= 1);
-            assert!(marker_facing_radius(m) >= bar.width() / 2);
+            assert!(marker_facing_radius(m) >= 2);
         }
     }
 

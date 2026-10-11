@@ -385,7 +385,7 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         return;
     };
     let font = create_message_font(dpi, DEFAULT_QUALITY);
-    let field_brush = unsafe { CreateSolidBrush(colorref(palette().omnibox_fill)) };
+    let field_brush = unsafe { CreateSolidBrush(colorref(field_fill(palette()))) };
     let local = layout.translated(card.left, card.top);
     shape(hwnd, screen, dpi);
     place(hwnd, edit, screen, &local);
@@ -685,7 +685,7 @@ unsafe extern "system" fn island_proc(
                     Some(brush) => {
                         let palette = palette();
                         SetTextColor(dc, colorref(palette.omnibox_text));
-                        SetBkColor(dc, colorref(palette.omnibox_fill));
+                        SetBkColor(dc, colorref(field_fill(palette)));
                         LRESULT(brush.0 as isize)
                     }
                     None => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -743,6 +743,42 @@ fn palette() -> &'static Palette {
     theme::palette(glass::appearance(), true)
 }
 
+/// `from` moved `amount` of the way toward `to`, opaque.
+fn blend(from: Rgba, to: Rgba, amount: f32) -> Rgba {
+    let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * amount).round() as u8;
+    Rgba {
+        r: mix(from.r, to.r),
+        g: mix(from.g, to.g),
+        b: mix(from.b, to.b),
+        a: 255,
+    }
+}
+
+fn is_dark(palette: &Palette) -> bool {
+    let w = palette.window;
+    (u32::from(w.r) * 30 + u32::from(w.g) * 59 + u32::from(w.b) * 11) / 100 < 128
+}
+
+/// The card's fill: lifted a little from the window so the popup separates from the page.
+fn panel_fill(palette: &Palette) -> Rgba {
+    blend(palette.window, palette.tab_text_active, 0.07)
+}
+
+/// The card's outline: a clear contrasting line.
+fn panel_border(palette: &Palette) -> Rgba {
+    blend(panel_fill(palette), palette.tab_text_active, 0.40)
+}
+
+/// The name field's fill: a recessed well in dark themes, a white field in light ones.
+fn field_fill(palette: &Palette) -> Rgba {
+    let panel = panel_fill(palette);
+    if is_dark(palette) {
+        blend(panel, Rgba::hex(0x000000, 255), 0.35)
+    } else {
+        Rgba::hex(0xFFFFFF, 255)
+    }
+}
+
 fn colorref(colour: Rgba) -> COLORREF {
     COLORREF(u32::from(colour.r) | (u32::from(colour.g) << 8) | (u32::from(colour.b) << 16))
 }
@@ -788,7 +824,7 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
             bottom: height,
         };
 
-        let background = CreateSolidBrush(colorref(palette.window));
+        let background = CreateSolidBrush(colorref(panel_fill(palette)));
         FillRect(dc, &client, background);
         let outline = CreateRoundRectRgn(
             0,
@@ -798,7 +834,7 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
             m.px(menu::CARD_RADIUS) * 2,
             m.px(menu::CARD_RADIUS) * 2,
         );
-        let border = CreateSolidBrush(colorref(palette.hairline));
+        let border = CreateSolidBrush(colorref(panel_border(palette)));
         let _ = FrameRgn(dc, outline, border, 1, 1);
         let _ = DeleteObject(HGDIOBJ(outline.0));
         let _ = DeleteObject(background.into());
@@ -811,13 +847,13 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
         // Name field: rounded, with a focus ring when the EDIT owns the keyboard.
         let field = to_rect(layout.field);
         let focused = GetFocus() == open.edit;
-        smooth::fill_round_rect(dc, field, m.px(8) * 2, palette.omnibox_fill);
-        let ring = if focused {
-            palette.omnibox_focus_border
+        smooth::fill_round_rect(dc, field, m.px(8) * 2, field_fill(palette));
+        let (ring, ring_width) = if focused {
+            (palette.omnibox_focus_border, 2)
         } else {
-            palette.omnibox_border
+            (blend(panel_fill(palette), palette.tab_text_active, 0.45), 1)
         };
-        smooth::stroke_round_rect(dc, field, m.px(8) * 2, ring, 1);
+        smooth::stroke_round_rect(dc, field, m.px(8) * 2, ring, ring_width);
         // The placeholder is the EDIT's own cue banner, so only the clear button is drawn here.
         if !edit_text(open.edit).is_empty() {
             draw_clear(dc, to_rect(layout.clear), palette.tab_text_inactive, m);
