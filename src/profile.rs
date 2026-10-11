@@ -289,6 +289,38 @@ impl Profile {
         self.name.as_deref()
     }
 
+    /// Per-profile local productivity files. These remain plain text so users can back them up
+    /// or edit them directly; they are separate for every named profile.
+    pub fn notes_file(&self) -> PathBuf {
+        self.root.join("notes.txt")
+    }
+    pub fn tasks_file(&self) -> PathBuf {
+        self.root.join("tasks.txt")
+    }
+    pub fn saved_sessions_file(&self) -> PathBuf {
+        self.root.join("sessions.txt")
+    }
+    pub fn history_file(&self) -> PathBuf {
+        self.root.join("history.txt")
+    }
+    pub fn bookmarks_file(&self) -> PathBuf {
+        self.root.join("bookmarks.txt")
+    }
+    pub fn history_enabled_file(&self) -> PathBuf {
+        self.root.join("history-enabled.txt")
+    }
+
+    /// History is opt-out; absent or malformed preference keeps the default enabled.
+    pub fn history_enabled(&self) -> bool {
+        fs::read_to_string(self.history_enabled_file())
+            .ok()
+            .is_none_or(|value| value.trim() != "0")
+    }
+
+    pub fn set_history_enabled(&self, enabled: bool) -> io::Result<()> {
+        fs::write(self.history_enabled_file(), if enabled { "1\n" } else { "0\n" })
+    }
+
     pub fn is_default(&self) -> bool {
         self.name.is_none() && !self.guest
     }

@@ -10,6 +10,7 @@ pub mod passwords;
 pub mod performance;
 pub mod permissions;
 pub mod profile;
+pub mod productivity;
 pub mod session;
 pub mod settings;
 pub mod shortcuts;

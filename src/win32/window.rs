@@ -301,7 +301,8 @@ impl WindowChrome {
             };
             if old.is_some_and(|t| t.loading) && !loading {
                 if let Some(url) = self.pending_history.remove(&id) {
-                    self.history.record(&url, &title)
+                    self.history.record(&url, &title);
+                    persist_profile_history(url, title.clone());
                 }
             }
             tabs.push(TabSnapshot {
@@ -3398,6 +3399,17 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     arm_motion(hwnd);
     true
+}
+
+fn persist_profile_history(url: String, title: String) {
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        if profile.history_enabled() {
+            let _ = crate::productivity::add_history_entry(&profile.history_file(), &url, &title);
+        }
+    });
 }
 
 unsafe extern "system" fn edit_subclass(
