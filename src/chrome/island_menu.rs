@@ -1,6 +1,6 @@
 //! Pure model and geometry for the tab island menu.
 //!
-//! Hovering an island's bar opens a card below it with a name field (with a clear button), a row of
+//! Hovering an island's ball opens a card below it with a name field (with a clear button), a row of
 //! colour swatches, the island's tabs, and a full-width "Close Tab Island" button. Nothing here
 //! touches Win32: the win32 popup draws from [`IslandLayout`] and resolves input with [`hit_test`].
 //!
@@ -45,7 +45,7 @@ pub const SECTION_GAP: i32 = 8;
 pub const ROW_HEIGHT: i32 = 26;
 pub const MORE_HEIGHT: i32 = 18;
 pub const BUTTON_HEIGHT: i32 = 30;
-/// Gap between the bar's bottom and the card top.
+/// Gap between the group's ball and the card top.
 pub const ANCHOR_GAP: i32 = 4;
 /// Minimum distance kept between the card and the client edges.
 pub const EDGE_MARGIN: i32 = 8;
@@ -135,7 +135,7 @@ impl IslandLayout {
     }
 }
 
-/// Lays out the menu under `anchor` (the island's bar), left-aligned to it and clamped so the card
+/// Lays out the menu under `anchor` (the group's ball), left-aligned to it and clamped so the card
 /// stays inside `client_width`.
 pub fn layout(anchor: Rect, client_width: i32, dpi: u32, row_count: usize) -> IslandLayout {
     let m = Metrics::new(dpi);
@@ -278,14 +278,13 @@ pub fn hit_test(layout: &IslandLayout, x: i32, y: i32) -> IslandHit {
 mod tests {
     use super::*;
     use crate::{
-        chrome::paint::{group_bar_rect, group_marker_box, island_colour},
+        chrome::paint::island_colour,
         theme,
     };
 
     const CLIENT_WIDTH: i32 = 900;
-    const DPIS: [u32; 3] = [96, 144, 192];
-
-    fn bar_anchor() -> Rect {
+    const DPIS: [u32; 4] = [96, 120, 144, 192];
+    fn ball_anchor() -> Rect {
         Rect::new(CLIENT_WIDTH - 200, 40, CLIENT_WIDTH - 196, 64)
     }
 
@@ -320,7 +319,7 @@ mod tests {
     fn menu_stays_inside_client_width_at_every_dpi() {
         for dpi in DPIS {
             let margin = Metrics::new(dpi).px(EDGE_MARGIN);
-            for anchor in [bar_anchor(), Rect::new(-30, 40, 4, 64)] {
+            for anchor in [ball_anchor(), Rect::new(-30, 40, 4, 64)] {
                 let l = layout(anchor, CLIENT_WIDTH, dpi, 3);
                 assert!(l.card.left >= margin, "dpi {dpi}: left {}", l.card.left);
                 assert!(l.card.right <= CLIENT_WIDTH - margin, "dpi {dpi}");
@@ -329,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_sits_below_the_bar_and_left_aligns_to_it() {
+    fn menu_sits_below_the_ball_and_left_aligns_to_it() {
         let anchor = Rect::new(100, 40, 104, 64);
         let l = layout(anchor, CLIENT_WIDTH, 96, 0);
         assert_eq!(l.card.left, 100);
@@ -339,7 +338,7 @@ mod tests {
     #[test]
     fn parts_do_not_overlap_and_sit_inside_the_card() {
         for dpi in DPIS {
-            let l = layout(bar_anchor(), CLIENT_WIDTH, dpi, 5);
+            let l = layout(ball_anchor(), CLIENT_WIDTH, dpi, 5);
             // The clear button sits inside the field by design, so it is checked against the field.
             let mut parts: Vec<Rect> = vec![l.field, l.close];
             parts.extend(l.swatches);
@@ -361,7 +360,7 @@ mod tests {
 
     #[test]
     fn swatch_row_has_one_slot_per_colour_plus_default() {
-        let l = layout(bar_anchor(), CLIENT_WIDTH, 96, 1);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, 96, 1);
         assert_eq!(l.swatches.len(), SWATCH_COUNT);
         let (first, last) = (l.swatches[0], l.swatches[SWATCH_COUNT - 1]);
         assert!(first.left < last.left);
@@ -370,7 +369,7 @@ mod tests {
 
     #[test]
     fn hit_test_finds_each_control_at_its_centre() {
-        let l = layout(bar_anchor(), CLIENT_WIDTH, 96, 2);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, 96, 2);
         assert_eq!(
             hit_test(&l, centre(l.clear).0, centre(l.clear).1),
             IslandHit::Clear
@@ -395,7 +394,7 @@ mod tests {
 
     #[test]
     fn hit_test_misses_gaps_and_outside_points() {
-        let l = layout(bar_anchor(), CLIENT_WIDTH, 96, 1);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, 96, 1);
         assert_eq!(hit_test(&l, l.card.left - 1, l.card.top), IslandHit::None);
         assert_eq!(hit_test(&l, l.card.right, l.card.bottom), IslandHit::None);
         // The gap between the swatch row and the first member row.
@@ -406,14 +405,14 @@ mod tests {
     #[test]
     fn member_rows_are_capped_and_the_rest_are_counted() {
         let dpi = 96;
-        let l = layout(bar_anchor(), CLIENT_WIDTH, dpi, MAX_ROWS + 5);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, dpi, MAX_ROWS + 5);
         assert_eq!(l.rows.len(), MAX_ROWS);
         assert_eq!(l.hidden_rows, 5);
         let more = l.more.expect("hidden rows need a more line");
         assert!(l.card.contains_rect(more));
         assert!(!intersects(more, l.close));
 
-        let few = layout(bar_anchor(), CLIENT_WIDTH, dpi, 2);
+        let few = layout(ball_anchor(), CLIENT_WIDTH, dpi, 2);
         assert_eq!(few.rows.len(), 2);
         assert_eq!(few.hidden_rows, 0);
         assert_eq!(few.more, None);
@@ -423,7 +422,7 @@ mod tests {
     fn card_height_is_the_sum_of_its_sections() {
         let dpi = 144;
         let m = Metrics::new(dpi);
-        let l = layout(bar_anchor(), CLIENT_WIDTH, dpi, 3);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, dpi, 3);
         let expected = m.px(PAD)
             + m.px(FIELD_HEIGHT)
             + m.px(SECTION_GAP)
@@ -438,7 +437,7 @@ mod tests {
 
     #[test]
     fn translated_layout_moves_every_rect_and_keeps_hits() {
-        let l = layout(bar_anchor(), CLIENT_WIDTH, 96, 2);
+        let l = layout(ball_anchor(), CLIENT_WIDTH, 96, 2);
         let moved = l.translated(l.card.left, l.card.top);
         assert_eq!(moved.card.left, 0);
         assert_eq!(moved.card.top, 0);
@@ -463,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn island_bar_uses_the_chosen_colour_or_the_theme_accent() {
+    fn island_ball_uses_the_chosen_colour_or_the_theme_accent() {
         let accent = theme::palette(theme::Appearance::Light, true).tab_group_accent;
         assert_eq!(island_colour(None, accent), accent);
         assert_eq!(island_colour(Some(0), accent), theme::ISLAND_COLOURS[0]);
@@ -475,68 +474,4 @@ mod tests {
         assert_eq!(island_colour(Some(200), accent), accent);
     }
 
-    #[test]
-    fn island_bar_sits_in_its_own_box_at_the_leading_edge() {
-        for dpi in DPIS {
-            let m = Metrics::new(dpi);
-            let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
-            let marker_box = group_marker_box(island, m);
-            assert!(marker_box.left >= island.left && marker_box.right <= island.right);
-            assert_eq!(
-                (marker_box.top, marker_box.bottom),
-                (island.top, island.bottom),
-                "dpi {dpi}: the box is as tall as a tab"
-            );
-            let bar = group_bar_rect(island, m);
-            assert!(bar.left >= marker_box.left && bar.right <= marker_box.right);
-            assert!(bar.top >= marker_box.top && bar.bottom <= marker_box.bottom);
-            assert!(bar.width() >= 3 && bar.height() >= 10);
-            assert!(bar.height() > bar.width() * 2, "dpi {dpi}: bar is tall");
-            let centre_drift = (bar.top + bar.bottom) - (island.top + island.bottom);
-            assert!(
-                centre_drift.abs() <= 1,
-                "dpi {dpi}: bar is vertically centred"
-            );
-            // The close target of the leading tab clears the box.
-            let tabs = crate::chrome::layout::compute(1024, 700, dpi, 3, false);
-            let tab = tabs.tab(0).unwrap();
-            let parts = tabs.group_leader_parts(tab);
-            let box_ = group_marker_box(tab, m);
-            assert!(parts.close.left > box_.right && parts.close.right <= tab.right);
-            assert!(parts.favicon.left > parts.close.right);
-        }
-    }
-
-    #[test]
-    fn bar_is_centred_in_its_box() {
-        use crate::chrome::paint::{marker_facing_radius, marker_only_bar};
-        for dpi in DPIS {
-            let m = Metrics::new(dpi);
-            let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
-            let bar = group_bar_rect(island, m);
-            let box_edges = group_marker_box(island, m);
-            let (before, after) = (bar.left - box_edges.left, box_edges.right - bar.right);
-            assert!((before - after).abs() <= 1, "dpi {dpi}: {before} vs {after}");
-            let slot = Rect::new(50, 4, 50 + m.px(Metrics::GROUP_MARKER_BOX_WIDTH), 28);
-            let bar = marker_only_bar(slot, m);
-            assert!(((bar.left - slot.left) - (slot.right - bar.right)).abs() <= 1);
-            assert!(marker_facing_radius(m) >= 2);
-        }
-    }
-
-    #[test]
-    fn collapsed_marker_slots_are_compact_boxes_beside_full_tabs() {
-        let m = Metrics::new(96);
-        let plain = crate::chrome::layout::compute(1024, 700, 96, 4, false);
-        let compact = plain.with_compact_slots([false, true, false, false]);
-        let marker = compact.tab(1).unwrap();
-        assert_eq!(marker.width(), m.px(Metrics::GROUP_MARKER_BOX_WIDTH));
-        // It hugs its neighbours, closer than two ordinary tabs sit.
-        let gap = m.px(Metrics::GROUP_MARKER_GAP);
-        assert!(gap < m.px(Metrics::ISLAND_GAP));
-        assert_eq!(compact.tab(2).unwrap().left - marker.right, gap);
-        assert_eq!(marker.left - compact.tab(0).unwrap().right, gap);
-        // The space it saves goes to the full tabs.
-        assert!(compact.tab(0).unwrap().width() >= plain.tab(0).unwrap().width());
-    }
 }
