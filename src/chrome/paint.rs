@@ -67,6 +67,22 @@ pub struct TabView<'a> {
     /// Island colour id for the group bar, drawn when this is the group leader. `None` uses the
     /// theme accent.
     pub group_colour: Option<u8>,
+    /// A collapsed group with no active member: the slot is drawn as its standalone colour marker
+    /// and no tab face.
+    pub marker_only: bool,
+}
+
+/// The standalone marker of a collapsed group with no active member, centred in its slot.
+pub fn marker_only_bar(slot: Rect, m: Metrics) -> Rect {
+    let width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
+    let height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
+    let left = slot.left + (slot.width() - width) / 2;
+    Rect::new(
+        left,
+        (slot.top + slot.bottom - height) / 2,
+        left + width,
+        (slot.top + slot.bottom + height) / 2,
+    )
 }
 
 /// Colour of a group bar: the island's chosen colour, or the theme accent when none is set.
@@ -83,15 +99,17 @@ pub fn group_shell_left(first: Rect, m: Metrics) -> i32 {
     if first.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH) {
         first.left
     } else {
-        first.left + m.px(Metrics::CLOSE_INSET + Metrics::CLOSE_SIZE + Metrics::TEXT_GAP)
+        first.left
+            + m.px(Metrics::CLOSE_INSET + Metrics::CLOSE_SIZE + Metrics::TEXT_GAP)
+            + m.px(Metrics::GROUP_MARKER_SLOT)
     }
 }
 
-/// The group bar drawn at the leading edge of a group's pill, vertically centred in it.
+/// The group bar drawn as its own entity just before a group's pill, vertically centred on it.
 pub fn group_bar_rect(shell: Rect, m: Metrics) -> Rect {
     let width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
     let height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
-    let left = shell.left + m.px(Metrics::GROUP_MARKER_INSET);
+    let left = shell.left - m.px(Metrics::GROUP_MARKER_SLOT);
     Rect::new(
         left,
         (shell.top + shell.bottom - height) / 2,
@@ -590,6 +608,15 @@ impl ChromeSurface {
             }
             let active = index == view.active;
             let details = view.tabs.get(index);
+            if details.is_some_and(|tab| tab.marker_only) {
+                let colour = island_colour(
+                    details.and_then(|tab| tab.group_colour),
+                    view.palette.tab_group_accent,
+                );
+                let bar = marker_only_bar(rect, m);
+                self.round(bar, bar.width() / 2, colour, dirty);
+                continue;
+            }
             let (hover, selected) = details.map_or((0.0, 0.0), |t| t.emphasis.amounts(view.now));
             let fill = mix(
                 mix(view.palette.tab_inactive, view.palette.tab_hover, hover),
@@ -2214,7 +2241,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }];
         let view = ChromeView {
             layout: &layout,
@@ -2327,7 +2354,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         });
         let view = ChromeView {
             layout,
@@ -2438,7 +2465,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -2462,7 +2489,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -2525,7 +2552,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -2600,7 +2627,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             };
             40
         ];
@@ -2632,7 +2659,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }];
         let palette = palette(Appearance::Dark, false);
         let dirty = Rect::new(0, 0, 768, 64);
@@ -2665,7 +2692,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None,
+            group_colour: None, marker_only: false,
         }; 40];
         let palette = palette(Appearance::Dark, false);
         let mut resting = ChromeSurface::new(768, 64, 96);
@@ -2696,7 +2723,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: true,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             },
             TabView {
                 title: "Install Docker Desktop",
@@ -2706,7 +2733,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: false,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             },
             TabView {
                 title: "Opera",
@@ -2716,7 +2743,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             },
         ];
         let palette = palette(Appearance::Dark, false);
@@ -2810,7 +2837,7 @@ mod tests {
                                 let layout =
                                     crate::chrome::layout::compute(width, 120, dpi, count, false);
                                 let now = Instant::now();
-                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None,group_colour:None}).collect::<Vec<_>>();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None,group_colour:None,marker_only:false}).collect::<Vec<_>>();
                                 let text = match state {
                                     0 => "",
                                     1 => "https://example.com/a-very-long-address",
@@ -2880,7 +2907,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -2974,7 +3001,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None,
+                group_colour: None, marker_only: false,
             };
             5
         ];

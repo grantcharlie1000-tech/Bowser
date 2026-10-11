@@ -127,17 +127,45 @@ pub fn client_rect_for_nccalc(
     maximised: bool,
     dpi: u32,
     frame: (i32, i32),
+    work: RECT,
 ) -> RECT {
+    let (frame_x, frame_y) = (frame.0.max(0), frame.1.max(0));
     if !maximised {
+        // Require multiple work-area edges to align before treating a restored window as snapped.
+        // This avoids trimming a floating window that happens to cross one edge.
+        let near_left = (window_rect.left - work.left).abs() <= frame_x;
+        let near_right = (window_rect.right - work.right).abs() <= frame_x;
+        let near_top = (window_rect.top - work.top).abs() <= frame_y;
+        let near_bottom = (window_rect.bottom - work.bottom).abs() <= frame_y;
+        let snapped = [near_left, near_right, near_top, near_bottom]
+            .into_iter()
+            .filter(|aligned| *aligned)
+            .count()
+            >= 2;
+        let left = if snapped && window_rect.left < work.left && work.left - window_rect.left <= frame_x {
+            work.left
+        } else {
+            window_rect.left
+        };
+        let right = if snapped && window_rect.right > work.right && window_rect.right - work.right <= frame_x {
+            work.right
+        } else {
+            window_rect.right
+        };
+        let bottom =
+            if snapped && window_rect.bottom > work.bottom && window_rect.bottom - work.bottom <= frame_y {
+                work.bottom
+            } else {
+                window_rect.bottom
+            };
         return RECT {
-            left: window_rect.left,
+            left,
             top: window_rect.top,
-            right: window_rect.right,
-            bottom: window_rect.bottom,
+            right,
+            bottom,
         };
     }
 
-    let (frame_x, frame_y) = (frame.0.max(0), frame.1.max(0));
     let border = Metrics::new(dpi).px(1).max(1);
     RECT {
         left: window_rect.left + frame_x,

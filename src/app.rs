@@ -512,6 +512,7 @@ struct AppTab {
     can_forward: bool,
     page_usable: bool,
     controller_created: bool,
+    muted: bool,
     hidden_since: Option<Instant>,
     suspended: bool,
     /// The WebView2 controller was closed under memory pressure. The URL, title and favicon stay,
@@ -544,6 +545,7 @@ impl AppTab {
             can_forward: false,
             page_usable: false,
             controller_created: false,
+            muted: false,
             hidden_since: None,
             suspended: false,
             discarded: false,
@@ -1708,6 +1710,17 @@ impl App {
         }
     }
 
+    /// Reloads the requested tab without selecting it first.
+    pub fn reload_tab(app: &AppRef, id: TabId) {
+        if id == Self::active_tab_id(app) {
+            Self::reload(app);
+        } else {
+            if let Some(Err(error)) = Self::with_engine(app, |engine| engine.reload_tab(id)) {
+                win32::show_error_message(&format!("Reload failed: {error}"));
+            }
+        }
+    }
+
     pub fn stop(app: &AppRef) {
         if let Some(Err(error)) = Self::with_engine(app, |engine| engine.stop()) {
             win32::show_error_message(&format!("Stopping navigation failed: {error}"));
@@ -1763,10 +1776,13 @@ impl App {
     }
 
     pub fn tab_muted(app: &AppRef, id: TabId) -> bool {
-        app.borrow()
-            .engine
-            .as_ref()
-            .is_some_and(|engine| engine.tab_muted(id))
+        let state = app.borrow();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| tab.muted)
+            || state.engine.as_ref().is_some_and(|engine| engine.tab_muted(id))
     }
 
     pub fn tab_supports_muting(app: &AppRef, id: TabId) -> bool {
@@ -1777,6 +1793,11 @@ impl App {
     }
 
     pub fn set_tab_muted(app: &AppRef, id: TabId, muted: bool) {
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.muted = muted;
+        } else {
+            return;
+        }
         if let Some(Err(error)) = Self::with_engine(app, |engine| engine.set_tab_muted(id, muted)) {
             win32::show_error_message(&format!("Audio control failed: {error}"));
         }
@@ -1834,9 +1855,15 @@ impl App {
 
     fn finish_hibernate_check(app: &AppRef, id: TabId, blocked: bool) {
         let eligible = Self::tab_hibernate_eligible(app, id);
-        if !eligible || blocked || Self::tab_playing_audio(app, id) {
+        let playing_audio = eligible && Self::tab_playing_audio(app, id);
+        if !eligible || blocked || playing_audio {
             if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
                 tab.sleep_check_started = None;
+            }
+            if blocked || playing_audio {
+                win32::show_error_message(
+                    "This tab has unsaved input or audio and was left open.",
+                );
             }
             return;
         }
@@ -2505,13 +2532,21 @@ impl App {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = events_app.upgrade() {
-                        let mut state = app.borrow_mut();
-                        let active = state.tab_model.active() == tab_id;
-                        let visible = active || state.split_view.is_some_and(|split| split.pane_for(tab_id).is_some());
-                        if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                            tab.controller_created = true;
-                            tab.hidden_since = (!visible).then(Instant::now);
-                            tab.suspended = false;
+                        let should_mute = {
+                            let mut state = app.borrow_mut();
+                            let active = state.tab_model.active() == tab_id;
+                            let visible = active || state.split_view.is_some_and(|split| split.pane_for(tab_id).is_some());
+                            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                                tab.controller_created = true;
+                                tab.hidden_since = (!visible).then(Instant::now);
+                                tab.suspended = false;
+                                tab.muted
+                            } else {
+                                false
+                            }
+                        };
+                        if should_mute {
+                            Self::set_tab_muted(&app, tab_id, true);
                         }
                     }
                 }))

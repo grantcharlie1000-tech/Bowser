@@ -1514,6 +1514,13 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn reload_tab(&mut self, id: TabId) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if let Some(tab) = state.tabs.get_mut(&id) {
+            EngineAdapter::reload(tab)?;
+        }
+        Ok(())
+    }
     fn stop(&mut self) -> Result<()> {
         let mut state = self.core.borrow_mut();
         if let Some(active) = state.active_tab

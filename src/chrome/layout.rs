@@ -34,7 +34,7 @@ impl Metrics {
     pub const ISLAND_HEIGHT: i32 = 24;
     pub const TAB_RADIUS: i32 = 9;
     /// The omnibox stays this wide at most and is centred in the toolbar.
-    pub const OMNIBOX_MAX_WIDTH: i32 = 520;
+    pub const OMNIBOX_MAX_WIDTH: i32 = 624;
     /// Space above and below an island inside the strip.
     pub const ISLAND_MARGIN: i32 = 2;
     /// Gap between neighbouring islands and the pinned tab controls.
@@ -43,11 +43,14 @@ impl Metrics {
     pub const TAB_MIN_WIDTH: i32 = 26;
     /// Titles are hidden in tabs narrower than this.
     pub const TITLE_MIN_TAB_WIDTH: i32 = 120;
-    pub const GROUP_MARKER_INSET: i32 = 5;
     pub const GROUP_MARKER_WIDTH: i32 = 4;
     pub const GROUP_MARKER_HEIGHT: i32 = 14;
-    /// Keeps the first grouped tab's favicon clear of the marker.
-    pub const GROUP_MARKER_SHIFT: i32 = 10;
+    /// Space the first grouped tab reserves before its pill for the marker, which sits outside the
+    /// pill with a small gap between them.
+    pub const GROUP_MARKER_SLOT: i32 = 6;
+    /// Offset of the first grouped tab's favicon from its tab edge, which keeps it inside the pill
+    /// clear of the marker slot.
+    pub const GROUP_MARKER_SHIFT: i32 = 12;
     pub const NEW_TAB_SIZE: i32 = 28;
     pub const TAB_MENU_SIZE: i32 = 26;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;

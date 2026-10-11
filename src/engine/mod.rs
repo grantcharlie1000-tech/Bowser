@@ -46,6 +46,10 @@ pub trait EngineAdapter {
     fn reload(&mut self) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Reloads a particular tab without changing the active tab.
+    fn reload_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
+        self.reload()
+    }
     fn stop(&mut self) -> windows::core::Result<()> {
         Ok(())
     }

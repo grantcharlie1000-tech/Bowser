@@ -239,7 +239,12 @@ impl WindowChrome {
         let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
         self.split_active = App::split_view(app).is_some();
-        let preferences = structural.then(|| App::tab_group_preferences(app));
+        // A change of active tab moves the collapsed-group representative and the active tab's width,
+        // so it re-projects and relays out even when the posting path was not structural. Projection
+        // inputs are collected whenever it runs, so both paths reach `project_strip` with real data.
+        let active_changed = self.active_tab != Some(active);
+        let reproject = structural || active_changed;
+        let preferences = reproject.then(|| App::tab_group_preferences(app));
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
         let mut group_inputs = Vec::with_capacity(ids.len());
@@ -254,7 +259,7 @@ impl WindowChrome {
             };
             let loading = App::tab_loading(app, id);
             let pinned = App::tab_pinned(app, id);
-            if structural {
+            if reproject {
                 let domain = App::tab_committed_url(app, id)
                     .as_ref()
                     .and_then(tab_groups::DomainKey::from_url);
@@ -309,10 +314,11 @@ impl WindowChrome {
             });
         }
         let active_index = ids.iter().position(|&id| id == active).unwrap_or(0);
-        let slots = if structural {
-            tab_groups::project_strip(&group_inputs, active_index, preferences.as_ref().unwrap())
-        } else {
-            self.slots.clone()
+        let slots = match preferences.as_ref() {
+            Some(preferences) if reproject => {
+                tab_groups::project_strip(&group_inputs, active_index, preferences)
+            }
+            _ => self.slots.clone(),
         };
         // Still the old tabs and layout here, so a tab that is leaving keeps its island to fade from.
         let hovered = self.hovered_tab();
@@ -349,7 +355,7 @@ impl WindowChrome {
                 self.edit_text.push_str(url)
             }
         }
-        if structural {
+        if reproject {
             self.relayout(
                 self.client.0,
                 self.client.1,
@@ -762,10 +768,12 @@ unsafe extern "system" fn window_proc(
                     + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d);
                 if wparam.0 != 0 {
                     let p = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
-                    p.rgrc[0] = frame::client_rect_for_nccalc(p.rgrc[0], mx, d, (fx, fy));
+                    let work = monitor_work_area(hwnd).unwrap_or(p.rgrc[0]);
+                    p.rgrc[0] = frame::client_rect_for_nccalc(p.rgrc[0], mx, d, (fx, fy), work);
                 } else {
                     let r = &mut *(lparam.0 as *mut RECT);
-                    *r = frame::client_rect_for_nccalc(*r, mx, d, (fx, fy));
+                    let work = monitor_work_area(hwnd).unwrap_or(*r);
+                    *r = frame::client_rect_for_nccalc(*r, mx, d, (fx, fy), work);
                 }
                 LRESULT(if wparam.0 != 0 {
                     WVR_REDRAW as isize
@@ -1654,7 +1662,12 @@ unsafe extern "system" fn window_proc(
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
-        let hit = layout::hit_test(&s.layout, x, y);
+        let hit = match layout::hit_test(&s.layout, x, y) {
+            Hit::TabClose(index) if s.slots.get(index).is_some_and(|slot| slot.marker_only) => {
+                Hit::Tab(index)
+            }
+            hit => hit,
+        };
         if hit == Hit::Viewport
             && s.split_active
             && layout::split_pane_layout(
@@ -1733,6 +1746,9 @@ fn bar_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
 /// uses. `None` for a compact island, where no bar is drawn.
 fn island_bar_rect(s: &WindowChrome, index: usize, m: Metrics) -> Option<Rect> {
     let island = s.layout.tab(index)?;
+    if s.slots.get(index).is_some_and(|slot| slot.marker_only) {
+        return Some(paint::marker_only_bar(island, m));
+    }
     if island.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH) {
         return None;
     }
@@ -1987,7 +2003,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     let can_mute_site = !site_ids.is_empty()
         && site_ids.iter().all(|candidate| App::tab_supports_muting(app, *candidate));
     let mut entries = vec![
-        Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus).shortcut("Ctrl+T")),
+        Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus)),
         Entry::Item(Item::new(TAB_SPLIT_VIEW_HOOK, "New split view with current tab", Icon::Grid)
             .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some())),
         Entry::Separator,
@@ -2019,7 +2035,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
-        Entry::Item(Item::new(RELOAD, "Reload", Icon::None).shortcut("Ctrl+R")),
+        Entry::Item(Item::new(RELOAD, "Reload", Icon::None)),
         Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).disabled_if(url.is_none())),
         Entry::Item(Item::new(PIN, if pinned { "Unpin tab" } else { "Pin tab" }, Icon::None).checked(pinned)),
         Entry::Item(
@@ -2039,7 +2055,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     ]);
     entries.push(Entry::Separator);
     entries.extend([
-        Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).shortcut("Ctrl+W")),
+        Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close)),
         Entry::Item(Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).disabled_if(ids.len() <= 1)),
         Entry::Item(Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).disabled_if(index == 0)),
         Entry::Item(Item::new(CLOSE_RIGHT, "Close tabs to the right", Icon::Close).disabled_if(index + 1 == ids.len())),
@@ -2053,7 +2069,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
             Menu {
                 header: None,
                 entries,
-                footer: "Actions for the selected tab".to_owned(),
+                footer: "Actions for this tab".to_owned(),
             },
         )
         .map_or(0, |chosen| chosen.id);
@@ -2097,19 +2113,20 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
                 }
             }
             RELOAD => {
-                let _ = App::select_tab(app, id);
-                App::reload(app);
+                App::reload_tab(app, id);
             }
             DUPLICATE => {
                 if let Some(url) = url.as_ref() {
                     let created = App::new_tab(app);
                     App::navigate_current(app, url);
+                    if pinned {
+                        let _ = App::set_tab_pinned(app, created, true);
+                    }
+                    if muted {
+                        App::set_tab_muted(app, created, true);
+                    }
                     let current = App::tab_ids(app);
-                    let after = if pinned {
-                        current.iter().take_while(|candidate| App::tab_pinned(app, **candidate)).count()
-                    } else {
-                        current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1
-                    };
+                    let after = current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1;
                     let _ = App::move_tab(app, created, after);
                 }
             }
@@ -2123,7 +2140,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
                 }
             }
             HIBERNATE => {
-                let _ = App::hibernate_tab(app, id);
+                if !App::hibernate_tab(app, id) {
+                    show_error_message("Bowser could not hibernate this tab.");
+                }
             }
             MOVE_WINDOW => {
                 if let Some(url) = url.as_ref() {
@@ -2748,6 +2767,17 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     }
 }
 
+/// The work area of the monitor nearest the window, in screen coordinates.
+fn monitor_work_area(hwnd: HWND) -> Option<RECT> {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    (!monitor.is_invalid() && unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool())
+        .then_some(info.rcWork)
+}
+
 fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximised: bool) {
     let radius = Metrics::new(dpi(hwnd)).window_radius();
     let (left, top, right, bottom) = if maximised {
@@ -2770,7 +2800,19 @@ fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximi
             (info.rcWork.bottom - window.top).clamp(0, window.bottom - window.top),
         )
     } else {
-        (0, 0, client_width, client_height)
+        // SetWindowRgn takes coordinates relative to the outer window, while WM_SIZE
+        // gives us client dimensions. Snapped windows retain a non-client frame offset,
+        // so translate the client bounds before applying the region.
+        let mut window = RECT::default();
+        let mut client_origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+        if unsafe { GetWindowRect(hwnd, &mut window) }.is_err()
+            || !unsafe { ClientToScreen(hwnd, &mut client_origin) }.as_bool()
+        {
+            return;
+        }
+        let left = client_origin.x - window.left;
+        let top = client_origin.y - window.top;
+        (left, top, left + client_width, top + client_height)
     };
     if right <= left || bottom <= top {
         return;
@@ -2991,10 +3033,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             .motion
                             .emphasis(t.id)
                             .unwrap_or_else(|| Emphasis::resting(false, false, now)),
-                        group_size: slot.group_key.as_ref().map(|_| slot.group_size),
-                        group_control: slot.group_control,
+                        // A marker-only slot is not a member island, so it joins no group pill.
+                        group_size: (!slot.marker_only)
+                            .then(|| slot.group_key.as_ref().map(|_| slot.group_size))
+                            .flatten(),
+                        group_control: slot.group_control && !slot.marker_only,
                         marker: t.marker,
                         group_colour: slot.island_colour,
+                        marker_only: slot.marker_only,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
@@ -3095,15 +3141,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         );
                     }
                 }
-                if !s.palette.translucent || !active_has_controller {
-                    // Solid mode owns every pixel. In glass mode an untouched viewport is
-                    // transparent too, so back blank tabs with the page surface to avoid
-                    // revealing arbitrary windows behind Bowser.
-                    let owned = if s.palette.translucent {
-                        s.layout.viewport
-                    } else {
-                        Rect::new(0, 0, s.client.0, s.client.1)
-                    };
+                if !s.palette.translucent {
+                    // Only solid mode owns every pixel. In glass mode a GDI fill carries zero
+                    // alpha over the accent blur and renders as a lighter blue-gray patch, so a
+                    // blank viewport is left untouched and shows the same blur and tint as the
+                    // top chrome.
+                    let owned = Rect::new(0, 0, s.client.0, s.client.1);
                     let fill = dirty
                         .intersect(Rect::new(0, 0, s.client.0, s.client.1))
                         .intersect(owned);
@@ -3478,6 +3521,7 @@ mod tests {
                 group_size: 1,
                 group_control: false,
                 collapsed: false,
+                marker_only: false,
                 island_colour: None,
             })
             .collect::<Vec<_>>();

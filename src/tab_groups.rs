@@ -482,6 +482,9 @@ pub struct StripSlot {
     pub group_control: bool,
     /// True when this one slot stands in for a collapsed group.
     pub collapsed: bool,
+    /// True for a collapsed group whose active tab is elsewhere: the slot is only the group's colour
+    /// marker, and `tab_index` names a member for lookups but is not drawn as a tab.
+    pub marker_only: bool,
     /// Colour id of a domain island, or `None` for the theme accent and for slots in no domain island.
     pub island_colour: Option<u8>,
 }
@@ -514,6 +517,7 @@ pub fn project_strip(
                 group_size: 1,
                 group_control: false,
                 collapsed: false,
+                marker_only: false,
                 island_colour: None,
             });
             continue;
@@ -536,7 +540,9 @@ pub fn project_strip(
             .as_ref()
             .and_then(|domain| preferences.colour(domain));
         if collapsed {
-            let representative = if group_members.contains(&active_index) {
+            // The active member keeps a compact island. Otherwise the group is only its marker.
+            let active_member = group_members.contains(&active_index);
+            let representative = if active_member {
                 active_index
             } else {
                 group_members[0]
@@ -548,6 +554,7 @@ pub fn project_strip(
                 group_size: group_members.len(),
                 group_control: true,
                 collapsed: true,
+                marker_only: !active_member,
                 island_colour,
             });
         } else {
@@ -559,6 +566,7 @@ pub fn project_strip(
                     group_size: group_members.len(),
                     group_control: position == 0,
                     collapsed: false,
+                    marker_only: false,
                     island_colour,
                 });
             }
