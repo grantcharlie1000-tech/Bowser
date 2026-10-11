@@ -7,21 +7,17 @@
 //! follows the tab list. Everything runs on the UI thread, and no `STATE` borrow is held across a
 //! Win32 call, because those calls can send messages straight back into this module.
 
-use std::{
-    cell::{Cell, RefCell},
-    ffi::c_void,
-};
+use std::cell::{Cell, RefCell};
 
 use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, ClientToScreen, CreatePen, CreateRoundRectRgn, CreateSolidBrush,
+            BeginPaint, ClientToScreen, CreateRoundRectRgn, CreateSolidBrush,
             DEFAULT_QUALITY, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-            DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect,
-            FrameRgn, GetStockObject, HDC, HGDIOBJ, InvalidateRect, LineTo, MoveToEx, NULL_BRUSH,
-            NULL_PEN, PAINTSTRUCT, PS_SOLID, RoundRect, SelectObject, SetBkMode, SetTextColor,
-            TRANSPARENT,
+            DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect,
+            FrameRgn, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode,
+            SetTextColor, SetWindowRgn, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -31,16 +27,16 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect,
                 GetCursorPos, GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, RegisterClassW,
                 SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetTimer, SetWindowPos,
-                SetWindowRgn, ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
-                WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
+                WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
     core::{PCWSTR, w},
 };
 
-use super::{WM_CARD_HOVER_TIMER, frame, glass};
+use super::{WM_CARD_HOVER_TIMER, frame, glass, smooth};
 use crate::{
     app::{App, AppRef},
     chrome::{
@@ -323,7 +319,14 @@ fn pointer_in_card() -> bool {
 
 /// The pointer left the card. Closing it lets a return to the tab start a fresh hover.
 fn card_left(hwnd: HWND) {
-    let main = STATE.with(|state| state.borrow().open.as_ref().filter(|open| open.hwnd == hwnd).map(|open| open.main));
+    let main = STATE.with(|state| {
+        state
+            .borrow()
+            .open
+            .as_ref()
+            .filter(|open| open.hwnd == hwnd)
+            .map(|open| open.main)
+    });
     if let Some(main) = main {
         dismiss(main);
     }
@@ -476,7 +479,14 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
 
         let background = CreateSolidBrush(colorref(palette.window));
         FillRect(dc, &client, background);
-        let outline = CreateRoundRectRgn(0, 0, width + 1, height + 1, m.px(tab_card::CARD_RADIUS) * 2, m.px(tab_card::CARD_RADIUS) * 2);
+        let outline = CreateRoundRectRgn(
+            0,
+            0,
+            width + 1,
+            height + 1,
+            m.px(tab_card::CARD_RADIUS) * 2,
+            m.px(tab_card::CARD_RADIUS) * 2,
+        );
         let border = CreateSolidBrush(colorref(palette.hairline));
         let _ = FrameRgn(dc, outline, border, 1, 1);
         let _ = DeleteObject(HGDIOBJ(outline.0));
@@ -599,57 +609,26 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
 }
 
 unsafe fn fill_ellipse(dc: HDC, rect: RECT, fill: Rgba) {
-    unsafe {
-        let brush = CreateSolidBrush(colorref(fill));
-        let old_brush = SelectObject(dc, brush.into());
-        let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-        let _ = Ellipse(dc, rect.left, rect.top, rect.right, rect.bottom);
-        SelectObject(dc, old_pen);
-        SelectObject(dc, old_brush);
-        let _ = DeleteObject(brush.into());
-    }
+    unsafe { smooth::fill_ellipse(dc, rect, fill) }
 }
 
 unsafe fn stroke_ellipse(dc: HDC, rect: RECT, colour: Rgba, width: i32) {
-    unsafe {
-        let pen = CreatePen(PS_SOLID, width, colorref(colour));
-        let old_pen = SelectObject(dc, pen.into());
-        let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        let _ = Ellipse(dc, rect.left, rect.top, rect.right, rect.bottom);
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        let _ = DeleteObject(pen.into());
-    }
+    unsafe { smooth::stroke_ellipse(dc, rect, colour, width) }
 }
 
 unsafe fn stroke_round_rect(dc: HDC, rect: RECT, radius: i32, colour: Rgba, width: i32) {
-    unsafe {
-        let pen = CreatePen(PS_SOLID, width, colorref(colour));
-        let old_pen = SelectObject(dc, pen.into());
-        let old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        let _ = RoundRect(
-            dc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            radius,
-            radius,
-        );
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        let _ = DeleteObject(pen.into());
-    }
+    unsafe { smooth::stroke_round_rect(dc, rect, radius, colour, width) }
 }
 
 unsafe fn draw_line(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, colour: Rgba, width: i32) {
     unsafe {
-        let pen = CreatePen(PS_SOLID, width, colorref(colour));
-        let old_pen = SelectObject(dc, pen.into());
-        let _ = MoveToEx(dc, x0, y0, None);
-        let _ = LineTo(dc, x1, y1);
-        SelectObject(dc, old_pen);
-        let _ = DeleteObject(pen.into());
+        smooth::stroke_line(
+            dc,
+            POINT { x: x0, y: y0 },
+            POINT { x: x1, y: y1 },
+            colour,
+            width,
+        )
     }
 }
 

@@ -36,14 +36,15 @@ WebAuthn/passkeys remain handled by Windows and the WebView2 runtime where the O
 
 Website permissions are denied, downloads are cancelled, and external application protocols are blocked. User-initiated HTTP(S) requests for another window open in a new tab; script popups are blocked. Web messages and host objects are disabled because Bowser does not expose a website-to-native bridge. Bowser retains the runtime's sandbox, site isolation, certificate validation and update behavior.
 
-Bookmarks, account management, extensions, a general settings UI, and a download manager are not included. It is an experimental browser and the benchmark report describes its observed behavior and limits.
+Bookmarks, hosted account management, and a download manager are not included. The main menu provides profiles, extensions, Passwords & Passkeys, the site blocker, and Settings. It is an experimental browser and the benchmark report describes its observed behavior and limits.
 
 ## Interface
 
 The window has two rows over a translucent surface:
 
-- **Tab islands:** each tab is its own rounded island with a favicon, title and close button. The active tab is lighter and has a border. Tabs on the same registrable domain group automatically when there are at least two unpinned tabs; a shared count badge collapses or expands the group while keeping the active tab visible. Right-click a tab to pin/unpin it or choose Auto, Always, or Never for its site's grouping. Pinned tabs stay at the left and do not join groups. Group preferences are stored in `%LOCALAPPDATA%\Bowser\tab-groups.txt`; tab sessions are not restored. A `+` button adds a tab, and the minimise, maximise and close buttons sit at the far right.
-- **Omnibox:** one address and search field spanning nearly the full width below the tabs. There is no toolbar, logo or bookmarks bar.
+- **Tabs:** rounded tabs have individual favicons and titles, with a close button on the left that appears on hover. Matching sites and Ctrl-click opener links group together in a shared pill. A hover card offers group markers and related tabs. Right-click a tab to pin/unpin it or choose Auto, Always, or Never for its site's grouping. Pinned tabs stay at the left and do not join groups. Group preferences are stored in `%LOCALAPPDATA%\Bowser\tab-groups.txt`. The tab overflow picker appears only when tabs cannot all fit.
+- **Toolbar:** navigation controls sit beside a centred address pill, with the main menu, new-tab button, and window controls at the right.
+- **Settings:** open the main menu and choose Settings to configure sleeping tabs and the blocker. Save writes to the active profile's human-editable `settings.txt`, preserving comments and unknown keys. Changes apply on the next launch. The window also provides Open settings file and Reset to defaults.
 
 An empty tab shows the desktop through the window. Real pages render opaque, as before. The tab islands and per-tab engine wiring are still in progress, so this describes the intended layout.
 

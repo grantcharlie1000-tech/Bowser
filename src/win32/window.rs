@@ -1,9 +1,10 @@
 use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARD_HOVER_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
-    WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass,
-    passwords_panel, show_error_message,
+    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass,
+    main_menu, passwords_panel, settings_panel, show_error_message,
 };
+use super::main_menu::{Entry, Icon, Item, Menu};
 use crate::{
     app::{App, AppRef, IdleTimerAction},
     chrome::{
@@ -43,7 +44,7 @@ use windows::{
             Input::KeyboardAndMouse::{
                 GetCapture, GetFocus, GetKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture,
                 SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
-                VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
+                VK_CONTROL, VK_MENU, VK_SHIFT,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
@@ -61,7 +62,7 @@ use windows::{
                 SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON,
+                SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON,
                 TPM_TOPALIGN, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR,
                 WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
@@ -95,6 +96,51 @@ struct TabSnapshot {
     favicon: Option<Rc<favicon::FaviconBitmap>>,
     marker: Option<Marker>,
 }
+/// A short eased transition for the visible address-bar progress value.
+#[derive(Default)]
+struct ProgressTransition {
+    tab: Option<TabId>,
+    navigation_id: Option<u64>,
+    from: f32,
+    to: f32,
+    started: Option<Instant>,
+}
+impl ProgressTransition {
+    const DURATION_MS: f32 = 210.0;
+
+    fn value(&self, now: Instant) -> Option<f32> {
+        self.tab?;
+        let Some(started) = self.started else { return Some(self.to) };
+        let t = (now.saturating_duration_since(started).as_secs_f32() * 1000.0
+            / Self::DURATION_MS)
+            .clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        Some((self.from + (self.to - self.from) * eased).clamp(0.0, 100.0))
+    }
+
+    fn retarget(&mut self, tab: TabId, navigation_id: u64, target: u8, now: Instant, animate: bool) {
+        if self.tab != Some(tab) || self.navigation_id != Some(navigation_id) {
+            self.tab = Some(tab);
+            self.navigation_id = Some(navigation_id);
+            self.from = 0.0;
+            self.to = target as f32;
+            self.started = animate.then_some(now);
+            return;
+        }
+        // Progress is monotonic for one navigation, including when updates arrive mid-transition.
+        let target = (target as f32).max(self.to);
+        if target == self.to { return; }
+        self.from = self.value(now).unwrap_or(0.0);
+        self.to = target;
+        self.started = animate.then_some(now);
+    }
+
+    fn settled(&self, now: Instant) -> bool {
+        self.value(now).is_some_and(|value| value >= self.to)
+    }
+
+    fn clear(&mut self) { *self = Self::default(); }
+}
 struct WindowChrome {
     surface: ChromeSurface,
     overlay: HWND,
@@ -126,6 +172,7 @@ struct WindowChrome {
     dpi: u32,
     motion: Motion,
     active_tab: Option<TabId>,
+    progress: ProgressTransition,
     first_paint_logged: bool,
 }
 impl WindowChrome {
@@ -158,6 +205,7 @@ impl WindowChrome {
             dpi,
             motion: Motion::new(!animations_enabled()),
             active_tab: None,
+            progress: ProgressTransition::default(),
             first_paint_logged: false,
         }
     }
@@ -169,6 +217,7 @@ impl WindowChrome {
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
         let mut group_inputs = Vec::with_capacity(ids.len());
+        let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         for &id in &ids {
             let old = self.tabs.iter().find(|t| t.id == id);
             let title = App::tab_title(app, id).unwrap_or_default();
@@ -191,7 +240,6 @@ impl WindowChrome {
                 });
             }
             let key = App::tab_favicon_key(app, id);
-            let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
             let image = if old.is_some_and(|t| {
                 t.favicon_key == key
                     && (key.is_none()
@@ -767,6 +815,9 @@ pub fn run(app: App) -> windows::core::Result<()> {
                 -1 => return Err(windows::core::Error::from_thread()),
                 0 => break,
                 _ => {
+                    if settings_panel::process_message(&m) {
+                        continue;
+                    }
                     let _ = TranslateMessage(&m);
                     DispatchMessageW(&m);
                 }
@@ -910,6 +961,10 @@ unsafe extern "system" fn window_proc(
                 let settled = with_chrome(hwnd, |s| {
                     s.palette = glass::palette();
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
+                    if !animations_enabled() {
+                        s.progress.from = s.progress.to;
+                        s.progress.started = None;
+                    }
                     if message == WM_SETTINGCHANGE && wparam.0 == SPI_SETNONCLIENTMETRICS {
                         s.surface.rebuild_fonts();
                     }
@@ -920,6 +975,9 @@ unsafe extern "system" fn window_proc(
                     // Reduced motion landed mid-fade, so no frame is needed. The full repaint below
                     // paints the settled state.
                     let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                }
+                if !animations_enabled() {
+                    let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 }
                 if message == WM_SETTINGCHANGE && wparam.0 == SPI_SETNONCLIENTMETRICS {
                     if let Some(app) = app {
@@ -1138,8 +1196,22 @@ unsafe extern "system" fn window_proc(
             }
             WM_NAVIGATION_PROGRESS => {
                 if let Some(app) = app {
-                    if App::navigation_progress_message(app, wparam.0 as u64, lparam.0) {
-                        invalidate_omni(hwnd)
+                    let navigation_id = wparam.0 as u64;
+                    if App::navigation_progress_message(app, navigation_id, lparam.0) {
+                        if let Some(target) = App::tab_progress_percent(app, App::active_tab_id(app)) {
+                            let animate = animations_enabled();
+                            with_chrome(hwnd, |s| {
+                                s.progress.retarget(App::active_tab_id(app), navigation_id, target, Instant::now(), animate);
+                            });
+                            if animate {
+                                let _ = SetTimer(Some(hwnd), WM_PROGRESS_TIMER, ANIMATION_FRAME_MS, None);
+                            }
+                            invalidate_omni(hwnd)
+                        } else {
+                            with_chrome(hwnd, |s| s.progress.clear());
+                            let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                            invalidate_omni(hwnd);
+                        }
                     }
                 }
                 LRESULT(0)
@@ -1147,10 +1219,23 @@ unsafe extern "system" fn window_proc(
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
                     let (structural, persisted) = App::take_tab_change_flags();
+                    let previously_active = with_chrome(hwnd, |s| s.active_tab).flatten();
                     let strips = with_chrome(hwnd, |s| {
                         s.refresh(app, structural);
                         (s.layout.strip, s.layout.tab_row)
                     });
+                    let active = App::active_tab_id(app);
+                    if previously_active != Some(active) {
+                        if let Some((navigation_id, target)) = App::active_navigation_progress_identity(app) {
+                            with_chrome(hwnd, |s| {
+                                s.progress.clear();
+                                s.progress.retarget(active, navigation_id, target, Instant::now(), false);
+                            });
+                        } else {
+                            with_chrome(hwnd, |s| s.progress.clear());
+                        }
+                        let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                    }
                     card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
                     if structural {
                         position_edit(hwnd);
@@ -1373,7 +1458,9 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                if wparam.0 == VK_ESCAPE.0 as usize && card::is_open() {
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && card::is_open()
+                {
                     card::close();
                     return LRESULT(0);
                 }
@@ -1457,6 +1544,18 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_PROGRESS_TIMER => {
+                let now = Instant::now();
+                let (running, active_matches) = with_chrome(hwnd, |s| {
+                    let active = app.map(App::active_tab_id);
+                    (s.progress.started.is_some_and(|started| now.saturating_duration_since(started).as_millis() < ProgressTransition::DURATION_MS as u128), active == s.progress.tab)
+                }).unwrap_or((false, false));
+                if active_matches { invalidate_omni(hwnd); }
+                if !running || !active_matches {
+                    let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_CARET_BLINK_TIMER => {
                 let minimised = IsIconic(hwnd).as_bool();
                 if caret_blink_allowed(foreground_is_ours(hwnd), minimised, edit_focused(hwnd)) {
@@ -1482,6 +1581,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
                 card::close();
@@ -1505,6 +1605,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
                 card::close();
                 if let Some(app) = app {
@@ -1860,51 +1961,8 @@ fn show_profile_menu(hwnd: HWND) {
     profiles.run(command);
 }
 
-/// Opens `settings.txt` in the default text editor, creating it with a commented template when it
-/// does not exist yet. Settings are read at startup, so edits apply on the next launch.
-fn open_settings_file() {
-    use std::io::Write;
-    let Ok(profile) = crate::profile::active() else {
-        return;
-    };
-    let path = profile.settings_file();
-    if !path.exists() {
-        let template = "# Bowser settings. Restart Bowser after editing.\r\n\
-            # sleep_enabled=true\r\n\
-            # sleep_after_secs=300\r\n\
-            # blocker_enabled=true\r\n\
-            # blocker_allow=example.com,other.org\r\n";
-        let created = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .and_then(|mut file| file.write_all(template.as_bytes()));
-        if let Err(error) = created {
-            if error.kind() != std::io::ErrorKind::AlreadyExists {
-                show_error_message(&format!("The settings file could not be created. {error}"));
-                return;
-            }
-        }
-    }
-    let wide = windows::core::HSTRING::from(path.as_os_str());
-    let result = unsafe {
-        windows::Win32::UI::Shell::ShellExecuteW(
-            None,
-            w!("open"),
-            &wide,
-            None,
-            None,
-            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-        )
-    };
-    // ShellExecuteW reports failure with a value of 32 or less.
-    if (result.0 as isize) <= 32 {
-        show_error_message("The settings file could not be opened.");
-    }
-}
-
 /// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
-/// settings. It is a native popup, so it follows the system menu look and keyboard handling.
+/// settings. A custom panel in the chrome palette; the profile rows open as the themed native menu.
 fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const NEW_TAB: usize = 5001;
     const EXTENSIONS: usize = 5002;
@@ -1912,119 +1970,116 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const BLOCKER: usize = 5004;
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
-
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
-    };
-    let append = |flags, id: usize, text: &str| {
-        let text = windows::core::HSTRING::from(text);
-        let _ = unsafe { AppendMenuW(menu, flags, id, windows::core::PCWSTR(text.as_ptr())) };
-    };
-    let separator = || {
-        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()) };
-    };
-
-    append(MF_STRING, NEW_TAB, "New tab\tCtrl+T");
-    separator();
+    const PROFILE: usize = 5007;
 
     let profiles = ProfileMenu::load();
+    let mut entries = vec![
+        Entry::Item(Item::new(NEW_TAB, "New tab", Icon::Plus).shortcut("Ctrl+T")),
+        Entry::Separator,
+    ];
     if let Some(profiles) = &profiles {
-        if let Ok(submenu) = unsafe { CreatePopupMenu() } {
-            profiles.append_to(submenu);
-            let title = windows::core::HSTRING::from(format!(
-                "Profile: {}",
-                ProfileMenu::label(profiles.current.listed_name())
-            ));
-            // The submenu handle is owned by `menu` and is destroyed with it.
-            let _ = unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_POPUP,
-                    submenu.0 as usize,
-                    windows::core::PCWSTR(title.as_ptr()),
-                )
-            };
-        }
+        let name = ProfileMenu::label(profiles.current.listed_name()).to_string();
+        entries.push(Entry::Item(
+            Item::new(PROFILE, format!("Profile: {name}"), Icon::Person).submenu(),
+        ));
     }
-    append(MF_STRING, EXTENSIONS, "Extensions…\tCtrl+Shift+E");
-    append(MF_STRING, PASSWORDS, "Passwords && passkeys\tCtrl+,");
-    separator();
-
-    match App::blocker_active_for_site(app) {
-        Some(active) => append(
-            if active {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
-            },
-            BLOCKER,
-            "Block ads && trackers on this site\tCtrl+Shift+B",
-        ),
-        None => append(
-            MF_STRING | MF_GRAYED,
-            BLOCKER,
-            "Block ads && trackers on this site\tCtrl+Shift+B",
-        ),
-    }
-    separator();
-    append(MF_STRING, SETTINGS, "Settings…");
-    append(
-        MF_STRING | MF_GRAYED,
-        0,
-        &format!("Bowser {}", env!("CARGO_PKG_VERSION")),
-    );
-    separator();
-    append(MF_STRING, EXIT, "Exit\tAlt+F4");
+    entries.push(Entry::Item(
+        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E"),
+    ));
+    entries.push(Entry::Item(
+        Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key).shortcut("Ctrl+,"),
+    ));
+    entries.push(Entry::Separator);
+    let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
+        .shortcut("Ctrl+Shift+B")
+        .described("Block ads & trackers on this site (Ctrl+Shift+B)");
+    entries.push(Entry::Item(match App::blocker_active_for_site(app) {
+        Some(active) => blocker.checked(active),
+        None => blocker.disabled(),
+    }));
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(Item::new(SETTINGS, "Settings…", Icon::Gear)));
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(
+        Item::new(EXIT, "Exit", Icon::Close).shortcut("Alt+F4"),
+    ));
+    let menu = Menu {
+        profile: profiles
+            .as_ref()
+            .map_or_else(|| "Bowser".to_owned(), |p| ProfileMenu::label(p.current.listed_name()).to_string()),
+        entries,
+        footer: format!("Bowser {}", env!("CARGO_PKG_VERSION")),
+    };
 
     // Right-aligned under the button, so the menu grows leftwards and stays on screen.
     let mut point = main_menu_anchor(hwnd);
     set_pressed(hwnd, Hit::MainMenu);
-    let command = unsafe {
+    unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            point.x,
-            point.y,
-            hwnd,
-            None,
-        )
-        .0 as usize
-    };
-    let _ = unsafe { DestroyMenu(menu) };
+    }
+    let chosen = main_menu::track(hwnd, point, menu);
     set_pressed(hwnd, Hit::None);
 
-    match command {
-        NEW_TAB => {
-            App::new_tab(app);
-            focus_omni(hwnd, app, true);
-        }
-        EXTENSIONS => show_extensions_menu(hwnd, app),
-        PASSWORDS => {
-            if let Err(error) = passwords_panel::open(hwnd) {
-                show_error_message(&format!(
-                    "Passwords & Passkeys could not be opened: {error}"
-                ));
+    if let Some(chosen) = chosen {
+        match chosen.id {
+            NEW_TAB => {
+                App::new_tab(app);
+                focus_omni(hwnd, app, true);
             }
-        }
-        BLOCKER => App::toggle_blocker(app),
-        SETTINGS => open_settings_file(),
-        EXIT => unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                Some(hwnd),
-                WM_CLOSE,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        },
-        other => {
-            if let Some(profiles) = &profiles {
-                profiles.run(other);
+            PROFILE => {
+                if let Some(profiles) = &profiles {
+                    show_profile_flyout(hwnd, profiles, chosen.row);
+                }
             }
+            EXTENSIONS => show_extensions_menu(hwnd, app),
+            PASSWORDS => {
+                if let Err(error) = passwords_panel::open(hwnd) {
+                    show_error_message(&format!(
+                        "Passwords & Passkeys could not be opened: {error}"
+                    ));
+                }
+            }
+            BLOCKER => App::toggle_blocker(app),
+            SETTINGS => {
+                if let Err(error) = settings_panel::open(hwnd) {
+                    show_error_message(&format!("Settings could not be opened: {error}"));
+                }
+            }
+            EXIT => unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(hwnd),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            },
+            _ => {}
         }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// The profile rows beside the Profile row of the main menu, as the themed native menu. `row` is in
+/// screen coordinates and is excluded from the flyout so the two never overlap.
+fn show_profile_flyout(hwnd: HWND, profiles: &ProfileMenu, row: RECT) {
+    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
+        return;
+    };
+    profiles.append_to(menu);
+    let command = unsafe {
+        super::menu_theme::track(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+            row.right,
+            row.top,
+            hwnd,
+            Some(&row as *const RECT),
+        )
+        .0 as usize
+    };
+    let _ = unsafe { DestroyMenu(menu) };
+    profiles.run(command);
 }
 
 fn open_profile_window(target: &crate::profile::Profile) {
@@ -2415,7 +2470,7 @@ fn set_hover(hwnd: HWND, h: Hit) {
         s.retarget_motion(Instant::now());
         (o, s.layout)
     })
-    .unwrap_or((Hit::None, layout::compute(0, 0, 96, 0, false)));
+    .unwrap_or_else(|| (Hit::None, layout::compute(0, 0, 96, 0, false)));
     if old != h {
         invalidate_hover(hwnd, &l, old);
         invalidate_hover(hwnd, &l, h);
@@ -2428,7 +2483,7 @@ fn set_pressed(hwnd: HWND, h: Hit) {
         s.pressed = h;
         (o, s.layout)
     })
-    .unwrap_or((Hit::None, layout::compute(0, 0, 96, 0, false)));
+    .unwrap_or_else(|| (Hit::None, layout::compute(0, 0, 96, 0, false)));
     if old != h {
         invalidate(hwnd, rect_for(&l, old));
         invalidate(hwnd, rect_for(&l, h));
@@ -2500,7 +2555,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
         if let Some(app) = app {
             let active = App::active_tab_id(app);
             let active_has_controller = App::active_tab_has_controller(app);
-            let progress = App::tab_progress_percent(app, active);
+            let progress_target = App::tab_progress_percent(app, active);
             let can_back = App::tab_can_go_back(app, active);
             let can_forward = App::tab_can_go_forward(app, active);
             let focus = GetFocus() == app.borrow().edit;
@@ -2565,6 +2620,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let l = &s.layout;
                 let p = s.palette;
                 let views = &s.views;
+                if progress_target.is_none() {
+                    s.progress.clear();
+                }
+                let progress = match (progress_target, s.progress.tab) {
+                    (Some(target), Some(tab)) if tab == active => s.progress.value(now).or(Some(target as f32)),
+                    (Some(target), _) => Some(target as f32),
+                    (None, _) => None,
+                };
                 let view = ChromeView {
                     layout: l,
                     palette: p,
@@ -2643,7 +2706,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 }
                 did = true;
             });
-            if did && App::navigation_progress_painted(app) {
+            if did
+                && App::navigation_progress_percent(app) == Some(100)
+                && with_chrome(hwnd, |s| s.progress.tab == Some(active) && s.progress.settled(now))
+                    .unwrap_or(false)
+                && App::navigation_progress_painted(app)
+            {
                 invalidate_omni(hwnd)
             }
         }
@@ -2838,6 +2906,13 @@ unsafe extern "system" fn edit_subclass(
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
             // Typing means Bowser is in front, so this also recovers the caret if no activation message arrived.
             sync_foreground(main, app);
+            // Escape closes an open hover card first. The page keeps Escape when it has focus.
+            if w.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                && card::is_open()
+            {
+                card::close();
+                return LRESULT(0);
+            }
             if w.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                 && GetCapture() == main
             {
@@ -2958,6 +3033,7 @@ mod tests {
                 loading: false,
                 favicon_key: None,
                 favicon: None,
+                marker: None,
             })
             .collect::<Vec<_>>();
         let slots = (0..40)

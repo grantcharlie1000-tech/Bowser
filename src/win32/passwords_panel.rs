@@ -12,13 +12,13 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateFontIndirectW, CreatePen, CreateSolidBrush, DRAW_TEXT_FORMAT,
+            BeginPaint, CreateFontIndirectW, CreateSolidBrush, DRAW_TEXT_FORMAT,
             DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject,
-            DrawTextW, Ellipse, EndPaint, FillRect, FrameRect, GetObjectW, HDC, HFONT,
-            InvalidateRect, LOGFONTW, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, RoundRect,
-            SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+            DrawTextW, EndPaint, FillRect, FrameRect, GetObjectW, HDC, HFONT,
+            InvalidateRect, LOGFONTW, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
+            TRANSPARENT,
         },
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
         UI::{
@@ -44,7 +44,7 @@ use crate::{
     passwords::ImportPlan,
     theme::{self, Rgba},
     win32::{
-        glass,
+        glass, smooth,
         passwords_import::{self, Counts, Flow, ImportError, Outcome, Profile, Stage},
     },
 };
@@ -407,25 +407,11 @@ fn to_wide(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+/// Rounded control with an antialiased fill and a one-pixel border.
 unsafe fn round_rect(dc: HDC, bounds: RECT, fill: Rgba, border: Rgba) {
     unsafe {
-        let brush = CreateSolidBrush(colorref(fill));
-        let pen = CreatePen(PS_SOLID, 1, colorref(border));
-        let old_brush = SelectObject(dc, brush.into());
-        let old_pen = SelectObject(dc, pen.into());
-        let _ = RoundRect(
-            dc,
-            bounds.left,
-            bounds.top,
-            bounds.right,
-            bounds.bottom,
-            RADIUS,
-            RADIUS,
-        );
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        let _ = DeleteObject(brush.into());
-        let _ = DeleteObject(pen.into());
+        smooth::fill_round_rect(dc, bounds, RADIUS, fill);
+        smooth::stroke_round_rect(dc, bounds, RADIUS, border, 1);
     }
 }
 
@@ -533,19 +519,13 @@ unsafe fn paint_control(
                     bounds.left + 24,
                     centre_y + 5,
                 );
-                let brush = if selected {
-                    CreateSolidBrush(colorref(palette.omnibox_focus_border))
+                let dot_fill = if selected {
+                    palette.omnibox_focus_border
                 } else {
-                    CreateSolidBrush(colorref(palette.omnibox_fill))
+                    palette.omnibox_fill
                 };
-                let pen = CreatePen(PS_SOLID, 1, colorref(palette.omnibox_focus_border));
-                let old_brush = SelectObject(dc, brush.into());
-                let old_pen = SelectObject(dc, pen.into());
-                let _ = Ellipse(dc, dot.left, dot.top, dot.right, dot.bottom);
-                SelectObject(dc, old_brush);
-                SelectObject(dc, old_pen);
-                let _ = DeleteObject(brush.into());
-                let _ = DeleteObject(pen.into());
+                smooth::fill_ellipse(dc, dot, dot_fill);
+                smooth::stroke_ellipse(dc, dot, palette.omnibox_focus_border, 1);
                 let text_colour = if selected {
                     palette.tab_text_active
                 } else {
@@ -587,22 +567,26 @@ unsafe fn paint_control(
                     (bounds.top + bounds.bottom) / 2,
                 );
                 let arm = (bounds.right - bounds.left) / 6;
-                let pen = CreatePen(
-                    PS_SOLID,
-                    ((bounds.right - bounds.left) / 20).max(1),
-                    colorref(if hovered {
-                        palette.tab_text_active
-                    } else {
-                        palette.tab_text_inactive
-                    }),
+                let stroke = ((bounds.right - bounds.left) / 20).max(1);
+                let glyph = if hovered {
+                    palette.tab_text_active
+                } else {
+                    palette.tab_text_inactive
+                };
+                smooth::stroke_line(
+                    dc,
+                    POINT { x: cx - arm, y: cy - arm },
+                    POINT { x: cx + arm + 1, y: cy + arm + 1 },
+                    glyph,
+                    stroke,
                 );
-                let old_pen = SelectObject(dc, pen.into());
-                let _ = MoveToEx(dc, cx - arm, cy - arm, None);
-                let _ = LineTo(dc, cx + arm + 1, cy + arm + 1);
-                let _ = MoveToEx(dc, cx - arm, cy + arm, None);
-                let _ = LineTo(dc, cx + arm + 1, cy - arm - 1);
-                SelectObject(dc, old_pen);
-                let _ = DeleteObject(pen.into());
+                smooth::stroke_line(
+                    dc,
+                    POINT { x: cx - arm, y: cy + arm },
+                    POINT { x: cx + arm + 1, y: cy - arm - 1 },
+                    glyph,
+                    stroke,
+                );
             }
             Role::Secondary | Role::Primary => {
                 let primary = control.role == Role::Primary;

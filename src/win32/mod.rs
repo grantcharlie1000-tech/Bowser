@@ -1,9 +1,12 @@
 mod card;
+mod main_menu;
+mod settings_panel;
 pub mod frame;
 pub mod glass;
 mod menu_theme;
 pub mod passwords_import;
 mod passwords_panel;
+mod smooth;
 mod window;
 
 pub(crate) use window::schedule_idle_timer;
@@ -67,6 +70,8 @@ pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
 /// One-shot hover delay for the tab card; armed when the pointer settles on an inactive tab.
 pub(crate) const WM_CARD_HOVER_TIMER: usize = 5;
+/// Advances the address bar navigation progress transition while it is visible.
+pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 
 pub(crate) fn post(
     hwnd: HWND,

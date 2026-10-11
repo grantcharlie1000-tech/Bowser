@@ -65,7 +65,7 @@ pub struct OmniboxView<'a> {
     pub caret_visible: bool,
     pub focused: bool,
     pub completion_suffix: &'a str,
-    pub progress: Option<u8>,
+    pub progress: Option<f32>,
 }
 
 /// A complete read-only snapshot of the chrome state for one paint.
@@ -593,7 +593,12 @@ impl ChromeSurface {
                         parts.favicon.top - inset + size,
                     );
                     if rect.contains_rect(dot) {
-                        self.round(dot, size / 2, MARKER_COLOURS[usize::from(marker.id())], dirty);
+                        self.round(
+                            dot,
+                            size / 2,
+                            MARKER_COLOURS[usize::from(marker.id())],
+                            dirty,
+                        );
                     }
                 }
             }
@@ -989,7 +994,7 @@ impl ChromeSurface {
             }
         }
         if let Some(progress) = view.omnibox.progress {
-            if progress > 0 {
+            if progress > 0.0 {
                 let unit = m.px(1).max(1);
                 let stroke = if view.omnibox.focused { 2 * unit } else { unit };
                 let gap = unit;
@@ -997,7 +1002,7 @@ impl ChromeSurface {
                 let bottom = rect.bottom - stroke - gap;
                 let top = bottom - bar_h;
                 let max_width = (rect.width() - stroke * 2).max(0);
-                let width = (max_width as i64 * i64::from(progress.min(100)) / 100) as i32;
+                let width = (max_width as f32 * progress.clamp(0.0, 100.0) / 100.0).round() as i32;
                 let bar = Rect::new(rect.left + stroke, top, rect.left + stroke + width, bottom)
                     .intersect(rect);
                 let (surface_w, surface_h, stride) = (self.width, self.height, self.stride());
@@ -2575,7 +2580,7 @@ mod tests {
                                     caret_visible: state == 2,
                                     focused: state == 2,
                                     completion_suffix: if state == 1 { ".net" } else { "" },
-                                    progress: if state == 2 { Some(45) } else { None },
+                                    progress: if state == 2 { Some(45.0) } else { None },
                                 };
                                 let view = ChromeView {
                                     layout: &layout,

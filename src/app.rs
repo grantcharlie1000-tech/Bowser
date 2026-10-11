@@ -1329,6 +1329,11 @@ impl App {
     /// Effective marker of every tab that shows one, for the strip painter.
     pub fn tab_markers(app: &AppRef) -> HashMap<TabId, Marker> {
         let state = app.borrow();
+        // The strip refreshes on every title and loading change; with no markers set there is
+        // nothing to resolve, so skip projecting the groups.
+        if state.group_markers.is_empty() && state.tab_markers.is_empty() {
+            return HashMap::new();
+        }
         let inputs = state.group_inputs();
         let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
         inputs
@@ -1353,7 +1358,10 @@ impl App {
         let inputs = state.group_inputs();
         let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
         let hovered = inputs.iter().position(|input| input.id == id)?;
-        let active = state.tab_model.index_of(state.tab_model.active()).unwrap_or(0);
+        let active = state
+            .tab_model
+            .index_of(state.tab_model.active())
+            .unwrap_or(0);
         let card_tabs: Vec<CardTab> = inputs
             .iter()
             .map(|input| {
@@ -1385,10 +1393,7 @@ impl App {
             },
             &rows,
         );
-        let row_ids = rows
-            .iter()
-            .map(|row| card_tabs[row.tab_index].id)
-            .collect();
+        let row_ids = rows.iter().map(|row| card_tabs[row.tab_index].id).collect();
         Some((model, row_ids))
     }
 
@@ -2504,6 +2509,12 @@ impl App {
 
     pub fn navigation_progress_percent(app: &AppRef) -> Option<u8> {
         app.borrow().navigation_progress.percent
+    }
+
+    pub fn active_navigation_progress_identity(app: &AppRef) -> Option<(u64, u8)> {
+        let state = app.borrow();
+        let progress = state.tabs.iter().find(|tab| tab.id == state.tab_model.active())?.progress;
+        Some((progress.navigation_id?, progress.percent?))
     }
 
     pub fn navigation_progress_painted(app: &AppRef) -> bool {
@@ -4995,7 +5006,10 @@ mod tab_marker_tests {
         groups.insert(group("alpha.example"), Marker::Heart);
         tabs.insert(TabId(3), Marker::Bag);
 
-        assert_eq!(resolve_marker(None, TabId(3), &groups, &tabs), Some(Marker::Bag));
+        assert_eq!(
+            resolve_marker(None, TabId(3), &groups, &tabs),
+            Some(Marker::Bag)
+        );
         assert_eq!(resolve_marker(None, TabId(4), &groups, &tabs), None);
     }
 
@@ -5036,11 +5050,19 @@ mod tab_marker_tests {
             card_tab(3, "Alpha two", None, true),
             card_tab(4, "Alpha three", None, false),
         ];
-        let keys = [Some(group("alpha.example")), None, Some(group("alpha.example")), Some(group("alpha.example"))];
+        let keys = [
+            Some(group("alpha.example")),
+            None,
+            Some(group("alpha.example")),
+            Some(group("alpha.example")),
+        ];
 
         let rows = card_rows(&tabs, &keys, 0, 1);
 
-        assert_eq!(rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(
+            rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(),
+            [2, 3]
+        );
         assert_eq!(rows[0].title, "Alpha two");
         assert!(rows[0].favicon_present);
         assert!(!rows[1].favicon_present);
@@ -5049,7 +5071,10 @@ mod tab_marker_tests {
 
     #[test]
     fn card_rows_are_empty_for_a_tab_in_no_group() {
-        let tabs = [card_tab(1, "Solo", None, true), card_tab(2, "Other", None, true)];
+        let tabs = [
+            card_tab(1, "Solo", None, true),
+            card_tab(2, "Other", None, true),
+        ];
         let keys = [None, None];
         assert!(card_rows(&tabs, &keys, 0, 0).is_empty());
     }
@@ -5066,7 +5091,10 @@ mod tab_marker_tests {
 
         let rows = card_rows(&tabs, &keys, 0, 2);
 
-        assert_eq!(rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(
+            rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(),
+            [1, 2]
+        );
         assert!(rows[0].linked, "child was opened by the hovered tab");
         assert!(rows[0].linked && !rows[0].active);
         assert!(rows[1].active);
@@ -5075,7 +5103,10 @@ mod tab_marker_tests {
 
     #[test]
     fn card_rows_name_blank_titles_as_new_tab() {
-        let tabs = [card_tab(1, "Hovered", None, true), card_tab(2, "  ", None, false)];
+        let tabs = [
+            card_tab(1, "Hovered", None, true),
+            card_tab(2, "  ", None, false),
+        ];
         let keys = [Some(group("gamma.example")), Some(group("gamma.example"))];
         let rows = card_rows(&tabs, &keys, 0, 0);
         assert_eq!(rows[0].title, tab_card::NEW_TAB_TITLE);

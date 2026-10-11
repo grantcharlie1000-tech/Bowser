@@ -469,7 +469,10 @@ pub fn project_strip(
 
 /// Group identity of each tab, by model index: `None` for a tab in no group. Uses the same rules as
 /// [`project_strip`], so a tab's key here matches the `group_key` of its strip slot.
-pub fn group_keys(tabs: &[TabGroupInput], preferences: &GroupPreferences) -> Vec<Option<TabGroupKey>> {
+pub fn group_keys(
+    tabs: &[TabGroupInput],
+    preferences: &GroupPreferences,
+) -> Vec<Option<TabGroupKey>> {
     let mut keys = vec![None; tabs.len()];
     for (key, indices) in opener_groups(tabs)
         .into_iter()
@@ -772,7 +775,11 @@ mod tests {
         assert!(keys[0].is_some());
         assert_eq!(keys[3], keys[4]);
         for slot in &slots {
-            assert_eq!(keys[slot.tab_index], slot.group_key, "slot {}", slot.tab_index);
+            assert_eq!(
+                keys[slot.tab_index], slot.group_key,
+                "slot {}",
+                slot.tab_index
+            );
         }
     }
 
