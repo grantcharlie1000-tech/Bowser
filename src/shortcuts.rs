@@ -28,6 +28,8 @@ pub enum Command {
     ShowProfileMenu,
     /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
     ShowExtensionsMenu,
+    /// Ctrl+Shift+Y toggles native video picture-in-picture.
+    TogglePictureInPicture,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -47,6 +49,7 @@ const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
+const VK_Y: u32 = 0x59;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_F5: u32 = 0x74;
@@ -84,6 +87,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
+        (VK_Y, true, true, false) => Some(Command::TogglePictureInPicture),
         _ => None,
     }
 }
@@ -121,6 +125,7 @@ mod tests {
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
+            (VK_Y, true, true, false, Command::TogglePictureInPicture),
         ];
         for index in 0..8 {
             table.push((

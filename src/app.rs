@@ -1924,6 +1924,24 @@ impl App {
         state.engine.as_mut().map(|engine| f(engine.as_mut()))
     }
 
+    pub fn picture_in_picture_eligible(
+        app: &AppRef,
+        tab: TabId,
+        done: Box<dyn FnOnce(bool)>,
+    ) {
+        if app.borrow().engine.is_some() {
+            let _ = Self::call_engine(app, |engine| {
+                engine.picture_in_picture_eligible(tab, done)
+            });
+        } else {
+            done(false);
+        }
+    }
+
+    pub fn toggle_picture_in_picture(app: &AppRef, tab: TabId) {
+        let _ = Self::call_engine(app, |engine| engine.toggle_picture_in_picture(tab));
+    }
+
     pub fn tab_can_go_back(app: &AppRef, id: TabId) -> bool {
         app.borrow()
             .tabs

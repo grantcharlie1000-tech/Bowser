@@ -10,7 +10,8 @@ use std::{
 use url::Url;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, BrowserExtensionEnableCompletedHandler,
-    BrowserExtensionRemoveCompletedHandler, CoTaskMemPWSTR, ContentLoadingEventHandler,
+    BrowserExtensionRemoveCompletedHandler, CallDevToolsProtocolMethodCompletedHandler,
+    CoTaskMemPWSTR, ContentLoadingEventHandler,
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
@@ -53,6 +54,57 @@ pub fn popup_decision(uri: &Url, user_initiated: bool) -> PopupDecision {
     } else {
         PopupDecision::Block
     }
+}
+
+const PIP_ELIGIBILITY_SCRIPT: &str = "(()=>{if(!document.pictureInPictureEnabled)return false;return Array.from(document.querySelectorAll('video')).some(v=>{const r=v.getBoundingClientRect(),s=getComputedStyle(v);return !v.paused&&!v.ended&&v.readyState>=2&&!v.disablePictureInPicture&&r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'})})()";
+
+const PIP_TOGGLE_PARAMETERS: &str = r#"{"expression":"(async()=>{if(!document.pictureInPictureEnabled)return false;if(document.pictureInPictureElement){await document.exitPictureInPicture();return true}const eligible=v=>{const r=v.getBoundingClientRect(),s=getComputedStyle(v);return !v.paused&&!v.ended&&v.readyState>=2&&!v.disablePictureInPicture&&r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none'},videos=Array.from(document.querySelectorAll('video')).filter(eligible).sort((a,b)=>b.getBoundingClientRect().width*b.getBoundingClientRect().height-a.getBoundingClientRect().width*a.getBoundingClientRect().height),video=videos[0];if(!video)return false;const aborter=new AbortController(),close=()=>{if(document.pictureInPictureElement===video)void document.exitPictureInPicture().catch(()=>{})};video.addEventListener('pause',close,{signal:aborter.signal});video.addEventListener('ended',close,{signal:aborter.signal});video.addEventListener('leavepictureinpicture',()=>aborter.abort(),{once:true});try{await video.requestPictureInPicture();return true}catch(error){aborter.abort();throw error}})()","awaitPromise":true,"returnByValue":true,"userGesture":true}"#;
+
+const PIP_EXIT_PARAMETERS: &str = r#"{"expression":"document.pictureInPictureElement?document.exitPictureInPicture().then(()=>true):false","awaitPromise":true,"returnByValue":true}"#;
+
+fn query_picture_in_picture_eligibility(
+    webview: &ICoreWebView2,
+    done: Box<dyn FnOnce(bool)>,
+) {
+    let result = Rc::new(RefCell::new(Some(done)));
+    let completion = result.clone();
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
+        let available = status.is_ok() && value.to_string().trim() == "true";
+        if let Some(done) = completion.borrow_mut().take() {
+            done(available);
+        }
+        Ok(())
+    }));
+    let script = CoTaskMemPWSTR::from(PIP_ELIGIBILITY_SCRIPT);
+    if unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) }.is_err()
+        && let Some(done) = result.borrow_mut().take()
+    {
+        done(false);
+    }
+}
+
+fn toggle_native_picture_in_picture(webview: &ICoreWebView2) {
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let params = HSTRING::from(PIP_TOGGLE_PARAMETERS);
+    let _ = unsafe {
+        webview.CallDevToolsProtocolMethod(
+            w!("Runtime.evaluate"),
+            PCWSTR(params.as_ptr()),
+            &handler,
+        )
+    };
+}
+
+fn exit_native_picture_in_picture(webview: &ICoreWebView2) {
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let params = HSTRING::from(PIP_EXIT_PARAMETERS);
+    let _ = unsafe {
+        webview.CallDevToolsProtocolMethod(
+            w!("Runtime.evaluate"),
+            PCWSTR(params.as_ptr()),
+            &handler,
+        )
+    };
 }
 
 /// A browser shortcut pressed while a page has focus. The WebView2 accelerator is consumed and the chord is
@@ -1437,7 +1489,44 @@ impl EngineAdapter for WebView2Engine {
         self.navigate_tab_internal(active, url)
     }
     fn navigate_tab(&mut self, tab: TabId, url: &Url) -> Result<()> {
+        if let Some(webview) = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone())
+        {
+            exit_native_picture_in_picture(&webview);
+        }
         self.navigate_tab_internal(tab, url)
+    }
+    fn picture_in_picture_eligible(
+        &mut self,
+        tab: TabId,
+        done: Box<dyn FnOnce(bool)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        if let Some(webview) = webview {
+            query_picture_in_picture_eligibility(&webview, done);
+        } else {
+            done(false);
+        }
+    }
+    fn toggle_picture_in_picture(&mut self, tab: TabId) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        if let Some(webview) = webview {
+            toggle_native_picture_in_picture(&webview);
+        }
     }
     fn prewarm_tab(&mut self, tab: TabId) -> Result<()> {
         let eligible = {
@@ -1522,6 +1611,16 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn stop(&mut self) -> Result<()> {
+        let active_webview = {
+            let state = self.core.borrow();
+            state
+                .active_tab
+                .and_then(|active| state.tabs.get(&active))
+                .and_then(|tab| tab.webview.clone())
+        };
+        if let Some(webview) = active_webview {
+            exit_native_picture_in_picture(&webview);
+        }
         let mut state = self.core.borrow_mut();
         if let Some(active) = state.active_tab
             && let Some(tab) = state.tabs.get_mut(&active)
@@ -1626,6 +1725,15 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn close_tab(&mut self, tab_id: TabId) -> Result<()> {
+        if let Some(webview) = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab_id)
+            .and_then(|tab| tab.webview.clone())
+        {
+            exit_native_picture_in_picture(&webview);
+        }
         let removed = {
             let mut state = self.core.borrow_mut();
             state.known_tabs.remove(&tab_id);
@@ -2073,6 +2181,9 @@ unsafe fn configure_controller(
                         .map(|url| navigation_start_policy(url, navigation_file_grant))
                     {
                         Some(NavigationStartPolicy::Allow) => {
+                            if let Some(sender) = _sender.as_ref() {
+                                exit_native_picture_in_picture(sender);
+                            }
                             // The first-party host is set when the navigation commits (see
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;

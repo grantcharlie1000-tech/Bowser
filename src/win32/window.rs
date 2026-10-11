@@ -1473,7 +1473,15 @@ unsafe extern "system" fn window_proc(
                     && let Some(id) = slot_tab_id(hwnd, i)
                 {
                     card::cancel(hwnd);
-                    show_tab_context_menu(hwnd, app, id, p.x, p.y);
+                    let app = app.clone();
+                    let menu_app = app.clone();
+                    App::picture_in_picture_eligible(
+                        &app,
+                        id,
+                        Box::new(move |available| {
+                            show_tab_context_menu(hwnd, &menu_app, id, p.x, p.y, available);
+                        }),
+                    );
                 }
                 LRESULT(0)
             }
@@ -1968,7 +1976,7 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
     unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
 }
 
-fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
+fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pip_available: bool) {
     const NEW_RIGHT: usize = 1;
     const TAB_SPLIT_VIEW_HOOK: usize = 2;
     const GROUP: usize = 3;
@@ -1986,6 +1994,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
     const CLOSE_OTHERS: usize = 13;
     const CLOSE_LEFT: usize = 14;
     const CLOSE_RIGHT: usize = 15;
+    const PICTURE_IN_PICTURE: usize = 16;
     let pinned = App::tab_pinned(app, id);
     let url = App::tab_committed_url(app, id);
     let key = url.as_ref().and_then(tab_groups::DomainKey::from_url);
@@ -2067,6 +2076,13 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
                 .disabled_if(url.is_none()),
         ),
     ]);
+    if pip_available {
+        entries.push(Entry::Item(Item::new(
+            PICTURE_IN_PICTURE,
+            "Picture in picture",
+            Icon::None,
+        )));
+    }
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close)),
@@ -2088,6 +2104,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
         )
         .map_or(0, |chosen| chosen.id);
         match command {
+            PICTURE_IN_PICTURE => App::toggle_picture_in_picture(app, id),
             NEW_RIGHT => {
                 let created = App::new_tab(app);
                 let current = App::tab_ids(app);
@@ -3386,6 +3403,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
+        Command::TogglePictureInPicture => {
+            App::toggle_picture_in_picture(app, App::active_tab_id(app));
+        }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(

@@ -34,6 +34,16 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         self.navigate(url)
     }
+    /// Checks for a visible, currently playing video without installing page scripts or polling.
+    fn picture_in_picture_eligible(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        done: Box<dyn FnOnce(bool)>,
+    ) {
+        done(false);
+    }
+    /// Toggles Chromium's native video PiP for the selected tab, if supported by its runtime.
+    fn toggle_picture_in_picture(&mut self, _tab: crate::tabs::TabId) {}
     /// Creates the active tab's controller without starting a navigation.
     fn prewarm_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())
