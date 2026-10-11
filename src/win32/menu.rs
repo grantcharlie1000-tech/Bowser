@@ -114,6 +114,8 @@ pub(crate) struct Item {
     /// Full wording shown in the footer while the row is highlighted, for labels kept short.
     pub description: Option<&'static str>,
     pub rich_row: Option<RichRow>,
+    /// Profile avatar glyph and accent fill, drawn in the normal icon slot.
+    pub badge: Option<(String, Rgba)>,
 }
 
 /// Optional list presentation for a page or other row that has a title and favicon.
@@ -136,6 +138,7 @@ impl Item {
             submenu_entries: None,
             description: None,
             rich_row: None,
+            badge: None,
         }
     }
 
@@ -181,6 +184,11 @@ impl Item {
         });
         self
     }
+
+    pub fn profile_badge(mut self, glyph: impl Into<String>, accent: Rgba) -> Self {
+        self.badge = Some((glyph.into(), accent));
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +203,8 @@ pub(crate) enum Entry {
 pub(crate) struct ProfileHeader {
     pub profile: String,
     pub caption: String,
+    pub avatar: String,
+    pub accent: Rgba,
 }
 
 /// Everything the popup shows. Only the main ⋮ menu sets `header`; every other popup leaves it
@@ -1149,18 +1159,13 @@ unsafe fn draw(dc: HDC, client: &RECT, dpi: u32, state: &State) {
                 header.left + s(PAD + 8) + s(AVATAR),
                 avatar_top + s(AVATAR),
             );
-            smooth::fill_ellipse(dc, avatar, palette.progress_fill);
-            let initial = card
-                .profile
-                .chars()
-                .next()
-                .map_or_else(|| "B".to_owned(), |c| c.to_uppercase().to_string());
+            smooth::fill_ellipse(dc, avatar, card.accent);
             SelectObject(dc, state.heading.into());
             draw_text(
                 dc,
                 avatar,
-                &initial,
-                palette.window,
+                &card.avatar,
+                theme::Rgba::hex(0xFFFFFF, 255),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
             );
             let text_left = avatar.right + s(12);
@@ -1335,6 +1340,23 @@ unsafe fn draw_item(
                     blend,
                 );
             }
+        } else if let Some((glyph, accent)) = &item.badge {
+            let centre = (inner.top + inner.bottom) / 2;
+            let size = s(20);
+            let badge = rect(
+                inner.left + s(8),
+                centre - size / 2,
+                inner.left + s(8) + size,
+                centre + size / 2,
+            );
+            smooth::fill_ellipse(dc, badge, *accent);
+            draw_text(
+                dc,
+                badge,
+                glyph,
+                theme::Rgba::hex(0xFFFFFF, 255),
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
         } else if item.icon != Icon::None {
             let centre = (inner.top + inner.bottom) / 2;
             let size = s(16);
@@ -1458,9 +1480,15 @@ unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba) {
                 // Body, then a shackle that is open (not joined to the body) for Unlock.
                 fill_body(dc, boxed(3, 7, 13, 15), colour, corner / 2);
                 let open = icon == Icon::Unlock;
-                let end = if open { std::f32::consts::PI / 3.0 } else { 0.0 };
+                let end = if open {
+                    std::f32::consts::PI / 3.0
+                } else {
+                    0.0
+                };
                 let mut path = vec![grid(5.0, 7.0)];
-                path.extend(arc(8.0, 4.0, 3.0, std::f32::consts::PI, end).map(|(px, py)| grid(px, py)));
+                path.extend(
+                    arc(8.0, 4.0, 3.0, std::f32::consts::PI, end).map(|(px, py)| grid(px, py)),
+                );
                 if !open {
                     path.push(grid(11.0, 7.0));
                 }
@@ -1504,7 +1532,9 @@ unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba) {
             }
             Icon::Bell => {
                 let mut path = vec![grid(4.0, 12.0)];
-                path.extend(arc(8.0, 7.0, 4.0, std::f32::consts::PI, 0.0).map(|(px, py)| grid(px, py)));
+                path.extend(
+                    arc(8.0, 7.0, 4.0, std::f32::consts::PI, 0.0).map(|(px, py)| grid(px, py)),
+                );
                 path.push(grid(12.0, 12.0));
                 polyline(dc, &path, colour, stroke);
                 line(3, 12, 13, 12);
@@ -1524,9 +1554,15 @@ unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba) {
                 // Arrowhead at the end of the sweep.
                 let tip = sweep.last().copied().unwrap_or_else(|| grid(8.0, 8.0));
                 let head = [
-                    POINT { x: tip.x + width / 4, y: tip.y },
+                    POINT {
+                        x: tip.x + width / 4,
+                        y: tip.y,
+                    },
                     tip,
-                    POINT { x: tip.x, y: tip.y + height / 4 },
+                    POINT {
+                        x: tip.x,
+                        y: tip.y + height / 4,
+                    },
                 ];
                 polyline(dc, &head, colour, stroke);
             }
@@ -1582,6 +1618,8 @@ mod tests {
             header: Some(ProfileHeader {
                 profile: "Default".to_owned(),
                 caption: "Current profile".to_owned(),
+                avatar: "D".to_owned(),
+                accent: theme::Rgba::hex(0x4C83D5, 255),
             }),
             entries,
             footer: "Bowser test".to_owned(),

@@ -642,6 +642,12 @@ fn scene_for(hwnd: HWND, panel: &Panel) -> Scene {
 
 /// Opens the Passwords & Passkeys panel over `owner`, or focuses the one already open.
 pub fn open(owner: HWND) -> windows::core::Result<()> {
+    if crate::profile::active().is_ok_and(|profile| profile.is_guest()) {
+        return Err(windows::core::Error::new(
+            windows::Win32::Foundation::E_ACCESSDENIED,
+            "Password storage is unavailable in guest windows.",
+        ));
+    }
     unsafe {
         let existing = OPEN.with(Cell::get);
         if existing != 0 && IsWindow(Some(HWND(existing as *mut c_void))).as_bool() {

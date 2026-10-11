@@ -19,6 +19,8 @@ pub struct LaunchOptions {
     pub profile: Option<String>,
     /// `--open-url <url>`: initial address for a newly opened window.
     pub open_url: Option<Url>,
+    /// `--guest`: a fresh, disposable browser data directory with no profile identity.
+    pub guest: bool,
 }
 
 impl LaunchOptions {
@@ -61,6 +63,13 @@ impl LaunchOptions {
         let mut raw_url = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            if flag == "--guest" {
+                if options.guest {
+                    return Err("Duplicate guest argument".into());
+                }
+                options.guest = true;
+                continue;
+            }
             if !matches!(
                 flag.as_str(),
                 "--benchmark-log"
@@ -157,6 +166,12 @@ impl LaunchOptions {
         }
         if options.profile.is_some() && options.benchmark_log.is_some() {
             return Err("--profile cannot be combined with benchmark options".into());
+        }
+        if options.guest && options.profile.is_some() {
+            return Err("--guest cannot be combined with --profile".into());
+        }
+        if options.guest && options.benchmark_log.is_some() {
+            return Err("--guest cannot be combined with benchmark options".into());
         }
         if options.benchmark_tracking_prevention.is_some() && options.user_data_dir.is_none() {
             return Err("Benchmark tracking prevention requires --benchmark-user-data-dir".into());
@@ -429,6 +444,13 @@ mod tests {
             LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing")).unwrap();
         assert!(options.benchmark_log.is_none());
         assert!(!PerfLog::new(None).unwrap().enabled());
+    }
+    #[test]
+    fn guest_argument_is_standalone_and_duplicate_guest_is_rejected() {
+        let options = LaunchOptions::parse_from(args(&["--guest"]), Path::new("missing")).unwrap();
+        assert!(options.guest);
+        assert!(LaunchOptions::parse_from(args(&["--guest", "--guest"]), Path::new("missing")).is_err());
+        assert!(LaunchOptions::parse_from(args(&["--guest", "--profile", "Work"]), Path::new("missing")).is_err());
     }
     #[test]
     fn measurement_flags_require_log() {

@@ -219,6 +219,8 @@ fn panel(snapshot: &Snapshot) -> Menu {
         header: Some(ProfileHeader {
             profile: host,
             caption,
+            avatar: "•".to_owned(),
+            accent: crate::theme::Rgba::hex(0x2B5FA8, 255),
         }),
         entries,
         footer: "Changes apply to the next request".to_owned(),

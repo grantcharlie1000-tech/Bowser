@@ -2023,16 +2023,40 @@ impl App {
             );
             return Ok(());
         };
-        let profile = match options.profile.as_deref() {
-            None => crate::profile::Profile::default_in(&app_data),
-            Some(name) => match crate::profile::Profile::named(&app_data, name) {
-                Ok(profile) => profile,
+        if crate::profile::sweep_stale_guests(&app_data).is_err() {
+            win32::show_error_message("Bowser could not safely inspect its guest data folder.");
+            return Ok(());
+        }
+        // Keep updater, benchmark and performance-probe launches on the historical default.
+        let interactive_launch = options.benchmark_log.is_none()
+            && options.benchmark_url.is_none()
+            && options.user_data_dir.is_none();
+        let profile_result = if options.guest {
+            crate::profile::Profile::guest_in(&app_data)
+        } else {
+            crate::profile::startup_profile(&app_data, options.profile.as_deref(), interactive_launch)
+        };
+        let profile = match profile_result {
+            Ok(profile) => profile,
+            Err(error) => {
+                win32::show_error_message(&error.to_string());
+                return Ok(());
+            }
+        };
+        let _guest_session = if profile.is_guest() {
+            match crate::profile::GuestSession::start(&profile) {
+                Ok(session) => Some(session),
                 Err(error) => {
+                    let _ = crate::profile::cleanup_guest(&profile);
                     win32::show_error_message(&error.to_string());
                     return Ok(());
                 }
-            },
-        };
+            }
+        } else { None };
+        if interactive_launch && !profile.is_guest() {
+            // Remembering is a convenience; an unwritable preferences folder must not block launch.
+            let _ = crate::profile::remember_last_profile(&app_data, profile.listed_name());
+        }
         crate::profile::set_active(profile.clone());
         let settings = crate::settings::Settings::load(&profile.settings_file());
         let provider = SearchProvider::from_config(
@@ -2049,7 +2073,9 @@ impl App {
             return Ok(());
         }
         // Benchmarks and custom profiles never touch the user's session files.
-        let track_session = options.benchmark_url.is_none() && options.user_data_dir.is_none();
+        let track_session = options.benchmark_url.is_none()
+            && options.user_data_dir.is_none()
+            && !profile.is_guest();
         let mut app = Self::from_launch_options(
             options,
             user_data_dir,

@@ -8,6 +8,7 @@ pub mod frame;
 pub mod glass;
 pub mod passwords_import;
 mod passwords_panel;
+mod profile_rename;
 mod smooth;
 mod window;
 
