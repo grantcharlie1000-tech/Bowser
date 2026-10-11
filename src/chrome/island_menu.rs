@@ -470,8 +470,12 @@ mod tests {
             let m = Metrics::new(dpi);
             let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
             let marker_box = group_marker_box(island, m);
-            assert!(marker_box.left > island.left && marker_box.right <= island.right);
-            assert!(marker_box.top >= island.top && marker_box.bottom <= island.bottom);
+            assert!(marker_box.left >= island.left && marker_box.right <= island.right);
+            assert_eq!(
+                (marker_box.top, marker_box.bottom),
+                (island.top, island.bottom),
+                "dpi {dpi}: the box is as tall as a tab"
+            );
             let bar = group_bar_rect(island, m);
             assert!(bar.left >= marker_box.left && bar.right <= marker_box.right);
             assert!(bar.top >= marker_box.top && bar.bottom <= marker_box.bottom);
@@ -499,8 +503,9 @@ mod tests {
         let compact = plain.with_compact_slots([false, true, false, false]);
         let marker = compact.tab(1).unwrap();
         assert_eq!(marker.width(), m.px(Metrics::GROUP_MARKER_BOX_WIDTH));
-        // The same gap separates it from its neighbours as separates any two tabs.
-        let gap = m.px(Metrics::ISLAND_GAP);
+        // It hugs its neighbours, closer than two ordinary tabs sit.
+        let gap = m.px(Metrics::GROUP_MARKER_GAP);
+        assert!(gap < m.px(Metrics::ISLAND_GAP));
         assert_eq!(compact.tab(2).unwrap().left - marker.right, gap);
         assert_eq!(marker.left - compact.tab(0).unwrap().right, gap);
         // The space it saves goes to the full tabs.

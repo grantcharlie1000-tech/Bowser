@@ -48,12 +48,13 @@ impl Metrics {
     pub const GROUP_MARKER_HEIGHT: i32 = 16;
     /// Width of a group's marker box: its own small rounded box, either at the leading edge of the
     /// group's shell or, for a collapsed group with no active member, the whole compact slot.
-    pub const GROUP_MARKER_BOX_WIDTH: i32 = 16;
-    /// Gap between a marker box and the shell edge it sits inside.
-    pub const GROUP_MARKER_INSET: i32 = 2;
+    pub const GROUP_MARKER_BOX_WIDTH: i32 = 10;
+    /// Gap between a compact marker slot and the tabs beside it, tighter than `ISLAND_GAP` so the
+    /// marker hugs its nearest tab.
+    pub const GROUP_MARKER_GAP: i32 = 0;
     /// Offset of a group leader's close target, favicon and title from its tab edge, which keeps
-    /// them inside the shell and clear of the marker box.
-    pub const GROUP_MARKER_SHIFT: i32 = 20;
+    /// them inside the shell and 1px clear of the marker box.
+    pub const GROUP_MARKER_SHIFT: i32 = 11;
     pub const NEW_TAB_SIZE: i32 = 28;
     pub const TAB_MENU_SIZE: i32 = 26;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;
@@ -559,11 +560,14 @@ impl Layout {
             return self;
         }
         let regular = shown - compact_count;
-        let gap = m.px(Metrics::ISLAND_GAP);
         let max_w = m.px(Metrics::TAB_MAX_WIDTH);
         let min_w = m.px(Metrics::TAB_MIN_WIDTH);
+        let gaps = (self.first_visible..self.first_visible + self.visible_count)
+            .skip(1)
+            .map(|index| self.gap_before(index))
+            .sum::<i32>();
         let inner_available = (self.tab_zone.width()
-            - (shown - 1) * gap
+            - gaps
             - compact_count * m.px(Metrics::GROUP_MARKER_BOX_WIDTH))
         .max(0);
         let (inactive, active) = if regular <= 0 {
@@ -593,10 +597,18 @@ impl Layout {
         }
     }
 
+    /// Gap between slot `index - 1` and `index`: a compact marker hugs its neighbours.
+    fn gap_before(&self, index: usize) -> i32 {
+        if self.is_compact(index) || index.checked_sub(1).is_some_and(|i| self.is_compact(i)) {
+            self.metrics.px(Metrics::GROUP_MARKER_GAP)
+        } else {
+            self.metrics.px(Metrics::ISLAND_GAP)
+        }
+    }
+
     fn tab_left_at(&self, index: usize) -> i32 {
-        let gap = self.metrics.px(Metrics::ISLAND_GAP);
         (self.first_visible..index).fold(self.tab_left, |left, slot| {
-            left + self.tab_width_at(slot) + gap
+            left + self.tab_width_at(slot) + self.gap_before(slot + 1)
         })
     }
 

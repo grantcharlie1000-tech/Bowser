@@ -70,9 +70,6 @@ pub struct TabView<'a> {
     /// A collapsed group with no active member: the slot is drawn as its standalone colour marker
     /// and no tab face.
     pub marker_only: bool,
-    /// The slot stands in for a collapsed group whose active tab is its face: the shell closes with
-    /// an end cap mirroring the marker box.
-    pub collapsed: bool,
 }
 
 /// The coloured bar centred in a marker box.
@@ -101,26 +98,14 @@ pub fn island_colour(chosen: Option<u8>, accent: Rgba) -> Rgba {
         .unwrap_or(accent)
 }
 
-/// The marker box at the leading edge of a group's shell: a small rounded box of its own, inset
-/// from the shell on every side. Painting and hit testing both use this.
+/// The marker box at the leading edge of a group's shell: as tall as a tab, with a tab's corner
+/// radius. Painting and hit testing both use this.
 pub fn group_marker_box(shell: Rect, m: Metrics) -> Rect {
-    let inset = m.px(Metrics::GROUP_MARKER_INSET);
     Rect::new(
-        shell.left + inset,
-        shell.top + inset,
-        shell.left + inset + m.px(Metrics::GROUP_MARKER_BOX_WIDTH),
-        shell.bottom - inset,
-    )
-}
-
-/// The closing cap at the trailing edge of a collapsed group's shell, mirroring the marker box.
-pub fn group_end_cap(shell: Rect, m: Metrics) -> Rect {
-    let inset = m.px(Metrics::GROUP_MARKER_INSET);
-    Rect::new(
-        shell.right - inset - m.px(Metrics::GROUP_MARKER_BOX_WIDTH),
-        shell.top + inset,
-        shell.right - inset,
-        shell.bottom - inset,
+        shell.left,
+        shell.top,
+        shell.left + m.px(Metrics::GROUP_MARKER_BOX_WIDTH),
+        shell.bottom,
     )
 }
 
@@ -648,8 +633,7 @@ impl ChromeSurface {
             let grouped = details.is_some_and(|tab| tab.group_size.is_some());
             if grouped {
                 if hover > 0.0 || selected > 0.0 {
-                    // A leading tab's face starts after the marker box, and a collapsed group's
-                    // face ends before its end cap.
+                    // A leading tab's face starts after the marker box.
                     let span = group_spans
                         .iter()
                         .find(|(start, end, _, _)| *start <= index && index < *end);
@@ -660,11 +644,7 @@ impl ChromeSurface {
                     let selected_rect = Rect::new(
                         if leader { rect.left + shift } else { rect.left + m.px(1) },
                         rect.top + m.px(1),
-                        if leader && details.is_some_and(|tab| tab.collapsed) {
-                            rect.right - shift
-                        } else {
-                            rect.right - m.px(1)
-                        },
+                        rect.right - m.px(1),
                         rect.bottom - m.px(1),
                     );
                     self.round(selected_rect, m.px(6), fill, dirty);
@@ -701,14 +681,6 @@ impl ChromeSurface {
             } else {
                 view.layout.tab_parts(tab_rect)
             };
-            if group_leader && details.is_some_and(|tab| tab.collapsed) {
-                // Leave room for the end cap at the trailing edge.
-                parts.title.right = parts
-                    .title
-                    .right
-                    .min(rect.right - m.px(Metrics::GROUP_MARKER_SHIFT))
-                    .max(parts.title.left);
-            }
             if !parts.title.is_empty() {
                 // The favicon and title sit centred in the tab, as a group.
                 let label = details.map_or("New tab", |value| value.title);
@@ -736,17 +708,10 @@ impl ChromeSurface {
                         details.and_then(|tab| tab.group_colour),
                         view.palette.tab_group_accent,
                     );
-                    let box_radius = m.tab_radius() - m.px(Metrics::GROUP_MARKER_INSET);
                     let marker_box = group_marker_box(*shell, m);
-                    self.round(marker_box, box_radius, view.palette.tab_inactive, dirty);
+                    self.round(marker_box, m.tab_radius(), view.palette.tab_inactive, dirty);
                     let bar = group_bar_rect(*shell, m);
                     self.round(bar, bar.width() / 2, colour, dirty);
-                    if details.is_some_and(|tab| tab.collapsed) {
-                        let cap = group_end_cap(*shell, m);
-                        self.round(cap, box_radius, view.palette.tab_inactive, dirty);
-                        let bar = bar_in_box(cap, m);
-                        self.round(bar, bar.width() / 2, scale_alpha(colour, 0.45), dirty);
-                    }
                 }
             }
             let narrow_active_close = active && parts.active_close;
@@ -2288,7 +2253,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }];
         let view = ChromeView {
             layout: &layout,
@@ -2401,7 +2366,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         });
         let view = ChromeView {
             layout,
@@ -2512,7 +2477,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -2536,7 +2501,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -2599,7 +2564,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -2674,7 +2639,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             };
             40
         ];
@@ -2706,7 +2671,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }];
         let palette = palette(Appearance::Dark, false);
         let dirty = Rect::new(0, 0, 768, 64);
@@ -2739,7 +2704,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
-            group_colour: None, marker_only: false, collapsed: false,
+            group_colour: None, marker_only: false,
         }; 40];
         let palette = palette(Appearance::Dark, false);
         let mut resting = ChromeSurface::new(768, 64, 96);
@@ -2770,7 +2735,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: true,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             },
             TabView {
                 title: "Install Docker Desktop",
@@ -2780,7 +2745,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: false,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             },
             TabView {
                 title: "Opera",
@@ -2790,7 +2755,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             },
         ];
         let palette = palette(Appearance::Dark, false);
@@ -2809,9 +2774,7 @@ mod tests {
             "the shared group shell fills the gap between member tabs"
         );
 
-        let accent_x = first.left
-            + Metrics::new(96).px(Metrics::GROUP_MARKER_INSET)
-            + Metrics::new(96).px(Metrics::GROUP_MARKER_BOX_WIDTH) / 2;
+        let accent_x = first.left + Metrics::new(96).px(Metrics::GROUP_MARKER_BOX_WIDTH) / 2;
         let pixel = y as usize * surface.stride() + accent_x as usize * 4;
         assert!(
             surface.pixels()[pixel + 2] > surface.pixels()[pixel],
@@ -2882,7 +2845,7 @@ mod tests {
                                 let layout =
                                     crate::chrome::layout::compute(width, 120, dpi, count, false);
                                 let now = Instant::now();
-                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None,group_colour:None,marker_only:false,collapsed:false}).collect::<Vec<_>>();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None,group_colour:None,marker_only:false}).collect::<Vec<_>>();
                                 let text = match state {
                                     0 => "",
                                     1 => "https://example.com/a-very-long-address",
@@ -2952,7 +2915,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -3046,7 +3009,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
-                group_colour: None, marker_only: false, collapsed: false,
+                group_colour: None, marker_only: false,
             };
             5
         ];

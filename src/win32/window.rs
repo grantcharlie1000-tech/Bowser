@@ -3055,7 +3055,6 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         marker: t.marker,
                         group_colour: slot.island_colour,
                         marker_only: slot.marker_only,
-                        collapsed: slot.collapsed && !slot.marker_only,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
