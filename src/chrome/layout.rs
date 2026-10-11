@@ -43,14 +43,17 @@ impl Metrics {
     pub const TAB_MIN_WIDTH: i32 = 26;
     /// Titles are hidden in tabs narrower than this.
     pub const TITLE_MIN_TAB_WIDTH: i32 = 120;
+    /// The coloured bar inside a group's marker box.
     pub const GROUP_MARKER_WIDTH: i32 = 4;
-    pub const GROUP_MARKER_HEIGHT: i32 = 14;
-    /// Space the first grouped tab reserves before its pill for the marker, which sits outside the
-    /// pill with a small gap between them.
-    pub const GROUP_MARKER_SLOT: i32 = 6;
-    /// Offset of the first grouped tab's favicon from its tab edge, which keeps it inside the pill
-    /// clear of the marker slot.
-    pub const GROUP_MARKER_SHIFT: i32 = 12;
+    pub const GROUP_MARKER_HEIGHT: i32 = 16;
+    /// Width of a group's marker box: its own small rounded box, either at the leading edge of the
+    /// group's shell or, for a collapsed group with no active member, the whole compact slot.
+    pub const GROUP_MARKER_BOX_WIDTH: i32 = 16;
+    /// Gap between a marker box and the shell edge it sits inside.
+    pub const GROUP_MARKER_INSET: i32 = 2;
+    /// Offset of a group leader's close target, favicon and title from its tab edge, which keeps
+    /// them inside the shell and clear of the marker box.
+    pub const GROUP_MARKER_SHIFT: i32 = 20;
     pub const NEW_TAB_SIZE: i32 = 28;
     pub const TAB_MENU_SIZE: i32 = 26;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;
@@ -227,7 +230,11 @@ pub struct Layout {
     visible_count: usize,
     island_top: i32,
     island_bottom: i32,
+    /// Bit per slot index: a compact slot is only a group marker box, not a full-width tab.
+    compact_slots: [u64; COMPACT_WORDS],
 }
+
+const COMPACT_WORDS: usize = 8;
 
 /// Height of the painted chrome: the strip, the omnibox row and the margin below it. This is where
 /// `Layout::viewport` starts.
@@ -466,6 +473,7 @@ pub fn compute_with_active(
         visible_count,
         island_top,
         island_bottom,
+        compact_slots: [0; COMPACT_WORDS],
     }
 }
 
@@ -526,7 +534,58 @@ impl Layout {
         (0..self.first_visible).chain(visible_end..self.tab_count)
     }
 
+    fn is_compact(&self, index: usize) -> bool {
+        self.compact_slots
+            .get(index / 64)
+            .is_some_and(|word| word >> (index % 64) & 1 == 1)
+    }
+
+    /// Marks slots that are only a group marker box (a collapsed group with no active member) and
+    /// gives them a compact width, handing the space they save to the full tabs. Slots past the
+    /// first `COMPACT_WORDS * 64` keep full width.
+    pub fn with_compact_slots(mut self, compact: impl IntoIterator<Item = bool>) -> Self {
+        self.compact_slots = [0; COMPACT_WORDS];
+        for (index, flag) in compact.into_iter().enumerate().take(COMPACT_WORDS * 64) {
+            if flag {
+                self.compact_slots[index / 64] |= 1 << (index % 64);
+            }
+        }
+        let m = self.metrics;
+        let shown = self.visible_count as i32;
+        let compact_count = (self.first_visible..self.first_visible + self.visible_count)
+            .filter(|&index| self.is_compact(index))
+            .count() as i32;
+        if compact_count == 0 {
+            return self;
+        }
+        let regular = shown - compact_count;
+        let gap = m.px(Metrics::ISLAND_GAP);
+        let max_w = m.px(Metrics::TAB_MAX_WIDTH);
+        let min_w = m.px(Metrics::TAB_MIN_WIDTH);
+        let inner_available = (self.tab_zone.width()
+            - (shown - 1) * gap
+            - compact_count * m.px(Metrics::GROUP_MARKER_BOX_WIDTH))
+        .max(0);
+        let (inactive, active) = if regular <= 0 {
+            (max_w, max_w)
+        } else if regular == 1 {
+            (inner_available, inner_available)
+        } else {
+            let base = inner_available.saturating_mul(2) / (2 * regular + 1);
+            let active = ((base * 3 + 1) / 2).min(max_w);
+            let inactive =
+                ((inner_available - active).max(0) / (regular - 1)).clamp(min_w, max_w);
+            (inactive, active.max(min_w))
+        };
+        self.inactive_tab_width = inactive;
+        self.active_tab_width = active;
+        self
+    }
+
     fn tab_width_at(&self, index: usize) -> i32 {
+        if self.is_compact(index) {
+            return self.metrics.px(Metrics::GROUP_MARKER_BOX_WIDTH);
+        }
         if index == self.active_index {
             self.active_tab_width
         } else {
@@ -624,6 +683,23 @@ impl Layout {
             close,
             active_close: !close_fits,
         }
+    }
+
+    /// Sub-rects for a group's leading tab, which carries the marker box at its leading edge: the
+    /// close target, favicon and title all sit right of the box, inside the group's shell.
+    pub fn group_leader_parts(&self, tab: Rect) -> TabParts {
+        let mut parts = self.tab_parts(tab);
+        let shift = self.metrics.px(Metrics::GROUP_MARKER_SHIFT);
+        for rect in [&mut parts.favicon, &mut parts.close] {
+            if !rect.is_empty() {
+                rect.left += shift;
+                rect.right += shift;
+            }
+        }
+        if !parts.title.is_empty() {
+            parts.title.left += shift;
+        }
+        parts
     }
 
     fn tab_centre(&self, index: usize) -> i32 {

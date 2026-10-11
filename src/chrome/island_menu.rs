@@ -272,7 +272,7 @@ pub fn hit_test(layout: &IslandLayout, x: i32, y: i32) -> IslandHit {
 mod tests {
     use super::*;
     use crate::{
-        chrome::paint::{group_bar_rect, group_shell_left, island_colour},
+        chrome::paint::{group_bar_rect, group_marker_box, island_colour},
         theme,
     };
 
@@ -465,36 +465,45 @@ mod tests {
     }
 
     #[test]
-    fn island_bar_sits_at_the_leading_edge_clear_of_the_close_target() {
+    fn island_bar_sits_in_its_own_box_at_the_leading_edge() {
         for dpi in DPIS {
             let m = Metrics::new(dpi);
             let island = Rect::new(300, 4, 300 + m.px(140), 4 + m.px(Metrics::ISLAND_HEIGHT));
-            let shell_left = group_shell_left(island, m);
-            assert!(
-                shell_left > island.left,
-                "dpi {dpi}: close target stays outside the pill"
-            );
-            let bar = group_bar_rect(
-                Rect::new(shell_left, island.top, island.right, island.bottom),
-                m,
-            );
-            assert!(bar.left >= shell_left && bar.right <= island.right);
-            assert!(bar.top >= island.top && bar.bottom <= island.bottom);
+            let marker_box = group_marker_box(island, m);
+            assert!(marker_box.left > island.left && marker_box.right <= island.right);
+            assert!(marker_box.top >= island.top && marker_box.bottom <= island.bottom);
+            let bar = group_bar_rect(island, m);
+            assert!(bar.left >= marker_box.left && bar.right <= marker_box.right);
+            assert!(bar.top >= marker_box.top && bar.bottom <= marker_box.bottom);
             assert!(bar.width() >= 3 && bar.height() >= 10);
+            assert!(bar.height() > bar.width() * 2, "dpi {dpi}: bar is tall");
             let centre_drift = (bar.top + bar.bottom) - (island.top + island.bottom);
             assert!(
                 centre_drift.abs() <= 1,
                 "dpi {dpi}: bar is vertically centred"
             );
+            // The close target of the leading tab clears the box.
+            let tabs = crate::chrome::layout::compute(1024, 700, dpi, 3, false);
+            let tab = tabs.tab(0).unwrap();
+            let parts = tabs.group_leader_parts(tab);
+            let box_ = group_marker_box(tab, m);
+            assert!(parts.close.left > box_.right && parts.close.right <= tab.right);
+            assert!(parts.favicon.left > parts.close.right);
         }
     }
 
     #[test]
-    fn compact_islands_keep_the_pill_at_their_own_edge() {
+    fn collapsed_marker_slots_are_compact_boxes_beside_full_tabs() {
         let m = Metrics::new(96);
-        let narrow = Rect::new(300, 4, 300 + m.px(Metrics::TITLE_MIN_TAB_WIDTH) - 1, 28);
-        assert_eq!(group_shell_left(narrow, m), narrow.left);
-        let wide = Rect::new(300, 4, 300 + m.px(Metrics::TITLE_MIN_TAB_WIDTH) + 40, 28);
-        assert!(group_shell_left(wide, m) > wide.left);
+        let plain = crate::chrome::layout::compute(1024, 700, 96, 4, false);
+        let compact = plain.with_compact_slots([false, true, false, false]);
+        let marker = compact.tab(1).unwrap();
+        assert_eq!(marker.width(), m.px(Metrics::GROUP_MARKER_BOX_WIDTH));
+        // The same gap separates it from its neighbours as separates any two tabs.
+        let gap = m.px(Metrics::ISLAND_GAP);
+        assert_eq!(compact.tab(2).unwrap().left - marker.right, gap);
+        assert_eq!(marker.left - compact.tab(0).unwrap().right, gap);
+        // The space it saves goes to the full tabs.
+        assert!(compact.tab(0).unwrap().width() >= plain.tab(0).unwrap().width());
     }
 }

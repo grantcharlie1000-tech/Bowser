@@ -378,7 +378,8 @@ impl WindowChrome {
             })
             .unwrap_or(0);
         self.layout =
-            layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised);
+            layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised)
+                .with_compact_slots(self.slots.iter().map(|slot| slot.marker_only));
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.surface.resize(w, h, self.dpi)
     }
@@ -1666,6 +1667,18 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
             Hit::TabClose(index) if s.slots.get(index).is_some_and(|slot| slot.marker_only) => {
                 Hit::Tab(index)
             }
+            // A group's leading tab carries the marker box, which pushes its close target right.
+            Hit::Tab(index) | Hit::TabClose(index) if leader_has_marker(s, index) => {
+                let close = s
+                    .layout
+                    .tab(index)
+                    .map(|island| s.layout.group_leader_parts(island).close);
+                if close.is_some_and(|close| close.contains(x, y)) {
+                    Hit::TabClose(index)
+                } else {
+                    Hit::Tab(index)
+                }
+            }
             hit => hit,
         };
         if hit == Hit::Viewport
@@ -1693,6 +1706,17 @@ fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
 /// A tab's visible rectangle in main-client coordinates, or `None` when it is scrolled out.
 fn tab_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     with_chrome(hwnd, |s| s.tab_rect(id)).flatten()
+}
+/// Whether the slot at `index` leads a group and so draws a marker box at its leading edge. Compact
+/// islands have no room for one.
+fn leader_has_marker(s: &WindowChrome, index: usize) -> bool {
+    s.slots.get(index).is_some_and(|slot| {
+        slot.group_control
+            && !slot.marker_only
+            && s.layout
+                .tab(index)
+                .is_some_and(|island| island.width() >= s.layout.metrics.px(Metrics::TITLE_MIN_TAB_WIDTH))
+    })
 }
 /// A domain island's leading bar, found from the strip the chrome last laid out.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1742,23 +1766,15 @@ fn bar_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     })
     .flatten()
 }
-/// The bar for the visible slot at `index`, placed from its island with the same rules the painter
-/// uses. `None` for a compact island, where no bar is drawn.
+/// The clickable marker for the visible slot at `index`, placed from its island with the same rules
+/// the painter uses: the bar of a compact marker-only slot, or the marker box at the leading edge of
+/// a group's leading tab. `None` for a compact island, where no marker is drawn.
 fn island_bar_rect(s: &WindowChrome, index: usize, m: Metrics) -> Option<Rect> {
     let island = s.layout.tab(index)?;
     if s.slots.get(index).is_some_and(|slot| slot.marker_only) {
         return Some(paint::marker_only_bar(island, m));
     }
-    if island.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH) {
-        return None;
-    }
-    let shell = Rect::new(
-        paint::group_shell_left(island, m),
-        island.top,
-        island.right,
-        island.bottom,
-    );
-    Some(paint::group_bar_rect(shell, m))
+    leader_has_marker(s, index).then(|| paint::group_marker_box(island, m))
 }
 /// Favicon of a tab as the chrome last decoded it, for the island menu's rows.
 pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
@@ -1801,16 +1817,14 @@ fn group_toggle_target(hwnd: HWND, slot_index: usize, x: i32, y: i32) -> Option<
         }
         let tab = s.tabs.get(slot.tab_index)?;
         let island = s.layout.tab(slot_index)?;
-        let mut favicon = s.layout.tab_parts(island).favicon;
-        if slot.group_control
-            && slot.domain.is_some()
-            && island.width() >= s.layout.metrics.px(Metrics::TITLE_MIN_TAB_WIDTH)
-        {
-            // The group leader's marker occupies the original leading part of the favicon area.
-            let shift = s.layout.metrics.px(Metrics::GROUP_MARKER_SHIFT);
-            favicon.left += shift;
-            favicon.right += shift;
+        if slot.domain.is_none() {
+            return None;
         }
+        let favicon = if leader_has_marker(s, slot_index) {
+            s.layout.group_leader_parts(island).favicon
+        } else {
+            s.layout.tab_parts(island).favicon
+        };
         favicon.contains(x, y).then_some((tab.id, !slot.collapsed))
     })
     .flatten()
@@ -3041,6 +3055,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         marker: t.marker,
                         group_colour: slot.island_colour,
                         marker_only: slot.marker_only,
+                        collapsed: slot.collapsed && !slot.marker_only,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
