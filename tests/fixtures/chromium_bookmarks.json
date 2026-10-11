@@ -1,0 +1,1 @@
+{"roots":{"bookmark_bar":{"name":"Bookmarks bar","type":"folder","children":[{"name":"News","type":"url","url":"https://example.com/"},{"name":"Bad","type":"url","url":"javascript:alert(1)"}]},"other":{"name":"Other bookmarks","type":"folder","children":[]}}}
