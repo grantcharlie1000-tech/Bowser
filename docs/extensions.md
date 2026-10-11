@@ -70,4 +70,4 @@ unpacked extension does not require opening that scheme from the address bar.
 
 - `src/extensions.rs`: validation, records file, install and remove, load-result store.
 - `src/engine/webview2.rs`: environment option, startup loading, runtime enable and remove.
-- `src/win32/window.rs`: Ctrl+Shift+X menu, folder picker, install confirmation.
+- `src/win32/window.rs`: Ctrl+Shift+E menu, folder picker, install confirmation.

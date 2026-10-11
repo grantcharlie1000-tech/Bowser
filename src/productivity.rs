@@ -100,6 +100,7 @@ pub fn browser_commands() -> CommandRegistry {
         ("Reload", "Reload the current page", "reload"),
         ("Back", "Go back", "back"),
         ("Forward", "Go forward", "forward"),
+        ("Extensions", "Manage installed extensions", "extensions"),
     ] {
         commands.register(label, detail, action);
     }
@@ -683,7 +684,7 @@ mod tests {
     fn browser_registry_exposes_core_productivity_and_browser_actions() {
         let registry = browser_commands();
         let actions: Vec<_> = registry.commands().iter().map(|item| item.action.as_str()).collect();
-        for action in ["new-tab", "close-tab", "settings", "passwords", "profiles", "toggle-sidebar", "save-session", "sessions", "add-bookmark"] {
+        for action in ["new-tab", "close-tab", "settings", "passwords", "profiles", "toggle-sidebar", "save-session", "sessions", "add-bookmark", "extensions"] {
             assert!(actions.contains(&action), "missing command {action}");
         }
     }

@@ -85,11 +85,13 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Forward | Alt+Right, browser forward key |
 | Passwords & Passkeys | Ctrl+, |
 | Command palette | Ctrl+Shift+K |
-| Notes & Tasks | Ctrl+Shift+E |
+| Notes & Tasks | Ctrl+Shift+N |
 | Add bookmark | Ctrl+D |
-| Extensions | Ctrl+Shift+X |
+| Extensions | Ctrl+Shift+E |
 
-Notes, tasks, bookmarks, history, and named tab sessions are stored locally in each profile. Guest profiles do not persist productivity data. The command palette searches open tabs, bookmarks, history, and browser commands. History can be disabled per profile in `history-enabled.txt`.
+Notes, tasks, bookmarks, history, and named tab sessions are stored locally in each profile. Guest profiles keep notes and tasks in memory for the lifetime of the window; they do not write productivity data to disk. The command palette searches open tabs, bookmarks, history, and browser commands. History can be disabled per profile in `history-enabled.txt`.
+
+The command palette is a live overlay: results for tabs, bookmarks, history, and browser commands update as you type. Use Up/Down and Enter, Escape, or click a result. Ctrl+Shift+N opens the Notes & Tasks sidebar docked to the right of the page. Notes have a title and body editor; tasks can be added, edited, checked off, and deleted. Drag the sidebar's left edge to resize it. Its `notes_panel_width` setting is stored in that profile's `settings.txt`; Guest keeps notes, tasks, and width only in memory.
 
 Under system memory pressure, a tab that has been hidden for 30 seconds or more may be unloaded to free memory. It stays in the tab strip with its title, favicon and group, and it reloads its last address when you select it again. Its back and forward history is lost when this happens. Pinned tabs, tabs playing audio and tabs that are still loading are never unloaded.
 

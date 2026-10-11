@@ -26,7 +26,7 @@ pub enum Command {
     ToggleBlocker,
     /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
     ShowProfileMenu,
-    /// Ctrl+Shift+X opens the extensions menu (enable, disable, remove, install).
+    /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
     ShowExtensionsMenu,
     ShowCommandPalette,
     ToggleNotes,
@@ -47,11 +47,11 @@ const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
 const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
+const VK_N: u32 = 0x4E;
 const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
-const VK_X: u32 = 0x58;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_F5: u32 = 0x74;
@@ -89,9 +89,9 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_K, true, true, false) => Some(Command::ShowCommandPalette),
-        (VK_E, true, true, false) => Some(Command::ToggleNotes),
+        (VK_N, true, true, false) => Some(Command::ToggleNotes),
         (VK_D, true, false, false) => Some(Command::AddBookmark),
-        (VK_X, true, true, false) => Some(Command::ShowExtensionsMenu),
+        (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
         _ => None,
     }
 }
@@ -129,9 +129,9 @@ mod tests {
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_K, true, true, false, Command::ShowCommandPalette),
-            (VK_E, true, true, false, Command::ToggleNotes),
+            (VK_N, true, true, false, Command::ToggleNotes),
             (VK_D, true, false, false, Command::AddBookmark),
-            (VK_X, true, true, false, Command::ShowExtensionsMenu),
+            (VK_E, true, true, false, Command::ShowExtensionsMenu),
         ];
         for index in 0..8 {
             table.push((
@@ -147,7 +147,11 @@ mod tests {
 
     #[test]
     fn every_listed_binding_maps_to_its_command() {
-        for (key, ctrl, shift, alt, expected) in bindings() {
+        let table = bindings();
+        for (index, (key, ctrl, shift, alt, expected)) in table.iter().copied().enumerate() {
+            assert!(table[index + 1..].iter().all(|other| {
+                (key, ctrl, shift, alt) != (other.0, other.1, other.2, other.3)
+            }), "duplicate binding for key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
             assert_eq!(
                 command_for(key, ctrl, shift, alt),
                 Some(expected),
@@ -190,6 +194,16 @@ mod tests {
             (VK_F5, false, true, false),
             (VK_9, false, false, false),
             (VK_1, false, false, true),
+            (VK_N, true, true, true),
+            (0x58, true, true, false), // Ctrl+Shift+X is no longer bound.
+            (0x59, true, true, false), // Picture-in-picture sibling chord.
+            (0x2E, true, true, false), // Privacy dashboard sibling chord.
+            (0xDC, true, true, false),
+            (VK_LEFT, true, true, false),
+            (VK_RIGHT, true, true, false),
+            (VK_W, true, true, false),
+            (0x5A, true, true, false),
+            (0x56, true, true, false),
         ] {
             assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");
         }
@@ -214,8 +228,8 @@ mod tests {
     #[test]
     fn productivity_chords_do_not_collide_with_existing_commands() {
         assert_eq!(command_for(0x4B, true, true, false), Some(Command::ShowCommandPalette));
-        assert_eq!(command_for(VK_E, true, true, false), Some(Command::ToggleNotes));
+        assert_eq!(command_for(VK_N, true, true, false), Some(Command::ToggleNotes));
         assert_eq!(command_for(VK_D, true, false, false), Some(Command::AddBookmark));
-        assert_eq!(command_for(0x58, true, true, false), Some(Command::ShowExtensionsMenu));
+        assert_eq!(command_for(VK_E, true, true, false), Some(Command::ShowExtensionsMenu));
     }
 }
