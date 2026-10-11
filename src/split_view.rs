@@ -10,11 +10,13 @@ pub struct SplitView {
     pub left: TabId,
     pub right: TabId,
     pub focused: Pane,
+    /// Percentage of viewport width assigned to the left pane (20 through 80).
+    pub ratio: u8,
 }
 
 impl SplitView {
     pub fn new(left: TabId, right: TabId, focused: Pane) -> Option<Self> {
-        (left != right).then_some(Self { left, right, focused })
+        (left != right).then_some(Self { left, right, focused, ratio: 50 })
     }
     pub fn focused_tab(self) -> TabId {
         match self.focused { Pane::Left => self.left, Pane::Right => self.right }
@@ -26,9 +28,11 @@ impl SplitView {
         if self.left == tab { Some(Pane::Left) } else if self.right == tab { Some(Pane::Right) } else { None }
     }
     pub fn focus(&mut self, pane: Pane) { self.focused = pane; }
+    pub fn set_ratio(&mut self, ratio: u8) { self.ratio = ratio.clamp(20, 80); }
     pub fn swap(&mut self) {
         std::mem::swap(&mut self.left, &mut self.right);
         self.focused = match self.focused { Pane::Left => Pane::Right, Pane::Right => Pane::Left };
+        self.ratio = 100 - self.ratio;
     }
     pub fn replace_focused(&mut self, tab: TabId) -> bool {
         if tab == self.other_tab() { return false; }
@@ -66,5 +70,18 @@ mod tests {
         assert_eq!(view.remove(TabId(1)), Some(TabId(2)));
         assert_eq!(view.remove(TabId(2)), Some(TabId(1)));
         assert_eq!(view.remove(TabId(3)), None);
+    }
+
+    #[test]
+    fn divider_ratio_is_clamped_and_follows_swapped_panes() {
+        let mut view = SplitView::new(TabId(1), TabId(2), Pane::Right).unwrap();
+        view.set_ratio(5);
+        assert_eq!(view.ratio, 20);
+        view.set_ratio(63);
+        assert_eq!(view.ratio, 63);
+        view.swap();
+        assert_eq!(view.ratio, 37);
+        view.set_ratio(95);
+        assert_eq!(view.ratio, 80);
     }
 }

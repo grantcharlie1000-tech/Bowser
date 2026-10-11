@@ -36,6 +36,10 @@ pub enum Command {
     UndoTabOrganisation,
     /// Ctrl+Shift+Y toggles native video picture-in-picture.
     TogglePictureInPicture,
+    ToggleSplit,
+    FocusSplitLeft,
+    FocusSplitRight,
+    CloseSplitPane,
 }
 
 const VK_TAB: u32 = 0x09;
@@ -60,6 +64,7 @@ const VK_Z: u32 = 0x5A;
 const VK_DELETE: u32 = 0x2E;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
+const VK_OEM_5: u32 = 0xDC;
 const VK_F5: u32 = 0x74;
 const VK_F6: u32 = 0x75;
 const VK_BROWSER_BACK: u32 = 0xA6;
@@ -99,6 +104,10 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
         (VK_Z, true, true, false) => Some(Command::UndoTabOrganisation),
         (VK_Y, true, true, false) => Some(Command::TogglePictureInPicture),
+        (VK_OEM_5, true, true, false) => Some(Command::ToggleSplit),
+        (VK_LEFT, true, true, false) => Some(Command::FocusSplitLeft),
+        (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
+        (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         _ => None,
     }
 }
@@ -140,6 +149,10 @@ mod tests {
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
             (VK_Z, true, true, false, Command::UndoTabOrganisation),
             (VK_Y, true, true, false, Command::TogglePictureInPicture),
+            (VK_OEM_5, true, true, false, Command::ToggleSplit),
+            (VK_LEFT, true, true, false, Command::FocusSplitLeft),
+            (VK_RIGHT, true, true, false, Command::FocusSplitRight),
+            (VK_W, true, true, false, Command::CloseSplitPane),
         ];
         for index in 0..8 {
             table.push((

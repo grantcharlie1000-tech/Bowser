@@ -1817,6 +1817,17 @@ impl App {
         focused: Pane,
         bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
     ) -> bool {
+        Self::open_split_view_with_ratio(app, left, right, focused, 50, bounds)
+    }
+
+    fn open_split_view_with_ratio(
+        app: &AppRef,
+        left: TabId,
+        right: TabId,
+        focused: Pane,
+        ratio: u8,
+        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+    ) -> bool {
         let (focused_tab, hwnd) = {
             let mut state = app.borrow_mut();
             if left == right
@@ -1825,7 +1836,8 @@ impl App {
             {
                 return false;
             }
-            let Some(split) = SplitView::new(left, right, focused) else { return false };
+            let Some(mut split) = SplitView::new(left, right, focused) else { return false };
+            split.set_ratio(ratio);
             state.split_view = Some(split);
             state.split_bounds = Some(bounds);
             let focused_tab = split.focused_tab();
@@ -1863,6 +1875,34 @@ impl App {
         }
     }
 
+    pub fn clear_split_bounds(app: &AppRef) {
+        if app.borrow().split_view.is_some() {
+            app.borrow_mut().split_bounds = None;
+            Self::apply_visible_panes(app);
+        }
+    }
+
+    pub fn set_split_ratio(app: &AppRef, ratio: u8) -> bool {
+        let changed = {
+            let mut state = app.borrow_mut();
+            let Some(split) = state.split_view.as_mut() else { return false };
+            let old = split.ratio;
+            split.set_ratio(ratio);
+            old != split.ratio
+        };
+        changed
+    }
+
+    pub fn split_state_changed(app: &AppRef) {
+        let (split, hwnd) = {
+            let state = app.borrow();
+            (state.split_view, state.hwnd)
+        };
+        if let Some(split) = split {
+            Self::post_tab_changed_kind(hwnd, split.focused_tab(), false, true);
+        }
+    }
+
     pub fn focus_split_pane(app: &AppRef, pane: Pane) -> bool {
         let (active, hwnd) = {
             let mut state = app.borrow_mut();
@@ -1893,35 +1933,21 @@ impl App {
         split.swap();
         let bounds = app.borrow().split_bounds;
         let Some(bounds) = bounds else { return false };
-        Self::open_split_view(app, split.left, split.right, split.focused, bounds)
+        Self::open_split_view_with_ratio(app, split.left, split.right, split.focused, split.ratio, bounds)
     }
 
     pub fn replace_focused_split_pane(app: &AppRef, tab: TabId) -> bool {
         let Some(mut split) = app.borrow().split_view else { return false };
         if !split.replace_focused(tab) { return false; }
         let Some(bounds) = app.borrow().split_bounds else { return false };
-        Self::open_split_view(app, split.left, split.right, split.focused, bounds)
+        Self::open_split_view_with_ratio(app, split.left, split.right, split.focused, split.ratio, bounds)
     }
 
     pub fn close_split_pane(app: &AppRef, pane: Pane) -> bool {
-        let (remaining, hwnd) = {
-            let mut state = app.borrow_mut();
-            let Some(split) = state.split_view else { return false };
-            let closing = match pane { Pane::Left => split.left, Pane::Right => split.right };
-            let Some(remaining) = split.remove(closing) else { return false };
-            state.split_view = None;
-            state.split_bounds = None;
-            state.tab_model.select(remaining);
-            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == remaining).map(|tab| (tab.progress, tab.page_usable)) {
-                state.navigation_progress = progress;
-                state.page_loaded = page_usable;
-            }
-            (remaining, state.hwnd)
-        };
-        Self::apply_visible_panes(app);
-        Self::post_tab_changed(hwnd, remaining);
-        Self::sync_window_title(app);
-        true
+        let split = { app.borrow().split_view };
+        let Some(split) = split else { return false };
+        let closing = match pane { Pane::Left => split.left, Pane::Right => split.right };
+        Self::close_tab(app, closing)
     }
 
     pub fn reload(app: &AppRef) {
@@ -2523,12 +2549,15 @@ impl App {
             return;
         };
         let mut active_url = None;
+        let mut restored_ids = Vec::with_capacity(session.tabs.len());
+        let restored_split = session.split;
         let hwnd = {
             let mut state = app.borrow_mut();
             let mut first = true;
             let mut active_id = None;
             for (index, saved) in session.tabs.iter().enumerate() {
                 let Ok(url) = url::Url::parse(&saved.url) else {
+                    restored_ids.push(None);
                     continue;
                 };
                 let id = if first {
@@ -2549,6 +2578,7 @@ impl App {
                     tab.title.clone_from(&saved.title);
                     tab.discarded = true;
                 }
+                restored_ids.push(Some(id));
                 // The saved active tab wins; otherwise the first tab that restored.
                 if index == session.active || active_id.is_none() {
                     active_id = Some(id);
@@ -2560,6 +2590,25 @@ impl App {
                 if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
                     tab.discarded = false;
                 }
+            }
+            if let Some(saved_split) = restored_split
+                && let (Some(Some(left)), Some(Some(right))) = (
+                    restored_ids.get(saved_split.left),
+                    restored_ids.get(saved_split.right),
+                )
+                && let Some(mut split) = SplitView::new(
+                    *left,
+                    *right,
+                    if saved_split.focused_left { Pane::Left } else { Pane::Right },
+                )
+            {
+                split.set_ratio(saved_split.ratio);
+                state.split_view = Some(split);
+                state.tab_model.select(split.focused_tab());
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == split.focused_tab()) {
+                    tab.discarded = false;
+                }
+                active_url = state.tabs.iter().find(|tab| tab.id == split.focused_tab()).and_then(|tab| tab.url.clone());
             }
             state.hwnd
         };
@@ -2597,7 +2646,20 @@ impl App {
     fn session_snapshot(app: &AppRef) -> Option<crate::session::Session> {
         let state = app.borrow();
         let active = state.tab_model.index_of(state.tab_model.active())?;
-        crate::session::Session::from_tabs(
+        let mut saved_indexes = HashMap::new();
+        let mut saved_count = 0;
+        for model in state.tab_model.iter() {
+            let url = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == model.id)
+                .and_then(|tab| tab.url.as_ref());
+            if url.is_some_and(|url| crate::session::persistable_url(url).is_some()) {
+                saved_indexes.insert(model.id, saved_count);
+                saved_count += 1;
+            }
+        }
+        let mut session = crate::session::Session::from_tabs(
             state.tab_model.iter().map(|model| {
                 let tab = state.tabs.iter().find(|tab| tab.id == model.id);
                 (
@@ -2607,7 +2669,20 @@ impl App {
                 )
             }),
             active,
-        )
+        )?;
+        if let Some(split) = state.split_view {
+            if let (Some(&left), Some(&right)) =
+                (saved_indexes.get(&split.left), saved_indexes.get(&split.right))
+            {
+                session.split = Some(crate::session::SessionSplit {
+                    left,
+                    right,
+                    focused_left: split.focused == Pane::Left,
+                    ratio: split.ratio,
+                });
+            }
+        }
+        Some(session)
     }
 
     /// The debounce timer fired: write the snapshot if anything changed.
@@ -3250,6 +3325,12 @@ impl App {
             Self::navigate_tab(app, pending_tab.unwrap_or(active_tab), &pending);
         } else if prewarm_requested {
             let _ = Self::with_engine(app, |engine| engine.prewarm_tab(active_tab));
+        }
+        let split = { app.borrow().split_view };
+        if let Some(split) = split {
+            Self::restore_discarded_tab(app, split.left);
+            Self::restore_discarded_tab(app, split.right);
+            Self::apply_visible_panes(app);
         }
     }
 
@@ -4414,6 +4495,12 @@ mod tests {
                 tab("https://c.test/", "C", false),
             ],
             active: 2,
+            split: Some(crate::session::SessionSplit {
+                left: 0,
+                right: 2,
+                focused_left: false,
+                ratio: 64,
+            }),
         });
         App::restore_pending_session(&app);
         let state = app.borrow();
@@ -4421,11 +4508,57 @@ mod tests {
         let titles: Vec<_> = state.tab_model.iter().map(|t| t.title.clone()).collect();
         assert_eq!(titles, ["A", "B", "C"]);
         assert!(state.tab_model.iter().next().unwrap().pinned);
+        let split = state.split_view.unwrap();
+        assert_eq!(split.ratio, 64);
+        assert_eq!(split.focused, crate::split_view::Pane::Right);
+        assert_eq!(state.tab_model.active(), split.right);
         let active = state.tab_model.active();
         assert_eq!(state.tab_model.index_of(active), Some(1));
         let asleep: Vec<_> = state.tabs.iter().map(|t| t.discarded).collect();
         assert_eq!(asleep, [true, false, true]);
         assert_eq!(state.pending.as_ref().unwrap().as_str(), "https://b.test/");
+    }
+
+    #[test]
+    fn closing_a_split_pane_closes_its_tab_and_keeps_the_other_as_active_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let left = App::active_tab_id(&app);
+        let right = App::new_tab(&app);
+        assert!(App::open_split_view(
+            &app,
+            left,
+            right,
+            crate::split_view::Pane::Right,
+            (rect(0, 0), rect(400, 0)),
+        ));
+
+        assert!(App::close_split_pane(&app, crate::split_view::Pane::Right));
+
+        assert_eq!(App::tab_ids(&app), [left]);
+        assert_eq!(App::active_tab_id(&app), left);
+        assert!(App::split_view(&app).is_none());
+    }
+
+    #[test]
+    fn swapping_split_panes_preserves_the_inverted_divider_ratio() {
+        let app = app_with_pending(rect(800, 600));
+        let left = App::active_tab_id(&app);
+        let right = App::new_tab(&app);
+        let bounds = (rect(0, 0), rect(400, 0));
+        assert!(App::open_split_view(
+            &app,
+            left,
+            right,
+            crate::split_view::Pane::Right,
+            bounds,
+        ));
+        assert!(App::set_split_ratio(&app, 63));
+
+        assert!(App::swap_split_panes(&app));
+
+        let split = App::split_view(&app).unwrap();
+        assert_eq!((split.left, split.right), (right, left));
+        assert_eq!(split.ratio, 37);
     }
 
     #[test]

@@ -44,7 +44,8 @@ pub const SAVE_DEBOUNCE_MS: u32 = 5_000;
 /// next start fresh, with the snapshot set aside as `session.crashed`.
 pub const CRASH_LOOP_LIMIT: u32 = 2;
 
-const HEADER: &str = "bowser-session 1";
+const HEADER_V1: &str = "bowser-session 1";
+const HEADER: &str = "bowser-session 2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionTab {
@@ -57,6 +58,15 @@ pub struct SessionTab {
 pub struct Session {
     pub tabs: Vec<SessionTab>,
     pub active: usize,
+    pub split: Option<SessionSplit>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionSplit {
+    pub left: usize,
+    pub right: usize,
+    pub focused_left: bool,
+    pub ratio: u8,
 }
 
 /// The URL text to persist, or `None` for anything that must not be stored: non-web schemes,
@@ -105,6 +115,7 @@ impl Session {
         (!kept.is_empty()).then_some(Self {
             tabs: kept,
             active: kept_active,
+            split: None,
         })
     }
 
@@ -127,6 +138,19 @@ impl Session {
             }
             text.push('\n');
         }
+        if let Some(split) = self.split.filter(|split| {
+            split.left < self.tabs.len()
+                && split.right < self.tabs.len()
+                && split.left != split.right
+        }) {
+            text.push_str(&format!(
+                "split {} {} {} {}\n",
+                split.left,
+                split.right,
+                u8::from(split.focused_left),
+                split.ratio.clamp(20, 80)
+            ));
+        }
         text
     }
 
@@ -137,14 +161,41 @@ impl Session {
             return None;
         }
         let mut lines = text.lines();
-        if lines.next()? != HEADER {
+        let version = lines.next()?;
+        if version != HEADER && version != HEADER_V1 {
             return None;
         }
         let mut active = 0usize;
         let mut tabs = Vec::new();
+        let mut split = None;
         for line in lines {
             if let Some(value) = line.strip_prefix("active ") {
                 active = value.trim().parse().unwrap_or(0);
+                continue;
+            }
+            if version == HEADER && line.starts_with("split ") {
+                let mut fields = line.split_whitespace();
+                if fields.next() == Some("split") {
+                    if let (Some(Ok(left)), Some(Ok(right)), Some(focused), Some(Ok(ratio))) = (
+                        fields.next().map(str::parse::<usize>),
+                        fields.next().map(str::parse::<usize>),
+                        fields.next(),
+                        fields.next().map(str::parse::<u8>),
+                    ) {
+                        if fields.next().is_none()
+                            && left != right
+                            && matches!(focused, "0" | "1")
+                            && (20..=80).contains(&ratio)
+                        {
+                            split = Some(SessionSplit {
+                                left,
+                                right,
+                                focused_left: focused == "1",
+                                ratio,
+                            });
+                        }
+                    }
+                }
                 continue;
             }
             let mut fields = line.splitn(4, '\t');
@@ -179,7 +230,12 @@ impl Session {
         if active >= tabs.len() {
             active = 0;
         }
-        Some(Self { tabs, active })
+        if split.is_some_and(|split: SessionSplit| {
+            split.left >= tabs.len() || split.right >= tabs.len()
+        }) {
+            split = None;
+        }
+        Some(Self { tabs, active, split })
     }
 }
 
@@ -581,6 +637,32 @@ mod tests {
         assert_eq!(parsed.tabs[0].title, "Tab\twith\\odd\nchars");
         assert_eq!(parsed.tabs[0].url, "https://example.com/a?x=1");
         assert!(!session.serialize().contains('#'));
+    }
+
+    #[test]
+    fn split_session_round_trips_ratio_and_focus_and_ignores_invalid_pairs() {
+        let mut session = sample();
+        session.split = Some(SessionSplit {
+            left: 0,
+            right: 1,
+            focused_left: false,
+            ratio: 63,
+        });
+        assert_eq!(Session::parse(&session.serialize()).unwrap(), session);
+
+        session.split = Some(SessionSplit {
+            left: 0,
+            right: 1,
+            focused_left: true,
+            ratio: 99,
+        });
+        assert_eq!(Session::parse(&session.serialize()).unwrap().split, Some(SessionSplit {
+            left: 0,
+            right: 1,
+            focused_left: true,
+            ratio: 80,
+        }));
+        assert!(Session::parse("bowser-session 1\nactive 0\ntab\t0\thttps://example.com/\told\n").unwrap().split.is_none());
     }
 
     #[test]
