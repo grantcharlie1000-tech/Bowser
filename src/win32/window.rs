@@ -24,7 +24,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use windows::{
     Win32::{
@@ -42,7 +42,7 @@ use windows::{
             Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetCapture, GetFocus, GetKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture,
+                GetCapture, GetDoubleClickTime, GetFocus, GetKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture,
                 SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
                 VK_CONTROL, VK_MENU, VK_SHIFT,
             },
@@ -182,6 +182,10 @@ struct WindowChrome {
     completion: Option<Completion>,
     suppress_completion: bool,
     programmatic_text_update: bool,
+    /// Selection anchor for mouse and shift selection in the omnibox, as a UTF-16 index.
+    omni_anchor: usize,
+    /// The time and count of the last press on the omnibox, for double and triple clicks.
+    omni_click: Option<(Instant, u8)>,
     history: History,
     urls: HashMap<TabId, String>,
     pending_history: HashMap<TabId, String>,
@@ -218,6 +222,8 @@ impl WindowChrome {
             completion: None,
             suppress_completion: false,
             programmatic_text_update: false,
+            omni_anchor: 0,
+            omni_click: None,
             history: History::default(),
             urls: HashMap::with_capacity(8),
             pending_history: HashMap::with_capacity(8),
@@ -1264,6 +1270,11 @@ unsafe extern "system" fn window_proc(
                         App::update_split_bounds(app, panes);
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
+                    if let Some(app) = app
+                        && with_chrome(hwnd, |s| s.pressed == Hit::Omnibox).unwrap_or(false)
+                    {
+                        omnibox_drag(hwnd, app, frame::point_from_lparam(lparam).x);
+                    }
                 } else {
                     let p = frame::point_from_lparam(lparam);
                     let h = hit(hwnd, p.x, p.y);
@@ -1350,6 +1361,11 @@ unsafe extern "system" fn window_proc(
                         set_pressed(hwnd, Hit::TabClose(i));
                         let _ = with_chrome(hwnd, |s| s.drag = None);
                         let _ = SetCapture(hwnd);
+                    }
+                    Hit::Omnibox => {
+                        if let Some(app) = app {
+                            omnibox_press(hwnd, app, p.x);
+                        }
                     }
                     Hit::NewTab => {
                         if let Some(app) = app {
@@ -1457,8 +1473,15 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONDBLCLK => {
                 let p = frame::point_from_lparam(lparam);
-                if hit(hwnd, p.x, p.y) == Hit::CaptionArea {
-                    toggle_max(hwnd)
+                match hit(hwnd, p.x, p.y) {
+                    Hit::CaptionArea => toggle_max(hwnd),
+                    // The system sends this in place of the second press, so it counts as a press too.
+                    Hit::Omnibox => {
+                        if let Some(app) = app {
+                            omnibox_press(hwnd, app, p.x);
+                        }
+                    }
+                    _ => {}
                 }
                 LRESULT(0)
             }
@@ -3353,6 +3376,74 @@ fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     });
     sync_foreground(hwnd, Some(app));
     invalidate_omni(hwnd)
+}
+/// Shows a navigation's address in the omnibox. While the field has focus the user owns its text and
+/// selection, so the address is only remembered and appears once focus leaves.
+pub(crate) fn sync_address_input(hwnd: HWND, edit: HWND, id: TabId, url: &url::Url) -> bool {
+    if omnibox::should_sync_displayed_url(edit_focused(hwnd)) {
+        return super::set_input_text(edit, url.as_str());
+    }
+    let shown = omnibox::display_form(url);
+    let _ = with_chrome(hwnd, |s| s.urls.insert(id, shown));
+    true
+}
+/// The text index under a client-space `x`, from the chrome's own metrics so it matches what is painted.
+fn omnibox_text_index(hwnd: HWND, text: &str, client_x: i32) -> usize {
+    let left = with_chrome(hwnd, |s| s.layout.omnibox.left).unwrap_or(0);
+    let text_left = Metrics::new(dpi(hwnd)).px(Metrics::OMNIBOX_TEXT_LEFT);
+    with_chrome(hwnd, |s| s.surface.index_at_x(text, client_x - left - text_left)).unwrap_or(0)
+}
+fn set_omni_selection(edit: HWND, anchor: usize, head: usize) {
+    unsafe {
+        let _ = SendMessageW(
+            edit,
+            EM_SETSEL,
+            Some(WPARAM(anchor.min(head))),
+            Some(LPARAM(anchor.max(head) as isize)),
+        );
+    }
+}
+/// A press on the omnibox. The chrome paints the text, so the press is mapped here to the EDIT's selection.
+/// An unfocused field takes focus and keeps its URL. One press places the caret, or extends from the anchor
+/// with Shift. Two select a word, and three select the whole field. Dragging then extends from the anchor.
+fn omnibox_press(hwnd: HWND, app: &AppRef, client_x: i32) {
+    let edit = app.borrow().edit;
+    let now = Instant::now();
+    let window = Duration::from_millis(u64::from(unsafe { GetDoubleClickTime() }));
+    let was_focused = edit_focused(hwnd);
+    let extend = was_focused && unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 };
+    let count = with_chrome(hwnd, |s| {
+        let count = omnibox::click_count(s.omni_click, now, window);
+        s.omni_click = Some((now, count));
+        count
+    })
+    .unwrap_or(1);
+    if !was_focused {
+        focus_omni(hwnd, app, false);
+    }
+    let text = read_edit(edit);
+    let index = omnibox_text_index(hwnd, &text, client_x);
+    let (anchor, head) = match count {
+        2 => omnibox::word_range(&text, index),
+        3 => (0, text.encode_utf16().count()),
+        _ if extend => (with_chrome(hwnd, |s| s.omni_anchor).unwrap_or(index), index),
+        _ => (index, index),
+    };
+    let _ = with_chrome(hwnd, |s| s.omni_anchor = anchor);
+    set_omni_selection(edit, anchor, head);
+    set_pressed(hwnd, Hit::Omnibox);
+    unsafe {
+        let _ = SetCapture(hwnd);
+    }
+    invalidate_omni(hwnd);
+}
+fn omnibox_drag(hwnd: HWND, app: &AppRef, client_x: i32) {
+    let edit = app.borrow().edit;
+    let text = read_edit(edit);
+    let index = omnibox_text_index(hwnd, &text, client_x);
+    let anchor = with_chrome(hwnd, |s| s.omni_anchor).unwrap_or(index);
+    set_omni_selection(edit, anchor, index);
+    invalidate_omni(hwnd);
 }
 fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {
     let c = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };

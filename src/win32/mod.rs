@@ -12,7 +12,7 @@ mod profile_rename;
 mod smooth;
 mod window;
 
-pub(crate) use window::schedule_idle_timer;
+pub(crate) use window::{schedule_idle_timer, sync_address_input};
 
 use windows::{
     Win32::{

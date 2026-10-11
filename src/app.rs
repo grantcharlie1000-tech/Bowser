@@ -2564,7 +2564,8 @@ impl App {
                         return;
                     }
                     if active {
-                        let event = if win32::set_input_text(edit, url.as_str()) {
+                        let main = app.borrow().hwnd;
+                        let event = if win32::sync_address_input(main, edit, tab_id, &url) {
                             "address_updated"
                         } else {
                             "address_update_failed"
