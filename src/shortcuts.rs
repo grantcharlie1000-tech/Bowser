@@ -24,6 +24,8 @@ pub enum Command {
     OpenPasswords,
     /// Ctrl+Shift+L offers credentials for the current exact origin.
     FillPassword,
+    /// Ctrl+Shift+Delete opens the profile's Privacy dashboard.
+    OpenPrivacyDashboard,
     /// Ctrl+Shift+B switches the ad/tracker blocker off or on for the current site.
     ToggleBlocker,
     /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
@@ -55,6 +57,7 @@ const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
 const VK_Y: u32 = 0x59;
 const VK_Z: u32 = 0x5A;
+const VK_DELETE: u32 = 0x2E;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_F5: u32 = 0x74;
@@ -90,6 +93,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         }
         (VK_OEM_COMMA, true, false, false) => Some(Command::OpenPasswords),
         (VK_L, true, true, false) => Some(Command::FillPassword),
+        (VK_DELETE, true, true, false) => Some(Command::OpenPrivacyDashboard),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
         (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
@@ -130,6 +134,7 @@ mod tests {
             (VK_BROWSER_FORWARD, false, false, false, Command::Forward),
             (VK_OEM_COMMA, true, false, false, Command::OpenPasswords),
             (VK_L, true, true, false, Command::FillPassword),
+            (VK_DELETE, true, true, false, Command::OpenPrivacyDashboard),
             (VK_B, true, true, false, Command::ToggleBlocker),
             (VK_P, true, true, false, Command::ShowProfileMenu),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),

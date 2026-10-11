@@ -353,6 +353,11 @@ impl Profile {
         self.root.join("history.txt")
     }
 
+    /// Host-only request counters for the Privacy dashboard.
+    pub fn privacy_stats_file(&self) -> PathBuf {
+        self.root.join(crate::privacy_stats::FILE_NAME)
+    }
+
     /// Per-site camera, microphone, location and notification decisions.
     pub fn permissions_file(&self) -> PathBuf {
         self.root.join(crate::permissions::FILE_NAME)
@@ -848,6 +853,10 @@ mod tests {
         assert_eq!(profile.passwords_file(), app.join("Passwords.dat"));
         assert_eq!(profile.bookmarks_file(), app.join("bookmarks.txt"));
         assert_eq!(profile.history_file(), app.join("history.txt"));
+        assert_eq!(
+            profile.privacy_stats_file(),
+            app.join(crate::privacy_stats::FILE_NAME)
+        );
         assert_eq!(profile.extensions_dir(), app.join("Extensions"));
         assert_eq!(profile.extensions_file(), app.join("extensions.txt"));
         assert_eq!(profile.title_suffix(), "");
@@ -864,6 +873,10 @@ mod tests {
         assert_eq!(profile.webview2_dir(), root.join("WebView2"));
         assert_eq!(profile.session_dir(), root);
         assert_eq!(profile.passwords_file(), root.join("Passwords.dat"));
+        assert_eq!(
+            profile.privacy_stats_file(),
+            root.join(crate::privacy_stats::FILE_NAME)
+        );
         assert_eq!(profile.extensions_dir(), root.join("Extensions"));
         assert_eq!(profile.extensions_file(), root.join("extensions.txt"));
         assert_eq!(profile.settings_file(), root.join("settings.txt"));

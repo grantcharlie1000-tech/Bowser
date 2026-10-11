@@ -151,6 +151,18 @@ impl PermissionStore {
         Permission::ALL.map(|permission| self.decision(origin, permission))
     }
 
+    /// Every explicitly stored decision, grouped deterministically by origin then kind.
+    pub fn all_decisions(&self) -> Vec<(String, Permission, Decision)> {
+        self.rules
+            .iter()
+            .flat_map(|(origin, decisions)| {
+                decisions
+                    .iter()
+                    .map(move |(permission, decision)| (origin.clone(), *permission, *decision))
+            })
+            .collect()
+    }
+
     /// Stores `decision` for one origin and permission, or clears it with `None`, then saves. On a
     /// failed save the previous value is restored and the error returned.
     pub fn set(
@@ -456,6 +468,22 @@ mod tests {
         let reloaded = PermissionStore::load(&path);
         assert!(!reloaded.allows("https://a.test", Permission::Camera));
         assert!(reloaded.allows("https://b.test", Permission::Camera));
+    }
+
+    #[test]
+    fn all_decisions_lists_stored_sites_by_origin_and_permission() {
+        let path = temp_file("all-decisions");
+        let mut store = PermissionStore::load(&path);
+        store.set("https://b.test", Permission::Camera, Some(Decision::Allow)).unwrap();
+        store.set("https://a.test", Permission::Microphone, Some(Decision::Block)).unwrap();
+
+        assert_eq!(
+            store.all_decisions(),
+            vec![
+                ("https://a.test".to_owned(), Permission::Microphone, Decision::Block),
+                ("https://b.test".to_owned(), Permission::Camera, Decision::Allow),
+            ]
+        );
     }
 
     #[test]

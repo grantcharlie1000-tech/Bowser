@@ -4,7 +4,7 @@ use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use url::Url;
@@ -17,7 +17,8 @@ use webview2_com::{
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
-    FaviconChangedEventHandler, FocusChangedEventHandler, GetCookiesCompletedHandler, GetFaviconCompletedHandler,
+    ClearBrowsingDataCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler,
+    GetCookiesCompletedHandler, GetFaviconCompletedHandler,
     Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
@@ -35,8 +36,8 @@ use windows::{
 };
 
 use super::{
-    EngineAdapter, EngineEvents, MemoryTargetApply, MemoryUsageTarget, PermissionsHandle,
-    TrackingPreventionLevel,
+    BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents, MemoryTargetApply,
+    MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
 use crate::tabs::TabId;
@@ -1521,6 +1522,74 @@ impl EngineAdapter for WebView2Engine {
         }
     }
 
+    fn clear_browsing_data(
+        &mut self,
+        tab: TabId,
+        kind: BrowsingDataKind,
+        range: BrowsingDataRange,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        let Some(webview) = webview else {
+            done(Err("The active profile is not ready.".to_owned()));
+            return;
+        };
+        let profile = unsafe {
+            webview
+                .cast::<ICoreWebView2_13>()
+                .and_then(|webview| webview.Profile())
+                .and_then(|profile| profile.cast::<ICoreWebView2Profile2>())
+        };
+        let profile = match profile {
+            Ok(profile) => profile,
+            Err(error) => {
+                done(Err(format!("This WebView2 runtime cannot clear that data: {error}")));
+                return;
+            }
+        };
+        let kinds = match kind {
+            BrowsingDataKind::SiteData => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES
+                    | COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE
+            }
+            BrowsingDataKind::Cache => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
+                    | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
+            }
+            BrowsingDataKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
+        };
+        let completion = Rc::new(RefCell::new(Some(done)));
+        let callback = completion.clone();
+        let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |status| {
+            if let Some(done) = callback.borrow_mut().take() {
+                done(status.map_err(|error| format!("{error}")));
+            }
+            Ok(())
+        }));
+        let result = unsafe {
+            if range == BrowsingDataRange::AllTime {
+                profile.ClearBrowsingData(kinds, &handler)
+            } else {
+                let end = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let seconds = match range {
+                    BrowsingDataRange::LastHour => 60 * 60,
+                    BrowsingDataRange::LastDay => 24 * 60 * 60,
+                    BrowsingDataRange::LastSevenDays => 7 * 24 * 60 * 60,
+                    BrowsingDataRange::AllTime => unreachable!(),
+                } as f64;
+                profile.ClearBrowsingDataInTimeRange(kinds, (end - seconds).max(0.0), end, &handler)
+            }
+        };
+        if let Err(error) = result {
+            if let Some(done) = completion.borrow_mut().take() {
+                done(Err(format!("{error}")));
+            }
+        }
+    }
+
     fn tracking_prevention_level(&self, tab: TabId) -> Option<&'static str> {
         let webview = self.core.borrow().tabs.get(&tab)?.webview.clone()?;
         let profile = unsafe {
@@ -1535,6 +1604,20 @@ impl EngineAdapter for WebView2Engine {
         let mut level = COREWEBVIEW2_TRACKING_PREVENTION_LEVEL(0);
         unsafe { profile.PreferredTrackingPreventionLevel(&mut level) }.ok()?;
         tracking_prevention_label(level)
+    }
+
+    fn smart_screen_enabled(&self, tab: TabId) -> Option<bool> {
+        let webview = self.core.borrow().tabs.get(&tab)?.webview.clone()?;
+        let settings = unsafe {
+            webview
+                .Settings()
+                .ok()?
+                .cast::<ICoreWebView2Settings8>()
+                .ok()?
+        };
+        let mut enabled = BOOL::default();
+        unsafe { settings.IsReputationCheckingRequired(&mut enabled) }.ok()?;
+        Some(enabled.as_bool())
     }
 
     fn navigate(&mut self, url: &Url) -> Result<()> {
@@ -2405,7 +2488,7 @@ unsafe fn configure_controller(
                 if content_block_tab.count.replace(0) != 0
                     && let Some(callback) = content_blocked.as_ref()
                 {
-                    callback(tab_id, 0);
+                    callback(tab_id, 0, String::new());
                 }
                 if let (Some(args), Some(callback)) = (args, content_progress.as_ref()) {
                     let mut navigation_id = 0;
@@ -2683,16 +2766,23 @@ unsafe fn configure_controller(
                     let mut uri = PWSTR::null();
                     request.Uri(&mut uri)?;
                     let guard = CoTaskMemPWSTR::from(uri);
-                    let block = REQUEST_URL.with(|buffer| {
+                    let (block, site_host) = REQUEST_URL.with(|buffer| {
                         let mut buffer = buffer.borrow_mut();
                         buffer.clear();
                         buffer.extend(
                             char::decode_utf16(uri.as_wide().iter().copied())
                                 .map(|unit| unit.unwrap_or('\u{FFFD}')),
                         );
-                        blocker
-                            .borrow()
-                            .should_block(&buffer, &request_tab.top_host.borrow())
+                        let block = {
+                            let site_host = request_tab.top_host.borrow();
+                            blocker.borrow().should_block(&buffer, &site_host)
+                        };
+                        let site_host = if block {
+                            request_tab.top_host.borrow().clone()
+                        } else {
+                            String::new()
+                        };
+                        (block, site_host)
                     });
                     drop(guard);
                     if block {
@@ -2706,7 +2796,7 @@ unsafe fn configure_controller(
                         let count = request_tab.count.get().saturating_add(1);
                         request_tab.count.set(count);
                         if let Some(callback) = blocked_callback.as_ref() {
-                            callback(tab_id, count);
+                            callback(tab_id, count, site_host);
                         }
                         if let Some(log) = policy_log.as_ref() {
                             log("request_blocked");
