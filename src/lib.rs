@@ -13,6 +13,7 @@ pub mod pip;
 pub mod permissions;
 pub mod privacy_stats;
 pub mod profile;
+pub mod productivity;
 pub mod session;
 pub mod settings;
 pub mod shortcuts;

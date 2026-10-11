@@ -2,8 +2,8 @@ use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_LOGIN_MESSAGE, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
     WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
-    import_panel, menu, passwords_panel, privacy_panel, settings_panel, show_error_message,
-    site_info,
+    command_palette, import_panel, menu, notes_panel, passwords_panel, privacy_panel, settings_panel,
+    show_error_message, site_info,
 };
 use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
@@ -207,6 +207,14 @@ struct WindowChrome {
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
+        let mut history = History::default();
+        if let Ok(profile) = crate::profile::active() {
+            if crate::productivity::profile_allows_productivity(&profile) && profile.history_enabled() {
+                for (_, url, title) in crate::productivity::read_history(&profile.history_file()) {
+                    history.record(&url, &title);
+                }
+            }
+        }
         Self {
             surface: ChromeSurface::new(width, height, dpi),
             overlay,
@@ -228,7 +236,7 @@ impl WindowChrome {
             programmatic_text_update: false,
             omni_anchor: 0,
             omni_click: None,
-            history: History::default(),
+            history,
             urls: HashMap::with_capacity(8),
             pending_history: HashMap::with_capacity(8),
             hover: Hit::None,
@@ -303,7 +311,8 @@ impl WindowChrome {
             };
             if old.is_some_and(|t| t.loading) && !loading {
                 if let Some(url) = self.pending_history.remove(&id) {
-                    self.history.record(&url, &title)
+                    self.history.record(&url, &title);
+                    persist_profile_history(url, title.clone());
                 }
             }
             tabs.push(TabSnapshot {
@@ -1021,6 +1030,8 @@ unsafe extern "system" fn window_proc(
                     sync_split_ratio(hwnd, App::split_view(app));
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
+                    notes_panel::sync(hwnd, to_win_rect(l.viewport), dpi(hwnd));
+                    let viewport = notes_panel::adjust_viewport(to_win_rect(l.viewport), hwnd, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         queue_split_bounds(hwnd, panes);
                     } else {
@@ -1031,10 +1042,10 @@ unsafe extern "system" fn window_proc(
                         app,
                         min,
                         RECT {
-                            left: l.viewport.left,
-                            top: l.viewport.top,
-                            right: l.viewport.right,
-                            bottom: l.viewport.bottom,
+                            left: viewport.left,
+                            top: viewport.top,
+                            right: viewport.right,
+                            bottom: viewport.bottom,
                         },
                     );
                     if !min {
@@ -1043,6 +1054,10 @@ unsafe extern "system" fn window_proc(
                     // Minimising stops the blink and restoring resumes it when Bowser is also in front.
                     sync_foreground(hwnd, Some(app));
                 }
+                LRESULT(0)
+            }
+            notes_panel::WM_SIDEBAR_RESIZED => {
+                if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -1081,6 +1096,8 @@ unsafe extern "system" fn window_proc(
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
+                    notes_panel::sync(hwnd, to_win_rect(l.viewport), dpi(hwnd));
+                    let viewport = notes_panel::adjust_viewport(to_win_rect(l.viewport), hwnd, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         App::update_split_bounds(app, panes);
                     } else {
@@ -1091,10 +1108,10 @@ unsafe extern "system" fn window_proc(
                         app,
                         false,
                         RECT {
-                            left: l.viewport.left,
-                            top: l.viewport.top,
-                            right: l.viewport.right,
-                            bottom: l.viewport.bottom,
+                            left: viewport.left,
+                            top: viewport.top,
+                            right: viewport.right,
+                            bottom: viewport.bottom,
                         },
                     );
                     let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2032,8 +2049,10 @@ fn split_rects(
 ) -> Option<(RECT, RECT)> {
     let (layout, saved_divider) = with_chrome(hwnd, |state| (state.layout, state.split_divider))?;
     let divider = divider_left.unwrap_or(saved_divider);
+    let viewport = notes_panel::adjust_viewport(to_win_rect(layout.viewport), hwnd, dpi(hwnd));
+    let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
     let panes = layout::split_pane_layout(
-        layout.viewport,
+        viewport,
         divider,
         layout.metrics.px(220),
         layout.metrics.px(6),
@@ -2068,6 +2087,23 @@ fn queue_split_bounds(hwnd: HWND, bounds: (RECT, RECT)) {
 fn cancel_split_bounds(hwnd: HWND) {
     unsafe { let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER); }
     let _ = with_chrome(hwnd, |s| s.pending_split_bounds = None);
+}
+
+fn to_win_rect(rect: Rect) -> RECT {
+    RECT { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+}
+
+fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
+    let Some(layout) = with_chrome(hwnd, |state| state.layout) else { return; };
+    let viewport = to_win_rect(layout.viewport);
+    notes_panel::sync(hwnd, viewport, dpi(hwnd));
+    if let Some(panes) = split_rects(hwnd, None) {
+        App::update_split_bounds(app, panes);
+    } else {
+        let bounds = notes_panel::adjust_viewport(viewport, hwnd, dpi(hwnd));
+        App::window_size_changed(app, false, bounds);
+    }
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
@@ -2670,6 +2706,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const PROFILE: usize = 5007;
     const IMPORT: usize = 5008;
     const PRIVACY: usize = 5009;
+    const NOTES: usize = 5010;
+    const PALETTE: usize = 5011;
+    const BOOKMARK: usize = 5012;
+    const SESSIONS: usize = 5013;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -2684,8 +2724,14 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         ));
     }
     entries.push(Entry::Item(
-        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E"),
+        Item::new(NOTES, "Notes & Tasks…", Icon::Info).shortcut("Ctrl+Shift+N"),
     ));
+    entries.push(Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).shortcut("Ctrl+Shift+K")));
+    entries.push(Entry::Item(Item::new(BOOKMARK, "Bookmark this page", Icon::Plus).shortcut("Ctrl+D")
+        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
+    entries.push(Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check)
+        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
+    entries.push(Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E")));
     entries.push(Entry::Item(
         Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key)
             .shortcut("Ctrl+,")
@@ -2742,6 +2788,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 focus_omni(hwnd, app, true);
             }
             PROFILE => {}
+            NOTES => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
+            PALETTE => run_command_palette(hwnd, app),
+            BOOKMARK => add_current_bookmark(hwnd, app),
+            SESSIONS => show_sessions(hwnd, app),
             EXTENSIONS => show_extensions_menu(hwnd, app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -2798,6 +2848,108 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+fn run_command_palette(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    let tabs: Vec<_> = App::tab_ids(app).into_iter().map(|id| {
+        (id.0, App::tab_title(app, id).unwrap_or_else(|| "New tab".into()), App::tab_committed_url(app, id).map_or_else(String::new, |url| url.to_string()))
+    }).collect();
+    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) { Vec::new() } else { crate::productivity::read_bookmarks(&profile.bookmarks_file()) };
+    let history = if !crate::productivity::profile_allows_productivity(&profile) || !profile.history_enabled() { Vec::new() } else { crate::productivity::read_history(&profile.history_file()) };
+    let Some(item) = command_palette::show(hwnd, tabs, bookmarks, history, crate::productivity::browser_commands()) else { return; };
+    if let Some(id) = item.action.strip_prefix("tab:").and_then(|s| s.parse::<u32>().ok()) {
+        let _ = App::select_tab(app, TabId(id));
+    } else if let Some(url) = item.action.strip_prefix("url:").and_then(|s| url::Url::parse(s).ok()) {
+        App::navigate_current(app, &url);
+    } else {
+        run_palette_command(hwnd, app, &item.action);
+    }
+}
+
+fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
+    match action {
+        "new-tab" => { App::new_tab(app); focus_omni(hwnd, app, true); }
+        "close-tab" => { let _ = App::close_tab(app, App::active_tab_id(app)); }
+        "settings" => { let _ = settings_panel::open(hwnd); }
+        "toggle-sidebar" => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
+        "passwords" => { let _ = passwords_panel::open(hwnd); }
+        "profiles" => show_profile_menu(hwnd),
+        "save-session" | "sessions" => show_sessions(hwnd, app),
+        "add-bookmark" => add_current_bookmark(hwnd, app),
+        "reload" => App::reload(app),
+        "back" => navigate_back_for_focused_pane(app),
+        "forward" => navigate_forward_for_focused_pane(app),
+        "extensions" => show_extensions_menu(hwnd, app),
+        _ => {}
+    }
+}
+
+fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let id = App::active_tab_id(app);
+    let Some(url) = App::tab_committed_url(app, id) else { return; };
+    let title = App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    if let Err(error) = crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title) {
+        show_error_message(&format!("Bookmark could not be saved: {error}"));
+    } else {
+        let _ = menu::track(hwnd, main_menu_anchor(hwnd), Menu { header: None, entries: vec![Entry::Item(Item::new(0, "Bookmark saved", Icon::Check).disabled())], footer: "Bookmarks".into() });
+    }
+}
+
+fn show_sessions(hwnd: HWND, app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let sessions = crate::productivity::read_sessions(&profile.saved_sessions_file());
+    const SAVE: usize = 1;
+    const RESTORE_BASE: usize = 100;
+    const DELETE_BASE: usize = 200;
+    let mut entries = vec![Entry::Item(Item::new(SAVE, "Save current tabs…", Icon::Plus))];
+    if !sessions.is_empty() { entries.push(Entry::Separator); }
+    for (index, session) in sessions.iter().enumerate() {
+        let restore = RESTORE_BASE + index;
+        let delete = DELETE_BASE + index;
+        entries.push(Entry::Item(Item::new(restore, session.name.clone(), Icon::Check).submenu_with(vec![
+            Entry::Item(Item::new(restore, format!("Restore {} tabs", session.urls.len()), Icon::Check)),
+            Entry::Item(Item::new(delete, "Delete session", Icon::Close)),
+        ])));
+    }
+    let mut point = main_menu_anchor(hwnd);
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Saved sessions".into() }) else { return; };
+    if chosen.id == SAVE {
+        let Some(name) = super::profile_rename::prompt_with_title(hwnd, "", "Save session", "Save") else { return; };
+        let active_id = App::active_tab_id(app);
+        let entries: Vec<_> = App::tab_ids(app).into_iter()
+            .filter_map(|id| App::tab_committed_url(app, id).map(|url| (id, url.to_string())))
+            .filter(|(_, value)| matches!(url::Url::parse(value).map(|u| u.scheme().to_owned()).as_deref(), Ok("http" | "https")))
+            .collect();
+        let urls: Vec<_> = entries.iter().map(|(_, url)| url.clone()).collect();
+        if urls.is_empty() { return; }
+        let active = entries.iter().position(|(id, _)| *id == active_id).unwrap_or(0);
+        if let Err(error) = crate::productivity::save_session(&profile.saved_sessions_file(), crate::productivity::SavedSession { name, urls, active }) {
+            show_error_message(&format!("Session could not be saved: {error}"));
+        }
+    } else if (RESTORE_BASE..DELETE_BASE).contains(&chosen.id) {
+        let Some(session) = sessions.get(chosen.id - RESTORE_BASE) else { return; };
+        if !super::ask_yes_no("Replace the open tabs with this saved session?") { return; }
+        for id in App::tab_ids(app) { let _ = App::close_tab(app, id); }
+        let mut ids = vec![App::active_tab_id(app)];
+        for value in &session.urls {
+            if let Ok(url) = url::Url::parse(value) { App::navigate_current(app, &url); }
+            if ids.len() < session.urls.len() {
+                ids.push(App::new_tab(app));
+                let _ = App::select_tab(app, *ids.last().unwrap());
+            }
+        }
+        if let Some(id) = ids.get(session.active) { let _ = App::select_tab(app, *id); }
+    } else if (DELETE_BASE..DELETE_BASE + sessions.len()).contains(&chosen.id) {
+        let index = chosen.id - DELETE_BASE;
+        if let Some(session) = sessions.get(index) {
+            if super::ask_yes_no("Delete this saved session?") { let _ = crate::productivity::delete_session(&profile.saved_sessions_file(), &session.name); }
+        }
+    }
 }
 
 fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
@@ -3452,17 +3604,19 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     now,
                     departures: s.motion.departures(),
                 };
+                let sidebar_viewport = notes_panel::adjust_viewport(to_win_rect(s.layout.viewport), hwnd, s.dpi);
+                let sidebar_viewport = Rect::new(sidebar_viewport.left, sidebar_viewport.top, sidebar_viewport.right, sidebar_viewport.bottom);
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
                         layout::split_pane_layout(
-                            s.layout.viewport,
+                            sidebar_viewport,
                             s.split_divider,
                             s.layout.metrics.px(220),
                             s.layout.metrics.px(6),
                         )
-                        .map(|panes| (s.layout.viewport, Some(panes), split.focused == crate::split_view::Pane::Left))
+                        .map(|panes| (sidebar_viewport, Some(panes), split.focused == crate::split_view::Pane::Left))
                     } else {
-                        Some((s.layout.viewport, None, false))
+                        Some((sidebar_viewport, None, false))
                     }
                 } else {
                     None
@@ -3723,6 +3877,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
                 let _ = App::close_split_pane(app, split.focused);
             }
         }
+        Command::ShowCommandPalette => run_command_palette(hwnd, app),
+        Command::ToggleNotes => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
+        Command::AddBookmark => add_current_bookmark(hwnd, app),
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {
                 show_error_message(&format!(
@@ -3737,6 +3894,15 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     arm_motion(hwnd);
     true
+}
+
+fn persist_profile_history(url: String, title: String) {
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    if crate::productivity::profile_allows_productivity(&profile) && profile.history_enabled() {
+        let _ = crate::productivity::add_history_entry(&profile.history_file(), &url, &title);
+    }
 }
 
 unsafe extern "system" fn edit_subclass(

@@ -54,11 +54,17 @@ struct Dialog {
     result: Option<String>,
     done: bool,
     brush: HBRUSH,
+    caption: String,
+    save_label: String,
 }
 
 thread_local! { static REGISTERED: Cell<bool> = const { Cell::new(false) }; }
 
 pub(crate) fn prompt(owner: HWND, current: &str) -> Option<String> {
+    prompt_with_title(owner, current, "Rename profile", "Save")
+}
+
+pub(crate) fn prompt_with_title(owner: HWND, current: &str, caption: &str, save_label: &str) -> Option<String> {
     register_class()?;
     let mut state = Box::new(Dialog {
         edit: HWND::default(),
@@ -69,6 +75,8 @@ pub(crate) fn prompt(owner: HWND, current: &str) -> Option<String> {
                 theme::palette(glass::appearance(), true).omnibox_fill,
             ))
         },
+        caption: caption.to_owned(),
+        save_label: save_label.to_owned(),
     });
     let mut owner_rect = RECT::default();
     unsafe {
@@ -335,6 +343,10 @@ fn paint(hwnd: HWND) {
             1,
         );
         SetBkMode(dc, TRANSPARENT);
+        let (caption, save_label) = dialog(hwnd).map_or_else(
+            || ("Rename profile".to_owned(), "Save".to_owned()),
+            |state| (state.caption.clone(), state.save_label.clone()),
+        );
         text(
             dc,
             RECT {
@@ -343,11 +355,11 @@ fn paint(hwnd: HWND) {
                 right: scale(396, hwnd),
                 bottom: scale(44, hwnd),
             },
-            "Rename profile",
+            &caption,
             palette.tab_text_active,
         );
         fill_button(dc, CANCEL, "Cancel", &palette, hwnd);
-        fill_button(dc, SAVE, "Save", &palette, hwnd);
+        fill_button(dc, SAVE, &save_label, &palette, hwnd);
         let _ = EndPaint(hwnd, &ps);
     }
 }

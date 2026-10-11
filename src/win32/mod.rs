@@ -1,8 +1,10 @@
 mod card;
+mod command_palette;
 mod hover_square;
 mod island_menu;
 mod import_panel;
 mod menu;
+mod notes_panel;
 mod settings_panel;
 mod site_info;
 pub mod frame;
