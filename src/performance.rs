@@ -17,6 +17,8 @@ pub struct LaunchOptions {
     pub benchmark_memory_pressure: bool,
     /// `--profile <name>`: a named profile; `None` is the default profile.
     pub profile: Option<String>,
+    /// `--open-url <url>`: initial address for a newly opened window.
+    pub open_url: Option<Url>,
 }
 
 impl LaunchOptions {
@@ -67,6 +69,7 @@ impl LaunchOptions {
                     | "--benchmark-tracking-prevention"
                     | "--benchmark-memory-pressure"
                     | "--profile"
+                    | "--open-url"
             ) {
                 return Err(format!("Unknown argument: {flag}"));
             }
@@ -124,6 +127,18 @@ impl LaunchOptions {
                     crate::profile::validate_name(&value).map_err(|error| error.to_string())?;
                     if options.profile.replace(value).is_some() {
                         return Err("Duplicate profile argument".into());
+                    }
+                }
+                "--open-url" => {
+                    let url = Url::parse(&value).map_err(|error| format!("Invalid URL: {error}"))?;
+                    if !matches!(url.scheme(), "http" | "https" | "file")
+                        || !url.username().is_empty()
+                        || url.password().is_some()
+                    {
+                        return Err("The initial address must be an HTTP(S) or file URL without credentials".into());
+                    }
+                    if options.open_url.replace(url).is_some() {
+                        return Err("Duplicate initial URL argument".into());
                     }
                 }
                 _ => {
@@ -470,6 +485,23 @@ mod tests {
         let options = result.unwrap();
         assert_eq!(options.user_data_dir, Some(PathBuf::from(profile)));
         assert_eq!(options.benchmark_url.unwrap().scheme(), "file");
+    }
+
+    #[test]
+    fn initial_url_is_allowed_with_a_profile_and_rejects_unsafe_schemes() {
+        let url = "https://example.com/path?q=one%20two";
+        let options = LaunchOptions::parse_from(
+            args(&["--profile", "Research", "--open-url", url]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert_eq!(options.profile.as_deref(), Some("Research"));
+        assert_eq!(options.open_url.unwrap().as_str(), url);
+        assert!(LaunchOptions::parse_from(
+            args(&["--open-url", "javascript:alert(1)"]),
+            Path::new("missing"),
+        )
+        .is_err());
     }
     #[test]
     fn remote_benchmark_url_and_duplicate_flags_are_rejected() {

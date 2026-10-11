@@ -8,7 +8,10 @@ use std::{
 };
 
 use crate::{
-    chrome::tab_card::{self, CardModel, CardRow, Marker, TabCardInput},
+    chrome::{
+        island_menu::{IslandModel, IslandRow},
+        tab_card::{self, CardModel, CardRow, Marker, TabCardInput},
+    },
     tab_groups::{self, TabGroupKey},
 };
 
@@ -29,7 +32,9 @@ use windows::{
 use crate::{
     navigation::{NavigationTarget, SearchProvider, resolve_input},
     performance::{LaunchOptions, PerfLog},
+    site_security::{self, LoadState, SiteSecurity},
     tabs::TabId,
+    split_view::{Pane, SplitView},
 };
 
 use crate::{
@@ -459,6 +464,7 @@ pub struct App {
     pub loop_shutdown_pending: bool,
     pub user_data_dir: PathBuf,
     pub benchmark_url: Option<url::Url>,
+    initial_url: Option<url::Url>,
     pub allowed_benchmark_file: Option<url::Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
@@ -474,6 +480,9 @@ pub struct App {
     navigation_progress: NavigationProgress,
     tabs: Vec<AppTab>,
     tab_model: crate::tabs::TabList,
+    /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
+    split_view: Option<SplitView>,
+    split_bounds: Option<(windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT)>,
     group_preferences: crate::tab_groups::GroupPreferences,
     group_preferences_path: Option<PathBuf>,
     /// Marker per tab group, keyed by group identity. In memory only: markers are not persisted.
@@ -487,6 +496,8 @@ pub struct App {
     pending_restore: Option<crate::session::Session>,
     /// Ad/tracker blocker shared with the engine; `None` for benchmark launches or when disabled.
     blocker: Option<engine::BlockerHandle>,
+    /// Stored per-site permission decisions; `None` for benchmark launches, which deny every request.
+    permissions: Option<engine::PermissionsHandle>,
 }
 
 struct AppTab {
@@ -515,6 +526,8 @@ struct AppTab {
     last_crash_reload: Option<Instant>,
     /// Requests the blocker stopped since this document started loading.
     blocked: u32,
+    /// Outcome of the last top-level navigation, for the connection state in Site information.
+    load: LoadState,
 }
 
 impl AppTab {
@@ -538,6 +551,7 @@ impl AppTab {
             sleep_blocked_until: None,
             last_crash_reload: None,
             blocked: 0,
+            load: LoadState::Loaded,
         }
     }
 }
@@ -818,7 +832,7 @@ impl App {
         let flags = u32::from(structural) | (u32::from(persisted) << 1);
         let should_post = TAB_CHANGE_POSTED.with(|posted| {
             TAB_CHANGE_FLAGS.with(|pending| pending.set(pending.get() | flags));
-            if posted.replace(true) { false } else { true }
+            !posted.replace(true)
         });
         if should_post {
             win32::post(
@@ -838,9 +852,10 @@ impl App {
     }
 
     pub fn new_tab(app: &AppRef) -> TabId {
-        let (id, hwnd, old, old_has_controller) = {
+        let (id, hwnd, old, old_has_controller, in_split) = {
             let mut state = app.borrow_mut();
             let old = state.tab_model.active();
+            let in_split = state.split_view.is_some();
             let old_has_controller = state
                 .tabs
                 .iter()
@@ -848,12 +863,23 @@ impl App {
                 .is_some_and(|tab| tab.controller_created);
             let id = state.tab_model.add(false);
             state.tab_model.select(id);
+            if let Some(mut split) = state.split_view {
+                let _ = split.replace_focused(id);
+                state.split_view = Some(split);
+            }
             state.tabs.push(AppTab::empty(id));
             state.navigation_progress.reset();
             state.page_loaded = false;
             state.desired_memory_target = MemoryUsageTarget::Normal;
-            (id, state.hwnd, old, old_has_controller)
+            (id, state.hwnd, old, old_has_controller, in_split)
         };
+        if in_split {
+            Self::apply_visible_panes(app);
+            Self::post_tab_changed(hwnd, id);
+            Self::sync_window_title(app);
+            Self::schedule_tab_idle_timer(app);
+            return id;
+        }
         let now = Instant::now();
         let actions = controller_visibility_plan((old, old_has_controller), (id, false));
         {
@@ -885,6 +911,11 @@ impl App {
                 return false;
             };
             state.tab_markers.remove(&id);
+            if let Some(remaining) = state.split_view.and_then(|split| split.remove(id)) {
+                state.split_view = None;
+                state.split_bounds = None;
+                state.tab_model.select(remaining);
+            }
             if state.tabs.len() == 1 {
                 let outcome = state.tab_model.close(id);
                 state.tabs[0] = AppTab::empty(outcome.new_active);
@@ -958,6 +989,9 @@ impl App {
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
         let _ = Self::expand_group_for_tab(app, id);
+        if app.borrow().split_view.is_some() {
+            return Self::select_split_tab(app, id);
+        }
         let (hwnd, previous, old_has_controller, new_has_controller) = {
             let mut state = app.borrow_mut();
             let previous = state.tab_model.active();
@@ -1014,6 +1048,41 @@ impl App {
         });
         Self::restore_discarded_tab(app, id);
         Self::post_tab_changed(hwnd, id);
+        Self::sync_window_title(app);
+        Self::schedule_tab_idle_timer(app);
+        true
+    }
+
+    fn select_split_tab(app: &AppRef, id: TabId) -> bool {
+        let (active, hwnd) = {
+            let mut state = app.borrow_mut();
+            if state.tab_model.get(id).is_none() { return false; }
+            let Some(mut split) = state.split_view else { return false };
+            if let Some(pane) = split.pane_for(id) {
+                split.focus(pane);
+            } else {
+                let replaced = split.focused_tab();
+                if !split.replace_focused(id) { return false; }
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == replaced) {
+                    tab.hidden_since = Some(Instant::now());
+                    tab.suspended = false;
+                }
+            }
+            state.split_view = Some(split);
+            state.tab_model.select(id);
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.hidden_since = None;
+                tab.suspended = false;
+            }
+            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == id).map(|tab| (tab.progress, tab.page_usable)) {
+                state.navigation_progress = progress;
+                state.page_loaded = page_usable;
+            }
+            (id, state.hwnd)
+        };
+        Self::apply_visible_panes(app);
+        Self::restore_discarded_tab(app, active);
+        Self::post_tab_changed(hwnd, active);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         true
@@ -1205,6 +1274,87 @@ impl App {
         changed
     }
 
+    /// Island menu for the domain island that `id` belongs to: its name, colour and member rows in
+    /// model order, with the member tab ids in the same order. `None` for a tab that is not in a
+    /// domain island, so opener-only islands have no menu.
+    pub fn island_menu(app: &AppRef, id: TabId) -> Option<(IslandModel, Vec<TabId>)> {
+        let state = app.borrow();
+        let key = state.domain_island_of(id)?;
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let active = state.tab_model.active();
+        let mut rows = Vec::new();
+        let mut ids = Vec::new();
+        for index in tab_groups::group_members(&keys, &TabGroupKey::Domain(key.clone())) {
+            let tab = inputs[index].id;
+            let mirror = state.mirror(tab);
+            let title = mirror.map_or("", |tab| tab.title.as_str());
+            rows.push(IslandRow {
+                title: if title.trim().is_empty() {
+                    tab_card::NEW_TAB_TITLE.to_owned()
+                } else {
+                    title.to_owned()
+                },
+                favicon_present: mirror.is_some_and(|tab| tab.favicon_key.is_some()),
+                active: tab == active,
+            });
+            ids.push(tab);
+        }
+        let model = IslandModel {
+            name: state.group_preferences.name(&key).map(str::to_owned),
+            colour: state.group_preferences.colour(&key),
+            rows,
+        };
+        Some((model, ids))
+    }
+
+    /// Renames the domain island that `id` belongs to. Returns whether the stored name changed.
+    pub fn set_tab_group_name(app: &AppRef, id: TabId, name: &str) -> bool {
+        Self::change_island(app, id, |prefs, key| prefs.set_name(key, name))
+    }
+
+    /// Recolours the domain island that `id` belongs to; `None` restores the theme accent.
+    pub fn set_tab_group_colour(app: &AppRef, id: TabId, colour: Option<u8>) -> bool {
+        Self::change_island(app, id, |prefs, key| prefs.set_colour(key, colour))
+    }
+
+    /// Closes every tab in the domain island that `id` belongs to, and returns how many closed.
+    pub fn close_tab_island(app: &AppRef, id: TabId) -> usize {
+        let Some((_, members)) = Self::island_menu(app, id) else {
+            return 0;
+        };
+        members
+            .into_iter()
+            .filter(|&tab| Self::close_tab(app, tab))
+            .count()
+    }
+
+    fn change_island(
+        app: &AppRef,
+        id: TabId,
+        change: impl FnOnce(
+            &mut crate::tab_groups::GroupPreferences,
+            &crate::tab_groups::DomainKey,
+        )
+            -> std::result::Result<bool, crate::tab_groups::PreferencesError>,
+    ) -> bool {
+        let (hwnd, active, changed) = {
+            let mut state = app.borrow_mut();
+            let Some(key) = state.domain_island_of(id) else {
+                return false;
+            };
+            let Ok(changed) = change(&mut state.group_preferences, &key) else {
+                return false;
+            };
+            (state.hwnd, state.tab_model.active(), changed)
+        };
+        if changed {
+            Self::save_group_preferences(app);
+            Self::post_tab_changed_kind(hwnd, active, true, false);
+        }
+        changed
+    }
+
     fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
@@ -1266,6 +1416,15 @@ impl App {
     }
 
     /// Group identity of one tab under the current projection, or `None` when it is in no group.
+    /// Registrable domain of the domain island `id` belongs to. `None` when the tab is in no
+    /// group or only in an opener group, since names, colours and collapse are per domain.
+    fn domain_island_of(&self, id: TabId) -> Option<tab_groups::DomainKey> {
+        match self.group_key_of(id)? {
+            TabGroupKey::Domain(key) => Some(key),
+            TabGroupKey::Opener(_) => None,
+        }
+    }
+
     fn group_key_of(&self, id: TabId) -> Option<TabGroupKey> {
         let inputs = self.group_inputs();
         let index = inputs.iter().position(|input| input.id == id)?;
@@ -1401,6 +1560,148 @@ impl App {
         app.borrow().tab_model.len()
     }
 
+    pub fn split_view(app: &AppRef) -> Option<SplitView> {
+        app.borrow().split_view
+    }
+
+    fn apply_visible_panes(app: &AppRef) {
+        let (split, bounds, active, viewport) = {
+            let state = app.borrow();
+            (
+                state.split_view,
+                state.split_bounds,
+                state.tab_model.active(),
+                state.last_valid_viewport_bounds,
+            )
+        };
+        let _ = Self::with_engine(app, |engine| {
+            if let (Some(split), Some((left, right))) = (split, bounds) {
+                engine.set_visible_tabs(&[(split.left, left), (split.right, right)], split.focused_tab())
+            } else if let Some(viewport) = viewport {
+                // `select_tab` preserves all currently visible tabs. After leaving split view
+                // that would leave the other pane controller visible over the single page.
+                engine.set_visible_tabs(&[(active, viewport)], active)
+            } else {
+                engine.select_tab(active)
+            }
+        });
+    }
+
+    /// Opens a non-persisted split and keeps both existing tab controllers alive and visible.
+    pub fn open_split_view(
+        app: &AppRef,
+        left: TabId,
+        right: TabId,
+        focused: Pane,
+        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+    ) -> bool {
+        let (focused_tab, hwnd) = {
+            let mut state = app.borrow_mut();
+            if left == right
+                || state.tab_model.get(left).is_none()
+                || state.tab_model.get(right).is_none()
+            {
+                return false;
+            }
+            let Some(split) = SplitView::new(left, right, focused) else { return false };
+            state.split_view = Some(split);
+            state.split_bounds = Some(bounds);
+            let focused_tab = split.focused_tab();
+            state.tab_model.select(focused_tab);
+            for tab in &mut state.tabs {
+                if tab.id == left || tab.id == right {
+                    tab.hidden_since = None;
+                    tab.suspended = false;
+                } else {
+                    tab.hidden_since.get_or_insert_with(Instant::now);
+                }
+            }
+            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == focused_tab).map(|tab| (tab.progress, tab.page_usable)) {
+                state.navigation_progress = progress;
+                state.page_loaded = page_usable;
+            }
+            (focused_tab, state.hwnd)
+        };
+        Self::apply_visible_panes(app);
+        Self::restore_discarded_tab(app, left);
+        Self::restore_discarded_tab(app, right);
+        Self::post_tab_changed(hwnd, focused_tab);
+        Self::sync_window_title(app);
+        Self::schedule_tab_idle_timer(app);
+        true
+    }
+
+    pub fn update_split_bounds(
+        app: &AppRef,
+        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+    ) {
+        if app.borrow().split_view.is_some() {
+            app.borrow_mut().split_bounds = Some(bounds);
+            Self::apply_visible_panes(app);
+        }
+    }
+
+    pub fn focus_split_pane(app: &AppRef, pane: Pane) -> bool {
+        let (active, hwnd) = {
+            let mut state = app.borrow_mut();
+            let Some(mut split) = state.split_view else { return false };
+            split.focus(pane);
+            let active = split.focused_tab();
+            state.split_view = Some(split);
+            state.tab_model.select(active);
+            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == active).map(|tab| (tab.progress, tab.page_usable)) {
+                state.navigation_progress = progress;
+                state.page_loaded = page_usable;
+            }
+            (active, state.hwnd)
+        };
+        Self::apply_visible_panes(app);
+        Self::post_tab_changed(hwnd, active);
+        Self::sync_window_title(app);
+        true
+    }
+
+    pub fn focus_split_tab(app: &AppRef, id: TabId) -> bool {
+        let pane = app.borrow().split_view.and_then(|split| split.pane_for(id));
+        pane.is_some_and(|pane| Self::focus_split_pane(app, pane))
+    }
+
+    pub fn swap_split_panes(app: &AppRef) -> bool {
+        let Some(mut split) = app.borrow().split_view else { return false };
+        split.swap();
+        let bounds = app.borrow().split_bounds;
+        let Some(bounds) = bounds else { return false };
+        Self::open_split_view(app, split.left, split.right, split.focused, bounds)
+    }
+
+    pub fn replace_focused_split_pane(app: &AppRef, tab: TabId) -> bool {
+        let Some(mut split) = app.borrow().split_view else { return false };
+        if !split.replace_focused(tab) { return false; }
+        let Some(bounds) = app.borrow().split_bounds else { return false };
+        Self::open_split_view(app, split.left, split.right, split.focused, bounds)
+    }
+
+    pub fn close_split_pane(app: &AppRef, pane: Pane) -> bool {
+        let (remaining, hwnd) = {
+            let mut state = app.borrow_mut();
+            let Some(split) = state.split_view else { return false };
+            let closing = match pane { Pane::Left => split.left, Pane::Right => split.right };
+            let Some(remaining) = split.remove(closing) else { return false };
+            state.split_view = None;
+            state.split_bounds = None;
+            state.tab_model.select(remaining);
+            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == remaining).map(|tab| (tab.progress, tab.page_usable)) {
+                state.navigation_progress = progress;
+                state.page_loaded = page_usable;
+            }
+            (remaining, state.hwnd)
+        };
+        Self::apply_visible_panes(app);
+        Self::post_tab_changed(hwnd, remaining);
+        Self::sync_window_title(app);
+        true
+    }
+
     pub fn reload(app: &AppRef) {
         if let Some(Err(error)) = Self::with_engine(app, |engine| engine.reload()) {
             win32::show_error_message(&format!("Reload failed: {error}"));
@@ -1441,6 +1742,10 @@ impl App {
             .is_some_and(|tab| tab.controller_created)
     }
 
+    pub fn tab_has_controller(app: &AppRef, id: TabId) -> bool {
+        app.borrow().tabs.iter().find(|tab| tab.id == id).is_some_and(|tab| tab.controller_created)
+    }
+
     pub fn tab_title(app: &AppRef, id: TabId) -> Option<String> {
         app.borrow()
             .tabs
@@ -1455,6 +1760,141 @@ impl App {
             .iter()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| tab.loading)
+    }
+
+    pub fn tab_muted(app: &AppRef, id: TabId) -> bool {
+        app.borrow()
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.tab_muted(id))
+    }
+
+    pub fn tab_supports_muting(app: &AppRef, id: TabId) -> bool {
+        app.borrow()
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.supports_tab_muting(id))
+    }
+
+    pub fn set_tab_muted(app: &AppRef, id: TabId, muted: bool) {
+        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.set_tab_muted(id, muted)) {
+            win32::show_error_message(&format!("Audio control failed: {error}"));
+        }
+    }
+
+    pub fn tab_hibernate_eligible(app: &AppRef, id: TabId) -> bool {
+        let state = app.borrow();
+        let Some(tab) = state.tabs.iter().find(|tab| tab.id == id) else {
+            return false;
+        };
+        state.tab_model.active() != id
+            && !state.split_view.is_some_and(|split| split.pane_for(id).is_some())
+            && !state.tab_model.get(id).is_some_and(|model| model.pinned)
+            && !tab.loading
+            && tab.controller_created
+            && !tab.discarded
+            && tab.url.as_ref().is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+    }
+
+    /// Suspends one inactive tab after the same unsaved-input/media check used by automatic
+    /// sleeping. The callback rechecks eligibility because it may complete after a tab switch.
+    pub fn hibernate_tab(app: &AppRef, id: TabId) -> bool {
+        if !Self::tab_hibernate_eligible(app, id) {
+            return false;
+        }
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.sleep_check_started = Some(Instant::now());
+        }
+        let verdict = Rc::new(std::cell::Cell::new(None));
+        let answered_inline = Rc::new(std::cell::Cell::new(true));
+        let weak = Rc::downgrade(app);
+        let done: Box<dyn FnOnce(bool)> = {
+            let verdict = verdict.clone();
+            let answered_inline = answered_inline.clone();
+            Box::new(move |blocked| {
+                if answered_inline.get() {
+                    verdict.set(Some(blocked));
+                } else if let Some(app) = weak.upgrade() {
+                    Self::finish_hibernate_check(&app, id, blocked);
+                }
+            })
+        };
+        let asked = Self::with_engine(app, |engine| {
+            engine.check_sleep_blocked(id, done);
+            Ok(())
+        });
+        answered_inline.set(false);
+        match (asked, verdict.take()) {
+            (Some(Ok(())), Some(blocked)) => Self::finish_hibernate_check(app, id, blocked),
+            (Some(Ok(())), None) => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn finish_hibernate_check(app: &AppRef, id: TabId, blocked: bool) {
+        let eligible = Self::tab_hibernate_eligible(app, id);
+        if !eligible || blocked || Self::tab_playing_audio(app, id) {
+            if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.sleep_check_started = None;
+            }
+            return;
+        }
+        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.suspend_tab(id)) {
+            win32::show_error_message(&format!("Tab hibernation failed: {error}"));
+            return;
+        }
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            tab.sleep_check_started = None;
+            tab.suspended = true;
+            tab.hidden_since.get_or_insert_with(Instant::now);
+            state.hwnd
+        };
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// Connection state of the active tab's page, for the address pill and Site information.
+    pub fn site_security(app: &AppRef) -> SiteSecurity {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state.tabs.iter().find(|tab| tab.id == active).map_or(
+            SiteSecurity::NoSite,
+            |tab| site_security::classify(tab.url.as_ref(), tab.load),
+        )
+    }
+
+    /// The active tab and its committed page address, when it has one.
+    pub fn active_site(app: &AppRef) -> Option<(TabId, url::Url)> {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        let url = state.tabs.iter().find(|tab| tab.id == active)?.url.clone()?;
+        Some((active, url))
+    }
+
+    /// Requests the blocker stopped on the active tab's current page.
+    pub fn active_blocked_count(app: &AppRef) -> u32 {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .map_or(0, |tab| tab.blocked)
+    }
+
+    pub fn permissions_handle(app: &AppRef) -> Option<engine::PermissionsHandle> {
+        app.borrow().permissions.clone()
+    }
+
+    /// Runs `f` on the engine when one exists. The app is borrowed for the call, so `f` must not
+    /// re-enter the UI; the WebView2 calls used here only queue work.
+    pub fn call_engine<R>(app: &AppRef, f: impl FnOnce(&mut dyn EngineAdapter) -> R) -> Option<R> {
+        let mut state = app.borrow_mut();
+        state.engine.as_mut().map(|engine| f(engine.as_mut()))
     }
 
     pub fn tab_can_go_back(app: &AppRef, id: TabId) -> bool {
@@ -1567,7 +2007,11 @@ impl App {
             },
         };
         crate::profile::set_active(profile.clone());
-        let provider = SearchProvider::from_config(&profile.search_provider_file());
+        let settings = crate::settings::Settings::load(&profile.settings_file());
+        let provider = SearchProvider::from_config(
+            settings.search_engine,
+            &profile.search_provider_file(),
+        );
         let user_data_dir = options
             .user_data_dir
             .as_ref()
@@ -1586,7 +2030,7 @@ impl App {
             log,
             Some(profile.tab_groups_file()),
         );
-        app.settings = crate::settings::Settings::load(&profile.settings_file());
+        app.settings = settings;
         if track_session && app.settings.blocker_enabled {
             let mut state = crate::blocker::BlockerState::load(
                 &profile.blocker_dir(),
@@ -1594,6 +2038,11 @@ impl App {
             );
             state.enabled = true;
             app.blocker = Some(Rc::new(RefCell::new(state)));
+        }
+        if track_session {
+            app.permissions = Some(Rc::new(RefCell::new(
+                crate::permissions::PermissionStore::load(&profile.permissions_file()),
+            )));
         }
         if track_session {
             app.init_session(&profile.session_dir());
@@ -1609,6 +2058,7 @@ impl App {
         group_preferences_path: Option<PathBuf>,
     ) -> Self {
         let benchmark_url = options.benchmark_url;
+        let initial_url = options.open_url;
         let allowed_benchmark_file = benchmark_url.clone();
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
@@ -1629,6 +2079,7 @@ impl App {
             user_data_dir,
             allowed_benchmark_file,
             benchmark_url,
+            initial_url,
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
             benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
@@ -1643,6 +2094,8 @@ impl App {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(initial_tab)],
             tab_model,
+            split_view: None,
+            split_bounds: None,
             group_preferences: group_preferences_path
                 .as_deref()
                 .map(crate::tab_groups::GroupPreferences::load)
@@ -1656,6 +2109,7 @@ impl App {
             last_session_snapshot: None,
             pending_restore: None,
             blocker: None,
+            permissions: None,
         }
     }
 
@@ -1806,12 +2260,15 @@ impl App {
     /// instead of reloaded again, so a page that crashes on load cannot loop.
     pub fn tab_render_failed(app: &AppRef, id: TabId) {
         let now = Instant::now();
-        let active = {
+        let (focused, visible, failed_pane) = {
             let mut state = app.borrow_mut();
             if state.closing {
                 return;
             }
-            let active = state.tab_model.active() == id;
+            let focused = state.tab_model.active() == id;
+            let split = state.split_view;
+            let visible = focused || split.is_some_and(|split| split.pane_for(id).is_some());
+            let failed_pane = split.and_then(|split| split.pane_for(id));
             let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
                 return;
             };
@@ -1825,20 +2282,41 @@ impl App {
             }
             tab.last_crash_reload = Some(now);
             tab.page_usable = false;
-            if !active {
+            if !visible {
                 tab.discarded = true;
             }
-            active
+            (focused, visible, failed_pane)
         };
         let _ = app.borrow().log.record("tab_render_process_failed");
-        if active {
+        if focused {
             Self::reload(app);
+        } else if visible && let Some(pane) = failed_pane {
+            let previous = app.borrow().split_view.map(|split| split.focused);
+            let _ = Self::focus_split_pane(app, pane);
+            Self::reload(app);
+            if let Some(previous) = previous {
+                let _ = Self::focus_split_pane(app, previous);
+            }
         }
+    }
+
+    /// Re-reads the saved engine choice before each search, so a choice saved in Settings applies
+    /// without a restart. The provider from startup stays in use when no profile is active.
+    fn refresh_search_provider(&mut self) {
+        let Ok(profile) = crate::profile::active() else {
+            return;
+        };
+        let settings = crate::settings::Settings::load(&profile.settings_file());
+        self.provider = SearchProvider::from_config(
+            settings.search_engine,
+            &profile.search_provider_file(),
+        );
     }
 
     pub fn submit(app: &AppRef, input: &str) {
         let target = {
-            let state = app.borrow();
+            let mut state = app.borrow_mut();
+            state.refresh_search_provider();
             match resolve_input(input, &state.provider) {
                 Ok(target) => target,
                 Err(error) => {
@@ -1859,6 +2337,13 @@ impl App {
 
     pub fn submit_benchmark_url(app: &AppRef, url: url::Url) {
         Self::submit_url(app, url.clone(), Some(url));
+    }
+
+    pub fn submit_initial_url(app: &AppRef) {
+        let url = app.borrow_mut().initial_url.take();
+        if let Some(url) = url {
+            Self::submit_url(app, url, None);
+        }
     }
 
     fn submit_url(app: &AppRef, url: url::Url, allowed_file: Option<url::Url>) {
@@ -2022,11 +2507,26 @@ impl App {
                     if let Some(app) = events_app.upgrade() {
                         let mut state = app.borrow_mut();
                         let active = state.tab_model.active() == tab_id;
+                        let visible = active || state.split_view.is_some_and(|split| split.pane_for(tab_id).is_some());
                         if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                             tab.controller_created = true;
-                            tab.hidden_since = (!active).then(Instant::now);
+                            tab.hidden_since = (!visible).then(Instant::now);
                             tab.suspended = false;
                         }
+                    }
+                }))
+            },
+            focus_changed: {
+                let events_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id| {
+                    if let Some(app) = events_app.upgrade() {
+                        let hwnd = app.borrow().hwnd;
+                        win32::post(
+                            hwnd,
+                            win32::WM_PANE_FOCUSED,
+                            windows::Win32::Foundation::WPARAM(tab_id.0 as usize),
+                            windows::Win32::Foundation::LPARAM(0),
+                        );
                     }
                 }))
             },
@@ -2071,6 +2571,7 @@ impl App {
                         {
                             tab.page_usable = false;
                             tab.loading = true;
+                            tab.load = LoadState::Loading;
                         }
                         let found = Self::apply_tab_progress(
                             &app,
@@ -2183,6 +2684,26 @@ impl App {
                     }
                 }))
             },
+            navigation_failed: {
+                let failed_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, certificate| {
+                    if let Some(app) = failed_app.upgrade() {
+                        let found = {
+                            let mut state = app.borrow_mut();
+                            match state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                                Some(tab) => {
+                                    tab.load = LoadState::Failed { certificate };
+                                    true
+                                }
+                                None => false,
+                            }
+                        };
+                        if found {
+                            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        }
+                    }
+                }))
+            },
             failed: Some(Rc::new(|error| {
                 win32::show_error_message(&format!("WebView2 error: {error}"))
             })),
@@ -2210,6 +2731,7 @@ impl App {
             startup_extensions: plan.enabled,
             known_extensions: known_extensions.unwrap_or_default(),
             extension_ids_file,
+            permissions: app.borrow().permissions.clone(),
         };
         let create_result = engine::WebView2Engine::begin_create_with_extras(
             hwnd,
@@ -2378,10 +2900,18 @@ impl App {
     }
 
     pub fn resize_current(app: &AppRef, bounds: windows::Win32::Foundation::RECT) {
+        let (split, panes) = {
+            let state = app.borrow();
+            (state.split_view, state.split_bounds)
+        };
         let Some(mut engine) = app.borrow_mut().engine.take() else {
             return;
         };
-        let result = engine.resize(bounds);
+        let result = if let (Some(split), Some((left, right))) = (split, panes) {
+            engine.set_visible_tabs(&[(split.left, left), (split.right, right)], split.focused_tab())
+        } else {
+            engine.resize(bounds)
+        };
         let mut state = app.borrow_mut();
         if state.closing {
             let _ = engine.close();
@@ -2456,6 +2986,7 @@ impl App {
             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                 tab.page_usable = true;
                 tab.loading = false;
+                tab.load = LoadState::Loaded;
             } else {
                 return;
             }
@@ -2464,6 +2995,8 @@ impl App {
             }
             active
         };
+        // The address pill's connection icon depends on the load outcome, so repaint it.
+        Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
         if active {
             let decision = {
                 let state = app.borrow();
@@ -3060,11 +3593,10 @@ fn chrome_viewport_bounds(
     width: i32,
     height: i32,
     dpi: u32,
-    tab_count: usize,
+    _tab_count: usize,
     maximised: bool,
 ) -> windows::Win32::Foundation::RECT {
-    let viewport =
-        crate::chrome::layout::compute(width, height, dpi, tab_count, maximised).viewport;
+    let viewport = crate::chrome::layout::content_rect(width, height, dpi, maximised);
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
@@ -4290,10 +4822,11 @@ mod tests {
             loop_shutdown_pending: false,
             user_data_dir: PathBuf::new(),
             benchmark_url: None,
+            initial_url: None,
             allowed_benchmark_file: None,
             benchmark_tracking_prevention: None,
             benchmark_memory_pressure: false,
-            provider: SearchProvider::from_config(Path::new("missing-search-provider.txt")),
+            provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             log: Rc::new(PerfLog::new(None).unwrap()),
             minimized: false,
             desired_memory_target: MemoryUsageTarget::Normal,
@@ -4305,6 +4838,8 @@ mod tests {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(TabId(0))],
             tab_model: crate::tabs::TabList::new(),
+            split_view: None,
+            split_bounds: None,
             group_preferences: crate::tab_groups::GroupPreferences::default(),
             group_preferences_path: None,
             group_markers: HashMap::new(),
@@ -4319,6 +4854,7 @@ mod tests {
             last_session_snapshot: None,
             pending_restore: None,
             blocker: None,
+            permissions: None,
         }))
     }
 
@@ -4608,7 +5144,7 @@ mod tests {
         let app = App::from_launch_options(
             LaunchOptions::default(),
             PathBuf::from("production-profile"),
-            SearchProvider::from_config(Path::new("missing-search-provider.txt")),
+            SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             log.clone(),
             None,
         );

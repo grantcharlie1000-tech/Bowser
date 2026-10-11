@@ -56,6 +56,20 @@ pub trait EngineAdapter {
     fn select_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Reconciles the controllers that should currently be visible, including their client bounds.
+    /// The active tab remains the command target. Engines that support only one visible controller
+    /// retain the active pane as a normal view.
+    fn set_visible_tabs(
+        &mut self,
+        panes: &[(crate::tabs::TabId, RECT)],
+        active: crate::tabs::TabId,
+    ) -> windows::core::Result<()> {
+        self.select_tab(active)?;
+        if let Some((_, bounds)) = panes.iter().find(|(tab, _)| *tab == active) {
+            self.resize(*bounds)?;
+        }
+        Ok(())
+    }
     /// Closes the controller owned by one logical tab.
     fn close_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         self.close()
@@ -63,6 +77,17 @@ pub trait EngineAdapter {
     /// Reports whether a tab's document is playing audio. Unknown counts as silent.
     fn tab_playing_audio(&self, _tab: crate::tabs::TabId) -> bool {
         false
+    }
+    /// Whether one tab's WebView is muted, when the engine exposes audio controls.
+    fn tab_muted(&self, _tab: crate::tabs::TabId) -> bool {
+        false
+    }
+    fn supports_tab_muting(&self, _tab: crate::tabs::TabId) -> bool {
+        false
+    }
+    /// Mutes or unmutes one tab. Engines without per-tab audio controls ignore the request.
+    fn set_tab_muted(&mut self, _tab: crate::tabs::TabId, _muted: bool) -> windows::core::Result<()> {
+        Ok(())
     }
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
     /// form input, playing video, picture-in-picture or a live camera/microphone stream.
@@ -73,6 +98,10 @@ pub trait EngineAdapter {
     }
     /// Suspends controllers that have been hidden for at least the supplied duration.
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
+        Ok(())
+    }
+    /// Suspends one already hidden controller in response to an explicit user request.
+    fn suspend_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())
     }
     fn suspend(&mut self) {}
@@ -103,6 +132,30 @@ pub trait EngineAdapter {
     fn remove_extension(&mut self, _id: &str, done: Box<dyn FnOnce(Result<(), String>)>) {
         done(Ok(()));
     }
+    /// Counts the cookies the browser would send to `url` from one tab. `done` may run later.
+    fn site_cookie_count(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _url: &url::Url,
+        done: Box<dyn FnOnce(Result<usize, String>)>,
+    ) {
+        done(Err("This browser engine cannot read cookies.".to_owned()));
+    }
+    /// Deletes the cookies the browser would send to `url` from one tab and reports how many were
+    /// removed. `done` may run later.
+    fn clear_site_cookies(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _url: &url::Url,
+        done: Box<dyn FnOnce(Result<usize, String>)>,
+    ) {
+        done(Err("This browser engine cannot clear cookies.".to_owned()));
+    }
+    /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
+    /// engine cannot say.
+    fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Operations against one logical tab. Implementations may share an environment across tabs.
@@ -126,6 +179,8 @@ pub struct EngineEvents {
     pub page_loaded: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// A WebView2 pane received focus from the user.
+    pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
     pub navigation_progress:
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
@@ -136,9 +191,16 @@ pub struct EngineEvents {
     /// The blocker stopped a request on this tab; the argument is the running count for the
     /// current page.
     pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32)>>,
+    /// A top-level navigation in this tab finished with an error. The flag is true for certificate
+    /// errors, which the Site information panel reports as a problem.
+    pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }
+
+/// Per-site permission decisions, shared between the UI (Site information) and the WebView2 request
+/// hook.
+pub type PermissionsHandle = std::rc::Rc<std::cell::RefCell<crate::permissions::PermissionStore>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationProgressEvent {
@@ -166,4 +228,6 @@ pub struct EngineExtras {
     /// File that maps Bowser extension ids to WebView2's ids, which differ. Without it a restart
     /// cannot tell which profile extension is which.
     pub extension_ids_file: Option<std::path::PathBuf>,
+    /// Stored per-site permission decisions, consulted for every permission request.
+    pub permissions: Option<PermissionsHandle>,
 }

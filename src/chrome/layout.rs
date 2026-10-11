@@ -56,12 +56,17 @@ impl Metrics {
     pub const OMNIBOX_TEXT_INSET: i32 = 12;
     /// Inset of the omnibox text from the left edge of the field, clear of the search icon.
     pub const OMNIBOX_TEXT_LEFT: i32 = 32;
+    /// Left inset and square size of the connection (site information) button inside the field.
+    pub const SITE_BUTTON_INSET: i32 = 3;
+    pub const SITE_BUTTON_SIZE: i32 = 24;
+    pub const SPLIT_BUTTON_INSET: i32 = 2;
+    pub const SPLIT_BUTTON_SIZE: i32 = 22;
     /// Square back / forward / reload buttons at the left of the omnibox row.
     pub const NAV_BUTTON_SIZE: i32 = 28;
     pub const NAV_BUTTON_GAP: i32 = 3;
     /// Inset of the first navigation button from the window edge.
     pub const NAV_LEFT_INSET: i32 = 4;
-    /// Square main-menu button at the far right of the omnibox row.
+    /// Width of the main-menu bubble, which sits right of the omnibox at the omnibox's height.
     pub const MENU_BUTTON_SIZE: i32 = 28;
     /// Inset of the tabs and omnibox from the window edges, and the margin below the omnibox.
     pub const OUTER_MARGIN: i32 = 2;
@@ -180,6 +185,8 @@ pub struct TabParts {
     pub favicon: Rect,
     pub title: Rect,
     pub close: Rect,
+    /// Narrow active tabs replace their favicon with the close affordance.
+    pub active_close: bool,
 }
 
 /// Chrome geometry for one window size. Build with [`compute`].
@@ -204,11 +211,14 @@ pub struct Layout {
     pub forward_button: Rect,
     pub reload_button: Rect,
     pub omnibox: Rect,
-    /// Opens the main menu (profiles, settings). Sits right of the omnibox.
+    /// Opens the main menu (profiles, settings). A bubble at the omnibox's height, directly right of
+    /// the omnibox. Empty when the toolbar is too narrow for it.
     pub main_menu_button: Rect,
     pub viewport: Rect,
     tab_count: usize,
-    tab_width: i32,
+    inactive_tab_width: i32,
+    active_tab_width: i32,
+    active_index: usize,
     tab_left: i32,
     first_visible: usize,
     visible_count: usize,
@@ -221,6 +231,54 @@ pub struct Layout {
 pub const fn chrome_height(dpi: u32) -> i32 {
     let m = Metrics::new(dpi);
     m.px(Metrics::STRIP_HEIGHT) + m.px(Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN)
+}
+
+/// Rounded page host bounds in client-relative physical pixels. The margins preserve the native
+/// resize rim while keeping the content inset aligned to the device-pixel chrome metrics.
+pub fn content_rect(client_w: i32, client_h: i32, dpi: u32, maximised: bool) -> Rect {
+    let m = Metrics::new(dpi);
+    let width = client_w.max(0);
+    let height = client_h.max(0);
+    let margin = m.px(Metrics::OUTER_MARGIN);
+    let top = (m.px(Metrics::STRIP_HEIGHT + Metrics::TAB_ROW_HEIGHT) + margin).min(height);
+    let rim = if maximised {
+        0
+    } else {
+        m.px(Metrics::RESIZE_RIM).min(width / 2)
+    };
+    Rect::new(rim, top, (width - rim).max(rim), (height - rim).max(top))
+}
+
+/// The three adjacent rectangles used by a split view. `divider_left` is clamped so both panes
+/// retain at least `min_pane_width` pixels. A too-narrow host collapses the split by returning
+/// `None`; callers can hide one pane and restore a single full-width view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SplitPaneLayout {
+    pub left: Rect,
+    pub divider: Rect,
+    pub right: Rect,
+}
+
+pub fn split_pane_layout(
+    content: Rect,
+    divider_left: i32,
+    min_pane_width: i32,
+    divider_width: i32,
+) -> Option<SplitPaneLayout> {
+    let min_pane_width = min_pane_width.max(1);
+    let divider_width = divider_width.max(1);
+    let min_left = content.left.saturating_add(min_pane_width);
+    let max_left = content.right.saturating_sub(min_pane_width.saturating_add(divider_width));
+    if max_left < min_left || content.bottom <= content.top {
+        return None;
+    }
+    let divider_left = divider_left.clamp(min_left, max_left);
+    let divider_right = divider_left.saturating_add(divider_width);
+    Some(SplitPaneLayout {
+        left: Rect::new(content.left, content.top, divider_left, content.bottom),
+        divider: Rect::new(divider_left, content.top, divider_right, content.bottom),
+        right: Rect::new(divider_right, content.top, content.right, content.bottom),
+    })
 }
 
 /// Computes the chrome for a client area of `client_w` x `client_h` physical pixels.
@@ -268,29 +326,31 @@ pub fn compute_with_active(
     let caption_left = (client_w - caption_w).max(0);
     let caption_area = Rect::new(caption_left, 0, client_w, strip_h);
 
-    // The tab row runs the full width. The tab list and "+" are in the toolbar, so the tab zone does
-    // not depend on them.
+    // The tab overflow picker occupies the trailing edge of the tab row, beside the tab slots.
     let tabs_left = margin;
-    let zone_right = (client_w - margin).max(tabs_left);
-    let tab_zone = Rect::new(tabs_left, tab_row.top, zone_right, tab_row.bottom);
-
-    let n = tab_count as i32;
-    let mut tab_width = if tab_count == 0 {
-        max_w
+    let row_right = (client_w - margin).max(tabs_left);
+    let active_index = active_index.min(tab_count.saturating_sub(1));
+    let active_premium = (min_w / 2).max(1);
+    let initial_capacity = ((row_right - tabs_left + gap - active_premium) / (min_w + gap))
+        .max(0) as usize;
+    let overflow = tab_count > initial_capacity;
+    let tab_menu_button = if overflow {
+        let left = (row_right - list_size).max(tabs_left);
+        Rect::new(left, tab_row.top + (tab_row_h - list_size) / 2, row_right, tab_row.top + (tab_row_h + list_size) / 2)
     } else {
-        let available = zone_right - tabs_left - (n - 1) * gap;
-        (available / n).clamp(min_w, max_w)
+        Rect::default()
     };
-    // Only whole tabs are shown. When they overflow, the visible ones share the zone evenly
-    // (never narrower than the minimum) so no dead strip is left at the right edge.
-    let stride_at_min = min_w + gap;
-    let min_visible = ((zone_right - tabs_left + gap) / stride_at_min).max(0) as usize;
-    let overflow = tab_count > min_visible;
+    let zone_right = if overflow {
+        (tab_menu_button.left - gap).max(tabs_left)
+    } else {
+        row_right
+    };
+    let tab_zone = Rect::new(tabs_left, tab_row.top, zone_right, tab_row.bottom);
+    let available = (zone_right - tabs_left).max(0);
+    // Reserve half an inactive tab as an active-tab premium. Widths depend on strip capacity and
+    // tab count, never on hover or animation, so selection changes do not cause layout jitter.
+    let min_visible = ((available + gap - active_premium) / (min_w + gap)).max(0) as usize;
     let visible_count = tab_count.min(min_visible);
-    if overflow {
-        let shown = (visible_count as i32).max(1);
-        tab_width = ((zone_right - tabs_left - (shown - 1) * gap) / shown).clamp(min_w, max_w);
-    }
     let first_visible = if overflow {
         active_index
             .min(tab_count.saturating_sub(1))
@@ -299,28 +359,44 @@ pub fn compute_with_active(
     } else {
         0
     };
+    let shown = visible_count as i32;
+    let inner_available = (available - shown.saturating_sub(1) * gap).max(0);
+    let (inactive_tab_width, active_tab_width) = if shown == 0 {
+        (max_w, max_w)
+    } else if shown == 1 {
+        (inner_available, inner_available)
+    } else {
+        let base = inner_available.saturating_mul(2) / (2 * shown + 1);
+        let active = ((base * 3 + 1) / 2).min(max_w);
+        let inactive = ((inner_available - active).max(0) / (shown - 1)).clamp(min_w, max_w);
+        (inactive, active.max(min_w))
+    };
 
     let island_top = tab_row.top + m.px(Metrics::TAB_ROW_HEIGHT - Metrics::ISLAND_HEIGHT) / 2;
     let island_bottom = island_top + m.px(Metrics::ISLAND_HEIGHT);
 
-    // Toolbar: navigation on the left, then from the right "+", tab list, and main menu just
-    // left of the captions, and the omnibox centred in the window with room to give way when the
-    // two sides need it.
+    // Toolbar: navigation on the left, "+" just left of the captions, and the omnibox centred in
+    // the window with the main-menu bubble directly right of it. The omnibox gives way first when
+    // the two sides need it, so the bubble stays stuck to the address pill.
     let nav_size = m.px(Metrics::NAV_BUTTON_SIZE);
-    let nav_pitch = nav_size + m.px(Metrics::NAV_BUTTON_GAP);
+    let nav_gap = m.px(Metrics::NAV_BUTTON_GAP);
     let nav_left = m.px(Metrics::NAV_LEFT_INSET);
     let nav_top = (strip_h - nav_size) / 2;
     let nav_button = |slot: i32| {
-        let left = nav_left + slot * nav_pitch;
+        let left = match slot {
+            0 => nav_left,
+            1 => nav_left + nav_size,
+            _ => nav_left + 2 * nav_size + nav_gap,
+        };
         Rect::new(left, nav_top, left + nav_size, nav_top + nav_size)
     };
-    let nav_right = nav_left + 3 * nav_pitch;
+    let nav_right = nav_left + 3 * nav_size + nav_gap;
 
-    let menu_size = m.px(Metrics::MENU_BUTTON_SIZE);
+    let menu_w = m.px(Metrics::MENU_BUTTON_SIZE);
     let mut right_edge = caption_left - margin;
     let mut toolbar_fits = true;
-    // Each control drops out from the left once the remaining controls would crowd navigation.
-    // This keeps the requested tab controls pinned to the right edge and avoids a middle gap.
+    // "+" drops out from the left once it would crowd navigation. This keeps it pinned to the
+    // right edge and avoids a middle gap.
     let mut place = |size: i32| {
         let left = right_edge - size;
         if toolbar_fits && left >= nav_right + gap {
@@ -333,14 +409,15 @@ pub fn compute_with_active(
         }
     };
     let new_tab_button = place(new_tab_size);
-    let tab_menu_button = if overflow {
-        place(list_size)
-    } else {
-        Rect::default()
-    };
-    let main_menu_button = place(menu_size);
     let omnibox_min = nav_right + gap;
-    let omnibox_max = right_edge.max(omnibox_min);
+    let group_right = right_edge.max(omnibox_min);
+    // The bubble only fits when the omnibox keeps a non-negative width beside it.
+    let menu_fits = toolbar_fits && group_right - menu_w - gap >= omnibox_min;
+    let omnibox_max = if menu_fits {
+        group_right - menu_w - gap
+    } else {
+        group_right
+    };
     let omnibox_h = m.px(Metrics::OMNIBOX_HEIGHT);
     let omnibox_w = (omnibox_max - omnibox_min).min(m.px(Metrics::OMNIBOX_MAX_WIDTH));
     let omnibox_left = (client_w / 2 - omnibox_w / 2)
@@ -352,19 +429,14 @@ pub fn compute_with_active(
         omnibox_left + omnibox_w,
         omnibox_top + omnibox_h,
     );
-
-    let viewport_top = (tab_row.bottom + margin).min(client_h);
-    let rim = if maximised {
-        0
+    let main_menu_button = if menu_fits {
+        let left = omnibox.right + gap;
+        Rect::new(left, omnibox_top, left + menu_w, omnibox_top + omnibox_h)
     } else {
-        m.px(Metrics::RESIZE_RIM).min(client_w / 2)
+        Rect::default()
     };
-    let viewport = Rect::new(
-        rim,
-        viewport_top,
-        client_w - rim,
-        (client_h - rim).max(viewport_top),
-    );
+
+    let viewport = content_rect(client_w, client_h, dpi, maximised);
 
     Layout {
         metrics: m,
@@ -383,7 +455,9 @@ pub fn compute_with_active(
         main_menu_button,
         viewport,
         tab_count,
-        tab_width,
+        inactive_tab_width,
+        active_tab_width,
+        active_index,
         tab_left: tabs_left,
         first_visible,
         visible_count,
@@ -404,6 +478,10 @@ pub enum Hit {
     Forward,
     Reload,
     Omnibox,
+    /// The connection icon at the left of the address pill. It opens Site information.
+    SiteInfo,
+    Split,
+    SplitDivider,
     MainMenu,
     Viewport,
     /// Empty strip. Dragging here moves the window.
@@ -414,6 +492,23 @@ pub enum Hit {
 }
 
 impl Layout {
+    /// The connection icon at the left of the address pill, centred vertically in it.
+    pub fn site_info_button(&self) -> Rect {
+        let m = self.metrics;
+        let size = m.px(Metrics::SITE_BUTTON_SIZE);
+        let left = self.omnibox.left + m.px(Metrics::SITE_BUTTON_INSET);
+        let top = self.omnibox.top + (self.omnibox.height() - size) / 2;
+        Rect::new(left, top, left + size, top + size)
+    }
+
+    pub fn split_button(&self) -> Rect {
+        let m = self.metrics;
+        let size = m.px(Metrics::SPLIT_BUTTON_SIZE);
+        let right = self.omnibox.right - m.px(Metrics::SPLIT_BUTTON_INSET);
+        let top = self.omnibox.top + (self.omnibox.height() - size) / 2;
+        Rect::new(right - size, top, right, top + size)
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tab_count
     }
@@ -428,8 +523,19 @@ impl Layout {
         (0..self.first_visible).chain(visible_end..self.tab_count)
     }
 
-    fn stride(&self) -> i32 {
-        self.tab_width + self.metrics.px(Metrics::ISLAND_GAP)
+    fn tab_width_at(&self, index: usize) -> i32 {
+        if index == self.active_index {
+            self.active_tab_width
+        } else {
+            self.inactive_tab_width
+        }
+    }
+
+    fn tab_left_at(&self, index: usize) -> i32 {
+        let gap = self.metrics.px(Metrics::ISLAND_GAP);
+        (self.first_visible..index).fold(self.tab_left, |left, slot| {
+            left + self.tab_width_at(slot) + gap
+        })
     }
 
     /// The rect of a caption button, or an empty rect for any other `Hit`. The painter, the
@@ -459,11 +565,12 @@ impl Layout {
         if index < self.first_visible || index >= self.first_visible + self.visible_count {
             return None;
         }
-        let left = self.tab_left + (index - self.first_visible) as i32 * self.stride();
+        let left = self.tab_left_at(index);
+        let width = self.tab_width_at(index);
         Some(Rect::new(
             left,
             self.island_top,
-            left + self.tab_width,
+            left + width,
             self.island_bottom,
         ))
     }
@@ -481,12 +588,18 @@ impl Layout {
         let close_size = m.px(Metrics::CLOSE_SIZE);
         let gap = m.px(Metrics::TEXT_GAP);
 
+        let close_minimum_width = m.px(Metrics::FAVICON_SIZE)
+            + m.px(Metrics::CLOSE_SIZE)
+            + m.px(Metrics::TEXT_GAP)
+            + 2 * m.px(Metrics::CLOSE_INSET);
+        let close_fits = tab.width() >= close_minimum_width;
         let compact = tab.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH);
-        let close_left = tab.left + m.px(Metrics::CLOSE_INSET);
-        // Compact tabs reveal the close glyph over the favicon on hover, so every tab remains
-        // closable without reserving permanent space for the control.
-        let close = square_in(close_left, close_size, tab);
-        let favicon_left = if compact {
+        let close = if close_fits {
+            square_in(tab.left + m.px(Metrics::CLOSE_INSET), close_size, tab)
+        } else {
+            Rect::default()
+        };
+        let favicon_left = if compact && !close_fits {
             tab.left + (tab.width() - favicon_size) / 2
         } else {
             close.right + gap
@@ -506,13 +619,12 @@ impl Layout {
             favicon,
             title,
             close,
+            active_close: !close_fits,
         }
     }
 
     fn tab_centre(&self, index: usize) -> i32 {
-        self.tab_left
-            + (index as i32 - self.first_visible as i32) * self.stride()
-            + self.tab_width / 2
+        self.tab_left_at(index) + self.tab_width_at(index) / 2
     }
 
     /// Index of the tab slot under `x`, if `x` is inside a visible tab column. Vertical position
@@ -521,12 +633,13 @@ impl Layout {
         if x < self.tab_zone.left || x >= self.tab_zone.right || self.tab_count == 0 {
             return None;
         }
-        let offset = x - self.tab_left;
-        let slot = (offset / self.stride()) as usize;
-        if slot >= self.visible_count || offset % self.stride() >= self.tab_width {
-            return None;
+        for index in self.first_visible..self.first_visible + self.visible_count {
+            let Some(tab) = self.tab(index) else { continue };
+            if tab.contains(x, self.island_top) {
+                return Some(index);
+            }
         }
-        Some(self.first_visible + slot)
+        None
     }
 
     /// Rects of the empty chrome that drag the window. This is the toolbar minus its controls plus
@@ -552,6 +665,7 @@ impl Layout {
         append_drag_regions(self.strip, &controls, &mut rects);
         let tabs: Vec<Rect> = (self.first_visible..self.first_visible + self.visible_count)
             .filter_map(|index| self.tab(index))
+            .chain(std::iter::once(self.tab_menu_button).filter(|rect| !rect.is_empty()))
             .collect();
         append_drag_regions(self.tab_row, &tabs, &mut rects);
         rects
@@ -605,6 +719,12 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
     if layout.viewport.contains(x, y) {
         return Hit::Viewport;
     }
+    if layout.site_info_button().contains(x, y) {
+        return Hit::SiteInfo;
+    }
+    if layout.split_button().contains(x, y) {
+        return Hit::Split;
+    }
     if layout.omnibox.contains(x, y) {
         return Hit::Omnibox;
     }
@@ -636,7 +756,10 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
         if !island.contains(x, y) {
             return Hit::CaptionArea;
         }
-        return if layout.tab_parts(island).close.contains(x, y) {
+        let parts = layout.tab_parts(island);
+        return if parts.close.contains(x, y)
+            || (index == layout.active_index && parts.active_close && parts.favicon.contains(x, y))
+        {
             Hit::TabClose(index)
         } else {
             Hit::Tab(index)
@@ -882,17 +1005,17 @@ mod tests {
             l.tab_menu_button.is_empty(),
             "no overflow menu when tabs fit"
         );
-        assert_eq!(l.main_menu_button, Rect::new(825, 3, 853, 31));
+        assert_eq!(l.main_menu_button, Rect::new(775, 4, 803, 30));
         assert_eq!(l.back_button, Rect::new(4, 3, 32, 31));
-        assert_eq!(l.forward_button, Rect::new(35, 3, 63, 31));
-        assert_eq!(l.reload_button, Rect::new(66, 3, 94, 31));
+        assert_eq!(l.forward_button, Rect::new(32, 3, 60, 31));
+        assert_eq!(l.reload_button, Rect::new(63, 3, 91, 31));
         assert_eq!(l.omnibox, Rect::new(252, 4, 772, 30));
         assert_eq!(
             (l.omnibox.left + l.omnibox.right) / 2,
             512,
             "the omnibox is centred in the window"
         );
-        assert_eq!(hit_test(&l, 839, 20), Hit::MainMenu);
+        assert_eq!(hit_test(&l, 789, 17), Hit::MainMenu);
         assert_eq!(l.viewport, Rect::new(4, 64, 1020, 696));
     }
 
@@ -900,9 +1023,8 @@ mod tests {
     fn eight_tabs_at_1024_shrink_evenly_without_overflow() {
         let l = layout(1024, 96, 8);
 
-        // (1020 - 7 * 3) / 8 = 124, across the full row.
-        assert_eq!(l.tab(0), Some(Rect::new(2, 36, 126, 60)));
-        assert_eq!(l.tab(7), Some(Rect::new(891, 36, 1015, 60)));
+        assert_eq!(l.tab(0).map(Rect::width), Some(176));
+        assert_eq!(l.tab(7).map(Rect::width), Some(117));
         assert!(l.tabs().all(|tab| tab.intersect(l.tab_zone) == tab));
         assert!(
             l.tab_menu_button.is_empty(),
@@ -915,10 +1037,10 @@ mod tests {
         let l = layout(768, 96, 40);
 
         // 26 whole islands fit at the 26 px minimum across the full row.
-        assert_eq!(l.tab(0).map(Rect::width), Some(26));
-        assert_eq!(l.tab_zone, Rect::new(2, 34, 766, 62));
+        assert_eq!(l.tab(0).map(Rect::width), Some(39));
+        assert_eq!(l.tab_zone, Rect::new(2, 34, 737, 62));
         assert_eq!(l.new_tab_button, Rect::new(600, 3, 628, 31));
-        assert_eq!(l.tab_menu_button, Rect::new(571, 4, 597, 30));
+        assert_eq!(l.tab_menu_button, Rect::new(740, 35, 766, 61));
         assert_eq!(l.caption_area.left, 630);
         assert!(
             !l.tab_menu_button.is_empty(),
@@ -929,15 +1051,15 @@ mod tests {
             l.tab(23).is_some_and(|tab| tab.right <= l.tab_zone.right),
             "the last visible island is whole and inside the zone"
         );
-        assert_eq!(l.tab(26), None, "tabs after the visible window are hidden");
+        assert_eq!(l.tab(25), None, "tabs after the visible window are hidden");
         assert!(
-            l.tab(25).is_some_and(|tab| tab.right <= l.tab_zone.right),
-            "the 26th island still fits"
+            l.tab(24).is_some_and(|tab| tab.right <= l.tab_zone.right),
+            "the 25th island still fits"
         );
         assert_eq!(l.tab(39), None, "the default active tab is index zero");
         assert_eq!(
             l.hidden_tab_indices().collect::<Vec<_>>(),
-            (26..40).collect::<Vec<_>>()
+            (25..40).collect::<Vec<_>>()
         );
     }
 
@@ -945,14 +1067,14 @@ mod tests {
     fn active_tab_is_kept_visible_when_tabs_overflow() {
         let l = compute_with_active(768, HEIGHT, 96, 40, 39, false);
 
-        assert_eq!(l.first_visible_tab(), 14);
+        assert_eq!(l.first_visible_tab(), 15);
         let active = l.tab(39).expect("active tab is visible");
         assert!(active.right <= l.tab_zone.right);
         assert_eq!(hit_test(&l, active.left + 3, 48), Hit::Tab(39));
-        assert_eq!(l.tabs().count(), 26);
+        assert_eq!(l.tabs().count(), 25);
         assert_eq!(
             l.hidden_tab_indices().collect::<Vec<_>>(),
-            (0..14).collect::<Vec<_>>()
+            (0..15).collect::<Vec<_>>()
         );
     }
 
@@ -985,22 +1107,22 @@ mod tests {
                     assert_eq!(new_tab.right, l.caption_area.left - margin, "dpi {dpi}");
                     if tabs > l.tabs().count() {
                         assert_eq!(list.width(), m.px(Metrics::TAB_MENU_SIZE));
-                        assert_eq!(list.right + gap, new_tab.left, "dpi {dpi}");
-                        assert_eq!(menu.right + gap, list.left, "dpi {dpi}");
+                        assert_eq!(l.tab_zone.right + gap, list.left, "dpi {dpi}");
+                        assert!(l.tab_row.contains_rect(list), "dpi {dpi}");
                     } else {
                         assert!(list.is_empty(), "hide the menu while every tab fits");
-                        assert_eq!(menu.right + gap, new_tab.left, "dpi {dpi}");
+                        assert!(menu.right + gap <= new_tab.left, "dpi {dpi}");
                     }
                     for (name, rect) in [("new tab", new_tab), ("tab menu", list)] {
                         if !rect.is_empty() {
-                            assert!(l.strip.contains_rect(rect), "{name} leaves the toolbar");
-                            let (above, below) =
-                                (rect.top - l.strip.top, l.strip.bottom - rect.bottom);
-                            assert!((above - below).abs() <= 1, "{name} dpi {dpi}");
+                            let band = if name == "tab menu" { l.tab_row } else { l.strip };
+                            assert!(band.contains_rect(rect), "{name} leaves its row");
                         }
                     }
-                    assert!(!l.tab_row.contains_rect(new_tab) && !l.tab_row.contains_rect(list));
-                    assert_eq!(l.tab_zone.right, l.client.right - margin);
+                    assert!(!l.tab_row.contains_rect(new_tab));
+                    if list.is_empty() {
+                        assert_eq!(l.tab_zone.right, l.client.right - margin);
+                    }
                     assert_eq!(l.tab_zone.bottom, l.tab_row.bottom);
                 }
             }
@@ -1116,6 +1238,45 @@ mod tests {
     }
 
     #[test]
+    fn active_tab_is_wider_without_changing_the_slot_count() {
+        let selected = compute_with_active(900, HEIGHT, 96, 6, 3, false);
+        let first = selected.tab(0).unwrap();
+        let active = selected.tab(3).unwrap();
+        let last = selected.tab(5).unwrap();
+        assert!(active.width() > first.width());
+        assert_eq!(selected.tabs().count(), 6);
+        assert!(last.right <= selected.tab_zone.right);
+    }
+
+    #[test]
+    fn narrow_tab_close_threshold_uses_scaled_metrics() {
+        for dpi in [96, 120, 144, 192] {
+            let metrics = Metrics::new(dpi);
+            let threshold = metrics.px(Metrics::FAVICON_SIZE)
+                + metrics.px(Metrics::CLOSE_SIZE)
+                + metrics.px(Metrics::TEXT_GAP)
+                + 2 * metrics.px(Metrics::CLOSE_INSET);
+            let too_narrow = compute_with_active(threshold - 1, HEIGHT, dpi, 1, 0, false);
+            let narrow_tab = too_narrow.tab(0).unwrap();
+            let parts = too_narrow.tab_parts(narrow_tab);
+            assert!(parts.active_close, "DPI {dpi}");
+            assert!(parts.close.is_empty(), "DPI {dpi}");
+
+            let enough_room = compute_with_active(
+                threshold + 2 * metrics.px(Metrics::OUTER_MARGIN) + 1,
+                HEIGHT,
+                dpi,
+                1,
+                0,
+                false,
+            );
+            let parts = enough_room.tab_parts(enough_room.tab(0).unwrap());
+            assert!(!parts.active_close, "DPI {dpi}");
+            assert!(!parts.close.is_empty(), "DPI {dpi}");
+        }
+    }
+
+    #[test]
     fn maximised_flag_is_carried_and_only_drops_the_resize_rim() {
         let windowed = compute(1024, HEIGHT, 120, 5, false);
         let maximised = compute(1024, HEIGHT, 120, 5, true);
@@ -1189,16 +1350,16 @@ mod tests {
 
     #[test]
     fn hit_test_identifies_each_region_at_1024() {
-        // Three tabs at 96 dpi: islands at 2, 343 and 684 (width 338, gap 3) in the row at y 36..60.
+        // The active slot is visibly wider; all tab hits remain within their own island.
         let l = layout(1024, 96, 3);
 
         assert_eq!(hit_test(&l, 100, 48), Hit::Tab(0));
-        assert_eq!(hit_test(&l, 400, 48), Hit::Tab(1));
+        assert_eq!(hit_test(&l, 500, 48), Hit::Tab(1));
         assert_eq!(hit_test(&l, 800, 48), Hit::Tab(2));
         assert_eq!(
-            hit_test(&l, 840, 15),
+            hit_test(&l, 790, 15),
             Hit::MainMenu,
-            "the overflow menu is hidden while all tabs fit"
+            "the main-menu bubble sits right of the address pill"
         );
         assert_eq!(
             hit_test(&l, 840, 48),
@@ -1215,12 +1376,13 @@ mod tests {
             Hit::CaptionArea,
             "the row margin is a window drag area"
         );
+        let gap_x = (l.tab(0).unwrap().right + l.tab(1).unwrap().left) / 2;
         assert_eq!(
-            hit_test(&l, 341, 48),
+            hit_test(&l, gap_x, 48),
             Hit::CaptionArea,
             "the gap between islands is a window drag area"
         );
-        assert_eq!(hit_test(&l, 400, 48), Hit::Tab(1));
+        assert_eq!(hit_test(&l, 500, 48), Hit::Tab(1));
         assert_eq!(
             hit_test(&l, 1, 15),
             Hit::CaptionArea,
@@ -1252,10 +1414,12 @@ mod tests {
             Hit::CaptionArea,
             "the gap past the last island is a window drag area"
         );
+        let picker_x = l.tab_menu_button.left + 2;
+        let picker_y = (l.tab_menu_button.top + l.tab_menu_button.bottom) / 2;
         assert_eq!(
-            hit_test(&l, 585, 15),
+            hit_test(&l, picker_x, picker_y),
             Hit::TabMenu,
-            "tab list stays reachable in the toolbar"
+            "tab list stays reachable inside the tab row"
         );
         assert_eq!(
             hit_test(&l, 615, 15),
@@ -1263,9 +1427,9 @@ mod tests {
             "+ stays reachable in the toolbar"
         );
         assert_eq!(
-            hit_test(&l, 585, 48),
-            Hit::Tab(20),
-            "the tab row under the toolbar button is still the tab zone"
+            hit_test(&l, picker_x, picker_y),
+            Hit::TabMenu,
+            "the overflow picker has its own hit target"
         );
     }
 
@@ -1283,20 +1447,25 @@ mod tests {
     }
 
     #[test]
-    fn compact_overflow_tabs_keep_a_hover_close_target() {
+    fn compact_overflow_tabs_keep_inactive_favicons_and_close_active_tab() {
         let l = layout(768, 96, 40);
         let tab = l.tab(0).expect("first compact tab");
-        assert_eq!(tab.width(), Metrics::new(96).px(Metrics::TAB_MIN_WIDTH));
-        let close = l.tab_parts(tab).close;
-        assert!(!close.is_empty(), "compact tabs still need a close target");
+        assert!(tab.width() > Metrics::new(96).px(Metrics::TAB_MIN_WIDTH));
+        let parts = l.tab_parts(tab);
+        assert!(parts.active_close);
+        assert!(parts.close.is_empty());
         assert_eq!(
             hit_test(
                 &l,
-                (close.left + close.right) / 2,
-                (close.top + close.bottom) / 2
+                (parts.favicon.left + parts.favicon.right) / 2,
+                (parts.favicon.top + parts.favicon.bottom) / 2
             ),
             Hit::TabClose(0)
         );
+        let inactive = l.tab_parts(l.tab(1).expect("inactive tab"));
+        assert!(inactive.close.is_empty());
+        assert!(!inactive.favicon.is_empty());
+        assert_eq!(hit_test(&l, inactive.favicon.left + 1, inactive.favicon.top + 1), Hit::Tab(1));
     }
 
     /// The back, forward and reload buttons, left to right, each with the hit it should return.
@@ -1384,6 +1553,59 @@ mod tests {
                     assert_ne!(hit_test(&l, rect.right, centre.1), hit, "right of {hit:?}");
                     assert_ne!(hit_test(&l, centre.0, rect.top - 1), hit, "above {hit:?}");
                     assert_ne!(hit_test(&l, centre.0, rect.bottom), hit, "below {hit:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn main_menu_bubble_sits_right_of_the_address_pill_without_overlap() {
+        // 520 logical px is the window's minimum track width.
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            for logical_width in [520, 600, 768, 1024, 1440] {
+                for tabs in [1, 8, 40] {
+                    let l = layout(m.px(logical_width), dpi, tabs);
+                    let gap = m.px(Metrics::ISLAND_GAP);
+                    let menu = l.main_menu_button;
+                    let context = format!("dpi {dpi} width {logical_width} tabs {tabs}");
+
+                    assert!(!menu.is_empty(), "bubble is shown; {context}");
+                    assert_eq!(
+                        menu.left - l.omnibox.right,
+                        gap,
+                        "bubble is stuck to the pill; {context}"
+                    );
+                    assert_eq!(
+                        (menu.top, menu.bottom),
+                        (l.omnibox.top, l.omnibox.bottom),
+                        "bubble is as tall as the pill; {context}"
+                    );
+                    assert_eq!(menu.width(), m.px(Metrics::MENU_BUTTON_SIZE), "{context}");
+                    if !l.new_tab_button.is_empty() {
+                        assert!(menu.right + gap <= l.new_tab_button.left, "{context}");
+                    }
+
+                    let controls = [
+                        ("back", l.back_button),
+                        ("forward", l.forward_button),
+                        ("reload", l.reload_button),
+                        ("address pill", l.omnibox),
+                        ("main menu", menu),
+                        ("new tab", l.new_tab_button),
+                        ("captions", l.caption_area),
+                    ];
+                    for (i, (name_a, a)) in controls.iter().enumerate() {
+                        for (name_b, b) in &controls[i + 1..] {
+                            if a.is_empty() || b.is_empty() {
+                                continue;
+                            }
+                            assert!(
+                                a.intersect(*b).is_empty(),
+                                "{name_a} {a:?} overlaps {name_b} {b:?}; {context}"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1494,7 +1716,7 @@ mod tests {
     fn title_is_hidden_below_threshold_width() {
         let narrow = layout(768, 96, 40);
         let tab = narrow.tab(0).expect("tab");
-        assert_eq!(tab.width(), 26);
+        assert!(tab.width() > 26);
         assert_eq!(narrow.tab_parts(tab).title.width(), 0);
 
         let wide = layout(1024, 96, 1);
@@ -1569,5 +1791,37 @@ mod tests {
         let l = layout(768, 96, 40);
 
         assert!(!l.drag_region_rects().is_empty());
+    }
+
+    #[test]
+    fn split_panes_clamp_divider_and_fit_at_minimum_window_width() {
+        let content = content_rect(520, 420, 96, false);
+        let panes = split_pane_layout(content, content.left + 100, 220, 6)
+            .expect("the minimum window still fits two panes");
+        assert_eq!(panes.left.left, content.left);
+        assert_eq!(panes.right.right, content.right);
+        assert_eq!(panes.divider.width(), 6);
+        assert!(panes.left.width() >= 220);
+        assert!(panes.right.width() >= 220);
+        assert_eq!(panes.left.right, panes.divider.left);
+        assert_eq!(panes.right.left, panes.divider.right);
+    }
+
+    #[test]
+    fn split_panes_collapse_when_the_content_cannot_fit_both_minimum_widths() {
+        let content = Rect::new(0, 0, 400, 300);
+        assert!(split_pane_layout(content, 200, 220, 6).is_none());
+    }
+
+    #[test]
+    fn content_rect_keeps_consistent_physical_pixel_margins() {
+        for dpi in [96, 120, 144, 192] {
+            let rect = content_rect(1200, 800, dpi, false);
+            let m = Metrics::new(dpi);
+            assert_eq!(rect.left, m.px(Metrics::RESIZE_RIM));
+            assert_eq!(rect.right, 1200 - m.px(Metrics::RESIZE_RIM));
+            assert_eq!(rect.bottom, 800 - m.px(Metrics::RESIZE_RIM));
+            assert!(rect.top > m.px(Metrics::STRIP_HEIGHT + Metrics::TAB_ROW_HEIGHT));
+        }
     }
 }

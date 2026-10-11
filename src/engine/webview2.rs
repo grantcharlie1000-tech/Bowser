@@ -14,7 +14,8 @@ use webview2_com::{
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
-    FaviconChangedEventHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
+    FaviconChangedEventHandler, FocusChangedEventHandler, GetCookiesCompletedHandler, GetFaviconCompletedHandler,
+    Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
@@ -26,12 +27,14 @@ use windows::{
         System::Com::IStream,
         UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT},
     },
-    core::{BOOL, Error, Interface, PCWSTR, PWSTR, Ref, Result, implement, w},
+    core::{BOOL, Error, HSTRING, Interface, PCWSTR, PWSTR, Ref, Result, implement, w},
 };
 
 use super::{
-    EngineAdapter, EngineEvents, MemoryTargetApply, MemoryUsageTarget, TrackingPreventionLevel,
+    EngineAdapter, EngineEvents, MemoryTargetApply, MemoryUsageTarget, PermissionsHandle,
+    TrackingPreventionLevel,
 };
+use crate::permissions::Permission;
 use crate::tabs::TabId;
 use crate::{shortcuts, win32};
 
@@ -297,6 +300,8 @@ struct EngineCore {
     tracking_policy: TrackingPolicy,
     blocker: Option<super::BlockerHandle>,
     active_tab: Option<TabId>,
+    /// Tabs whose controllers currently occupy one of the visible page panes.
+    visible_tabs: HashSet<TabId>,
     target: MemoryUsageTarget,
     tabs: HashMap<TabId, WebView2Tab>,
     known_tabs: HashSet<TabId>,
@@ -322,6 +327,8 @@ struct EngineCore {
     extension_ids_file: Option<PathBuf>,
     /// Bowser id to WebView2 extension id, for extensions present in the profile.
     extension_ids: HashMap<String, String>,
+    /// Stored per-site permission decisions. `None` denies every request, as before the store.
+    permissions: Option<PermissionsHandle>,
 }
 
 /// Completion for an extension operation. It runs once, on the UI thread.
@@ -380,7 +387,7 @@ impl WebView2Engine {
         tab_id: TabId,
         prewarm: bool,
     ) -> Result<()> {
-        let (environment, parent, allowed_file, events, tracking_policy, blocker) = {
+        let (environment, parent, allowed_file, events, tracking_policy, blocker, permissions) = {
             let mut state = core.borrow_mut();
             if state.closed || !state.known_tabs.contains(&tab_id) {
                 return Ok(());
@@ -416,6 +423,7 @@ impl WebView2Engine {
                 state.events.clone(),
                 state.tracking_policy,
                 state.blocker.clone(),
+                state.permissions.clone(),
             )
         };
 
@@ -476,7 +484,7 @@ impl WebView2Engine {
                                 || state.active_tab == Some(tab_id)
                                 || state.pending.contains_key(&tab_id)),
                         state.bounds,
-                        state.active_tab == Some(tab_id),
+                        state.visible_tabs.contains(&tab_id),
                     )
                 };
                 if !still_open {
@@ -505,6 +513,7 @@ impl WebView2Engine {
                         completion_events.clone(),
                         tracking_policy,
                         blocker.clone(),
+                        permissions.clone(),
                         visible,
                     )
                 };
@@ -1119,6 +1128,7 @@ impl WebView2Engine {
         let startup_extensions = extras.startup_extensions;
         let known_extensions = extras.known_extensions;
         let extension_ids_file = extras.extension_ids_file;
+        let permissions = extras.permissions;
         let extension_ids = extension_ids_file
             .as_deref()
             .map(load_extension_ids)
@@ -1225,6 +1235,7 @@ impl WebView2Engine {
                         },
                         blocker: blocker.clone(),
                         active_tab: None,
+                        visible_tabs: HashSet::new(),
                         target: MemoryUsageTarget::Normal,
                         tabs: HashMap::new(),
                         known_tabs: HashSet::new(),
@@ -1243,6 +1254,7 @@ impl WebView2Engine {
                         known_extensions: known_extensions.clone(),
                         extension_ids_file: extension_ids_file.clone(),
                         extension_ids: extension_ids.clone(),
+                        permissions: permissions.clone(),
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -1355,6 +1367,65 @@ impl EngineAdapter for WebView2Engine {
             }
             _ => done(Ok(())),
         }
+    }
+
+    fn site_cookie_count(
+        &mut self,
+        tab: TabId,
+        url: &Url,
+        done: Box<dyn FnOnce(std::result::Result<usize, String>)>,
+    ) {
+        match cookie_manager(&self.core, tab) {
+            Ok(manager) => list_cookies(
+                &manager,
+                url,
+                Box::new(move |result| done(result.map(|cookies| cookies.len()))),
+            ),
+            Err(error) => done(Err(error)),
+        }
+    }
+
+    fn clear_site_cookies(
+        &mut self,
+        tab: TabId,
+        url: &Url,
+        done: Box<dyn FnOnce(std::result::Result<usize, String>)>,
+    ) {
+        match cookie_manager(&self.core, tab) {
+            Ok(manager) => {
+                let remover = manager.clone();
+                list_cookies(
+                    &manager,
+                    url,
+                    Box::new(move |result| {
+                        done(result.and_then(|cookies| {
+                            for cookie in &cookies {
+                                unsafe { remover.DeleteCookie(cookie) }
+                                    .map_err(|error| format!("{error}"))?;
+                            }
+                            Ok(cookies.len())
+                        }))
+                    }),
+                );
+            }
+            Err(error) => done(Err(error)),
+        }
+    }
+
+    fn tracking_prevention_level(&self, tab: TabId) -> Option<&'static str> {
+        let webview = self.core.borrow().tabs.get(&tab)?.webview.clone()?;
+        let profile = unsafe {
+            webview
+                .cast::<ICoreWebView2_13>()
+                .ok()?
+                .Profile()
+                .ok()?
+                .cast::<ICoreWebView2Profile3>()
+                .ok()?
+        };
+        let mut level = COREWEBVIEW2_TRACKING_PREVENTION_LEVEL(0);
+        unsafe { profile.PreferredTrackingPreventionLevel(&mut level) }.ok()?;
+        tracking_prevention_label(level)
     }
 
     fn navigate(&mut self, url: &Url) -> Result<()> {
@@ -1478,7 +1549,8 @@ impl EngineAdapter for WebView2Engine {
         }
         state.known_tabs.insert(tab_id);
         let previous = state.active_tab;
-        if previous != Some(tab_id) {
+        let was_visible = state.visible_tabs.contains(&tab_id);
+        if previous != Some(tab_id) && !was_visible {
             if let Some(previous) = previous {
                 if state.known_tabs.contains(&previous) {
                     if let Some(tab) = state.tabs.get_mut(&previous) {
@@ -1493,6 +1565,10 @@ impl EngineAdapter for WebView2Engine {
             }
             state.active_tab = Some(tab_id);
         }
+        if !was_visible {
+            state.visible_tabs.clear();
+            state.visible_tabs.insert(tab_id);
+        }
         state.hidden_since.remove(&tab_id);
         state.suspended.remove(&tab_id);
         let bounds = state.bounds;
@@ -1504,10 +1580,49 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn set_visible_tabs(&mut self, panes: &[(TabId, RECT)], active: TabId) -> Result<()> {
+        let mut create = Vec::new();
+        {
+            let mut state = self.core.borrow_mut();
+            if state.closed {
+                return Ok(());
+            }
+            let next: HashSet<TabId> = panes.iter().map(|(tab, _)| *tab).collect();
+            let old: Vec<TabId> = state.visible_tabs.difference(&next).copied().collect();
+            for tab_id in old {
+                if let Some(tab) = state.tabs.get_mut(&tab_id) {
+                    EngineAdapter::set_visible(tab, false)?;
+                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                }
+                state.hidden_since.insert(tab_id, Instant::now());
+                state.suspended.remove(&tab_id);
+            }
+            state.visible_tabs = next;
+            state.active_tab = Some(active);
+            let target = state.target;
+            for (tab_id, bounds) in panes {
+                state.known_tabs.insert(*tab_id);
+                state.hidden_since.remove(tab_id);
+                state.suspended.remove(tab_id);
+                if let Some(tab) = state.tabs.get_mut(tab_id) {
+                    EngineAdapter::resize(tab, *bounds)?;
+                    EngineAdapter::set_visible(tab, true)?;
+                    let _ = EngineAdapter::set_memory_usage_target(tab, target);
+                } else if !state.creating.contains(tab_id) {
+                    create.push(*tab_id);
+                }
+            }
+        }
+        for tab in create {
+            Self::request_controller(&self.core, tab, false)?;
+        }
+        Ok(())
+    }
     fn close_tab(&mut self, tab_id: TabId) -> Result<()> {
         let removed = {
             let mut state = self.core.borrow_mut();
             state.known_tabs.remove(&tab_id);
+            state.visible_tabs.remove(&tab_id);
             state.waiting_controllers.retain(|queued| *queued != tab_id);
             if state.prewarm_waiting == Some(tab_id) {
                 state.prewarm_waiting = None;
@@ -1530,6 +1645,37 @@ impl EngineAdapter for WebView2Engine {
         };
         webview.is_some_and(|webview| webview_playing_audio(&webview))
     }
+    fn tab_muted(&self, tab_id: TabId) -> bool {
+        let webview = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        webview.is_some_and(|webview| {
+            webview.cast::<ICoreWebView2_8>().ok().is_some_and(|audio| {
+                let mut muted = BOOL(0);
+                unsafe { audio.IsMuted(&mut muted).is_ok() && muted.as_bool() }
+            })
+        })
+    }
+    fn supports_tab_muting(&self, tab_id: TabId) -> bool {
+        let webview = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        webview.is_some_and(|webview| webview.cast::<ICoreWebView2_8>().is_ok())
+    }
+    fn set_tab_muted(&mut self, tab_id: TabId, muted: bool) -> Result<()> {
+        let webview = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+        };
+        if let Some(webview) = webview {
+            if let Ok(audio) = webview.cast::<ICoreWebView2_8>() {
+                unsafe { audio.SetIsMuted(muted)?; }
+            }
+        }
+        Ok(())
+    }
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
         let webview = {
             let state = self.core.borrow();
@@ -1544,7 +1690,8 @@ impl EngineAdapter for WebView2Engine {
         if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
             let _ = unsafe { webview3.Resume() };
         }
-        let slot: Rc<RefCell<Option<Box<dyn FnOnce(bool)>>>> = Rc::new(RefCell::new(Some(done)));
+        type CompletionSlot = Rc<RefCell<Option<Box<dyn FnOnce(bool)>>>>;
+        let slot: CompletionSlot = Rc::new(RefCell::new(Some(done)));
         let completion = slot.clone();
         let after = webview.clone();
         let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
@@ -1584,6 +1731,17 @@ impl EngineAdapter for WebView2Engine {
                 tab.suspend();
                 state.suspended.insert(id);
             }
+        }
+        Ok(())
+    }
+    fn suspend_tab(&mut self, tab_id: TabId) -> Result<()> {
+        let mut state = self.core.borrow_mut();
+        if state.active_tab == Some(tab_id) {
+            return Ok(());
+        }
+        if let Some(tab) = state.tabs.get_mut(&tab_id) {
+            tab.suspend();
+            state.suspended.insert(tab_id);
         }
         Ok(())
     }
@@ -1846,6 +2004,7 @@ unsafe fn configure_controller(
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
     blocker: Option<super::BlockerHandle>,
+    permissions: Option<PermissionsHandle>,
     visible: bool,
 ) -> Result<WebView2Tab> {
     unsafe {
@@ -1999,6 +2158,7 @@ unsafe fn configure_controller(
         let completed_address_changed = events.address_changed.clone();
         let completed_progress = events.navigation_progress.clone();
         let completed_page_loaded = events.page_loaded.clone();
+        let completed_failed = events.navigation_failed.clone();
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
@@ -2034,6 +2194,10 @@ unsafe fn configure_controller(
                                     callback(tab_id, url);
                                 }
                             }
+                        } else if let Some(callback) = completed_failed.as_ref() {
+                            let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
+                            let _ = args.WebErrorStatus(&mut status);
+                            callback(tab_id, is_certificate_error(status));
                         }
                     }
                 }
@@ -2083,13 +2247,42 @@ unsafe fn configure_controller(
         )?;
 
         let policy_event = events.policy_event.clone();
+        let permission_store = permissions.clone();
         webview.add_PermissionRequested(
             &PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
-                    let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY);
-                }
-                if let Some(log) = policy_event.as_ref() {
-                    log("permission_denied");
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+                    let _ = args.PermissionKind(&mut kind);
+                    let mut uri = PWSTR::null();
+                    let uri = if args.Uri(&mut uri).is_ok() {
+                        CoTaskMemPWSTR::from(uri).to_string()
+                    } else {
+                        String::new()
+                    };
+                    // Only a stored Allow for this exact origin grants. Everything else, including
+                    // kinds Bowser has no store for, is denied, as before the store existed.
+                    let allowed = match (permission_for_kind(kind), permission_store.as_ref()) {
+                        (Some(permission), Some(store)) => store.borrow().allows(&uri, permission),
+                        _ => false,
+                    };
+                    let state = if allowed {
+                        COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                    } else {
+                        COREWEBVIEW2_PERMISSION_STATE_DENY
+                    };
+                    let _ = args.SetState(state);
+                    // The store is the only record of a decision: WebView2 must not keep its own,
+                    // or a later Block would not reach the next request.
+                    if let Ok(args3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                        let _ = args3.SetSavesInProfile(false);
+                    }
+                    if let Some(log) = policy_event.as_ref() {
+                        log(if allowed {
+                            "permission_allowed"
+                        } else {
+                            "permission_denied"
+                        });
+                    }
                 }
                 Ok(())
             })),
@@ -2282,6 +2475,15 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+        if let Some(callback) = events.focus_changed.clone() {
+            controller.add_GotFocus(
+                &FocusChangedEventHandler::create(Box::new(move |_sender, _args| {
+                    callback(tab_id);
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
 
         if let Some(callback) = events.failed.as_ref() {
             let failure_callback = callback.clone();
@@ -2332,6 +2534,100 @@ fn tracking_prevention_name(level: COREWEBVIEW2_TRACKING_PREVENTION_LEVEL) -> &'
     } else {
         "other"
     }
+}
+
+/// The level as shown to the user, or `None` for a value this build does not know.
+fn tracking_prevention_label(level: COREWEBVIEW2_TRACKING_PREVENTION_LEVEL) -> Option<&'static str> {
+    if level == COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE {
+        Some("Off")
+    } else if level == COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED {
+        Some("Balanced")
+    } else if level == COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT {
+        Some("Strict")
+    } else {
+        None
+    }
+}
+
+/// The stored-permission kind for a WebView2 request. Kinds Bowser keeps no store for return `None`.
+fn permission_for_kind(kind: COREWEBVIEW2_PERMISSION_KIND) -> Option<Permission> {
+    if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+        Some(Permission::Microphone)
+    } else if kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA {
+        Some(Permission::Camera)
+    } else if kind == COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION {
+        Some(Permission::Geolocation)
+    } else if kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+        Some(Permission::Notifications)
+    } else {
+        None
+    }
+}
+
+/// True for the certificate failures WebView2 reports for a navigation.
+fn is_certificate_error(status: COREWEBVIEW2_WEB_ERROR_STATUS) -> bool {
+    [
+        COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED,
+    ]
+    .contains(&status)
+}
+
+type CookieResult = std::result::Result<Vec<ICoreWebView2Cookie>, String>;
+
+fn cookie_manager(
+    core: &RefCell<EngineCore>,
+    tab: TabId,
+) -> std::result::Result<ICoreWebView2CookieManager, String> {
+    let webview = core
+        .borrow()
+        .tabs
+        .get(&tab)
+        .and_then(|tab| tab.webview.clone())
+        .ok_or_else(|| "The tab has no page yet.".to_owned())?;
+    let webview2 = webview
+        .cast::<ICoreWebView2_2>()
+        .map_err(|_| "This WebView2 runtime cannot read cookies.".to_owned())?;
+    unsafe { webview2.CookieManager() }.map_err(|error| format!("{error}"))
+}
+
+type CookieDone = Box<dyn FnOnce(CookieResult)>;
+
+/// Lists the cookies the browser would send to `url`. The callback runs on the UI thread later.
+fn list_cookies(manager: &ICoreWebView2CookieManager, url: &url::Url, done: CookieDone) {
+    let slot: Rc<RefCell<Option<CookieDone>>> = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = GetCookiesCompletedHandler::create(Box::new(move |status, list| {
+        let result = match (status, list) {
+            (Ok(()), Some(list)) => cookies_in(&list),
+            (Ok(()), None) => Ok(Vec::new()),
+            (Err(error), _) => Err(format!("{error}")),
+        };
+        let done = completion.borrow_mut().take();
+        if let Some(done) = done {
+            done(result);
+        }
+        Ok(())
+    }));
+    let uri = HSTRING::from(url.as_str());
+    if let Err(error) = unsafe { manager.GetCookies(&uri, &handler) } {
+        let done = slot.borrow_mut().take();
+        if let Some(done) = done {
+            done(Err(format!("{error}")));
+        }
+    }
+}
+
+fn cookies_in(list: &ICoreWebView2CookieList) -> CookieResult {
+    let mut count = 0u32;
+    unsafe { list.Count(&mut count) }.map_err(|error| format!("{error}"))?;
+    let mut found = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        found.push(unsafe { list.GetValueAtIndex(index) }.map_err(|error| format!("{error}"))?);
+    }
+    Ok(found)
 }
 
 fn event(log: Option<&Rc<dyn Fn(&'static str)>>, name: &'static str) {

@@ -1,4 +1,4 @@
-//! The Settings window: a native, owned panel for the four keys in the active profile's
+//! The Settings window: a native, owned panel for the settings in the active profile's
 //! `settings.txt`.
 //!
 //! Inputs are real Win32 children, so Tab, Space and screen readers work as usual. Checkboxes and
@@ -14,8 +14,9 @@ use windows::{
         Foundation::{COLORREF, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CLEARTYPE_QUALITY, CreateFontIndirectW, CreateSolidBrush,
-            DRAW_TEXT_FORMAT, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-            DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetObjectW,
+            DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+            DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
+            GetObjectW,
             HBRUSH, HDC, HFONT, InvalidateRect, LOGFONTW, PAINTSTRUCT, SelectObject, SetBkColor,
             SetBkMode, SetTextColor, TRANSPARENT,
         },
@@ -42,7 +43,9 @@ use windows::{
     core::{HSTRING, PCWSTR, w},
 };
 
+use super::menu::{self, Entry, Icon, Item, Menu};
 use crate::{
+    navigation::{SearchEngine, SearchProvider},
     settings::{self, Settings, parse_blocker_allow, parse_sleep_after_secs},
     theme::{self, Rgba},
     win32::{glass, smooth},
@@ -51,6 +54,13 @@ use crate::{
 const CLASS_NAME: PCWSTR = w!("BowserSettingsPanel");
 const TITLE: &str = "Settings";
 const SUBTITLE: &str = "Changes are saved to this profile's settings.txt.";
+const SEARCH_HEADING: &str = "Search";
+const SEARCH_LABEL: &str = "Search engine";
+const SEARCH_HELP: &str =
+    "Used for address bar searches. A choice made here takes precedence over search-provider.txt.";
+/// Shown in the selector when no engine is chosen and no `search-provider.txt` is in use.
+const SEARCH_DEFAULT: &str = "Bing (default)";
+const SEARCH_CUSTOM: &str = "Custom (search-provider.txt)";
 const SLEEP_HEADING: &str = "Tab sleep";
 const SLEEP_TOGGLE: &str = "Sleep hidden tabs after a delay";
 const SLEEP_HELP: &str = "Hidden tabs are discarded to free memory once they have been hidden for this long. Under memory pressure, the longest-hidden tabs are discarded regardless.";
@@ -61,12 +71,12 @@ const BLOCKER_TOGGLE: &str = "Block ads and trackers";
 const BLOCKER_HELP: &str = "Blocks known ad and tracking requests on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
 const ALLOW_HELP: &str = "Separate sites with commas, for example example.com, other.org.";
-const IDLE_STATUS: &str = "Changes take effect after you restart Bowser.";
-const SAVED_STATUS: &str = "Saved. Restart Bowser to apply changes.";
+const IDLE_STATUS: &str = "Search applies on the next search. Other changes need a restart.";
+const SAVED_STATUS: &str = "Saved. Search applies now; restart Bowser for other changes.";
 const RADIUS: i32 = 10;
 /// Logical (96 DPI) client size. Every other measurement is scaled from these values.
 const CLIENT_WIDTH: i32 = 600;
-const CLIENT_HEIGHT: i32 = 540;
+const CLIENT_HEIGHT: i32 = 674;
 
 const ID_SLEEP_ENABLED: i32 = 201;
 const ID_SLEEP_SECS: i32 = 202;
@@ -76,6 +86,7 @@ const ID_OPEN_FILE: i32 = 205;
 const ID_RESET: i32 = 206;
 const ID_SAVE: i32 = 207;
 const ID_CLOSE: i32 = 208;
+const ID_SEARCH_ENGINE: i32 = 209;
 
 thread_local! {
     /// The open window, so reopening the menu item focuses it rather than stacking another.
@@ -146,6 +157,10 @@ struct Panel {
     /// `BM_GETCHECK`/`BM_SETCHECK`. Native clicks and Space still arrive as `BN_CLICKED`.
     sleep_enabled: bool,
     blocker_enabled: bool,
+    /// The saved engine choice, or `None` when searches use `search-provider.txt` or the default.
+    search_engine: Option<SearchEngine>,
+    /// What the selector shows when `search_engine` is `None`.
+    search_fallback: &'static str,
     /// Control ID of the text field that has keyboard focus, or 0. Drives the teal ring.
     focus: i32,
     status: String,
@@ -156,6 +171,11 @@ struct Panel {
 struct Layout {
     title: RECT,
     subtitle: RECT,
+    search_heading: RECT,
+    search_card: RECT,
+    search_label: RECT,
+    search_button: RECT,
+    search_help: RECT,
     sleep_heading: RECT,
     sleep_card: RECT,
     sleep_toggle: RECT,
@@ -182,32 +202,37 @@ struct Layout {
 fn layout(dpi: u32) -> Layout {
     let s = |v: i32| scaled(v, dpi);
     let r = |l: i32, t: i32, right: i32, b: i32| rect(s(l), s(t), s(right), s(b));
-    let sleep_field = r(224, 196, 328, 226);
-    let allow_field = r(44, 382, 556, 412);
+    let sleep_field = r(224, 330, 328, 360);
+    let allow_field = r(44, 516, 556, 546);
     Layout {
         title: r(28, 20, 572, 56),
         subtitle: r(28, 56, 572, 76),
-        sleep_heading: r(28, 92, 572, 114),
-        sleep_card: r(28, 118, 572, 240),
-        sleep_toggle: r(44, 130, 556, 154),
-        sleep_help: r(44, 158, 556, 192),
-        sleep_label: r(44, 200, 220, 222),
+        search_heading: r(28, 92, 572, 114),
+        search_card: r(28, 118, 572, 214),
+        search_label: r(44, 132, 220, 158),
+        search_button: r(224, 128, 420, 162),
+        search_help: r(44, 170, 556, 204),
+        sleep_heading: r(28, 226, 572, 248),
+        sleep_card: r(28, 252, 572, 374),
+        sleep_toggle: r(44, 264, 556, 288),
+        sleep_help: r(44, 292, 556, 326),
+        sleep_label: r(44, 334, 220, 356),
         sleep_field,
         sleep_edit: inset(sleep_field, s(8), s(5)),
-        sleep_unit: r(340, 200, 556, 222),
-        blocker_heading: r(28, 248, 572, 270),
-        blocker_card: r(28, 276, 572, 452),
-        blocker_toggle: r(44, 288, 556, 312),
-        blocker_help: r(44, 316, 556, 350),
-        allow_label: r(44, 358, 556, 378),
+        sleep_unit: r(340, 334, 556, 356),
+        blocker_heading: r(28, 382, 572, 404),
+        blocker_card: r(28, 410, 572, 586),
+        blocker_toggle: r(44, 422, 556, 446),
+        blocker_help: r(44, 450, 556, 484),
+        allow_label: r(44, 492, 556, 512),
         allow_field,
         allow_edit: inset(allow_field, s(8), s(5)),
-        allow_help: r(44, 418, 556, 436),
-        status: r(28, 458, 572, 478),
-        open_file: r(28, 486, 198, 520),
-        reset: r(210, 486, 342, 520),
-        save: r(354, 486, 458, 520),
-        close: r(470, 486, 572, 520),
+        allow_help: r(44, 552, 556, 570),
+        status: r(28, 592, 572, 612),
+        open_file: r(28, 620, 198, 654),
+        reset: r(210, 620, 342, 654),
+        save: r(354, 620, 458, 654),
+        close: r(470, 620, 572, 654),
     }
 }
 
@@ -312,6 +337,7 @@ unsafe fn paint(hwnd: HWND) {
             FrameRect(dc, &client, res.border);
             SetBkMode(dc, TRANSPARENT);
 
+            round_rect(dc, l.search_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.sleep_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
             round_rect(dc, l.blocker_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
 
@@ -320,10 +346,13 @@ unsafe fn paint(hwnd: HWND) {
             let old = SelectObject(dc, res.heading.into());
             draw_text(dc, l.title, TITLE, p.tab_text_active, single);
             SelectObject(dc, res.section.into());
+            draw_text(dc, l.search_heading, SEARCH_HEADING, p.tab_text_active, single);
             draw_text(dc, l.sleep_heading, SLEEP_HEADING, p.tab_text_active, single);
             draw_text(dc, l.blocker_heading, BLOCKER_HEADING, p.tab_text_active, single);
             SelectObject(dc, res.font.into());
             draw_text(dc, l.subtitle, SUBTITLE, p.omnibox_placeholder, single);
+            draw_text(dc, l.search_label, SEARCH_LABEL, p.omnibox_text, single);
+            draw_text(dc, l.search_help, SEARCH_HELP, p.omnibox_placeholder, wrapped);
             draw_text(dc, l.sleep_help, SLEEP_HELP, p.omnibox_placeholder, wrapped);
             draw_text(dc, l.sleep_label, SLEEP_LABEL, p.omnibox_text, single);
             draw_text(dc, l.sleep_unit, SLEEP_UNIT, p.omnibox_placeholder, single);
@@ -414,6 +443,37 @@ unsafe fn draw_item(hwnd: HWND, lparam: LPARAM) {
                     FrameRect(dc, &rc, res.focus);
                 }
             }
+            ID_SEARCH_ENGINE => {
+                let s = |v: i32| scaled(v, dpi);
+                // Sits on the card, so clear the corners before the rounded field.
+                FillRect(dc, &rc, res.card);
+                let (border, width) = if focused {
+                    (p.omnibox_focus_border, s(2))
+                } else {
+                    (p.omnibox_border, s(1))
+                };
+                let fill = if pressed { p.tab_active } else { p.window };
+                round_rect(dc, rc, fill, border, width);
+                draw_text(
+                    dc,
+                    rect(rc.left + s(12), rc.top, rc.right - s(32), rc.bottom),
+                    &text,
+                    p.omnibox_text,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+                );
+                let (right, middle) = (rc.right - s(16), (rc.top + rc.bottom) / 2);
+                let chevron = |from: POINT, to: POINT| {
+                    smooth::stroke_line(dc, from, to, p.omnibox_text, s(2).max(1));
+                };
+                chevron(
+                    POINT { x: right - s(5), y: middle - s(2) },
+                    POINT { x: right, y: middle + s(3) },
+                );
+                chevron(
+                    POINT { x: right, y: middle + s(3) },
+                    POINT { x: right + s(5), y: middle - s(2) },
+                );
+            }
             ID_OPEN_FILE | ID_RESET | ID_SAVE | ID_CLOSE => {
                 let primary = id == ID_SAVE;
                 let (fill, text_colour) = if primary {
@@ -453,6 +513,7 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
         let edit_number = WINDOW_STYLE((ES_AUTOHSCROLL | ES_NUMBER) as u32) | WS_TABSTOP;
         let edit_text = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
         let children = [
+            (ID_SEARCH_ENGINE, "", l.search_button, button, ButtonKind::Owner),
             (ID_SLEEP_ENABLED, SLEEP_TOGGLE, l.sleep_toggle, button, ButtonKind::Owner),
             (ID_SLEEP_SECS, "", l.sleep_edit, edit_number, ButtonKind::Edit),
             (ID_BLOCKER_ENABLED, BLOCKER_TOGGLE, l.blocker_toggle, button, ButtonKind::Owner),
@@ -513,12 +574,78 @@ fn populate(hwnd: HWND, settings: &Settings) {
     if let Some(panel) = state(hwnd) {
         panel.sleep_enabled = settings.sleep_enabled;
         panel.blocker_enabled = settings.blocker_enabled;
+        panel.search_engine = settings.search_engine;
     }
+    refresh_search_text(hwnd);
     invalidate_child(hwnd, ID_SLEEP_ENABLED);
     invalidate_child(hwnd, ID_BLOCKER_ENABLED);
     set_text(hwnd, ID_SLEEP_SECS, &settings.sleep_after_secs.to_string());
     set_text(hwnd, ID_BLOCKER_ALLOW, &settings.blocker_allow.join(", "));
     invalidate(hwnd);
+}
+
+fn search_text(panel: &Panel) -> &'static str {
+    match panel.search_engine {
+        Some(engine) => engine.label(),
+        None => panel.search_fallback,
+    }
+}
+
+/// Copies the selector's current choice into its text. Owner-drawn, so the text is what it shows.
+fn refresh_search_text(hwnd: HWND) {
+    let text = state(hwnd).map_or("", |panel| search_text(panel));
+    set_text(hwnd, ID_SEARCH_ENGINE, text);
+}
+
+fn engine_description(engine: SearchEngine) -> &'static str {
+    match engine {
+        SearchEngine::Google => "Searches go to google.com.",
+        SearchEngine::DuckDuckGo => "Searches go to duckduckgo.com.",
+    }
+}
+
+/// Opens the themed engine list under the selector. The list runs its own message loop, so the
+/// panel is read before it opens and changed only after it closes. Nothing is saved until Save.
+fn choose_search_engine(hwnd: HWND) {
+    let Some(button) = child_of(hwnd, ID_SEARCH_ENGINE) else {
+        return;
+    };
+    let mut bounds = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(button, &mut bounds);
+    }
+    let current = state(hwnd).and_then(|panel| panel.search_engine);
+    let entries = SearchEngine::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, &engine)| {
+            let selected = current == Some(engine);
+            let icon = if selected { Icon::Check } else { Icon::None };
+            Entry::Item(
+                Item::new(index, engine.label(), icon)
+                    .checked(selected)
+                    .described(engine_description(engine)),
+            )
+        })
+        .collect();
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Used for address bar searches.".to_owned(),
+    };
+    let anchor = POINT {
+        x: bounds.left,
+        y: bounds.bottom + scaled(4, dpi_of(hwnd)),
+    };
+    if let Some(chosen) = menu::track_below(hwnd, anchor, menu) {
+        if let Some(&engine) = SearchEngine::ALL.get(chosen.id) {
+            if let Some(panel) = state(hwnd) {
+                panel.search_engine = Some(engine);
+            }
+            refresh_search_text(hwnd);
+            set_status(hwnd, "Not saved yet. Press Save to keep this search engine.", false);
+        }
+    }
 }
 
 fn invalidate(hwnd: HWND) {
@@ -563,8 +690,10 @@ fn save_form(hwnd: HWND) {
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    let (sleep_enabled, blocker_enabled) = state(hwnd)
-        .map_or((true, true), |panel| (panel.sleep_enabled, panel.blocker_enabled));
+    let (sleep_enabled, blocker_enabled, search_engine) = state(hwnd).map_or(
+        (true, true, None),
+        |panel| (panel.sleep_enabled, panel.blocker_enabled, panel.search_engine),
+    );
     let sleep = parse_sleep_after_secs(&window_text_of(hwnd, ID_SLEEP_SECS));
     let allow = parse_blocker_allow(&window_text_of(hwnd, ID_BLOCKER_ALLOW));
     let (sleep_after_secs, blocker_allow) = match (sleep, allow) {
@@ -585,6 +714,7 @@ fn save_form(hwnd: HWND) {
         sleep_after_secs,
         blocker_enabled,
         blocker_allow,
+        search_engine,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {
@@ -602,7 +732,7 @@ fn window_text_of(hwnd: HWND, id: i32) -> String {
 fn reset(hwnd: HWND) {
     if !confirm(
         hwnd,
-        "Reset all four settings to their defaults? Comments and other lines in settings.txt are kept.",
+        "Reset all settings to their defaults? Comments and other lines in settings.txt are kept.",
     ) {
         return;
     }
@@ -612,7 +742,11 @@ fn reset(hwnd: HWND) {
     match settings::save(&path, &Settings::default()) {
         Ok(()) => {
             populate(hwnd, &Settings::default());
-            set_status(hwnd, "Defaults saved. Restart Bowser to apply changes.", false);
+            set_status(
+                hwnd,
+                "Defaults saved. Search applies now; restart Bowser for other changes.",
+                false,
+            );
         }
         Err(error) => set_status(hwnd, save_error(&error), true),
     }
@@ -688,6 +822,7 @@ fn command(hwnd: HWND, wparam: WPARAM) {
             }
             invalidate(hwnd);
         }
+        (ID_SEARCH_ENGINE, BN_CLICKED) => choose_search_engine(hwnd),
         (ID_OPEN_FILE, BN_CLICKED) => open_file(hwnd),
         (ID_RESET, BN_CLICKED) => reset(hwnd),
         (ID_SAVE, BN_CLICKED) => save_form(hwnd),
@@ -747,12 +882,22 @@ pub(crate) fn open(owner: HWND) -> windows::core::Result<()> {
             Ok(settings) => settings.clone(),
             Err(_) => Settings::default(),
         };
+        // With no engine chosen, the selector names what searches really use.
+        let search_fallback = if SearchProvider::from_config(None, &profile.search_provider_file())
+            .is_default()
+        {
+            SEARCH_DEFAULT
+        } else {
+            SEARCH_CUSTOM
+        };
         let panel = Box::into_raw(Box::new(Panel {
             path,
             palette,
             res: Resources::new(dpi, palette),
             sleep_enabled: initial.sleep_enabled,
             blocker_enabled: initial.blocker_enabled,
+            search_engine: initial.search_engine,
+            search_fallback,
             focus: 0,
             status: IDLE_STATUS.to_owned(),
             status_error: false,

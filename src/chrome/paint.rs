@@ -34,7 +34,16 @@ use crate::{
         tab_card::Marker,
     },
     favicon::FaviconBitmap,
-    theme::{MARKER_COLOURS, Palette, Rgba},
+    site_security::SiteSecurity,
+    theme::{ISLAND_COLOURS, MARKER_COLOURS, Palette, Rgba},
+};
+
+/// Warning colour for a certificate problem. The palette has no alert colour of its own.
+const CERTIFICATE_WARNING: Rgba = Rgba {
+    r: 0xC4,
+    g: 0x2B,
+    b: 0x1C,
+    a: 0xFF,
 };
 
 /// Logical diameter of a tab's marker dot.
@@ -55,6 +64,40 @@ pub struct TabView<'a> {
     pub group_control: bool,
     /// Marker dot drawn over the start of the favicon area.
     pub marker: Option<Marker>,
+    /// Island colour id for the group bar, drawn when this is the group leader. `None` uses the
+    /// theme accent.
+    pub group_colour: Option<u8>,
+}
+
+/// Colour of a group bar: the island's chosen colour, or the theme accent when none is set.
+pub fn island_colour(chosen: Option<u8>, accent: Rgba) -> Rgba {
+    chosen
+        .and_then(|id| ISLAND_COLOURS.get(usize::from(id)).copied())
+        .unwrap_or(accent)
+}
+
+/// Left edge of a group's shared pill. A tab wide enough for its close target keeps that target
+/// outside the pill; a compact tab starts the pill at its own edge. Painting and the island bar
+/// hit test both use this, so they agree on where the bar is.
+pub fn group_shell_left(first: Rect, m: Metrics) -> i32 {
+    if first.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH) {
+        first.left
+    } else {
+        first.left + m.px(Metrics::CLOSE_INSET + Metrics::CLOSE_SIZE + Metrics::TEXT_GAP)
+    }
+}
+
+/// The group bar drawn at the leading edge of a group's pill, vertically centred in it.
+pub fn group_bar_rect(shell: Rect, m: Metrics) -> Rect {
+    let width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
+    let height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
+    let left = shell.left + m.px(Metrics::GROUP_MARKER_INSET);
+    Rect::new(
+        left,
+        (shell.top + shell.bottom - height) / 2,
+        left + width,
+        (shell.top + shell.bottom + height) / 2,
+    )
 }
 
 /// State of the ghost native EDIT rendered by the chrome painter.
@@ -66,6 +109,8 @@ pub struct OmniboxView<'a> {
     pub focused: bool,
     pub completion_suffix: &'a str,
     pub progress: Option<f32>,
+    /// Connection state drawn as the icon at the left of the field.
+    pub site: SiteSecurity,
 }
 
 /// A complete read-only snapshot of the chrome state for one paint.
@@ -86,7 +131,7 @@ pub struct ChromeView<'a> {
     pub departures: &'a [Departure],
 }
 
-/// Reusable top-down premultiplied BGRA image. Its height stops at the omnibox row.
+/// Reusable top-down premultiplied BGRA image for chrome and the overlaid page boundary.
 pub struct ChromeSurface {
     width: i32,
     height: i32,
@@ -103,6 +148,7 @@ pub struct ChromeSurface {
     /// when the omnibox is not focused.
     caret_rect: Rect,
     last_presented: Option<PresentedSurface>,
+    page_regions: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,6 +208,7 @@ impl ChromeSurface {
             omnibox_scroll: 0,
             caret_rect: Rect::default(),
             last_presented: None,
+            page_regions: None,
         }
     }
 
@@ -195,6 +242,14 @@ impl ChromeSurface {
     pub fn stride(&self) -> usize {
         self.dib.stride()
     }
+
+    /// Sets the content edges painted above the WebView2 surface.
+    pub fn set_page_regions(
+        &mut self,
+        content: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
+    ) {
+        self.page_regions = content;
+    }
     pub fn width(&self) -> i32 {
         self.width
     }
@@ -216,7 +271,11 @@ impl ChromeSurface {
             pixels[start..start + dirty.width() as usize * 4].fill(0);
         }
         if !view.palette.translucent {
-            self.fill_rect(bounds, view.palette.window, dirty);
+            self.fill_rect(
+                Rect::new(0, 0, self.width, layout::chrome_height(view.layout.metrics.dpi())),
+                view.palette.window,
+                dirty,
+            );
         }
         self.paint_departures(view, dirty);
         self.paint_tabs(view, dirty);
@@ -226,6 +285,72 @@ impl ChromeSurface {
         self.paint_nav(view, dirty);
         self.paint_caption(view, dirty);
         self.paint_omnibox(view, dirty);
+        self.paint_page_boundary(view, dirty);
+    }
+
+    fn paint_page_boundary(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let Some((content, panes, focused_left)) = self.page_regions else { return };
+        let m = view.layout.metrics;
+        let radius = m.px(9);
+        let colour = view.palette.omnibox_border;
+        if let Some(panes) = panes {
+            self.mask_rounded(view.palette.window, panes.left, radius, dirty, true, false);
+            self.mask_rounded(view.palette.window, panes.right, radius, dirty, false, true);
+            self.border(panes.left, radius, 1.0, colour, dirty);
+            self.border(panes.right, radius, 1.0, colour, dirty);
+            let focus = if focused_left { panes.left } else { panes.right };
+            self.border(focus, radius, 1.5, view.palette.omnibox_focus_border, dirty);
+            let divider = panes.divider;
+            self.fill_rect(divider, view.palette.omnibox_border, dirty);
+        } else {
+            self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
+            self.border(content, radius, 1.0, colour, dirty);
+        }
+    }
+
+    /// Covers only the pixels outside the page's rounded outer corners. The WebView remains a
+    /// rectangular controller; this small themed mask is painted in the owned chrome overlay.
+    fn mask_rounded(
+        &mut self,
+        colour: Rgba,
+        rect: Rect,
+        radius: i32,
+        dirty: Rect,
+        round_left: bool,
+        round_right: bool,
+    ) {
+        let radius = radius.min(rect.width() / 2).min(rect.height() / 2).max(0);
+        if radius == 0 { return; }
+        let corners = [
+            (rect.left, rect.top, round_left, true),
+            (rect.right - radius, rect.top, round_right, true),
+            (rect.left, rect.bottom - radius, round_left, false),
+            (rect.right - radius, rect.bottom - radius, round_right, false),
+        ];
+        let stride = self.stride();
+        let width = self.width;
+        let height = self.height;
+        let pixels = self.dib.pixels_mut();
+        for (left, top, enabled, top_corner) in corners {
+            if !enabled { continue; }
+            let corner = Rect::new(left, top, left + radius, top + radius).intersect(dirty);
+            let (cx, cy) = match (left == rect.left, top_corner) {
+                (true, true) => (left + radius, top + radius),
+                (false, true) => (left, top + radius),
+                (true, false) => (left + radius, top),
+                (false, false) => (left, top),
+            };
+            for y in corner.top.max(0)..corner.bottom.min(height) {
+                for x in corner.left.max(0)..corner.right.min(width) {
+                    let dx = x - cx;
+                    let dy = y - cy;
+                    if dx * dx + dy * dy > radius * radius {
+                        let index = y as usize * stride + x as usize * 4;
+                        blend_pixel(&mut pixels[index..index + 4], colour, 255);
+                    }
+                }
+            }
+        }
     }
 
     /// Updates the layered chrome surface using its premultiplied per-pixel alpha.
@@ -418,12 +543,7 @@ impl ChromeSurface {
                 continue;
             };
             let compact = first.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH);
-            let leading = if compact {
-                0
-            } else {
-                m.px(Metrics::CLOSE_INSET + Metrics::CLOSE_SIZE + Metrics::TEXT_GAP)
-            };
-            let shell = Rect::new(first.left + leading, first.top, last.right, last.bottom)
+            let shell = Rect::new(group_shell_left(first, m), first.top, last.right, last.bottom)
                 .intersect(view.layout.tab_zone);
             if !shell.is_empty() {
                 let has_marker =
@@ -440,7 +560,7 @@ impl ChromeSurface {
             self.border(
                 shell,
                 m.tab_radius(),
-                m.dpi() as f32 / 96.0,
+                1.0,
                 scale_alpha(view.palette.hairline, 0.8),
                 dirty,
             );
@@ -478,7 +598,6 @@ impl ChromeSurface {
             );
             let radius = m.tab_radius();
             let grouped = details.is_some_and(|tab| tab.group_size.is_some());
-            let mut grouped_face = None;
             if grouped {
                 if hover > 0.0 || selected > 0.0 {
                     let shell_left = group_spans
@@ -492,34 +611,31 @@ impl ChromeSurface {
                         rect.bottom - m.px(1),
                     );
                     self.round(selected_rect, m.px(6), fill, dirty);
-                    grouped_face = Some(selected_rect);
                 }
             } else {
                 self.round(rect, radius, fill, dirty);
-                // Resting tabs are flat; the outline only appears as a tab warms up or is selected.
                 self.border(
                     rect,
                     radius,
-                    m.dpi() as f32 / 96.0,
-                    scale_alpha(view.palette.hairline, hover.max(selected)),
+                    1.0,
+                    scale_alpha(view.palette.hairline, 0.62),
                     dirty,
                 );
             }
-            if selected > 0.0 {
+            if selected > 0.0 && !grouped {
                 // Translucent palettes keep only a faint outline on the selected island, so it
                 // reads as a soft fill rather than a framed box.
                 let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
                 let colour = scale_alpha(view.palette.tab_active_border, selected * stroke);
-                let active_rect = grouped_face.unwrap_or(rect);
                 self.border(
-                    active_rect,
-                    if grouped { m.px(6) } else { radius },
-                    m.dpi() as f32 / 96.0,
+                    rect,
+                    radius,
+                    1.0,
                     colour,
                     dirty,
                 );
             }
-            // Islands are independent rounded shapes with a gap between them, so no divider is drawn.
+            // Group members share the shell outline; their faces use fills and dividers.
             let mut parts = view.layout.tab_parts(tab_rect);
             if !parts.title.is_empty() {
                 // The favicon and title sit centred in the tab, as a group.
@@ -547,27 +663,20 @@ impl ChromeSurface {
                     .iter()
                     .find(|(start, _, _, has_marker)| *start == index && *has_marker)
                 {
-                    let marker_width = m.px(Metrics::GROUP_MARKER_WIDTH).max(3);
-                    let marker_height = m.px(Metrics::GROUP_MARKER_HEIGHT).max(10);
-                    let marker = Rect::new(
-                        shell.left + m.px(Metrics::GROUP_MARKER_INSET),
-                        (shell.top + shell.bottom - marker_height) / 2,
-                        shell.left + m.px(Metrics::GROUP_MARKER_INSET) + marker_width,
-                        (shell.top + shell.bottom + marker_height) / 2,
-                    );
-                    self.round(
-                        marker,
-                        marker_width / 2,
+                    let marker = group_bar_rect(*shell, m);
+                    let colour = island_colour(
+                        view.tabs.get(index).and_then(|tab| tab.group_colour),
                         view.palette.tab_group_accent,
-                        dirty,
                     );
+                    self.round(marker, marker.width() / 2, colour, dirty);
                 }
                 let shift = m.px(Metrics::GROUP_MARKER_SHIFT);
                 parts.favicon.left += shift;
                 parts.favicon.right += shift;
                 parts.title.left += shift;
             }
-            if rect.contains_rect(parts.favicon) {
+            let narrow_active_close = active && parts.active_close;
+            if rect.contains_rect(parts.favicon) && !narrow_active_close {
                 if let Some(Some(favicon)) = details.map(|value| value.favicon) {
                     self.blit_favicon(parts.favicon, favicon, dirty);
                 } else {
@@ -611,17 +720,23 @@ impl ChromeSurface {
                 );
                 self.draw_text(title, parts.title, color, true, rect, dirty);
             }
-            if !rect.contains_rect(parts.close) {
+            let close_rect = if narrow_active_close {
+                parts.favicon
+            } else {
+                parts.close
+            };
+            if close_rect.is_empty() || !rect.contains_rect(close_rect) {
                 continue;
             }
-            let close_hover = matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == index);
+            let close_hover = !parts.active_close
+                && matches!(view.hover, Hit::Tab(i) | Hit::TabClose(i) if i == index);
             let close_pressed = matches!(view.pressed, Hit::TabClose(i) if i == index);
-            if !close_hover && !close_pressed {
+            if !narrow_active_close && !close_hover && !close_pressed {
                 continue;
             }
             if close_hover || close_pressed {
                 self.round(
-                    parts.close,
+                    close_rect,
                     m.px(6),
                     if close_pressed {
                         view.palette.tab_active_border
@@ -636,7 +751,7 @@ impl ChromeSurface {
             } else {
                 view.palette.tab_text_inactive
             };
-            let (cx, cy) = center(parts.close);
+            let (cx, cy) = center(close_rect);
             let half = m.px(4);
             self.line(cx - half, cy - half, cx + half, cy + half, 1.35, c, dirty);
             self.line(cx - half, cy + half, cx + half, cy - half, 1.35, c, dirty);
@@ -685,21 +800,25 @@ impl ChromeSurface {
         self.line(x, y + 2, x + 4, y - 2, 1.5, c, dirty);
     }
 
-    /// Three stacked dots at the right of the omnibox row; the main menu opens from here.
+    /// Three stacked dots in a bubble right of the address pill; the main menu opens from here. The
+    /// bubble has the back / forward pill's fill and outline.
     fn paint_main_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let rect = view.layout.main_menu_button;
         if rect.intersect(dirty).is_empty() {
             return;
         }
         let m = view.layout.metrics;
+        let radius = m.island_radius();
+        self.round(rect, radius, view.palette.tab_inactive, dirty);
         if view.hover == Hit::MainMenu || view.pressed == Hit::MainMenu {
             let colour = if view.pressed == Hit::MainMenu {
                 view.palette.tab_active_border
             } else {
                 view.palette.caption_hover
             };
-            self.round(rect, m.island_radius(), colour, dirty);
+            self.round(rect, radius, colour, dirty);
         }
+        self.border(rect, radius, m.dpi() as f32 / 96.0, view.palette.hairline, dirty);
         let (cx, cy) = center(rect);
         let size = m.px(3).max(2);
         let pitch = m.px(6);
@@ -713,6 +832,24 @@ impl ChromeSurface {
     /// Back, forward and reload. Back and forward are dimmed and inert when there is no history.
     fn paint_nav(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
+        let back = view.layout.back_button;
+        let forward = view.layout.forward_button;
+        let pill = Rect::new(back.left, back.top, forward.right, back.bottom);
+        if !pill.intersect(dirty).is_empty() {
+            self.round(pill, m.island_radius(), view.palette.tab_inactive, dirty);
+            self.border(pill, m.island_radius(), 1.0, view.palette.hairline, dirty);
+            if view.hover == Hit::Back || view.pressed == Hit::Back {
+                self.round(back, m.px(7), view.palette.caption_hover, dirty);
+            } else if view.hover == Hit::Forward || view.pressed == Hit::Forward {
+                self.round(forward, m.px(7), view.palette.caption_hover, dirty);
+            }
+            let divider_x = forward.left;
+            self.fill_rect(
+                Rect::new(divider_x, pill.top + m.px(7), divider_x + 1, pill.bottom - m.px(7)),
+                view.palette.hairline,
+                dirty,
+            );
+        }
         let buttons = [
             (Hit::Back, view.layout.back_button, view.can_back),
             (Hit::Forward, view.layout.forward_button, view.can_forward),
@@ -724,7 +861,7 @@ impl ChromeSurface {
             }
             let mut color = view.palette.caption_glyph;
             if enabled {
-                if view.hover == hit || view.pressed == hit {
+                if hit == Hit::Reload && (view.hover == hit || view.pressed == hit) {
                     self.round(rect, m.island_radius(), view.palette.caption_hover, dirty);
                 }
             } else {
@@ -859,30 +996,26 @@ impl ChromeSurface {
             },
             dirty,
         );
-        let inset = m.px(Metrics::OMNIBOX_TEXT_INSET);
         let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let text_area = Rect::new(rect.left + left_inset, top, rect.right - inset, top + line);
+        let split_button = view.layout.split_button();
+        let text_area = Rect::new(
+            rect.left + left_inset,
+            top,
+            (split_button.left - m.px(4)).max(rect.left + left_inset),
+            top + line,
+        );
         let origin = text_area;
-        // Thin magnifier, left aligned and vertically centred in the field.
-        let lens = m.px(10);
-        let lens_rect = Rect::new(
-            rect.left + m.px(10),
-            (rect.top + rect.bottom - lens) / 2 - m.px(1),
-            rect.left + m.px(10) + lens,
-            (rect.top + rect.bottom - lens) / 2 - m.px(1) + lens,
-        );
-        let placeholder = view.palette.omnibox_placeholder;
-        self.border(lens_rect, lens / 2, 1.2, placeholder, dirty);
-        // The handle leaves the circle along its lower right diagonal.
-        let reach = lens as f32 / 2.0 * std::f32::consts::FRAC_1_SQRT_2;
-        let (lx, ly) = (
-            (lens_rect.left + lens_rect.right) as f32 / 2.0 + reach,
-            (lens_rect.top + lens_rect.bottom) as f32 / 2.0 + reach,
-        );
-        let handle = m.px(3) as f32;
-        self.line_f(lx, ly, lx + handle, ly + handle, 1.2, placeholder, dirty);
+        // The connection icon at the left of the field: a magnifier stands in before any page loads.
+        let icon_colour = match view.omnibox.site {
+            SiteSecurity::Secure => view.palette.omnibox_text,
+            SiteSecurity::CertificateProblem => CERTIFICATE_WARNING,
+            _ => view.palette.omnibox_placeholder,
+        };
+        let button = view.layout.site_info_button();
+        self.paint_site_icon(view.omnibox.site, button, icon_colour, dirty);
+        self.paint_split_button(view, split_button, dirty);
         // Text, selection and caret never leave the field, however far the text is scrolled.
         let field = Rect::new(text_area.left, rect.top, text_area.right, rect.bottom);
         let caret_width = m.px(1).max(1);
@@ -995,29 +1128,124 @@ impl ChromeSurface {
         }
         if let Some(progress) = view.omnibox.progress {
             if progress > 0.0 {
-                let unit = m.px(1).max(1);
-                let stroke = if view.omnibox.focused { 2 * unit } else { unit };
-                let gap = unit;
-                let bar_h = 3 * unit;
-                let bottom = rect.bottom - stroke - gap;
+                let bar_h = m.px(2).max(1);
+                let bottom = rect.bottom;
                 let top = bottom - bar_h;
-                let max_width = (rect.width() - stroke * 2).max(0);
-                let width = (max_width as f32 * progress.clamp(0.0, 100.0) / 100.0).round() as i32;
-                let bar = Rect::new(rect.left + stroke, top, rect.left + stroke + width, bottom)
-                    .intersect(rect);
+                let width = (rect.width() as f32 * progress.clamp(0.0, 100.0) / 100.0).round() as i32;
+                let bar = Rect::new(rect.left, top, rect.left + width, bottom);
                 let (surface_w, surface_h, stride) = (self.width, self.height, self.stride());
-                raster_rounded_rect_clipped(
-                    self.dib.pixels_mut(),
-                    surface_w,
-                    surface_h,
-                    stride,
-                    bar,
-                    (bar_h / 2) as f32,
-                    rect,
-                    radius as f32,
-                    view.palette.progress_fill,
-                    dirty,
-                );
+                let opacity = ((200.0 - progress) / 100.0).clamp(0.0, 1.0);
+                for (extra, alpha) in [(m.px(4), 0.09), (m.px(2), 0.18), (0, 1.0)] {
+                    let glow = Rect::new(bar.left, bar.top - extra, bar.right, bar.bottom);
+                    raster_rounded_rect_clipped(
+                        self.dib.pixels_mut(), surface_w, surface_h, stride,
+                        glow, 0.0, rect, radius as f32,
+                        scale_alpha(view.palette.progress_fill, opacity * alpha), dirty,
+                    );
+                }
+                if (100.0..200.0).contains(&progress) {
+                    let tail = m.px(14);
+                    let sweep = bar.left + (bar.width() as f32 * ((progress - 100.0) / 100.0)) as i32;
+                    let shimmer = Rect::new((sweep - tail).max(bar.left), top - m.px(2), sweep.min(bar.right), bottom);
+                    raster_rounded_rect_clipped(
+                        self.dib.pixels_mut(), surface_w, surface_h, stride,
+                        shimmer, 0.0, rect, radius as f32,
+                        scale_alpha(view.palette.progress_fill, opacity * 0.22), dirty,
+                    );
+                }
+            }
+        }
+    }
+
+    fn paint_split_button(&mut self, view: &ChromeView<'_>, rect: Rect, dirty: Rect) {
+        if rect.intersect(dirty).is_empty() { return; }
+        let m = view.layout.metrics;
+        if view.hover == Hit::Split || view.pressed == Hit::Split {
+            let colour = if view.pressed == Hit::Split {
+                view.palette.tab_active_border
+            } else {
+                view.palette.caption_hover
+            };
+            self.round(rect, m.px(6), colour, dirty);
+        }
+        let inset = m.px(5).max(4);
+        let left = Rect::new(rect.left + inset, rect.top + inset, rect.left + inset * 2, rect.bottom - inset);
+        let right = Rect::new(rect.right - inset * 2, rect.top + inset, rect.right - inset, rect.bottom - inset);
+        self.border(left, m.px(2), 1.0, view.palette.caption_glyph, dirty);
+        self.border(right, m.px(2), 1.0, view.palette.caption_glyph, dirty);
+        let (cx, _) = center(rect);
+        self.line(cx, rect.top + inset, cx, rect.bottom - inset, 1.0, view.palette.caption_glyph, dirty);
+    }
+
+    /// Draws the connection icon centred in `button`, on a 14-unit grid: a padlock when the page is
+    /// secure, an open padlock for plain HTTP, a warning sign for a certificate problem, an info mark
+    /// for local or unknown pages, and a magnifier before any page is loaded.
+    fn paint_site_icon(&mut self, state: SiteSecurity, button: Rect, colour: Rgba, dirty: Rect) {
+        const GRID: f32 = 14.0;
+        const ARC_STEPS: usize = 12;
+        let size = button.width() * 14 / 24;
+        let left = button.left + (button.width() - size) / 2;
+        let top = button.top + (button.height() - size) / 2;
+        let scale = size as f32 / GRID;
+        let point = |x: f32, y: f32| (left as f32 + x * scale, top as f32 + y * scale);
+        let grid_rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let (a, b) = point(x0, y0);
+            let (c, d) = point(x1, y1);
+            Rect::new(a.round() as i32, b.round() as i32, c.round() as i32, d.round() as i32)
+        };
+        let stroke = (1.3 * self.dpi as f32 / 96.0).max(1.0);
+        match state {
+            SiteSecurity::Secure | SiteSecurity::NotSecure => {
+                let body = grid_rect(2.0, 6.5, 12.0, 13.0);
+                self.round(body, body.width() / 5, colour, dirty);
+                // Closed shackle for a secure page. For plain HTTP the arc stops short of the right
+                // leg, so the shackle looks unlatched.
+                let end = if state == SiteSecurity::Secure {
+                    0.0
+                } else {
+                    std::f32::consts::PI / 3.0
+                };
+                let mut path = vec![point(4.0, 6.5), point(4.0, 4.0)];
+                for step in 0..=ARC_STEPS {
+                    let t = std::f32::consts::PI
+                        - (std::f32::consts::PI - end) * step as f32 / ARC_STEPS as f32;
+                    path.push(point(7.0 + 3.0 * t.cos(), 4.0 - 3.0 * t.sin()));
+                }
+                if state == SiteSecurity::Secure {
+                    path.push(point(10.0, 6.5));
+                }
+                for pair in path.windows(2) {
+                    let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                    self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
+                }
+            }
+            SiteSecurity::CertificateProblem => {
+                let corners = [point(7.0, 1.5), point(13.0, 12.5), point(1.0, 12.5)];
+                for index in 0..3 {
+                    let ((x0, y0), (x1, y1)) = (corners[index], corners[(index + 1) % 3]);
+                    self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
+                }
+                let (x0, y0) = point(7.0, 5.0);
+                let (x1, y1) = point(7.0, 8.5);
+                self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
+                let dot = grid_rect(6.1, 9.9, 7.9, 11.7);
+                self.round(dot, dot.width() / 2, colour, dirty);
+            }
+            SiteSecurity::Internal | SiteSecurity::Unknown => {
+                let ring = grid_rect(1.0, 1.0, 13.0, 13.0);
+                self.border(ring, ring.width() / 2, stroke, colour, dirty);
+                let dot = grid_rect(6.1, 2.9, 7.9, 4.7);
+                self.round(dot, dot.width() / 2, colour, dirty);
+                let (x0, y0) = point(7.0, 6.5);
+                let (x1, y1) = point(7.0, 10.5);
+                self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
+            }
+            SiteSecurity::NoSite => {
+                let lens = grid_rect(1.5, 1.5, 9.5, 9.5);
+                self.border(lens, lens.width() / 2, stroke, colour, dirty);
+                let (x0, y0) = point(9.0, 9.0);
+                let (x1, y1) = point(12.5, 12.5);
+                self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
             }
         }
     }
@@ -1156,11 +1384,10 @@ impl ChromeSurface {
     }
 }
 
-/// Clamps a client size to the chrome rows that are painted, and a DPI to at least 96.
+/// Clamps a client size to the whole owned overlay and a DPI to at least 96.
 fn surface_size(width: i32, height: i32, dpi: u32) -> (i32, i32, u32) {
     let dpi = dpi.max(96);
-    let chrome = height.max(0).min(layout::chrome_height(dpi));
-    (width.max(1), chrome.max(1), dpi)
+    (width.max(1), height.max(1), dpi)
 }
 
 /// Encodes `text` as UTF-16 into `out`, capped at `MAX_TEXT_UNITS` without splitting a surrogate
@@ -1987,6 +2214,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }];
         let view = ChromeView {
             layout: &layout,
@@ -2005,6 +2233,7 @@ mod tests {
                 focused: false,
                 completion_suffix: "",
                 progress: None,
+                site: SiteSecurity::NoSite,
             },
             now: Instant::now(),
             departures: &[],
@@ -2075,6 +2304,7 @@ mod tests {
             focused: true,
             completion_suffix: suffix,
             progress: None,
+            site: SiteSecurity::Secure,
         }
     }
 
@@ -2097,6 +2327,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         });
         let view = ChromeView {
             layout,
@@ -2207,6 +2438,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }];
         let text = "https://en.wikipedia.org/wi";
         let mut surface = ChromeSurface::new(1000, 120, 96);
@@ -2230,6 +2462,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }; 2];
         let mut surface = ChromeSurface::new(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -2240,7 +2473,7 @@ mod tests {
         );
         // The toolbar is intentionally transparent outside controls. Check its left margin,
         // the gap between navigation buttons, the row gap, and the margin below the tab row.
-        let nav_gap_x = (layout.back_button.right + layout.forward_button.left) / 2;
+        let nav_gap_x = (layout.forward_button.right + layout.reload_button.left) / 2;
         for (x, y) in [
             (0, 20),
             (
@@ -2268,9 +2501,15 @@ mod tests {
             &test_view(&layout, &tabs, solid, omnibox("", (0, 0), "")),
             dirty,
         );
-        for y in 0..surface.height() {
+        let chrome = layout::chrome_height(layout.metrics.dpi());
+        for y in 0..chrome {
             for x in 0..surface.width() {
                 assert_eq!(alpha_at(&surface, x, y), 255, "solid pixel ({x},{y})");
+            }
+        }
+        for y in chrome..surface.height() {
+            for x in 0..surface.width() {
+                assert_eq!(alpha_at(&surface, x, y), 0, "transparent page overlay pixel ({x},{y})");
             }
         }
     }
@@ -2286,6 +2525,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }];
         let pal = palette(Appearance::Light, true);
         let mut surface = ChromeSurface::new(600, 120, 96);
@@ -2305,8 +2545,9 @@ mod tests {
             "an unfocused field shows the start"
         );
         let o = layout.omnibox;
-        let inset = layout.metrics.px(Metrics::OMNIBOX_TEXT_INSET);
-        let right_margin = (o.right - inset + 1)..(o.right - 4);
+        let right_edge = layout.split_button().left - layout.metrics.px(4);
+        let inset = o.right - right_edge;
+        let right_margin = (right_edge + 1)..(o.right - 4);
         let middle = (o.top + o.bottom) / 2;
         for y in (middle - 6)..(middle + 6) {
             for x in right_margin.clone() {
@@ -2359,6 +2600,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
+                group_colour: None,
             };
             40
         ];
@@ -2369,7 +2611,7 @@ mod tests {
         view.hover = Hit::TabClose(39);
         surface.paint(&view, Rect::new(0, 0, 768, surface.height()));
         for x in layout.tab_zone.right..layout.tab_menu_button.left {
-            for y in 0..layout.strip.bottom {
+            for y in layout.tab_row.top..layout.tab_row.bottom {
                 assert_eq!(
                     alpha_at(&surface, x, y),
                     0,
@@ -2390,6 +2632,7 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }];
         let palette = palette(Appearance::Dark, false);
         let dirty = Rect::new(0, 0, 768, 64);
@@ -2412,7 +2655,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_tab_close_glyph_appears_when_hovering_the_tab_body() {
+    fn compact_active_tab_draws_close_in_the_favicon_slot() {
         let layout = layout::compute(768, 700, 96, 40, false);
         let tabs = [TabView {
             title: "A tab with a title",
@@ -2422,26 +2665,22 @@ mod tests {
             group_size: None,
             group_control: false,
             marker: None,
+            group_colour: None,
         }; 40];
         let palette = palette(Appearance::Dark, false);
         let mut resting = ChromeSurface::new(768, 64, 96);
-        let mut hovered = ChromeSurface::new(768, 64, 96);
-        let resting_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
-        let mut hovered_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
-        hovered_view.hover = Hit::Tab(0);
-
-        resting.paint(&resting_view, Rect::new(0, 0, 768, 64));
-        hovered.paint(&hovered_view, Rect::new(0, 0, 768, 64));
-
-        let close = layout.tab_parts(layout.tab(0).unwrap()).close;
-        let differs = (close.top..close.bottom).any(|y| {
-            let start = y as usize * resting.stride() + close.left as usize * 4;
-            let end = y as usize * resting.stride() + close.right as usize * 4;
-            resting.pixels()[start..end] != hovered.pixels()[start..end]
-        });
+        let view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+        resting.paint(&view, Rect::new(0, 0, 768, 64));
+        let parts = layout.tab_parts(layout.tab(0).unwrap());
+        assert!(parts.active_close);
+        assert!(parts.close.is_empty());
         assert!(
-            differs,
-            "hovering a compact tab should reveal its close glyph"
+            alpha_at(
+                &resting,
+                (parts.favicon.left + parts.favicon.right) / 2,
+                (parts.favicon.top + parts.favicon.bottom) / 2,
+            ) > 0,
+            "the active narrow tab draws the close glyph over its favicon slot"
         );
     }
 
@@ -2457,6 +2696,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: true,
                 marker: None,
+                group_colour: None,
             },
             TabView {
                 title: "Install Docker Desktop",
@@ -2466,6 +2706,7 @@ mod tests {
                 group_size: Some(2),
                 group_control: false,
                 marker: None,
+                group_colour: None,
             },
             TabView {
                 title: "Opera",
@@ -2475,6 +2716,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
+                group_colour: None,
             },
         ];
         let palette = palette(Appearance::Dark, false);
@@ -2568,7 +2810,7 @@ mod tests {
                                 let layout =
                                     crate::chrome::layout::compute(width, 120, dpi, count, false);
                                 let now = Instant::now();
-                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None}).collect::<Vec<_>>();
+                                let tabs=(0..count).map(|i|TabView{title:if i+1==count{"A remarkably long page title that should truncate elegantly"}else{"A quiet page"},loading:false,favicon:if i%2==0{Some(&QA_FAVICON)}else{None},emphasis:Emphasis::resting(i==0,i+1==count,now),group_size:None,group_control:false,marker:None,group_colour:None}).collect::<Vec<_>>();
                                 let text = match state {
                                     0 => "",
                                     1 => "https://example.com/a-very-long-address",
@@ -2581,6 +2823,7 @@ mod tests {
                                     focused: state == 2,
                                     completion_suffix: if state == 1 { ".net" } else { "" },
                                     progress: if state == 2 { Some(45.0) } else { None },
+                                    site: SiteSecurity::Secure,
                                 };
                                 let view = ChromeView {
                                     layout: &layout,
@@ -2637,6 +2880,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
+                group_colour: None,
             })
             .collect::<Vec<_>>();
         let start = Instant::now();
@@ -2730,6 +2974,7 @@ mod tests {
                 group_size: None,
                 group_control: false,
                 marker: None,
+                group_colour: None,
             };
             5
         ];
@@ -2750,6 +2995,7 @@ mod tests {
                 focused: false,
                 completion_suffix: "",
                 progress: None,
+                site: SiteSecurity::NoSite,
             },
             now: Instant::now(),
             departures: &[],

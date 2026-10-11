@@ -1,9 +1,11 @@
 mod card;
-mod main_menu;
+mod hover_square;
+mod island_menu;
+mod menu;
 mod settings_panel;
+mod site_info;
 pub mod frame;
 pub mod glass;
-mod menu_theme;
 pub mod passwords_import;
 mod passwords_panel;
 mod smooth;
@@ -60,6 +62,8 @@ pub(crate) const WM_NAVIGATION_PROGRESS: u32 = windows::Win32::UI::WindowsAndMes
 pub(crate) const WM_TABS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
 /// Forwarded page accelerators; WPARAM=virtual key, LPARAM=ctrl/shift/alt bit flags.
 pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
+/// Posted by a WebView2 controller when the user moves focus into a pane; WPARAM = tab id.
+pub(crate) const WM_PANE_FOCUSED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
@@ -68,8 +72,6 @@ pub(crate) const WM_CARET_BLINK_TIMER: usize = 2;
 pub(crate) const WM_ANIMATION_TIMER: usize = 3;
 /// One-shot debounce for session snapshots; armed by a tab change, never repeating.
 pub(crate) const WM_SESSION_SAVE_TIMER: usize = 4;
-/// One-shot hover delay for the tab card; armed when the pointer settles on an inactive tab.
-pub(crate) const WM_CARD_HOVER_TIMER: usize = 5;
 /// Advances the address bar navigation progress transition while it is visible.
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 

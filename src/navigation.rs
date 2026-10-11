@@ -6,6 +6,49 @@ use url::{Host, Url};
 
 const DEFAULT_SEARCH_TEMPLATE: &str = "https://www.bing.com/search?q={query}";
 
+/// The engines Settings can choose between. Each is a fixed HTTPS template, so a saved choice can
+/// never send searches anywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchEngine {
+    Google,
+    DuckDuckGo,
+}
+
+impl SearchEngine {
+    /// Settings window order.
+    pub const ALL: [SearchEngine; 2] = [SearchEngine::Google, SearchEngine::DuckDuckGo];
+
+    /// The `search_engine` value stored in settings.txt.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::DuckDuckGo => "duckduckgo",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::DuckDuckGo => "DuckDuckGo",
+        }
+    }
+
+    pub fn template(self) -> &'static str {
+        match self {
+            Self::Google => "https://www.google.com/search?q={query}",
+            Self::DuckDuckGo => "https://duckduckgo.com/?q={query}",
+        }
+    }
+
+    /// Matches the settings.txt value, ignoring case and surrounding spaces. Anything else is `None`.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        Self::ALL
+            .into_iter()
+            .find(|engine| engine.key().eq_ignore_ascii_case(value))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavigationTarget {
     Empty,
@@ -42,13 +85,24 @@ pub struct SearchProvider {
 }
 
 impl SearchProvider {
-    pub fn from_config(path: &Path) -> Self {
-        let template = fs::read_to_string(path)
-            .ok()
-            .map(|contents| contents.trim().to_owned())
-            .filter(|template| valid_template(template))
-            .unwrap_or_else(|| DEFAULT_SEARCH_TEMPLATE.to_owned());
+    /// A saved engine choice wins. With no choice, a valid `search-provider.txt` template is used,
+    /// and otherwise the Bing default. Keeping that last step means an upgrade never changes the
+    /// engine of a profile that has not chosen one.
+    pub fn from_config(engine: Option<SearchEngine>, path: &Path) -> Self {
+        let template = match engine {
+            Some(engine) => engine.template().to_owned(),
+            None => fs::read_to_string(path)
+                .ok()
+                .map(|contents| contents.trim().to_owned())
+                .filter(|template| valid_template(template))
+                .unwrap_or_else(|| DEFAULT_SEARCH_TEMPLATE.to_owned()),
+        };
         Self { template }
+    }
+
+    /// True when searches go to the built-in Bing template.
+    pub fn is_default(&self) -> bool {
+        self.template == DEFAULT_SEARCH_TEMPLATE
     }
 
     pub fn search_url(&self, query: &str) -> Result<Url, NavigationError> {
@@ -238,9 +292,13 @@ mod tests {
 
     fn default_provider() -> SearchProvider {
         let path = temp_config(None);
-        let provider = SearchProvider::from_config(&path);
+        let provider = SearchProvider::from_config(None, &path);
         let _ = fs::remove_file(path);
         provider
+    }
+
+    fn engine_provider(engine: SearchEngine) -> SearchProvider {
+        SearchProvider::from_config(Some(engine), &temp_config(None))
     }
 
     #[test]
@@ -296,7 +354,7 @@ mod tests {
     #[test]
     fn unicode_search_query_is_utf8_encoded_without_query_injection() {
         let path = temp_config(Some("https://search.example/search?q={query}"));
-        let provider = SearchProvider::from_config(&path);
+        let provider = SearchProvider::from_config(None, &path);
         let target = resolve_input("café & tea #morning", &provider).unwrap();
         let NavigationTarget::Search { query, url } = target else {
             panic!("expected search")
@@ -381,12 +439,15 @@ mod tests {
 
     #[test]
     fn invalid_and_missing_configuration_fall_back_to_bing() {
-        let missing = SearchProvider::from_config(&temp_config(None));
-        let invalid =
-            SearchProvider::from_config(&temp_config(Some("http://search.example/?q={query}")));
-        let malformed = SearchProvider::from_config(&temp_config(Some(
-            "https://search.example/?q={query}&again={query}",
-        )));
+        let missing = SearchProvider::from_config(None, &temp_config(None));
+        let invalid = SearchProvider::from_config(
+            None,
+            &temp_config(Some("http://search.example/?q={query}")),
+        );
+        let malformed = SearchProvider::from_config(
+            None,
+            &temp_config(Some("https://search.example/?q={query}&again={query}")),
+        );
         for provider in [missing, invalid, malformed] {
             assert_eq!(
                 provider.search_url("hello world").unwrap().as_str(),
@@ -398,11 +459,126 @@ mod tests {
     #[test]
     fn a_valid_configured_search_template_is_used() {
         let path = temp_config(Some("https://search.example/?query={query}"));
-        let provider = SearchProvider::from_config(&path);
+        let provider = SearchProvider::from_config(None, &path);
         assert_eq!(
             provider.search_url("rust").unwrap().as_str(),
             "https://search.example/?query=rust"
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn each_engine_routes_searches_to_its_own_site() {
+        assert_eq!(
+            engine_provider(SearchEngine::Google)
+                .search_url("rust lang")
+                .unwrap()
+                .as_str(),
+            "https://www.google.com/search?q=rust%20lang"
+        );
+        assert_eq!(
+            engine_provider(SearchEngine::DuckDuckGo)
+                .search_url("rust lang")
+                .unwrap()
+                .as_str(),
+            "https://duckduckgo.com/?q=rust%20lang"
+        );
+    }
+
+    #[test]
+    fn search_text_stays_one_query_value_for_every_engine() {
+        let query = "a+b & c # d%20e? é/ü=1 \"q\" 日本";
+        for engine in SearchEngine::ALL {
+            let url = engine_provider(engine).search_url(query).unwrap();
+            let text = url.as_str();
+            assert!(!text.contains(' '), "{text}");
+            for escaped in ["%2B", "%26", "%23", "%25", "%3F", "%3D", "%C3%A9", "%E6%97%A5"] {
+                assert!(text.contains(escaped), "{escaped} missing from {text}");
+            }
+            assert!(url.fragment().is_none(), "{text}");
+            // Parsing the query back gives the typed text exactly, so nothing splits or injects.
+            let pairs: Vec<(String, String)> = url
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            assert_eq!(pairs, vec![("q".to_owned(), query.to_owned())], "{text}");
+        }
+    }
+
+    #[test]
+    fn engine_choice_changes_only_search_targets_not_addresses() {
+        let bing = default_provider();
+        for engine in SearchEngine::ALL {
+            let provider = engine_provider(engine);
+            for input in [
+                "example.com",
+                "example.com:8080/path",
+                "localhost:8080/path",
+                "127.0.0.1:8080",
+                "[::1]:8080",
+                "http://example.com/a?b=c",
+                "https://example.com/?q=a",
+                "münich.example",
+            ] {
+                assert_eq!(
+                    resolve_input(input, &provider).unwrap(),
+                    resolve_input(input, &bing).unwrap(),
+                    "{engine:?} input: {input}"
+                );
+            }
+            let NavigationTarget::Search { query, url } =
+                resolve_input("two words & more", &provider).unwrap()
+            else {
+                panic!("expected search")
+            };
+            assert_eq!(query, "two words & more");
+            let host = match engine {
+                SearchEngine::Google => "www.google.com",
+                SearchEngine::DuckDuckGo => "duckduckgo.com",
+            };
+            assert_eq!(url.host_str(), Some(host));
+        }
+    }
+
+    #[test]
+    fn engine_keys_parse_case_insensitively_and_reject_anything_else() {
+        assert_eq!(SearchEngine::parse("google"), Some(SearchEngine::Google));
+        assert_eq!(
+            SearchEngine::parse("  DuckDuckGo "),
+            Some(SearchEngine::DuckDuckGo)
+        );
+        for value in ["", "bing", "ddg", "google.com", "https://www.google.com/search?q={query}"] {
+            assert_eq!(SearchEngine::parse(value), None, "value: {value}");
+        }
+    }
+
+    #[test]
+    fn a_saved_engine_takes_precedence_over_the_override_file() {
+        let path = temp_config(Some("https://search.example/?q={query}"));
+        let provider = SearchProvider::from_config(Some(SearchEngine::Google), &path);
+        assert_eq!(
+            provider.search_url("rust").unwrap().as_str(),
+            "https://www.google.com/search?q=rust"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn without_a_saved_engine_the_override_file_and_then_bing_are_used() {
+        let path = temp_config(Some("https://search.example/?q={query}"));
+        let overridden = SearchProvider::from_config(None, &path);
+        assert!(!overridden.is_default());
+        assert_eq!(
+            overridden.search_url("rust").unwrap().as_str(),
+            "https://search.example/?q=rust"
+        );
+        let _ = fs::remove_file(path);
+
+        let bing = SearchProvider::from_config(None, &temp_config(None));
+        assert!(bing.is_default());
+        assert_eq!(
+            bing.search_url("rust").unwrap().as_str(),
+            "https://www.bing.com/search?q=rust"
+        );
     }
 }

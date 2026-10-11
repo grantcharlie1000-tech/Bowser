@@ -36,7 +36,7 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-use super::{WM_CARD_HOVER_TIMER, frame, glass, smooth};
+use super::{frame, glass, hover_square, island_menu, smooth};
 use crate::{
     app::{App, AppRef},
     chrome::{
@@ -50,7 +50,11 @@ use crate::{
 
 const CLASS_NAME: PCWSTR = w!("BowserTabCard");
 /// How long the pointer must rest on a tab before its card opens.
-pub(crate) const HOVER_DELAY_MS: u32 = 350;
+pub(crate) const HOVER_DELAY_MS: u32 = 3000;
+const HOVER_TIMER_BASE: usize = 0x10_000;
+/// One-shot leave check, re-armed only while the pointer is inside the card's square but off the card.
+const WATCH_TIMER: usize = 0x7002;
+const WATCH_INTERVAL_MS: u32 = 150;
 /// `WM_MOUSEACTIVATE` result that keeps the card from taking activation on click.
 const MA_NOACTIVATE: isize = 3;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -65,7 +69,32 @@ struct State {
     /// The tab under the pointer, whether or not a card may open for it. Changes only when the
     /// pointer moves to another tab, so repeated mouse moves never restart the hover timer.
     target: Option<TabId>,
+    hover: HoverGeneration,
     open: Option<Open>,
+}
+
+#[derive(Default)]
+struct HoverGeneration {
+    generation: usize,
+    timer_id: Option<usize>,
+}
+
+impl HoverGeneration {
+    fn arm(&mut self) -> usize {
+        self.generation = self.generation.wrapping_add(1);
+        let id = HOVER_TIMER_BASE.wrapping_add(self.generation);
+        self.timer_id = Some(id);
+        id
+    }
+
+    fn cancel(&mut self) -> Option<usize> {
+        self.generation = self.generation.wrapping_add(1);
+        self.timer_id.take()
+    }
+
+    fn is_current(&self, id: usize) -> bool {
+        self.timer_id == Some(id)
+    }
 }
 
 struct Open {
@@ -74,6 +103,8 @@ struct Open {
     tab: TabId,
     /// Card rectangle in screen coordinates, for the pointer-in-card test.
     screen: RECT,
+    /// The tab and gap and card, in screen coordinates. The card stays open while the pointer is in it.
+    square: RECT,
     model: CardModel,
     rows: Vec<TabId>,
     /// Layout in card-client coordinates.
@@ -88,43 +119,107 @@ thread_local! {
 /// The tab under the pointer changed to `target` (`None` when it is over no tab). Closes any open
 /// card and, for a tab that is not active, starts the hover timer.
 pub(crate) fn hover_changed(main: HWND, app: &AppRef, target: Option<TabId>) {
-    let changed = STATE.with(|state| {
+    // The pointer is on the strip, so the strip reports its own leave. No re-check is needed meanwhile.
+    stop_watch(main);
+    // Empty strip inside the open card's square keeps the card. Leaving the square closes it.
+    if target.is_none() && matches!(pointer_position(), Some((_, true))) {
+        return;
+    }
+    let (changed, old_timer, new_timer) = STATE.with(|state| {
         let mut state = state.borrow_mut();
         if state.target == target {
-            false
+            (false, None, None)
         } else {
             state.target = target;
-            true
+            let old_timer = state.hover.cancel();
+            let new_timer = target
+                .filter(|tab| App::active_tab_id(app) != *tab)
+                .map(|_| state.hover.arm());
+            (true, old_timer, new_timer)
         }
     });
     if !changed {
         return;
     }
     close();
-    unsafe {
-        let _ = KillTimer(Some(main), WM_CARD_HOVER_TIMER);
+    if let Some(timer) = old_timer {
+        unsafe {
+            let _ = KillTimer(Some(main), timer);
+        }
     }
     // The active tab gets no card: its marker is already on the strip, and a card over the page
     // after every click on the current tab would be noise.
     if let Some(tab) = target
         && App::active_tab_id(app) != tab
     {
-        unsafe {
-            SetTimer(Some(main), WM_CARD_HOVER_TIMER, HOVER_DELAY_MS, None);
+        if let Some(timer) = new_timer {
+            unsafe {
+                let _ = SetTimer(Some(main), timer, HOVER_DELAY_MS, None);
+            }
         }
     }
 }
 
+pub(crate) fn is_hover_timer(timer: usize) -> bool {
+    timer >= HOVER_TIMER_BASE || timer == WATCH_TIMER
+}
+
+/// Invalidates any queued hover timer and closes the card. Used on tab switches, drags and
+/// deactivation so a stale timer cannot reopen a card after the interaction ended.
+pub(crate) fn cancel(main: HWND) {
+    cancel_card(main);
+    // Island menus share the strip's clicks, drags and window changes, so they are cancelled too.
+    island_menu::cancel(main);
+}
+
+/// Cancels the hover card and its timer only. Tab-list changes use this, because an island menu
+/// follows its island through [`island_menu::sync`] instead of closing.
+pub(crate) fn cancel_card(main: HWND) {
+    let timer = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.target = None;
+        state.hover.cancel()
+    });
+    if let Some(timer) = timer {
+        unsafe {
+            let _ = KillTimer(Some(main), timer);
+        }
+    }
+    close();
+}
+
 /// The hover timer fired: opens the card for the tab still under the pointer. `anchor` gives the
 /// tab's rectangle in main-client coordinates, or `None` when it is not visible.
-pub(crate) fn hover_timer(main: HWND, app: &AppRef, anchor: impl Fn(TabId) -> Option<Rect>) {
-    unsafe {
-        let _ = KillTimer(Some(main), WM_CARD_HOVER_TIMER);
+pub(crate) fn hover_timer(
+    main: HWND,
+    timer: usize,
+    app: &AppRef,
+    anchor: impl Fn(TabId) -> Option<Rect>,
+) {
+    if timer == WATCH_TIMER {
+        // One-shot: stop it, then let the check arm it again while the pointer stays in the square.
+        stop_watch(main);
+        check_leave(main);
+        return;
     }
-    let Some(tab) = STATE.with(|state| state.borrow().target) else {
+    let target = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        if !state.hover.is_current(timer) {
+            return None;
+        }
+        state.hover.cancel();
+        state.target
+    });
+    if target.is_none() {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(Some(main), timer);
+    }
+    let Some(tab) = target else {
         return;
     };
-    if App::active_tab_id(app) == tab {
+    if App::active_tab_id(app) == tab || island_menu::is_open() {
         return;
     }
     if let Some(rect) = anchor(tab) {
@@ -132,12 +227,11 @@ pub(crate) fn hover_timer(main: HWND, app: &AppRef, anchor: impl Fn(TabId) -> Op
     }
 }
 
-/// The main window's pointer left it. The card stays when the pointer moved onto it.
+/// The main window's pointer left it. Moving onto the page takes the pointer out of the window without
+/// leaving the card's square, so the card decides from the pointer's position rather than from this
+/// message alone.
 pub(crate) fn pointer_left(main: HWND) {
-    if pointer_in_card() {
-        return;
-    }
-    dismiss(main);
+    check_leave(main);
 }
 
 /// Keeps the card in step with the tab list: it follows its tab's position, refreshes its contents,
@@ -161,6 +255,7 @@ pub(crate) fn close() {
     let open = STATE.with(|state| state.borrow_mut().open.take());
     if let Some(open) = open {
         unsafe {
+            let _ = KillTimer(Some(open.main), WATCH_TIMER);
             let _ = DestroyWindow(open.hwnd);
         }
     }
@@ -169,10 +264,44 @@ pub(crate) fn close() {
 /// Closes the card and forgets the hovered tab, so the next pointer move onto a tab starts a new
 /// hover.
 fn dismiss(main: HWND) {
-    STATE.with(|state| state.borrow_mut().target = None);
+    let timer = STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.target = None;
+        state.hover.cancel()
+    });
     close();
-    unsafe {
-        let _ = KillTimer(Some(main), WM_CARD_HOVER_TIMER);
+    if let Some(timer) = timer {
+        unsafe {
+            let _ = KillTimer(Some(main), timer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod hover_generation_tests {
+    use super::*;
+
+    #[test]
+    fn preview_delay_is_three_seconds() {
+        assert_eq!(HOVER_DELAY_MS, 3000);
+    }
+
+    #[test]
+    fn rearming_invalidates_the_previous_timer_generation() {
+        let mut hover = HoverGeneration::default();
+        let first = hover.arm();
+        let second = hover.arm();
+        assert_ne!(first, second);
+        assert!(!hover.is_current(first));
+        assert!(hover.is_current(second));
+    }
+
+    #[test]
+    fn cancel_invalidates_a_queued_timer() {
+        let mut hover = HoverGeneration::default();
+        let timer = hover.arm();
+        assert_eq!(hover.cancel(), Some(timer));
+        assert!(!hover.is_current(timer));
     }
 }
 
@@ -200,6 +329,13 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         right: origin.x + card.right,
         bottom: origin.y + card.bottom,
     };
+    let trigger = RECT {
+        left: origin.x + anchor.left,
+        top: origin.y + anchor.top,
+        right: origin.x + anchor.right,
+        bottom: origin.y + anchor.bottom,
+    };
+    let square = hover_square::square(trigger, screen, Metrics::new(dpi).px(hover_square::TOLERANCE));
     let existing = STATE.with(|state| state.borrow().open.as_ref().map(|open| open.hwnd));
     let (hwnd, created) = match existing {
         Some(hwnd) => {
@@ -227,6 +363,7 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         hwnd,
         tab,
         screen,
+        square,
         model,
         rows,
         layout: localise(&layout, card.left, card.top),
@@ -302,22 +439,48 @@ fn localise(layout: &CardLayout, dx: i32, dy: i32) -> CardLayout {
     }
 }
 
-fn pointer_in_card() -> bool {
+/// Where the pointer is relative to the open card: over the card, and inside its square. `None` when
+/// no card is open or the pointer cannot be read.
+fn pointer_position() -> Option<(bool, bool)> {
     let mut cursor = POINT::default();
     if unsafe { GetCursorPos(&mut cursor) }.is_err() {
-        return false;
+        return None;
     }
     STATE.with(|state| {
-        state.borrow().open.as_ref().is_some_and(|open| {
-            cursor.x >= open.screen.left
-                && cursor.x < open.screen.right
-                && cursor.y >= open.screen.top
-                && cursor.y < open.screen.bottom
+        state.borrow().open.as_ref().map(|open| {
+            (
+                hover_square::contains(open.screen, cursor),
+                hover_square::contains(open.square, cursor),
+            )
         })
     })
 }
 
-/// The pointer left the card. Closing it lets a return to the tab start a fresh hover.
+/// Stops the pending leave check, if one is armed.
+fn stop_watch(main: HWND) {
+    unsafe {
+        let _ = KillTimer(Some(main), WATCH_TIMER);
+    }
+}
+
+/// Decides, from where the pointer is now, whether the open card stays, waits for another check in
+/// the gap, or closes. Closing lets a return to the tab start a fresh hover.
+fn check_leave(main: HWND) {
+    if !is_open() {
+        stop_watch(main);
+        return;
+    }
+    let (in_card, in_square) = pointer_position().unwrap_or((false, false));
+    match hover_square::on_leave(in_card, in_square, false) {
+        Leave::Keep => stop_watch(main),
+        Leave::Watch => unsafe {
+            let _ = SetTimer(Some(main), WATCH_TIMER, WATCH_INTERVAL_MS, None);
+        },
+        Leave::Close => dismiss(main),
+    }
+}
+
+/// The pointer left the card. It stays while the pointer is in the square, such as in the gap.
 fn card_left(hwnd: HWND) {
     let main = STATE.with(|state| {
         state
@@ -328,7 +491,7 @@ fn card_left(hwnd: HWND) {
             .map(|open| open.main)
     });
     if let Some(main) = main {
-        dismiss(main);
+        check_leave(main);
     }
 }
 

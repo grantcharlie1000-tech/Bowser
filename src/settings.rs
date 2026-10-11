@@ -9,6 +9,7 @@
 //! sleep_after_secs=300
 //! blocker_enabled=true
 //! blocker_allow=example.com,other.org
+//! search_engine=google
 //! ```
 
 use std::{
@@ -17,13 +18,16 @@ use std::{
     path::Path,
 };
 
+use crate::navigation::SearchEngine;
+
 pub const FILE_NAME: &str = "settings.txt";
 /// Starter file written by "Open settings file" when none exists. Every setting is commented out.
 pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n\
     # sleep_enabled=true\r\n\
     # sleep_after_secs=300\r\n\
     # blocker_enabled=true\r\n\
-    # blocker_allow=example.com,other.org\r\n";
+    # blocker_allow=example.com,other.org\r\n\
+    # search_engine=google\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -44,6 +48,9 @@ pub struct Settings {
     pub blocker_enabled: bool,
     /// `blocker_allow=example.com,other.org`: sites where the blocker never blocks.
     pub blocker_allow: Vec<String>,
+    /// `search_engine=google` or `search_engine=duckduckgo`. `None` means no choice was saved, so
+    /// `search-provider.txt` or the Bing default applies.
+    pub search_engine: Option<SearchEngine>,
 }
 
 impl Default for Settings {
@@ -53,6 +60,7 @@ impl Default for Settings {
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
             blocker_enabled: true,
             blocker_allow: Vec::new(),
+            search_engine: None,
         }
     }
 }
@@ -101,6 +109,11 @@ impl Settings {
                     if let Ok(secs) = value.parse::<u64>() {
                         settings.sleep_after_secs =
                             secs.clamp(MIN_SLEEP_AFTER_SECS, MAX_SLEEP_AFTER_SECS);
+                    }
+                }
+                "search_engine" => {
+                    if let Some(engine) = SearchEngine::parse(value) {
+                        settings.search_engine = Some(engine);
                     }
                 }
                 _ => {}
@@ -171,18 +184,20 @@ fn bool_text(on: bool) -> &'static str {
     if on { "true" } else { "false" }
 }
 
-/// Returns `existing` with the four setting lines replaced by `settings`. Comments, unknown keys
-/// and the file's line endings are kept. A setting missing from the file is appended, and a
-/// repeated setting keeps only its first line, since `parse` reads the last value anyway.
+/// Returns `existing` with the setting lines replaced by `settings`. Comments, unknown keys and the
+/// file's line endings are kept. A setting missing from the file is appended, and a repeated
+/// setting keeps only its first line, since `parse` reads the last value anyway. An unset search
+/// engine removes its line, so the file falls back to `search-provider.txt` or the default.
 pub fn render_updated(existing: &str, settings: &Settings) -> String {
     let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
-    let values = [
-        ("sleep_enabled", bool_text(settings.sleep_enabled).to_owned()),
-        ("sleep_after_secs", settings.sleep_after_secs.to_string()),
-        ("blocker_enabled", bool_text(settings.blocker_enabled).to_owned()),
-        ("blocker_allow", settings.blocker_allow.join(",")),
+    let values: [(&str, Option<String>); 5] = [
+        ("sleep_enabled", Some(bool_text(settings.sleep_enabled).to_owned())),
+        ("sleep_after_secs", Some(settings.sleep_after_secs.to_string())),
+        ("blocker_enabled", Some(bool_text(settings.blocker_enabled).to_owned())),
+        ("blocker_allow", Some(settings.blocker_allow.join(","))),
+        ("search_engine", settings.search_engine.map(|engine| engine.key().to_owned())),
     ];
-    let mut written = [false; 4];
+    let mut written = [false; 5];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -197,7 +212,9 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             Some(index) if written[index] => {}
             Some(index) => {
                 written[index] = true;
-                out.push_str(&format!("{}={}{newline}", values[index].0, values[index].1));
+                if let Some(value) = &values[index].1 {
+                    out.push_str(&format!("{}={value}{newline}", values[index].0));
+                }
             }
             None => {
                 out.push_str(line);
@@ -206,7 +223,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         }
     }
     for (index, (name, value)) in values.iter().enumerate() {
-        if !written[index] {
+        if let (false, Some(value)) = (written[index], value) {
             out.push_str(&format!("{name}={value}{newline}"));
         }
     }
@@ -366,7 +383,79 @@ mod tests {
             sleep_after_secs: 900,
             blocker_enabled: false,
             blocker_allow: vec!["a.com".to_owned(), "b.org".to_owned()],
+            search_engine: Some(SearchEngine::DuckDuckGo),
         }
+    }
+
+    #[test]
+    fn search_engine_defaults_to_no_choice_and_reads_both_engines() {
+        assert_eq!(Settings::default().search_engine, None);
+        assert_eq!(
+            Settings::parse("search_engine=google").search_engine,
+            Some(SearchEngine::Google)
+        );
+        assert_eq!(
+            Settings::parse("search_engine=DuckDuckGo").search_engine,
+            Some(SearchEngine::DuckDuckGo)
+        );
+    }
+
+    #[test]
+    fn invalid_search_engine_values_mean_no_choice_and_keep_other_settings() {
+        for value in ["bing", "ddg", "", "google.com", "https://evil.example/?q={query}"] {
+            let s = Settings::parse(&format!("search_engine={value}\nsleep_enabled=off\n"));
+            assert_eq!(s.search_engine, None, "value: {value:?}");
+            assert!(!s.sleep_enabled, "value: {value:?}");
+        }
+        // A later invalid line does not erase a valid choice, matching the other keys.
+        assert_eq!(
+            Settings::parse("search_engine=google\nsearch_engine=nope").search_engine,
+            Some(SearchEngine::Google)
+        );
+    }
+
+    #[test]
+    fn search_engine_round_trips_through_the_file_with_comments_kept() {
+        let existing = "# my notes\r\nsearch_engine=google\r\nfoo=bar\r\n";
+        let text = render_updated(existing, &sample());
+        assert_eq!(text.matches("search_engine").count(), 1);
+        assert!(text.contains("search_engine=duckduckgo\r\n"));
+        assert!(text.starts_with("# my notes\r\n"));
+        assert!(text.contains("foo=bar\r\n"));
+        assert_eq!(Settings::parse(&text), sample());
+    }
+
+    #[test]
+    fn clearing_the_engine_removes_its_line_so_the_fallback_applies_again() {
+        let existing = "# keep\nsearch_engine=google\nsleep_enabled=true\n";
+        let cleared = Settings {
+            search_engine: None,
+            ..sample()
+        };
+        let text = render_updated(existing, &cleared);
+        assert!(!text.contains("search_engine"), "{text}");
+        assert!(text.starts_with("# keep\n"));
+        assert_eq!(Settings::parse(&text).search_engine, None);
+    }
+
+    #[test]
+    fn saving_other_settings_leaves_an_upgraded_file_without_a_choice_unchanged() {
+        // A file from before this key existed has no search_engine line. Saving other settings must
+        // not add one, or the user's search-provider.txt or Bing default would be overridden.
+        let existing = "# Bowser settings.\nsleep_enabled=true\n";
+        let saved = Settings {
+            sleep_enabled: false,
+            ..Settings::default()
+        };
+        let text = render_updated(existing, &saved);
+        assert!(!text.contains("search_engine"), "{text}");
+        assert_eq!(Settings::parse(&text).search_engine, None);
+    }
+
+    #[test]
+    fn template_lists_the_engine_setting_commented_out() {
+        assert!(TEMPLATE.contains("# search_engine=google\r\n"));
+        assert_eq!(Settings::parse(TEMPLATE).search_engine, None);
     }
 
     #[test]
@@ -383,7 +472,8 @@ mod tests {
         assert_eq!(
             text,
             "# my notes\r\nfoo=bar\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
-             sleep_after_secs=900\r\nblocker_enabled=false\r\nblocker_allow=a.com,b.org\r\n"
+             sleep_after_secs=900\r\nblocker_enabled=false\r\nblocker_allow=a.com,b.org\r\n\
+             search_engine=duckduckgo\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

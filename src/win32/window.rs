@@ -1,10 +1,10 @@
 use super::{
-    INPUT_ID, WM_ANIMATION_TIMER, WM_CARD_HOVER_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_PANE_FOCUSED,
     WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
-    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass,
-    main_menu, passwords_panel, settings_panel, show_error_message,
+    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
+    menu, passwords_panel, settings_panel, show_error_message, site_info,
 };
-use super::main_menu::{Entry, Icon, Item, Menu};
+use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
     app::{App, AppRef, IdleTimerAction},
     chrome::{
@@ -48,32 +48,33 @@ use windows::{
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
-                AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu,
-                CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
+                CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
+                DestroyWindow, DispatchMessageW,
                 EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE,
-                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow,
+                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetForegroundWindow,
                 GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, GetWindowThreadProcessId, HMENU, HTBOTTOM, HTBOTTOMLEFT,
-                HTBOTTOMRIGHT, HTCAPTION, HTCLOSE, HTLEFT, HTMAXBUTTON, HTMINBUTTON, HTRIGHT,
-                HTTOP, HTTOPLEFT, HTTOPRIGHT, HideCaret, IsIconic, IsZoomed, KillTimer,
-                LoadCursorW, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+                GetWindowTextW, GetWindowThreadProcessId, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON,
+                HTMINBUTTON, HideCaret, IsIconic, IsZoomed, KillTimer, MINMAXINFO,
+                LoadCursorW, SetCursor, IDC_SIZEWE, MSG,
                 MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE,
-                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED, SM_CXFRAME,
+                SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
                 SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
                 SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON,
-                TPM_TOPALIGN, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR,
+                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR,
                 WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
-                WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS,
+                WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
+                WM_KILLFOCUS,
                 WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
                 WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
+                WM_NCRBUTTONUP,
                 WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
                 WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS,
                 WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN,
                 WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
                 WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-                WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_VISIBLE, WVR_REDRAW,
+                WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+                WVR_REDRAW,
             },
         },
     },
@@ -107,6 +108,24 @@ struct ProgressTransition {
 }
 impl ProgressTransition {
     const DURATION_MS: f32 = 210.0;
+    const FADE_MS: f32 = 220.0;
+
+    // Values above 100 encode the finish fade for the existing paint path.
+    fn paint_value(&self, now: Instant) -> Option<f32> {
+        let value = self.value(now)?;
+        if self.to < 100.0 { return Some(value); }
+        let Some(started) = self.started else { return Some(value); };
+        let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
+        let fade = ((elapsed - Self::DURATION_MS) / Self::FADE_MS).clamp(0.0, 1.0);
+        Some(value + 100.0 * fade * fade * (3.0 - 2.0 * fade))
+    }
+
+    fn running(&self, now: Instant) -> bool {
+        self.started.is_some_and(|started| {
+            let duration = Self::DURATION_MS + if self.to >= 100.0 { Self::FADE_MS } else { 0.0 };
+            now.saturating_duration_since(started).as_secs_f32() * 1000.0 < duration
+        })
+    }
 
     fn value(&self, now: Instant) -> Option<f32> {
         self.tab?;
@@ -136,7 +155,7 @@ impl ProgressTransition {
     }
 
     fn settled(&self, now: Instant) -> bool {
-        self.value(now).is_some_and(|value| value >= self.to)
+        self.value(now).is_some_and(|value| value >= self.to) && !self.running(now)
     }
 
     fn clear(&mut self) { *self = Self::default(); }
@@ -174,6 +193,9 @@ struct WindowChrome {
     active_tab: Option<TabId>,
     progress: ProgressTransition,
     first_paint_logged: bool,
+    split_active: bool,
+    split_dragging: bool,
+    split_divider: i32,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -207,12 +229,16 @@ impl WindowChrome {
             active_tab: None,
             progress: ProgressTransition::default(),
             first_paint_logged: false,
+            split_active: false,
+            split_dragging: false,
+            split_divider: width / 2,
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
         let now = Instant::now();
         let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
+        self.split_active = App::split_view(app).is_some();
         let preferences = structural.then(|| App::tab_group_preferences(app));
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
@@ -347,6 +373,7 @@ impl WindowChrome {
             .unwrap_or(0);
         self.layout =
             layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised);
+        self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.surface.resize(w, h, self.dpi)
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
@@ -398,133 +425,10 @@ impl WindowChrome {
     }
 }
 thread_local! {static WINDOWS:RefCell<HashMap<isize,WindowChrome>>=RefCell::new(HashMap::new());}
-#[derive(Clone, Copy)]
-struct ResizeEdges {
-    left: bool,
-    right: bool,
-    top: bool,
-    bottom: bool,
-}
-struct ResizeState {
-    edges: ResizeEdges,
-    start_cursor: windows::Win32::Foundation::POINT,
-    start_rect: RECT,
-    min_width: i32,
-    min_height: i32,
-}
-thread_local! {static RESIZING:RefCell<HashMap<isize,ResizeState>>=RefCell::new(HashMap::new());}
-
-fn resize_edges(hit: usize) -> Option<ResizeEdges> {
-    let (left, right, top, bottom) = match hit as u32 {
-        x if x == HTLEFT as u32 => (true, false, false, false),
-        x if x == HTRIGHT as u32 => (false, true, false, false),
-        x if x == HTTOP as u32 => (false, false, true, false),
-        x if x == HTBOTTOM as u32 => (false, false, false, true),
-        x if x == HTTOPLEFT as u32 => (true, false, true, false),
-        x if x == HTTOPRIGHT as u32 => (false, true, true, false),
-        x if x == HTBOTTOMLEFT as u32 => (true, false, false, true),
-        x if x == HTBOTTOMRIGHT as u32 => (false, true, false, true),
-        _ => return None,
-    };
-    Some(ResizeEdges {
-        left,
-        right,
-        top,
-        bottom,
-    })
+fn main_window_style() -> WINDOW_STYLE {
+    WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN
 }
 
-fn begin_resize(hwnd: HWND, hit: usize) -> bool {
-    let Some(edges) = resize_edges(hit) else {
-        return false;
-    };
-    if unsafe { IsZoomed(hwnd).as_bool() } {
-        return false;
-    }
-    let mut start_rect = RECT::default();
-    let mut start_cursor = windows::Win32::Foundation::POINT::default();
-    if unsafe { GetWindowRect(hwnd, &mut start_rect) }.is_err()
-        || unsafe { GetCursorPos(&mut start_cursor) }.is_err()
-    {
-        return false;
-    }
-    let metrics = Metrics::new(dpi(hwnd));
-    let min_width = metrics.px(520);
-    let min_height = metrics.px(300);
-    unsafe {
-        let _ = SetCapture(hwnd);
-    }
-    if unsafe { GetCapture() } != hwnd {
-        return false;
-    }
-    RESIZING.with(|states| {
-        states.borrow_mut().insert(
-            hwnd.0 as isize,
-            ResizeState {
-                edges,
-                start_cursor,
-                start_rect,
-                min_width,
-                min_height,
-            },
-        );
-    });
-    true
-}
-
-fn resize_window(hwnd: HWND) {
-    let state = RESIZING.with(|states| {
-        states.borrow().get(&(hwnd.0 as isize)).map(|state| {
-            (
-                state.edges,
-                state.start_cursor,
-                state.start_rect,
-                state.min_width,
-                state.min_height,
-            )
-        })
-    });
-    let Some((edges, start_cursor, start_rect, min_width, min_height)) = state else {
-        return;
-    };
-    let mut cursor = windows::Win32::Foundation::POINT::default();
-    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
-        return;
-    }
-    let dx = cursor.x - start_cursor.x;
-    let dy = cursor.y - start_cursor.y;
-    let mut rect = start_rect;
-    if edges.left {
-        rect.left = (start_rect.left + dx).min(start_rect.right - min_width);
-    }
-    if edges.right {
-        rect.right = (start_rect.right + dx).max(start_rect.left + min_width);
-    }
-    if edges.top {
-        rect.top = (start_rect.top + dy).min(start_rect.bottom - min_height);
-    }
-    if edges.bottom {
-        rect.bottom = (start_rect.bottom + dy).max(start_rect.top + min_height);
-    }
-    unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-            SWP_NOACTIVATE | SWP_NOZORDER,
-        );
-    }
-}
-
-fn finish_resize(hwnd: HWND) -> bool {
-    RESIZING.with(|states| states.borrow_mut().remove(&(hwnd.0 as isize)).is_some())
-}
-fn is_resizing(hwnd: HWND) -> bool {
-    RESIZING.with(|states| states.borrow().contains_key(&(hwnd.0 as isize)))
-}
 fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<T> {
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
 }
@@ -552,7 +456,7 @@ fn sync_overlay_position(hwnd: HWND) {
 }
 fn clear_pointer_state(hwnd: HWND) -> bool {
     with_chrome(hwnd, |s| {
-        let had_state = s.drag.take().is_some() || s.pressed != Hit::None;
+        let had_state = s.drag.take().is_some() || s.pressed != Hit::None || std::mem::take(&mut s.split_dragging);
         s.pressed = Hit::None;
         had_state
     })
@@ -713,6 +617,9 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
         gained
     })
     .unwrap_or(false);
+    if !foreground {
+        card::cancel(hwnd);
+    }
     // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
     // that stopped while another application was active. Activation can arrive from a modal loop that already
     // holds the app state, so the borrow is checked first.
@@ -774,9 +681,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Default::default(),
             CLASS_NAME,
             windows::core::PCWSTR(window_title.as_ptr()),
-            // The system sizing frame also forces WS_EX_WINDOWEDGE on this HWND. Bowser
-            // handles the resize loop itself so its rounded region can stay edge-free.
-            WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN,
+            main_window_style(),
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1000,
@@ -805,6 +710,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
         App::restore_pending_session(&app);
+        App::submit_initial_url(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
@@ -867,6 +773,13 @@ unsafe extern "system" fn window_proc(
                     0
                 })
             }
+            WM_GETMINMAXINFO => {
+                let info = &mut *(lparam.0 as *mut MINMAXINFO);
+                let metrics = Metrics::new(dpi(hwnd));
+                info.ptMinTrackSize.x = metrics.px(520);
+                info.ptMinTrackSize.y = metrics.px(300);
+                LRESULT(0)
+            }
             WM_NCHITTEST => {
                 let mut p = frame::point_from_lparam(lparam);
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
@@ -886,6 +799,8 @@ unsafe extern "system" fn window_proc(
                         | Hit::Forward
                         | Hit::Reload
                         | Hit::Omnibox
+                        | Hit::SiteInfo
+                        | Hit::Split
                 );
                 frame::frame_hit_test(
                     p,
@@ -915,9 +830,8 @@ unsafe extern "system" fn window_proc(
                 set_hover(hwnd, Hit::None);
                 LRESULT(0)
             }
-            WM_NCLBUTTONDOWN if begin_resize(hwnd, wparam.0) => LRESULT(0),
-            // Only the caption buttons are ours. Dragging the strip and the resize edges need the
-            // default handler, which runs the system move loop. Resize edges are handled above.
+            // Only the caption buttons are ours. Dragging the strip and sizing edges use the
+            // system's native move and resize loops.
             WM_NCLBUTTONDOWN | WM_NCLBUTTONUP if caption_hit(wparam.0 as u32) == Hit::None => {
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
@@ -1041,7 +955,7 @@ unsafe extern "system" fn window_proc(
                         0,
                         0,
                         r.right,
-                        layout::chrome_height(dpi(hwnd)),
+                        r.bottom,
                         Some(hwnd),
                         None,
                         Some(instance),
@@ -1061,11 +975,11 @@ unsafe extern "system" fn window_proc(
             }
             WM_MOVE => {
                 sync_overlay_position(hwnd);
-                card::close();
+                card::cancel(hwnd);
                 LRESULT(0)
             }
             WM_SIZE => {
-                card::close();
+                card::cancel(hwnd);
                 if let Some(app) = app {
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
@@ -1083,6 +997,9 @@ unsafe extern "system" fn window_proc(
                     });
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
+                    if let Some(panes) = split_rects(hwnd, None) {
+                        App::update_split_bounds(app, panes);
+                    }
                     App::window_size_changed(
                         app,
                         min,
@@ -1136,6 +1053,9 @@ unsafe extern "system" fn window_proc(
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
+                    if let Some(panes) = split_rects(hwnd, None) {
+                        App::update_split_bounds(app, panes);
+                    }
                     App::window_size_changed(
                         app,
                         false,
@@ -1148,6 +1068,25 @@ unsafe extern "system" fn window_proc(
                     );
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
+                LRESULT(0)
+            }
+            WM_SYSCOMMAND
+                if (wparam.0 & 0xFFF0) == SC_KEYMENU as usize
+                    && (lparam.0 as u16) == u16::from(b' ') =>
+            {
+                let mut window = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut window);
+                show_system_menu(
+                    hwnd,
+                    windows::Win32::Foundation::POINT {
+                        x: window.left,
+                        y: window.top,
+                    },
+                );
+                LRESULT(0)
+            }
+            WM_NCRBUTTONUP if wparam.0 == windows::Win32::UI::WindowsAndMessaging::HTCAPTION as usize => {
+                show_system_menu(hwnd, frame::point_from_lparam(lparam));
                 LRESULT(0)
             }
             WM_COMMAND
@@ -1184,13 +1123,13 @@ unsafe extern "system" fn window_proc(
             }
             WM_HISTORY_BACK => {
                 if let Some(app) = app {
-                    App::history(app, false)
+                    navigate_back_for_focused_pane(app)
                 }
                 LRESULT(0)
             }
             WM_HISTORY_FORWARD => {
                 if let Some(app) = app {
-                    App::history(app, true)
+                    navigate_forward_for_focused_pane(app)
                 }
                 LRESULT(0)
             }
@@ -1216,9 +1155,20 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_PANE_FOCUSED => {
+                if let Some(app) = app
+                    && App::focus_split_tab(app, TabId(wparam.0 as u32))
+                {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
                     let (structural, persisted) = App::take_tab_change_flags();
+                    if structural {
+                        card::cancel_card(hwnd);
+                    }
                     let previously_active = with_chrome(hwnd, |s| s.active_tab).flatten();
                     let strips = with_chrome(hwnd, |s| {
                         s.refresh(app, structural);
@@ -1226,6 +1176,12 @@ unsafe extern "system" fn window_proc(
                     });
                     let active = App::active_tab_id(app);
                     if previously_active != Some(active) {
+                        card::cancel_card(hwnd);
+                        let value = App::tab_committed_url(app, active)
+                            .map(|url| url.to_string())
+                            .unwrap_or_default();
+                        let edit = app.borrow().edit;
+                        let _ = SetWindowTextW(edit, &windows::core::HSTRING::from(value));
                         if let Some((navigation_id, target)) = App::active_navigation_progress_identity(app) {
                             with_chrome(hwnd, |s| {
                                 s.progress.clear();
@@ -1237,6 +1193,7 @@ unsafe extern "system" fn window_proc(
                         let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                     }
                     card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
+                    island_menu::sync(hwnd, app, |id| bar_anchor(hwnd, id));
                     if structural {
                         position_edit(hwnd);
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1279,18 +1236,32 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
-                if is_resizing(hwnd) {
-                    resize_window(hwnd);
-                    return LRESULT(0);
-                }
                 if GetCapture() == hwnd {
+                    let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
+                    if dragging
+                        && let Some(panes) = split_rects(hwnd, Some(frame::point_from_lparam(lparam).x))
+                        && let Some(app) = app
+                    {
+                        let divider = panes.0.right;
+                        let _ = with_chrome(hwnd, |s| s.split_divider = divider);
+                        App::update_split_bounds(app, panes);
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
                 } else {
                     let p = frame::point_from_lparam(lparam);
                     let h = hit(hwnd, p.x, p.y);
+                    if h == Hit::SplitDivider {
+                        let cursor = LoadCursorW(None, IDC_SIZEWE);
+                        if let Ok(cursor) = cursor { let _ = SetCursor(Some(cursor)); }
+                    }
                     set_hover(hwnd, h);
                     if let Some(app) = app {
                         card::hover_changed(hwnd, app, hit_tab(hwnd, h));
                     }
+                    island_menu::bar_hover(
+                        hwnd,
+                        island_bar_at(hwnd, p.x, p.y).map(|bar| (bar.tab, bar.rect)),
+                    );
                     let mut t = TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1304,19 +1275,19 @@ unsafe extern "system" fn window_proc(
             WM_MOUSELEAVE => {
                 set_hover(hwnd, Hit::None);
                 card::pointer_left(hwnd);
+                island_menu::pointer_left(hwnd);
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
-                finish_resize(hwnd);
+                card::cancel(hwnd);
                 if clear_pointer_state(hwnd) {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
-                let was_resizing = finish_resize(hwnd);
                 let had_pointer_state = clear_pointer_state(hwnd);
-                if was_resizing || had_pointer_state {
+                if had_pointer_state {
                     if GetCapture() == hwnd {
                         let _ = ReleaseCapture();
                     }
@@ -1327,10 +1298,16 @@ unsafe extern "system" fn window_proc(
             WM_LBUTTONDOWN => {
                 let p = frame::point_from_lparam(lparam);
                 // Pressing the strip dismisses a hover card; the press then acts on the strip.
-                card::close();
+                card::cancel(hwnd);
                 match hit(hwnd, p.x, p.y) {
                     Hit::Tab(i) => {
-                        if let Some((id, collapsed)) = group_toggle_target(hwnd, i, p.x, p.y) {
+                        if let Some(bar) = island_bar_at(hwnd, p.x, p.y) {
+                            // Clicking an island's bar collapses it, or expands it when it is collapsed.
+                            if let Some(app) = app {
+                                let _ = App::set_tab_group_collapsed(app, bar.tab, !bar.collapsed);
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        } else if let Some((id, collapsed)) = group_toggle_target(hwnd, i, p.x, p.y) {
                             if let Some(app) = app {
                                 let _ = App::set_tab_group_collapsed(app, id, collapsed);
                                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1373,6 +1350,34 @@ unsafe extern "system" fn window_proc(
                             show_main_menu(hwnd, app);
                         }
                     }
+                    Hit::Split => {
+                        set_pressed(hwnd, Hit::Split);
+                        let _ = SetCapture(hwnd);
+                    }
+                    Hit::SplitDivider => {
+                        let _ = with_chrome(hwnd, |s| s.split_dragging = true);
+                        let _ = SetCapture(hwnd);
+                    }
+                    Hit::SiteInfo => {
+                        if let Some(app) = app {
+                            let button =
+                                with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
+                            set_pressed(hwnd, Hit::SiteInfo);
+                            site_info::show(hwnd, app, button);
+                            set_pressed(hwnd, Hit::None);
+                            let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                    }
+                    Hit::Viewport => {
+                        if let Some(app) = app
+                            && App::split_view(app).is_some()
+                            && let Some((left, _right)) = split_rects(hwnd, None)
+                        {
+                            let pane = if p.x < left.right { crate::split_view::Pane::Left } else { crate::split_view::Pane::Right };
+                            let _ = App::focus_split_pane(app, pane);
+                        }
+                    }
                     h @ (Hit::Back
                     | Hit::Forward
                     | Hit::Reload
@@ -1387,12 +1392,11 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
-                if finish_resize(hwnd) {
-                    let _ = ReleaseCapture();
-                    return LRESULT(0);
-                }
                 let p = frame::point_from_lparam(lparam);
-                if let Some((id, from)) = with_chrome(hwnd, |s| s.drag.take()).flatten() {
+                let was_split_drag = with_chrome(hwnd, |s| std::mem::take(&mut s.split_dragging)).unwrap_or(false);
+                if was_split_drag {
+                    let _ = ReleaseCapture();
+                } else if let Some((id, from)) = with_chrome(hwnd, |s| s.drag.take()).flatten() {
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     if let Some(app) = app {
                         let to = layout::reorder_target(&l, from, p.x);
@@ -1417,12 +1421,17 @@ unsafe extern "system" fn window_proc(
                             // App::history checks the engine itself, so a click on a dimmed
                             // button is harmless.
                             match was {
-                                Hit::Back => App::history(app, false),
-                                Hit::Forward => App::history(app, true),
+                                Hit::Back => navigate_back_for_focused_pane(app),
+                                Hit::Forward => navigate_forward_for_focused_pane(app),
                                 _ => App::reload(app),
                             }
                             let _ = with_chrome(hwnd, |s| s.refresh(app, true));
                             let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        if was == Hit::Split
+                            && let Some(app) = app
+                        {
+                            show_split_menu(hwnd, app);
                         }
                         caption_command(hwnd, was)
                     }
@@ -1439,6 +1448,7 @@ unsafe extern "system" fn window_proc(
             WM_MBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
                 if let Hit::Tab(i) | Hit::TabClose(i) = hit(hwnd, p.x, p.y) {
+                    card::cancel(hwnd);
                     if let Some(app) = app {
                         if let Some(id) = slot_tab_id(hwnd, i) {
                             let _ = App::close_tab(app, id);
@@ -1453,6 +1463,7 @@ unsafe extern "system" fn window_proc(
                     && let Some(app) = app
                     && let Some(id) = slot_tab_id(hwnd, i)
                 {
+                    card::cancel(hwnd);
                     show_tab_context_menu(hwnd, app, id, p.x, p.y);
                 }
                 LRESULT(0)
@@ -1516,9 +1527,15 @@ unsafe extern "system" fn window_proc(
                 sync_foreground(hwnd, app);
                 LRESULT(0)
             }
-            WM_TIMER if wparam.0 == WM_CARD_HOVER_TIMER => {
+            WM_TIMER if island_menu::is_timer(wparam.0) => {
                 if let Some(app) = app {
-                    card::hover_timer(hwnd, app, |id| tab_anchor(hwnd, id));
+                    island_menu::timer(hwnd, wparam.0, app, |id| bar_anchor(hwnd, id));
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if card::is_hover_timer(wparam.0) => {
+                if let Some(app) = app {
+                    card::hover_timer(hwnd, wparam.0, app, |id| tab_anchor(hwnd, id));
                 }
                 LRESULT(0)
             }
@@ -1548,7 +1565,7 @@ unsafe extern "system" fn window_proc(
                 let now = Instant::now();
                 let (running, active_matches) = with_chrome(hwnd, |s| {
                     let active = app.map(App::active_tab_id);
-                    (s.progress.started.is_some_and(|started| now.saturating_duration_since(started).as_millis() < ProgressTransition::DURATION_MS as u128), active == s.progress.tab)
+                    (s.progress.running(now), active == s.progress.tab)
                 }).unwrap_or((false, false));
                 if active_matches { invalidate_omni(hwnd); }
                 if !running || !active_matches {
@@ -1583,8 +1600,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
-                let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
-                card::close();
+                card::cancel(hwnd);
                 if let Some(app) = app {
                     App::session_finish(app);
                     let (mut engine, log) = {
@@ -1606,8 +1622,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
-                let _ = KillTimer(Some(hwnd), WM_CARD_HOVER_TIMER);
-                card::close();
+                card::cancel(hwnd);
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
                     if !s.input_font.is_invalid() {
@@ -1627,7 +1642,6 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
-                finish_resize(hwnd);
                 let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if !raw.is_null() {
                     drop(Box::from_raw(raw as *mut AppRef));
@@ -1639,7 +1653,22 @@ unsafe extern "system" fn window_proc(
     }
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
-    with_chrome(hwnd, |s| layout::hit_test(&s.layout, x, y)).unwrap_or(Hit::None)
+    with_chrome(hwnd, |s| {
+        let hit = layout::hit_test(&s.layout, x, y);
+        if hit == Hit::Viewport
+            && s.split_active
+            && layout::split_pane_layout(
+                s.layout.viewport,
+                s.split_divider,
+                s.layout.metrics.px(220),
+                s.layout.metrics.px(6),
+            )
+            .is_some_and(|panes| panes.divider.contains(x, y))
+        {
+            return Hit::SplitDivider;
+        }
+        hit
+    }).unwrap_or(Hit::None)
 }
 /// The tab a strip hit lands on. Its close button counts as the tab itself for hover.
 fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
@@ -1651,6 +1680,79 @@ fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
 /// A tab's visible rectangle in main-client coordinates, or `None` when it is scrolled out.
 fn tab_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     with_chrome(hwnd, |s| s.tab_rect(id)).flatten()
+}
+/// A domain island's leading bar, found from the strip the chrome last laid out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct IslandBar {
+    /// The island's leader, the tab whose slot carries the bar.
+    tab: TabId,
+    /// The bar in main-client coordinates.
+    rect: Rect,
+    collapsed: bool,
+}
+/// The island bar under a client point, if the point is on one. Only domain islands have bars that
+/// open the menu or collapse; opener-only islands are not included.
+fn island_bar_at(hwnd: HWND, x: i32, y: i32) -> Option<IslandBar> {
+    with_chrome(hwnd, |s| {
+        let m = Metrics::new(s.dpi);
+        s.slots.iter().enumerate().find_map(|(index, slot)| {
+            if !slot.group_control || slot.domain.is_none() {
+                return None;
+            }
+            let bar = island_bar_rect(s, index, m)?;
+            let hit = Rect::new(bar.left - m.px(3), bar.top, bar.right + m.px(3), bar.bottom);
+            let tab = s.tabs.get(slot.tab_index).map(|tab| tab.id)?;
+            hit.contains(x, y).then_some(IslandBar {
+                tab,
+                rect: hit,
+                collapsed: slot.collapsed,
+            })
+        })
+    })
+    .flatten()
+}
+/// The island bar's rectangle for a tab, in main-client coordinates, or `None` when that tab does
+/// not lead a visible domain island.
+fn bar_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
+    with_chrome(hwnd, |s| {
+        let m = Metrics::new(s.dpi);
+        s.slots.iter().enumerate().find_map(|(index, slot)| {
+            if !slot.group_control || slot.domain.is_none() {
+                return None;
+            }
+            if s.tabs.get(slot.tab_index).map(|tab| tab.id) != Some(id) {
+                return None;
+            }
+            let bar = island_bar_rect(s, index, m)?;
+            Some(Rect::new(bar.left - m.px(3), bar.top, bar.right + m.px(3), bar.bottom))
+        })
+    })
+    .flatten()
+}
+/// The bar for the visible slot at `index`, placed from its island with the same rules the painter
+/// uses. `None` for a compact island, where no bar is drawn.
+fn island_bar_rect(s: &WindowChrome, index: usize, m: Metrics) -> Option<Rect> {
+    let island = s.layout.tab(index)?;
+    if island.width() < m.px(Metrics::TITLE_MIN_TAB_WIDTH) {
+        return None;
+    }
+    let shell = Rect::new(
+        paint::group_shell_left(island, m),
+        island.top,
+        island.right,
+        island.bottom,
+    );
+    Some(paint::group_bar_rect(shell, m))
+}
+/// Favicon of a tab as the chrome last decoded it, for the island menu's rows.
+pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
+    with_chrome(hwnd, |s| {
+        s.tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.favicon.clone())
+    })
+    .flatten()
 }
 fn overflow_tab_ids(layout: &Layout, slots: &[StripSlot], tabs: &[TabSnapshot]) -> Vec<TabId> {
     layout
@@ -1706,36 +1808,197 @@ fn collapsed_group_target(hwnd: HWND, slot_index: usize) -> Option<TabId> {
     })
     .flatten()
 }
-fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
-    const PIN: usize = 1;
-    const AUTO: usize = 2;
-    const ALWAYS: usize = 3;
-    const NEVER: usize = 4;
-    const COLLAPSE: usize = 5;
 
-    let menu = unsafe { CreatePopupMenu() };
-    let Ok(menu) = menu else { return };
-    let pinned = App::tab_pinned(app, id);
-    let _ = unsafe {
-        AppendMenuW(
-            menu,
-            MF_STRING,
-            PIN,
-            if pinned {
-                w!("Unpin tab")
-            } else {
-                w!("Pin tab")
-            },
-        )
+fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
+    use windows::Win32::{
+        Foundation::{GlobalFree, HANDLE},
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+        },
     };
+
+    let wide = text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    unsafe {
+        if OpenClipboard(Some(hwnd)).is_err() {
+            return false;
+        }
+        if EmptyClipboard().is_err() {
+            let _ = CloseClipboard();
+            return false;
+        }
+        let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * std::mem::size_of::<u16>()) else {
+            let _ = CloseClipboard();
+            return false;
+        };
+        let destination = GlobalLock(memory).cast::<u16>();
+        if destination.is_null() {
+            let _ = GlobalFree(Some(memory));
+            let _ = CloseClipboard();
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), destination, wide.len());
+        let _ = GlobalUnlock(memory);
+        if SetClipboardData(13, Some(HANDLE(memory.0))).is_err() {
+            let _ = GlobalFree(Some(memory));
+            let _ = CloseClipboard();
+            return false;
+        }
+        let _ = CloseClipboard();
+        true
+    }
+}
+
+fn split_rects(
+    hwnd: HWND,
+    divider_left: Option<i32>,
+) -> Option<(RECT, RECT)> {
+    let (layout, saved_divider) = with_chrome(hwnd, |state| (state.layout, state.split_divider))?;
+    let divider = divider_left.unwrap_or(saved_divider);
+    let panes = layout::split_pane_layout(
+        layout.viewport,
+        divider,
+        layout.metrics.px(220),
+        layout.metrics.px(6),
+    )?;
+    Some((
+        RECT { left: panes.left.left, top: panes.left.top, right: panes.left.right, bottom: panes.left.bottom },
+        RECT { left: panes.right.left, top: panes.right.top, right: panes.right.right, bottom: panes.right.bottom },
+    ))
+}
+
+fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
+    App::tab_ids(app)
+        .into_iter()
+        .filter(|id| Some(*id) != skip)
+        .map(|id| {
+            let title = App::tab_title(app, id).filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New tab".to_owned());
+            let favicon = App::tab_favicon(app, id).and_then(|bytes| {
+                crate::favicon::decode(&bytes, 24)
+            });
+            Entry::Item(Item::new(id.0 as usize + 100, title.clone(), Icon::Grid).rich_row(title, favicon))
+        })
+        .collect()
+}
+
+fn show_split_menu(hwnd: HWND, app: &AppRef) {
+    const OPEN_BASE: usize = 100;
+    const SWAP: usize = 1;
+    const CLOSE_LEFT: usize = 2;
+    const CLOSE_RIGHT: usize = 3;
+    const REPLACE: usize = 4;
+    const OPEN_NEW: usize = 5;
+    let split = App::split_view(app);
+    let entries = if let Some(split) = split {
+        vec![
+            Entry::Item(Item::new(SWAP, "Swap panes", Icon::Grid)),
+            Entry::Item(Item::new(CLOSE_LEFT, "Close left pane", Icon::Close)),
+            Entry::Item(Item::new(CLOSE_RIGHT, "Close right pane", Icon::Close)),
+            Entry::Item(Item::new(REPLACE, "Replace pane with tab…", Icon::Grid)
+                .submenu_with(split_tab_rows(app, Some(split.other_tab())))),
+        ]
+    } else {
+        let active = App::active_tab_id(app);
+        let mut entries = vec![Entry::Item(Item::new(OPEN_NEW, "Open split view with a new tab", Icon::Plus))];
+        entries.push(Entry::Separator);
+        entries.push(Entry::Item(Item::new(OPEN_BASE, "Open split view with…", Icon::Grid)
+            .submenu_with(split_tab_rows(app, Some(active)))));
+        entries
+    };
+    let mut point = main_menu_anchor(hwnd);
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let command = menu::track(hwnd, point, Menu {
+        header: None,
+        entries,
+        footer: "Split view".to_owned(),
+    }).map_or(0, |chosen| chosen.id);
+    if let Some(split) = split {
+        match command {
+            SWAP => { let _ = App::swap_split_panes(app); }
+            CLOSE_LEFT => { let _ = App::close_split_pane(app, crate::split_view::Pane::Left); }
+            CLOSE_RIGHT => { let _ = App::close_split_pane(app, crate::split_view::Pane::Right); }
+            value if value >= OPEN_BASE => { let _ = App::replace_focused_split_pane(app, TabId((value - OPEN_BASE) as u32)); }
+            _ => {}
+        }
+        let _ = split;
+    } else {
+        let active = App::active_tab_id(app);
+        if command == OPEN_NEW {
+            let new = App::new_tab(app);
+            if let Some(bounds) = split_rects(hwnd, None) {
+                let _ = App::open_split_view(app, active, new, crate::split_view::Pane::Right, bounds);
+            }
+        } else if command >= OPEN_BASE {
+            let other = TabId((command - OPEN_BASE) as u32);
+            if let Some(bounds) = split_rects(hwnd, None) {
+                let _ = App::open_split_view(app, active, other, crate::split_view::Pane::Right, bounds);
+            }
+        }
+    }
+    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+}
+
+fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
+    const NEW_RIGHT: usize = 1;
+    const TAB_SPLIT_VIEW_HOOK: usize = 2;
+    const GROUP: usize = 3;
+    const GROUP_NEW: usize = 30;
+    const GROUP_AUTO: usize = 31;
+    const RELOAD: usize = 4;
+    const DUPLICATE: usize = 5;
+    const PIN: usize = 6;
+    const MUTE_TAB: usize = 7;
+    const MUTE_SITE: usize = 8;
+    const HIBERNATE: usize = 9;
+    const COPY_URL: usize = 10;
+    const MOVE_WINDOW: usize = 11;
+    const CLOSE: usize = 12;
+    const CLOSE_OTHERS: usize = 13;
+    const CLOSE_LEFT: usize = 14;
+    const CLOSE_RIGHT: usize = 15;
+    let pinned = App::tab_pinned(app, id);
     let url = App::tab_committed_url(app, id);
     let key = url.as_ref().and_then(tab_groups::DomainKey::from_url);
+    let ids = App::tab_ids(app);
+    let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+        return;
+    };
+    let can_hibernate = App::tab_hibernate_eligible(app, id);
     let mut has_group = false;
     let mut collapsed = false;
+    let muted = App::tab_muted(app, id);
+    let host = url.as_ref().and_then(|address| address.host_str()).map(str::to_owned);
+    let site_ids: Vec<TabId> = host
+        .as_ref()
+        .map(|host| {
+            ids.iter()
+                .copied()
+                .filter(|candidate| {
+                    App::tab_committed_url(app, *candidate)
+                        .and_then(|address| address.host_str().map(str::to_owned))
+                        .as_ref()
+                        == Some(host)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mute_site = site_ids.iter().any(|candidate| !App::tab_muted(app, *candidate));
+    let can_mute_tab = App::tab_supports_muting(app, id);
+    let can_mute_site = !site_ids.is_empty()
+        && site_ids.iter().all(|candidate| App::tab_supports_muting(app, *candidate));
+    let mut entries = vec![
+        Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus).shortcut("Ctrl+T")),
+        Entry::Item(Item::new(TAB_SPLIT_VIEW_HOOK, "New split view with current tab", Icon::Grid)
+            .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some())),
+        Entry::Separator,
+    ];
     if let Some(key) = &key {
-        let _ = unsafe { AppendMenuW(menu, MF_STRING, AUTO, w!("Group this site automatically")) };
-        let _ = unsafe { AppendMenuW(menu, MF_STRING, ALWAYS, w!("Always group this site")) };
-        let _ = unsafe { AppendMenuW(menu, MF_STRING, NEVER, w!("Never group this site")) };
+        entries.push(Entry::Item(
+            Item::new(GROUP, "Add tab to group", Icon::Grid).submenu_with(vec![
+                Entry::Item(Item::new(GROUP_NEW, "New group for this site", Icon::Plus)),
+                Entry::Item(Item::new(GROUP_AUTO, "Group automatically", Icon::Grid)),
+            ]),
+        ));
         (has_group, collapsed) = with_chrome(hwnd, |state| {
             state
                 .slots
@@ -1744,49 +2007,154 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
                 .map_or((false, false), |slot| (true, slot.collapsed))
         })
         .unwrap_or((false, false));
-        if has_group {
-            let _ = unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_STRING,
-                    COLLAPSE,
-                    if collapsed {
-                        w!("Expand group")
-                    } else {
-                        w!("Collapse group")
-                    },
-                )
-            };
-        }
+        entries.push(Entry::Item(
+            Item::new(
+                GROUP_AUTO + 1,
+                if collapsed { "Expand group" } else { "Collapse group" },
+                Icon::None,
+            )
+            .disabled_if(!has_group),
+        ));
     }
+    entries.push(Entry::Separator);
+    entries.extend([
+        Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
+        Entry::Item(Item::new(RELOAD, "Reload", Icon::None).shortcut("Ctrl+R")),
+        Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).disabled_if(url.is_none())),
+        Entry::Item(Item::new(PIN, if pinned { "Unpin tab" } else { "Pin tab" }, Icon::None).checked(pinned)),
+        Entry::Item(
+            Item::new(MUTE_TAB, if muted { "Unmute tab" } else { "Mute tab" }, Icon::None)
+                .checked(muted)
+                .disabled_if(!can_mute_tab),
+        ),
+        Entry::Item(
+            Item::new(MUTE_SITE, if mute_site { "Mute site" } else { "Unmute site" }, Icon::None)
+                .disabled_if(!can_mute_site),
+        ),
+        Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).disabled_if(!can_hibernate)),
+        Entry::Item(
+            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None)
+                .disabled_if(url.is_none()),
+        ),
+    ]);
+    entries.push(Entry::Separator);
+    entries.extend([
+        Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).shortcut("Ctrl+W")),
+        Entry::Item(Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).disabled_if(ids.len() <= 1)),
+        Entry::Item(Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).disabled_if(index == 0)),
+        Entry::Item(Item::new(CLOSE_RIGHT, "Close tabs to the right", Icon::Close).disabled_if(index + 1 == ids.len())),
+    ]);
     let mut point = windows::Win32::Foundation::POINT { x, y };
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        let command = super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            point.x,
-            point.y,
+        let command = menu::track_below(
             hwnd,
-            None,
+            point,
+            Menu {
+                header: None,
+                entries,
+                footer: "Actions for the selected tab".to_owned(),
+            },
         )
-        .0 as usize;
-        let _ = DestroyMenu(menu);
+        .map_or(0, |chosen| chosen.id);
         match command {
+            NEW_RIGHT => {
+                let created = App::new_tab(app);
+                let current = App::tab_ids(app);
+                let after = if pinned {
+                    current.iter().take_while(|candidate| App::tab_pinned(app, **candidate)).count()
+                } else {
+                    current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1
+                };
+                let _ = App::move_tab(app, created, after);
+                focus_omni(hwnd, app, true);
+            }
+            TAB_SPLIT_VIEW_HOOK => {
+                let active = App::active_tab_id(app);
+                let companion = if id != active {
+                    Some(active)
+                } else {
+                    App::tab_ids(app).into_iter().find(|candidate| *candidate != id)
+                };
+                if let (Some(companion), Some(bounds)) = (companion, split_rects(hwnd, None)) {
+                    let _ = App::open_split_view(app, id, companion, crate::split_view::Pane::Left, bounds);
+                }
+            }
+            GROUP_NEW => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
+            }
+            GROUP_AUTO => {
+                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Auto);
+            }
+            value if value == GROUP_AUTO + 1 && has_group => {
+                let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+            }
+            COPY_URL => {
+                if let Some(url) = url.as_ref() {
+                    if !copy_text_to_clipboard(hwnd, url.as_str()) {
+                        show_error_message("Bowser could not copy the tab URL.");
+                    }
+                }
+            }
+            RELOAD => {
+                let _ = App::select_tab(app, id);
+                App::reload(app);
+            }
+            DUPLICATE => {
+                if let Some(url) = url.as_ref() {
+                    let created = App::new_tab(app);
+                    App::navigate_current(app, url);
+                    let current = App::tab_ids(app);
+                    let after = if pinned {
+                        current.iter().take_while(|candidate| App::tab_pinned(app, **candidate)).count()
+                    } else {
+                        current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1
+                    };
+                    let _ = App::move_tab(app, created, after);
+                }
+            }
             PIN => {
                 let _ = App::set_tab_pinned(app, id, !pinned);
             }
-            AUTO => {
-                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Auto);
+            MUTE_TAB => App::set_tab_muted(app, id, !muted),
+            MUTE_SITE => {
+                for site_tab in site_ids {
+                    App::set_tab_muted(app, site_tab, mute_site);
+                }
             }
-            ALWAYS => {
-                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
+            HIBERNATE => {
+                let _ = App::hibernate_tab(app, id);
             }
-            NEVER => {
-                let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Never);
+            MOVE_WINDOW => {
+                if let Some(url) = url.as_ref() {
+                    let profile = crate::profile::active();
+                    let launched = profile.is_ok_and(|profile| {
+                        crate::profile::spawn_window_with_url(&profile, url)
+                    });
+                    if launched {
+                        let _ = App::close_tab(app, id);
+                    } else {
+                        show_error_message("Bowser could not open this tab in a new window.");
+                    }
+                }
             }
-            COLLAPSE if has_group => {
-                let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+            CLOSE => {
+                let _ = App::close_tab(app, id);
+            }
+            CLOSE_OTHERS => {
+                for other in ids.iter().copied().filter(|other| *other != id) {
+                    let _ = App::close_tab(app, other);
+                }
+            }
+            CLOSE_LEFT => {
+                for left in ids[..index].iter().copied() {
+                    let _ = App::close_tab(app, left);
+                }
+            }
+            CLOSE_RIGHT => {
+                for right in ids[index + 1..].iter().copied() {
+                    let _ = App::close_tab(app, right);
+                }
             }
             _ => {}
         }
@@ -1842,27 +2210,26 @@ impl ProfileMenu {
         windows::core::HSTRING::from(text)
     }
 
-    /// Switch rows (current one ticked), "New profile" and a "Delete profile…" submenu.
-    fn append_to(&self, menu: windows::Win32::UI::WindowsAndMessaging::HMENU) {
+    /// Builds switch, create, and delete actions from the same snapshot used by `run`.
+    fn entries(&self) -> Vec<Entry> {
         use crate::profile;
+        let mut entries = Vec::with_capacity(self.names.len().saturating_mul(2) + 3);
         for (index, name) in self.names.iter().enumerate() {
-            let flags = if self.is_current(name) {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
-            };
-            let text = Self::label(name);
-            let _ = unsafe {
-                AppendMenuW(
-                    menu,
-                    flags,
+            entries.push(Entry::Item(
+                Item::new(
                     PROFILE_SWITCH_BASE + index,
-                    windows::core::PCWSTR(text.as_ptr()),
+                    Self::label(name).to_string(),
+                    Icon::Person,
                 )
-            };
+                .checked(self.is_current(name)),
+            ));
         }
-        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()) };
-        let _ = unsafe { AppendMenuW(menu, MF_STRING, PROFILE_NEW, w!("New profile")) };
+        entries.push(Entry::Separator);
+        entries.push(Entry::Item(Item::new(
+            PROFILE_NEW,
+            "New profile",
+            Icon::Plus,
+        )));
         let deletable: Vec<usize> = self
             .names
             .iter()
@@ -1872,27 +2239,17 @@ impl ProfileMenu {
             })
             .map(|(index, _)| index)
             .collect();
-        if let Ok(submenu) = unsafe { CreatePopupMenu() } {
-            for &index in &deletable {
-                let text = Self::label(&self.names[index]);
-                let _ = unsafe {
-                    AppendMenuW(
-                        submenu,
-                        MF_STRING,
-                        PROFILE_DELETE_BASE + index,
-                        windows::core::PCWSTR(text.as_ptr()),
-                    )
-                };
+        if !deletable.is_empty() {
+            entries.push(Entry::SectionHeader("Delete profile".to_owned()));
+            for index in deletable {
+                entries.push(Entry::Item(Item::new(
+                    PROFILE_DELETE_BASE + index,
+                    Self::label(&self.names[index]).to_string(),
+                    Icon::Close,
+                )));
             }
-            let flags = if deletable.is_empty() {
-                MF_POPUP | MF_GRAYED
-            } else {
-                MF_POPUP
-            };
-            // The submenu handle is owned by `menu` and is destroyed with it.
-            let _ =
-                unsafe { AppendMenuW(menu, flags, submenu.0 as usize, w!("Delete profile…")) };
         }
+        entries
     }
 
     /// Runs the command a row of [`Self::append_to`] returned. Other ids are ignored.
@@ -1940,25 +2297,18 @@ fn show_profile_menu(hwnd: HWND) {
     let Some(profiles) = ProfileMenu::load() else {
         return;
     };
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
-    };
-    profiles.append_to(menu);
     let mut point = main_menu_anchor(hwnd);
-    let command = unsafe {
+    unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            point.x,
-            point.y,
-            hwnd,
-            None,
-        )
-        .0 as usize
     };
-    let _ = unsafe { DestroyMenu(menu) };
-    profiles.run(command);
+    let menu = Menu {
+        header: None,
+        entries: profiles.entries(),
+        footer: "Switch, create, or delete".to_owned(),
+    };
+    if let Some(chosen) = menu::track(hwnd, point, menu) {
+        profiles.run(chosen.id);
+    }
 }
 
 /// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
@@ -1980,7 +2330,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     if let Some(profiles) = &profiles {
         let name = ProfileMenu::label(profiles.current.listed_name()).to_string();
         entries.push(Entry::Item(
-            Item::new(PROFILE, format!("Profile: {name}"), Icon::Person).submenu(),
+            Item::new(PROFILE, format!("Profile: {name}"), Icon::Person)
+                .submenu_with(profiles.entries()),
         ));
     }
     entries.push(Entry::Item(
@@ -2004,9 +2355,12 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(EXIT, "Exit", Icon::Close).shortcut("Alt+F4"),
     ));
     let menu = Menu {
-        profile: profiles
-            .as_ref()
-            .map_or_else(|| "Bowser".to_owned(), |p| ProfileMenu::label(p.current.listed_name()).to_string()),
+        header: Some(ProfileHeader {
+            profile: profiles
+                .as_ref()
+                .map_or_else(|| "Bowser".to_owned(), |p| ProfileMenu::label(p.current.listed_name()).to_string()),
+            caption: "Current profile".to_owned(),
+        }),
         entries,
         footer: format!("Bowser {}", env!("CARGO_PKG_VERSION")),
     };
@@ -2017,7 +2371,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
     }
-    let chosen = main_menu::track(hwnd, point, menu);
+    let chosen = menu::track(hwnd, point, menu);
     set_pressed(hwnd, Hit::None);
 
     if let Some(chosen) = chosen {
@@ -2026,11 +2380,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 App::new_tab(app);
                 focus_omni(hwnd, app, true);
             }
-            PROFILE => {
-                if let Some(profiles) = &profiles {
-                    show_profile_flyout(hwnd, profiles, chosen.row);
-                }
-            }
+            PROFILE => {}
             EXTENSIONS => show_extensions_menu(hwnd, app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -2053,33 +2403,26 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     LPARAM(0),
                 );
             },
+            id if (PROFILE_SWITCH_BASE..PROFILE_SWITCH_BASE + PROFILE_MAX_LISTED).contains(&id) => {
+                if let Some(profiles) = &profiles {
+                    profiles.run(id);
+                }
+            }
+            id if (PROFILE_DELETE_BASE..PROFILE_DELETE_BASE + PROFILE_MAX_LISTED).contains(&id) => {
+                if let Some(profiles) = &profiles {
+                    profiles.run(id);
+                }
+            }
+            PROFILE_NEW => {
+                if let Some(profiles) = &profiles {
+                    profiles.run(PROFILE_NEW);
+                }
+            }
             _ => {}
         }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
-}
-
-/// The profile rows beside the Profile row of the main menu, as the themed native menu. `row` is in
-/// screen coordinates and is excluded from the flyout so the two never overlap.
-fn show_profile_flyout(hwnd: HWND, profiles: &ProfileMenu, row: RECT) {
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
-    };
-    profiles.append_to(menu);
-    let command = unsafe {
-        super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
-            row.right,
-            row.top,
-            hwnd,
-            Some(&row as *const RECT),
-        )
-        .0 as usize
-    };
-    let _ = unsafe { DestroyMenu(menu) };
-    profiles.run(command);
 }
 
 fn open_profile_window(target: &crate::profile::Profile) {
@@ -2088,13 +2431,59 @@ fn open_profile_window(target: &crate::profile::Profile) {
     }
 }
 
-/// Ctrl+Shift+E: native menu for this profile's unpacked extensions. Each row toggles the
-/// extension; failures from the last load show in the row. Removal is under a submenu.
+/// Handles Alt+Space and titlebar right-click with Bowser's themed window-command menu.
+fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
+    use windows::Win32::UI::WindowsAndMessaging::{SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE};
+    let maximized = unsafe { IsZoomed(hwnd).as_bool() };
+    let minimized = unsafe { IsIconic(hwnd).as_bool() };
+    let entries = vec![
+        Entry::Item(
+            Item::new(SC_RESTORE as usize, "Restore", Icon::None)
+                .disabled_if(!maximized && !minimized),
+        ),
+        Entry::Item(
+            Item::new(SC_MOVE as usize, "Move", Icon::None).disabled_if(maximized || minimized),
+        ),
+        Entry::Item(
+            Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(maximized || minimized),
+        ),
+        Entry::Item(
+            Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).disabled_if(minimized),
+        ),
+        Entry::Item(
+            Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).disabled_if(maximized),
+        ),
+        Entry::Separator,
+        Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).shortcut("Alt+F4")),
+    ];
+    let chosen = menu::track_below(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries,
+            footer: "Window commands".to_owned(),
+        },
+    );
+    if let Some(chosen) = chosen {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM(chosen.id),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
+/// Ctrl+Shift+E: themed menu for this profile's unpacked extensions.
 fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
     use crate::extensions::{self, Record};
     const INSTALL: usize = 1;
     const TOGGLE_BASE: usize = 100;
     const REMOVE_BASE: usize = 1000;
+    const REMOVE_MENU: usize = 2;
     const MAX_LISTED: usize = extensions::MAX_INSTALLED;
 
     let Ok(profile) = crate::profile::active() else {
@@ -2107,18 +2496,11 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
             return;
         }
     };
-    let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
-        return;
-    };
+    let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 3);
     if records.is_empty() {
-        let _ = unsafe {
-            AppendMenuW(
-                menu,
-                MF_STRING | MF_GRAYED,
-                0,
-                w!("No extensions installed"),
-            )
-        };
+        entries.push(Entry::Item(
+            Item::new(0, "No extensions installed", Icon::None).disabled(),
+        ));
     }
     for (index, record) in records.iter().enumerate() {
         let mut label = format!(
@@ -2134,58 +2516,49 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
         if let Some(reason) = extensions::load_failure(&record.id) {
             label.push_str(&format!(" (failed: {reason})"));
         }
-        let flags = if record.enabled {
-            MF_STRING | MF_CHECKED
-        } else {
-            MF_STRING
-        };
-        let text = windows::core::HSTRING::from(label);
-        let _ = unsafe {
-            AppendMenuW(
-                menu,
-                flags,
-                TOGGLE_BASE + index,
-                windows::core::PCWSTR(text.as_ptr()),
-            )
-        };
+        entries.push(Entry::Item(
+            Item::new(TOGGLE_BASE + index, label, Icon::Grid).checked(record.enabled),
+        ));
     }
-    let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null()) };
-    if let Ok(submenu) = unsafe { CreatePopupMenu() } {
-        for (index, record) in records.iter().enumerate() {
-            let text = windows::core::HSTRING::from(record.name.as_str());
-            let _ = unsafe {
-                AppendMenuW(
-                    submenu,
-                    MF_STRING,
-                    REMOVE_BASE + index,
-                    windows::core::PCWSTR(text.as_ptr()),
-                )
-            };
-        }
-        let flags = if records.is_empty() {
-            MF_POPUP | MF_GRAYED
-        } else {
-            MF_POPUP
-        };
-        // The submenu handle is owned by `menu` and is destroyed with it.
-        let _ = unsafe { AppendMenuW(menu, flags, submenu.0 as usize, w!("Remove extension…")) };
-    }
-    let _ = unsafe { AppendMenuW(menu, MF_STRING, INSTALL, w!("Install unpacked extension…")) };
+    let remove_entries: Vec<Entry> = records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| {
+            Entry::Item(Item::new(
+                REMOVE_BASE + index,
+                record.name.clone(),
+                Icon::Close,
+            ))
+        })
+        .collect();
+    entries.push(Entry::Separator);
+    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close);
+    entries.push(Entry::Item(if records.is_empty() {
+        remove.disabled()
+    } else {
+        remove.submenu_with(remove_entries)
+    }));
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(Item::new(
+        INSTALL,
+        "Install unpacked extension…",
+        Icon::Plus,
+    )));
 
     let mut point = main_menu_anchor(hwnd);
-    let command = unsafe {
+    unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_TOPALIGN,
-            point.x,
-            point.y,
-            hwnd,
-            None,
-        )
-        .0 as usize
     };
-    let _ = unsafe { DestroyMenu(menu) };
+    let command = menu::track(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries,
+            footer: "Unpacked extensions".to_owned(),
+        },
+    )
+    .map_or(0, |chosen| chosen.id);
 
     match command {
         INSTALL => install_extension(hwnd, app, &profile),
@@ -2316,29 +2689,32 @@ fn pick_extension_folder(owner: HWND) -> Option<std::path::PathBuf> {
 }
 
 fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
-    let ids =
+    let hidden =
         with_chrome(hwnd, |s| overflow_tab_ids(&s.layout, &s.slots, &s.tabs)).unwrap_or_default();
-    if ids.is_empty() {
+    if hidden.is_empty() {
         return;
     }
-    let menu = unsafe { CreatePopupMenu() };
-    let Ok(menu) = menu else { return };
-    let mut labels = Vec::with_capacity(ids.len());
+    let ids = App::tab_ids(app);
+    let active = App::active_tab_id(app);
+    let mut entries = Vec::with_capacity(ids.len());
     for (index, id) in ids.iter().copied().enumerate() {
         let mut label = App::tab_title(app, id).unwrap_or_default();
         if label.trim().is_empty() {
             label = "New tab".to_owned();
         }
-        let wide = label.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-        let _ = unsafe {
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                index as usize + 1,
-                windows::core::PCWSTR(wide.as_ptr()),
-            )
-        };
-        labels.push(wide);
+        let favicon = with_chrome(hwnd, |state| {
+            state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == id)
+                .and_then(|tab| tab.favicon.as_deref().cloned())
+        })
+        .flatten();
+        entries.push(Entry::Item(
+            Item::new(index + 1, label.clone(), if id == active { Icon::Check } else { Icon::None })
+                .rich_row(label, favicon)
+                .checked(id == active),
+        ));
     }
     let mut point = with_chrome(hwnd, |s| {
         let r = s.layout.tab_menu_button;
@@ -2350,16 +2726,18 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     .unwrap_or_default();
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
-        let command = super::menu_theme::track(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            point.x,
-            point.y,
-            hwnd,
-            None,
-        )
-        .0 as usize;
-        let _ = DestroyMenu(menu);
+    }
+    let command = menu::track_below(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries,
+            footer: "Select a tab".to_owned(),
+        },
+    )
+    .map_or(0, |chosen| chosen.id);
+    {
         if let Some(id) = command
             .checked_sub(1)
             .and_then(|index| ids.get(index))
@@ -2368,7 +2746,6 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
             let _ = App::select_tab(app, id);
         }
     }
-    let _ = labels;
 }
 
 fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximised: bool) {
@@ -2416,6 +2793,14 @@ fn rect_for(l: &Layout, h: Hit) -> Rect {
         Hit::Forward => l.forward_button,
         Hit::Reload => l.reload_button,
         Hit::Omnibox => l.omnibox,
+        Hit::Split => l.split_button(),
+        Hit::SplitDivider => Rect::new(
+            l.viewport.left + l.viewport.width() / 2 - 3,
+            l.viewport.top,
+            l.viewport.left + l.viewport.width() / 2 + 3,
+            l.viewport.bottom,
+        ),
+        Hit::SiteInfo => l.site_info_button(),
         Hit::CaptionMinimize | Hit::CaptionMaximize | Hit::CaptionClose => l.caption_button(h),
         Hit::CaptionArea => l.strip,
         _ => Rect::default(),
@@ -2489,6 +2874,17 @@ fn set_pressed(hwnd: HWND, h: Hit) {
         invalidate(hwnd, rect_for(&l, h));
     }
 }
+
+/// Navigation target for the currently focused browsing pane. Split view can route through this
+/// boundary without changing toolbar or keyboard callers.
+fn navigate_back_for_focused_pane(app: &AppRef) {
+    App::history(app, false);
+}
+
+fn navigate_forward_for_focused_pane(app: &AppRef) {
+    App::history(app, true);
+}
+
 fn caption_hit(v: u32) -> Hit {
     match v {
         x if x == HTMINBUTTON => Hit::CaptionMinimize,
@@ -2554,10 +2950,15 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
         let dc = BeginPaint(hwnd, &mut ps);
         if let Some(app) = app {
             let active = App::active_tab_id(app);
-            let active_has_controller = App::active_tab_has_controller(app);
+            let split_view = App::split_view(app);
+            let active_has_controller = split_view.map_or_else(
+                || App::active_tab_has_controller(app),
+                |split| App::tab_has_controller(app, split.left) || App::tab_has_controller(app, split.right),
+            );
             let progress_target = App::tab_progress_percent(app, active);
             let can_back = App::tab_can_go_back(app, active);
             let can_forward = App::tab_can_go_forward(app, active);
+            let site = App::site_security(app);
             let focus = GetFocus() == app.borrow().edit;
             let now = Instant::now();
             let (mut a, mut b) = (0u32, 0u32);
@@ -2583,13 +2984,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         continue;
                     };
                     let v = TabView {
-                        title: if slot.collapsed {
-                            slot.domain
-                                .as_ref()
-                                .map_or(&t.title, |domain| domain.as_str())
-                        } else {
-                            &t.title
-                        },
+                        title: &t.title,
                         loading: t.loading,
                         favicon: t.favicon.as_deref(),
                         emphasis: s
@@ -2599,6 +2994,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         group_size: slot.group_key.as_ref().map(|_| slot.group_size),
                         group_control: slot.group_control,
                         marker: t.marker,
+                        group_colour: slot.island_colour,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
@@ -2624,7 +3020,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     s.progress.clear();
                 }
                 let progress = match (progress_target, s.progress.tab) {
-                    (Some(target), Some(tab)) if tab == active => s.progress.value(now).or(Some(target as f32)),
+                    (Some(target), Some(tab)) if tab == active => s.progress.paint_value(now).or(Some(target as f32)),
                     (Some(target), _) => Some(target as f32),
                     (None, _) => None,
                 };
@@ -2649,10 +3045,27 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         focused: focus,
                         completion_suffix: suffix,
                         progress,
+                        site,
                     },
                     now,
                     departures: s.motion.departures(),
                 };
+                let page_regions = if active_has_controller {
+                    if let Some(split) = split_view {
+                        layout::split_pane_layout(
+                            s.layout.viewport,
+                            s.split_divider,
+                            s.layout.metrics.px(220),
+                            s.layout.metrics.px(6),
+                        )
+                        .map(|panes| (s.layout.viewport, Some(panes), split.focused == crate::split_view::Pane::Left))
+                    } else {
+                        Some((s.layout.viewport, None, false))
+                    }
+                } else {
+                    None
+                };
+                s.surface.set_page_regions(page_regions);
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
                 let t1 = std::time::Instant::now();
@@ -2805,8 +3218,8 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             App::reload(app)
         }
         Command::Stop => App::stop(app),
-        Command::Back => App::history(app, false),
-        Command::Forward => App::history(app, true),
+        Command::Back => navigate_back_for_focused_pane(app),
+        Command::Forward => navigate_forward_for_focused_pane(app),
         Command::ToggleBlocker => App::toggle_blocker(app),
         Command::ShowProfileMenu => show_profile_menu(hwnd),
         Command::ShowExtensionsMenu => show_extensions_menu(hwnd, app),
@@ -3023,6 +3436,27 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn progress_finishes_then_fades_before_settling() {
+        let start = Instant::now();
+        let mut progress = ProgressTransition::default();
+        progress.retarget(TabId(1), 7, 100, start, true);
+        assert!(progress.paint_value(start).unwrap() < 100.0);
+        assert!(progress.paint_value(start + Duration::from_millis(300)).unwrap() > 100.0);
+        assert!(!progress.settled(start + Duration::from_millis(300)));
+        assert!(progress.settled(start + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn main_window_style_has_native_resize_and_caption_controls() {
+        let style = main_window_style();
+        assert_ne!(style.0 & WS_THICKFRAME.0, 0);
+        assert_ne!(style.0 & WS_CAPTION.0, 0);
+        assert_ne!(style.0 & WS_SYSMENU.0, 0);
+        assert_ne!(style.0 & WS_MAXIMIZEBOX.0, 0);
+    }
 
     #[test]
     fn overflow_menu_contains_only_tabs_outside_the_visible_window() {
@@ -3044,12 +3478,13 @@ mod tests {
                 group_size: 1,
                 group_control: false,
                 collapsed: false,
+                island_colour: None,
             })
             .collect::<Vec<_>>();
         let overflow = layout::compute_with_active(768, 700, 96, 40, 39, false);
         assert_eq!(
             overflow_tab_ids(&overflow, &slots, &tabs),
-            (0..14).map(TabId).collect::<Vec<_>>()
+            (0..15).map(TabId).collect::<Vec<_>>()
         );
 
         let fitting = layout::compute(1024, 700, 96, 8, false);
@@ -3093,12 +3528,12 @@ mod tests {
     }
 
     #[test]
-    fn overlay_surface_tracks_chrome_height_across_dpi_changes() {
+    fn overlay_surface_tracks_full_client_height_across_dpi_changes() {
         let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
         for dpi in [96, 120, 144, 192, 96, 120] {
             s.relayout(1000, 700, dpi, TabId(0), false);
             let chrome = layout::chrome_height(dpi);
-            assert_eq!(s.surface.height(), chrome, "surface height at dpi {dpi}");
+            assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
             assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
             assert_eq!(s.layout.viewport.top, chrome, "viewport top at dpi {dpi}");
         }

@@ -157,6 +157,11 @@ impl Profile {
         self.root.join(PASSWORDS_FILE_NAME)
     }
 
+    /// Per-site camera, microphone, location and notification decisions.
+    pub fn permissions_file(&self) -> PathBuf {
+        self.root.join(crate::permissions::FILE_NAME)
+    }
+
     /// Copies of unpacked browser extensions installed into this profile, one folder per id.
     pub fn extensions_dir(&self) -> PathBuf {
         self.root.join(EXTENSIONS_DIR_NAME)
@@ -312,12 +317,24 @@ pub fn delete(app_data: &Path, name: &str, current: &Profile) -> Result<(), Prof
 
 /// Starts a new Bowser process for `profile`. The current window is left open.
 pub fn spawn_window(profile: &Profile) -> bool {
+    spawn_window_inner(profile, None)
+}
+
+/// Starts a new Bowser process for `profile` and opens `url` in its initial tab.
+pub fn spawn_window_with_url(profile: &Profile, url: &url::Url) -> bool {
+    spawn_window_inner(profile, Some(url))
+}
+
+fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
     let mut command = std::process::Command::new(exe);
     if let Some(name) = profile.name() {
         command.arg("--profile").arg(name);
+    }
+    if let Some(url) = url {
+        command.arg("--open-url").arg(url.as_str());
     }
     command.spawn().is_ok()
 }

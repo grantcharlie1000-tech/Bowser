@@ -6,9 +6,10 @@
 //! Public Suffix List embedded in the `psl` crate (private suffixes included),
 //! so no network lookup or refresh ever happens.
 //!
-//! [`GroupPreferences`] stores only a per-domain [`GroupMode`] and collapsed
-//! flag. Load it once at startup with [`GroupPreferences::load`] and call
-//! [`GroupPreferences::save`] after an explicit user change.
+//! [`GroupPreferences`] stores only a per-domain [`GroupMode`], collapsed flag,
+//! optional island name, and optional island colour. Load it once at startup
+//! with [`GroupPreferences::load`] and call [`GroupPreferences::save`] after an
+//! explicit user change.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,8 +27,14 @@ pub const MAX_FILE_BYTES: usize = 256 * 1024;
 /// Largest number of non-default domain entries kept.
 pub const MAX_ENTRIES: usize = 512;
 
-const HEADER: &str = "bowser-tab-groups 1";
+/// Version 2 header. Version 1 files (mode and collapsed only) are still read.
+const HEADER: &str = "bowser-tab-groups 2";
+const HEADER_V1: &str = "bowser-tab-groups 1";
 const MAX_DOMAIN_BYTES: usize = 253;
+/// Number of island colours. Stored colour ids are `0..COLOUR_COUNT`.
+pub const COLOUR_COUNT: usize = 8;
+/// Longest island name, in characters, after cleaning.
+pub const MAX_NAME_CHARS: usize = 48;
 
 /// Canonical registrable domain (for example `example.co.uk`) in lowercase
 /// ASCII/punycode. A `DomainKey` can only be built through validation, so it
@@ -135,16 +142,32 @@ impl GroupMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Entry {
     mode: GroupMode,
     collapsed: bool,
+    /// Index into the island colours, or `None` for the theme accent.
+    colour: Option<u8>,
+    /// Cleaned user name for the island, or `None` for no name.
+    name: Option<String>,
 }
 
 impl Entry {
-    fn is_default(self) -> bool {
-        self == Self::default()
+    fn is_default(&self) -> bool {
+        *self == Self::default()
     }
+}
+
+/// Trims, drops control characters, and caps the length. Returns `None` for an empty result, so
+/// a blank name is the same as no name.
+pub fn clean_name(text: &str) -> Option<String> {
+    let kept: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_NAME_CHARS)
+        .collect();
+    let trimmed = kept.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 #[derive(Debug)]
@@ -193,6 +216,16 @@ impl GroupPreferences {
         self.entries.get(key).is_some_and(|e| e.collapsed)
     }
 
+    /// The island's name, when the user has set one.
+    pub fn name(&self, key: &DomainKey) -> Option<&str> {
+        self.entries.get(key).and_then(|e| e.name.as_deref())
+    }
+
+    /// The island's colour index, or `None` for the theme accent.
+    pub fn colour(&self, key: &DomainKey) -> Option<u8> {
+        self.entries.get(key).and_then(|e| e.colour)
+    }
+
     /// Whether `unpinned_members` tabs of `key` form a group under the user's
     /// mode for that domain.
     pub fn forms_group(&self, key: &DomainKey, unpinned_members: usize) -> bool {
@@ -213,15 +246,34 @@ impl GroupPreferences {
         self.update(key, |entry| entry.collapsed = collapsed)
     }
 
+    /// Sets the island name after [`clean_name`]. A blank name clears it.
+    pub fn set_name(&mut self, key: &DomainKey, name: &str) -> Result<bool, PreferencesError> {
+        let name = clean_name(name);
+        self.update(key, |entry| entry.name = name)
+    }
+
+    /// Sets the island colour. `None` restores the theme accent. Colour ids at or above
+    /// [`COLOUR_COUNT`] are rejected without changing anything.
+    pub fn set_colour(
+        &mut self,
+        key: &DomainKey,
+        colour: Option<u8>,
+    ) -> Result<bool, PreferencesError> {
+        if colour.is_some_and(|id| usize::from(id) >= COLOUR_COUNT) {
+            return Err(PreferencesError::Malformed);
+        }
+        self.update(key, |entry| entry.colour = colour)
+    }
+
     fn update(
         &mut self,
         key: &DomainKey,
         change: impl FnOnce(&mut Entry),
     ) -> Result<bool, PreferencesError> {
-        let before = self.entries.get(key).copied();
-        let mut entry = before.unwrap_or_default();
+        let before = self.entries.get(key).cloned();
+        let mut entry = before.clone().unwrap_or_default();
         change(&mut entry);
-        if before.unwrap_or_default() == entry {
+        if before.clone().unwrap_or_default() == entry {
             return Ok(false);
         }
         if entry.is_default() {
@@ -235,17 +287,21 @@ impl GroupPreferences {
         Ok(true)
     }
 
-    /// Strict parser for the version-1 text format. Any deviation (header,
+    /// Strict parser for the version-1 and version-2 text formats. Version 2
+    /// lines are `domain mode state colour [name]`, where colour is `-` or a
+    /// colour id and the name is the rest of the line. Any deviation (header,
     /// unknown token, duplicate or unsorted domain, default-valued entry, bad
-    /// domain, size or count over limits) rejects the whole file.
+    /// domain, unclean name, size or count over limits) rejects the whole file.
     pub fn parse(text: &str) -> Result<Self, PreferencesError> {
         if text.len() > MAX_FILE_BYTES {
             return Err(PreferencesError::TooLarge);
         }
         let mut lines = text.split('\n');
-        if lines.next() != Some(HEADER) {
-            return Err(PreferencesError::Malformed);
-        }
+        let version_two = match lines.next() {
+            Some(HEADER) => true,
+            Some(HEADER_V1) => false,
+            _ => return Err(PreferencesError::Malformed),
+        };
         let mut lines = lines.peekable();
         let mut preferences = Self::default();
         let mut previous: Option<DomainKey> = None;
@@ -253,9 +309,9 @@ impl GroupPreferences {
             if line.is_empty() && lines.peek().is_none() {
                 break; // single trailing newline
             }
-            let mut fields = line.split(' ');
-            let (Some(domain), Some(mode), Some(state), None) =
-                (fields.next(), fields.next(), fields.next(), fields.next())
+            let mut fields = line.splitn(5, ' ');
+            let (Some(domain), Some(mode), Some(state)) =
+                (fields.next(), fields.next(), fields.next())
             else {
                 return Err(PreferencesError::Malformed);
             };
@@ -265,9 +321,36 @@ impl GroupPreferences {
                 "expanded" => false,
                 _ => return Err(PreferencesError::Malformed),
             };
+            let (colour, name) = if version_two {
+                let colour = match fields.next() {
+                    Some("-") => None,
+                    Some(token) => Some(
+                        token
+                            .parse::<u8>()
+                            .ok()
+                            .filter(|id| usize::from(*id) < COLOUR_COUNT)
+                            .ok_or(PreferencesError::Malformed)?,
+                    ),
+                    None => return Err(PreferencesError::Malformed),
+                };
+                let name = match fields.next() {
+                    Some(name) if clean_name(name).as_deref() == Some(name) => {
+                        Some(name.to_owned())
+                    }
+                    Some(_) => return Err(PreferencesError::Malformed),
+                    None => None,
+                };
+                (colour, name)
+            } else if fields.next().is_some() {
+                return Err(PreferencesError::Malformed);
+            } else {
+                (None, None)
+            };
             let entry = Entry {
                 mode: GroupMode::from_token(mode).ok_or(PreferencesError::Malformed)?,
                 collapsed,
+                colour,
+                name,
             };
             // Sorted-and-unique is what `serialize` emits; requiring it also
             // rejects duplicates.
@@ -283,7 +366,7 @@ impl GroupPreferences {
         Ok(preferences)
     }
 
-    /// Canonical version-1 text. Never exceeds [`MAX_FILE_BYTES`].
+    /// Canonical version-2 text. Never exceeds [`MAX_FILE_BYTES`].
     pub fn serialize(&self) -> String {
         let mut text = String::from(HEADER);
         text.push('\n');
@@ -297,6 +380,15 @@ impl GroupPreferences {
             } else {
                 "expanded"
             });
+            text.push(' ');
+            match entry.colour {
+                Some(id) => text.push_str(&id.to_string()),
+                None => text.push('-'),
+            }
+            if let Some(name) = &entry.name {
+                text.push(' ');
+                text.push_str(name);
+            }
             text.push('\n');
         }
         text
@@ -390,6 +482,8 @@ pub struct StripSlot {
     pub group_control: bool,
     /// True when this one slot stands in for a collapsed group.
     pub collapsed: bool,
+    /// Colour id of a domain island, or `None` for the theme accent and for slots in no domain island.
+    pub island_colour: Option<u8>,
 }
 
 /// Projects ordered model tabs into visible tab-strip slots without mutating or
@@ -411,8 +505,8 @@ pub fn project_strip(
     }
     let mut emitted_groups = std::collections::BTreeSet::new();
     let mut slots = Vec::with_capacity(tabs.len());
-    for index in 0..tabs.len() {
-        let Some(group_key) = group_for_index[index] else {
+    for (index, group_key) in group_for_index.iter().copied().enumerate() {
+        let Some(group_key) = group_key else {
             slots.push(StripSlot {
                 tab_index: index,
                 domain: None,
@@ -420,6 +514,7 @@ pub fn project_strip(
                 group_size: 1,
                 group_control: false,
                 collapsed: false,
+                island_colour: None,
             });
             continue;
         };
@@ -437,6 +532,9 @@ pub fn project_strip(
         let collapsed = domain
             .as_ref()
             .is_some_and(|domain| preferences.is_collapsed(domain));
+        let island_colour = domain
+            .as_ref()
+            .and_then(|domain| preferences.colour(domain));
         if collapsed {
             let representative = if group_members.contains(&active_index) {
                 active_index
@@ -450,6 +548,7 @@ pub fn project_strip(
                 group_size: group_members.len(),
                 group_control: true,
                 collapsed: true,
+                island_colour,
             });
         } else {
             for (position, &member) in group_members.iter().enumerate() {
@@ -460,6 +559,7 @@ pub fn project_strip(
                     group_size: group_members.len(),
                     group_control: position == 0,
                     collapsed: false,
+                    island_colour,
                 });
             }
         }
@@ -483,6 +583,16 @@ pub fn group_keys(
         }
     }
     keys
+}
+
+/// Model indices of the tabs whose group identity is `key`, in model order. Built from
+/// [`group_keys`] output, so it matches what the strip shows as one island.
+pub fn group_members(keys: &[Option<TabGroupKey>], key: &TabGroupKey) -> Vec<usize> {
+    keys.iter()
+        .enumerate()
+        .filter(|(_, member)| member.as_ref() == Some(key))
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Connected components of unpinned tabs linked by opener edges. Only edges between two
@@ -1016,13 +1126,17 @@ mod tests {
         let text = prefs.serialize();
         assert_eq!(
             text,
-            "bowser-tab-groups 1\n\
-             alpha.co.uk never collapsed\n\
-             mid.example auto collapsed\n\
-             zebra.example always expanded\n"
+            "bowser-tab-groups 2\n\
+             alpha.co.uk never collapsed -\n\
+             mid.example auto collapsed -\n\
+             zebra.example always expanded -\n"
         );
         assert!(!text.contains("://") && !text.contains('@'));
         assert_eq!(GroupPreferences::parse(&text).unwrap(), prefs);
+        assert_eq!(
+            GroupPreferences::parse("bowser-tab-groups 2\n").unwrap(),
+            GroupPreferences::default()
+        );
         assert_eq!(
             GroupPreferences::parse("bowser-tab-groups 1\n").unwrap(),
             GroupPreferences::default()
@@ -1032,11 +1146,114 @@ mod tests {
     }
 
     #[test]
+    fn island_name_and_colour_round_trip_with_spaces_in_the_name() {
+        let mut prefs = GroupPreferences::default();
+        let example = key("example.com");
+        assert!(prefs.set_name(&example, "  Research  notes ").unwrap());
+        assert!(prefs.set_colour(&example, Some(5)).unwrap());
+
+        let text = prefs.serialize();
+        assert_eq!(
+            text,
+            "bowser-tab-groups 2\nexample.com auto expanded 5 Research  notes\n"
+        );
+        let parsed = GroupPreferences::parse(&text).unwrap();
+        assert_eq!(parsed, prefs);
+        assert_eq!(parsed.name(&example), Some("Research  notes"));
+        assert_eq!(parsed.colour(&example), Some(5));
+    }
+
+    #[test]
+    fn version_one_files_load_without_names_or_colours() {
+        let prefs =
+            GroupPreferences::parse("bowser-tab-groups 1\nexample.com always collapsed\n").unwrap();
+        let example = key("example.com");
+        assert_eq!(prefs.mode(&example), GroupMode::Always);
+        assert!(prefs.is_collapsed(&example));
+        assert_eq!(prefs.name(&example), None);
+        assert_eq!(prefs.colour(&example), None);
+    }
+
+    #[test]
+    fn rename_recolour_and_reset_prune_the_entry_when_it_becomes_default() {
+        let mut prefs = GroupPreferences::default();
+        let example = key("example.com");
+
+        assert!(!prefs.set_name(&example, "   \t").unwrap());
+        assert!(prefs.set_name(&example, "Work").unwrap());
+        assert!(!prefs.set_name(&example, "Work").unwrap());
+        assert_eq!(prefs.name(&example), Some("Work"));
+        assert!(prefs.set_colour(&example, Some(0)).unwrap());
+        assert_eq!(prefs.colour(&example), Some(0));
+        assert!(prefs.set_colour(&example, None).unwrap());
+        assert!(prefs.set_name(&example, "").unwrap());
+        assert_eq!(prefs, GroupPreferences::default());
+    }
+
+    #[test]
+    fn colour_ids_outside_the_palette_are_rejected_without_change() {
+        let mut prefs = GroupPreferences::default();
+        let example = key("example.com");
+        assert!(
+            prefs
+                .set_colour(&example, Some(COLOUR_COUNT as u8))
+                .is_err()
+        );
+        assert_eq!(prefs, GroupPreferences::default());
+        assert!(
+            prefs
+                .set_colour(&example, Some(COLOUR_COUNT as u8 - 1))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn names_are_cleaned_and_capped() {
+        assert_eq!(clean_name("  a\tb\u{7}  ").as_deref(), Some("ab"));
+        assert_eq!(clean_name("\n\r"), None);
+        let long = "x".repeat(MAX_NAME_CHARS + 10);
+        assert_eq!(
+            clean_name(&long).map(|name| name.chars().count()),
+            Some(MAX_NAME_CHARS)
+        );
+        // A name that cleaning would change is not canonical, so the file is rejected.
+        for bad in [
+            "bowser-tab-groups 2\nexample.com auto expanded - \n",
+            "bowser-tab-groups 2\nexample.com auto expanded - pad \n",
+            "bowser-tab-groups 2\nexample.com auto expanded 8\n",
+            "bowser-tab-groups 2\nexample.com auto expanded red\n",
+            "bowser-tab-groups 2\nexample.com auto expanded\n",
+            "bowser-tab-groups 2\nexample.com auto expanded -\u{1b}\n",
+        ] {
+            assert!(
+                matches!(
+                    GroupPreferences::parse(bad),
+                    Err(PreferencesError::Malformed)
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn group_members_follow_the_island_key_in_model_order() {
+        let alpha = TabGroupKey::Domain(key("example.com"));
+        let keys = vec![
+            Some(alpha.clone()),
+            None,
+            Some(TabGroupKey::Domain(key("example.net"))),
+            Some(alpha.clone()),
+        ];
+        assert_eq!(group_members(&keys, &alpha), [0, 3]);
+        assert!(group_members(&keys, &TabGroupKey::Opener(crate::tabs::TabId(9))).is_empty());
+    }
+
+    #[test]
     fn malformed_preferences_are_rejected() {
         let long_domain = format!("{}.example", "a".repeat(250));
         let cases = [
             "".to_owned(),
-            "bowser-tab-groups 2\n".to_owned(),
+            "bowser-tab-groups 3\n".to_owned(),
             "bowser-tab-groups 1 \n".to_owned(),
             "Bowser-Tab-Groups 1\n".to_owned(),
             "bowser-tab-groups 1\r\nexample.com always expanded\r\n".to_owned(),
