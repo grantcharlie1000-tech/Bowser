@@ -6,6 +6,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     ffi::c_void,
     path::{Path, PathBuf},
 };
@@ -75,6 +76,7 @@ thread_local! {
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
     static CLIPBOARD_GUARD: RefCell<Option<Zeroizing<Vec<u16>>>> = const { RefCell::new(None) };
     static SAVE_PROMPT_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static SAVE_PROMPT_DECLINED_ORIGINS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 struct SavePromptGuard;
@@ -1752,7 +1754,7 @@ pub(crate) fn offer_fill(hwnd: HWND, app: &crate::app::AppRef) {
     let Ok(password) = vault.reveal(entry.id) else {
         return;
     };
-    let script = passwords::password_fill_script(&entry.username, &password);
+    let script = passwords::password_fill_script(&origin, &entry.username, &password);
     let _ = crate::app::App::execute_script_for_origin(app, tab_id, &origin, &script);
 }
 
@@ -1786,6 +1788,9 @@ pub(crate) fn handle_login_message(
     if vault.is_never_for_site(&message.origin) {
         return;
     }
+    if SAVE_PROMPT_DECLINED_ORIGINS.with(|origins| origins.borrow().contains(&message.origin)) {
+        return;
+    }
     let matched = vault.match_login(&message.origin, &username, &password);
     if matches!(matched, passwords::LoginMatch::Unchanged(_)) {
         return;
@@ -1794,11 +1799,11 @@ pub(crate) fn handle_login_message(
         return;
     }
     let _prompt_guard = SavePromptGuard;
-    let Some(choice) = save_prompt(hwnd, &message.origin, matched) else {
+    let Some(choice) = save_prompt(hwnd, &message.origin, &username, matched) else {
         return;
     };
     match choice {
-        1 => {
+        2 => {
             let Ok(mut vault) = PasswordStore::open_default() else {
                 return;
             };
@@ -1812,6 +1817,11 @@ pub(crate) fn handle_login_message(
                 passwords::LoginMatch::Unchanged(_) => {}
             }
         }
+        1 => {
+            SAVE_PROMPT_DECLINED_ORIGINS.with(|origins| {
+                origins.borrow_mut().insert(message.origin.clone());
+            });
+        }
         3 => {
             if let Ok(mut vault) = PasswordStore::open_default() {
                 let _ = vault.mark_never_for_site(&message.origin, true);
@@ -1824,6 +1834,7 @@ pub(crate) fn handle_login_message(
 fn save_prompt(
     hwnd: HWND,
     origin: &str,
+    username: &str,
     matched: passwords::LoginMatch,
 ) -> Option<usize> {
     use crate::win32::menu::{Entry, Icon, Item, Menu};
@@ -1837,19 +1848,20 @@ fn save_prompt(
         passwords::LoginMatch::Changed(_) => "Save replaces the password for this username",
         _ => "The password stays in this profile's encrypted vault",
     };
-    crate::win32::menu::track(
+    crate::win32::menu::track_with_default(
         hwnd,
         anchor,
         Menu {
             header: None,
             entries: vec![
-                Entry::SectionHeader(format!("{title} for {origin}?")),
-                Entry::Item(Item::new(1, "Save", Icon::Key)),
-                Entry::Item(Item::new(2, "Not now", Icon::Close)),
+                Entry::SectionHeader(format!("{title} for {username} at {origin}?")),
+                Entry::Item(Item::new(1, "Not now", Icon::Close)),
+                Entry::Item(Item::new(2, "Save", Icon::Key)),
                 Entry::Item(Item::new(3, "Never for this site", Icon::Shield)),
             ],
             footer: footer.to_owned(),
         },
+        Some(1),
     )
     .map(|chosen| chosen.id)
 }

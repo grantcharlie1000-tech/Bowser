@@ -3040,6 +3040,12 @@ impl App {
         let nav_progress_events_app = Rc::downgrade(app);
         let favicon_events_app = Rc::downgrade(app);
         let login_events_app = Rc::downgrade(app);
+        let login_messages_enabled = crate::profile::active().is_ok_and(|profile| {
+            crate::engine::password_login_messages_enabled(
+                crate::passwords::PasswordStore::open_default().is_ok(),
+                profile.is_guest(),
+            )
+        });
         let progress_hwnd = hwnd;
         let events = engine::EngineEvents {
             address_changed: Some(Rc::new(move |tab_id, url| {
@@ -3322,11 +3328,15 @@ impl App {
             failed: Some(Rc::new(|error| {
                 win32::show_error_message(&format!("WebView2 error: {error}"))
             })),
-            login_message: Some(Rc::new(move |tab_id, message| {
-                if let Some(app) = login_events_app.upgrade() {
-                    App::queue_login_message(&app, tab_id, message);
-                }
-            })),
+            login_message: login_messages_enabled.then(|| {
+                let callback: Rc<dyn Fn(TabId, crate::passwords::LoginMessage)> =
+                    Rc::new(move |tab_id, message| {
+                        if let Some(app) = login_events_app.upgrade() {
+                            App::queue_login_message(&app, tab_id, message);
+                        }
+                    });
+                callback
+            }),
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {

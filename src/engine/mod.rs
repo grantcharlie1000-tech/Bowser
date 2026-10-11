@@ -1,4 +1,5 @@
 mod webview2;
+pub(crate) use webview2::password_login_messages_enabled;
 
 pub use webview2::{RuntimeUnavailable, WebView2Engine};
 
