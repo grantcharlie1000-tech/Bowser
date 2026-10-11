@@ -9,8 +9,9 @@ use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
     app::{App, AppRef, IdleTimerAction},
     chrome::{
+        group_ui::{self, GroupGeometry},
         layout::{self, Hit, Layout, Metrics, Rect},
-        motion::{Emphasis, Motion},
+        motion::{Emphasis, GroupSpec, Motion},
         paint::{self, ChromeSurface, ChromeView, OmniboxView, TabView},
         tab_card::Marker,
     },
@@ -402,6 +403,7 @@ impl WindowChrome {
                 App::sidebar_width(app),
             );
         }
+        self.motion.sync_groups(&self.group_specs(), now);
     }
     fn relayout(
         &mut self,
@@ -426,7 +428,15 @@ impl WindowChrome {
             .unwrap_or(0);
         self.layout =
             layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised)
-                .with_compact_slots(self.slots.iter().map(|slot| slot.marker_only));
+                .with_group_slots(
+                    self.slots.iter().map(|slot| slot.marker_only),
+                    self.slots
+                        .iter()
+                        .map(|slot| slot.group_control && !slot.collapsed),
+                    self.slots
+                        .iter()
+                        .map(|slot| slot.collapsed && !slot.marker_only),
+                );
         if tab_layout == crate::settings::TabLayout::Vertical {
             let sidebar = crate::vertical_tabs::SidebarLayout::compute(
                 w,
@@ -451,7 +461,7 @@ impl WindowChrome {
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
         match self.hover {
-            Hit::Tab(i) | Hit::TabClose(i) => self
+            Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => self
                 .slots
                 .get(i)
                 .and_then(|slot| self.tabs.get(slot.tab_index))
@@ -462,6 +472,69 @@ impl WindowChrome {
     fn retarget_motion(&mut self, now: Instant) {
         let hovered = self.hovered_tab();
         self.motion.retarget(hovered, self.active_tab, now);
+    }
+    fn group_specs(&self) -> Vec<GroupSpec> {
+        let mut groups = Vec::new();
+        for (index, slot) in self.slots.iter().enumerate() {
+            if !self.visual_group_leader(index) {
+                continue;
+            }
+            let Some(key) = slot.group_key.clone() else { continue };
+            let state = group_ui::state_from_model(slot.collapsed, !slot.marker_only);
+            let members = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(member_index, member)| {
+                    member.group_key.as_ref() == Some(&key)
+                        && self.layout.tab(*member_index).is_some()
+                })
+                .collect::<Vec<_>>();
+            let Some((first_index, first_slot)) = members.first().copied() else { continue };
+            let (last_index, _) = members.last().copied().unwrap_or((first_index, first_slot));
+            let Some(first) = self
+                .layout
+                .tab(first_index)
+                .map(|rect| rect.intersect(self.layout.tab_zone))
+            else {
+                continue;
+            };
+            let Some(last) = self
+                .layout
+                .tab(last_index)
+                .map(|rect| rect.intersect(self.layout.tab_zone))
+            else {
+                continue;
+            };
+            let shell = Rect::new(first.left, first.top, last.right, first.bottom);
+            groups.push(GroupSpec {
+                key,
+                state,
+                count: first_slot.group_size,
+                shell,
+            });
+        }
+        groups
+    }
+    fn visual_group_leader(&self, index: usize) -> bool {
+        let Some(key) = self.slots.get(index).and_then(|slot| slot.group_key.as_ref()) else {
+            return false;
+        };
+        self.layout.tab(index).is_some()
+            && !(self.layout.first_visible_tab()..index).any(|previous| {
+                self.layout.tab(previous).is_some()
+                    && self
+                        .slots
+                        .get(previous)
+                        .and_then(|slot| slot.group_key.as_ref())
+                        == Some(key)
+            })
+    }
+    fn group_geometry(&self, index: usize, now: Instant) -> Option<GroupGeometry> {
+        let slot = self.slots.get(index)?;
+        let key = slot.group_key.as_ref()?;
+        let frame = self.motion.group_frame(key, now)?;
+        Some(group_ui::group_geometry(frame, Metrics::new(self.dpi)))
     }
     /// The visible part of a tab's island, or `None` when it is scrolled out of the strip.
     fn tab_rect(&self, id: TabId) -> Option<Rect> {
@@ -481,13 +554,22 @@ impl WindowChrome {
         for departure in self.motion.departures() {
             invalidate(hwnd, departure.rect.intersect(self.layout.tab_zone));
         }
-        self.motion.prune(now);
         let running = self.motion.step(now);
         for &id in self.motion.repaint() {
             if let Some(rect) = self.tab_rect(id) {
                 invalidate(hwnd, rect);
             }
         }
+        for key in self.motion.repaint_groups() {
+            if let Some(rect) = self
+                .motion
+                .group_repaint_bounds(key, now, self.layout.metrics)
+                .map(|rect| rect.intersect(self.layout.tab_zone))
+            {
+                invalidate(hwnd, rect);
+            }
+        }
+        self.motion.prune(now);
         running
     }
     fn update_completion(&mut self) {
@@ -1320,7 +1402,7 @@ unsafe extern "system" fn window_proc(
                         let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                     }
                     card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
-                    island_menu::sync(hwnd, app, |id| bar_anchor(hwnd, id));
+                    island_menu::sync(hwnd, app, |id| ball_anchor(hwnd, id));
                     if structural {
                         position_edit(hwnd);
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1336,6 +1418,7 @@ unsafe extern "system" fn window_proc(
                             let _ = InvalidateRect(Some(hwnd), Some(&rect), false);
                         }
                     }
+                    arm_motion(hwnd);
                     // Debounced crash-recovery snapshot: one timer, armed only when dirty.
                     if persisted && App::session_changed(app) {
                         let _ = SetTimer(
@@ -1448,9 +1531,9 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = app {
                         card::hover_changed(hwnd, app, hit_tab(hwnd, h));
                     }
-                    island_menu::bar_hover(
+                    island_menu::ball_hover(
                         hwnd,
-                        island_bar_at(hwnd, p.x, p.y).map(|bar| (bar.tab, bar.rect)),
+                        island_ball_at(hwnd, p.x, p.y).map(|ball| (ball.tab, ball.rect)),
                     );
                     let mut t = TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1511,19 +1594,27 @@ unsafe extern "system" fn window_proc(
                 // Pressing the strip dismisses a hover card; the press then acts on the strip.
                 card::cancel(hwnd);
                 match hit(hwnd, p.x, p.y) {
+                    Hit::GroupBall(i) => {
+                        if let Some(app) = app {
+                            let control = with_chrome(hwnd, |s| {
+                                let slot = s.slots.get(i)?;
+                                let tab = s.tabs.get(slot.tab_index)?;
+                                Some((tab.id, slot.collapsed, slot.domain.is_some()))
+                            })
+                            .flatten();
+                            if let Some((id, collapsed, can_collapse)) = control {
+                                if can_collapse {
+                                    let _ = App::set_tab_group_collapsed(app, id, !collapsed);
+                                } else {
+                                    let _ = App::select_tab(app, id);
+                                }
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                                arm_motion(hwnd);
+                            }
+                        }
+                    }
                     Hit::Tab(i) => {
-                        if let Some(bar) = island_bar_at(hwnd, p.x, p.y) {
-                            // Clicking an island's bar collapses it, or expands it when it is collapsed.
-                            if let Some(app) = app {
-                                let _ = App::set_tab_group_collapsed(app, bar.tab, !bar.collapsed);
-                                let _ = InvalidateRect(Some(hwnd), None, false);
-                            }
-                        } else if let Some((id, collapsed)) = group_toggle_target(hwnd, i, p.x, p.y) {
-                            if let Some(app) = app {
-                                let _ = App::set_tab_group_collapsed(app, id, collapsed);
-                                let _ = InvalidateRect(Some(hwnd), None, false);
-                            }
-                        } else if let Some(id) = collapsed_group_target(hwnd, i) {
+                        if let Some(id) = collapsed_group_target(hwnd, i) {
                             if let Some(app) = app {
                                 let _ = App::set_tab_group_collapsed(app, id, false);
                                 let _ = App::select_tab(app, id);
@@ -1801,22 +1892,83 @@ unsafe extern "system" fn window_proc(
             }
             WM_RBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
-                let target = match hit(hwnd, p.x, p.y) {
-                    Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
-                    Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
-                    _ => None,
-                };
-                if let Some(id) = target && let Some(app) = app {
-                    card::cancel(hwnd);
-                    let app = app.clone();
-                    let menu_app = app.clone();
-                    App::picture_in_picture_eligible(
-                        &app,
-                        id,
-                        Box::new(move |available| {
-                            show_tab_context_menu(hwnd, &menu_app, id, p.x, p.y, available);
-                        }),
-                    );
+                if let Some(app) = app {
+                    match hit(hwnd, p.x, p.y) {
+                        Hit::GroupBall(i) => {
+                            card::cancel(hwnd);
+                            if let Some(id) = slot_tab_id(hwnd, i) {
+                                let domain_group = with_chrome(hwnd, |s| {
+                                    s.slots.get(i).is_some_and(|slot| slot.domain.is_some())
+                                })
+                                .unwrap_or(false);
+                                if domain_group {
+                                    if let Some(anchor) = ball_anchor(hwnd, id) {
+                                        island_menu::open_now(hwnd, app, id, anchor);
+                                    }
+                                } else {
+                                    let app = app.clone();
+                                    let menu_app = app.clone();
+                                    App::picture_in_picture_eligible(
+                                        &app,
+                                        id,
+                                        Box::new(move |available| {
+                                            show_tab_context_menu(
+                                                hwnd,
+                                                &menu_app,
+                                                id,
+                                                p.x,
+                                                p.y,
+                                                available,
+                                            );
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                        Hit::Tab(i) | Hit::TabClose(i) => {
+                            if let Some(id) = slot_tab_id(hwnd, i) {
+                                card::cancel(hwnd);
+                                let app = app.clone();
+                                let menu_app = app.clone();
+                                App::picture_in_picture_eligible(
+                                    &app,
+                                    id,
+                                    Box::new(move |available| {
+                                        show_tab_context_menu(
+                                            hwnd,
+                                            &menu_app,
+                                            id,
+                                            p.x,
+                                            p.y,
+                                            available,
+                                        );
+                                    }),
+                                );
+                            }
+                        }
+                        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
+                            if let Some(id) = sidebar_tab_id(hwnd, i) {
+                                card::cancel(hwnd);
+                                let app = app.clone();
+                                let menu_app = app.clone();
+                                App::picture_in_picture_eligible(
+                                    &app,
+                                    id,
+                                    Box::new(move |available| {
+                                        show_tab_context_menu(
+                                            hwnd,
+                                            &menu_app,
+                                            id,
+                                            p.x,
+                                            p.y,
+                                            available,
+                                        );
+                                    }),
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 LRESULT(0)
             }
@@ -1896,7 +2048,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if island_menu::is_timer(wparam.0) => {
                 if let Some(app) = app {
-                    island_menu::timer(hwnd, wparam.0, app, |id| bar_anchor(hwnd, id));
+                    island_menu::timer(hwnd, wparam.0, app, |id| ball_anchor(hwnd, id));
                 }
                 LRESULT(0)
             }
@@ -2061,24 +2213,51 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 crate::vertical_tabs::SidebarHit::TabClose(index) => Hit::SidebarTabClose(index),
             };
         }
-        let hit = match layout::hit_test(&s.layout, x, y) {
-            Hit::TabClose(index) if s.slots.get(index).is_some_and(|slot| slot.marker_only) => {
-                Hit::Tab(index)
+        let now = Instant::now();
+        let balls = s
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| s.visual_group_leader(*index))
+            .filter_map(|(index, _)| {
+                s.group_geometry(index, now)
+                    .map(|geometry| {
+                        (index, geometry.hit_rect.intersect(s.layout.tab_zone))
+                    })
+            })
+            .collect::<Vec<_>>();
+        let mut hit = layout::hit_test_with_group_balls(&s.layout, &balls, x, y);
+        if let Hit::Tab(index) | Hit::TabClose(index) = hit {
+            let slot = s.slots.get(index);
+            if s.visual_group_leader(index)
+                && slot.is_some_and(|slot| slot.marker_only)
+            {
+                return Hit::GroupBall(index);
             }
-            // A group's leading tab carries the marker box, which pushes its close target right.
-            Hit::Tab(index) | Hit::TabClose(index) if leader_has_marker(s, index) => {
-                let close = s
-                    .layout
-                    .tab(index)
-                    .map(|island| s.layout.group_leader_parts(island).close);
-                if close.is_some_and(|close| close.contains(x, y)) {
+            if let Some(island) = s.layout.tab(index) {
+                let inset = if s.visual_group_leader(index) {
+                    s.group_geometry(index, now)
+                        .map_or(0, |geometry| geometry.content_inset)
+                } else {
+                    0
+                };
+                let parts = if slot.is_some_and(|slot| slot.group_key.is_some()) {
+                    s.layout.group_tab_parts(island, inset)
+                } else {
+                    s.layout.tab_parts(island)
+                };
+                let active_tab = slot
+                    .and_then(|slot| s.tabs.get(slot.tab_index))
+                    .is_some_and(|tab| Some(tab.id) == s.active_tab);
+                hit = if parts.close.contains(x, y)
+                    || (active_tab && parts.active_close && parts.favicon.contains(x, y))
+                {
                     Hit::TabClose(index)
                 } else {
                     Hit::Tab(index)
-                }
+                };
             }
-            hit => hit,
-        };
+        }
         if hit == Hit::Viewport
             && s.split_active
             && layout::split_pane_layout(
@@ -2104,7 +2283,7 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
 /// The tab a strip hit lands on. Its close button counts as the tab itself for hover.
 fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
     match h {
-        Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
+        Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => slot_tab_id(hwnd, i),
         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
         _ => None,
     }
@@ -2121,74 +2300,54 @@ fn sidebar_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
 fn tab_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     with_chrome(hwnd, |s| s.tab_rect(id)).flatten()
 }
-/// Whether the slot at `index` leads a group and so draws a marker box at its leading edge. Compact
-/// islands have no room for one.
-fn leader_has_marker(s: &WindowChrome, index: usize) -> bool {
-    s.slots.get(index).is_some_and(|slot| {
-        slot.group_control
-            && !slot.marker_only
-            && s.layout
-                .tab(index)
-                .is_some_and(|island| island.width() >= s.layout.metrics.px(Metrics::TITLE_MIN_TAB_WIDTH))
-    })
-}
-/// A domain island's leading bar, found from the strip the chrome last laid out.
+/// A domain island's leading ball, found from the strip the chrome last laid out.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct IslandBar {
-    /// The island's leader, the tab whose slot carries the bar.
+struct IslandBall {
+    /// The island's leader, the tab whose slot carries the ball.
     tab: TabId,
-    /// The bar in main-client coordinates.
+    /// The ball or stack in main-client coordinates.
     rect: Rect,
     collapsed: bool,
 }
-/// The island bar under a client point, if the point is on one. Only domain islands have bars that
+/// The island ball under a client point, if the point is on one. Only domain islands have balls that
 /// open the menu or collapse; opener-only islands are not included.
-fn island_bar_at(hwnd: HWND, x: i32, y: i32) -> Option<IslandBar> {
+fn island_ball_at(hwnd: HWND, x: i32, y: i32) -> Option<IslandBall> {
     with_chrome(hwnd, |s| {
-        let m = Metrics::new(s.dpi);
         s.slots.iter().enumerate().find_map(|(index, slot)| {
-            if !slot.group_control || slot.domain.is_none() {
+            if !s.visual_group_leader(index) || slot.domain.is_none() {
                 return None;
             }
-            let bar = island_bar_rect(s, index, m)?;
-            let hit = Rect::new(bar.left - m.px(3), bar.top, bar.right + m.px(3), bar.bottom);
+            let ball = s
+                .group_geometry(index, Instant::now())?
+                .hit_rect
+                .intersect(s.layout.tab_zone);
             let tab = s.tabs.get(slot.tab_index).map(|tab| tab.id)?;
-            hit.contains(x, y).then_some(IslandBar {
+            ball.contains(x, y).then_some(IslandBall {
                 tab,
-                rect: hit,
+                rect: ball,
                 collapsed: slot.collapsed,
             })
         })
     })
     .flatten()
 }
-/// The island bar's rectangle for a tab, in main-client coordinates, or `None` when that tab does
+/// The island ball's rectangle for a tab, in main-client coordinates, or `None` when that tab does
 /// not lead a visible domain island.
-fn bar_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
+fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     with_chrome(hwnd, |s| {
-        let m = Metrics::new(s.dpi);
         s.slots.iter().enumerate().find_map(|(index, slot)| {
-            if !slot.group_control || slot.domain.is_none() {
+            if !s.visual_group_leader(index) || slot.domain.is_none() {
                 return None;
             }
             if s.tabs.get(slot.tab_index).map(|tab| tab.id) != Some(id) {
                 return None;
             }
-            let bar = island_bar_rect(s, index, m)?;
-            Some(Rect::new(bar.left - m.px(3), bar.top, bar.right + m.px(3), bar.bottom))
+            s.group_geometry(index, Instant::now()).map(|geometry| {
+                geometry.hit_rect.intersect(s.layout.tab_zone)
+            })
         })
     })
     .flatten()
-}
-/// The clickable marker for the visible slot at `index`, placed from its island with the same rules
-/// the painter uses: the bar of a compact marker-only slot, or the marker box at the leading edge of
-/// a group's leading tab. `None` for a compact island, where no marker is drawn.
-fn island_bar_rect(s: &WindowChrome, index: usize, m: Metrics) -> Option<Rect> {
-    let island = s.layout.tab(index)?;
-    if s.slots.get(index).is_some_and(|slot| slot.marker_only) {
-        return Some(paint::marker_only_bar(island, m));
-    }
-    leader_has_marker(s, index).then(|| paint::group_marker_box(island, m))
 }
 /// Favicon of a tab as the chrome last decoded it, for the island menu's rows.
 pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
@@ -2222,26 +2381,6 @@ fn slot_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
 }
 fn slot_model_index(hwnd: HWND, index: usize) -> Option<usize> {
     with_chrome(hwnd, |s| s.slots.get(index).map(|slot| slot.tab_index)).flatten()
-}
-fn group_toggle_target(hwnd: HWND, slot_index: usize, x: i32, y: i32) -> Option<(TabId, bool)> {
-    with_chrome(hwnd, |s| {
-        let slot = s.slots.get(slot_index)?;
-        if !slot.group_control {
-            return None;
-        }
-        let tab = s.tabs.get(slot.tab_index)?;
-        let island = s.layout.tab(slot_index)?;
-        if slot.domain.is_none() {
-            return None;
-        }
-        let favicon = if leader_has_marker(s, slot_index) {
-            s.layout.group_leader_parts(island).favicon
-        } else {
-            s.layout.tab_parts(island).favicon
-        };
-        favicon.contains(x, y).then_some((tab.id, !slot.collapsed))
-    })
-    .flatten()
 }
 fn collapsed_group_target(hwnd: HWND, slot_index: usize) -> Option<TabId> {
     with_chrome(hwnd, |s| {
@@ -3730,7 +3869,7 @@ fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximi
 
 fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
-        Hit::Tab(i) | Hit::TabClose(i) => l.tab(i).unwrap_or_default(),
+        Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => l.tab(i).unwrap_or_default(),
         Hit::NewTab => l.new_tab_button,
         Hit::TabMenu => l.tab_menu_button,
         Hit::MainMenu => l.main_menu_button,
@@ -3767,7 +3906,7 @@ fn invalidate(hwnd: HWND, r: Rect) {
 /// Repaints a hit. A tab's divider hides beside a hovered tab, so its neighbours repaint too.
 fn invalidate_hover(hwnd: HWND, l: &Layout, h: Hit) {
     match h {
-        Hit::Tab(i) | Hit::TabClose(i) => {
+        Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => {
             for index in i.saturating_sub(1)..=i + 1 {
                 invalidate(hwnd, rect_for(l, Hit::Tab(index)));
             }
@@ -3781,7 +3920,8 @@ fn moved_hover(hover: Hit, index: Option<usize>) -> Hit {
     match (hover, index) {
         (Hit::Tab(_), Some(i)) => Hit::Tab(i),
         (Hit::TabClose(_), Some(i)) => Hit::TabClose(i),
-        (Hit::Tab(_) | Hit::TabClose(_), None) => Hit::None,
+        (Hit::GroupBall(_), Some(i)) => Hit::GroupBall(i),
+        (Hit::Tab(_) | Hit::TabClose(_) | Hit::GroupBall(_), None) => Hit::None,
         (other, _) => other,
     }
 }
@@ -3929,6 +4069,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     let Some(t) = s.tabs.get(slot.tab_index) else {
                         continue;
                     };
+                    let group_frame = slot
+                        .group_key
+                        .as_ref()
+                        .and_then(|key| s.motion.group_frame(key, now));
                     let v = TabView {
                         title: &t.title,
                         loading: t.loading,
@@ -3937,14 +4081,11 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             .motion
                             .emphasis(t.id)
                             .unwrap_or_else(|| Emphasis::resting(false, false, now)),
-                        // A marker-only slot is not a member island, so it joins no group pill.
-                        group_size: (!slot.marker_only)
-                            .then(|| slot.group_key.as_ref().map(|_| slot.group_size))
-                            .flatten(),
-                        group_control: slot.group_control && !slot.marker_only,
+                        group_size: slot.group_key.as_ref().map(|_| slot.group_size),
+                        group_control: slot.group_control,
                         marker: t.marker,
                         group_colour: slot.island_colour,
-                        marker_only: slot.marker_only,
+                        group_frame,
                     };
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));

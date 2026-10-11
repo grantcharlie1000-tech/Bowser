@@ -43,18 +43,12 @@ impl Metrics {
     pub const TAB_MIN_WIDTH: i32 = 26;
     /// Titles are hidden in tabs narrower than this.
     pub const TITLE_MIN_TAB_WIDTH: i32 = 120;
-    /// The coloured bar inside a group's marker box.
-    pub const GROUP_MARKER_WIDTH: i32 = 4;
-    pub const GROUP_MARKER_HEIGHT: i32 = 16;
-    /// Width of a group's marker box: its own small rounded box, either at the leading edge of the
-    /// group's shell or, for a collapsed group with no active member, the whole compact slot.
-    pub const GROUP_MARKER_BOX_WIDTH: i32 = 10;
-    /// Gap between a compact marker slot and the tabs beside it, tighter than `ISLAND_GAP` so the
-    /// marker hugs its nearest tab.
-    pub const GROUP_MARKER_GAP: i32 = 0;
-    /// Offset of a group leader's close target, favicon and title from its tab edge, which keeps
-    /// them inside the shell and 1px clear of the marker box.
-    pub const GROUP_MARKER_SHIFT: i32 = 11;
+    /// Diameter of the pill slot used when a collapsed group has no selected member.
+    pub const GROUP_CAPSULE_WIDTH: i32 = Self::ISLAND_HEIGHT;
+    /// Width reserved for a leading ball plus the shifted close and favicon affordances.
+    pub const GROUP_BALL_SLOT_WIDTH: i32 = 72;
+    /// Minimum width reserved for a collapsed selected group's capped fan and tab controls.
+    pub const GROUP_STACK_SLOT_WIDTH: i32 = 96;
     pub const NEW_TAB_SIZE: i32 = 28;
     pub const TAB_MENU_SIZE: i32 = 26;
     pub const CAPTION_BUTTON_WIDTH: i32 = 46;
@@ -231,11 +225,15 @@ pub struct Layout {
     visible_count: usize,
     island_top: i32,
     island_bottom: i32,
-    /// Bit per slot index: a compact slot is only a group marker box, not a full-width tab.
-    compact_slots: [u64; COMPACT_WORDS],
+    /// Bit per slot index: a capsule represents a collapsed group with no selected member.
+    pill_group_slots: [u64; GROUP_SLOT_WORDS],
+    /// Bit per slot index: the expanded group leader has a leading ball.
+    ball_group_slots: [u64; GROUP_SLOT_WORDS],
+    /// Bit per slot index: the slot reserves space for a collapsed selected group's ball fan.
+    stack_group_slots: [u64; GROUP_SLOT_WORDS],
 }
 
-const COMPACT_WORDS: usize = 8;
+const GROUP_SLOT_WORDS: usize = 8;
 
 /// Height of the painted chrome: the strip, the omnibox row and the margin below it. This is where
 /// `Layout::viewport` starts.
@@ -474,7 +472,9 @@ pub fn compute_with_active(
         visible_count,
         island_top,
         island_bottom,
-        compact_slots: [0; COMPACT_WORDS],
+        pill_group_slots: [0; GROUP_SLOT_WORDS],
+        ball_group_slots: [0; GROUP_SLOT_WORDS],
+        stack_group_slots: [0; GROUP_SLOT_WORDS],
     }
 }
 
@@ -490,6 +490,7 @@ pub enum Hit {
     SidebarGroup(usize),
     SidebarTab(usize),
     SidebarTabClose(usize),
+    GroupBall(usize),
     NewTab,
     TabMenu,
     Back,
@@ -541,51 +542,132 @@ impl Layout {
         (0..self.first_visible).chain(visible_end..self.tab_count)
     }
 
-    fn is_compact(&self, index: usize) -> bool {
-        self.compact_slots
+    fn is_group_pill(&self, index: usize) -> bool {
+        self.pill_group_slots
             .get(index / 64)
             .is_some_and(|word| word >> (index % 64) & 1 == 1)
     }
 
-    /// Marks slots that are only a group marker box (a collapsed group with no active member) and
-    /// gives them a compact width, handing the space they save to the full tabs. Slots past the
-    /// first `COMPACT_WORDS * 64` keep full width.
-    pub fn with_compact_slots(mut self, compact: impl IntoIterator<Item = bool>) -> Self {
-        self.compact_slots = [0; COMPACT_WORDS];
-        for (index, flag) in compact.into_iter().enumerate().take(COMPACT_WORDS * 64) {
+    fn is_group_stack(&self, index: usize) -> bool {
+        self.stack_group_slots
+            .get(index / 64)
+            .is_some_and(|word| word >> (index % 64) & 1 == 1)
+    }
+
+    fn is_group_ball(&self, index: usize) -> bool {
+        self.ball_group_slots
+            .get(index / 64)
+            .is_some_and(|word| word >> (index % 64) & 1 == 1)
+    }
+
+    /// Reserves space for group controls and redistributes remaining width among tabs. Slots past
+    /// the first `GROUP_SLOT_WORDS * 64` keep full width.
+    pub fn with_group_slots(
+        mut self,
+        pills: impl IntoIterator<Item = bool>,
+        balls: impl IntoIterator<Item = bool>,
+        stacks: impl IntoIterator<Item = bool>,
+    ) -> Self {
+        self.pill_group_slots = [0; GROUP_SLOT_WORDS];
+        for (index, flag) in pills.into_iter().enumerate().take(GROUP_SLOT_WORDS * 64) {
             if flag {
-                self.compact_slots[index / 64] |= 1 << (index % 64);
+                self.pill_group_slots[index / 64] |= 1 << (index % 64);
+            }
+        }
+        self.ball_group_slots = [0; GROUP_SLOT_WORDS];
+        for (index, flag) in balls.into_iter().enumerate().take(GROUP_SLOT_WORDS * 64) {
+            if flag {
+                self.ball_group_slots[index / 64] |= 1 << (index % 64);
+            }
+        }
+        self.stack_group_slots = [0; GROUP_SLOT_WORDS];
+        for (index, flag) in stacks.into_iter().enumerate().take(GROUP_SLOT_WORDS * 64) {
+            if flag {
+                self.stack_group_slots[index / 64] |= 1 << (index % 64);
             }
         }
         let m = self.metrics;
-        let shown = self.visible_count as i32;
-        let compact_count = (self.first_visible..self.first_visible + self.visible_count)
-            .filter(|&index| self.is_compact(index))
-            .count() as i32;
-        if compact_count == 0 {
+        let original_visible = self.visible_count;
+        let original_first = self.first_visible;
+        let visible_end = self.first_visible + self.visible_count;
+        if !(self.first_visible..visible_end).any(|index| {
+            self.is_group_pill(index) || self.is_group_ball(index) || self.is_group_stack(index)
+        }) {
             return self;
         }
-        let regular = shown - compact_count;
         let max_w = m.px(Metrics::TAB_MAX_WIDTH);
         let min_w = m.px(Metrics::TAB_MIN_WIDTH);
-        let gaps = (self.first_visible..self.first_visible + self.visible_count)
-            .skip(1)
-            .map(|index| self.gap_before(index))
-            .sum::<i32>();
-        let inner_available = (self.tab_zone.width()
-            - gaps
-            - compact_count * m.px(Metrics::GROUP_MARKER_BOX_WIDTH))
-        .max(0);
-        let (inactive, active) = if regular <= 0 {
-            (max_w, max_w)
-        } else if regular == 1 {
-            (inner_available, inner_available)
-        } else {
-            let base = inner_available.saturating_mul(2) / (2 * regular + 1);
-            let active = ((base * 3 + 1) / 2).min(max_w);
-            let inactive =
-                ((inner_available - active).max(0) / (regular - 1)).clamp(min_w, max_w);
-            (inactive, active.max(min_w))
+        let mut shown = original_visible;
+        let (inactive, active) = loop {
+            self.visible_count = shown;
+            self.first_visible = if shown == original_visible {
+                original_first
+            } else {
+                self.active_index
+                    .saturating_sub(shown.saturating_sub(1))
+                    .min(self.tab_count.saturating_sub(shown))
+            };
+            let first = self.first_visible;
+            let end = first + shown;
+            let pills = (first..end)
+                .filter(|&index| self.is_group_pill(index))
+                .count() as i32;
+            let regular = shown as i32 - pills;
+            let gaps = shown.saturating_sub(1) as i32 * m.px(Metrics::ISLAND_GAP);
+            let inner_available =
+                (self.tab_zone.width() - gaps - pills * m.px(Metrics::GROUP_CAPSULE_WIDTH)).max(0);
+            let active_regular = self.active_index >= first
+                && self.active_index < end
+                && !self.is_group_pill(self.active_index);
+            let widths = if regular <= 0 {
+                (max_w, max_w)
+            } else if regular == 1 {
+                (inner_available, inner_available)
+            } else if active_regular {
+                let base = inner_available.saturating_mul(2) / (2 * regular + 1);
+                let active = ((base * 3 + 1) / 2).min(max_w);
+                let inactive =
+                    ((inner_available - active).max(0) / (regular - 1)).clamp(min_w, max_w);
+                (inactive, active.max(min_w))
+            } else {
+                let equal = (inner_available / regular).clamp(min_w, max_w);
+                (equal, equal)
+            };
+            let used = (first..end)
+                .filter(|&index| !self.is_group_pill(index))
+                .map(|index| {
+                    let width = if index == self.active_index {
+                        widths.1
+                    } else {
+                        widths.0
+                    };
+                    let minimum = if self.is_group_stack(index) {
+                        m.px(Metrics::GROUP_STACK_SLOT_WIDTH)
+                    } else if self.is_group_ball(index) {
+                        m.px(Metrics::GROUP_BALL_SLOT_WIDTH)
+                    } else {
+                        0
+                    };
+                    width.max(minimum)
+                })
+                .sum::<i32>();
+            if used <= inner_available {
+                break widths;
+            }
+            if self.tab_menu_button.is_empty() {
+                let margin = m.px(Metrics::OUTER_MARGIN);
+                let list_size = m.px(Metrics::TAB_MENU_SIZE);
+                let row_right = (self.client.right - margin).max(self.tab_zone.left);
+                let left = (row_right - list_size).max(self.tab_zone.left);
+                let top = self.tab_row.top + (self.tab_row.height() - list_size) / 2;
+                self.tab_menu_button = Rect::new(left, top, row_right, top + list_size);
+                self.tab_zone.right = (left - m.px(Metrics::ISLAND_GAP)).max(self.tab_zone.left);
+                continue;
+            }
+            if shown <= 1 {
+                break widths;
+            }
+            shown -= 1;
         };
         self.inactive_tab_width = inactive;
         self.active_tab_width = active;
@@ -593,23 +675,27 @@ impl Layout {
     }
 
     fn tab_width_at(&self, index: usize) -> i32 {
-        if self.is_compact(index) {
-            return self.metrics.px(Metrics::GROUP_MARKER_BOX_WIDTH);
+        if self.is_group_pill(index) {
+            return self.metrics.px(Metrics::GROUP_CAPSULE_WIDTH);
         }
-        if index == self.active_index {
+        let width = if index == self.active_index {
             self.active_tab_width
         } else {
             self.inactive_tab_width
-        }
+        };
+        let minimum = if self.is_group_stack(index) {
+            self.metrics.px(Metrics::GROUP_STACK_SLOT_WIDTH)
+        } else if self.is_group_ball(index) {
+            self.metrics.px(Metrics::GROUP_BALL_SLOT_WIDTH)
+        } else {
+            0
+        };
+        width.max(minimum)
     }
 
-    /// Gap between slot `index - 1` and `index`: a compact marker hugs its neighbours.
-    fn gap_before(&self, index: usize) -> i32 {
-        if self.is_compact(index) || index.checked_sub(1).is_some_and(|i| self.is_compact(i)) {
-            self.metrics.px(Metrics::GROUP_MARKER_GAP)
-        } else {
-            self.metrics.px(Metrics::ISLAND_GAP)
-        }
+    /// Gap between neighbouring tabs and group capsules.
+    fn gap_before(&self, _index: usize) -> i32 {
+        self.metrics.px(Metrics::ISLAND_GAP)
     }
 
     fn tab_left_at(&self, index: usize) -> i32 {
@@ -703,19 +789,18 @@ impl Layout {
         }
     }
 
-    /// Sub-rects for a group's leading tab, which carries the marker box at its leading edge: the
-    /// close target, favicon and title all sit right of the box, inside the group's shell.
-    pub fn group_leader_parts(&self, tab: Rect) -> TabParts {
+    /// Sub-rects for a group tab, shortened vertically and shifted clear of its leading ball stack.
+    pub fn group_tab_parts(&self, tab: Rect, ball_inset: i32) -> TabParts {
+        let tab = crate::chrome::group_ui::shrink_tab(tab, self.metrics);
         let mut parts = self.tab_parts(tab);
-        let shift = self.metrics.px(Metrics::GROUP_MARKER_SHIFT);
         for rect in [&mut parts.favicon, &mut parts.close] {
             if !rect.is_empty() {
-                rect.left += shift;
-                rect.right += shift;
+                rect.left += ball_inset;
+                rect.right += ball_inset;
             }
         }
         if !parts.title.is_empty() {
-            parts.title.left += shift;
+            parts.title.left += ball_inset;
         }
         parts
     }
@@ -875,6 +960,18 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
         return Hit::CaptionMinimize;
     }
     Hit::CaptionArea
+}
+
+/// Gives a group's ball or stack first claim on its geometry, before the containing tab receives a
+/// hit. The caller supplies current animated hit rectangles, in slot order.
+pub fn hit_test_with_group_balls(layout: &Layout, balls: &[(usize, Rect)], x: i32, y: i32) -> Hit {
+    if !layout.client.contains(x, y) {
+        return Hit::None;
+    }
+    if let Some((index, _)) = balls.iter().find(|(_, rect)| rect.contains(x, y)) {
+        return Hit::GroupBall(*index);
+    }
+    hit_test(layout, x, y)
 }
 
 /// Target index for a tab dragged to horizontal position `x`. `x` is the dragged island's

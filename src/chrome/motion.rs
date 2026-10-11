@@ -4,10 +4,35 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{chrome::layout::Rect, tabs::TabId};
+use crate::{
+    chrome::{
+        group_ui::{GroupFrame, GroupState, GroupTransition, transition_bounds},
+        layout::{Metrics, Rect},
+    },
+    tab_groups::TabGroupKey,
+    tabs::TabId,
+};
 
 /// Length of every chrome transition, long enough to read as motion and short enough not to lag.
 pub const TRANSITION: Duration = Duration::from_millis(150);
+
+/// Current visual projection for one persistent group key.
+#[derive(Clone, Debug)]
+pub struct GroupSpec {
+    pub key: TabGroupKey,
+    pub state: GroupState,
+    pub count: usize,
+    pub shell: Rect,
+}
+
+#[derive(Clone, Debug)]
+struct GroupTrack {
+    key: TabGroupKey,
+    state: GroupState,
+    count: usize,
+    shell: Rect,
+    transition: Option<GroupTransition>,
+}
 
 /// One eased value moving towards a target. Retargeting starts from the value on screen, so a
 /// transition that is interrupted never jumps.
@@ -123,6 +148,10 @@ pub struct Motion {
     /// Tabs whose target changed since the last frame. Their first frame may run late, after the
     /// fade has already ended, so each one is repainted once on the next frame regardless of time.
     changed: Vec<TabId>,
+    groups: Vec<GroupTrack>,
+    moving_groups: Vec<TabGroupKey>,
+    repaint_groups: Vec<TabGroupKey>,
+    changed_groups: Vec<TabGroupKey>,
 }
 
 impl Motion {
@@ -134,6 +163,10 @@ impl Motion {
             moving: Vec::with_capacity(8),
             repaint: Vec::with_capacity(8),
             changed: Vec::with_capacity(8),
+            groups: Vec::with_capacity(4),
+            moving_groups: Vec::with_capacity(4),
+            repaint_groups: Vec::with_capacity(4),
+            changed_groups: Vec::with_capacity(4),
         }
     }
 
@@ -153,6 +186,12 @@ impl Motion {
         self.moving.clear();
         self.repaint.clear();
         self.changed.clear();
+        self.moving_groups.clear();
+        self.repaint_groups.clear();
+        self.changed_groups.clear();
+        for group in &mut self.groups {
+            group.transition = None;
+        }
         changed
     }
 
@@ -170,6 +209,70 @@ impl Motion {
     /// The tabs whose island the last frame asked to repaint.
     pub fn repaint(&self) -> &[TabId] {
         &self.repaint
+    }
+
+    pub fn repaint_groups(&self) -> &[TabGroupKey] {
+        &self.repaint_groups
+    }
+
+    /// Synchronizes the visual projection while preserving transitions by stable group key.
+    pub fn sync_groups(&mut self, specs: &[GroupSpec], now: Instant) {
+        self.groups
+            .retain(|group| specs.iter().any(|spec| spec.key == group.key));
+        for spec in specs {
+            if let Some(group) = self.groups.iter_mut().find(|group| group.key == spec.key) {
+                if group.state != spec.state
+                    || group.count != spec.count
+                    || group.shell != spec.shell
+                {
+                    if !self.snap {
+                        group.transition = Some(GroupTransition::new(
+                            group.state,
+                            spec.state,
+                            group.count,
+                            spec.count,
+                            group.shell,
+                            spec.shell,
+                            now,
+                        ));
+                        if !self.changed_groups.contains(&spec.key) {
+                            self.changed_groups.push(spec.key.clone());
+                        }
+                    } else {
+                        group.transition = None;
+                    }
+                    group.state = spec.state;
+                    group.count = spec.count;
+                    group.shell = spec.shell;
+                }
+            } else {
+                self.groups.push(GroupTrack {
+                    key: spec.key.clone(),
+                    state: spec.state,
+                    count: spec.count,
+                    shell: spec.shell,
+                    transition: None,
+                });
+            }
+        }
+    }
+
+    pub fn group_frame(&self, key: &TabGroupKey, now: Instant) -> Option<GroupFrame> {
+        let group = self.groups.iter().find(|group| &group.key == key)?;
+        Some(group.transition.map_or_else(
+            || GroupFrame::resting(group.shell, group.state, group.count),
+            |transition| transition.frame(now, self.snap),
+        ))
+    }
+
+    pub fn group_repaint_bounds(
+        &self,
+        key: &TabGroupKey,
+        now: Instant,
+        metrics: Metrics,
+    ) -> Option<Rect> {
+        let frame = self.group_frame(key, now)?;
+        Some(transition_bounds(frame, metrics))
     }
 
     /// Follows the current tab list. A tab that is gone starts a departure from `rect_of`, which
@@ -219,6 +322,11 @@ impl Motion {
             .iter()
             .any(|(_, emphasis)| emphasis.is_active(now))
             || self.departures.iter().any(|d| d.is_active(now))
+            || self.groups.iter().any(|group| {
+                group
+                    .transition
+                    .is_some_and(|transition| transition.is_animating(now, self.snap))
+            })
     }
 
     /// Advances one frame and records which tabs it must repaint. A tab still moving is repainted,
@@ -240,12 +348,38 @@ impl Motion {
             }
         }
         self.changed.clear();
+        self.repaint_groups.clear();
+        self.repaint_groups
+            .extend(self.moving_groups.iter().cloned());
+        self.moving_groups.clear();
+        for group in &self.groups {
+            if group
+                .transition
+                .is_some_and(|transition| transition.is_animating(now, self.snap))
+            {
+                self.moving_groups.push(group.key.clone());
+            }
+        }
+        for key in self.moving_groups.iter().chain(&self.changed_groups) {
+            if !self.repaint_groups.contains(key) {
+                self.repaint_groups.push(key.clone());
+            }
+        }
+        self.changed_groups.clear();
         self.animating(now)
     }
 
     /// Forgets departures whose fade has finished. Call this only after repainting their rects.
     pub fn prune(&mut self, now: Instant) {
         self.departures.retain(|d| d.is_active(now));
+        for group in &mut self.groups {
+            if group
+                .transition
+                .is_some_and(|transition| !transition.is_animating(now, self.snap))
+            {
+                group.transition = None;
+            }
+        }
     }
 }
 
@@ -471,6 +605,71 @@ mod tests {
 
         assert!(!motion.step(at(start, 200)));
         assert!(motion.repaint().is_empty(), "idle frames repaint nothing");
+    }
+
+    #[test]
+    fn group_morphs_use_the_shared_timer_dirty_bounds_and_reduced_motion() {
+        let start = Instant::now();
+        let key = TabGroupKey::Opener(TabId(9));
+        let expanded = GroupSpec {
+            key: key.clone(),
+            state: GroupState::Expanded,
+            count: 5,
+            shell: Rect::new(100, 8, 420, 32),
+        };
+        let collapsed = GroupSpec {
+            key: key.clone(),
+            state: GroupState::CollapsedWithSelection,
+            count: 5,
+            shell: Rect::new(100, 8, 126, 32),
+        };
+        let mut motion = Motion::new(false);
+        motion.sync_groups(std::slice::from_ref(&expanded), start);
+        assert!(!motion.animating(start), "a new group starts settled");
+
+        let began = at(start, 10);
+        motion.sync_groups(&[collapsed.clone()], began);
+        assert!(
+            motion.animating(began),
+            "group changes use the chrome timer"
+        );
+        assert!(motion.step(at(start, 40)));
+        assert_eq!(motion.repaint_groups(), &[key.clone()]);
+        let bounds = motion
+            .group_repaint_bounds(&key, at(start, 40), Metrics::new(96))
+            .unwrap();
+        assert!(
+            bounds.right > collapsed.shell.right,
+            "bounds include the ball fan"
+        );
+
+        let done = at(start, 10 + TRANSITION.as_millis() as u64);
+        assert!(
+            !motion.step(done),
+            "the shared timer stops when groups settle"
+        );
+        assert_eq!(
+            motion.repaint_groups(),
+            &[key.clone()],
+            "the landing frame paints"
+        );
+        motion.prune(done);
+        assert!(motion.group_frame(&key, done).is_some());
+        assert!(!motion.step(at(start, 200)));
+        assert!(
+            motion.repaint_groups().is_empty(),
+            "idle groups do not repaint"
+        );
+
+        let mut reduced = Motion::new(true);
+        reduced.sync_groups(std::slice::from_ref(&expanded), start);
+        reduced.sync_groups(&[collapsed], began);
+        assert!(
+            !reduced.animating(began),
+            "reduced motion settles immediately"
+        );
+        assert!(!reduced.step(began));
+        assert!(reduced.repaint_groups().is_empty());
     }
 
     #[test]

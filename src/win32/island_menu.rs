@@ -1,11 +1,11 @@
-//! Tab island menu: a native popup under a domain island's bar, opened by hovering the bar. It holds
+//! Tab island menu: a native popup under a domain island's ball, opened by hovering the ball. It holds
 //! the island's name field, colour swatches, member tabs, and a close button for the whole island.
 //!
 //! The popup is owned by the main window and is activated only by a click inside it, so hovering
 //! never takes focus from the address field. The name is a native EDIT child, which gives real caret,
 //! selection, clipboard, and IME handling. Enter commits the name and closes; Escape reverts it and
-//! closes. Opening waits [`HOVER_DELAY_MS`] after the pointer reaches the bar. The menu stays open
-//! while the pointer is inside its square (the bar, the gap, and the popup) or a field in it has
+//! closes. Opening waits [`HOVER_DELAY_MS`] after the pointer reaches the ball. The menu stays open
+//! while the pointer is inside its square (the ball, the gap, and the popup) or a field in it has
 //! focus. Outside the square it closes, and a one-shot check re-runs while the pointer sits in the gap.
 //!
 //! Everything runs on the UI thread, and no `STATE` borrow is held across a Win32 call, because
@@ -66,7 +66,7 @@ use crate::{
 };
 
 const CLASS_NAME: PCWSTR = w!("BowserIslandMenu");
-/// How long the pointer must rest on a bar before its menu opens.
+/// How long the pointer must rest on a ball before its menu opens.
 pub(crate) const HOVER_DELAY_MS: u32 = 300;
 /// Re-check interval while the pointer is in the square but off the menu, such as in the gap.
 const CHECK_INTERVAL_MS: u32 = 150;
@@ -91,8 +91,8 @@ const CLEAR_STROKE: i32 = 2;
 
 #[derive(Default)]
 struct State {
-    /// The bar under the pointer: its leader tab and bar rectangle in main-client coordinates.
-    bar: Option<(TabId, Rect)>,
+    /// The ball under the pointer: its leader tab and ball rect in main-client coordinates.
+    ball: Option<(TabId, Rect)>,
     open: Option<Open>,
 }
 
@@ -104,7 +104,7 @@ struct Open {
     tab: TabId,
     /// Popup rectangle in screen coordinates, for the pointer-in-popup test.
     screen: RECT,
-    /// The bar and the gap and the popup, in screen coordinates. The menu stays open inside it.
+    /// The ball, the gap, and the popup, in screen coordinates. The menu stays open inside it.
     square: RECT,
     model: IslandModel,
     /// Member tab ids, in the same order as `model.rows`.
@@ -124,29 +124,29 @@ thread_local! {
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The pointer is over the bar of the domain island led by `bar.0`, or over no bar (`None`). The
-/// menu opens after [`HOVER_DELAY_MS`] for the bar the pointer rests on, and closes after the
-/// pointer leaves both the bar and the menu.
-pub(crate) fn bar_hover(main: HWND, bar: Option<(TabId, Rect)>) {
-    let (same_bar, open_tab) = STATE.with(|state| {
+/// The pointer is over the ball of the domain island led by `ball.0`, or over no ball (`None`). The
+/// menu opens after [`HOVER_DELAY_MS`] for the ball the pointer rests on, and closes after the
+/// pointer leaves both the ball and the menu.
+pub(crate) fn ball_hover(main: HWND, ball: Option<(TabId, Rect)>) {
+    let (same_ball, open_tab) = STATE.with(|state| {
         let mut state = state.borrow_mut();
-        let same = state.bar.map(|(tab, _)| tab) == bar.map(|(tab, _)| tab);
-        state.bar = bar;
+        let same = state.ball.map(|(tab, _)| tab) == ball.map(|(tab, _)| tab);
+        state.ball = ball;
         (same, state.open.as_ref().map(|open| open.tab))
     });
-    if same_bar {
+    if same_ball {
         return;
     }
     unsafe {
         let _ = KillTimer(Some(main), OPEN_TIMER);
     }
-    match bar {
+    match ball {
         Some((tab, _)) => {
             unsafe {
                 let _ = KillTimer(Some(main), CLOSE_TIMER);
             }
             if open_tab == Some(tab) {
-                // Back on the bar of the open menu: keep it open.
+                // Back on the ball of the open menu: keep it open.
                 return;
             }
             unsafe {
@@ -157,9 +157,9 @@ pub(crate) fn bar_hover(main: HWND, bar: Option<(TabId, Rect)>) {
     }
 }
 
-/// Timer handler. The open timer shows the menu for the bar still under the pointer; the close
-/// timer closes it when the pointer is over neither the bar nor the menu. `anchor` gives the bar's
-/// current rectangle for a tab, or `None` when that bar is scrolled out of view.
+/// Timer handler. The open timer shows the menu for the ball still under the pointer; the close
+/// timer closes it when the pointer is over neither the ball nor the menu. `anchor` gives the ball's
+/// current rectangle for a tab, or `None` when that ball is scrolled out of view.
 pub(crate) fn timer(
     main: HWND,
     timer: usize,
@@ -171,8 +171,8 @@ pub(crate) fn timer(
     }
     match timer {
         OPEN_TIMER => {
-            let bar = STATE.with(|state| state.borrow().bar);
-            let Some((tab, _)) = bar else {
+            let ball = STATE.with(|state| state.borrow().ball);
+            let Some((tab, _)) = ball else {
                 return;
             };
             if let Some(rect) = anchor(tab) {
@@ -191,7 +191,7 @@ pub(crate) fn is_timer(timer: usize) -> bool {
 /// The main window's pointer left it. Moving onto the page or onto the menu takes the pointer out of
 /// the window, so the menu decides from the pointer's position.
 pub(crate) fn pointer_left(main: HWND) {
-    STATE.with(|state| state.borrow_mut().bar = None);
+    STATE.with(|state| state.borrow_mut().ball = None);
     check_leave(main);
 }
 
@@ -234,8 +234,8 @@ fn check_leave(main: HWND) {
     }
 }
 
-/// Keeps the menu in step with the tab list: it follows the island's bar, refreshes its contents,
-/// and closes when the bar is gone.
+/// Keeps the menu in step with the tab list: it follows the island's ball, refreshes its contents,
+/// and closes when the ball is gone.
 pub(crate) fn sync(main: HWND, app: &AppRef, anchor: impl Fn(TabId) -> Option<Rect>) {
     let Some(tab) = STATE.with(|state| state.borrow().open.as_ref().map(|open| open.tab)) else {
         return;
@@ -252,8 +252,8 @@ pub(crate) fn is_open() -> bool {
 
 /// Stops every timer and closes the menu at once. Used for clicks, drags, and card-level cancels.
 pub(crate) fn cancel(main: HWND) {
-    // The hovered bar is kept, so a small move on the same bar does not reopen the menu straight
-    // after a click. Leaving the bar clears it as usual.
+    // The hovered ball is kept, so a small move on the same ball does not reopen the menu straight
+    // after a click. Leaving the ball clears it as usual.
     unsafe {
         let _ = KillTimer(Some(main), OPEN_TIMER);
         let _ = KillTimer(Some(main), CLOSE_TIMER);
@@ -264,6 +264,15 @@ pub(crate) fn cancel(main: HWND) {
 /// Commits the draft name and destroys the menu, if one is open.
 pub(crate) fn close() {
     finish(true);
+}
+
+/// Opens the existing island menu immediately for a right-click on its ball.
+pub(crate) fn open_now(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
+    unsafe {
+        let _ = KillTimer(Some(main), OPEN_TIMER);
+    }
+    STATE.with(|state| state.borrow_mut().ball = Some((tab, anchor)));
+    show(main, app, tab, anchor);
 }
 
 /// Takes the open menu out of state, commits its name when `commit` is set, and destroys it. The
