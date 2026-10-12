@@ -85,6 +85,24 @@ pub enum RailAction {
     Menu,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PanelFields {
+    pub a: String,
+    pub id: Option<u64>,
+    pub parent: Option<u64>,
+    pub before: Option<u64>,
+    pub n: Option<i32>,
+    pub on: Option<bool>,
+    pub text: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutMode { Vertical, Horizontal }
+
 /// A rail button key as it travels on the wire. Grammar: `home`, `customize`, `addws`, `addapp`,
 /// `bookmarks`, `history`, `menu`, `ws:<digits>` (at most 20 digits, a u64) and `app:<digits>` (at
 /// most 10 digits, a u32). Digits are canonical decimal: no sign, and no leading zero unless the
@@ -184,6 +202,10 @@ pub enum Command {
     /// Drag-reorder drop of a workspace or app: before `before`, or at the end of its section when
     /// `None`. `key` is always a `ws:` or `app:` key.
     RailMove { key: RailKeyWire, before: Option<RailKeyWire> },
+    Panel { kind: PanelType, f: PanelFields },
+    PopupSize { tok: u32, w: u16, h: u16 },
+    PopupPick { tok: u32, id: u32 },
+    PopupDismiss { tok: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -521,6 +543,41 @@ fn rail_key_field(
     RailKeyWire::parse(str_field(fields, name)?).ok_or(ProtocolError::InvalidValue(name))
 }
 
+fn optional_u64(fields: &[(String, Value)], name: &'static str) -> Result<Option<u64>, ProtocolError> {
+    match field(fields, name) {
+        None => Ok(None),
+        Some(Value::Number(raw)) => {
+            if !raw.bytes().all(|b| b.is_ascii_digit()) { return Err(ProtocolError::WrongType(name)); }
+            let value = raw.parse::<u64>().map_err(|_| ProtocolError::InvalidValue(name))?;
+            if value > 9_007_199_254_740_991 { return Err(ProtocolError::InvalidValue(name)); }
+            Ok(Some(value))
+        }
+        Some(_) => Err(ProtocolError::WrongType(name)),
+    }
+}
+
+fn optional_i32(fields: &[(String, Value)], name: &'static str) -> Result<Option<i32>, ProtocolError> {
+    match field(fields, name) {
+        None => Ok(None),
+        Some(Value::Number(raw)) if raw.bytes().enumerate().all(|(i, b)| b.is_ascii_digit() || (i == 0 && b == b'-')) =>
+            raw.parse().map(Some).map_err(|_| ProtocolError::InvalidValue(name)),
+        Some(_) => Err(ProtocolError::WrongType(name)),
+    }
+}
+
+fn optional_text(fields: &[(String, Value)], name: &'static str) -> Result<Option<String>, ProtocolError> {
+    match field(fields, name) {
+        None => Ok(None),
+        Some(Value::Str(value)) if value.chars().count() <= MAX_TEXT_CHARS => Ok(Some(value.clone())),
+        Some(Value::Str(_)) => Err(ProtocolError::TooLong(name)),
+        Some(_) => Err(ProtocolError::WrongType(name)),
+    }
+}
+
+fn panel_token(raw: &str) -> bool {
+    !raw.is_empty() && raw.len() <= 24 && raw.bytes().all(|b| b.is_ascii_lowercase())
+}
+
 fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     match field(fields, "v") {
         Some(Value::Number(raw)) if raw == "1" => {}
@@ -542,6 +599,12 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "group" => &["a", "key"],
         "rail" => &["a", "k"],
         "railmove" => &["k", "before"],
+        // `a` is required; at most three more fields fit beside `v` and `t`.
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" =>
+            &["a", "id", "parent", "before", "n", "on", "text", "url"],
+        "size" => &["tok", "w", "h"],
+        "pick" => &["tok", "id"],
+        "dismiss" => &["tok"],
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -621,8 +684,58 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" => {
+            let a = str_field(fields, "a")?;
+            if !panel_token(a) { return Err(ProtocolError::InvalidValue("a")); }
+            let kind = match kind {
+                "panel" => PanelType::Panel, "hist" => PanelType::History,
+                "bm" => PanelType::Bookmarks, "cust" => PanelType::Customize,
+                "notes" => PanelType::Notes, "set" => PanelType::Settings,
+                _ => PanelType::Privacy,
+            };
+            let on = match field(fields, "on") {
+                None => None, Some(Value::Bool(value)) => Some(*value),
+                Some(_) => return Err(ProtocolError::WrongType("on")),
+            };
+            Command::Panel { kind, f: PanelFields {
+                a: a.to_owned(), id: optional_u64(fields, "id")?,
+                parent: optional_u64(fields, "parent")?, before: optional_u64(fields, "before")?,
+                n: optional_i32(fields, "n")?, on,
+                text: optional_text(fields, "text")?, url: optional_text(fields, "url")?,
+            }}
+        }
+        "size" => {
+            let w = uint_field(fields, "w")?;
+            let h = uint_field(fields, "h")?;
+            if !(1..=4000).contains(&w) { return Err(ProtocolError::InvalidValue("w")); }
+            if !(1..=4000).contains(&h) { return Err(ProtocolError::InvalidValue("h")); }
+            Command::PopupSize { tok: uint_field(fields, "tok")?, w: w as u16, h: h as u16 }
+        }
+        "pick" => Command::PopupPick { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")? },
+        "dismiss" => Command::PopupDismiss { tok: uint_field(fields, "tok")? },
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
+}
+
+/// Selects the active panel in the reusable panel page. A token uses the same grammar as `a`.
+pub fn panelshow_json(p: &str) -> Option<String> {
+    panel_token(p).then(|| format!("{{\"v\":1,\"t\":\"panelshow\",\"p\":{}}}", json_string(p)))
+}
+
+pub fn layout_json(mode: LayoutMode) -> String {
+    let mode = match mode { LayoutMode::Vertical => "vertical", LayoutMode::Horizontal => "horizontal" };
+    format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"{mode}\"}}")
+}
+
+/// Builds a versioned snapshot envelope with a structurally-written data object.
+pub fn snap_json(p: &str, build: impl FnOnce(&mut super::json::Object<'_>)) -> Option<String> {
+    if !panel_token(p) { return None; }
+    Some(super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "snap");
+        out.string("p", p);
+        out.object("d", build);
+    }))
 }
 
 /// Security summary shown in the omnibox; the wire strings are fixed by the contract.
@@ -1065,7 +1178,7 @@ fn format_scale(scale: f32) -> String {
 
 /// Encodes `text` as a JSON string literal. Besides the mandatory escapes it writes `<` and the
 /// two line separators as `\u` escapes, so the output is safe inside a script context too.
-fn json_string(text: &str) -> String {
+pub(crate) fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {
@@ -1134,8 +1247,9 @@ mod tests {
         state.solid = true;
         state.theme = vec![("bg", "#123456".to_owned()), ("text", "#fff".to_owned())];
         let rail = [rail_item("home", "Home", ""), rail_item("app:5", "Mail & More", "#abc")];
+        let snap = snap_json("history", |d| { d.array("items", |_| {}); d.int("count", 0); }).unwrap();
         let content = format!(
-            "{{\"tabs\":{},\"fav\":{},\"rail\":{},\"railfav\":{},\"state\":{},\"setText\":{},\"completion\":{}}}\n",
+            "{{\"tabs\":{},\"fav\":{},\"rail\":{},\"railfav\":{},\"state\":{},\"setText\":{},\"completion\":{},\"panelshow\":{},\"layout\":{},\"snap\":{}}}\n",
             tabs_json(7, &[leader, member]),
             fav_json(7, &png).expect("fixture PNG"),
             rail_json(&rail),
@@ -1143,6 +1257,9 @@ mod tests {
             state.to_json(),
             set_text_json("https://example.test/😀", false),
             completion_json(9, ".test/"),
+            panelshow_json("history").expect("panel token"),
+            layout_json(LayoutMode::Vertical),
+            snap,
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("ui/test/fixtures/rust-messages.json");
@@ -1152,6 +1269,56 @@ mod tests {
         } else {
             assert_eq!(std::fs::read_to_string(path).expect("committed Rust messages fixture"), content);
         }
+    }
+
+    #[test]
+    fn foundation_commands_accept_boundaries_and_reject_bad_fields() {
+        let cases = [
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":9007199254740991,"n":-2147483648}"#,
+            r#"{"v":1,"t":"bm","a":"move","id":1,"parent":2,"before":3}"#,
+            r#"{"v":1,"t":"cust","a":"rename","text":"hello","url":"https://example.test/"}"#,
+            r#"{"v":1,"t":"size","tok":4294967295,"w":1,"h":4000}"#,
+            r#"{"v":1,"t":"pick","tok":0,"id":4294967295}"#,
+            r#"{"v":1,"t":"dismiss","tok":0}"#,
+        ];
+        for raw in cases { assert!(parse_command(raw).is_ok(), "{raw}"); }
+        for raw in [
+            r#"{"v":1,"t":"hist","a":"open","extra":1}"#,
+            r#"{"v":1,"t":"hist","a":"open","a":"close"}"#,
+            r#"{"v":1,"t":"hist","a":1}"#,
+            r#"{"v":1,"t":"hist","a":"Open"}"#,
+            r#"{"v":1,"t":"hist","a":"abcdefghijklmnopqrstuvwxyz"}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":9007199254740992}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":-1}"#,
+            r#"{"v":1,"t":"hist","a":"open","parent":9007199254740992}"#,
+            r#"{"v":1,"t":"hist","a":"open","before":-1}"#,
+            r#"{"v":1,"t":"hist","a":"open","n":2147483648}"#,
+            r#"{"v":1,"t":"hist","a":"open","url":false}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1,"parent":2,"before":3,"n":4}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1,"parent":2,"before":3,"a":"again"}"#,
+            r#"{"v":1,"t":"hist","a":"open","on":"true"}"#,
+            r#"{"v":1,"t":"size","tok":0,"w":0,"h":4}"#,
+            r#"{"v":1,"t":"pick","tok":4294967296,"id":1}"#,
+        ] { assert!(parse_command(raw).is_err(), "{raw}"); }
+        let long = format!(r#"{{"v":1,"t":"notes","a":"save","text":"{}"}}"#, "x".repeat(2049));
+        assert!(parse_command(&long).is_err());
+        let long_url = format!(r#"{{"v":1,"t":"bm","a":"open","url":"{}"}}"#, "é".repeat(2049));
+        assert!(parse_command(&long_url).is_err());
+        assert_eq!(
+            err(r#"{"v":1,"t":"hist","a":"open","id":1,"parent":2,"before":3,"a":"again"}"#),
+            ProtocolError::TooManyFields,
+        );
+    }
+
+    #[test]
+    fn foundation_message_builders_have_exact_shapes() {
+        assert_eq!(panelshow_json("history").as_deref(), Some(r#"{"v":1,"t":"panelshow","p":"history"}"#));
+        assert_eq!(panelshow_json("History"), None);
+        assert_eq!(layout_json(LayoutMode::Vertical), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
+        assert_eq!(layout_json(LayoutMode::Horizontal), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
+        assert_eq!(snap_json("history", |d| d.int("count", 0)).as_deref(), Some(r#"{"v":1,"t":"snap","p":"history","d":{"count":0}}"#));
+        assert_eq!(snap_json("History", |_| {}), None);
     }
 
     #[test]

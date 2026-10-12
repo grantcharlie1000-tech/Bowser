@@ -5778,7 +5778,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::TabMove { .. }
         | ChromeCommand::Group { .. }
         | ChromeCommand::Rail { .. }
-        | ChromeCommand::RailMove { .. } => {}
+        | ChromeCommand::RailMove { .. }
+        | ChromeCommand::Panel { .. }
+        | ChromeCommand::PopupSize { .. }
+        | ChromeCommand::PopupPick { .. }
+        | ChromeCommand::PopupDismiss { .. } => {}
     }
     html_sync(hwnd);
 }
@@ -5962,6 +5966,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
+        View::Panel | View::Popup | View::Dialog => None,
     })
     .flatten();
     let Some(region) = region else {

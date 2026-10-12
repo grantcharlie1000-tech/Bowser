@@ -10,6 +10,9 @@ pub const START_URL: &str = "bowser-ui://app/index.html?view=toolbar";
 pub const TABS_START_URL: &str = "bowser-ui://app/index.html?view=tabs";
 /// Start URL of the left rail host. Same bundle as `START_URL`, different view.
 pub const RAIL_START_URL: &str = "bowser-ui://app/index.html?view=rail";
+pub const PANEL_START_URL: &str = "bowser-ui://app/index.html?view=panel";
+pub const POPUP_START_URL: &str = "bowser-ui://app/index.html?view=popup";
+pub const DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
@@ -160,7 +163,7 @@ mod tests {
     #[test]
     fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL, RAIL_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");

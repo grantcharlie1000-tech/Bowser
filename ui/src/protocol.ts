@@ -26,6 +26,18 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy';
+export interface PanelFields {
+  a: string;
+  id?: number;
+  parent?: number;
+  before?: number;
+  n?: number;
+  on?: boolean;
+  text?: string;
+  url?: string;
+}
 
 export const THEME_TOKENS = [
   'bg',
@@ -57,7 +69,11 @@ export type Command =
   | { v: 1; t: 'tabmove'; id: number; before: number }
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   | { v: 1; t: 'rail'; a: RailAction; k: string }
-  | { v: 1; t: 'railmove'; k: string; before: string };
+  | { v: 1; t: 'railmove'; k: string; before: string }
+  | ({ v: 1; t: PanelKind } & PanelFields)
+  | { v: 1; t: 'size'; tok: number; w: number; h: number }
+  | { v: 1; t: 'pick'; tok: number; id: number }
+  | { v: 1; t: 'dismiss'; tok: number };
 
 // Rust -> JS messages (validated by parseInbound).
 export interface StateMsg {
@@ -139,6 +155,10 @@ export interface RailFavMsg {
   readonly k: string;
   readonly uri: string;
 }
+export interface PanelShowMsg { readonly t: 'panelshow'; readonly p: PanelToken }
+export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
+export type SnapshotValue = string | number | boolean | null | readonly SnapshotValue[] | { readonly [key: string]: SnapshotValue };
+export interface SnapshotMsg { readonly t: 'snap'; readonly p: PanelToken; readonly d: { readonly [key: string]: SnapshotValue } }
 export type Inbound =
   | StateMsg
   | SetTextMsg
@@ -147,7 +167,10 @@ export type Inbound =
   | TabsMsg
   | FavMsg
   | RailMsg
-  | RailFavMsg;
+  | RailFavMsg
+  | PanelShowMsg
+  | LayoutMsg
+  | SnapshotMsg;
 
 interface WebViewLike {
   postMessage(message: string): void;
@@ -198,6 +221,53 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 }
 
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy'];
+const PANEL_ACTION_RE = /^[a-z]{1,24}$/;
+const MAX_SNAPSHOT_DEPTH = 8;
+const MAX_SNAPSHOT_KEYS = 4096;
+const MAX_SNAPSHOT_OBJECT_KEYS = 128;
+const MAX_SNAPSHOT_ARRAY_ITEMS = 4096;
+
+/** Only validated, flat commands can cross to the Rust panel parser. */
+export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
+  if (!PANEL_ACTION_RE.test(fields.a)) return false;
+  const keys = Object.keys(fields);
+  if (keys.length > 4 || keys.some(k => !['a', 'id', 'parent', 'before', 'n', 'on', 'text', 'url'].includes(k))) return false;
+  for (const key of ['id', 'parent', 'before'] as const) {
+    const value = fields[key];
+    if (value !== undefined && !isInt(value, 0, Number.MAX_SAFE_INTEGER)) return false;
+  }
+  if (fields.n !== undefined && !isInt(fields.n, -0x80000000, 0x7fffffff)) return false;
+  if (fields.on !== undefined && !isBool(fields.on)) return false;
+  if (fields.text !== undefined && !isStr(fields.text, MAX_TEXT)) return false;
+  if (fields.url !== undefined && !isStr(fields.url, MAX_TEXT)) return false;
+  return send({ v: 1, t, ...fields });
+}
+
+export function sendPopupSize(tok: number, w: number, h: number): boolean {
+  return isInt(tok, 0, MAX_ID) && isInt(w, 1, 4000) && isInt(h, 1, 4000) && send({ v: 1, t: 'size', tok, w, h });
+}
+export function sendPopupPick(tok: number, id: number): boolean {
+  return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && send({ v: 1, t: 'pick', tok, id });
+}
+export function sendPopupDismiss(tok: number): boolean {
+  return isInt(tok, 0, MAX_ID) && send({ v: 1, t: 'dismiss', tok });
+}
+
+function validSnapshot(value: unknown, depth: number, budget: { keys: number }): value is SnapshotValue {
+  if (depth > MAX_SNAPSHOT_DEPTH) return false;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    if (value.length > MAX_SNAPSHOT_ARRAY_ITEMS) return false;
+    return value.every(item => validSnapshot(item, depth + 1, budget));
+  }
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  budget.keys += keys.length;
+  if (keys.length > MAX_SNAPSHOT_OBJECT_KEYS || budget.keys > MAX_SNAPSHOT_KEYS) return false;
+  return keys.every(key => validSnapshot(value[key], depth + 1, budget));
+}
 
 /** Sends one command. Returns false when the host bridge is missing or the message is too large. */
 export function send(cmd: Command): boolean {
@@ -273,7 +343,7 @@ function parseRailItem(v: unknown, seen: ReadonlySet<string>): RailItem | null {
 export function parseInbound(data: unknown): Inbound | null {
   let raw: unknown = data;
   if (typeof raw === 'string') {
-    if (raw.length > MAX_INBOUND) return null;
+    if (new TextEncoder().encode(raw).length > MAX_INBOUND) return null;
     try {
       raw = JSON.parse(raw);
     } catch {
@@ -281,8 +351,26 @@ export function parseInbound(data: unknown): Inbound | null {
     }
   }
   if (!isRecord(raw)) return null;
+  if (typeof data !== 'string') {
+    try { if (new TextEncoder().encode(JSON.stringify(raw)).length > MAX_INBOUND) return null; }
+    catch { return null; }
+  }
 
   switch (raw.t) {
+    case 'panelshow': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'p']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS)) return null;
+      return { t: 'panelshow', p: raw.p };
+    }
+    case 'layout': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'mode']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
+      return { t: 'layout', mode: raw.mode };
+    }
+    case 'snap': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
+      const budget = { keys: 0 };
+      if (!validSnapshot(raw.d, 1, budget)) return null;
+      return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
+    }
     case 'state': {
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;

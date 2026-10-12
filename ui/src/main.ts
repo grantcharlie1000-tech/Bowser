@@ -3,6 +3,9 @@ import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type
 import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
+import { startPanel } from './panel';
+import { startPopup } from './popup';
+import { startDialog } from './dialog';
 
 /** True only when the event target is the drag surface itself, never a control inside it. */
 function onDragSurface(target: EventTarget | null): boolean {
@@ -169,6 +172,9 @@ function start(): void {
   const view = new URLSearchParams(location.search).get('view');
   if (view === 'tabs') startTabs(root);
   else if (view === 'rail') startRail(root);
+  else if (view === 'panel') startPanel(root);
+  else if (view === 'popup') startPopup(root);
+  else if (view === 'dialog') startDialog(root);
   else startToolbar(root);
 }
 

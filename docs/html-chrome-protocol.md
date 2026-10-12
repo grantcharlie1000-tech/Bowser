@@ -1,6 +1,6 @@
 # HTML chrome: architecture and bridge contract (v1)
 
-Status: the toolbar row (milestone 1) and the tab strip (milestone 2) are implemented. The GDI chrome remains the default; the HTML chrome is opt-in with `BOWSER_UI=html` and falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
+Status: toolbar, tab strip and rail are implemented. Panel, popup and dialog views have foundation stubs; their content and native hosts follow in later backlog tasks. The GDI chrome remains the default; the HTML chrome is opt-in with `BOWSER_UI=html` and falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
 
 ## Architecture (reviewed by Opus)
 
@@ -140,3 +140,39 @@ Rust validates the key against the current rail model; unknown keys are ignored.
 | `railfav` | `k`, `uri` (`data:image/png;base64,...`, same validation as `fav`) |
 
 `state` still supplies theme/solid/dark/scale. Tooltips use the element `title` attribute (WebView2 shows it as a native tooltip that may overflow the 40px-wide view).
+
+## Foundation extension: panel, popup and dialog views
+
+The same embedded `index.html` serves three more exact start URLs:
+`bowser-ui://app/index.html?view=panel`, `bowser-ui://app/index.html?view=popup`, and
+`bowser-ui://app/index.html?view=dialog`. Each host accepts a message only when both WebView2 source
+URLs equal its own start URL exactly. The stubs apply `state` theme colours, send `ready`, and leave
+an empty container for later tasks.
+
+Panel and dialog commands remain flat JS -> Rust objects with `v:1`. The families are `panel`,
+`hist`, `bm`, `cust`, `notes`, `set`, and `priv`, all shaped as
+`{v:1,t:"hist",a:"open",id?:number,parent?:number,before?:number,n?:number,on?:boolean,text?:string,url?:string}`.
+`a` is a required 1–24 character lower-case ASCII token. `id`, `parent` and `before` are unsigned
+integers at most 2^53−1; `n` is signed i32; `text` and `url` are at most 2048 Unicode characters.
+The allowed field names are exactly `a,id,parent,before,n,on,text,url`. Any four of those names may
+appear, including `a`: `MAX_FIELDS` remains six keys total, counting `v` and `t`; the seventh key
+is rejected before duplicate-key inspection. The panel host accepts `panel/hist/bm/cust`; the
+dialog host accepts `panel/notes/set/priv`.
+
+The popup host alone accepts `{v:1,t:"size",tok,w,h}` (`tok` unsigned u32; `w` and `h` whole CSS
+pixels from 1 to 4000), `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
+`{v:1,t:"dismiss",tok}` (`tok` unsigned u32). Toolbar, tab-strip and rail hosts reject all panel,
+dialog and popup command families before dispatch. `ready` is accepted by every host.
+
+Rust -> JS additions are `{v:1,t:"panelshow",p:"history"}` (a 1–24 character lower-case ASCII panel
+token), `{v:1,t:"layout",mode:"vertical"|"horizontal"}`, and snapshots shaped as
+`{v:1,t:"snap",p:"history",d:{...}}`. The UI accepts panel tokens `history`, `bookmarks`,
+`customize`, `notes`, `settings` and `privacy`; a snapshot's `d` is an object whose nested JSON
+values have at most eight levels, 128 keys per object, 4096 keys overall and 4096 items per array.
+The complete inbound message is at most 256 KiB encoded as UTF-8. Unknown top-level keys or
+malformed values are rejected. The Rust `json.rs` writer closes containers structurally and escapes
+`<`, control characters and Unicode line separators.
+
+`ChromeHost::try_suspend()` starts WebView2 suspension and returns initiation errors; asynchronous
+failure invokes the host failure callback. `resume()` returns WebView2 errors. Both reject closed
+or re-entered host state without panicking.

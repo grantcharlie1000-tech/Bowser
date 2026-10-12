@@ -4,7 +4,10 @@
 pub mod assets;
 #[cfg(test)]
 mod fingerprint;
+#[cfg(test)]
+mod guard;
 pub mod host;
+pub mod json;
 pub mod protocol;
 
 use std::collections::{HashMap, HashSet};

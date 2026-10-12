@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import * as esbuild from 'esbuild';
 
 // protocol.ts imports the rail grammar from rail-logic.ts, so it is bundled rather than transpiled alone.
@@ -17,7 +18,48 @@ const bundled = esbuild.buildSync({
   logLevel: 'silent',
 });
 const bundledUrl = `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`;
-const { parseInbound } = await import(bundledUrl);
+const { parseInbound, sendPanel, sendPopupSize, sendPopupPick, sendPopupDismiss } = await import(bundledUrl);
+
+test('foundation Rust fixture messages parse across the bridge', () => {
+  const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'rust-messages.json'), 'utf8'));
+  assert.deepEqual(parseInbound(fixture.panelshow), { t: 'panelshow', p: 'history' });
+  assert.deepEqual(parseInbound(fixture.layout), { t: 'layout', mode: 'vertical' });
+  assert.deepEqual(parseInbound(fixture.snap), { t: 'snap', p: 'history', d: { items: [], count: 0 } });
+});
+
+test('foundation messages reject unknown fields, depth, size and key overflow', () => {
+  assert.equal(parseInbound('{"t":"panelshow","p":"history","x":1}'), null);
+  assert.equal(parseInbound('{"t":"panelshow","p":"History"}'), null);
+  assert.equal(parseInbound('{"t":"layout","mode":"grid"}'), null);
+  assert.equal(parseInbound('{"v":2,"t":"snap","p":"history","d":{}}'), null);
+  assert.equal(parseInbound(JSON.stringify({ v: 1, t: 'snap', p: 'history', d: { x: [[[[[[[[[]]]]]]]]] } })), null);
+  assert.equal(parseInbound(JSON.stringify({ v: 1, t: 'snap', p: 'history', d: { x: 'x'.repeat(256 * 1024) } })), null);
+  assert.equal(parseInbound(JSON.stringify({ v: 1, t: 'snap', p: 'history', d: Object.fromEntries(Array.from({length: 129}, (_, i) => [`k${i}`, i])) })), null);
+  const many = Object.fromEntries(Array.from({ length: 33 }, (_, group) => [
+    `g${group}`, Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`k${i}`, i])),
+  ]));
+  assert.equal(parseInbound(JSON.stringify({ v: 1, t: 'snap', p: 'history', d: many })), null);
+  assert.equal(parseInbound({ v: 1, t: 'snap', p: 'history', d: { bad: undefined } }), null);
+});
+
+test('typed foundation senders enforce wire ranges and field cap', () => {
+  const wires = [];
+  globalThis.window = { chrome: { webview: { postMessage: wire => wires.push(JSON.parse(wire)) } } };
+  assert.equal(sendPanel('hist', { a: 'open', id: Number.MAX_SAFE_INTEGER, n: -1 }), true);
+  assert.equal(sendPanel('hist', { a: 'Open' }), false);
+  assert.equal(sendPanel('hist', { a: 'open', id: 1, parent: 2, before: 3, n: 4, on: true }), false);
+  assert.equal(sendPopupSize(1, 4000, 1), true);
+  assert.equal(sendPopupSize(1, 4001, 1), false);
+  assert.equal(sendPopupPick(1, 2), true);
+  assert.equal(sendPopupDismiss(1), true);
+  assert.deepEqual(wires[0], { v: 1, t: 'hist', a: 'open', id: Number.MAX_SAFE_INTEGER, n: -1 });
+  assert.deepEqual(wires.slice(1), [
+    { v: 1, t: 'size', tok: 1, w: 4000, h: 1 },
+    { v: 1, t: 'pick', tok: 1, id: 2 },
+    { v: 1, t: 'dismiss', tok: 1 },
+  ]);
+  delete globalThis.window;
+});
 
 test('empty tabs message from Rust parses', () => {
   const m = parseInbound('{"v":1,"t":"tabs","active":0,"items":[]}');

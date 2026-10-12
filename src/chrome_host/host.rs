@@ -34,9 +34,12 @@ use windows::{
 };
 
 use super::{
-    assets::{self, Asset, RAIL_START_URL, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
+    assets::{
+        self, Asset, DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL, RAIL_START_URL,
+        RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL,
+    },
     protocol::{
-        Command, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
+        Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
         TokenBucket, is_popup_command, parse_command,
     },
 };
@@ -150,6 +153,9 @@ pub enum View {
     Toolbar,
     Tabs,
     Rail,
+    Panel,
+    Popup,
+    Dialog,
 }
 
 impl View {
@@ -158,6 +164,9 @@ impl View {
             Self::Toolbar => START_URL,
             Self::Tabs => TABS_START_URL,
             Self::Rail => RAIL_START_URL,
+            Self::Panel => PANEL_START_URL,
+            Self::Popup => POPUP_START_URL,
+            Self::Dialog => DIALOG_START_URL,
         }
     }
 }
@@ -338,6 +347,44 @@ impl ChromeHost {
             state.controller.clone()
         };
         self.observe(unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) })
+    }
+
+    /// Starts suspension. Initiation errors are returned; completion failures notify `on_failed`.
+    pub fn try_suspend(&self) -> Result<()> {
+        let webview = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            state.webview.clone()
+        };
+        let webview3: ICoreWebView2_3 = webview.cast()?;
+        let weak = Rc::downgrade(&self.state);
+        let handler = webview2_com::TrySuspendCompletedHandler::create(Box::new(
+            move |result, suspended| {
+                if result.is_err() || !suspended {
+                    if let Some(state) = weak.upgrade() {
+                        let callback = state
+                            .try_borrow()
+                            .ok()
+                            .filter(|s| !s.closed)
+                            .map(|s| s.on_failed.clone());
+                        if let Some(callback) = callback { callback(); }
+                    }
+                }
+                Ok(())
+            },
+        ));
+        self.observe(unsafe { webview3.TrySuspend(&handler) })
+    }
+
+    /// Wakes a suspended page. COM and re-entry errors are returned to the caller.
+    pub fn resume(&self) -> Result<()> {
+        let webview = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            state.webview.clone()
+        };
+        let webview3: ICoreWebView2_3 = webview.cast()?;
+        self.observe(unsafe { webview3.Resume() })
     }
 
     /// Records the caller's visibility. The controller is only shown once the page is ready.
@@ -732,6 +779,7 @@ fn install_handlers(
                 let Ok(command) = parse_command(&raw) else {
                     return Ok(());
                 };
+                if !view_accepts_command(view, &command) { return Ok(()); }
                 if matches!(command, Command::Ready) {
                     reveal(&weak_bridge);
                 } else if is_popup_command(&command) && !popup_gate.allow(Instant::now()) {
@@ -878,6 +926,19 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
     is_start_url(view, sender_uri) && is_start_url(view, message_uri)
 }
 
+/// The URL check establishes origin; this check limits each page to its own command family.
+fn view_accepts_command(view: View, command: &Command) -> bool {
+    if matches!(command, Command::Ready) { return true; }
+    match view {
+        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_)),
+        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_)),
+        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. }),
+        View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
+        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. }),
+        View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes | PanelType::Settings | PanelType::Privacy, .. }),
+    }
+}
+
 /// The path of a `bowser-ui://app/...` URI, or `None` for any other scheme or host.
 fn request_path(uri: &str) -> Option<String> {
     let url = Url::parse(uri).ok()?;
@@ -1010,13 +1071,42 @@ mod tests {
         assert_eq!(View::Toolbar.start_url(), "bowser-ui://app/index.html?view=toolbar");
         assert_eq!(View::Tabs.start_url(), "bowser-ui://app/index.html?view=tabs");
         assert_eq!(View::Rail.start_url(), "bowser-ui://app/index.html?view=rail");
-        let views = [View::Toolbar, View::Tabs, View::Rail];
+        assert_eq!(View::Panel.start_url(), "bowser-ui://app/index.html?view=panel");
+        assert_eq!(View::Popup.start_url(), "bowser-ui://app/index.html?view=popup");
+        assert_eq!(View::Dialog.start_url(), "bowser-ui://app/index.html?view=dialog");
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
                 assert!(!is_start_url(view, other.start_url()), "{view:?} accepted {other:?}");
             }
         }
+    }
+
+    #[test]
+    fn new_views_reject_nearby_urls_and_foreign_command_families() {
+        for view in [View::Panel, View::Popup, View::Dialog] {
+            let url = view.start_url();
+            assert!(is_trusted_message(view, url, url));
+            assert!(!is_start_url(view, &format!("{url}&x=1")));
+            assert!(!is_start_url(view, &format!("{url}#top")));
+            assert!(!is_trusted_message(view, START_URL, url));
+            assert!(!is_trusted_message(view, url, START_URL));
+        }
+        let panel = parse_command(r#"{"v":1,"t":"hist","a":"open","id":1}"#).unwrap();
+        let popup = parse_command(r#"{"v":1,"t":"pick","tok":1,"id":2}"#).unwrap();
+        for view in [View::Toolbar, View::Tabs, View::Rail] {
+            assert!(!view_accepts_command(view, &panel));
+            assert!(!view_accepts_command(view, &popup));
+        }
+        assert!(view_accepts_command(View::Panel, &panel));
+        assert!(!view_accepts_command(View::Dialog, &panel));
+        let dialog = parse_command(r#"{"v":1,"t":"set","a":"open"}"#).unwrap();
+        assert!(view_accepts_command(View::Dialog, &dialog));
+        assert!(!view_accepts_command(View::Panel, &dialog));
+        assert!(!view_accepts_command(View::Popup, &panel));
+        assert!(view_accepts_command(View::Popup, &popup));
+        assert!(!view_accepts_command(View::Panel, &popup));
     }
 
     #[test]
