@@ -520,7 +520,11 @@ mod tests {
         assert_eq!(word_range(text, 12), (11, 20), "wikipedia");
         assert_eq!(word_range(text, 26), (25, 29), "wiki");
         assert_eq!(word_range(text, 29), (29, 30), "the slash before Rust");
-        assert_eq!(word_range(text, 100), (30, 34), "past the end selects the last run");
+        assert_eq!(
+            word_range(text, 100),
+            (30, 34),
+            "past the end selects the last run"
+        );
     }
 
     #[test]
@@ -542,9 +546,17 @@ mod tests {
         assert_eq!(click_count(None, start, window), 1);
         let second = click_count(Some((start, 1)), start + Duration::from_millis(100), window);
         assert_eq!(second, 2);
-        let third = click_count(Some((start, second)), start + Duration::from_millis(200), window);
+        let third = click_count(
+            Some((start, second)),
+            start + Duration::from_millis(200),
+            window,
+        );
         assert_eq!(third, 3);
-        let fourth = click_count(Some((start, third)), start + Duration::from_millis(300), window);
+        let fourth = click_count(
+            Some((start, third)),
+            start + Duration::from_millis(300),
+            window,
+        );
         assert_eq!(fourth, 1);
     }
 

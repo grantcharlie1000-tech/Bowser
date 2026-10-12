@@ -13,10 +13,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CLEARTYPE_QUALITY, CreateFontIndirectW, CreateSolidBrush,
-            DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
-            DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
-            GetObjectW,
+            BeginPaint, CLEARTYPE_QUALITY, CreateFontIndirectW, CreateSolidBrush, DRAW_TEXT_FORMAT,
+            DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+            DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, GetObjectW,
             HBRUSH, HDC, HFONT, InvalidateRect, LOGFONTW, PAINTSTRUCT, SelectObject, SetBkColor,
             SetBkMode, SetTextColor, TRANSPARENT,
         },
@@ -26,17 +25,16 @@ use windows::{
             Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE, VK_RETURN},
             Shell::ShellExecuteW,
             WindowsAndMessaging::{
-                BN_CLICKED, BS_OWNERDRAW, CREATESTRUCTW,
-                CreateWindowExW, DefWindowProcW, DestroyWindow, EN_KILLFOCUS, EN_SETFOCUS,
-                ES_AUTOHSCROLL, ES_NUMBER, GWLP_USERDATA, GetClientRect, GetDlgCtrlID,
-                GetDlgItem, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL, IDYES, IsChild, IsDialogMessageW,
-                IsWindow, LoadCursorW, MB_ICONQUESTION, MB_YESNO, MSG, MessageBoxW,
-                RegisterClassW, SW_SHOW, SW_SHOWNORMAL, SendMessageW, SetForegroundWindow,
-                SetWindowLongPtrW, SetWindowTextW, ShowWindow, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-                WM_CREATE, WM_CTLCOLOREDIT, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_NCCREATE,
-                WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-                WS_EX_CONTROLPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+                BN_CLICKED, BS_OWNERDRAW, CREATESTRUCTW, CreateWindowExW, DefWindowProcW,
+                DestroyWindow, EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, ES_NUMBER, GWLP_USERDATA,
+                GetClientRect, GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowRect,
+                GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW, IDCANCEL, IDYES, IsChild,
+                IsDialogMessageW, IsWindow, LoadCursorW, MB_ICONQUESTION, MB_YESNO, MSG,
+                MessageBoxW, RegisterClassW, SW_SHOW, SW_SHOWNORMAL, SendMessageW,
+                SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WINDOW_STYLE,
+                WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DRAWITEM, WM_ERASEBKGND,
+                WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CHILD,
+                WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -57,9 +55,9 @@ const SUBTITLE: &str = "Changes are saved to this profile's settings.txt.";
 const SEARCH_HEADING: &str = "Search";
 const SEARCH_LABEL: &str = "Search engine";
 const SEARCH_HELP: &str =
-    "Used for address bar searches. A choice made here takes precedence over search-provider.txt.";
+    "Optimised: DuckDuckGo (no ads) for web, Google for images. Type `img ` before a query for images.";
 /// Shown in the selector when no engine is chosen and no `search-provider.txt` is in use.
-const SEARCH_DEFAULT: &str = "Bing (default)";
+const SEARCH_DEFAULT: &str = "Optimised (default)";
 const SEARCH_CUSTOM: &str = "Custom (search-provider.txt)";
 const SLEEP_HEADING: &str = "Tab sleep";
 const SLEEP_TOGGLE: &str = "Sleep hidden tabs after a delay";
@@ -68,9 +66,11 @@ const SLEEP_LABEL: &str = "Sleep after (seconds)";
 const SLEEP_UNIT: &str = "30 to 604800 seconds (7 days)";
 const BLOCKER_HEADING: &str = "Ad and tracker blocker";
 const LAYOUT_HEADING: &str = "Tab layout";
-const LAYOUT_HELP: &str = "Choose a horizontal strip or vertical sidebar. Sidebar width is measured in logical pixels.";
+const LAYOUT_HELP: &str =
+    "Choose a horizontal strip or vertical sidebar. Sidebar width is measured in logical pixels.";
 const BLOCKER_TOGGLE: &str = "Block ads and trackers";
-const BLOCKER_HELP: &str = "Blocks known ad and tracking requests on every site except the ones listed below.";
+const BLOCKER_HELP: &str =
+    "Blocks known ad and tracking requests on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
 const ALLOW_HELP: &str = "Separate sites with commas, for example example.com, other.org.";
 const TAB_GROUPS_HEADING: &str = "Tab groups";
@@ -335,6 +335,9 @@ unsafe fn round_rect(dc: HDC, bounds: RECT, fill: Rgba, border: Rgba, width: i32
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut wide: Vec<u16> = text.encode_utf16().collect();
+        if wide.is_empty() {
+            return;
+        }
         let mut bounds = bounds;
         SetTextColor(dc, colorref(colour));
         DrawTextW(dc, &mut wide, &mut bounds, format);
@@ -369,38 +372,132 @@ unsafe fn paint(hwnd: HWND) {
             FrameRect(dc, &client, res.border);
             SetBkMode(dc, TRANSPARENT);
 
-            round_rect(dc, l.search_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
-            round_rect(dc, l.layout_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
-            round_rect(dc, l.sleep_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
-            round_rect(dc, l.blocker_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
-            round_rect(dc, l.tab_groups_card, p.omnibox_fill, p.omnibox_border, scaled(1, dpi));
+            round_rect(
+                dc,
+                l.search_card,
+                p.omnibox_fill,
+                p.omnibox_border,
+                scaled(1, dpi),
+            );
+            round_rect(
+                dc,
+                l.layout_card,
+                p.omnibox_fill,
+                p.omnibox_border,
+                scaled(1, dpi),
+            );
+            round_rect(
+                dc,
+                l.sleep_card,
+                p.omnibox_fill,
+                p.omnibox_border,
+                scaled(1, dpi),
+            );
+            round_rect(
+                dc,
+                l.blocker_card,
+                p.omnibox_fill,
+                p.omnibox_border,
+                scaled(1, dpi),
+            );
+            round_rect(
+                dc,
+                l.tab_groups_card,
+                p.omnibox_fill,
+                p.omnibox_border,
+                scaled(1, dpi),
+            );
 
             let single = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
             let wrapped = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX;
             let old = SelectObject(dc, res.heading.into());
             draw_text(dc, l.title, TITLE, p.tab_text_active, single);
             SelectObject(dc, res.section.into());
-            draw_text(dc, l.search_heading, SEARCH_HEADING, p.tab_text_active, single);
-            draw_text(dc, l.layout_heading, LAYOUT_HEADING, p.tab_text_active, single);
-            draw_text(dc, l.sleep_heading, SLEEP_HEADING, p.tab_text_active, single);
-            draw_text(dc, l.blocker_heading, BLOCKER_HEADING, p.tab_text_active, single);
-            draw_text(dc, l.tab_groups_heading, TAB_GROUPS_HEADING, p.tab_text_active, single);
+            draw_text(
+                dc,
+                l.search_heading,
+                SEARCH_HEADING,
+                p.tab_text_active,
+                single,
+            );
+            draw_text(
+                dc,
+                l.layout_heading,
+                LAYOUT_HEADING,
+                p.tab_text_active,
+                single,
+            );
+            draw_text(
+                dc,
+                l.sleep_heading,
+                SLEEP_HEADING,
+                p.tab_text_active,
+                single,
+            );
+            draw_text(
+                dc,
+                l.blocker_heading,
+                BLOCKER_HEADING,
+                p.tab_text_active,
+                single,
+            );
+            draw_text(
+                dc,
+                l.tab_groups_heading,
+                TAB_GROUPS_HEADING,
+                p.tab_text_active,
+                single,
+            );
             SelectObject(dc, res.font.into());
             draw_text(dc, l.subtitle, SUBTITLE, p.omnibox_placeholder, single);
             draw_text(dc, l.search_label, SEARCH_LABEL, p.omnibox_text, single);
-            draw_text(dc, l.search_help, SEARCH_HELP, p.omnibox_placeholder, wrapped);
-            draw_text(dc, l.layout_help, LAYOUT_HELP, p.omnibox_placeholder, single);
-            draw_text(dc, l.layout_width_label, "Sidebar width", p.omnibox_text, single);
+            draw_text(
+                dc,
+                l.search_help,
+                SEARCH_HELP,
+                p.omnibox_placeholder,
+                wrapped,
+            );
+            draw_text(
+                dc,
+                l.layout_help,
+                LAYOUT_HELP,
+                p.omnibox_placeholder,
+                single,
+            );
+            draw_text(
+                dc,
+                l.layout_width_label,
+                "Sidebar width",
+                p.omnibox_text,
+                single,
+            );
             draw_text(dc, l.sleep_help, SLEEP_HELP, p.omnibox_placeholder, wrapped);
             draw_text(dc, l.sleep_label, SLEEP_LABEL, p.omnibox_text, single);
             draw_text(dc, l.sleep_unit, SLEEP_UNIT, p.omnibox_placeholder, single);
-            draw_text(dc, l.blocker_help, BLOCKER_HELP, p.omnibox_placeholder, wrapped);
+            draw_text(
+                dc,
+                l.blocker_help,
+                BLOCKER_HELP,
+                p.omnibox_placeholder,
+                wrapped,
+            );
             draw_text(dc, l.allow_label, ALLOW_LABEL, p.omnibox_text, single);
             draw_text(dc, l.allow_help, ALLOW_HELP, p.omnibox_placeholder, wrapped);
-            draw_text(dc, l.tab_groups_help, TAB_GROUPS_HELP, p.omnibox_placeholder, wrapped);
+            draw_text(
+                dc,
+                l.tab_groups_help,
+                TAB_GROUPS_HELP,
+                p.omnibox_placeholder,
+                wrapped,
+            );
 
             // The field frames sit outside the edit controls, so the teal ring is drawn here.
-            for (id, field) in [(ID_SLEEP_SECS, l.sleep_field), (ID_BLOCKER_ALLOW, l.allow_field), (ID_SIDEBAR_WIDTH, l.layout_width)] {
+            for (id, field) in [
+                (ID_SLEEP_SECS, l.sleep_field),
+                (ID_BLOCKER_ALLOW, l.allow_field),
+                (ID_SIDEBAR_WIDTH, l.layout_width),
+            ] {
                 let focused = panel.focus == id;
                 let (border, width) = if focused {
                     (p.omnibox_focus_border, scaled(2, dpi))
@@ -462,12 +559,24 @@ unsafe fn draw_item(hwnd: HWND, lparam: LPARAM) {
                         smooth::stroke_line(dc, from, to, p.window, s(2).max(1));
                     };
                     mark(
-                        POINT { x: boxed.left + s(4), y: boxed.top + s(9) },
-                        POINT { x: boxed.left + s(8), y: boxed.top + s(13) },
+                        POINT {
+                            x: boxed.left + s(4),
+                            y: boxed.top + s(9),
+                        },
+                        POINT {
+                            x: boxed.left + s(8),
+                            y: boxed.top + s(13),
+                        },
                     );
                     mark(
-                        POINT { x: boxed.left + s(8), y: boxed.top + s(13) },
-                        POINT { x: boxed.left + s(14), y: boxed.top + s(5) },
+                        POINT {
+                            x: boxed.left + s(8),
+                            y: boxed.top + s(13),
+                        },
+                        POINT {
+                            x: boxed.left + s(14),
+                            y: boxed.top + s(5),
+                        },
                     );
                 }
                 let label = rect(rc.left + s(30), rc.top, rc.right, rc.bottom);
@@ -505,12 +614,24 @@ unsafe fn draw_item(hwnd: HWND, lparam: LPARAM) {
                     smooth::stroke_line(dc, from, to, p.omnibox_text, s(2).max(1));
                 };
                 chevron(
-                    POINT { x: right - s(5), y: middle - s(2) },
-                    POINT { x: right, y: middle + s(3) },
+                    POINT {
+                        x: right - s(5),
+                        y: middle - s(2),
+                    },
+                    POINT {
+                        x: right,
+                        y: middle + s(3),
+                    },
                 );
                 chevron(
-                    POINT { x: right, y: middle + s(3) },
-                    POINT { x: right + s(5), y: middle - s(2) },
+                    POINT {
+                        x: right,
+                        y: middle + s(3),
+                    },
+                    POINT {
+                        x: right + s(5),
+                        y: middle - s(2),
+                    },
                 );
             }
             ID_OPEN_FILE | ID_RESET | ID_SAVE | ID_CLOSE => {
@@ -552,16 +673,76 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
         let edit_number = WINDOW_STYLE((ES_AUTOHSCROLL | ES_NUMBER) as u32) | WS_TABSTOP;
         let edit_text = WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP;
         let children = [
-            (ID_SEARCH_ENGINE, "", l.search_button, button, ButtonKind::Owner),
-            (ID_TAB_LAYOUT, "", l.layout_toggle, button, ButtonKind::Owner),
-            (ID_SIDEBAR_WIDTH, "", l.layout_width, edit_number, ButtonKind::Edit),
-            (ID_SLEEP_ENABLED, SLEEP_TOGGLE, l.sleep_toggle, button, ButtonKind::Owner),
-            (ID_SLEEP_SECS, "", l.sleep_edit, edit_number, ButtonKind::Edit),
-            (ID_BLOCKER_ENABLED, BLOCKER_TOGGLE, l.blocker_toggle, button, ButtonKind::Owner),
-            (ID_TAB_GROUPS, TAB_GROUPS_TOGGLE, l.tab_groups_toggle, button, ButtonKind::Owner),
-            (ID_BLOCKER_ALLOW, "", l.allow_edit, edit_text, ButtonKind::Edit),
-            (ID_OPEN_FILE, "Open settings file", l.open_file, button, ButtonKind::Owner),
-            (ID_RESET, "Reset to defaults", l.reset, button, ButtonKind::Owner),
+            (
+                ID_SEARCH_ENGINE,
+                "",
+                l.search_button,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_TAB_LAYOUT,
+                "",
+                l.layout_toggle,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_SIDEBAR_WIDTH,
+                "",
+                l.layout_width,
+                edit_number,
+                ButtonKind::Edit,
+            ),
+            (
+                ID_SLEEP_ENABLED,
+                SLEEP_TOGGLE,
+                l.sleep_toggle,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_SLEEP_SECS,
+                "",
+                l.sleep_edit,
+                edit_number,
+                ButtonKind::Edit,
+            ),
+            (
+                ID_BLOCKER_ENABLED,
+                BLOCKER_TOGGLE,
+                l.blocker_toggle,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_TAB_GROUPS,
+                TAB_GROUPS_TOGGLE,
+                l.tab_groups_toggle,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_BLOCKER_ALLOW,
+                "",
+                l.allow_edit,
+                edit_text,
+                ButtonKind::Edit,
+            ),
+            (
+                ID_OPEN_FILE,
+                "Open settings file",
+                l.open_file,
+                button,
+                ButtonKind::Owner,
+            ),
+            (
+                ID_RESET,
+                "Reset to defaults",
+                l.reset,
+                button,
+                ButtonKind::Owner,
+            ),
             (ID_SAVE, "Save", l.save, button, ButtonKind::Owner),
             (ID_CLOSE, "Close", l.close, button, ButtonKind::Owner),
         ];
@@ -634,7 +815,13 @@ fn populate(hwnd: HWND, settings: &Settings) {
 
 fn refresh_layout_text(hwnd: HWND) {
     let (text, width) = state(hwnd).map_or(("Horizontal tabs", 260), |panel| {
-        (match panel.tab_layout { settings::TabLayout::Horizontal => "Horizontal tabs", settings::TabLayout::Vertical => "Vertical tabs" }, panel.sidebar_width)
+        (
+            match panel.tab_layout {
+                settings::TabLayout::Horizontal => "Horizontal tabs",
+                settings::TabLayout::Vertical => "Vertical tabs",
+            },
+            panel.sidebar_width,
+        )
     });
     set_text(hwnd, ID_TAB_LAYOUT, text);
     set_text(hwnd, ID_SIDEBAR_WIDTH, &width.to_string());
@@ -655,6 +842,7 @@ fn refresh_search_text(hwnd: HWND) {
 
 fn engine_description(engine: SearchEngine) -> &'static str {
     match engine {
+        SearchEngine::Optimised => "DuckDuckGo (no ads) for web, Google for images.",
         SearchEngine::Google => "Searches go to google.com.",
         SearchEngine::DuckDuckGo => "Searches go to duckduckgo.com.",
     }
@@ -699,7 +887,11 @@ fn choose_search_engine(hwnd: HWND) {
                 panel.search_engine = Some(engine);
             }
             refresh_search_text(hwnd);
-            set_status(hwnd, "Not saved yet. Press Save to keep this search engine.", false);
+            set_status(
+                hwnd,
+                "Not saved yet. Press Save to keep this search engine.",
+                false,
+            );
         }
     }
 }
@@ -746,21 +938,27 @@ fn save_form(hwnd: HWND) {
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    let (sleep_enabled, blocker_enabled, search_engine, automatic_tab_grouping, tab_layout) = state(hwnd)
-        .map_or((true, true, None, true, settings::TabLayout::Horizontal), |panel| {
-            (
-                panel.sleep_enabled,
-                panel.blocker_enabled,
-                panel.search_engine,
-                panel.automatic_tab_grouping,
-                panel.tab_layout,
-            )
-        });
+    let (sleep_enabled, blocker_enabled, search_engine, automatic_tab_grouping, tab_layout) =
+        state(hwnd).map_or(
+            (true, true, None, true, settings::TabLayout::Horizontal),
+            |panel| {
+                (
+                    panel.sleep_enabled,
+                    panel.blocker_enabled,
+                    panel.search_engine,
+                    panel.automatic_tab_grouping,
+                    panel.tab_layout,
+                )
+            },
+        );
     let sleep = parse_sleep_after_secs(&window_text_of(hwnd, ID_SLEEP_SECS));
     let allow = parse_blocker_allow(&window_text_of(hwnd, ID_BLOCKER_ALLOW));
-    let sidebar_width = window_text_of(hwnd, ID_SIDEBAR_WIDTH).parse::<u16>()
+    let sidebar_width = window_text_of(hwnd, ID_SIDEBAR_WIDTH)
+        .parse::<u16>()
         .ok()
-        .filter(|width| (settings::MIN_SIDEBAR_WIDTH..=settings::MAX_SIDEBAR_WIDTH).contains(width));
+        .filter(|width| {
+            (settings::MIN_SIDEBAR_WIDTH..=settings::MAX_SIDEBAR_WIDTH).contains(width)
+        });
     let Some(sidebar_width) = sidebar_width else {
         focus_field(hwnd, ID_SIDEBAR_WIDTH);
         set_status(hwnd, "Sidebar width must be between 180 and 360.", true);
@@ -782,6 +980,7 @@ fn save_form(hwnd: HWND) {
     let settings = Settings {
         tab_layout,
         sidebar_width,
+        side_panel_width: Settings::load(&path).side_panel_width,
         sleep_enabled,
         sleep_after_secs,
         blocker_enabled,
@@ -794,7 +993,11 @@ fn save_form(hwnd: HWND) {
             populate(hwnd, &settings);
             let app = state(hwnd).map(|panel| panel.app.clone());
             if let Some(app) = app {
-                crate::app::App::apply_tab_layout_settings(&app, settings.tab_layout, settings.sidebar_width);
+                crate::app::App::apply_tab_layout_settings(
+                    &app,
+                    settings.tab_layout,
+                    settings.sidebar_width,
+                );
             }
             set_status(hwnd, SAVED_STATUS, false);
         }
@@ -866,9 +1069,7 @@ fn open_file(hwnd: HWND) {
         return;
     }
     let wide = HSTRING::from(path.as_os_str());
-    let result = unsafe {
-        ShellExecuteW(None, w!("open"), &wide, None, None, SW_SHOWNORMAL)
-    };
+    let result = unsafe { ShellExecuteW(None, w!("open"), &wide, None, None, SW_SHOWNORMAL) };
     // ShellExecuteW reports failure with a value of 32 or less.
     if (result.0 as isize) <= 32 {
         set_status(hwnd, "The settings file could not be opened.", true);
@@ -978,13 +1179,12 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             Err(_) => Settings::default(),
         };
         // With no engine chosen, the selector names what searches really use.
-        let search_fallback = if SearchProvider::from_config(None, &profile.search_provider_file())
-            .is_default()
-        {
-            SEARCH_DEFAULT
-        } else {
-            SEARCH_CUSTOM
-        };
+        let search_fallback =
+            if SearchProvider::from_config(None, &profile.search_provider_file()).is_default() {
+                SEARCH_DEFAULT
+            } else {
+                SEARCH_CUSTOM
+            };
         let panel = Box::into_raw(Box::new(Panel {
             app: app.clone(),
             path,
@@ -1036,7 +1236,9 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
                 populate(window, &Settings::default());
                 set_status(
                     window,
-                    format!("settings.txt could not be read ({error}). Open the settings file to fix it, then reopen Settings."),
+                    format!(
+                        "settings.txt could not be read ({error}). Open the settings file to fix it, then reopen Settings."
+                    ),
                     true,
                 );
             }

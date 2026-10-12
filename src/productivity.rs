@@ -95,7 +95,11 @@ pub fn browser_commands() -> CommandRegistry {
             "Save the open tabs as a named session",
             "save-session",
         ),
-        ("Saved sessions", "Restore or delete a saved session", "sessions"),
+        (
+            "Saved sessions",
+            "Restore or delete a saved session",
+            "sessions",
+        ),
         ("Add bookmark", "Save the current page", "add-bookmark"),
         ("Reload", "Reload the current page", "reload"),
         ("Back", "Go back", "back"),
@@ -461,13 +465,47 @@ pub fn add_history_entry_at(
     }
     let mut out = String::new();
     for (timestamp, url, title) in entries {
-        out.push_str(&format!("{timestamp}\t{}\t{}\n", escape(&url), escape(&title)));
+        out.push_str(&format!(
+            "{timestamp}\t{}\t{}\n",
+            escape(&url),
+            escape(&title)
+        ));
     }
     atomic_write(path, out.as_bytes())
 }
 
 pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
     add_bookmark_in_folder(path, url, title, "")
+}
+
+/// Removes a bookmark from the established flat file and the additive v2 tree.
+pub fn remove_bookmark(path: &Path, url: &str) -> std::io::Result<bool> {
+    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let mut entries = read_bookmarks(path);
+    let old_len = entries.len();
+    entries.retain(|(_, existing, _)| existing != &url);
+    if entries.len() != old_len {
+        let out = entries
+            .iter()
+            .map(|(title, url, folder)| {
+                format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder))
+            })
+            .collect::<String>();
+        atomic_write(path, out.as_bytes())?;
+    }
+    if let Some(profile_dir) = path.parent() {
+        let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
+        if let Some(id) = tree
+            .items()
+            .iter()
+            .find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: existing, .. } if existing == &url))
+            .map(|item| item.id)
+        {
+            tree.delete(id);
+            tree.save(profile_dir)?;
+        }
+    }
+    Ok(entries.len() != old_len)
 }
 
 pub fn add_bookmark_in_folder(
@@ -479,15 +517,58 @@ pub fn add_bookmark_in_folder(
     let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
     let mut entries = read_bookmarks(path);
     entries.retain(|(_, existing, _)| existing != &url);
-    entries.push((title.chars().take(256).collect(), url, folder.chars().take(128).collect()));
+    entries.push((
+        title.chars().take(256).collect(),
+        url.clone(),
+        folder.chars().take(128).collect(),
+    ));
     if entries.len() > MAX_BOOKMARKS {
         entries.drain(..entries.len() - MAX_BOOKMARKS);
     }
     let out = entries
         .iter()
-        .map(|(title, url, folder)| format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder)))
+        .map(|(title, url, folder)| {
+            format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder))
+        })
         .collect::<String>();
-    atomic_write(path, out.as_bytes())
+    atomic_write(path, out.as_bytes())?;
+    // Keep the established importer/command-palette file intact and mirror this mutation into
+    // the additive tree format consumed by the sidebar.
+    if let Some(profile_dir) = path.parent() {
+        let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
+        let parent = folder_path(&mut tree, folder)?;
+        if let Some(old) = tree.items().iter().find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: old, .. } if old == &url)).map(|item| item.id) { tree.delete(old); }
+        tree.add_bookmark(parent, &title, &url)?;
+        tree.save(profile_dir)?;
+    }
+    Ok(())
+}
+
+fn folder_path(
+    tree: &mut crate::bookmarks::BookmarkStore,
+    folder: &str,
+) -> std::io::Result<Option<u64>> {
+    let mut parent = None;
+    for part in folder
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .take(16)
+    {
+        let existing = tree
+            .children(parent)
+            .into_iter()
+            .find(|item| {
+                matches!(item.kind, crate::bookmarks::BookmarkKind::Folder)
+                    && item.title.eq_ignore_ascii_case(part)
+            })
+            .map(|item| item.id);
+        parent = Some(match existing {
+            Some(id) => id,
+            None => tree.add_folder(parent, part)?,
+        });
+    }
+    Ok(parent)
 }
 
 pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
@@ -518,6 +599,118 @@ pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
             })
             .collect()
     })
+}
+
+pub type HistoryEntry = (u64, String, String);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoryDay {
+    pub label: String,
+    pub day: String,
+    pub entries: Vec<HistoryEntry>,
+}
+
+pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
+    let normalized = valid_http_url(url).ok_or_else(invalid_url_error)?;
+    let mut entries = read_history(path);
+    let n = entries.len();
+    entries.retain(|(_, u, _)| u != &normalized);
+    if entries.len() == n {
+        return Ok(false);
+    }
+    write_history(path, &entries)?;
+    Ok(true)
+}
+pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Result<usize> {
+    let mut entries = read_history(path);
+    let n = entries.len();
+    entries.retain(|(t, _, _)| *t < start || *t > end);
+    let count = n - entries.len();
+    if count > 0 {
+        write_history(path, &entries)?
+    }
+    Ok(count)
+}
+pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize> {
+    let host = host.trim().trim_start_matches("www.").to_ascii_lowercase();
+    let mut entries = read_history(path);
+    let n = entries.len();
+    entries.retain(|(_, url, _)| {
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .is_none_or(|h| h.trim_start_matches("www.") != host)
+    });
+    let count = n - entries.len();
+    if count > 0 {
+        write_history(path, &entries)?
+    }
+    Ok(count)
+}
+pub fn clear_history(path: &Path) -> std::io::Result<()> {
+    atomic_write(path, b"")
+}
+pub fn search_history(path: &Path, query: &str, limit: usize) -> Vec<HistoryEntry> {
+    let q = query.trim().to_lowercase();
+    let mut entries = read_history(path);
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+    entries
+        .into_iter()
+        .filter(|(_, u, t)| {
+            q.is_empty() || u.to_lowercase().contains(&q) || t.to_lowercase().contains(&q)
+        })
+        .take(limit)
+        .collect()
+}
+pub fn group_history_by_day(entries: &[HistoryEntry], now: u64) -> Vec<HistoryDay> {
+    use std::collections::BTreeMap;
+    let today = (now / 86400) as i64;
+    let mut groups: BTreeMap<i64, Vec<HistoryEntry>> = BTreeMap::new();
+    for e in entries {
+        groups
+            .entry((e.0 / 86400) as i64)
+            .or_default()
+            .push(e.clone())
+    }
+    groups
+        .into_iter()
+        .rev()
+        .map(|(d, mut entries)| {
+            entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+            let date = civil_from_days(d);
+            HistoryDay {
+                label: if d == today {
+                    "Today".into()
+                } else if d == today - 1 {
+                    "Yesterday".into()
+                } else {
+                    date.clone()
+                },
+                day: date,
+                entries,
+            }
+        })
+        .collect()
+}
+fn write_history(path: &Path, entries: &[HistoryEntry]) -> std::io::Result<()> {
+    let text = entries
+        .iter()
+        .take(MAX_HISTORY)
+        .map(|(t, u, title)| format!("{t}\t{}\t{}\n", escape(u), escape(title)))
+        .collect::<String>();
+    atomic_write(path, text.as_bytes())
+}
+fn civil_from_days(days: i64) -> String {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    y += if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 pub fn read_url_titles(path: &Path, header: &str, limit: usize) -> Vec<(String, String)> {
@@ -571,7 +764,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     {
         use std::os::windows::ffi::OsStrExt;
         use windows::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
         };
         let from: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
         let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -683,8 +876,23 @@ mod tests {
     #[test]
     fn browser_registry_exposes_core_productivity_and_browser_actions() {
         let registry = browser_commands();
-        let actions: Vec<_> = registry.commands().iter().map(|item| item.action.as_str()).collect();
-        for action in ["new-tab", "close-tab", "settings", "passwords", "profiles", "toggle-sidebar", "save-session", "sessions", "add-bookmark", "extensions"] {
+        let actions: Vec<_> = registry
+            .commands()
+            .iter()
+            .map(|item| item.action.as_str())
+            .collect();
+        for action in [
+            "new-tab",
+            "close-tab",
+            "settings",
+            "passwords",
+            "profiles",
+            "toggle-sidebar",
+            "save-session",
+            "sessions",
+            "add-bookmark",
+            "extensions",
+        ] {
             assert!(actions.contains(&action), "missing command {action}");
         }
     }
@@ -711,12 +919,14 @@ mod tests {
             read_url_titles(&history, "bowser-history-v1", 10),
             vec![("https://example.com/".into(), "Example".into())]
         );
-        assert!(add_bookmark(
-            &root.join("bookmarks.txt"),
-            "https://u:p@example.com",
-            "bad"
-        )
-        .is_err());
+        assert!(
+            add_bookmark(
+                &root.join("bookmarks.txt"),
+                "https://u:p@example.com",
+                "bad"
+            )
+            .is_err()
+        );
         let notes = root.join("notes.txt");
         write_notes(&notes, "hello\n").unwrap();
         assert_eq!(read_notes(&notes), "hello\n");
@@ -725,16 +935,36 @@ mod tests {
 
     #[test]
     fn history_and_bookmarks_use_importer_formats_and_dedupe_by_url() {
-        let root = std::env::temp_dir().join(format!("bowser-productivity-formats-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "bowser-productivity-formats-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         let history = root.join("history.txt");
         add_history_entry_at(&history, 1_700_000_000, "https://example.com/", "Example").unwrap();
-        assert_eq!(fs::read_to_string(&history).unwrap(), "1700000000\thttps://example.com/\tExample\n");
+        assert_eq!(
+            fs::read_to_string(&history).unwrap(),
+            "1700000000\thttps://example.com/\tExample\n"
+        );
         let bookmarks = root.join("bookmarks.txt");
         add_bookmark_in_folder(&bookmarks, "https://example.com/", "First", "Reading").unwrap();
         add_bookmark_in_folder(&bookmarks, "https://example.com/", "Latest", "Work").unwrap();
-        assert_eq!(fs::read_to_string(&bookmarks).unwrap(), "Latest\thttps://example.com/\tWork\n");
-        assert_eq!(read_bookmarks(&bookmarks), vec![("Latest".into(), "https://example.com/".into(), "Work".into())]);
+        assert_eq!(
+            fs::read_to_string(&bookmarks).unwrap(),
+            "Latest\thttps://example.com/\tWork\n"
+        );
+        assert_eq!(
+            read_bookmarks(&bookmarks),
+            vec![(
+                "Latest".into(),
+                "https://example.com/".into(),
+                "Work".into()
+            )]
+        );
+        assert!(remove_bookmark(&bookmarks, "https://example.com/").unwrap());
+        assert!(read_bookmarks(&bookmarks).is_empty());
+        let tree = crate::bookmarks::BookmarkStore::load(&root).unwrap();
+        assert!(!tree.is_bookmarked("https://example.com/"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -771,6 +1001,29 @@ mod tests {
         assert!(complete_task(&tasks, 2, true).unwrap());
         assert!(edit_task(&tasks, 2, "Review".into()).unwrap());
         assert!(delete_task(&tasks, 2).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_delete_search_and_group_by_day() {
+        let root = std::env::temp_dir().join(format!("bowser-history-edit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("history.txt");
+        add_history_entry_at(&path, 1_700_000_000, "https://example.com/one", "One").unwrap();
+        add_history_entry_at(&path, 1_700_086_400, "https://other.test/", "Two").unwrap();
+        assert_eq!(search_history(&path, "TWO", 1)[0].2, "Two");
+        assert_eq!(delete_history_for_host(&path, "example.com").unwrap(), 1);
+        assert_eq!(
+            delete_history_range(&path, 1_700_086_400, 1_700_086_400).unwrap(),
+            1
+        );
+        add_history_entry_at(&path, 1_700_000_000, "https://example.com/", "One").unwrap();
+        let grouped = group_history_by_day(&read_history(&path), 1_700_086_400);
+        assert_eq!(grouped[0].label, "Yesterday");
+        assert!(delete_history_entry(&path, "https://example.com/").unwrap());
+        clear_history(&path).unwrap();
+        assert!(read_history(&path).is_empty());
         let _ = fs::remove_dir_all(root);
     }
 }

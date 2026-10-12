@@ -142,22 +142,28 @@ pub fn client_rect_for_nccalc(
             .filter(|aligned| *aligned)
             .count()
             >= 2;
-        let left = if snapped && window_rect.left < work.left && work.left - window_rect.left <= frame_x {
-            work.left
-        } else {
-            window_rect.left
-        };
-        let right = if snapped && window_rect.right > work.right && window_rect.right - work.right <= frame_x {
+        let left =
+            if snapped && window_rect.left < work.left && work.left - window_rect.left <= frame_x {
+                work.left
+            } else {
+                window_rect.left
+            };
+        let right = if snapped
+            && window_rect.right > work.right
+            && window_rect.right - work.right <= frame_x
+        {
             work.right
         } else {
             window_rect.right
         };
-        let bottom =
-            if snapped && window_rect.bottom > work.bottom && window_rect.bottom - work.bottom <= frame_y {
-                work.bottom
-            } else {
-                window_rect.bottom
-            };
+        let bottom = if snapped
+            && window_rect.bottom > work.bottom
+            && window_rect.bottom - work.bottom <= frame_y
+        {
+            work.bottom
+        } else {
+            window_rect.bottom
+        };
         return RECT {
             left,
             top: window_rect.top,

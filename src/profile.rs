@@ -309,6 +309,15 @@ impl Profile {
     pub fn bookmarks_file(&self) -> PathBuf {
         self.root.join("bookmarks.txt")
     }
+    pub fn bookmarks_v2_file(&self) -> PathBuf {
+        self.root.join("bookmarks-v2.txt")
+    }
+    pub fn sidebar_file(&self) -> PathBuf {
+        self.root.join("sidebar.txt")
+    }
+    pub fn favicons_dir(&self) -> PathBuf {
+        self.root.join("favicons")
+    }
 
     /// Whether the first-run migration offer has not been answered for this profile.
     pub fn import_offer_pending(&self) -> bool {
@@ -357,6 +366,11 @@ impl Profile {
     /// WebView2 user-data folder (cookies, storage, cache). Never shared between profiles.
     pub fn webview2_dir(&self) -> PathBuf {
         self.root.join(WEBVIEW2_DIR_NAME)
+    }
+
+    /// Isolated cookies and site data for pinned web apps in this profile.
+    pub fn web_apps_dir(&self) -> PathBuf {
+        self.root.join("WebApps")
     }
 
     /// Crash-recovery session files and the running marker.
@@ -1121,6 +1135,9 @@ mod tests {
         let second = Profile::guest_in(&app).unwrap();
         assert_ne!(first.root(), second.root());
         fs::write(first.root().join("guest-data"), "private").unwrap();
+        fs::create_dir_all(first.web_apps_dir()).unwrap();
+        fs::write(first.web_apps_dir().join("cookies"), "private").unwrap();
+        assert_eq!(first.web_apps_dir(), first.root().join("WebApps"));
         cleanup_guest(&first).unwrap();
         assert!(!first.root().exists());
         assert!(second.root().exists());

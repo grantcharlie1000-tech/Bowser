@@ -14,6 +14,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::Instant,
 };
 
 use windows::{
@@ -42,7 +43,8 @@ use windows::{
                 LoadCursorW, PostMessageW, RegisterClassW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
                 SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowPos, SetWindowTextW,
                 ShowWindow, WM_APP, WM_CHAR, WM_CTLCOLOREDIT, WM_ERASEBKGND, WM_KEYDOWN,
-                WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW,
+                WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WM_TIMER,
+                WNDCLASSW,
                 WS_CHILD, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
             },
         },
@@ -50,7 +52,7 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-use super::{frame, glass, hover_square, smooth};
+use super::{frame, glass, hover_square, menu as popup_menu, smooth};
 use crate::{
     app::{App, AppRef},
     chrome::{
@@ -73,6 +75,7 @@ const CHECK_INTERVAL_MS: u32 = 150;
 /// One-shot timers. Ids stay below the tab card's hover timer range.
 const OPEN_TIMER: usize = 0x7000;
 const CLOSE_TIMER: usize = 0x7001;
+const CLEAR_MOTION_TIMER: usize = 0x7002;
 /// `EN_KILLFOCUS` notification code, sent from the name field when it loses the keyboard.
 const EN_KILLFOCUS: u32 = 0x0200;
 /// Posted from the name field to the popup: `wparam` is 1 to commit the name and 0 to revert it.
@@ -117,6 +120,10 @@ struct Open {
     committed: Option<String>,
     font: HFONT,
     field_brush: HBRUSH,
+    clear_hover_target: Cell<bool>,
+    clear_hover: Cell<popup_menu::IconMotion>,
+    clear_press: Cell<popup_menu::IconMotion>,
+    clear_running: Cell<bool>,
 }
 
 thread_local! {
@@ -413,6 +420,10 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         layout: local,
         font,
         field_brush,
+        clear_hover_target: Cell::new(false),
+        clear_hover: Cell::new(popup_menu::IconMotion::new(0.0, Instant::now())),
+        clear_press: Cell::new(popup_menu::IconMotion::new(0.0, Instant::now())),
+        clear_running: Cell::new(false),
     };
     STATE.with(|state| state.borrow_mut().open = Some(open));
     // The popup and the hover card should not overlap, so the card closes when the menu opens.
@@ -601,6 +612,13 @@ fn click(hwnd: HWND, x: i32, y: i32) {
             let _ = SetFocus(Some(edit));
         },
         IslandHit::Clear => unsafe {
+            STATE.with(|state| {
+                if let Some(open) = state.borrow().open.as_ref().filter(|open| open.hwnd == hwnd) {
+                    let mut press = open.clear_press.get();
+                    press.sample(1.0, Instant::now(), true);
+                    open.clear_press.set(press);
+                }
+            });
             let _ = SetWindowTextW(edit, PCWSTR::null());
             let _ = SetFocus(Some(edit));
             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -709,10 +727,29 @@ unsafe extern "system" fn island_proc(
                 };
                 let _ = TrackMouseEvent(&mut track);
                 popup_entered(hwnd);
+                let p = frame::point_from_lparam(lparam);
+                let changed = STATE.with(|state| {
+                    let state = state.borrow();
+                    let Some(open) = state.open.as_ref().filter(|open| open.hwnd == hwnd) else {
+                        return false;
+                    };
+                    let hover = menu::hit_test(&open.layout, p.x, p.y) == IslandHit::Clear;
+                    open.clear_hover_target.replace(hover) != hover
+                });
+                if changed { let _ = InvalidateRect(Some(hwnd), None, false); }
                 LRESULT(0)
             }
             WM_MOUSELEAVE => {
+                let changed = STATE.with(|state| {
+                    state.borrow().open.as_ref().filter(|open| open.hwnd == hwnd)
+                        .is_some_and(|open| open.clear_hover_target.replace(false))
+                });
+                if changed { let _ = InvalidateRect(Some(hwnd), None, false); }
                 popup_left(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == CLEAR_MOTION_TIMER => {
+                let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
@@ -805,7 +842,7 @@ unsafe fn paint(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
-        STATE.with(|state| {
+        let moving = STATE.with(|state| {
             if let Some(open) = state
                 .borrow()
                 .open
@@ -813,8 +850,13 @@ unsafe fn paint(hwnd: HWND) {
                 .filter(|open| open.hwnd == hwnd)
             {
                 draw(dc, hwnd, open);
+                open.clear_running.get()
+            } else {
+                false
             }
         });
+        if moving { let _ = SetTimer(Some(hwnd), CLEAR_MOTION_TIMER, 16, None); }
+        else { let _ = KillTimer(Some(hwnd), CLEAR_MOTION_TIMER); }
         let _ = EndPaint(hwnd, &ps);
     }
 }
@@ -864,8 +906,20 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
         };
         smooth::stroke_round_rect(dc, field, m.px(8) * 2, ring, ring_width);
         // The placeholder is the EDIT's own cue banner, so only the clear button is drawn here.
-        if !edit_text(open.edit).is_empty() {
-            draw_clear(dc, to_rect(layout.clear), palette.tab_text_inactive, m);
+        let now = Instant::now();
+        let snap = !popup_menu::animations_enabled();
+        let mut hover = open.clear_hover.get();
+        let hover_value = hover.sample(open.clear_hover_target.get() as u8 as f32, now, snap);
+        open.clear_hover.set(hover);
+        let mut press = open.clear_press.get();
+        let press_value = press.sample(0.0, now, snap);
+        open.clear_press.set(press);
+        open.clear_running.set(hover.running(now) || press.running(now));
+        if !edit_text(open.edit).is_empty() || press_value > 0.0 {
+            let colour = blend(palette.tab_text_inactive, palette.progress_fill, press_value);
+            let resting = 1.0 + 0.06 * hover_value;
+            draw_clear(dc, to_rect(layout.clear), colour, m,
+                resting + (0.96 - resting) * press_value);
         }
 
         for (slot, swatch) in layout.swatches.iter().enumerate() {
@@ -965,31 +1019,25 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
 }
 
 /// A small "x" in the clear button.
-unsafe fn draw_clear(dc: HDC, rect: RECT, colour: Rgba, m: Metrics) {
+unsafe fn draw_clear(dc: HDC, rect: RECT, colour: Rgba, m: Metrics, scale: f32) {
     unsafe {
         let inset = m.px(4);
         let width = m.px(CLEAR_STROKE).max(1);
+        let cx = (rect.left + rect.right) as f32 * 0.5;
+        let cy = (rect.top + rect.bottom) as f32 * 0.5;
+        let point = |x: i32, y: i32| POINT {
+            x: (cx + (x as f32 - cx) * scale).round() as i32,
+            y: (cy + (y as f32 - cy) * scale).round() as i32,
+        };
         let (a, b) = (
-            POINT {
-                x: rect.left + inset,
-                y: rect.top + inset,
-            },
-            POINT {
-                x: rect.right - inset,
-                y: rect.bottom - inset,
-            },
+            point(rect.left + inset, rect.top + inset),
+            point(rect.right - inset, rect.bottom - inset),
         );
         smooth::stroke_line(dc, a, b, colour, width);
         smooth::stroke_line(
             dc,
-            POINT {
-                x: rect.right - inset,
-                y: rect.top + inset,
-            },
-            windows::Win32::Foundation::POINT {
-                x: rect.left + inset,
-                y: rect.bottom - inset,
-            },
+            point(rect.right - inset, rect.top + inset),
+            point(rect.left + inset, rect.bottom - inset),
             colour,
             width,
         );
@@ -1066,6 +1114,9 @@ unsafe fn blit_favicon(dc: HDC, rect: RECT, image: &FaviconBitmap) {
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut wide: Vec<u16> = text.encode_utf16().collect();
+        if wide.is_empty() {
+            return;
+        }
         let mut bounds = bounds;
         SetTextColor(dc, colorref(colour));
         DrawTextW(dc, &mut wide, &mut bounds, format);

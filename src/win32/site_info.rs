@@ -125,14 +125,19 @@ fn panel(snapshot: &Snapshot) -> Menu {
         .as_ref()
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| "No site".to_owned());
-    let caption = snapshot
-        .url
-        .as_ref()
-        .map_or_else(|| "No page loaded".to_owned(), |url| url.origin().ascii_serialization());
+    let caption = snapshot.url.as_ref().map_or_else(
+        || "No page loaded".to_owned(),
+        |url| url.origin().ascii_serialization(),
+    );
 
     let mut entries = vec![Entry::SectionHeader("Connection".to_owned())];
     entries.push(Entry::Item(
-        Item::new(INFO, snapshot.security.summary(), connection_icon(snapshot.security)).disabled(),
+        Item::new(
+            INFO,
+            snapshot.security.summary(),
+            connection_icon(snapshot.security),
+        )
+        .disabled(),
     ));
     entries.push(Entry::Item(
         Item::new(INFO, "Certificate details unavailable", Icon::None).disabled(),
@@ -164,8 +169,12 @@ fn panel(snapshot: &Snapshot) -> Menu {
                 })
                 .collect();
             entries.push(Entry::Item(
-                Item::new(INFO, format!("{}: {state}", permission.label()), permission_icon(permission))
-                    .submenu_with(choices),
+                Item::new(
+                    INFO,
+                    format!("{}: {state}", permission.label()),
+                    permission_icon(permission),
+                )
+                .submenu_with(choices),
             ));
         }
     } else {
@@ -211,8 +220,12 @@ fn panel(snapshot: &Snapshot) -> Menu {
     entries.push(Entry::Separator);
     let any_stored = snapshot.decisions.iter().any(Option::is_some);
     entries.push(Entry::Item(
-        Item::new(RESET_PERMISSIONS, "Reset permissions for this site", Icon::Reset)
-            .disabled_if(snapshot.origin.is_none() || !any_stored),
+        Item::new(
+            RESET_PERMISSIONS,
+            "Reset permissions for this site",
+            Icon::Reset,
+        )
+        .disabled_if(snapshot.origin.is_none() || !any_stored),
     ));
 
     Menu {
@@ -237,15 +250,18 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
                 App::call_engine(app, |engine| engine.clear_site_cookies(tab, url, done)).is_some()
             }) {
                 Some(Ok(_)) => {}
-                Some(Err(error)) => {
-                    show_error_message(&format!("Bowser could not clear cookies for this site: {error}"))
-                }
-                None => show_error_message("Bowser could not clear cookies: the browser did not answer."),
+                Some(Err(error)) => show_error_message(&format!(
+                    "Bowser could not clear cookies for this site: {error}"
+                )),
+                None => show_error_message(
+                    "Bowser could not clear cookies: the browser did not answer.",
+                ),
             }
         }
         BLOCKER => App::toggle_blocker(app),
         RESET_PERMISSIONS => {
-            let (Some(origin), Some(store)) = (snapshot.origin.as_ref(), App::permissions_handle(app))
+            let (Some(origin), Some(store)) =
+                (snapshot.origin.as_ref(), App::permissions_handle(app))
             else {
                 return;
             };
@@ -257,7 +273,8 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
             let offset = id - PERMISSION;
             let permission = Permission::ALL[offset / CHOICES.len()];
             let decision = CHOICES[offset % CHOICES.len()];
-            let (Some(origin), Some(store)) = (snapshot.origin.as_ref(), App::permissions_handle(app))
+            let (Some(origin), Some(store)) =
+                (snapshot.origin.as_ref(), App::permissions_handle(app))
             else {
                 return;
             };

@@ -117,7 +117,11 @@ pub struct ParsedCredential {
 }
 
 impl ParsedCredential {
-    pub fn new(url: impl Into<String>, username: impl Into<String>, password: impl Into<String>) -> Self {
+    pub fn new(
+        url: impl Into<String>,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
         Self {
             url: url.into(),
             username: username.into(),
@@ -264,11 +268,14 @@ impl PasswordStore {
     /// Searches the origin host and username without retrieving password values.
     pub fn search(&self, query: &str) -> Vec<CredentialSummary> {
         let needle = query.to_lowercase();
-        self.summaries(self.records.iter().enumerate()).into_iter().filter(|entry| {
-            needle.is_empty()
-                || entry.host.to_lowercase().contains(&needle)
-                || entry.username.to_lowercase().contains(&needle)
-        }).collect()
+        self.summaries(self.records.iter().enumerate())
+            .into_iter()
+            .filter(|entry| {
+                needle.is_empty()
+                    || entry.host.to_lowercase().contains(&needle)
+                    || entry.username.to_lowercase().contains(&needle)
+            })
+            .collect()
     }
 
     /// Returns entries whose complete scheme/host/port origin exactly matches this secure URL.
@@ -301,9 +308,10 @@ impl PasswordStore {
         }
         matches
             .find(|(_, record)| record.password == password)
-            .map_or(LoginMatch::Changed(CredentialId(first_index)), |(index, _)| {
-                LoginMatch::Unchanged(CredentialId(index))
-            })
+            .map_or(
+                LoginMatch::Changed(CredentialId(first_index)),
+                |(index, _)| LoginMatch::Unchanged(CredentialId(index)),
+            )
     }
 
     /// Returns a password only through this explicit reveal operation.
@@ -365,7 +373,10 @@ impl PasswordStore {
             username: username.to_owned(),
             password: password.to_owned(),
         };
-        let other_records = self.records.iter().enumerate()
+        let other_records = self
+            .records
+            .iter()
+            .enumerate()
             .filter_map(|(index, record)| (index != id.0).then_some(record));
         match classify(&candidate, other_records) {
             Classification::ExactDuplicate => return Err(PasswordError::Duplicate),
@@ -429,19 +440,24 @@ impl PasswordStore {
         Ok(())
     }
 
-    fn summaries<'a>(&self, records: impl Iterator<Item = (usize, &'a Record)>) -> Vec<CredentialSummary> {
-        records.map(|(index, record)| {
-            let host = url::Url::parse(&record.url)
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_default();
-            CredentialSummary {
-                id: CredentialId(index),
-                origin: record.url.clone(),
-                host,
-                username: record.username.clone(),
-            }
-        }).collect()
+    fn summaries<'a>(
+        &self,
+        records: impl Iterator<Item = (usize, &'a Record)>,
+    ) -> Vec<CredentialSummary> {
+        records
+            .map(|(index, record)| {
+                let host = url::Url::parse(&record.url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .unwrap_or_default();
+                CredentialSummary {
+                    id: CredentialId(index),
+                    origin: record.url.clone(),
+                    host,
+                    username: record.username.clone(),
+                }
+            })
+            .collect()
     }
 
     /// Parse a user-selected official CSV export and classify against this vault.
@@ -475,8 +491,16 @@ impl PasswordStore {
         }
         let parsed = table.iter().map(|fields| {
             ParsedCredential::new(
-                fields.get(url_col).map(|value| value.trim()).unwrap_or("").to_owned(),
-                fields.get(user_col).map(|value| value.trim()).unwrap_or("").to_owned(),
+                fields
+                    .get(url_col)
+                    .map(|value| value.trim())
+                    .unwrap_or("")
+                    .to_owned(),
+                fields
+                    .get(user_col)
+                    .map(|value| value.trim())
+                    .unwrap_or("")
+                    .to_owned(),
                 fields.get(pass_col).cloned().unwrap_or_default(),
             )
         });
@@ -509,11 +533,13 @@ impl PasswordStore {
                 None => Classification::Reject,
                 Some(candidate) => classify(
                     candidate,
-                    self.records.iter().chain(rows.iter().filter_map(|(record, class)| {
-                        (*class != Classification::Reject)
-                            .then_some(record.as_ref())
-                            .flatten()
-                    })),
+                    self.records
+                        .iter()
+                        .chain(rows.iter().filter_map(|(record, class)| {
+                            (*class != Classification::Reject)
+                                .then_some(record.as_ref())
+                                .flatten()
+                        })),
                 ),
             };
             preview.push(PreviewRow {
@@ -582,14 +608,23 @@ impl PasswordStore {
 }
 
 #[cfg(windows)]
-fn replace_file(temp: &std::path::Path, destination: &std::path::Path) -> Result<(), PasswordError> {
+fn replace_file(
+    temp: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), PasswordError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::{
-        Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
+        Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        },
         core::PCWSTR,
     };
     let temp: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     unsafe {
         MoveFileExW(
             PCWSTR(temp.as_ptr()),
@@ -601,7 +636,10 @@ fn replace_file(temp: &std::path::Path, destination: &std::path::Path) -> Result
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp: &std::path::Path, destination: &std::path::Path) -> Result<(), PasswordError> {
+fn replace_file(
+    temp: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), PasswordError> {
     fs::rename(temp, destination).map_err(|_| PasswordError::Io)
 }
 
@@ -760,7 +798,11 @@ fn parse_login_message(json: &str, origin: String) -> Option<LoginMessage> {
 }
 
 fn skip_json_space(json: &str, at: &mut usize) {
-    while json.as_bytes().get(*at).is_some_and(u8::is_ascii_whitespace) {
+    while json
+        .as_bytes()
+        .get(*at)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
         *at += 1;
     }
 }
@@ -809,7 +851,9 @@ fn parse_json_string(json: &str, at: &mut usize) -> Option<Zeroizing<String>> {
                             if !(0xDC00..=0xDFFF).contains(&second) {
                                 return None;
                             }
-                            0x1_0000 + ((u32::from(first) - 0xD800) << 10) + (u32::from(second) - 0xDC00)
+                            0x1_0000
+                                + ((u32::from(first) - 0xD800) << 10)
+                                + (u32::from(second) - 0xDC00)
                         } else if (0xDC00..=0xDFFF).contains(&first) {
                             return None;
                         } else {
@@ -852,9 +896,17 @@ fn parse_json_hex_unit(bytes: &[u8], at: &mut usize) -> Option<u16> {
 
 /// Builds a top-document-only fill script. The output itself is a zeroizing secret buffer because
 /// it contains the password until WebView2 copies the script for execution.
-pub(crate) fn password_fill_script(origin: &str, username: &str, password: &str) -> Zeroizing<String> {
-    let capacity = origin.len().saturating_add(username.len()).saturating_add(password.len())
-        .saturating_mul(6).saturating_add(1200);
+pub(crate) fn password_fill_script(
+    origin: &str,
+    username: &str,
+    password: &str,
+) -> Zeroizing<String> {
+    let capacity = origin
+        .len()
+        .saturating_add(username.len())
+        .saturating_add(password.len())
+        .saturating_mul(6)
+        .saturating_add(1200);
     let mut script = Zeroizing::new(String::with_capacity(capacity));
     script.push_str("(()=>{if(window.top!==window)return false;if(location.origin!==");
     append_js_string(&mut script, origin);
@@ -889,10 +941,7 @@ fn append_js_string(output: &mut String, value: &str) {
 
 /// Generates a password with the Windows system-preferred BCrypt CSPRNG and rejection sampling.
 /// The caller supplies a unique set of printable ASCII characters and a length from 8 to 256.
-pub fn generate_password(
-    length: usize,
-    charset: &[u8],
-    ) -> Result<SecretString, PasswordError> {
+pub fn generate_password(length: usize, charset: &[u8]) -> Result<SecretString, PasswordError> {
     if !(8..=256).contains(&length)
         || !(2..=95).contains(&charset.len())
         || charset.iter().any(|byte| !(b' '..=b'~').contains(byte))
@@ -909,10 +958,7 @@ pub fn generate_password(
 }
 
 #[cfg(windows)]
-fn generate_password_with(
-    length: usize,
-    charset: &[u8],
-) -> Result<SecretString, PasswordError> {
+fn generate_password_with(length: usize, charset: &[u8]) -> Result<SecretString, PasswordError> {
     use windows::Win32::Security::Cryptography::{
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
     };
@@ -941,10 +987,7 @@ fn generate_password_with(
 }
 
 #[cfg(not(windows))]
-fn generate_password_with(
-    _length: usize,
-    _charset: &[u8],
-) -> Result<SecretString, PasswordError> {
+fn generate_password_with(_length: usize, _charset: &[u8]) -> Result<SecretString, PasswordError> {
     Err(PasswordError::Protection)
 }
 fn classify<'a>(candidate: &Record, existing: impl Iterator<Item = &'a Record>) -> Classification {
@@ -1042,7 +1085,10 @@ fn parse_csv(input: &[u8]) -> Result<Vec<Vec<String>>, PasswordError> {
     Ok(std::mem::take(&mut *rows))
 }
 
-fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Zeroizing<Vec<u8>>, PasswordError> {
+fn encode_store(
+    records: &[Record],
+    never_sites: &[String],
+) -> Result<Zeroizing<Vec<u8>>, PasswordError> {
     if records.len() > MAX_IMPORT_ROWS || never_sites.len() > MAX_NEVER_SITES {
         return Err(PasswordError::InvalidStore);
     }
@@ -1050,7 +1096,9 @@ fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Zeroizing<
     for record in records {
         for value in [&record.url, &record.username, &record.password] {
             u32::try_from(value.len()).map_err(|_| PasswordError::InvalidStore)?;
-            capacity = capacity.checked_add(4 + value.len()).ok_or(PasswordError::InvalidStore)?;
+            capacity = capacity
+                .checked_add(4 + value.len())
+                .ok_or(PasswordError::InvalidStore)?;
         }
     }
     for site in never_sites {
@@ -1058,7 +1106,9 @@ fn encode_store(records: &[Record], never_sites: &[String]) -> Result<Zeroizing<
             return Err(PasswordError::InvalidStore);
         }
         u32::try_from(site.len()).map_err(|_| PasswordError::InvalidStore)?;
-        capacity = capacity.checked_add(4 + site.len()).ok_or(PasswordError::InvalidStore)?;
+        capacity = capacity
+            .checked_add(4 + site.len())
+            .ok_or(PasswordError::InvalidStore)?;
     }
     if capacity > MAX_STORE_BYTES {
         return Err(PasswordError::InvalidStore);
@@ -1164,8 +1214,7 @@ fn decode_store(bytes: &[u8]) -> Result<(Vec<Record>, Vec<String>), PasswordErro
                 .map_err(|_| PasswordError::InvalidStore)?
                 .to_owned();
             at += n;
-            if secure_origin(&site).as_deref() != Some(site.as_str())
-                || never_sites.contains(&site)
+            if secure_origin(&site).as_deref() != Some(site.as_str()) || never_sites.contains(&site)
             {
                 return Err(PasswordError::InvalidStore);
             }
@@ -1306,7 +1355,10 @@ mod tests {
         ];
         assert!(!format!("{:?}", parsed[2]).contains("new-secret"));
         let plan = vault.preview_credentials(parsed).unwrap();
-        assert_eq!(plan.rows()[0].classification, Classification::ExactDuplicate);
+        assert_eq!(
+            plan.rows()[0].classification,
+            Classification::ExactDuplicate
+        );
         assert_eq!(plan.rows()[1].classification, Classification::Conflict);
         assert_eq!(plan.rows()[2].classification, Classification::New);
         assert_eq!(plan.rows()[3].classification, Classification::Reject);
@@ -1368,12 +1420,19 @@ mod tests {
 
     #[test]
     fn fill_script_checks_origin_and_only_uses_a_safe_same_form_username_field() {
-        let script = password_fill_script("https://example.test", "alice\";alert(1)//", "synthetic-pass");
+        let script = password_fill_script(
+            "https://example.test",
+            "alice\";alert(1)//",
+            "synthetic-pass",
+        );
         assert!(script.starts_with("(()=>{if(window.top!==window)return false;if(location.origin!==\"https://example.test\")return false;"));
         assert!(script.contains("alice\\\";alert(1)//"));
         assert!(script.contains("e.type==='password'"));
         assert!(script.contains("p.form.querySelectorAll(sel)"));
-        assert!(script.contains("p.parentElement.querySelectorAll('input[type=email],input[type=text]')"));
+        assert!(
+            script
+                .contains("p.parentElement.querySelectorAll('input[type=email],input[type=text]')")
+        );
         assert!(script.contains("getBoundingClientRect"));
         assert!(script.contains("getComputedStyle"));
         assert!(script.contains("e.type==='text'||e.type==='email'"));
@@ -1391,7 +1450,10 @@ mod tests {
         fs::create_dir(&root).unwrap();
 
         assert!(matches!(PasswordStore::open(&root), Err(PasswordError::Io)));
-        assert!(root.is_dir(), "an unreadable vault path must not be replaced");
+        assert!(
+            root.is_dir(),
+            "an unreadable vault path must not be replaced"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1419,7 +1481,11 @@ mod tests {
         let path = root.join("Passwords.dat");
         let mut vault = PasswordStore::open(&path).unwrap();
         let id = vault
-            .add("https://Example.test/account", "Alice@Example.test", "crud-secret-a")
+            .add(
+                "https://Example.test/account",
+                "Alice@Example.test",
+                "crud-secret-a",
+            )
             .unwrap();
 
         let list = vault.list();
@@ -1429,7 +1495,11 @@ mod tests {
         assert_eq!(vault.search("alice@").len(), 1);
         assert!(!format!("{list:?}").contains("crud-secret-a"));
         assert_eq!(
-            vault.match_login("https://example.test", "Alice@Example.test", "crud-secret-a"),
+            vault.match_login(
+                "https://example.test",
+                "Alice@Example.test",
+                "crud-secret-a"
+            ),
             LoginMatch::Unchanged(id)
         );
         assert_eq!(
@@ -1437,13 +1507,22 @@ mod tests {
             LoginMatch::Changed(id)
         );
         assert_eq!(
-            vault.match_login("https://evil-example.test", "Alice@Example.test", "crud-secret-a"),
+            vault.match_login(
+                "https://evil-example.test",
+                "Alice@Example.test",
+                "crud-secret-a"
+            ),
             LoginMatch::Missing
         );
         assert_eq!(&*vault.reveal(id).unwrap(), "crud-secret-a");
 
         vault
-            .update(id, "https://example.test/login", "alice@example.test", "crud-secret-b")
+            .update(
+                id,
+                "https://example.test/login",
+                "alice@example.test",
+                "crud-secret-b",
+            )
             .unwrap();
         assert_eq!(&*vault.reveal(id).unwrap(), "crud-secret-b");
         drop(vault);
@@ -1460,10 +1539,22 @@ mod tests {
     fn origin_lookup_is_exact_and_rejects_lookalikes_and_other_subdomains() {
         let vault = store();
         assert_eq!(vault.get_for_origin("https://example.test/login").len(), 1);
-        assert!(vault.get_for_origin("https://evil-example.test/").is_empty());
-        assert!(vault.get_for_origin("https://login.example.test/").is_empty());
+        assert!(
+            vault
+                .get_for_origin("https://evil-example.test/")
+                .is_empty()
+        );
+        assert!(
+            vault
+                .get_for_origin("https://login.example.test/")
+                .is_empty()
+        );
         assert!(vault.get_for_origin("http://example.test/").is_empty());
-        assert!(vault.get_for_origin("https://example.test.evil/").is_empty());
+        assert!(
+            vault
+                .get_for_origin("https://example.test.evil/")
+                .is_empty()
+        );
     }
 
     #[cfg(windows)]
@@ -1472,12 +1563,18 @@ mod tests {
         let root = temp_vault_root();
         let path = root.join("Passwords.dat");
         let mut vault = PasswordStore::open(&path).unwrap();
-        assert!(vault.add("http://localhost:8080", "dev", "local-secret").is_ok());
+        assert!(
+            vault
+                .add("http://localhost:8080", "dev", "local-secret")
+                .is_ok()
+        );
         assert_eq!(
             vault.add("http://example.test", "remote", "remote-secret"),
             Err(PasswordError::InsecureOrigin)
         );
-        vault.mark_never_for_site("https://Example.test/login", true).unwrap();
+        vault
+            .mark_never_for_site("https://Example.test/login", true)
+            .unwrap();
         drop(vault);
         let reopened = PasswordStore::open(&path).unwrap();
         assert!(reopened.is_never_for_site("https://example.test/"));
@@ -1524,7 +1621,10 @@ mod tests {
             )
             .unwrap();
         let plain = Zeroizing::new(dpapi_unprotect(&fs::read(&path).unwrap()).unwrap());
-        assert_eq!(u32::from_le_bytes(plain[8..12].try_into().unwrap()), VERSION);
+        assert_eq!(
+            u32::from_le_bytes(plain[8..12].try_into().unwrap()),
+            VERSION
+        );
         assert_eq!(PasswordStore::open(&path).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1539,8 +1639,14 @@ mod tests {
             counts[(byte - b'a') as usize] += 1;
         }
         assert!(counts.into_iter().all(|count| (40..=90).contains(&count)));
-        assert_eq!(generate_password(7, b"abcdef").unwrap_err(), PasswordError::InvalidGenerator);
-        assert_eq!(generate_password(12, b"a").unwrap_err(), PasswordError::InvalidGenerator);
+        assert_eq!(
+            generate_password(7, b"abcdef").unwrap_err(),
+            PasswordError::InvalidGenerator
+        );
+        assert_eq!(
+            generate_password(12, b"a").unwrap_err(),
+            PasswordError::InvalidGenerator
+        );
     }
 
     #[test]
@@ -1553,15 +1659,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted.kind, LoginMessageKind::Submitted);
-        assert_eq!(accepted.username.as_ref().map(|value| value.as_ref()), Some("alice"));
-        assert_eq!(accepted.password.as_ref().map(|value| value.as_ref()), Some("message-secret"));
+        assert_eq!(
+            accepted.username.as_ref().map(|value| value.as_ref()),
+            Some("alice")
+        );
+        assert_eq!(
+            accepted.password.as_ref().map(|value| value.as_ref()),
+            Some("message-secret")
+        );
         assert!(!format!("{accepted:?}").contains("message-secret"));
 
-        assert!(validate_login_message("{broken", "https://example.test/", "https://example.test/", true).is_none());
-        assert!(validate_login_message(&format!("{}", "x".repeat(MAX_PAGE_MESSAGE_BYTES + 1)), "https://example.test/", "https://example.test/", true).is_none());
-        assert!(validate_login_message(r#"{"kind":"login-submitted","user":"u","pass":"p","extra":true}"#, "https://example.test/", "https://example.test/", true).is_none());
-        assert!(validate_login_message(r#"{"kind":"login-submitted","user":"u","pass":"p"}"#, "https://evil-example.test/", "https://example.test/", true).is_none());
-        assert!(validate_login_message(r#"{"kind":"login-submitted","user":"u","pass":"p"}"#, "https://example.test/", "https://example.test/", false).is_none());
+        assert!(
+            validate_login_message(
+                "{broken",
+                "https://example.test/",
+                "https://example.test/",
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            validate_login_message(
+                &format!("{}", "x".repeat(MAX_PAGE_MESSAGE_BYTES + 1)),
+                "https://example.test/",
+                "https://example.test/",
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            validate_login_message(
+                r#"{"kind":"login-submitted","user":"u","pass":"p","extra":true}"#,
+                "https://example.test/",
+                "https://example.test/",
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            validate_login_message(
+                r#"{"kind":"login-submitted","user":"u","pass":"p"}"#,
+                "https://evil-example.test/",
+                "https://example.test/",
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            validate_login_message(
+                r#"{"kind":"login-submitted","user":"u","pass":"p"}"#,
+                "https://example.test/",
+                "https://example.test/",
+                false
+            )
+            .is_none()
+        );
     }
 
     #[cfg(windows)]
@@ -1593,6 +1745,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("bowser-password-crud-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "bowser-password-crud-{}-{nonce}",
+            std::process::id()
+        ))
     }
 }

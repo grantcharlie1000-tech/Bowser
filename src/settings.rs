@@ -1,15 +1,15 @@
 //! User-editable settings read once at startup from `%LOCALAPPDATA%\Bowser\settings.txt`.
 //!
 //! The file is `key=value` per line. Blank lines and lines starting with `#` are ignored, as are
-//! unknown keys and values that do not parse, so a typo never prevents startup and never
-//! changes any other setting. Values are clamped to a safe range.
+//! unknown keys and values that do not parse, so a typo never prevents startup. An invalid explicit
+//! search engine falls back to Optimised. Values are clamped to a safe range.
 //!
 //! ```text
 //! sleep_enabled=true
 //! sleep_after_secs=300
 //! blocker_enabled=true
 //! blocker_allow=example.com,other.org
-//! search_engine=google
+//! search_engine=optimised
 //! automatic_tab_grouping=true
 //! tab_layout=horizontal
 //! sidebar_width=260
@@ -28,11 +28,12 @@ pub const FILE_NAME: &str = "settings.txt";
 pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n\
     # tab_layout=horizontal\r\n\
     # sidebar_width=260\r\n\
+    # side_panel_width=340\r\n\
     # sleep_enabled=true\r\n\
     # sleep_after_secs=300\r\n\
     # blocker_enabled=true\r\n\
     # blocker_allow=example.com,other.org\r\n\
-    # search_engine=google\r\n\
+    # search_engine=optimised\r\n\
     # automatic_tab_grouping=true\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
@@ -64,12 +65,17 @@ impl TabLayout {
 pub const MIN_SIDEBAR_WIDTH: u16 = 180;
 pub const MAX_SIDEBAR_WIDTH: u16 = 360;
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 260;
+pub const MIN_SIDE_PANEL_WIDTH: u16 = 280;
+pub const MAX_SIDE_PANEL_WIDTH: u16 = 520;
+pub const DEFAULT_SIDE_PANEL_WIDTH: u16 = 340;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub tab_layout: TabLayout,
     /// Sidebar width in logical 96 DPI pixels.
     pub sidebar_width: u16,
+    /// Opera-style rail panel width in logical 96 DPI pixels.
+    pub side_panel_width: u16,
     /// Whether hidden tabs sleep (are discarded) after `sleep_after_secs` even without memory
     /// pressure. Under memory pressure the long-hidden tabs are discarded regardless.
     pub sleep_enabled: bool,
@@ -78,8 +84,8 @@ pub struct Settings {
     pub blocker_enabled: bool,
     /// `blocker_allow=example.com,other.org`: sites where the blocker never blocks.
     pub blocker_allow: Vec<String>,
-    /// `search_engine=google` or `search_engine=duckduckgo`. `None` means no choice was saved, so
-    /// `search-provider.txt` or the Bing default applies.
+    /// `search_engine=optimised`, `google` or `duckduckgo`. Existing saved choices are preserved;
+    /// without this key, a valid legacy `search-provider.txt` remains in use, otherwise Optimised.
     pub search_engine: Option<SearchEngine>,
     /// `automatic_tab_grouping`: whether tabs are grouped by site without being asked (default on).
     /// Read at startup. When off, no new automatic groups form; explicit groups still work.
@@ -91,6 +97,7 @@ impl Default for Settings {
         Self {
             tab_layout: TabLayout::Horizontal,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
             blocker_enabled: true,
@@ -134,6 +141,11 @@ impl Settings {
                         settings.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
                     }
                 }
+                "side_panel_width" => {
+                    if let Ok(width) = value.parse::<u16>() {
+                        settings.side_panel_width = width.clamp(MIN_SIDE_PANEL_WIDTH, MAX_SIDE_PANEL_WIDTH);
+                    }
+                }
                 "sleep_enabled" => {
                     if let Some(on) = parse_bool(value) {
                         settings.sleep_enabled = on;
@@ -162,6 +174,8 @@ impl Settings {
                 "search_engine" => {
                     if let Some(engine) = SearchEngine::parse(value) {
                         settings.search_engine = Some(engine);
+                    } else if settings.search_engine.is_none() {
+                        settings.search_engine = Some(SearchEngine::Optimised);
                     }
                 }
                 "automatic_tab_grouping" => {
@@ -242,21 +256,38 @@ fn bool_text(on: bool) -> &'static str {
 /// setting keeps only its first line, since `parse` reads the last value anyway. An unset search
 /// engine removes its line, so the file falls back to `search-provider.txt` or the default.
 pub fn render_updated(existing: &str, settings: &Settings) -> String {
-    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
-    let values: [(&str, Option<String>); 8] = [
+    let newline = if existing.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let values: [(&str, Option<String>); 9] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
-        ("sleep_enabled", Some(bool_text(settings.sleep_enabled).to_owned())),
-        ("sleep_after_secs", Some(settings.sleep_after_secs.to_string())),
-        ("blocker_enabled", Some(bool_text(settings.blocker_enabled).to_owned())),
+        ("side_panel_width", Some(settings.side_panel_width.to_string())),
+        (
+            "sleep_enabled",
+            Some(bool_text(settings.sleep_enabled).to_owned()),
+        ),
+        (
+            "sleep_after_secs",
+            Some(settings.sleep_after_secs.to_string()),
+        ),
+        (
+            "blocker_enabled",
+            Some(bool_text(settings.blocker_enabled).to_owned()),
+        ),
         ("blocker_allow", Some(settings.blocker_allow.join(","))),
-        ("search_engine", settings.search_engine.map(|engine| engine.key().to_owned())),
+        (
+            "search_engine",
+            settings.search_engine.map(|engine| engine.key().to_owned()),
+        ),
         (
             "automatic_tab_grouping",
             Some(bool_text(settings.automatic_tab_grouping).to_owned()),
         ),
     ];
-    let mut written = [false; 8];
+    let mut written = [false; 9];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -393,8 +424,14 @@ mod tests {
         let settings = Settings::parse("tab_layout=VERTICAL\nsidebar_width=400\n");
         assert_eq!(settings.tab_layout, TabLayout::Vertical);
         assert_eq!(settings.sidebar_width, MAX_SIDEBAR_WIDTH);
-        assert_eq!(Settings::parse("tab_layout=sideways").tab_layout, TabLayout::Horizontal);
-        assert_eq!(Settings::parse("sidebar_width=30").sidebar_width, MIN_SIDEBAR_WIDTH);
+        assert_eq!(
+            Settings::parse("tab_layout=sideways").tab_layout,
+            TabLayout::Horizontal
+        );
+        assert_eq!(
+            Settings::parse("sidebar_width=30").sidebar_width,
+            MIN_SIDEBAR_WIDTH
+        );
     }
 
     #[test]
@@ -445,10 +482,23 @@ mod tests {
         assert!(Settings::parse("blocker_enabled=maybe").blocker_enabled);
     }
 
+    #[test]
+    fn side_panel_width_is_additive_and_clamped() {
+        assert_eq!(Settings::parse("side_panel_width=200").side_panel_width, MIN_SIDE_PANEL_WIDTH);
+        assert_eq!(Settings::parse("side_panel_width=900").side_panel_width, MAX_SIDE_PANEL_WIDTH);
+        let mut settings = Settings::default();
+        settings.side_panel_width = 410;
+        let saved = render_updated("# keep\nunknown=value\n", &settings);
+        assert!(saved.contains("side_panel_width=410\n"));
+        assert!(saved.contains("unknown=value\n"));
+        assert_eq!(Settings::parse(&saved).side_panel_width, 410);
+    }
+
     fn sample() -> Settings {
         Settings {
             tab_layout: TabLayout::Vertical,
             sidebar_width: 300,
+            side_panel_width: 340,
             sleep_enabled: false,
             sleep_after_secs: 900,
             blocker_enabled: false,
@@ -459,8 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn search_engine_defaults_to_no_choice_and_reads_both_engines() {
+    fn search_engine_defaults_to_optimised_and_reads_all_choices() {
         assert_eq!(Settings::default().search_engine, None);
+        assert_eq!(Settings::parse("sleep_enabled=false").search_engine, None);
         assert_eq!(
             Settings::parse("search_engine=google").search_engine,
             Some(SearchEngine::Google)
@@ -469,20 +520,27 @@ mod tests {
             Settings::parse("search_engine=DuckDuckGo").search_engine,
             Some(SearchEngine::DuckDuckGo)
         );
+        assert_eq!(
+            Settings::parse("search_engine=optimised").search_engine,
+            Some(SearchEngine::Optimised)
+        );
     }
 
     #[test]
-    fn invalid_search_engine_values_mean_no_choice_and_keep_other_settings() {
-        for value in ["bing", "ddg", "", "google.com", "https://evil.example/?q={query}"] {
+    fn unknown_search_engine_values_use_optimised_and_keep_other_settings() {
+        for value in [
+            "bing",
+            "ddg",
+            "",
+            "google.com",
+            "https://evil.example/?q={query}",
+        ] {
             let s = Settings::parse(&format!("search_engine={value}\nsleep_enabled=off\n"));
-            assert_eq!(s.search_engine, None, "value: {value:?}");
+            assert_eq!(s.search_engine, Some(SearchEngine::Optimised), "value: {value:?}");
             assert!(!s.sleep_enabled, "value: {value:?}");
         }
         // A later invalid line does not erase a valid choice, matching the other keys.
-        assert_eq!(
-            Settings::parse("search_engine=google\nsearch_engine=nope").search_engine,
-            Some(SearchEngine::Google)
-        );
+        assert_eq!(Settings::parse("search_engine=google\nsearch_engine=nope").search_engine, Some(SearchEngine::Google));
     }
 
     #[test]
@@ -494,6 +552,17 @@ mod tests {
         assert!(text.starts_with("# my notes\r\n"));
         assert!(text.contains("foo=bar\r\n"));
         assert_eq!(Settings::parse(&text), sample());
+    }
+
+    #[test]
+    fn legacy_explicit_google_choice_survives_unrelated_settings_save() {
+        let legacy = "# saved before Optimised existed\nsearch_engine=google\nunknown=keep\n";
+        let mut settings = Settings::parse(legacy);
+        settings.sleep_enabled = false;
+        let saved = render_updated(legacy, &settings);
+        assert!(saved.contains("search_engine=google\n"), "{saved}");
+        assert!(saved.contains("unknown=keep\n"), "{saved}");
+        assert_eq!(Settings::parse(&saved).search_engine, Some(SearchEngine::Google));
     }
 
     #[test]
@@ -510,9 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn saving_other_settings_leaves_an_upgraded_file_without_a_choice_unchanged() {
-        // A file from before this key existed has no search_engine line. Saving other settings must
-        // not add one, or the user's search-provider.txt or Bing default would be overridden.
+    fn saving_other_settings_leaves_an_unset_engine_and_legacy_content_unchanged() {
         let existing = "# Bowser settings.\nsleep_enabled=true\n";
         let saved = Settings {
             sleep_enabled: false,
@@ -520,12 +587,14 @@ mod tests {
         };
         let text = render_updated(existing, &saved);
         assert!(!text.contains("search_engine"), "{text}");
+        assert!(text.starts_with("# Bowser settings.\n"));
+        assert!(text.contains("sleep_enabled=false\n"));
         assert_eq!(Settings::parse(&text).search_engine, None);
     }
 
     #[test]
     fn template_lists_the_engine_setting_commented_out() {
-        assert!(TEMPLATE.contains("# search_engine=google\r\n"));
+        assert!(TEMPLATE.contains("# search_engine=optimised\r\n"));
         assert_eq!(Settings::parse(TEMPLATE).search_engine, None);
     }
 
@@ -563,7 +632,7 @@ mod tests {
         assert_eq!(
             text,
             "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
-             tab_layout=vertical\r\nsidebar_width=300\r\nsleep_after_secs=900\r\n\
+             tab_layout=vertical\r\nsidebar_width=300\r\nside_panel_width=340\r\nsleep_after_secs=900\r\n\
              blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
              automatic_tab_grouping=false\r\n"
         );
@@ -586,13 +655,24 @@ mod tests {
         std::fs::write(&path, "# keep me\nfoo=1\n").unwrap();
         save(&path, &sample()).unwrap();
         assert_eq!(Settings::load(&path), sample());
-        assert!(std::fs::read_to_string(&path).unwrap().starts_with("# keep me\nfoo=1\n"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("# keep me\nfoo=1\n")
+        );
         let fresh = dir.join("fresh.txt");
         save(&fresh, &Settings::default()).unwrap();
         assert_eq!(Settings::load(&fresh), Settings::default());
         let leftovers = std::fs::read_dir(&dir)
             .unwrap()
-            .filter(|entry| entry.as_ref().unwrap().file_name().to_string_lossy().contains(".tmp"))
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp")
+            })
             .count();
         assert_eq!(leftovers, 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -641,7 +721,10 @@ mod tests {
     fn strict_read_reports_bad_files_and_defaults_missing_ones() {
         let dir = std::env::temp_dir().join(format!("bowser-strict-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read_strict(&dir.join("none.txt")).unwrap(), Settings::default());
+        assert_eq!(
+            read_strict(&dir.join("none.txt")).unwrap(),
+            Settings::default()
+        );
         let big = dir.join("big.txt");
         std::fs::write(&big, "#".repeat(MAX_FILE_BYTES + 1)).unwrap();
         assert!(read_strict(&big).is_err());
@@ -654,7 +737,10 @@ mod tests {
     #[test]
     fn form_validation_accepts_bounds_and_rejects_the_rest() {
         assert_eq!(parse_sleep_after_secs(" 30 "), Ok(30));
-        assert_eq!(parse_sleep_after_secs(&MAX_SLEEP_AFTER_SECS.to_string()), Ok(MAX_SLEEP_AFTER_SECS));
+        assert_eq!(
+            parse_sleep_after_secs(&MAX_SLEEP_AFTER_SECS.to_string()),
+            Ok(MAX_SLEEP_AFTER_SECS)
+        );
         assert!(parse_sleep_after_secs("29").is_err());
         assert!(parse_sleep_after_secs("604801").is_err());
         assert!(parse_sleep_after_secs("1.5").is_err());

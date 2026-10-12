@@ -1,6 +1,7 @@
 //! Favicon decoding through Windows Imaging Component and a small LRU cache.
 
 use crate::tabs::FaviconKey;
+use std::{fs, io, path::PathBuf, time::SystemTime};
 
 const MAX_CACHE_ENTRIES: usize = 64;
 
@@ -119,6 +120,123 @@ fn sha256(message: &[u8]) -> [u8; 32] {
         out.copy_from_slice(&word.to_be_bytes());
     }
     digest
+}
+
+const MAX_FAVICON_FILE_BYTES: usize = 256 * 1024;
+const MAX_PERSISTENT_FAVICONS: usize = 400;
+
+/// Candidate same-origin favicon URLs, with the conventional ICO path first.
+pub fn favicon_url_candidates(page_url: &str) -> Vec<String> {
+    let Ok(url) = url::Url::parse(page_url) else {
+        return Vec::new();
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return Vec::new();
+    }
+    let origin = url.origin().ascii_serialization();
+    ["/favicon.ico", "/favicon.png", "/apple-touch-icon.png"]
+        .into_iter()
+        .map(|path| format!("{origin}{path}"))
+        .collect()
+}
+
+/// Stores bounded bytes under a SHA-256 host-derived filename in the active profile.
+pub fn store_favicon(host: &str, bytes: &[u8]) -> io::Result<()> {
+    store_favicon_in(&favicon_dir()?, host, bytes)
+}
+
+fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<()> {
+    if bytes.is_empty() || bytes.len() > MAX_FAVICON_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "favicon exceeds size limit",
+        ));
+    }
+    let host = normalized_host(host)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid favicon host"))?;
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{}.ico", hex(&sha256(host.as_bytes()))));
+    let temp = path.with_extension("tmp");
+    fs::write(&temp, bytes)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+        let a: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+        let b: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe {
+            MoveFileExW(
+                windows::core::PCWSTR(a.as_ptr()),
+                windows::core::PCWSTR(b.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )?;
+        }
+    }
+    #[cfg(not(windows))]
+    fs::rename(temp, &path)?;
+    evict_old_favicons(dir)?;
+    Ok(())
+}
+
+pub fn load_favicon_bytes(host: &str) -> io::Result<Option<Vec<u8>>> {
+    load_favicon_bytes_in(&favicon_dir()?, host)
+}
+
+fn load_favicon_bytes_in(dir: &std::path::Path, host: &str) -> io::Result<Option<Vec<u8>>> {
+    let Some(host) = normalized_host(host) else {
+        return Ok(None);
+    };
+    let path = dir.join(format!("{}.ico", hex(&sha256(host.as_bytes()))));
+    match fs::metadata(&path) {
+        Ok(m) if m.len() as usize <= MAX_FAVICON_FILE_BYTES => {
+            let bytes = fs::read(path)?;
+            Ok(Some(bytes))
+        }
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+fn favicon_dir() -> io::Result<PathBuf> {
+    crate::profile::active()
+        .map(|p| p.favicons_dir())
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "active profile unavailable"))
+}
+fn normalized_host(host: &str) -> Option<String> {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if h.is_empty()
+        || h.len() > 253
+        || h.contains(['/', '\\', ':'])
+        || h.chars().any(char::is_control)
+    {
+        None
+    } else {
+        Some(h)
+    }
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn evict_old_favicons(dir: &std::path::Path) -> io::Result<()> {
+    let mut files = fs::read_dir(dir)?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let m = e.metadata().ok()?;
+            if !m.is_file() || p.extension().is_none_or(|x| x != "ico") {
+                return None;
+            }
+            Some((p, m.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(_, t)| *t);
+    while files.len() > MAX_PERSISTENT_FAVICONS {
+        let (p, _) = files.remove(0);
+        let _ = fs::remove_file(p);
+    }
+    Ok(())
 }
 
 fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
@@ -494,5 +612,38 @@ mod tests {
 
         assert!(cache.get(key, 16, source).is_some());
         assert!(cache.get(key, 32, source).is_none());
+    }
+
+    #[test]
+    fn favicon_candidates_are_http_origin_scoped() {
+        assert_eq!(
+            favicon_url_candidates("https://example.com/path?q=1"),
+            vec![
+                "https://example.com/favicon.ico",
+                "https://example.com/favicon.png",
+                "https://example.com/apple-touch-icon.png"
+            ]
+        );
+        assert!(favicon_url_candidates("file:///C:/private").is_empty());
+    }
+
+    #[test]
+    fn persistent_favicon_bytes_are_host_keyed_and_bounded() {
+        let root = std::env::temp_dir().join(format!("bowser-favicons-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        store_favicon_in(&root, "Example.com", b"icon").unwrap();
+        assert_eq!(
+            load_favicon_bytes_in(&root, "example.COM").unwrap(),
+            Some(b"icon".to_vec())
+        );
+        assert!(
+            load_favicon_bytes_in(&root, "other.example")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store_favicon_in(&root, "example.com", &vec![0; MAX_FAVICON_FILE_BYTES + 1]).is_err()
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -149,7 +149,8 @@ impl LaunchOptions {
                     }
                 }
                 "--open-url" => {
-                    let url = Url::parse(&value).map_err(|error| format!("Invalid URL: {error}"))?;
+                    let url =
+                        Url::parse(&value).map_err(|error| format!("Invalid URL: {error}"))?;
                     if !matches!(url.scheme(), "http" | "https" | "file")
                         || !url.username().is_empty()
                         || url.password().is_some()
@@ -459,8 +460,16 @@ mod tests {
     fn guest_argument_is_standalone_and_duplicate_guest_is_rejected() {
         let options = LaunchOptions::parse_from(args(&["--guest"]), Path::new("missing")).unwrap();
         assert!(options.guest);
-        assert!(LaunchOptions::parse_from(args(&["--guest", "--guest"]), Path::new("missing")).is_err());
-        assert!(LaunchOptions::parse_from(args(&["--guest", "--profile", "Work"]), Path::new("missing")).is_err());
+        assert!(
+            LaunchOptions::parse_from(args(&["--guest", "--guest"]), Path::new("missing")).is_err()
+        );
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--guest", "--profile", "Work"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
     }
     #[test]
     fn new_window_flag_is_standalone_and_duplicate_is_rejected() {
@@ -473,7 +482,13 @@ mod tests {
         .unwrap();
         assert!(options.new_window);
         assert_eq!(options.profile.as_deref(), Some("Work"));
-        assert!(LaunchOptions::parse_from(args(&["--new-window", "--new-window"]), Path::new("missing")).is_err());
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--new-window", "--new-window"]),
+                Path::new("missing")
+            )
+            .is_err()
+        );
     }
     #[test]
     fn measurement_flags_require_log() {
@@ -542,11 +557,13 @@ mod tests {
         .unwrap();
         assert_eq!(options.profile.as_deref(), Some("Research"));
         assert_eq!(options.open_url.unwrap().as_str(), url);
-        assert!(LaunchOptions::parse_from(
-            args(&["--open-url", "javascript:alert(1)"]),
-            Path::new("missing"),
-        )
-        .is_err());
+        assert!(
+            LaunchOptions::parse_from(
+                args(&["--open-url", "javascript:alert(1)"]),
+                Path::new("missing"),
+            )
+            .is_err()
+        );
     }
     #[test]
     fn remote_benchmark_url_and_duplicate_flags_are_rejected() {

@@ -1,18 +1,24 @@
 mod card;
 mod command_palette;
-mod hover_square;
-mod island_menu;
-mod import_panel;
-mod menu;
-mod notes_panel;
-mod settings_panel;
-mod site_info;
 pub mod frame;
 pub mod glass;
+mod hover_square;
+mod import_panel;
+mod island_menu;
+mod menu;
+mod notes_panel;
+mod panel_bookmarks;
+mod panel_customize;
+mod panel_history;
+mod panel_widgets;
+pub mod panel_webapp;
 pub mod passwords_import;
 mod passwords_panel;
-mod profile_rename;
 pub(crate) mod privacy_panel;
+mod profile_rename;
+mod settings_panel;
+pub mod side_panel;
+mod site_info;
 mod smooth;
 mod window;
 
@@ -26,7 +32,7 @@ use windows::{
     core::w,
 };
 
-pub use window::run;
+pub use window::{rail_activate, run};
 
 pub fn show_runtime_error(error: &crate::engine::RuntimeUnavailable) {
     show_error_message(&format!("{error}"));
@@ -58,6 +64,20 @@ pub fn ask_yes_no(message: &str) -> bool {
     }
 }
 
+/// Native Yes/No question owned by the browser window; `true` for Yes.
+pub(crate) fn ask_yes_no_owned(owner: HWND, message: &str) -> bool {
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            Some(owner),
+            windows::core::PCWSTR(text.as_ptr()),
+            w!("Bowser"),
+            windows::Win32::UI::WindowsAndMessaging::MB_YESNO
+                | windows::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION,
+        ) == windows::Win32::UI::WindowsAndMessaging::IDYES
+    }
+}
+
 pub(crate) const INPUT_ID: u16 = 100;
 pub(crate) const WM_SUBMIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub(crate) const WM_HISTORY_BACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
@@ -65,6 +85,8 @@ pub(crate) const WM_HISTORY_FORWARD: u32 = windows::Win32::UI::WindowsAndMessagi
 pub(crate) const WM_NAVIGATION_PROGRESS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 13;
 /// Posted to the main window when tab state (title, favicon, loading, list) changed; WPARAM = tab id.
 pub(crate) const WM_TABS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
+/// Profile workspace or sidebar configuration changed; rebuild the cached rail view.
+pub(crate) const WM_RAIL_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
 /// Forwarded page accelerators; WPARAM=virtual key, LPARAM=ctrl/shift/alt bit flags.
 pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
 /// Posted by a WebView2 controller when the user moves focus into a pane; WPARAM = tab id.

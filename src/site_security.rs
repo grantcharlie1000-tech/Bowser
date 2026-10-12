@@ -14,7 +14,9 @@ pub enum LoadState {
     Loading,
     Loaded,
     /// `certificate` is true when WebView2 reported a certificate error for the navigation.
-    Failed { certificate: bool },
+    Failed {
+        certificate: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +78,14 @@ mod tests {
     #[test]
     fn https_is_secure_only_after_a_clean_load() {
         let page = url("https://example.com/");
-        assert_eq!(classify(Some(&page), LoadState::Loaded), SiteSecurity::Secure);
-        assert_eq!(classify(Some(&page), LoadState::Loading), SiteSecurity::Unknown);
+        assert_eq!(
+            classify(Some(&page), LoadState::Loaded),
+            SiteSecurity::Secure
+        );
+        assert_eq!(
+            classify(Some(&page), LoadState::Loading),
+            SiteSecurity::Unknown
+        );
         assert_eq!(
             classify(Some(&page), LoadState::Failed { certificate: false }),
             SiteSecurity::Unknown
@@ -102,10 +110,17 @@ mod tests {
             LoadState::Failed { certificate: false },
             LoadState::Failed { certificate: true },
         ] {
-            assert_eq!(classify(Some(&page), load), SiteSecurity::NotSecure, "{load:?}");
+            assert_eq!(
+                classify(Some(&page), load),
+                SiteSecurity::NotSecure,
+                "{load:?}"
+            );
         }
         let local = url("http://localhost:8080/");
-        assert_eq!(classify(Some(&local), LoadState::Loaded), SiteSecurity::NotSecure);
+        assert_eq!(
+            classify(Some(&local), LoadState::Loaded),
+            SiteSecurity::NotSecure
+        );
     }
 
     #[test]

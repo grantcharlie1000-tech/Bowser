@@ -16,11 +16,10 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateFontIndirectW, CreateSolidBrush, DRAW_TEXT_FORMAT,
-            DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject,
-            DrawTextW, EndPaint, FillRect, FrameRect, GetObjectW, HDC, HFONT,
-            InvalidateRect, LOGFONTW, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor,
-            TRANSPARENT,
+            BeginPaint, CreateFontIndirectW, CreateSolidBrush, DRAW_TEXT_FORMAT, DT_CENTER,
+            DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW,
+            EndPaint, FillRect, FrameRect, GetObjectW, HDC, HFONT, InvalidateRect, LOGFONTW,
+            PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
         },
         System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
         UI::{
@@ -32,12 +31,11 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
-                GetClientRect, GetWindowLongPtrW, GetWindowRect, IDC_ARROW, IsWindow, LoadCursorW,
-                GetParent,
-                RegisterClassW, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-                WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
-                WM_NCDESTROY, WM_PAINT, WM_CHAR, WM_TIMER, WNDCLASSW, WS_POPUP, KillTimer,
-                SetTimer,
+                GetClientRect, GetParent, GetWindowLongPtrW, GetWindowRect, IDC_ARROW, IsWindow,
+                KillTimer, LoadCursorW, RegisterClassW, SW_SHOW, SetForegroundWindow, SetTimer,
+                SetWindowLongPtrW, ShowWindow, WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_TIMER,
+                WNDCLASSW, WS_POPUP,
             },
         },
     },
@@ -48,8 +46,9 @@ use crate::{
     passwords::{self, CredentialId, CredentialSummary, ImportPlan, PasswordError, PasswordStore},
     theme::{self, Rgba},
     win32::{
-        glass, smooth,
+        glass,
         passwords_import::{self, Counts, Flow, ImportError, Outcome, Profile, Stage},
+        smooth,
     },
 };
 
@@ -65,7 +64,8 @@ const ROW: i32 = 40;
 const BUTTON_HEIGHT: i32 = 36;
 const RADIUS: i32 = 10;
 const NOTICE: &str = "Passkey use is unverified in Bowser. Manage Windows Hello passkeys in Windows Settings; Bowser cannot import or export them.";
-const INTRO: &str = "DPAPI protects saved passwords at rest; reveal has no Windows re-authentication.";
+const INTRO: &str =
+    "DPAPI protects saved passwords at rest; reveal has no Windows re-authentication.";
 const REMINDER: &str = "CSV exports contain plaintext passwords. Bowser reads the selected file locally and never deletes it.";
 pub(crate) const CLIPBOARD_CLEAR_TIMER: usize = 31;
 const REVEAL_CLEAR_TIMER: usize = 32;
@@ -108,7 +108,10 @@ impl Panel {
         match PasswordStore::open_default() {
             Ok(vault) => {
                 self.entries = vault.search(&self.search);
-                if self.selected.is_some_and(|id| !self.entries.iter().any(|entry| entry.id == id)) {
+                if self
+                    .selected
+                    .is_some_and(|id| !self.entries.iter().any(|entry| entry.id == id))
+                {
                     self.selected = None;
                     self.revealed = None;
                 }
@@ -533,7 +536,10 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
         if panel.entries.len() > 5 {
             scene.text(
                 rect(x0, y, x1, y + s(24)),
-                format!("{} more entries; refine the search to find one.", panel.entries.len() - 5),
+                format!(
+                    "{} more entries; refine the search to find one.",
+                    panel.entries.len() - 5
+                ),
                 Style::Muted,
             );
         }
@@ -542,7 +548,9 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
         && panel.selected == Some(*id)
     {
         let secret = password.as_str().to_owned();
-        scene.cards.push(rect(x0, height - s(160), x1, height - s(132)));
+        scene
+            .cards
+            .push(rect(x0, height - s(160), x1, height - s(132)));
         scene.text(
             rect(x0 + s(12), height - s(157), x1 - s(12), height - s(134)),
             secret,
@@ -560,7 +568,12 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
     );
     scene.control(
         Target::OpenImport,
-        rect(x0 + s(112), second_row, x0 + s(232), second_row + s(BUTTON_HEIGHT)),
+        rect(
+            x0 + s(112),
+            second_row,
+            x0 + s(232),
+            second_row + s(BUTTON_HEIGHT),
+        ),
         "Import CSV",
         Role::Secondary,
         true,
@@ -568,7 +581,18 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
     let action_width = (x1 - x0 - s(24)) / 4;
     let has_selection = panel.selected.is_some();
     for (index, (target, label)) in [
-        (Target::Reveal, if panel.revealed.as_ref().is_some_and(|(id, _)| Some(*id) == panel.selected) { "Hide" } else { "Reveal" }),
+        (
+            Target::Reveal,
+            if panel
+                .revealed
+                .as_ref()
+                .is_some_and(|(id, _)| Some(*id) == panel.selected)
+            {
+                "Hide"
+            } else {
+                "Reveal"
+            },
+        ),
         (Target::Copy, "Copy"),
         (Target::Edit, "Edit"),
         (Target::Delete, "Delete"),
@@ -579,9 +603,18 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
         let left = x0 + index as i32 * (action_width + s(8));
         scene.control(
             target,
-            rect(left, action_row, left + action_width, action_row + s(BUTTON_HEIGHT)),
+            rect(
+                left,
+                action_row,
+                left + action_width,
+                action_row + s(BUTTON_HEIGHT),
+            ),
             label,
-            if target == Target::Delete { Role::Secondary } else { Role::Secondary },
+            if target == Target::Delete {
+                Role::Secondary
+            } else {
+                Role::Secondary
+            },
             has_selection,
         );
     }
@@ -605,7 +638,11 @@ fn build_editor(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
     };
     scene.text(
         rect(x0, s(PAD), x1 - s(44), s(PAD + 32)),
-        if draft.id.is_some() { "Edit password" } else { "Add password" },
+        if draft.id.is_some() {
+            "Edit password"
+        } else {
+            "Add password"
+        },
         Style::Heading,
     );
     scene.control(
@@ -656,7 +693,9 @@ fn build_editor(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
             true,
         );
         if draft.focus == field {
-            scene.cards.push(rect(x0 - s(1), top + s(21), x1 + s(1), top + s(59)));
+            scene
+                .cards
+                .push(rect(x0 - s(1), top + s(21), x1 + s(1), top + s(59)));
         }
     }
     scene.control(
@@ -806,11 +845,9 @@ enum ClipboardClear {
 }
 
 fn clipboard_unchanged_and_clear(owner: HWND, baseline: &[u16]) -> ClipboardClear {
-    use windows::Win32::{
-        System::{
-            DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard},
-            Memory::{GlobalLock, GlobalSize, GlobalUnlock},
-        },
+    use windows::Win32::System::{
+        DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard},
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock},
     };
     unsafe {
         if OpenClipboard(Some(owner)).is_err() {
@@ -859,6 +896,9 @@ unsafe fn round_rect(dc: HDC, bounds: RECT, fill: Rgba, border: Rgba) {
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut wide = Zeroizing::new(to_wide(text));
+        if wide.is_empty() {
+            return;
+        }
         let mut bounds = bounds;
         SetTextColor(dc, colorref(colour));
         DrawTextW(dc, &mut wide, &mut bounds, format);
@@ -1016,15 +1056,27 @@ unsafe fn paint_control(
                 };
                 smooth::stroke_line(
                     dc,
-                    POINT { x: cx - arm, y: cy - arm },
-                    POINT { x: cx + arm + 1, y: cy + arm + 1 },
+                    POINT {
+                        x: cx - arm,
+                        y: cy - arm,
+                    },
+                    POINT {
+                        x: cx + arm + 1,
+                        y: cy + arm + 1,
+                    },
                     glyph,
                     stroke,
                 );
                 smooth::stroke_line(
                     dc,
-                    POINT { x: cx - arm, y: cy + arm },
-                    POINT { x: cx + arm + 1, y: cy - arm - 1 },
+                    POINT {
+                        x: cx - arm,
+                        y: cy + arm,
+                    },
+                    POINT {
+                        x: cx + arm + 1,
+                        y: cy - arm - 1,
+                    },
                     glyph,
                     stroke,
                 );
@@ -1038,7 +1090,12 @@ unsafe fn paint_control(
                 round_rect(dc, bounds, palette.omnibox_fill, border);
                 draw_text(
                     dc,
-                    rect(bounds.left + 12, bounds.top, bounds.right - 12, bounds.bottom),
+                    rect(
+                        bounds.left + 12,
+                        bounds.top,
+                        bounds.right - 12,
+                        bounds.bottom,
+                    ),
                     &control.label,
                     if control.label.starts_with("Search by ") {
                         palette.omnibox_placeholder
@@ -1291,9 +1348,15 @@ unsafe extern "system" fn panel_proc(
                     0x08 if panel.view == PanelView::Edit => {
                         if let Some(draft) = panel.editor.as_mut() {
                             match draft.focus {
-                                DraftField::Origin => { draft.origin.pop(); }
-                                DraftField::Username => { draft.username.pop(); }
-                                DraftField::Password => { draft.password.pop(); }
+                                DraftField::Origin => {
+                                    draft.origin.pop();
+                                }
+                                DraftField::Username => {
+                                    draft.username.pop();
+                                }
+                                DraftField::Password => {
+                                    draft.password.pop();
+                                }
                             }
                         }
                     }
@@ -1394,9 +1457,8 @@ fn handle_char(hwnd: HWND, unit: u16) {
                 let Some(high) = draft.pending_surrogate.take() else {
                     return;
                 };
-                let scalar = 0x1_0000
-                    + ((u32::from(high) - 0xD800) << 10)
-                    + (u32::from(unit) - 0xDC00);
+                let scalar =
+                    0x1_0000 + ((u32::from(high) - 0xD800) << 10) + (u32::from(unit) - 0xDC00);
                 char::from_u32(scalar)
             }
             _ => {
@@ -1497,21 +1559,26 @@ fn activate(hwnd: HWND, target: Target) {
         }
         Target::Add => {
             if let Some(panel) = state(hwnd) {
-                panel.editor = Some(CredentialDraft::new(None, String::new(), String::new(), String::new()));
+                panel.editor = Some(CredentialDraft::new(
+                    None,
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ));
                 panel.view = PanelView::Edit;
                 panel.search_focused = false;
                 panel.notice = None;
             }
         }
         Target::Edit => {
-            let Some((id, entry)) = state(hwnd).and_then(|panel| {
-                Some((panel.selected?, panel.selected_entry()?.clone()))
-            }) else {
+            let Some((id, entry)) = state(hwnd)
+                .and_then(|panel| Some((panel.selected?, panel.selected_entry()?.clone())))
+            else {
                 return;
             };
-            match PasswordStore::open_default().and_then(|vault| {
-                vault.reveal(id).map(|password| (entry, password))
-            }) {
+            match PasswordStore::open_default()
+                .and_then(|vault| vault.reveal(id).map(|password| (entry, password)))
+            {
                 Ok((entry, password)) => {
                     if let Some(panel) = state(hwnd) {
                         panel.editor = Some(CredentialDraft::new(
@@ -1531,9 +1598,9 @@ fn activate(hwnd: HWND, target: Target) {
             }
         }
         Target::Delete => {
-            let Some((id, entry)) = state(hwnd).and_then(|panel| {
-                Some((panel.selected?, panel.selected_entry()?.clone()))
-            }) else {
+            let Some((id, entry)) = state(hwnd)
+                .and_then(|panel| Some((panel.selected?, panel.selected_entry()?.clone())))
+            else {
                 return;
             };
             if confirm_delete_entry(hwnd, &entry)
@@ -1554,8 +1621,12 @@ fn activate(hwnd: HWND, target: Target) {
             let Some(id) = state(hwnd).and_then(|panel| panel.selected) else {
                 return;
             };
-            let already_revealed = state(hwnd)
-                .is_some_and(|panel| panel.revealed.as_ref().is_some_and(|(active, _)| *active == id));
+            let already_revealed = state(hwnd).is_some_and(|panel| {
+                panel
+                    .revealed
+                    .as_ref()
+                    .is_some_and(|(active, _)| *active == id)
+            });
             if already_revealed {
                 if let Some(panel) = state(hwnd) {
                     panel.revealed = None;
@@ -1582,9 +1653,15 @@ fn activate(hwnd: HWND, target: Target) {
             };
             match PasswordStore::open_default().and_then(|vault| vault.reveal(id)) {
                 Ok(password) if copy_password(hwnd, &password) => {
-                    set_notice(hwnd, "Password copied; Bowser will clear it after 30 seconds if unchanged.");
+                    set_notice(
+                        hwnd,
+                        "Password copied; Bowser will clear it after 30 seconds if unchanged.",
+                    );
                 }
-                Ok(_) => set_notice(hwnd, "Password was not copied or could not be cleared automatically."),
+                Ok(_) => set_notice(
+                    hwnd,
+                    "Password was not copied or could not be cleared automatically.",
+                ),
                 Err(error) => set_notice(hwnd, password_error_message(error)),
             }
         }
@@ -1703,7 +1780,10 @@ fn confirm_delete_entry(hwnd: HWND, entry: &CredentialSummary) -> bool {
                 Entry::Item(Item::new(1, "Delete saved password", Icon::Close)),
                 Entry::Item(Item::new(2, "Keep password", Icon::Person)),
             ],
-            footer: format!("This removes the entry for {} from this profile", entry.host),
+            footer: format!(
+                "This removes the entry for {} from this profile",
+                entry.host
+            ),
         },
     )
     .is_some_and(|chosen| chosen.id == 1)
@@ -1773,9 +1853,7 @@ pub(crate) fn handle_login_message(
     let Some(current_url) = crate::app::App::tab_committed_url(app, tab_id) else {
         return;
     };
-    if passwords::secure_origin(current_url.as_str()).as_deref()
-        != Some(message.origin.as_str())
-    {
+    if passwords::secure_origin(current_url.as_str()).as_deref() != Some(message.origin.as_str()) {
         return;
     }
     let (Some(username), Some(password)) = (message.username.take(), message.password.take())

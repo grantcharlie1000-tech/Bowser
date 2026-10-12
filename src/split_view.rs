@@ -3,7 +3,10 @@
 use crate::tabs::TabId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Pane { Left, Right }
+pub enum Pane {
+    Left,
+    Right,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SplitView {
@@ -16,27 +19,56 @@ pub struct SplitView {
 
 impl SplitView {
     pub fn new(left: TabId, right: TabId, focused: Pane) -> Option<Self> {
-        (left != right).then_some(Self { left, right, focused, ratio: 50 })
+        (left != right).then_some(Self {
+            left,
+            right,
+            focused,
+            ratio: 50,
+        })
     }
     pub fn focused_tab(self) -> TabId {
-        match self.focused { Pane::Left => self.left, Pane::Right => self.right }
+        match self.focused {
+            Pane::Left => self.left,
+            Pane::Right => self.right,
+        }
     }
     pub fn other_tab(self) -> TabId {
-        match self.focused { Pane::Left => self.right, Pane::Right => self.left }
+        match self.focused {
+            Pane::Left => self.right,
+            Pane::Right => self.left,
+        }
     }
     pub fn pane_for(self, tab: TabId) -> Option<Pane> {
-        if self.left == tab { Some(Pane::Left) } else if self.right == tab { Some(Pane::Right) } else { None }
+        if self.left == tab {
+            Some(Pane::Left)
+        } else if self.right == tab {
+            Some(Pane::Right)
+        } else {
+            None
+        }
     }
-    pub fn focus(&mut self, pane: Pane) { self.focused = pane; }
-    pub fn set_ratio(&mut self, ratio: u8) { self.ratio = ratio.clamp(20, 80); }
+    pub fn focus(&mut self, pane: Pane) {
+        self.focused = pane;
+    }
+    pub fn set_ratio(&mut self, ratio: u8) {
+        self.ratio = ratio.clamp(20, 80);
+    }
     pub fn swap(&mut self) {
         std::mem::swap(&mut self.left, &mut self.right);
-        self.focused = match self.focused { Pane::Left => Pane::Right, Pane::Right => Pane::Left };
+        self.focused = match self.focused {
+            Pane::Left => Pane::Right,
+            Pane::Right => Pane::Left,
+        };
         self.ratio = 100 - self.ratio;
     }
     pub fn replace_focused(&mut self, tab: TabId) -> bool {
-        if tab == self.other_tab() { return false; }
-        match self.focused { Pane::Left => self.left = tab, Pane::Right => self.right = tab }
+        if tab == self.other_tab() {
+            return false;
+        }
+        match self.focused {
+            Pane::Left => self.left = tab,
+            Pane::Right => self.right = tab,
+        }
         true
     }
     pub fn remove(self, tab: TabId) -> Option<TabId> {
@@ -61,7 +93,11 @@ mod tests {
         assert_eq!((view.left, view.right), (TabId(1), TabId(3)));
         view.swap();
         assert_eq!((view.left, view.right), (TabId(3), TabId(1)));
-        assert_eq!(view.focused_tab(), TabId(3), "the focused tab follows the swap");
+        assert_eq!(
+            view.focused_tab(),
+            TabId(3),
+            "the focused tab follows the swap"
+        );
     }
 
     #[test]

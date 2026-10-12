@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use crate::{
     chrome::{
         group_ui::{GroupFrame, GroupState, GroupTransition, transition_bounds},
-        layout::{Metrics, Rect},
+        layout::{Hit, Metrics, Rect},
+        rail::{RailFade, RailKey},
     },
     tab_groups::TabGroupKey,
     tabs::TabId,
@@ -15,6 +16,54 @@ use crate::{
 
 /// Length of every chrome transition, long enough to read as motion and short enough not to lag.
 pub const TRANSITION: Duration = Duration::from_millis(150);
+
+/// Fixed slots keep icon motion independent of tab and rail allocations.
+pub const ICON_HITS: [Hit; 10] = [
+    Hit::Back, Hit::Forward, Hit::Reload, Hit::SiteInfo, Hit::NewTab,
+    Hit::TabMenu, Hit::MainMenu, Hit::CaptionMinimize, Hit::CaptionMaximize,
+    Hit::CaptionClose,
+];
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IconFrame { pub hover: f32, pub press: f32, pub active: f32, pub rotation: f32 }
+
+impl IconFrame {
+    /// Press always reaches 0.96, including while hover or active is easing.
+    pub fn scale(self) -> f32 {
+        let resting = 1.0 + self.hover * 0.06 + self.active * 0.02;
+        resting + (0.96 - resting) * self.press
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct IconTrack {
+    hover: Transition, press: Transition, active: Transition,
+    spin_started: Option<Instant>,
+}
+
+impl IconTrack {
+    fn resting(now: Instant) -> Self { Self {
+        hover: Transition::resting(0.0, now),
+        press: Transition::resting(0.0, now),
+        active: Transition::resting(0.0, now),
+        spin_started: None,
+    }}
+    fn frame(self, now: Instant) -> IconFrame { IconFrame {
+        hover: self.hover.value(now), press: self.press.value(now),
+        active: self.active.value(now),
+        rotation: self.spin_started.map_or(0.0, |started| {
+            std::f32::consts::TAU * ease_out(progress(started, now))
+        }),
+    }}
+    fn running(self, now: Instant) -> bool {
+        self.hover.is_active(now) || self.press.is_active(now) || self.active.is_active(now)
+            || self.spin_started.is_some_and(|started| is_running(started, now))
+    }
+    fn settle(&mut self) {
+        self.hover.settle(); self.press.settle(); self.active.settle();
+        self.spin_started = None;
+    }
+}
 
 /// Current visual projection for one persistent group key.
 #[derive(Clone, Debug)]
@@ -115,6 +164,14 @@ impl Emphasis {
     }
 }
 
+/// Hover emphasis for one left-rail button, in `0.0..=1.0`. A track exists while its button is
+/// hovered or still fading out.
+#[derive(Clone, Copy, Debug)]
+struct RailTrack {
+    key: RailKey,
+    hover: Transition,
+}
+
 /// The fading ghost of a tab that was closed. It keeps the island it occupied until the fade ends.
 #[derive(Clone, Copy, Debug)]
 pub struct Departure {
@@ -152,6 +209,18 @@ pub struct Motion {
     moving_groups: Vec<TabGroupKey>,
     repaint_groups: Vec<TabGroupKey>,
     changed_groups: Vec<TabGroupKey>,
+    rail: Vec<RailTrack>,
+    /// Rail buttons whose hover was still moving on the last frame.
+    rail_moving: Vec<RailKey>,
+    /// Rail buttons to repaint on the last frame: those moving now, those that stopped on the frame
+    /// before, and those whose target changed since.
+    rail_repaint: Vec<RailKey>,
+    /// Rail buttons whose hover target changed since the last frame.
+    rail_changed: Vec<RailKey>,
+    icons: [IconTrack; 10],
+    icon_moving: [bool; 10],
+    icon_repaint: [bool; 10],
+    icon_changed: [bool; 10],
 }
 
 impl Motion {
@@ -167,6 +236,14 @@ impl Motion {
             moving_groups: Vec::with_capacity(4),
             repaint_groups: Vec::with_capacity(4),
             changed_groups: Vec::with_capacity(4),
+            rail: Vec::with_capacity(8),
+            rail_moving: Vec::with_capacity(4),
+            rail_repaint: Vec::with_capacity(4),
+            rail_changed: Vec::with_capacity(4),
+            icons: [IconTrack::resting(Instant::now()); 10],
+            icon_moving: [false; 10],
+            icon_repaint: [false; 10],
+            icon_changed: [false; 10],
         }
     }
 
@@ -192,6 +269,16 @@ impl Motion {
         for group in &mut self.groups {
             group.transition = None;
         }
+        for track in &mut self.rail {
+            track.hover.settle();
+        }
+        self.rail_moving.clear();
+        self.rail_repaint.clear();
+        self.rail_changed.clear();
+        for track in &mut self.icons { track.settle(); }
+        self.icon_moving.fill(false);
+        self.icon_repaint.fill(false);
+        self.icon_changed.fill(false);
         changed
     }
 
@@ -316,12 +403,85 @@ impl Motion {
         }
     }
 
+    /// Moves the rail button under the pointer towards full hover, and every other rail button
+    /// towards rest. A button whose target has not changed keeps its running fade, as tabs do.
+    pub fn retarget_rail(&mut self, hovered: Option<RailKey>, now: Instant) {
+        let snap = self.snap;
+        for track in &mut self.rail {
+            let changed = track
+                .hover
+                .retarget(flag(hovered == Some(track.key)), now, snap);
+            if changed && !snap && !self.rail_changed.contains(&track.key) {
+                self.rail_changed.push(track.key);
+            }
+        }
+        let Some(key) = hovered else { return };
+        if self.rail.iter().any(|track| track.key == key) {
+            return;
+        }
+        let mut hover = Transition::resting(0.0, now);
+        let changed = hover.retarget(1.0, now, snap);
+        self.rail.push(RailTrack { key, hover });
+        if changed && !snap && !self.rail_changed.contains(&key) {
+            self.rail_changed.push(key);
+        }
+    }
+
+    /// The hover amount of every rail button that has a track at `now`, written into `out`. The
+    /// caller keeps `out` between frames, so this does not allocate once it is grown.
+    pub fn rail_fades(&self, now: Instant, out: &mut Vec<RailFade>) {
+        out.clear();
+        out.extend(self.rail.iter().map(|track| RailFade {
+            key: track.key,
+            amount: track.hover.value(now),
+        }));
+    }
+
+    /// The rail buttons the last frame asked to repaint.
+    pub fn rail_repaint(&self) -> &[RailKey] {
+        &self.rail_repaint
+    }
+
+    /// Retargets the ten toolbar and caption buttons. Press-in lands in the same event frame;
+    /// release and hover changes use the shared 150 ms transition.
+    pub fn retarget_icons(&mut self, hover: Hit, pressed: Hit, now: Instant) {
+        for (index, hit) in ICON_HITS.iter().enumerate() {
+            let track = &mut self.icons[index];
+            let h = track.hover.retarget(flag(hover == *hit), now, self.snap);
+            let p = track.press.retarget(flag(pressed == *hit), now,
+                self.snap || pressed == *hit);
+            if *hit == Hit::Reload && pressed == *hit && p && !self.snap {
+                track.spin_started = Some(now);
+            }
+            self.icon_changed[index] |= (h || p) && !self.snap;
+        }
+    }
+
+    pub fn retarget_icon_active(&mut self, hit: Hit, active: bool, now: Instant) {
+        if let Some(index) = ICON_HITS.iter().position(|&key| key == hit) {
+            let changed = self.icons[index].active.retarget(flag(active), now, self.snap);
+            self.icon_changed[index] |= changed && !self.snap;
+        }
+    }
+
+    pub fn icon_frame(&self, hit: Hit, now: Instant) -> IconFrame {
+        ICON_HITS.iter().position(|&key| key == hit)
+            .map_or(IconFrame::default(), |index| self.icons[index].frame(now))
+    }
+
+    pub fn icon_repaint(&self) -> impl Iterator<Item = Hit> + '_ {
+        ICON_HITS.iter().copied().zip(self.icon_repaint)
+            .filter_map(|(hit, repaint)| repaint.then_some(hit))
+    }
+
     /// True while any tab emphasis or departure is still moving. The frame timer runs only then.
     pub fn animating(&self, now: Instant) -> bool {
         self.tabs
             .iter()
             .any(|(_, emphasis)| emphasis.is_active(now))
             || self.departures.iter().any(|d| d.is_active(now))
+            || self.rail.iter().any(|track| track.hover.is_active(now))
+            || self.icons.iter().any(|track| track.running(now))
             || self.groups.iter().any(|group| {
                 group
                     .transition
@@ -366,12 +526,34 @@ impl Motion {
             }
         }
         self.changed_groups.clear();
+        self.rail_repaint.clear();
+        self.rail_repaint.extend_from_slice(&self.rail_moving);
+        self.rail_moving.clear();
+        for track in &self.rail {
+            if track.hover.is_active(now) {
+                self.rail_moving.push(track.key);
+            }
+        }
+        for &key in self.rail_moving.iter().chain(&self.rail_changed) {
+            if !self.rail_repaint.contains(&key) {
+                self.rail_repaint.push(key);
+            }
+        }
+        self.rail_changed.clear();
+        for index in 0..self.icons.len() {
+            let moving = self.icons[index].running(now);
+            self.icon_repaint[index] = self.icon_moving[index] || moving || self.icon_changed[index];
+            self.icon_moving[index] = moving;
+            self.icon_changed[index] = false;
+        }
         self.animating(now)
     }
 
     /// Forgets departures whose fade has finished. Call this only after repainting their rects.
     pub fn prune(&mut self, now: Instant) {
         self.departures.retain(|d| d.is_active(now));
+        self.rail
+            .retain(|track| track.hover.is_active(now) || track.hover.to != 0.0);
         for group in &mut self.groups {
             if group
                 .transition
@@ -406,6 +588,44 @@ mod tests {
 
     fn at(start: Instant, millis: u64) -> Instant {
         start + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn icon_hover_reaches_target_repaints_final_frame_and_settles() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_icons(Hit::Back, Hit::None, start);
+        assert_eq!(motion.icon_frame(Hit::Back, start).hover, 0.0);
+        let middle = at(start, 75);
+        assert!(motion.icon_frame(Hit::Back, middle).hover > 0.5);
+        assert!(motion.step(middle));
+        assert!(motion.icon_repaint().any(|hit| hit == Hit::Back));
+        let end = at(start, 150);
+        assert!(!motion.step(end));
+        assert_eq!(motion.icon_frame(Hit::Back, end).hover, 1.0);
+        assert!(motion.icon_repaint().any(|hit| hit == Hit::Back));
+        assert!(!motion.step(at(start, 166)));
+        assert!(!motion.icon_repaint().any(|hit| hit == Hit::Back));
+    }
+
+    #[test]
+    fn icon_press_is_immediate_release_eases_and_reduced_motion_snaps() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_icons(Hit::Reload, Hit::Reload, start);
+        assert_eq!(motion.icon_frame(Hit::Reload, start).scale(), 0.96);
+        let turn = motion.icon_frame(Hit::Reload, at(start, 75)).rotation;
+        assert!(turn > 0.0 && turn < std::f32::consts::TAU);
+        assert_eq!(motion.icon_frame(Hit::Reload, at(start, 150)).rotation,
+            std::f32::consts::TAU);
+        motion.retarget_icons(Hit::Reload, Hit::None, at(start, 10));
+        assert_eq!(motion.icon_frame(Hit::Reload, at(start, 10)).press, 1.0);
+        assert!(motion.icon_frame(Hit::Reload, at(start, 85)).press < 0.5);
+        motion.set_snap(true, at(start, 90));
+        assert_eq!(motion.icon_frame(Hit::Reload, at(start, 90)).press, 0.0);
+        motion.retarget_icons(Hit::None, Hit::Reload, at(start, 90));
+        assert_eq!(motion.icon_frame(Hit::Reload, at(start, 90)).press, 1.0);
+        assert!(!motion.animating(at(start, 90)));
     }
 
     #[test]
@@ -744,5 +964,129 @@ mod tests {
             motion.retarget(Some(hovered), Some(a), now);
         }
         assert_eq!(motion.changed, vec![a, b, c], "one pending id per tab");
+    }
+
+    fn fade_of(motion: &Motion, key: RailKey, now: Instant) -> f32 {
+        let mut fades = Vec::new();
+        motion.rail_fades(now, &mut fades);
+        fades
+            .iter()
+            .find(|fade| fade.key == key)
+            .map_or(0.0, |fade| fade.amount)
+    }
+
+    #[test]
+    fn a_rail_hover_fades_in_over_the_transition_and_then_stops_the_timer() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_rail(Some(RailKey::Menu), start);
+
+        assert_eq!(fade_of(&motion, RailKey::Menu, start), 0.0);
+        let mid = fade_of(&motion, RailKey::Menu, at(start, 75));
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "half way through the fade, got {mid}"
+        );
+        assert!(motion.animating(at(start, 75)));
+        assert_eq!(fade_of(&motion, RailKey::Menu, at(start, 150)), 1.0);
+        assert!(
+            !motion.animating(at(start, 150)),
+            "the frame timer stops at the end"
+        );
+    }
+
+    #[test]
+    fn moving_the_pointer_between_rail_buttons_repaints_both_and_settles() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_rail(Some(RailKey::Workspace(1)), start);
+        let settled = at(start, 200);
+        assert!(!motion.step(settled), "the first button has landed");
+
+        let moved = at(start, 200);
+        motion.retarget_rail(Some(RailKey::Workspace(2)), moved);
+        assert!(motion.step(moved), "the hover is moving");
+        let repaint = motion.rail_repaint();
+        assert!(
+            repaint.contains(&RailKey::Workspace(1)),
+            "the old button fades out"
+        );
+        assert!(
+            repaint.contains(&RailKey::Workspace(2)),
+            "the new button fades in"
+        );
+
+        let halfway = at(moved, 75);
+        assert!(motion.step(halfway));
+        let fading_out = fade_of(&motion, RailKey::Workspace(1), halfway);
+        let fading_in = fade_of(&motion, RailKey::Workspace(2), halfway);
+        assert!(
+            fading_out > 0.0 && fading_out < 1.0,
+            "old button mid-fade: {fading_out}"
+        );
+        assert!(
+            fading_in > 0.0 && fading_in < 1.0,
+            "new button mid-fade: {fading_in}"
+        );
+
+        let landed = at(moved, 150);
+        assert!(!motion.step(landed), "both fades ended");
+        assert!(
+            motion.rail_repaint().contains(&RailKey::Workspace(1)),
+            "the frame that lands the old button's fade is painted"
+        );
+        motion.prune(landed);
+        assert_eq!(
+            fade_of(&motion, RailKey::Workspace(1), landed),
+            0.0,
+            "old track is gone"
+        );
+        assert!(!motion.step(at(moved, 300)));
+        assert!(
+            motion.rail_repaint().is_empty(),
+            "idle frames repaint no rail buttons"
+        );
+    }
+
+    #[test]
+    fn repeating_a_rail_hover_target_keeps_the_running_fade() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_rail(Some(RailKey::History), start);
+        motion.retarget_rail(Some(RailKey::History), at(start, 60));
+        let fade = fade_of(&motion, RailKey::History, at(start, 60));
+        assert!(
+            fade_of(&motion, RailKey::History, at(start, 90)) > fade,
+            "repeating the same hover does not restart the fade"
+        );
+    }
+
+    #[test]
+    fn reduced_motion_snaps_rail_hover_without_a_timer() {
+        let start = Instant::now();
+        let mut motion = Motion::new(true);
+        motion.retarget_rail(Some(RailKey::Bookmarks), start);
+
+        assert!(!motion.animating(start));
+        assert_eq!(fade_of(&motion, RailKey::Bookmarks, start), 1.0);
+        assert!(!motion.step(start));
+        assert!(
+            motion.rail_repaint().is_empty(),
+            "a snapped change queues no repaint"
+        );
+        motion.retarget_rail(None, at(start, 10));
+        assert_eq!(fade_of(&motion, RailKey::Bookmarks, at(start, 10)), 0.0);
+    }
+
+    #[test]
+    fn turning_motion_off_mid_fade_settles_the_rail() {
+        let start = Instant::now();
+        let mut motion = Motion::new(false);
+        motion.retarget_rail(Some(RailKey::Customize), start);
+        assert!(motion.animating(at(start, 20)));
+        motion.set_snap(true, at(start, 20));
+
+        assert!(!motion.animating(at(start, 20)));
+        assert_eq!(fade_of(&motion, RailKey::Customize, at(start, 20)), 1.0);
     }
 }

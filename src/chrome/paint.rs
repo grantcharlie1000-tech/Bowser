@@ -29,9 +29,11 @@ use windows::Win32::{
 
 use crate::{
     chrome::{
-        group_ui::{group_geometry, shrink_tab, GroupFrame, GroupGeometry, GroupState},
+        group_ui::{GroupFrame, GroupGeometry, GroupState, group_geometry, shrink_tab},
         layout::{self, Hit, Layout, Metrics, Rect},
-        motion::{Departure, Emphasis},
+        motion::{Departure, Emphasis, IconFrame, Motion},
+        rail::{self, RailAmounts, RailEntry, RailFrame, RailIcon, RailKey, RailMotion, RailView},
+        rail_icons::{self, IconCache, Primitive},
         tab_card::Marker,
     },
     favicon::FaviconBitmap,
@@ -112,6 +114,21 @@ pub struct ChromeView<'a> {
     pub now: Instant,
     /// Islands of tabs that were just closed, fading out where they stood.
     pub departures: &'a [Departure],
+    /// The left rail's buttons. `None` paints the empty pill, as before the rail had entries.
+    pub rail: Option<RailView<'a>>,
+    /// Fixed toolbar and caption icon tracks driven by the window's shared frame timer.
+    pub icon_motion: Option<&'a Motion>,
+}
+
+impl ChromeView<'_> {
+    fn icon_frame(&self, hit: Hit) -> IconFrame {
+        self.icon_motion.map_or_else(
+            || IconFrame { hover: (self.hover == hit) as u8 as f32,
+                press: (self.pressed == hit) as u8 as f32, active: 0.0,
+                rotation: if hit == Hit::Reload && self.pressed == hit { 0.61 } else { 0.0 } },
+            |motion| motion.icon_frame(hit, self.now),
+        )
+    }
 }
 
 /// Reusable top-down premultiplied BGRA image for chrome and the overlaid page boundary.
@@ -132,6 +149,10 @@ pub struct ChromeSurface {
     caret_rect: Rect,
     last_presented: Option<PresentedSurface>,
     page_regions: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
+    /// Press and active motion of the left rail's buttons, advanced as the rail paints.
+    rail_motion: RailMotion,
+    /// The rail icons' outlines, built once and reused by every frame.
+    rail_icons: IconCache,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,7 +213,27 @@ impl ChromeSurface {
             caret_rect: Rect::default(),
             last_presented: None,
             page_regions: None,
+            rail_motion: RailMotion::new(false),
+            rail_icons: IconCache::default(),
         }
+    }
+
+    /// Whether any rail button's press or active motion is still running at `now`. The window
+    /// keeps its frame timer going while this is true.
+    pub fn rail_animating(&self, now: Instant) -> bool {
+        self.rail_motion.animating(now)
+    }
+
+    /// Advances the rail's press and active motion one frame. The caller repaints the rail when
+    /// `repaint` is set and stops its frame timer when `running` is clear.
+    pub fn rail_step(&mut self, now: Instant) -> RailFrame {
+        self.rail_motion.step(now)
+    }
+
+    /// Turns rail animation off, as when Windows has client-area animation off, or back on.
+    /// Returns whether a running transition was landed, so the caller can repaint the rail.
+    pub fn set_rail_snap(&mut self, snap: bool, now: Instant) -> bool {
+        self.rail_motion.set_snap(snap, now)
     }
 
     /// Rebuilds storage only when client dimensions or DPI change.
@@ -244,8 +285,12 @@ impl ChromeSurface {
     ) {
         let mid = viewport.left + viewport.width() / 2;
         let target = match pane {
-            crate::split_view::Pane::Left => Rect::new(viewport.left, viewport.top, mid, viewport.bottom),
-            crate::split_view::Pane::Right => Rect::new(mid, viewport.top, viewport.right, viewport.bottom),
+            crate::split_view::Pane::Left => {
+                Rect::new(viewport.left, viewport.top, mid, viewport.bottom)
+            }
+            crate::split_view::Pane::Right => {
+                Rect::new(mid, viewport.top, viewport.right, viewport.bottom)
+            }
         };
         let tint = Rgba {
             a: if palette.translucent { 58 } else { 34 },
@@ -282,7 +327,12 @@ impl ChromeSurface {
         self.fill_rect(layout.handle, palette.hairline, dirty);
         self.draw_text(
             workspace,
-            Rect::new(layout.header.left + m.px(14), layout.header.top, layout.new_tab_button().left - m.px(6), layout.header.bottom),
+            Rect::new(
+                layout.header.left + m.px(14),
+                layout.header.top,
+                layout.new_tab_button().left - m.px(6),
+                layout.header.bottom,
+            ),
             palette.tab_text_active,
             true,
             layout.header,
@@ -290,7 +340,14 @@ impl ChromeSurface {
         );
         let plus = layout.new_tab_button();
         self.round(plus, plus.width() / 2, palette.tab_hover, dirty);
-        self.draw_text("+", plus, palette.tab_text_active, false, layout.header, dirty);
+        self.draw_text(
+            "+",
+            plus,
+            palette.tab_text_active,
+            false,
+            layout.header,
+            dirty,
+        );
 
         for (index, row) in rows.iter().enumerate() {
             let bounds = crate::chrome::vertical_paint::row_bounds(layout, index, m, scroll);
@@ -299,33 +356,99 @@ impl ChromeSurface {
             }
             match row {
                 crate::chrome::vertical_paint::SidebarRow::Group { name, colour, .. } => {
-                    let Some(geometry) = crate::chrome::vertical_paint::header_ball(layout, rows, index, scroll, m) else {
+                    let Some(geometry) =
+                        crate::chrome::vertical_paint::header_ball(layout, rows, index, scroll, m)
+                    else {
                         continue;
                     };
                     let accent = island_colour(*colour, palette.tab_group_accent);
                     let brighten = if hover_row == Some(index) { 0.12 } else { 0.0 };
                     self.paint_ball_stack(&geometry, accent, brighten, dirty);
                     let label_left = crate::chrome::vertical_paint::header_label_left(&geometry, m);
-                    self.draw_text(name, Rect::new(label_left, bounds.top, bounds.right - m.px(8), bounds.bottom), palette.tab_text_active, true, layout.rows, dirty);
+                    self.draw_text(
+                        name,
+                        Rect::new(
+                            label_left,
+                            bounds.top,
+                            bounds.right - m.px(8),
+                            bounds.bottom,
+                        ),
+                        palette.tab_text_active,
+                        true,
+                        layout.rows,
+                        dirty,
+                    );
                 }
-                crate::chrome::vertical_paint::SidebarRow::Tab { id, title, pinned, loading, grouped } => {
-                    let bounds = if *grouped { crate::chrome::vertical_paint::member_bounds(bounds, m) } else { bounds };
+                crate::chrome::vertical_paint::SidebarRow::Tab {
+                    id,
+                    title,
+                    pinned,
+                    loading,
+                    grouped,
+                } => {
+                    let bounds = if *grouped {
+                        crate::chrome::vertical_paint::member_bounds(bounds, m)
+                    } else {
+                        bounds
+                    };
                     let selected = *id == active;
-                    let fill = if selected { palette.tab_active } else if hover_row == Some(index) { palette.tab_hover } else { palette.tab_inactive };
+                    let fill = if selected {
+                        palette.tab_active
+                    } else if hover_row == Some(index) {
+                        palette.tab_hover
+                    } else {
+                        palette.tab_inactive
+                    };
                     self.round(bounds, m.px(7), fill, dirty);
                     if selected {
                         self.border(bounds, m.px(7), 1.0, palette.tab_active_border, dirty);
                     }
                     let mut label = String::new();
-                    if *pinned { label.push('◆'); label.push(' '); }
+                    if *pinned {
+                        label.push('◆');
+                        label.push(' ');
+                    }
                     label.push_str(title);
-                    self.draw_text(&label, Rect::new(bounds.left + m.px(10), bounds.top, bounds.right - m.px(28), bounds.bottom), if selected { palette.tab_text_active } else { palette.tab_text_inactive }, true, layout.rows, dirty);
+                    self.draw_text(
+                        &label,
+                        Rect::new(
+                            bounds.left + m.px(10),
+                            bounds.top,
+                            bounds.right - m.px(28),
+                            bounds.bottom,
+                        ),
+                        if selected {
+                            palette.tab_text_active
+                        } else {
+                            palette.tab_text_inactive
+                        },
+                        true,
+                        layout.rows,
+                        dirty,
+                    );
                     if *loading {
-                        let progress = Rect::new(bounds.left + m.px(10), bounds.bottom - m.px(2), bounds.right - m.px(10), bounds.bottom - m.px(1));
+                        let progress = Rect::new(
+                            bounds.left + m.px(10),
+                            bounds.bottom - m.px(2),
+                            bounds.right - m.px(10),
+                            bounds.bottom - m.px(1),
+                        );
                         self.fill_rect(progress, palette.progress_fill, dirty);
                     }
                     if hover_row == Some(index) {
-                        self.draw_text("×", Rect::new(bounds.right - m.px(24), bounds.top, bounds.right - m.px(3), bounds.bottom), palette.tab_text_active, false, layout.rows, dirty);
+                        self.draw_text(
+                            "×",
+                            Rect::new(
+                                bounds.right - m.px(24),
+                                bounds.top,
+                                bounds.right - m.px(3),
+                                bounds.bottom,
+                            ),
+                            palette.tab_text_active,
+                            false,
+                            layout.rows,
+                            dirty,
+                        );
                     }
                 }
             }
@@ -347,11 +470,17 @@ impl ChromeSurface {
         }
         if !view.palette.translucent {
             self.fill_rect(
-                Rect::new(0, 0, self.width, layout::chrome_height(view.layout.metrics.dpi())),
+                Rect::new(
+                    0,
+                    0,
+                    self.width,
+                    layout::chrome_height(view.layout.metrics.dpi()),
+                ),
                 view.palette.window,
                 dirty,
             );
         }
+        self.paint_left_rail(view, dirty);
         self.paint_departures(view, dirty);
         self.paint_tabs(view, dirty);
         self.paint_tab_menu(view, dirty);
@@ -364,7 +493,9 @@ impl ChromeSurface {
     }
 
     fn paint_page_boundary(&mut self, view: &ChromeView<'_>, dirty: Rect) {
-        let Some((content, panes, focused_left)) = self.page_regions else { return };
+        let Some((content, panes, focused_left)) = self.page_regions else {
+            return;
+        };
         let m = view.layout.metrics;
         let radius = m.px(9);
         let colour = view.palette.omnibox_border;
@@ -373,7 +504,11 @@ impl ChromeSurface {
             self.mask_rounded(view.palette.window, panes.right, radius, dirty, false, true);
             self.border(panes.left, radius, 1.0, colour, dirty);
             self.border(panes.right, radius, 1.0, colour, dirty);
-            let focus = if focused_left { panes.left } else { panes.right };
+            let focus = if focused_left {
+                panes.left
+            } else {
+                panes.right
+            };
             self.border(focus, radius, 1.5, view.palette.omnibox_focus_border, dirty);
             let divider = panes.divider;
             self.fill_rect(divider, view.palette.omnibox_border, dirty);
@@ -395,19 +530,28 @@ impl ChromeSurface {
         round_right: bool,
     ) {
         let radius = radius.min(rect.width() / 2).min(rect.height() / 2).max(0);
-        if radius == 0 { return; }
+        if radius == 0 {
+            return;
+        }
         let corners = [
             (rect.left, rect.top, round_left, true),
             (rect.right - radius, rect.top, round_right, true),
             (rect.left, rect.bottom - radius, round_left, false),
-            (rect.right - radius, rect.bottom - radius, round_right, false),
+            (
+                rect.right - radius,
+                rect.bottom - radius,
+                round_right,
+                false,
+            ),
         ];
         let stride = self.stride();
         let width = self.width;
         let height = self.height;
         let pixels = self.dib.pixels_mut();
         for (left, top, enabled, top_corner) in corners {
-            if !enabled { continue; }
+            if !enabled {
+                continue;
+            }
             let corner = Rect::new(left, top, left + radius, top + radius).intersect(dirty);
             let (cx, cy) = match (left == rect.left, top_corner) {
                 (true, true) => (left + radius, top + radius),
@@ -596,6 +740,230 @@ impl ChromeSurface {
         );
     }
 
+    /// The left rail: the pill, then, when the app supplies a rail view, its buttons and section
+    /// hairlines on top. Without a view the pill is painted alone.
+    fn paint_left_rail(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let pill = view.layout.rail;
+        let radius = pill.width() / 2;
+        self.round(pill, radius, view.palette.tab_active, dirty);
+        let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
+        let colour = scale_alpha(view.palette.tab_active_border, stroke);
+        self.border(pill, radius, 1.0, colour, dirty);
+        let Some(supplied) = view.rail else { return };
+        let m = view.layout.metrics;
+        let pressed = match view.pressed {
+            Hit::Rail(key) => Some(key),
+            _ => None,
+        };
+        self.rail_motion
+            .sync(supplied.entries, pressed, supplied.open_panel, view.now);
+        let geometry = rail::geometry(pill, supplied.entries, supplied.scroll, m.dpi());
+        for rule in &geometry.rules {
+            self.fill_rect(rule.visible(), view.palette.hairline, dirty);
+        }
+        for item in &geometry.items {
+            let Some(entry) = supplied.entries.get(item.index) else {
+                continue;
+            };
+            let clip = item.visible().intersect(dirty);
+            if clip.is_empty() {
+                continue;
+            }
+            let row = item.clip.intersect(dirty);
+            self.paint_rail_button(view, &supplied, entry, item.rect, clip, row);
+        }
+        if let Some(focused) = supplied.focused
+            && let Some(item) = geometry.item(focused)
+        {
+            self.border(
+                item.rect,
+                m.px(rail::BUTTON_RADIUS),
+                1.5,
+                view.palette.omnibox_focus_border,
+                item.visible().intersect(dirty),
+            );
+        }
+        if let Some(indicator) = supplied.drop_indicator {
+            let x = pill.left + m.px(4);
+            self.fill_rect(
+                Rect::new(x, indicator.y - m.px(1), pill.right - m.px(4), indicator.y + m.px(1)),
+                view.palette.progress_fill,
+                dirty,
+            );
+        }
+        if let Some(key) = supplied.tooltip
+            && let Some(item) = geometry.item(key)
+        {
+            let label = rail::rail_tooltip(key, supplied.entries);
+            let length = encode_into(&mut self.label_units, &label);
+            let text_width = self.text.measure(&self.label_units[..length], length);
+            let left = pill.right + m.px(7);
+            let max_top = (self.height - m.px(28)).max(m.px(4));
+            let top = (item.rect.top + (item.rect.height() - m.px(24)) / 2)
+                .clamp(m.px(4).min(max_top), max_top);
+            let bounds = Rect::new(left, top, (left + text_width + m.px(18)).min(self.width - m.px(4)), top + m.px(24));
+            self.round(bounds, m.px(6), view.palette.tab_active, dirty);
+            self.border(bounds, m.px(6), 1.0, view.palette.omnibox_border, dirty);
+            self.draw_text(
+                &label,
+                Rect::new(bounds.left + m.px(9), bounds.top, bounds.right - m.px(6), bounds.bottom),
+                view.palette.tab_text_active,
+                true,
+                bounds,
+                dirty,
+            );
+        }
+    }
+
+    /// One rail button: its hover, press and open-panel fills, the active bar, the corner dot, and
+    /// the icon, favicon or letter tile. `clip` is the visible part of the button within the dirty
+    /// rect. `row` is the part of the rail the button may show in, which the active bar may use
+    /// even though it sits left of the button.
+    fn paint_rail_button(
+        &mut self,
+        view: &ChromeView<'_>,
+        rail: &RailView<'_>,
+        entry: &RailEntry<'_>,
+        button: Rect,
+        clip: Rect,
+        row: Rect,
+    ) {
+        let palette = view.palette;
+        let m = view.layout.metrics;
+        let key = entry.key;
+        let radius = m.px(rail::BUTTON_RADIUS);
+        let open = rail.open_panel == Some(key);
+        let pressed = view.pressed == Hit::Rail(key);
+        let accent = entry.accent.unwrap_or(palette.tab_group_accent);
+        let amounts = self
+            .rail_motion
+            .amounts(key, rail_hover_amount(view, rail, key), view.now);
+
+        // The plate: an open panel holds it, a press lands it at once and lets it go as the press
+        // eases out, and the pointer's hover fills it in between.
+        if open {
+            self.round(button, radius, palette.tab_active, clip);
+        } else {
+            if !pressed && amounts.hover > 0.0 {
+                self.round(button, radius, scale_alpha(palette.tab_hover, amounts.hover), clip);
+            }
+            if amounts.press > 0.0 {
+                self.round(button, radius, scale_alpha(palette.tab_active, amounts.press), clip);
+            }
+        }
+        if open {
+            self.border(button, radius, 1.0, palette.tab_active_border, clip);
+        }
+        // An open panel lights the icon but not the bar, which marks the current workspace or app.
+        let bar_amount = if open && !entry.active { 0.0 } else { amounts.active };
+        if bar_amount > 0.0 {
+            let bar_width = m.px(rail::ACTIVE_BAR_WIDTH);
+            let bar_scale = RailAmounts { active: bar_amount, ..amounts }.bar_scale();
+            let grown = (m.px(rail::ACTIVE_BAR_HEIGHT) as f32 * bar_scale).round() as i32;
+            let bar_height = grown.max(bar_width);
+            let bar_left = view.layout.rail.left + m.px(1);
+            let top = button.top + (button.height() - bar_height) / 2;
+            let bar = Rect::new(bar_left, top, bar_left + bar_width, top + bar_height);
+            self.round(bar, bar_width / 2, scale_alpha(accent, bar_amount), row);
+        }
+
+        let ink = mix(palette.tab_text_inactive, palette.tab_text_active, amounts.active);
+        if let Some(image) = entry.favicon {
+            // A favicon is a bitmap, so it only sinks under a press and does not lift on hover.
+            let scale = RailAmounts { hover: 0.0, ..amounts }.icon_scale();
+            let size = (m.px(Metrics::FAVICON_SIZE) as f32 * scale).round() as i32;
+            self.blit_favicon(rail::centred(button, size.max(1)), image, clip);
+        } else if entry.icon == RailIcon::Letter {
+            let size = (m.px(rail::TILE) as f32 * amounts.icon_scale()).round() as i32;
+            let tile = rail::centred(button, size.max(1));
+            self.round(tile, m.px(rail::TILE_RADIUS), accent, clip);
+            if let Some(letter) = entry.label.trim().chars().next() {
+                let text = letter.to_uppercase().collect::<String>();
+                self.draw_centred(&text, tile, Rgba::hex(0xFFFFFF, 0xFF), clip);
+            }
+        } else {
+            // A workspace glyph already wears its colour, so its draw-on is a lighter pass of it.
+            let (colour, trace) = match entry.icon {
+                RailIcon::Glyph(_) if entry.accent.is_some() => {
+                    (accent, mix(accent, palette.tab_text_active, 0.4))
+                }
+                _ => (ink, accent),
+            };
+            let square = rail::centred(button, m.px(rail::ICON));
+            self.paint_rail_icon(entry.icon, square, colour, trace, amounts, clip);
+        }
+
+        if entry.dot {
+            let size = m.px(rail::DOT) as f32;
+            let centre_x = (button.right - m.px(6)) as f32;
+            let centre_y = (button.top + m.px(6)) as f32;
+            self.line_f(centre_x, centre_y, centre_x, centre_y, size, accent, clip);
+        }
+    }
+
+    /// Strokes an outlined rail icon into `square`, which is the icon's 24-unit grid scaled to fit.
+    /// The pen is the rail's logical stroke width at this surface's dpi. The icon scales about the
+    /// square's centre with hover and press, and draws itself on in `trace` as it becomes active:
+    /// strokes the trace has covered are drawn in `trace` alone, and the stroke it is crossing
+    /// shows both. Outlines come from the cache, so a frame allocates nothing.
+    fn paint_rail_icon(
+        &mut self,
+        icon: RailIcon,
+        square: Rect,
+        colour: Rgba,
+        trace: Rgba,
+        amounts: RailAmounts,
+        clip: Rect,
+    ) {
+        let mut cache = std::mem::take(&mut self.rail_icons);
+        let cached = cache.get(icon);
+        let pen = rail::STROKE * self.dpi as f32 / 96.0 * amounts.pen_scale();
+        let scale = square.width() as f32 / rail_icons::GRID * amounts.icon_scale();
+        let left = (square.left + square.right) as f32 / 2.0 - rail_icons::GRID * scale / 2.0;
+        let top = (square.top + square.bottom) as f32 / 2.0 - rail_icons::GRID * scale / 2.0;
+        let at = |(x, y): (f32, f32)| (left + x * scale, top + y * scale);
+        let covered = amounts.active.clamp(0.0, 1.0) * cached.span;
+        let mut offset = 0.0;
+        for primitive in &cached.primitives {
+            let span = primitive.span();
+            let drawn = rail_icons::traced_fraction(offset, span, covered);
+            offset += span;
+            match *primitive {
+                Primitive::Segment { from, to } => {
+                    let (x0, y0) = at(from);
+                    let (x1, y1) = at(to);
+                    if drawn < 1.0 {
+                        self.line_f(x0, y0, x1, y1, pen, colour, clip);
+                    }
+                    if drawn > 0.0 {
+                        let (x, y) = (x0 + (x1 - x0) * drawn, y0 + (y1 - y0) * drawn);
+                        self.line_f(x0, y0, x, y, pen, trace, clip);
+                    }
+                }
+                Primitive::Dot { centre, radius } => {
+                    let (x, y) = at(centre);
+                    if drawn < 1.0 {
+                        self.line_f(x, y, x, y, 2.0 * radius * scale, colour, clip);
+                    }
+                    if drawn > 0.0 {
+                        self.line_f(x, y, x, y, 2.0 * radius * scale * drawn, trace, clip);
+                    }
+                }
+            }
+        }
+        self.rail_icons = cache;
+    }
+
+    /// One line of text centred in `rect`, clipped to `clip`.
+    fn draw_centred(&mut self, value: &str, rect: Rect, colour: Rgba, clip: Rect) {
+        let length = encode_into(&mut self.label_units, value);
+        self.text.select_font();
+        let width = self.text.measure(&self.label_units[..length], length);
+        let left = rect.left + (rect.width() - width).max(0) / 2;
+        let placed = Rect::new(left, rect.top, rect.right, rect.bottom);
+        self.draw_text(value, placed, colour, false, clip, clip);
+    }
+
     /// Closed tabs fade out and shrink slightly on the island they left. They take no input.
     fn paint_departures(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
@@ -660,15 +1028,13 @@ impl ChromeSurface {
                 .intersect(view.layout.tab_zone);
             if !shell.is_empty() {
                 let details = view.tabs.get(start);
-                let frame = details
-                    .and_then(|tab| tab.group_frame)
-                    .unwrap_or_else(|| {
-                        GroupFrame::resting(
-                            shell,
-                            GroupState::Expanded,
-                            details.and_then(|tab| tab.group_size).unwrap_or(1),
-                        )
-                    });
+                let frame = details.and_then(|tab| tab.group_frame).unwrap_or_else(|| {
+                    GroupFrame::resting(
+                        shell,
+                        GroupState::Expanded,
+                        details.and_then(|tab| tab.group_size).unwrap_or(1),
+                    )
+                });
                 group_spans.push((start, index, group_geometry(frame, m)));
             }
         }
@@ -728,9 +1094,7 @@ impl ChromeSurface {
             let target_state = group_frame.map_or(GroupState::Expanded, |frame| frame.state);
 
             if grouped && target_state == GroupState::CollapsedWithoutSelection {
-                if group_leader
-                    && let Some(geometry) = geometry
-                {
+                if group_leader && let Some(geometry) = geometry {
                     let colour = island_colour(
                         details.and_then(|tab| tab.group_colour),
                         view.palette.tab_group_accent,
@@ -740,7 +1104,11 @@ impl ChromeSurface {
                 continue;
             }
 
-            let base_rect = if grouped { shrink_tab(tab_rect, m) } else { tab_rect };
+            let base_rect = if grouped {
+                shrink_tab(tab_rect, m)
+            } else {
+                tab_rect
+            };
             let slide_x = match (group_frame, span) {
                 (Some(frame), Some((start, _, geometry)))
                     if frame.state == GroupState::Expanded
@@ -763,16 +1131,22 @@ impl ChromeSurface {
                 (Some(frame), Some((start, _, _)))
                     if frame.state == GroupState::Expanded
                         && frame.from != GroupState::Expanded
-                        && index != *start => frame.progress,
+                        && index != *start =>
+                {
+                    frame.progress
+                }
                 _ => 1.0,
             };
             let tab_opacity = reveal.clamp(0.0, 1.0);
             let (hover, selected) = details.map_or((0.0, 0.0), |t| t.emphasis.amounts(view.now));
-            let fill = scale_alpha(mix(
-                mix(view.palette.tab_inactive, view.palette.tab_hover, hover),
-                view.palette.tab_active,
-                selected,
-            ), tab_opacity);
+            let fill = scale_alpha(
+                mix(
+                    mix(view.palette.tab_inactive, view.palette.tab_hover, hover),
+                    view.palette.tab_active,
+                    selected,
+                ),
+                tab_opacity,
+            );
             let radius = m.tab_radius();
             if grouped {
                 if hover > 0.0 || selected > 0.0 {
@@ -821,9 +1195,7 @@ impl ChromeSurface {
             parts.title = move_rect(parts.title, slide_x);
             parts.close = move_rect(parts.close, slide_x);
 
-            if group_leader
-                && let Some(geometry) = geometry
-            {
+            if group_leader && let Some(geometry) = geometry {
                 let colour = island_colour(
                     details.and_then(|tab| tab.group_colour),
                     view.palette.tab_group_accent,
@@ -891,7 +1263,14 @@ impl ChromeSurface {
                     view.palette.tab_text_active,
                     selected,
                 );
-                self.draw_text(title, parts.title, scale_alpha(color, tab_opacity), true, draw_rect, dirty);
+                self.draw_text(
+                    title,
+                    parts.title,
+                    scale_alpha(color, tab_opacity),
+                    true,
+                    draw_rect,
+                    dirty,
+                );
             }
             let close_rect = if narrow_active_close {
                 parts.favicon
@@ -924,10 +1303,15 @@ impl ChromeSurface {
             } else {
                 view.palette.tab_text_inactive
             };
+            let c = mix(c, view.palette.progress_fill, close_pressed as u8 as f32);
             let (cx, cy) = center(close_rect);
-            let half = m.px(4);
-            self.line(cx - half, cy - half, cx + half, cy + half, 1.35, c, dirty);
-            self.line(cx - half, cy + half, cx + half, cy - half, 1.35, c, dirty);
+            let hover_amount = details.map_or(0.0, |tab| tab.emphasis.amounts(view.now).0);
+            let scale = m.px(16) as f32 / 24.0
+                * if close_pressed { 0.96 } else { 1.0 + 0.06 * hover_amount };
+            let half = 6.0 * scale;
+            let (cx, cy) = (cx as f32, cy as f32);
+            self.line_f(cx - half, cy - half, cx + half, cy + half, 1.5 * scale, c, dirty);
+            self.line_f(cx - half, cy + half, cx + half, cy - half, 1.5 * scale, c, dirty);
         }
     }
 
@@ -941,7 +1325,13 @@ impl ChromeSurface {
     ) {
         let hovered = view.hover == Hit::GroupBall(index);
         let pressed = view.pressed == Hit::GroupBall(index);
-        let brighten = if pressed { 0.22 } else if hovered { 0.12 } else { 0.0 };
+        let brighten = if pressed {
+            0.22
+        } else if hovered {
+            0.12
+        } else {
+            0.0
+        };
         self.paint_ball_stack(geometry, colour, brighten, dirty);
     }
 
@@ -983,9 +1373,8 @@ impl ChromeSurface {
                 && let Some(overflow) = geometry.overflow_count
             {
                 let label = format!("+{overflow}");
-                let luminance = u16::from(colour.r) * 3
-                    + u16::from(colour.g) * 6
-                    + u16::from(colour.b);
+                let luminance =
+                    u16::from(colour.r) * 3 + u16::from(colour.g) * 6 + u16::from(colour.b);
                 let text = if luminance > 1275 {
                     Rgba::hex(0x20242A, 245)
                 } else {
@@ -1010,10 +1399,13 @@ impl ChromeSurface {
             );
         }
         let (x, y) = center(rect);
-        let c = view.palette.caption_glyph;
-        let arm = view.layout.metrics.px(4);
-        self.line(x - arm, y, x + arm, y, 1.4, c, dirty);
-        self.line(x, y - arm, x, y + arm, 1.4, c, dirty);
+        let frame = view.icon_frame(Hit::NewTab);
+        let c = mix(view.palette.caption_glyph, view.palette.progress_fill, frame.press);
+        let scale = view.layout.metrics.px(16) as f32 / 24.0 * frame.scale();
+        let arm = 8.0 * scale;
+        let (x, y) = (x as f32, y as f32);
+        self.line_f(x - arm, y, x + arm, y, 1.5 * scale, c, dirty);
+        self.line_f(x, y - arm, x, y + arm, 1.5 * scale, c, dirty);
     }
 
     fn paint_tab_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
@@ -1033,9 +1425,12 @@ impl ChromeSurface {
             dirty,
         );
         let (x, y) = center(rect);
-        let c = view.palette.caption_glyph;
-        self.line(x - 4, y - 2, x, y + 2, 1.5, c, dirty);
-        self.line(x, y + 2, x + 4, y - 2, 1.5, c, dirty);
+        let frame = view.icon_frame(Hit::TabMenu);
+        let c = mix(view.palette.caption_glyph, view.palette.progress_fill, frame.press);
+        let scale = view.layout.metrics.px(16) as f32 / 24.0 * frame.scale();
+        let (x, y) = (x as f32, y as f32);
+        self.line_f(x - 7.0 * scale, y - 3.0 * scale, x, y + 4.0 * scale, 1.5 * scale, c, dirty);
+        self.line_f(x, y + 4.0 * scale, x + 7.0 * scale, y - 3.0 * scale, 1.5 * scale, c, dirty);
     }
 
     /// A three-line menu glyph in a bubble right of the address pill; the main menu opens from
@@ -1056,10 +1451,22 @@ impl ChromeSurface {
             };
             self.round(rect, radius, colour, dirty);
         }
-        self.border(rect, radius, m.dpi() as f32 / 96.0, view.palette.hairline, dirty);
-        let colour = view.palette.caption_glyph;
+        self.border(
+            rect,
+            radius,
+            m.dpi() as f32 / 96.0,
+            view.palette.hairline,
+            dirty,
+        );
+        let frame = view.icon_frame(Hit::MainMenu);
+        let colour = mix(view.palette.caption_glyph, view.palette.progress_fill, frame.press);
+        let cx = (rect.left + rect.right) as f32 * 0.5;
+        let cy = (rect.top + rect.bottom) as f32 * 0.5;
+        let amount = frame.scale();
         for (left, right, y) in main_menu_bars(rect, m) {
-            self.line_f(left, y, right, y, NAV_STROKE, colour, dirty);
+            self.line_f(cx + (left - cx) * amount, cy + (y - cy) * amount,
+                cx + (right - cx) * amount, cy + (y - cy) * amount,
+                NAV_STROKE, colour, dirty);
         }
     }
 
@@ -1079,7 +1486,12 @@ impl ChromeSurface {
             }
             let divider_x = forward.left;
             self.fill_rect(
-                Rect::new(divider_x, pill.top + m.px(7), divider_x + 1, pill.bottom - m.px(7)),
+                Rect::new(
+                    divider_x,
+                    pill.top + m.px(7),
+                    divider_x + 1,
+                    pill.bottom - m.px(7),
+                ),
                 view.palette.hairline,
                 dirty,
             );
@@ -1093,7 +1505,9 @@ impl ChromeSurface {
             if rect.intersect(dirty).is_empty() {
                 continue;
             }
-            let mut color = view.palette.caption_glyph;
+            let frame = if enabled { view.icon_frame(hit) } else { IconFrame::default() };
+            let mut color = mix(view.palette.caption_glyph,
+                view.palette.progress_fill, frame.press);
             if enabled {
                 if hit == Hit::Reload && (view.hover == hit || view.pressed == hit) {
                     self.round(rect, m.island_radius(), view.palette.caption_hover, dirty);
@@ -1103,50 +1517,50 @@ impl ChromeSurface {
             }
             let (cx, cy) = center(rect);
             let (cx, cy) = (cx as f32, cy as f32);
-            let half = m.px(7) as f32;
-            let head = m.px(4) as f32;
-            let w = NAV_STROKE;
+            let scale = m.px(20) as f32 / 24.0 * frame.scale();
+            let nudge = match hit {
+                Hit::Back => -m.px(2) as f32 * frame.press,
+                Hit::Forward => m.px(2) as f32 * frame.press,
+                _ => 0.0,
+            };
+            let rotation = frame.rotation;
+            let point = |x: f32, y: f32| {
+                let dx = (x - 12.0) * scale;
+                let dy = (y - 12.0) * scale;
+                (cx + nudge + dx * rotation.cos() - dy * rotation.sin(),
+                    cy + dx * rotation.sin() + dy * rotation.cos())
+            };
+            let w = 1.5 * scale;
             match hit {
                 Hit::Back | Hit::Forward => {
-                    // Forward is the mirror image of back.
-                    let dir = if hit == Hit::Back { -1.0 } else { 1.0 };
-                    let tip = cx + dir * half;
-                    let tail = cx - dir * half;
-                    self.line_f(tail, cy, tip, cy, w, color, dirty);
-                    self.line_f(tip, cy, tip - dir * head, cy - head, w, color, dirty);
-                    self.line_f(tip, cy, tip - dir * head, cy + head, w, color, dirty);
+                    let (tip, tail, barb) = if hit == Hit::Back {
+                        (4.0, 20.0, 10.0)
+                    } else {
+                        (20.0, 4.0, 14.0)
+                    };
+                    let (x0, y0) = point(tail, 12.0);
+                    let (x1, y1) = point(tip, 12.0);
+                    self.line_f(x0, y0, x1, y1, w, color, dirty);
+                    for y in [6.0, 18.0] {
+                        let (x2, y2) = point(barb, y);
+                        self.line_f(x1, y1, x2, y2, w, color, dirty);
+                    }
                 }
                 _ => {
-                    // A clockwise arc of about 290 degrees, open at the upper right, with an
-                    // arrowhead where it ends. Screen y points down, so angles grow clockwise.
-                    const SEGMENTS: usize = 12;
-                    let radius = half - 1.0;
-                    let start = 10.0_f32.to_radians();
-                    let sweep = 290.0_f32.to_radians();
-                    let point = |step: usize| {
-                        let angle = start + sweep * step as f32 / SEGMENTS as f32;
-                        (cx + radius * angle.cos(), cy + radius * angle.sin())
-                    };
-                    let mut previous = point(0);
+                    // The same 24-grid circular arrow used by Reset.
+                    const SEGMENTS: usize = 20;
+                    let mut previous = point(20.0, 12.0);
                     for step in 1..=SEGMENTS {
-                        let next = point(step);
+                        let angle = 5.75 * step as f32 / SEGMENTS as f32;
+                        let next = point(12.0 + 8.0 * angle.cos(), 12.0 + 8.0 * angle.sin());
                         self.line_f(previous.0, previous.1, next.0, next.1, w, color, dirty);
                         previous = next;
                     }
-                    let end = start + sweep;
-                    let (tangent, normal) = ((-end.sin(), end.cos()), (end.cos(), end.sin()));
-                    let barb = head * 0.9;
-                    for side in [-1.0_f32, 1.0] {
-                        self.line_f(
-                            previous.0,
-                            previous.1,
-                            previous.0 - tangent.0 * head + normal.0 * barb * side,
-                            previous.1 - tangent.1 * head + normal.1 * barb * side,
-                            w,
-                            color,
-                            dirty,
-                        );
-                    }
+                    let (x0, y0) = point(19.0, 3.0);
+                    let (x1, y1) = point(19.0, 8.0);
+                    let (x2, y2) = point(14.0, 8.0);
+                    self.line_f(x0, y0, x1, y1, w, color, dirty);
+                    self.line_f(x1, y1, x2, y2, w, color, dirty);
                 }
             }
         }
@@ -1167,6 +1581,7 @@ impl ChromeSurface {
             let close = i == 2;
             let hovered = view.hover == button_hit;
             let pressed = view.pressed == button_hit;
+            let frame = view.icon_frame(button_hit);
             if hovered || pressed {
                 self.fill_rect(
                     rect,
@@ -1178,34 +1593,48 @@ impl ChromeSurface {
                     dirty,
                 );
             }
-            let color = if close && (hovered || pressed) {
+            let base_color = if close && (hovered || pressed) {
                 view.palette.close_glyph_hover
             } else {
                 view.palette.caption_glyph
             };
+            let color = mix(base_color, view.palette.progress_fill,
+                frame.press.max(if i == 1 { frame.active } else { 0.0 }));
             let (cx, cy) = center(rect);
-            let (p3, p4, p5) = (m.px(3), m.px(4), m.px(5));
+            let (cx, cy) = (cx as f32, cy as f32);
+            let scale = m.px(20) as f32 / 24.0 * frame.scale();
+            let glyph = |x: f32, y: f32| (cx + (x - 12.0) * scale, cy + (y - 12.0) * scale);
+            let stroke = 1.5 * scale;
             match i {
-                0 => self.line(cx - p5, cy, cx + p5, cy, 1.35, color, dirty),
-                1 if view.caption_maximised => {
-                    self.outline_rect(
-                        Rect::new(cx - p5, cy - p4, cx + p4, cy + p4),
-                        1.1,
-                        color,
-                        dirty,
-                    );
-                    self.line(cx - p3, cy - p5, cx + p5, cy - p5, 1.0, color, dirty);
-                    self.line(cx + p5, cy - p5, cx + p5, cy + p3, 1.0, color, dirty);
+                0 => {
+                    let (x0, y0) = glyph(4.0, 12.0);
+                    let (x1, y1) = glyph(20.0, 12.0);
+                    self.line_f(x0, y0, x1, y1, stroke, color, dirty);
                 }
-                1 => self.outline_rect(
-                    Rect::new(cx - p5, cy - p4, cx + p5, cy + p5),
-                    1.1,
-                    color,
-                    dirty,
-                ),
+                1 if view.caption_maximised => {
+                    let (x0, y0) = glyph(7.0, 7.0);
+                    let (x1, y1) = glyph(21.0, 21.0);
+                    self.border(Rect::new(x0.round() as i32, y0.round() as i32,
+                        x1.round() as i32, y1.round() as i32), m.px(2), stroke, color, dirty);
+                    let (x0, y0) = glyph(4.0, 17.0);
+                    let (x1, y1) = glyph(4.0, 5.0);
+                    let (x2, y2) = glyph(18.0, 3.0);
+                    self.line_f(x0, y0, x1, y1, stroke, color, dirty);
+                    self.line_f(x1, y1, x2, y2, stroke, color, dirty);
+                }
+                1 => {
+                    let (x0, y0) = glyph(4.0, 4.0);
+                    let (x1, y1) = glyph(20.0, 20.0);
+                    self.border(Rect::new(x0.round() as i32, y0.round() as i32,
+                        x1.round() as i32, y1.round() as i32), m.px(2), stroke, color, dirty);
+                }
                 _ => {
-                    self.line(cx - p5, cy - p5, cx + p5, cy + p5, 1.45, color, dirty);
-                    self.line(cx - p5, cy + p5, cx + p5, cy - p5, 1.45, color, dirty);
+                    let (x0, y0) = glyph(6.0, 6.0);
+                    let (x1, y1) = glyph(18.0, 18.0);
+                    let (x2, y2) = glyph(6.0, 18.0);
+                    let (x3, y3) = glyph(18.0, 6.0);
+                    self.line_f(x0, y0, x1, y1, stroke, color, dirty);
+                    self.line_f(x2, y2, x3, y3, stroke, color, dirty);
                 }
             }
         }
@@ -1248,7 +1677,8 @@ impl ChromeSurface {
             _ => view.palette.omnibox_placeholder,
         };
         let button = view.layout.site_info_button();
-        self.paint_site_icon(view.omnibox.site, button, icon_colour, dirty);
+        self.paint_site_icon(view.omnibox.site, button, icon_colour,
+            view.icon_frame(Hit::SiteInfo), view.palette.progress_fill, dirty);
         self.paint_split_button(view, split_button, dirty);
         // Text, selection and caret never leave the field, however far the text is scrolled.
         let field = Rect::new(text_area.left, rect.top, text_area.right, rect.bottom);
@@ -1365,26 +1795,47 @@ impl ChromeSurface {
                 let bar_h = m.px(2).max(1);
                 let bottom = rect.bottom;
                 let top = bottom - bar_h;
-                let width = (rect.width() as f32 * progress.clamp(0.0, 100.0) / 100.0).round() as i32;
+                let width =
+                    (rect.width() as f32 * progress.clamp(0.0, 100.0) / 100.0).round() as i32;
                 let bar = Rect::new(rect.left, top, rect.left + width, bottom);
                 let (surface_w, surface_h, stride) = (self.width, self.height, self.stride());
                 let opacity = ((200.0 - progress) / 100.0).clamp(0.0, 1.0);
                 for (extra, alpha) in [(m.px(4), 0.09), (m.px(2), 0.18), (0, 1.0)] {
                     let glow = Rect::new(bar.left, bar.top - extra, bar.right, bar.bottom);
                     raster_rounded_rect_clipped(
-                        self.dib.pixels_mut(), surface_w, surface_h, stride,
-                        glow, 0.0, rect, radius as f32,
-                        scale_alpha(view.palette.progress_fill, opacity * alpha), dirty,
+                        self.dib.pixels_mut(),
+                        surface_w,
+                        surface_h,
+                        stride,
+                        glow,
+                        0.0,
+                        rect,
+                        radius as f32,
+                        scale_alpha(view.palette.progress_fill, opacity * alpha),
+                        dirty,
                     );
                 }
                 if (100.0..200.0).contains(&progress) {
                     let tail = m.px(14);
-                    let sweep = bar.left + (bar.width() as f32 * ((progress - 100.0) / 100.0)) as i32;
-                    let shimmer = Rect::new((sweep - tail).max(bar.left), top - m.px(2), sweep.min(bar.right), bottom);
+                    let sweep =
+                        bar.left + (bar.width() as f32 * ((progress - 100.0) / 100.0)) as i32;
+                    let shimmer = Rect::new(
+                        (sweep - tail).max(bar.left),
+                        top - m.px(2),
+                        sweep.min(bar.right),
+                        bottom,
+                    );
                     raster_rounded_rect_clipped(
-                        self.dib.pixels_mut(), surface_w, surface_h, stride,
-                        shimmer, 0.0, rect, radius as f32,
-                        scale_alpha(view.palette.progress_fill, opacity * 0.22), dirty,
+                        self.dib.pixels_mut(),
+                        surface_w,
+                        surface_h,
+                        stride,
+                        shimmer,
+                        0.0,
+                        rect,
+                        radius as f32,
+                        scale_alpha(view.palette.progress_fill, opacity * 0.22),
+                        dirty,
                     );
                 }
             }
@@ -1392,7 +1843,9 @@ impl ChromeSurface {
     }
 
     fn paint_split_button(&mut self, view: &ChromeView<'_>, rect: Rect, dirty: Rect) {
-        if rect.intersect(dirty).is_empty() { return; }
+        if rect.intersect(dirty).is_empty() {
+            return;
+        }
         let m = view.layout.metrics;
         if view.hover == Hit::Split || view.pressed == Hit::Split {
             let colour = if view.pressed == Hit::Split {
@@ -1403,82 +1856,108 @@ impl ChromeSurface {
             self.round(rect, m.px(6), colour, dirty);
         }
         let inset = m.px(5).max(4);
-        let left = Rect::new(rect.left + inset, rect.top + inset, rect.left + inset * 2, rect.bottom - inset);
-        let right = Rect::new(rect.right - inset * 2, rect.top + inset, rect.right - inset, rect.bottom - inset);
+        let left = Rect::new(
+            rect.left + inset,
+            rect.top + inset,
+            rect.left + inset * 2,
+            rect.bottom - inset,
+        );
+        let right = Rect::new(
+            rect.right - inset * 2,
+            rect.top + inset,
+            rect.right - inset,
+            rect.bottom - inset,
+        );
         self.border(left, m.px(2), 1.0, view.palette.caption_glyph, dirty);
         self.border(right, m.px(2), 1.0, view.palette.caption_glyph, dirty);
         let (cx, _) = center(rect);
-        self.line(cx, rect.top + inset, cx, rect.bottom - inset, 1.0, view.palette.caption_glyph, dirty);
+        self.line(
+            cx,
+            rect.top + inset,
+            cx,
+            rect.bottom - inset,
+            1.0,
+            view.palette.caption_glyph,
+            dirty,
+        );
     }
 
-    /// Draws the connection icon centred in `button`, on a 14-unit grid: a padlock when the page is
+    /// Draws the connection icon centred in `button`, on the shared 24-unit grid: a padlock when the page is
     /// secure, an open padlock for plain HTTP, a warning sign for a certificate problem, an info mark
     /// for local or unknown pages, and a magnifier before any page is loaded.
-    fn paint_site_icon(&mut self, state: SiteSecurity, button: Rect, colour: Rgba, dirty: Rect) {
-        const GRID: f32 = 14.0;
+    fn paint_site_icon(&mut self, state: SiteSecurity, button: Rect, colour: Rgba,
+        frame: IconFrame, accent: Rgba, dirty: Rect) {
+        const GRID: f32 = 24.0;
         const ARC_STEPS: usize = 12;
-        let size = button.width() * 14 / 24;
-        let left = button.left + (button.width() - size) / 2;
-        let top = button.top + (button.height() - size) / 2;
-        let scale = size as f32 / GRID;
-        let point = |x: f32, y: f32| (left as f32 + x * scale, top as f32 + y * scale);
+        let size = button.width() * 18 / 24;
+        let (cx, cy) = center(button);
+        let scale = size as f32 / GRID * frame.scale();
+        let (cx, cy) = (cx as f32, cy as f32);
+        let point = |x: f32, y: f32| (cx + (x - 12.0) * scale,
+            cy + (y - 12.0) * scale);
+        let colour = mix(colour, accent, frame.press.max(frame.active * 0.55));
         let grid_rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
             let (a, b) = point(x0, y0);
             let (c, d) = point(x1, y1);
-            Rect::new(a.round() as i32, b.round() as i32, c.round() as i32, d.round() as i32)
+            Rect::new(
+                a.round() as i32,
+                b.round() as i32,
+                c.round() as i32,
+                d.round() as i32,
+            )
         };
-        let stroke = (1.3 * self.dpi as f32 / 96.0).max(1.0);
+        let stroke = (1.5 * scale).max(1.0);
         match state {
             SiteSecurity::Secure | SiteSecurity::NotSecure => {
-                let body = grid_rect(2.0, 6.5, 12.0, 13.0);
-                self.round(body, body.width() / 5, colour, dirty);
-                // Closed shackle for a secure page. For plain HTTP the arc stops short of the right
-                // leg, so the shackle looks unlatched.
+                let body = grid_rect(4.0, 10.0, 20.0, 21.0);
+                self.border(body, (2.0 * scale).round() as i32, stroke, colour, dirty);
                 let end = if state == SiteSecurity::Secure {
                     0.0
                 } else {
                     std::f32::consts::PI / 3.0
                 };
-                let mut path = vec![point(4.0, 6.5), point(4.0, 4.0)];
+                let mut previous = point(7.0, 10.0);
+                let next = point(7.0, 7.5);
+                self.line_f(previous.0, previous.1, next.0, next.1, stroke, colour, dirty);
+                previous = next;
                 for step in 0..=ARC_STEPS {
                     let t = std::f32::consts::PI
                         - (std::f32::consts::PI - end) * step as f32 / ARC_STEPS as f32;
-                    path.push(point(7.0 + 3.0 * t.cos(), 4.0 - 3.0 * t.sin()));
+                    let next = point(12.0 + 5.0 * t.cos(), 7.5 - 5.0 * t.sin());
+                    self.line_f(previous.0, previous.1, next.0, next.1, stroke, colour, dirty);
+                    previous = next;
                 }
                 if state == SiteSecurity::Secure {
-                    path.push(point(10.0, 6.5));
-                }
-                for pair in path.windows(2) {
-                    let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
-                    self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
+                    let next = point(17.0, 10.0);
+                    self.line_f(previous.0, previous.1, next.0, next.1, stroke, colour, dirty);
                 }
             }
             SiteSecurity::CertificateProblem => {
-                let corners = [point(7.0, 1.5), point(13.0, 12.5), point(1.0, 12.5)];
+                let corners = [point(12.0, 3.0), point(21.0, 20.0), point(3.0, 20.0)];
                 for index in 0..3 {
                     let ((x0, y0), (x1, y1)) = (corners[index], corners[(index + 1) % 3]);
                     self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
                 }
-                let (x0, y0) = point(7.0, 5.0);
-                let (x1, y1) = point(7.0, 8.5);
+                let (x0, y0) = point(12.0, 9.0);
+                let (x1, y1) = point(12.0, 14.0);
                 self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
-                let dot = grid_rect(6.1, 9.9, 7.9, 11.7);
+                let dot = grid_rect(11.0, 16.5, 13.0, 18.5);
                 self.round(dot, dot.width() / 2, colour, dirty);
             }
             SiteSecurity::Internal | SiteSecurity::Unknown => {
-                let ring = grid_rect(1.0, 1.0, 13.0, 13.0);
+                let ring = grid_rect(3.0, 3.0, 21.0, 21.0);
                 self.border(ring, ring.width() / 2, stroke, colour, dirty);
-                let dot = grid_rect(6.1, 2.9, 7.9, 4.7);
+                let dot = grid_rect(11.0, 6.0, 13.0, 8.0);
                 self.round(dot, dot.width() / 2, colour, dirty);
-                let (x0, y0) = point(7.0, 6.5);
-                let (x1, y1) = point(7.0, 10.5);
+                let (x0, y0) = point(12.0, 11.0);
+                let (x1, y1) = point(12.0, 17.0);
                 self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
             }
             SiteSecurity::NoSite => {
-                let lens = grid_rect(1.5, 1.5, 9.5, 9.5);
+                let lens = grid_rect(4.0, 4.0, 17.0, 17.0);
                 self.border(lens, lens.width() / 2, stroke, colour, dirty);
-                let (x0, y0) = point(9.0, 9.0);
-                let (x1, y1) = point(12.5, 12.5);
+                let (x0, y0) = point(15.5, 15.5);
+                let (x1, y1) = point(20.5, 20.5);
                 self.line_f(x0, y0, x1, y1, stroke, colour, dirty);
             }
         }
@@ -1717,7 +2196,7 @@ fn center(rect: Rect) -> (i32, i32) {
 }
 
 /// Stroke width of the toolbar glyphs: back, forward, reload and the main menu.
-const NAV_STROKE: f32 = 1.3;
+const NAV_STROKE: f32 = 1.5;
 
 /// The main menu glyph's three bars as `(left, right, y)` stroke centrelines, top to bottom.
 ///
@@ -1765,6 +2244,16 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
         g: channel(a.g, b.g),
         b: channel(a.b, b.b),
         a: alpha.round() as u8,
+    }
+}
+
+/// How far a rail button's hover has faded in. A button still fading uses its fade, and a button the
+/// pointer rests on without a fade is fully hovered.
+fn rail_hover_amount(view: &ChromeView<'_>, rail: &RailView<'_>, key: RailKey) -> f32 {
+    match rail.fades.iter().find(|fade| fade.key == key) {
+        Some(fade) => fade.amount,
+        None if view.hover == Hit::Rail(key) => 1.0,
+        None => 0.0,
     }
 }
 
@@ -2581,6 +3070,8 @@ mod tests {
             },
             now: Instant::now(),
             departures: &[],
+            rail: None,
+            icon_motion: None,
         };
         let dirty = Rect::new(0, 0, 240, 84);
         let mut surface = ChromeSurface::new(500, 120, 96);
@@ -2637,6 +3128,8 @@ mod tests {
             omnibox,
             now: Instant::now(),
             departures: &[],
+            rail: None,
+            icon_motion: None,
         }
     }
 
@@ -2687,10 +3180,573 @@ mod tests {
             omnibox: omnibox("", (0, 0), ""),
             now,
             departures,
+            rail: None,
+            icon_motion: None,
         };
         let mut surface = ChromeSurface::new(1000, 120, 96);
         surface.paint(&view, Rect::new(0, 0, 1000, surface.height()));
         surface
+    }
+
+    use crate::chrome::rail::{RailFade, WorkspaceGlyph};
+
+    fn rail_entry(key: RailKey, icon: RailIcon) -> RailEntry<'static> {
+        RailEntry {
+            key,
+            icon,
+            label: "Work".to_owned(),
+            active: false,
+            dot: false,
+            accent: None,
+            favicon: None,
+        }
+    }
+
+    /// Paints a rail of the given entries into `surface`, which is a 300 x 400 logical client.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_rail_with(
+        surface: &mut ChromeSurface,
+        entries: &[RailEntry<'_>],
+        dpi: u32,
+        hover: Hit,
+        pressed: Hit,
+        fades: &[RailFade],
+        open_panel: Option<RailKey>,
+        dirty: Rect,
+    ) {
+        paint_rail_decorated(surface, entries, dpi, hover, pressed, fades, open_panel, None, None, None, dirty);
+    }
+
+    fn paint_rail_decorated(
+        surface: &mut ChromeSurface,
+        entries: &[RailEntry<'_>],
+        dpi: u32,
+        hover: Hit,
+        pressed: Hit,
+        fades: &[RailFade],
+        open_panel: Option<RailKey>,
+        focused: Option<RailKey>,
+        drop_indicator: Option<crate::chrome::rail::RailDropIndicator>,
+        tooltip: Option<RailKey>,
+        dirty: Rect,
+    ) {
+        let m = Metrics::new(dpi);
+        let layout = layout::compute_in_frame(m.px(300), m.px(400), dpi, 0, 0, false);
+        let view = ChromeView {
+            layout: &layout,
+            palette: palette(Appearance::Light, false),
+            tabs: &[],
+            active: 0,
+            hover,
+            pressed,
+            caption_maximised: false,
+            can_back: false,
+            can_forward: false,
+            omnibox: omnibox("", (0, 0), ""),
+            now: Instant::now(),
+            departures: &[],
+            rail: Some(RailView {
+                entries,
+                fades,
+                open_panel,
+                scroll: 0,
+                drop_indicator,
+                focused,
+                tooltip,
+            }),
+            icon_motion: None,
+        };
+        surface.paint(&view, dirty);
+    }
+
+    fn paint_rail(
+        entries: &[RailEntry<'_>],
+        dpi: u32,
+        hover: Hit,
+        pressed: Hit,
+        fades: &[RailFade],
+        open_panel: Option<RailKey>,
+    ) -> ChromeSurface {
+        let m = Metrics::new(dpi);
+        let (width, height) = (m.px(300), m.px(400));
+        let mut surface = ChromeSurface::new(width, height, dpi);
+        let whole = Rect::new(0, 0, width, height);
+        paint_rail_with(
+            &mut surface,
+            entries,
+            dpi,
+            hover,
+            pressed,
+            fades,
+            open_panel,
+            whole,
+        );
+        surface
+    }
+
+    fn button_rect(entries: &[RailEntry<'_>], dpi: u32, key: RailKey) -> Rect {
+        let m = Metrics::new(dpi);
+        let layout = layout::compute_in_frame(m.px(300), m.px(400), dpi, 0, 0, false);
+        rail::geometry(layout.rail, entries, 0, dpi)
+            .item(key)
+            .expect("the key is placed")
+            .rect
+    }
+
+    /// The premultiplied BGRA bytes of `rect`, row by row.
+    fn pixels_in(surface: &ChromeSurface, rect: Rect) -> Vec<u8> {
+        let stride = surface.stride();
+        let mut out = Vec::with_capacity(rect.width() as usize * rect.height() as usize * 4);
+        for y in rect.top..rect.bottom {
+            let start = y as usize * stride + rect.left as usize * 4;
+            out.extend_from_slice(&surface.pixels()[start..start + rect.width() as usize * 4]);
+        }
+        out
+    }
+
+    fn pixel_at(surface: &ChromeSurface, x: i32, y: i32) -> [u8; 4] {
+        let i = y as usize * surface.stride() + x as usize * 4;
+        surface.pixels()[i..i + 4].try_into().expect("four bytes")
+    }
+
+    #[test]
+    fn every_rail_icon_paints_visible_and_distinct_pixels() {
+        let icons: Vec<RailIcon> = [
+            RailIcon::Home,
+            RailIcon::Customize,
+            RailIcon::Plus,
+            RailIcon::Heart,
+            RailIcon::Clock,
+            RailIcon::Dots,
+            RailIcon::AppTile,
+            RailIcon::Letter,
+        ]
+        .into_iter()
+        .chain(WorkspaceGlyph::ALL.map(RailIcon::Glyph))
+        .collect();
+        let key = RailKey::Workspace(1);
+        for dpi in [96, 144, 192] {
+            let blank = paint_rail(&[], dpi, Hit::None, Hit::None, &[], None);
+            let mut seen = Vec::new();
+            for icon in icons.iter().copied() {
+                let entries = [rail_entry(key, icon)];
+                let rect = button_rect(&entries, dpi, key);
+                let painted = paint_rail(&entries, dpi, Hit::None, Hit::None, &[], None);
+                let pixels = pixels_in(&painted, rect);
+                assert!(
+                    pixels != pixels_in(&blank, rect),
+                    "{icon:?} draws nothing at dpi {dpi}"
+                );
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&pixels, &mut hasher);
+                let print = std::hash::Hasher::finish(&hasher);
+                assert!(
+                    !seen.contains(&print),
+                    "{icon:?} draws the same pixels as an earlier icon at dpi {dpi}"
+                );
+                seen.push(print);
+            }
+        }
+    }
+
+    #[test]
+    fn a_hover_fade_paints_between_rest_and_full_hover() {
+        let key = RailKey::Workspace(1);
+        let entries = [rail_entry(key, RailIcon::Glyph(WorkspaceGlyph::Star))];
+        let rect = button_rect(&entries, 96, key);
+        let rest = pixels_in(&paint_rail(&entries, 96, Hit::None, Hit::None, &[], None), rect);
+        let half_fade = [RailFade { key, amount: 0.5 }];
+        let half = pixels_in(
+            &paint_rail(&entries, 96, Hit::None, Hit::None, &half_fade, None),
+            rect,
+        );
+        let full = pixels_in(
+            &paint_rail(&entries, 96, Hit::Rail(key), Hit::None, &[], None),
+            rect,
+        );
+        let snapped_fade = [RailFade { key, amount: 1.0 }];
+        let snapped = pixels_in(
+            &paint_rail(&entries, 96, Hit::None, Hit::None, &snapped_fade, None),
+            rect,
+        );
+
+        assert!(rest != half, "a half fade is visible");
+        assert!(half != full, "a half fade is weaker than full hover");
+        assert!(full == snapped, "a settled fade paints like a resting hover");
+    }
+
+    #[test]
+    fn the_active_workspace_shows_a_bar_in_its_accent() {
+        let key = RailKey::Workspace(1);
+        let mut entry = rail_entry(key, RailIcon::Glyph(WorkspaceGlyph::Code));
+        let rest = paint_rail(std::slice::from_ref(&entry), 96, Hit::None, Hit::None, &[], None);
+        entry.active = true;
+        entry.accent = Some(Rgba::hex(0x2E9E5B, 0xFF));
+        let entries = [entry];
+        let active = paint_rail(&entries, 96, Hit::None, Hit::None, &[], None);
+
+        let rect = button_rect(&entries, 96, key);
+        let bar_x = layout::left_rail(400, 96).left + Metrics::new(96).px(1) + 1;
+        let mid_y = rect.top + rect.height() / 2;
+        assert_eq!(
+            pixel_at(&active, bar_x, mid_y),
+            [0x5B, 0x9E, 0x2E, 0xFF],
+            "the bar is the workspace accent"
+        );
+        assert_ne!(pixel_at(&rest, bar_x, mid_y), [0x5B, 0x9E, 0x2E, 0xFF]);
+    }
+
+    #[test]
+    fn open_and_pressed_buttons_differ_from_rest() {
+        let key = RailKey::History;
+        let entries = [rail_entry(key, RailIcon::Clock)];
+        let rect = button_rect(&entries, 96, key);
+        let rest = pixels_in(&paint_rail(&entries, 96, Hit::None, Hit::None, &[], None), rect);
+        let open = pixels_in(
+            &paint_rail(&entries, 96, Hit::None, Hit::None, &[], Some(key)),
+            rect,
+        );
+        let pressed = pixels_in(
+            &paint_rail(&entries, 96, Hit::Rail(key), Hit::Rail(key), &[], None),
+            rect,
+        );
+        assert!(open != rest, "an open panel is highlighted");
+        assert!(pressed != rest, "a pressed button is highlighted");
+        assert!(pressed != open, "press and open read differently");
+    }
+
+    /// Paints the whole 300 x 400 rail at 96 dpi at the instant `now`, into a surface that keeps its
+    /// rail motion between calls, as the window's does.
+    fn paint_rail_at(
+        surface: &mut ChromeSurface,
+        entries: &[RailEntry<'_>],
+        hover: Hit,
+        pressed: Hit,
+        fades: &[RailFade],
+        now: Instant,
+    ) {
+        let layout = layout::compute_in_frame(300, 400, 96, 0, 0, false);
+        let view = ChromeView {
+            layout: &layout,
+            palette: palette(Appearance::Light, false),
+            tabs: &[],
+            active: 0,
+            hover,
+            pressed,
+            caption_maximised: false,
+            can_back: false,
+            can_forward: false,
+            omnibox: omnibox("", (0, 0), ""),
+            now,
+            departures: &[],
+            rail: Some(RailView {
+                entries,
+                fades,
+                open_panel: None,
+                scroll: 0,
+                drop_indicator: None,
+                focused: None,
+                tooltip: None,
+            }),
+            icon_motion: None,
+        };
+        surface.paint(&view, Rect::new(0, 0, 300, 400));
+    }
+
+    fn at_ms(start: Instant, ms: u64) -> Instant {
+        start + std::time::Duration::from_millis(ms)
+    }
+
+    /// The area of ink inside the button, in pixels, away from its rounded corners. Each pixel's
+    /// distance from the button's own plate colour is taken as a share of the largest distance, so
+    /// plates that differ between states (rest, hover, press) still compare fairly: a fully inked
+    /// pixel counts one and an antialiased edge counts its coverage.
+    fn ink_mass(surface: &ChromeSurface, button: Rect) -> f32 {
+        let plate = pixel_at(surface, button.left + 4, button.top + button.height() / 2);
+        let mut distances = Vec::new();
+        for y in button.top + 5..button.bottom - 5 {
+            for x in button.left + 5..button.right - 5 {
+                let p = pixel_at(surface, x, y);
+                distances.push((0..4).map(|i| u32::from(p[i].abs_diff(plate[i]))).sum::<u32>());
+            }
+        }
+        let full = distances.iter().copied().max().unwrap_or(0).max(1) as f32;
+        distances.iter().map(|&d| d as f32 / full).sum()
+    }
+
+    /// Pixels inside the button that are the solid accent.
+    fn accent_pixels(surface: &ChromeSurface, button: Rect, accent: Rgba) -> usize {
+        let mut count = 0;
+        for y in button.top + 5..button.bottom - 5 {
+            for x in button.left + 5..button.right - 5 {
+                let p = pixel_at(surface, x, y);
+                let near = |have: u8, want: u8| have.abs_diff(want) <= 6;
+                if near(p[0], accent.b) && near(p[1], accent.g) && near(p[2], accent.r) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn a_press_sinks_the_icon_at_once_and_eases_back_out() {
+        let key = RailKey::Home;
+        let entries = [rail_entry(key, RailIcon::Plus)];
+        let button = button_rect(&entries, 96, key);
+        let start = Instant::now();
+        let mut surface = ChromeSurface::new(300, 400, 96);
+
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], start);
+        let rest = ink_mass(&surface, button);
+        let rest_pixels = pixels_in(&surface, button);
+
+        let down = at_ms(start, 20);
+        paint_rail_at(&mut surface, &entries, Hit::Rail(key), Hit::Rail(key), &[], down);
+        let pressed = ink_mass(&surface, button);
+        assert!(pressed < rest, "the icon is smaller on the very frame of the press");
+        assert!(!surface.rail_animating(down), "an instant press needs no timer");
+
+        let up = at_ms(start, 120);
+        paint_rail_at(&mut surface, &entries, Hit::Rail(key), Hit::None, &[], up);
+        assert!(surface.rail_animating(up), "the release eases back out");
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], at_ms(up, 70));
+        let mid = ink_mass(&surface, button);
+        assert!(pressed < mid && mid < rest, "mid-release is between sunk and rest: {pressed} < {mid} < {rest}");
+
+        let settled = at_ms(up, 300);
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], settled);
+        assert!(!surface.rail_animating(settled));
+        assert!(pixels_in(&surface, button) == rest_pixels, "settled pixels equal the rest pixels");
+    }
+
+    #[test]
+    fn hover_lifts_the_icon_and_weights_its_stroke() {
+        let key = RailKey::Home;
+        let entries = [rail_entry(key, RailIcon::Plus)];
+        let button = button_rect(&entries, 96, key);
+        let now = Instant::now();
+        let mut rest = ChromeSurface::new(300, 400, 96);
+        let mut hovered = ChromeSurface::new(300, 400, 96);
+        paint_rail_at(&mut rest, &entries, Hit::None, Hit::None, &[], now);
+        let full = [RailFade { key, amount: 1.0 }];
+        paint_rail_at(&mut hovered, &entries, Hit::Rail(key), Hit::None, &full, now);
+        assert!(
+            ink_mass(&hovered, button) > ink_mass(&rest, button),
+            "a hovered icon is bigger and heavier"
+        );
+    }
+
+    #[test]
+    fn an_activated_button_draws_itself_on_in_its_accent_then_settles() {
+        let key = RailKey::Home;
+        let mut entry = rail_entry(key, RailIcon::Home);
+        let button = button_rect(std::slice::from_ref(&entry), 96, key);
+        let accent = palette(Appearance::Light, false).tab_group_accent;
+        let start = Instant::now();
+        let mut surface = ChromeSurface::new(300, 400, 96);
+
+        paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
+        assert_eq!(accent_pixels(&surface, button, accent), 0, "idle has no accent stroke");
+
+        entry.active = true;
+        let entries = [entry];
+        let on = at_ms(start, 50);
+        let mut counts = Vec::new();
+        for offset in [0, 45, 90, 135, 400] {
+            paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], at_ms(on, offset));
+            counts.push(accent_pixels(&surface, button, accent));
+        }
+        assert_eq!(counts[0], 0, "the draw-on starts from nothing");
+        assert!(counts.windows(2).all(|pair| pair[0] <= pair[1]), "it only grows: {counts:?}");
+        assert!(counts[2] > 0 && counts[2] < counts[4], "it is part-drawn midway: {counts:?}");
+        assert!(!surface.rail_animating(at_ms(on, 400)), "settled");
+
+        let mut fresh = ChromeSurface::new(300, 400, 96);
+        paint_rail_at(&mut fresh, &entries, Hit::None, Hit::None, &[], start);
+        assert!(
+            pixels_in(&surface, button) == pixels_in(&fresh, button),
+            "a settled draw-on paints like an icon that was already active"
+        );
+    }
+
+    #[test]
+    fn deactivating_undraws_and_the_bar_shrinks_away() {
+        let key = RailKey::Workspace(1);
+        let mut entry = rail_entry(key, RailIcon::Glyph(WorkspaceGlyph::Code));
+        entry.active = true;
+        entry.accent = Some(Rgba::hex(0x2E9E5B, 0xFF));
+        let button = button_rect(std::slice::from_ref(&entry), 96, key);
+        let bar_x = layout::left_rail(400, 96).left + Metrics::new(96).px(1) + 1;
+        let (bar_top, bar_bottom) = (button.top + 2, button.bottom - 2);
+        let bar_rows = |surface: &ChromeSurface| {
+            (bar_top..bar_bottom)
+                .filter(|&y| pixel_at(surface, bar_x, y) == [0x5B, 0x9E, 0x2E, 0xFF])
+                .count()
+        };
+        let start = Instant::now();
+        let mut surface = ChromeSurface::new(300, 400, 96);
+        paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
+        let full = bar_rows(&surface);
+        assert!(full > 0);
+
+        entry.active = false;
+        let entries = [entry];
+        let off = at_ms(start, 30);
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], off);
+        assert_eq!(bar_rows(&surface), full, "it leaves from the full bar");
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], at_ms(off, 60));
+        assert!(bar_rows(&surface) < full, "the bar is shrinking");
+        paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], at_ms(off, 300));
+        assert_eq!(bar_rows(&surface), 0, "and is gone once settled");
+        assert!(!surface.rail_animating(at_ms(off, 300)));
+    }
+
+    #[test]
+    fn reduced_motion_paints_press_and_active_end_states_without_a_frame() {
+        let key = RailKey::Home;
+        let mut entry = rail_entry(key, RailIcon::Home);
+        let button = button_rect(std::slice::from_ref(&entry), 96, key);
+        let start = Instant::now();
+        let mut snapped = ChromeSurface::new(300, 400, 96);
+        let _ = snapped.set_rail_snap(true, start);
+        paint_rail_at(&mut snapped, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
+
+        entry.active = true;
+        let entries = [entry];
+        let later = at_ms(start, 1);
+        paint_rail_at(&mut snapped, &entries, Hit::Rail(key), Hit::Rail(key), &[], later);
+        assert!(!snapped.rail_animating(later), "no frame timer is requested");
+        let frame = snapped.rail_step(later);
+        assert!(!frame.running && !frame.repaint);
+
+        let mut settled = ChromeSurface::new(300, 400, 96);
+        paint_rail_at(&mut settled, &entries, Hit::Rail(key), Hit::Rail(key), &[], start);
+        assert!(
+            pixels_in(&snapped, button) == pixels_in(&settled, button),
+            "the very next frame is already the end state"
+        );
+    }
+
+    #[test]
+    fn the_rail_stops_asking_for_frames_once_press_and_active_settle() {
+        let key = RailKey::Home;
+        let mut entry = rail_entry(key, RailIcon::Home);
+        let start = Instant::now();
+        let mut surface = ChromeSurface::new(300, 400, 96);
+        paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
+        assert!(!surface.rail_animating(start), "an idle rail has no timer");
+
+        entry.active = true;
+        let on = at_ms(start, 10);
+        paint_rail_at(&mut surface, &[entry], Hit::None, Hit::None, &[], on);
+        assert!(surface.rail_animating(on));
+        let mut now = on;
+        let mut frames = 0;
+        loop {
+            now = at_ms(now, 16);
+            let frame = surface.rail_step(now);
+            if !frame.running {
+                assert!(frame.repaint, "the landing frame repaints");
+                break;
+            }
+            frames += 1;
+            assert!(frames < 30, "the timer must stop");
+        }
+        assert!(!surface.rail_animating(now));
+    }
+
+    #[test]
+    fn rail_focus_drop_line_and_tooltip_are_painted() {
+        use crate::chrome::rail::RailDropIndicator;
+        let key = RailKey::Workspace(1);
+        let entries = [rail_entry(key, RailIcon::Glyph(WorkspaceGlyph::Star))];
+        let m = Metrics::new(96);
+        let layout = layout::compute_in_frame(m.px(300), m.px(400), 96, 0, 0, false);
+        let rect = button_rect(&entries, 96, key);
+        let whole = Rect::new(0, 0, m.px(300), m.px(400));
+        let mut base = ChromeSurface::new(whole.right, whole.bottom, 96);
+        let mut decorated = ChromeSurface::new(whole.right, whole.bottom, 96);
+        paint_rail_with(&mut base, &entries, 96, Hit::None, Hit::None, &[], None, whole);
+        paint_rail_decorated(
+            &mut decorated,
+            &entries,
+            96,
+            Hit::None,
+            Hit::None,
+            &[],
+            None,
+            Some(key),
+            Some(RailDropIndicator { y: rect.bottom }),
+            Some(key),
+            whole,
+        );
+        assert_ne!(pixels_in(&base, rect), pixels_in(&decorated, rect), "the focus ring changes the button pixels");
+        let indicator_x = layout.rail.left + 8;
+        assert_ne!(pixel_at(&base, indicator_x, rect.bottom), pixel_at(&decorated, indicator_x, rect.bottom));
+        assert_ne!(base.pixels(), decorated.pixels(), "the tooltip paints outside the button");
+    }
+
+    #[test]
+    fn repainting_only_a_buttons_dirty_rect_matches_a_full_paint() {
+        let key = RailKey::History;
+        let entries = [rail_entry(key, RailIcon::Clock)];
+        let m = Metrics::new(144);
+        let (width, height) = (m.px(300), m.px(400));
+        let layout = layout::compute_in_frame(width, height, 144, 0, 0, false);
+        let dirty = rail::geometry(layout.rail, &entries, 0, 144).dirty_for(&[key]);
+        let rect = button_rect(&entries, 144, key);
+        assert!(dirty.contains_rect(rect), "the dirty rect covers the whole button");
+
+        let full = paint_rail(&entries, 144, Hit::Rail(key), Hit::None, &[], None);
+        let mut incremental = ChromeSurface::new(width, height, 144);
+        let whole = Rect::new(0, 0, width, height);
+        paint_rail_with(
+            &mut incremental,
+            &entries,
+            144,
+            Hit::None,
+            Hit::None,
+            &[],
+            None,
+            whole,
+        );
+        paint_rail_with(
+            &mut incremental,
+            &entries,
+            144,
+            Hit::Rail(key),
+            Hit::None,
+            &[],
+            None,
+            dirty,
+        );
+        assert!(
+            pixels_in(&incremental, rect) == pixels_in(&full, rect),
+            "the hover repaints exactly the button"
+        );
+    }
+
+    #[test]
+    fn a_favicon_replaces_the_letter_tile() {
+        let key = RailKey::App(4);
+        let favicon = crate::favicon::FaviconBitmap {
+            width: 2,
+            height: 2,
+            bgra_premultiplied: vec![0x20, 0x40, 0x80, 0xFF].repeat(4),
+        };
+        let letter = [rail_entry(key, RailIcon::Letter)];
+        let with_favicon = [RailEntry {
+            favicon: Some(&favicon),
+            ..rail_entry(key, RailIcon::Letter)
+        }];
+        let rect = button_rect(&letter, 96, key);
+        let tile = pixels_in(&paint_rail(&letter, 96, Hit::None, Hit::None, &[], None), rect);
+        let icon = pixels_in(
+            &paint_rail(&with_favicon, 96, Hit::None, Hit::None, &[], None),
+            rect,
+        );
+        assert!(tile != icon, "a favicon is drawn in place of the letter");
     }
 
     #[test]
@@ -2856,7 +3912,11 @@ mod tests {
         }
         for y in chrome..surface.height() {
             for x in 0..surface.width() {
-                assert_eq!(alpha_at(&surface, x, y), 0, "transparent page overlay pixel ({x},{y})");
+                assert_eq!(
+                    alpha_at(&surface, x, y),
+                    0,
+                    "transparent page overlay pixel ({x},{y})"
+                );
             }
         }
     }
@@ -3164,11 +4224,18 @@ mod tests {
             assert_eq!(pitch, bars[2].2 - bars[1].2, "equal spacing at dpi {dpi}");
             assert_eq!(pitch.fract(), 0.0, "integer pitch at dpi {dpi}");
             assert!(pitch >= NAV_STROKE + 2.0, "bars stay distinct at dpi {dpi}");
-            assert!((bars[1].2 - centre_y).abs() <= 0.5, "middle bar centred at dpi {dpi}");
+            assert!(
+                (bars[1].2 - centre_y).abs() <= 0.5,
+                "middle bar centred at dpi {dpi}"
+            );
             for (left, right, y) in bars {
                 assert_eq!(y.fract(), 0.5, "bar on a pixel-row centre at dpi {dpi}");
                 assert_eq!((left + right) / 2.0, centre_x, "centred at dpi {dpi}");
-                assert_eq!(right - left, bars[0].1 - bars[0].0, "equal bars at dpi {dpi}");
+                assert_eq!(
+                    right - left,
+                    bars[0].1 - bars[0].0,
+                    "equal bars at dpi {dpi}"
+                );
                 // Stroke and round caps keep clear of the outline.
                 let reach = NAV_STROKE / 2.0 + 2.0;
                 assert!(left - reach >= rect.left as f32, "dpi {dpi}");
@@ -3214,7 +4281,11 @@ mod tests {
             assert_eq!(at(x, rows[1]), ink, "dpi {dpi}");
             assert_eq!(at(x, rows[2]), ink, "dpi {dpi}");
             let gap = (rows[0] + rows[1]) / 2;
-            assert_ne!(at(x, gap), ink, "gap between bars is unpainted at dpi {dpi}");
+            assert_ne!(
+                at(x, gap),
+                ink,
+                "gap between bars is unpainted at dpi {dpi}"
+            );
         }
     }
 
@@ -3255,7 +4326,8 @@ mod tests {
                         (Hit::MainMenu, Hit::None),
                         (Hit::MainMenu, Hit::MainMenu),
                     ];
-                    let crop_w: i32 = crops.iter().map(|crop| crop.width()).sum::<i32>() * states.len() as i32;
+                    let crop_w: i32 =
+                        crops.iter().map(|crop| crop.width()).sum::<i32>() * states.len() as i32;
                     let crop_h = crops[0].height();
                     let (out_w, out_h) = (crop_w as usize * scale, crop_h as usize * scale);
                     let mut out = vec![0u8; out_w * out_h * 4];
@@ -3373,12 +4445,7 @@ mod tests {
                 let shell = Rect::new(first.left, first.top, last.right, last.bottom);
                 tabs[group_index].group_frame =
                     Some(GroupFrame::resting(shell, state, member_count));
-                let mut view = test_view(
-                    &layout,
-                    &tabs,
-                    pal,
-                    omnibox("", (0, 0), ""),
-                );
+                let mut view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
                 view.active = 0;
                 let mut surface = ChromeSurface::new(420, 120, dpi);
                 surface.paint(&view, Rect::new(0, 0, 420, surface.height()));
@@ -3458,6 +4525,8 @@ mod tests {
                                     omnibox: omni,
                                     now,
                                     departures: &[],
+                                    rail: None,
+                                    icon_motion: None,
                                 };
                                 let mut surface = ChromeSurface::new(width, 120, dpi);
                                 surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -3533,6 +4602,8 @@ mod tests {
                 omnibox: omnibox("", (0, 0), ""),
                 now,
                 departures: &[],
+                rail: None,
+                icon_motion: None,
             };
             let mut surface = ChromeSurface::new(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -3568,6 +4639,8 @@ mod tests {
                 omnibox: omnibox("", (0, 0), ""),
                 now,
                 departures: &[],
+                rail: None,
+                icon_motion: None,
             };
             let mut surface = ChromeSurface::new(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -3621,6 +4694,8 @@ mod tests {
             },
             now: Instant::now(),
             departures: &[],
+            rail: None,
+            icon_motion: None,
         };
         let mut s = ChromeSurface::new(1000, 800, 96);
         let full_dirty = Rect::new(0, 0, 1000, s.height());

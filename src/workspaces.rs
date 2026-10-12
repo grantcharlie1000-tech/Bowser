@@ -12,12 +12,105 @@ pub const FILE_NAME: &str = "workspaces.txt";
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u32);
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum WorkspaceIcon {
+    #[default]
+    Briefcase,
+    Home,
+    Code,
+    Book,
+    Cart,
+    Game,
+    Music,
+    Heart,
+    Star,
+    Bolt,
+    Globe,
+    Leaf,
+}
+impl WorkspaceIcon {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Briefcase => "briefcase",
+            Self::Home => "home",
+            Self::Code => "code",
+            Self::Book => "book",
+            Self::Cart => "cart",
+            Self::Game => "game",
+            Self::Music => "music",
+            Self::Heart => "heart",
+            Self::Star => "star",
+            Self::Bolt => "bolt",
+            Self::Globe => "globe",
+            Self::Leaf => "leaf",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "briefcase" => Self::Briefcase,
+            "home" => Self::Home,
+            "code" => Self::Code,
+            "book" => Self::Book,
+            "cart" => Self::Cart,
+            "game" => Self::Game,
+            "music" => Self::Music,
+            "heart" => Self::Heart,
+            "star" => Self::Star,
+            "bolt" => Self::Bolt,
+            "globe" => Self::Globe,
+            "leaf" => Self::Leaf,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WorkspaceColour {
+    Blue,
+    Violet,
+    Teal,
+    Amber,
+    Rose,
+    Red,
+    Green,
+    Slate,
+}
+impl WorkspaceColour {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Blue => "blue",
+            Self::Violet => "violet",
+            Self::Teal => "teal",
+            Self::Amber => "amber",
+            Self::Rose => "rose",
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Slate => "slate",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "blue" => Self::Blue,
+            "violet" => Self::Violet,
+            "teal" => Self::Teal,
+            "amber" => Self::Amber,
+            "rose" => Self::Rose,
+            "red" => Self::Red,
+            "green" => Self::Green,
+            "slate" => Self::Slate,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Workspace {
     id: WorkspaceId,
     name: String,
     tabs: Vec<TabId>,
     active_tab: TabId,
+    icon: WorkspaceIcon,
+    colour: Option<WorkspaceColour>,
 }
 
 impl Workspace {
@@ -32,6 +125,18 @@ impl Workspace {
     }
     pub fn active_tab(&self) -> TabId {
         self.active_tab
+    }
+    pub fn icon(&self) -> WorkspaceIcon {
+        self.icon
+    }
+    pub fn colour(&self) -> Option<WorkspaceColour> {
+        self.colour
+    }
+    pub fn set_icon(&mut self, icon: WorkspaceIcon) {
+        self.icon = icon;
+    }
+    pub fn set_colour(&mut self, colour: Option<WorkspaceColour>) {
+        self.colour = colour;
     }
 }
 
@@ -73,6 +178,8 @@ impl WorkspaceSet {
                 name,
                 tabs: vec![first_tab],
                 active_tab: first_tab,
+                icon: WorkspaceIcon::default(),
+                colour: None,
             }],
             active: WorkspaceId(0),
             next_id: 1,
@@ -173,16 +280,25 @@ impl WorkspaceSet {
             .iter_mut()
             .find(|workspace| workspace.tabs.contains(&tab))
             .ok_or(WorkspaceError::NotFound)?;
-        let old_index = workspace.tabs.iter().position(|member| *member == tab).unwrap();
+        let old_index = workspace
+            .tabs
+            .iter()
+            .position(|member| *member == tab)
+            .unwrap();
         let tab = workspace.tabs.remove(old_index);
-        workspace.tabs.insert(new_index.min(workspace.tabs.len()), tab);
+        workspace
+            .tabs
+            .insert(new_index.min(workspace.tabs.len()), tab);
         Ok(())
     }
 
     pub fn sync_order(&mut self, ordered: &[TabId]) {
         for workspace in &mut self.workspaces {
             workspace.tabs.sort_by_key(|tab| {
-                ordered.iter().position(|candidate| candidate == tab).unwrap_or(usize::MAX)
+                ordered
+                    .iter()
+                    .position(|candidate| candidate == tab)
+                    .unwrap_or(usize::MAX)
             });
         }
     }
@@ -204,7 +320,9 @@ impl WorkspaceSet {
             .collect::<std::collections::HashMap<_, _>>();
         for workspace in &mut self.workspaces {
             for tab in &mut workspace.tabs {
-                if let Some(mapped) = remap.get(tab) { *tab = *mapped; }
+                if let Some(mapped) = remap.get(tab) {
+                    *tab = *mapped;
+                }
             }
             if let Some(mapped) = remap.get(&workspace.active_tab) {
                 workspace.active_tab = *mapped;
@@ -222,12 +340,17 @@ impl WorkspaceSet {
                 workspace.active_tab = workspace.tabs.first().copied().unwrap_or(active_tab);
             }
         }
-        self.workspaces.retain(|workspace| !workspace.tabs.is_empty());
+        self.workspaces
+            .retain(|workspace| !workspace.tabs.is_empty());
         if self.workspaces.is_empty() {
             *self = Self::new("Default", active_tab);
             return;
         }
-        if !self.workspaces.iter().any(|workspace| workspace.id == self.active) {
+        if !self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == self.active)
+        {
             self.active = self.workspaces[0].id;
         }
         let assigned = self
@@ -275,6 +398,8 @@ impl WorkspaceSet {
             name,
             tabs: vec![first_tab],
             active_tab: first_tab,
+            icon: WorkspaceIcon::default(),
+            colour: None,
         });
         Ok(id)
     }
@@ -289,6 +414,52 @@ impl WorkspaceSet {
             return Err(WorkspaceError::DuplicateName);
         }
         self.get_mut(id)?.name = name;
+        Ok(())
+    }
+
+    pub fn set_icon(&mut self, id: WorkspaceId, icon: WorkspaceIcon) -> Result<(), WorkspaceError> {
+        self.get_mut(id)?.icon = icon;
+        Ok(())
+    }
+    pub fn set_colour(
+        &mut self,
+        id: WorkspaceId,
+        colour: Option<WorkspaceColour>,
+    ) -> Result<(), WorkspaceError> {
+        self.get_mut(id)?.colour = colour;
+        Ok(())
+    }
+    pub fn reorder(&mut self, id: WorkspaceId, new_index: usize) -> Result<(), WorkspaceError> {
+        let old = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)
+            .ok_or(WorkspaceError::NotFound)?;
+        let workspace = self.workspaces.remove(old);
+        self.workspaces
+            .insert(new_index.min(self.workspaces.len()), workspace);
+        Ok(())
+    }
+    pub fn move_up(&mut self, id: WorkspaceId) -> Result<(), WorkspaceError> {
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)
+            .ok_or(WorkspaceError::NotFound)?;
+        if index > 0 {
+            self.workspaces.swap(index, index - 1);
+        }
+        Ok(())
+    }
+    pub fn move_down(&mut self, id: WorkspaceId) -> Result<(), WorkspaceError> {
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)
+            .ok_or(WorkspaceError::NotFound)?;
+        if index + 1 < self.workspaces.len() {
+            self.workspaces.swap(index, index + 1);
+        }
         Ok(())
     }
 
@@ -333,7 +504,14 @@ impl WorkspaceSet {
         let mut out = format!("active={}\n", self.active.0);
         if !self.session_order.is_empty() {
             out.push_str("order=");
-            out.push_str(&self.session_order.iter().map(|id| id.0.to_string()).collect::<Vec<_>>().join(","));
+            out.push_str(
+                &self
+                    .session_order
+                    .iter()
+                    .map(|id| id.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
             out.push('\n');
         }
         for workspace in &self.workspaces {
@@ -344,11 +522,13 @@ impl WorkspaceSet {
                 .collect::<Vec<_>>()
                 .join(",");
             out.push_str(&format!(
-                "workspace={}\t{}\t{}\t{}\n",
+                "workspace={}\t{}\t{}\t{}\t{}\t{}\n",
                 workspace.id.0,
                 encode(&workspace.name),
                 workspace.active_tab.0,
-                tabs
+                tabs,
+                workspace.icon.key(),
+                workspace.colour.map_or("-", WorkspaceColour::key),
             ));
         }
         out
@@ -379,7 +559,9 @@ impl WorkspaceSet {
             if let Some(value) = line.strip_prefix("order=") {
                 for id in value.split(',').filter(|id| !id.is_empty()) {
                     let id = TabId(id.parse::<u32>().map_err(|_| WorkspaceError::InvalidFile)?);
-                    if session_order.contains(&id) { return Err(WorkspaceError::InvalidFile); }
+                    if session_order.contains(&id) {
+                        return Err(WorkspaceError::InvalidFile);
+                    }
                     session_order.push(id);
                 }
                 continue;
@@ -403,8 +585,12 @@ impl WorkspaceSet {
                     .ok_or(WorkspaceError::InvalidFile)?,
             );
             let members = fields.next().ok_or(WorkspaceError::InvalidFile)?;
-            if fields.next().is_some()
-                || !ids.insert(id)
+            let icon = fields
+                .next()
+                .and_then(WorkspaceIcon::parse)
+                .unwrap_or_default();
+            let colour = fields.next().and_then(WorkspaceColour::parse);
+            if !ids.insert(id)
                 || workspaces
                     .iter()
                     .any(|w: &Workspace| w.name.eq_ignore_ascii_case(&name))
@@ -432,6 +618,8 @@ impl WorkspaceSet {
                 name,
                 tabs: member_ids,
                 active_tab,
+                icon,
+                colour,
             });
         }
         if workspaces.is_empty() || workspaces.len() > MAX_WORKSPACES {
@@ -642,5 +830,40 @@ mod tests {
         workspaces.save(&path).unwrap();
         assert_eq!(WorkspaceSet::load(&path).unwrap(), Some(workspaces));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn icon_colour_round_trip_and_legacy_defaults() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        workspaces
+            .set_icon(WorkspaceId(0), WorkspaceIcon::Code)
+            .unwrap();
+        workspaces
+            .set_colour(WorkspaceId(0), Some(WorkspaceColour::Teal))
+            .unwrap();
+        let parsed = WorkspaceSet::parse(&workspaces.serialize()).unwrap();
+        assert_eq!(parsed.active().icon(), WorkspaceIcon::Code);
+        assert_eq!(parsed.active().colour(), Some(WorkspaceColour::Teal));
+        let legacy = WorkspaceSet::parse("active=0\nworkspace=0\tDefault\t1\t1\n").unwrap();
+        assert_eq!(legacy.active().icon(), WorkspaceIcon::Briefcase);
+        assert_eq!(legacy.active().colour(), None);
+    }
+
+    #[test]
+    fn reorder_preserves_ids_and_delete_active_selects_neighbor() {
+        let mut set = WorkspaceSet::new("Default", TabId(1));
+        let second = set.create("Work", TabId(2)).unwrap();
+        let third = set.create("Play", TabId(3)).unwrap();
+        set.reorder(third, 0).unwrap();
+        assert_eq!(set.all()[0].id(), third);
+        set.switch_to(second).unwrap();
+        assert_eq!(set.remove_workspace(second).unwrap(), vec![TabId(2)]);
+        assert_ne!(set.active_id(), second);
+        let remaining_id = set.all()[0].id();
+        assert_eq!(set.remove_workspace(remaining_id).unwrap().len(), 1);
+        assert_eq!(
+            set.remove_workspace(set.active_id()),
+            Err(WorkspaceError::LastWorkspace)
+        );
     }
 }

@@ -407,7 +407,10 @@ mod tests {
         assert!(decompress_lz4_block(&[0x00, 0, 0], 4).is_err());
         assert!(decompress_lz4_block(&[0x00, 1, 0], 4).is_err());
         assert!(decompress_lz4_block(&[0x00], 16 * 1024 * 1024 + 1).is_err());
-        assert_eq!(firefox::decompress_mozlz4(b"mozLz40\0\x02\0\0\0\x20[]").unwrap(), b"[]");
+        assert_eq!(
+            firefox::decompress_mozlz4(b"mozLz40\0\x02\0\0\0\x20[]").unwrap(),
+            b"[]"
+        );
         assert!(firefox::decompress_mozlz4(b"bad-header").is_err());
         assert!(firefox::decompress_mozlz4(b"mozLz40\0\x01\0\0\x01").is_err());
     }

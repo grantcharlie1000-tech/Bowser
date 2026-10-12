@@ -4,23 +4,29 @@ use std::{fs, net::IpAddr};
 
 use url::{Host, Url};
 
-const DEFAULT_SEARCH_TEMPLATE: &str = "https://www.bing.com/search?q={query}";
+const DEFAULT_SEARCH_TEMPLATE: &str = "https://html.duckduckgo.com/html/?q={query}&k1=-1";
 
 /// The engines Settings can choose between. Each is a fixed HTTPS template, so a saved choice can
 /// never send searches anywhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchEngine {
+    Optimised,
     Google,
     DuckDuckGo,
 }
 
 impl SearchEngine {
     /// Settings window order.
-    pub const ALL: [SearchEngine; 2] = [SearchEngine::Google, SearchEngine::DuckDuckGo];
+    pub const ALL: [SearchEngine; 3] = [
+        SearchEngine::Optimised,
+        SearchEngine::Google,
+        SearchEngine::DuckDuckGo,
+    ];
 
     /// The `search_engine` value stored in settings.txt.
     pub fn key(self) -> &'static str {
         match self {
+            Self::Optimised => "optimised",
             Self::Google => "google",
             Self::DuckDuckGo => "duckduckgo",
         }
@@ -28,6 +34,7 @@ impl SearchEngine {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Optimised => "Optimised",
             Self::Google => "Google",
             Self::DuckDuckGo => "DuckDuckGo",
         }
@@ -35,8 +42,16 @@ impl SearchEngine {
 
     pub fn template(self) -> &'static str {
         match self {
+            Self::Optimised => DEFAULT_SEARCH_TEMPLATE,
             Self::Google => "https://www.google.com/search?q={query}",
             Self::DuckDuckGo => "https://duckduckgo.com/?q={query}",
+        }
+    }
+
+    fn image_template(self) -> &'static str {
+        match self {
+            Self::Optimised | Self::Google => "https://www.google.com/search?tbm=isch&q={query}",
+            Self::DuckDuckGo => "https://duckduckgo.com/?q={query}&iax=images&ia=images",
         }
     }
 
@@ -82,12 +97,12 @@ impl std::error::Error for NavigationError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchProvider {
     template: String,
+    image_template: String,
 }
 
 impl SearchProvider {
     /// A saved engine choice wins. With no choice, a valid `search-provider.txt` template is used,
-    /// and otherwise the Bing default. Keeping that last step means an upgrade never changes the
-    /// engine of a profile that has not chosen one.
+    /// and otherwise the Optimised default.
     pub fn from_config(engine: Option<SearchEngine>, path: &Path) -> Self {
         let template = match engine {
             Some(engine) => engine.template().to_owned(),
@@ -97,20 +112,35 @@ impl SearchProvider {
                 .filter(|template| valid_template(template))
                 .unwrap_or_else(|| DEFAULT_SEARCH_TEMPLATE.to_owned()),
         };
-        Self { template }
+        let image_template = engine
+            .unwrap_or(SearchEngine::Optimised)
+            .image_template()
+            .to_owned();
+        Self {
+            template,
+            image_template,
+        }
     }
 
-    /// True when searches go to the built-in Bing template.
+    /// True when searches go to the built-in Optimised template.
     pub fn is_default(&self) -> bool {
         self.template == DEFAULT_SEARCH_TEMPLATE
     }
 
     pub fn search_url(&self, query: &str) -> Result<Url, NavigationError> {
-        if query.chars().any(char::is_control) || !valid_template(&self.template) {
+        self.url_from_template(&self.template, query)
+    }
+
+    pub fn image_search_url(&self, query: &str) -> Result<Url, NavigationError> {
+        self.url_from_template(&self.image_template, query)
+    }
+
+    fn url_from_template(&self, template: &str, query: &str) -> Result<Url, NavigationError> {
+        if query.chars().any(char::is_control) || !valid_template(template) {
             return Err(NavigationError::InvalidSearchProvider);
         }
         let encoded = percent_encode_query(query);
-        Url::parse(&self.template.replacen("{query}", &encoded, 1))
+        Url::parse(&template.replacen("{query}", &encoded, 1))
             .map_err(|_| NavigationError::InvalidSearchProvider)
     }
 }
@@ -156,9 +186,29 @@ pub fn resolve_input(
         return Ok(NavigationTarget::Web(url));
     }
 
-    let query = input.to_owned();
-    let url = provider.search_url(&query)?;
+    let (query, images) = parse_image_prefix(input);
+    let url = if images {
+        provider.image_search_url(&query)?
+    } else {
+        provider.search_url(&query)?
+    };
     Ok(NavigationTarget::Search { query, url })
+}
+
+/// Image search is explicit: one recognized token must be followed by a space and non-empty text.
+fn parse_image_prefix(input: &str) -> (String, bool) {
+    for prefix in ["!img ", "images ", "!i ", "img "] {
+        if input
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            let query = input[prefix.len()..].trim();
+            if !query.is_empty() {
+                return (query.to_owned(), true);
+            }
+        }
+    }
+    (input.to_owned(), false)
 }
 
 fn explicit_scheme(input: &str) -> Option<&str> {
@@ -438,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_and_missing_configuration_fall_back_to_bing() {
+    fn invalid_and_missing_configuration_fall_back_to_optimised() {
         let missing = SearchProvider::from_config(None, &temp_config(None));
         let invalid = SearchProvider::from_config(
             None,
@@ -451,7 +501,7 @@ mod tests {
         for provider in [missing, invalid, malformed] {
             assert_eq!(
                 provider.search_url("hello world").unwrap().as_str(),
-                "https://www.bing.com/search?q=hello%20world"
+                "https://html.duckduckgo.com/html/?q=hello%20world&k1=-1"
             );
         }
     }
@@ -486,13 +536,72 @@ mod tests {
     }
 
     #[test]
+    fn optimised_search_uses_ad_free_html_and_google_images() {
+        let provider = engine_provider(SearchEngine::Optimised);
+        assert_eq!(
+            provider.search_url("cats").unwrap().as_str(),
+            "https://html.duckduckgo.com/html/?q=cats&k1=-1"
+        );
+        assert_eq!(
+            provider.image_search_url("cats").unwrap().as_str(),
+            "https://www.google.com/search?tbm=isch&q=cats"
+        );
+    }
+
+    #[test]
+    fn image_prefix_requires_a_token_and_following_space() {
+        let provider = engine_provider(SearchEngine::Optimised);
+        for (input, expected_query, expected_host) in [
+            ("img", "img", "html.duckduckgo.com"),
+            ("image of a cat", "image of a cat", "html.duckduckgo.com"),
+            ("img cats", "cats", "www.google.com"),
+            ("images cats", "cats", "www.google.com"),
+            ("!i cats", "cats", "www.google.com"),
+            ("!img cats", "cats", "www.google.com"),
+        ] {
+            let NavigationTarget::Search { query, url } = resolve_input(input, &provider).unwrap()
+            else {
+                panic!("expected search for {input:?}")
+            };
+            assert_eq!(query, expected_query, "input: {input}");
+            assert_eq!(url.host_str(), Some(expected_host), "input: {input}");
+        }
+    }
+
+    #[test]
+    fn every_engine_has_an_image_search_target_and_encodes_the_query() {
+        let query = "a+b & c # café";
+        let expected = [
+            (SearchEngine::Optimised, "www.google.com", "tbm=isch"),
+            (SearchEngine::Google, "www.google.com", "tbm=isch"),
+            (SearchEngine::DuckDuckGo, "duckduckgo.com", "iax=images"),
+        ];
+        for (engine, host, mode) in expected {
+            let url = engine_provider(engine).image_search_url(query).unwrap();
+            assert_eq!(url.host_str(), Some(host));
+            assert!(url.as_str().contains(mode), "{url}");
+            assert_eq!(url.query_pairs().find(|(key, _)| key == "q").unwrap().1, query);
+            assert!(url.fragment().is_none(), "{url}");
+        }
+    }
+
+    #[test]
     fn search_text_stays_one_query_value_for_every_engine() {
         let query = "a+b & c # d%20e? é/ü=1 \"q\" 日本";
         for engine in SearchEngine::ALL {
             let url = engine_provider(engine).search_url(query).unwrap();
             let text = url.as_str();
             assert!(!text.contains(' '), "{text}");
-            for escaped in ["%2B", "%26", "%23", "%25", "%3F", "%3D", "%C3%A9", "%E6%97%A5"] {
+            for escaped in [
+                "%2B",
+                "%26",
+                "%23",
+                "%25",
+                "%3F",
+                "%3D",
+                "%C3%A9",
+                "%E6%97%A5",
+            ] {
                 assert!(text.contains(escaped), "{escaped} missing from {text}");
             }
             assert!(url.fragment().is_none(), "{text}");
@@ -501,7 +610,19 @@ mod tests {
                 .query_pairs()
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
-            assert_eq!(pairs, vec![("q".to_owned(), query.to_owned())], "{text}");
+            assert_eq!(
+                pairs.iter().filter(|(key, _)| key == "q").count(),
+                1,
+                "{text}"
+            );
+            assert_eq!(
+                pairs.iter().find(|(key, _)| key == "q").unwrap().1,
+                query,
+                "{text}"
+            );
+            if engine == SearchEngine::Optimised {
+                assert!(pairs.contains(&("k1".to_owned(), "-1".to_owned())), "{text}");
+            }
         }
     }
 
@@ -533,6 +654,7 @@ mod tests {
             };
             assert_eq!(query, "two words & more");
             let host = match engine {
+                SearchEngine::Optimised => "html.duckduckgo.com",
                 SearchEngine::Google => "www.google.com",
                 SearchEngine::DuckDuckGo => "duckduckgo.com",
             };
@@ -547,7 +669,13 @@ mod tests {
             SearchEngine::parse("  DuckDuckGo "),
             Some(SearchEngine::DuckDuckGo)
         );
-        for value in ["", "bing", "ddg", "google.com", "https://www.google.com/search?q={query}"] {
+        for value in [
+            "",
+            "bing",
+            "ddg",
+            "google.com",
+            "https://www.google.com/search?q={query}",
+        ] {
             assert_eq!(SearchEngine::parse(value), None, "value: {value}");
         }
     }
@@ -564,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_saved_engine_the_override_file_and_then_bing_are_used() {
+    fn without_a_saved_engine_the_override_file_and_then_optimised_are_used() {
         let path = temp_config(Some("https://search.example/?q={query}"));
         let overridden = SearchProvider::from_config(None, &path);
         assert!(!overridden.is_default());
@@ -574,11 +702,11 @@ mod tests {
         );
         let _ = fs::remove_file(path);
 
-        let bing = SearchProvider::from_config(None, &temp_config(None));
-        assert!(bing.is_default());
+        let optimised = SearchProvider::from_config(None, &temp_config(None));
+        assert!(optimised.is_default());
         assert_eq!(
-            bing.search_url("rust").unwrap().as_str(),
-            "https://www.bing.com/search?q=rust"
+            optimised.search_url("rust").unwrap().as_str(),
+            "https://html.duckduckgo.com/html/?q=rust&k1=-1"
         );
     }
 }

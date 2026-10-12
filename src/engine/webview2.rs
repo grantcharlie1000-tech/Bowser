@@ -8,18 +8,15 @@ use std::{
 };
 
 use url::Url;
-use zeroize::{Zeroize, Zeroizing};
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
-    BrowserExtensionEnableCompletedHandler,
-    BrowserExtensionRemoveCompletedHandler, CallDevToolsProtocolMethodCompletedHandler,
-    CoTaskMemPWSTR, ContentLoadingEventHandler,
-    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DOMContentLoadedEventHandler,
-    DocumentTitleChangedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
-    ClearBrowsingDataCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler,
-    GetCookiesCompletedHandler, GetFaviconCompletedHandler,
-    Microsoft::Web::WebView2::Win32::*,
+    BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler,
+    CallDevToolsProtocolMethodCompletedHandler, ClearBrowsingDataCompletedHandler, CoTaskMemPWSTR,
+    ContentLoadingEventHandler, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DOMContentLoadedEventHandler, DocumentTitleChangedEventHandler, DownloadStartingEventHandler,
+    ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler,
+    GetCookiesCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
@@ -34,6 +31,7 @@ use windows::{
     },
     core::{BOOL, Error, HSTRING, Interface, PCWSTR, PWSTR, Ref, Result, implement, w},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents, MemoryTargetApply,
@@ -66,10 +64,7 @@ const PIP_TOGGLE_PARAMETERS: &str = r#"{"expression":"(async()=>{if(!document.pi
 
 const PIP_EXIT_PARAMETERS: &str = r#"{"expression":"document.pictureInPictureElement?document.exitPictureInPicture().then(()=>true):false","awaitPromise":true,"returnByValue":true}"#;
 
-fn query_picture_in_picture_eligibility(
-    webview: &ICoreWebView2,
-    done: Box<dyn FnOnce(bool)>,
-) {
+fn query_picture_in_picture_eligibility(webview: &ICoreWebView2, done: Box<dyn FnOnce(bool)>) {
     let result = Rc::new(RefCell::new(Some(done)));
     let completion = result.clone();
     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
@@ -1533,7 +1528,12 @@ impl EngineAdapter for WebView2Engine {
         range: BrowsingDataRange,
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
-        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
         let Some(webview) = webview else {
             done(Err("The active profile is not ready.".to_owned()));
             return;
@@ -1547,7 +1547,9 @@ impl EngineAdapter for WebView2Engine {
         let profile = match profile {
             Ok(profile) => profile,
             Err(error) => {
-                done(Err(format!("This WebView2 runtime cannot clear that data: {error}")));
+                done(Err(format!(
+                    "This WebView2 runtime cannot clear that data: {error}"
+                )));
                 return;
             }
         };
@@ -1669,11 +1671,7 @@ impl EngineAdapter for WebView2Engine {
         let completed = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
         unsafe { webview.ExecuteScript(PCWSTR(wide_script.as_ptr()), &completed) }
     }
-    fn picture_in_picture_eligible(
-        &mut self,
-        tab: TabId,
-        done: Box<dyn FnOnce(bool)>,
-    ) {
+    fn picture_in_picture_eligible(&mut self, tab: TabId, done: Box<dyn FnOnce(bool)>) {
         let webview = self
             .core
             .borrow()
@@ -1955,7 +1953,9 @@ impl EngineAdapter for WebView2Engine {
         };
         if let Some(webview) = webview {
             if let Ok(audio) = webview.cast::<ICoreWebView2_8>() {
-                unsafe { audio.SetIsMuted(muted)?; }
+                unsafe {
+                    audio.SetIsMuted(muted)?;
+                }
             }
         }
         Ok(())
@@ -2333,10 +2333,7 @@ unsafe fn configure_controller(
                 Box::new(move |handler| {
                     let script = CoTaskMemPWSTR::from(LOGIN_DETECTION_SCRIPT);
                     script_webview
-                        .AddScriptToExecuteOnDocumentCreated(
-                            *script.as_ref().as_pcwstr(),
-                            &handler,
-                        )
+                        .AddScriptToExecuteOnDocumentCreated(*script.as_ref().as_pcwstr(), &handler)
                         .map_err(webview2_com::Error::WindowsError)
                 }),
                 Box::new(|error_code, _id| error_code),
@@ -2920,7 +2917,9 @@ fn tracking_prevention_name(level: COREWEBVIEW2_TRACKING_PREVENTION_LEVEL) -> &'
 }
 
 /// The level as shown to the user, or `None` for a value this build does not know.
-fn tracking_prevention_label(level: COREWEBVIEW2_TRACKING_PREVENTION_LEVEL) -> Option<&'static str> {
+fn tracking_prevention_label(
+    level: COREWEBVIEW2_TRACKING_PREVENTION_LEVEL,
+) -> Option<&'static str> {
     if level == COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_NONE {
         Some("Off")
     } else if level == COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_BALANCED {

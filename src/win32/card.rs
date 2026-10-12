@@ -13,11 +13,11 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, ClientToScreen, CreateRoundRectRgn, CreateSolidBrush,
-            DEFAULT_QUALITY, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-            DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect,
-            FrameRgn, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode,
-            SetTextColor, SetWindowRgn, TRANSPARENT,
+            BeginPaint, ClientToScreen, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_QUALITY,
+            DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+            DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRgn, HDC, HGDIOBJ,
+            InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
+            TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -802,6 +802,9 @@ unsafe fn draw_line(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, colour: Rgba, w
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut wide: Vec<u16> = text.encode_utf16().collect();
+        if wide.is_empty() {
+            return;
+        }
         let mut bounds = bounds;
         SetTextColor(dc, colorref(colour));
         DrawTextW(dc, &mut wide, &mut bounds, format);

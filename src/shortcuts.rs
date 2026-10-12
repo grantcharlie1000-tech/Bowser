@@ -193,9 +193,12 @@ mod tests {
     fn every_listed_binding_maps_to_its_command() {
         let table = bindings();
         for (index, (key, ctrl, shift, alt, expected)) in table.iter().copied().enumerate() {
-            assert!(table[index + 1..].iter().all(|other| {
-                (key, ctrl, shift, alt) != (other.0, other.1, other.2, other.3)
-            }), "duplicate binding for key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
+            assert!(
+                table[index + 1..].iter().all(|other| {
+                    (key, ctrl, shift, alt) != (other.0, other.1, other.2, other.3)
+                }),
+                "duplicate binding for key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}"
+            );
             assert_eq!(
                 command_for(key, ctrl, shift, alt),
                 Some(expected),
@@ -263,9 +266,21 @@ mod tests {
 
     #[test]
     fn productivity_chords_do_not_collide_with_existing_commands() {
-        assert_eq!(command_for(0x4B, true, true, false), Some(Command::ShowCommandPalette));
-        assert_eq!(command_for(VK_N, true, true, false), Some(Command::ToggleNotes));
-        assert_eq!(command_for(VK_D, true, false, false), Some(Command::AddBookmark));
-        assert_eq!(command_for(VK_E, true, true, false), Some(Command::ShowExtensionsMenu));
+        assert_eq!(
+            command_for(0x4B, true, true, false),
+            Some(Command::ShowCommandPalette)
+        );
+        assert_eq!(
+            command_for(VK_N, true, true, false),
+            Some(Command::ToggleNotes)
+        );
+        assert_eq!(
+            command_for(VK_D, true, false, false),
+            Some(Command::AddBookmark)
+        );
+        assert_eq!(
+            command_for(VK_E, true, true, false),
+            Some(Command::ShowExtensionsMenu)
+        );
     }
 }

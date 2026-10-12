@@ -296,10 +296,8 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bowser-permissions-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bowser-permissions-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join(FILE_NAME)
@@ -371,7 +369,10 @@ mod tests {
             Decision::Block,
             "a later line replaces an earlier one"
         );
-        assert_eq!(rules["https://b.test"][&Permission::Microphone], Decision::Allow);
+        assert_eq!(
+            rules["https://b.test"][&Permission::Microphone],
+            Decision::Allow
+        );
     }
 
     #[test]
@@ -397,7 +398,11 @@ mod tests {
         let path = temp_file("lookup");
         let mut store = PermissionStore::load(&path);
         store
-            .set("https://meet.test", Permission::Camera, Some(Decision::Allow))
+            .set(
+                "https://meet.test",
+                Permission::Camera,
+                Some(Decision::Allow),
+            )
             .unwrap();
         assert!(store.allows("https://meet.test/room", Permission::Camera));
         assert!(!store.allows("https://meet.test/room", Permission::Microphone));
@@ -429,7 +434,10 @@ mod tests {
             .unwrap();
         assert_eq!(store.site_decisions("https://a.test"), [None; 4]);
         let text = fs::read_to_string(&path).unwrap();
-        assert!(!text.lines().any(|line| line.starts_with("https://")), "{text}");
+        assert!(
+            !text.lines().any(|line| line.starts_with("https://")),
+            "{text}"
+        );
     }
 
     #[test]
@@ -438,10 +446,18 @@ mod tests {
         {
             let mut store = PermissionStore::load(&path);
             store
-                .set("https://a.test", Permission::Microphone, Some(Decision::Allow))
+                .set(
+                    "https://a.test",
+                    Permission::Microphone,
+                    Some(Decision::Allow),
+                )
                 .unwrap();
             store
-                .set("http://localhost:8080", Permission::Geolocation, Some(Decision::Allow))
+                .set(
+                    "http://localhost:8080",
+                    Permission::Geolocation,
+                    Some(Decision::Allow),
+                )
                 .unwrap();
         }
         let reloaded = PermissionStore::load(&path);
@@ -458,7 +474,11 @@ mod tests {
             .set("https://a.test", Permission::Camera, Some(Decision::Allow))
             .unwrap();
         store
-            .set("https://a.test", Permission::Notifications, Some(Decision::Block))
+            .set(
+                "https://a.test",
+                Permission::Notifications,
+                Some(Decision::Block),
+            )
             .unwrap();
         store
             .set("https://b.test", Permission::Camera, Some(Decision::Allow))
@@ -474,24 +494,38 @@ mod tests {
     fn all_decisions_lists_stored_sites_by_origin_and_permission() {
         let path = temp_file("all-decisions");
         let mut store = PermissionStore::load(&path);
-        store.set("https://b.test", Permission::Camera, Some(Decision::Allow)).unwrap();
-        store.set("https://a.test", Permission::Microphone, Some(Decision::Block)).unwrap();
+        store
+            .set("https://b.test", Permission::Camera, Some(Decision::Allow))
+            .unwrap();
+        store
+            .set(
+                "https://a.test",
+                Permission::Microphone,
+                Some(Decision::Block),
+            )
+            .unwrap();
 
         assert_eq!(
             store.all_decisions(),
             vec![
-                ("https://a.test".to_owned(), Permission::Microphone, Decision::Block),
-                ("https://b.test".to_owned(), Permission::Camera, Decision::Allow),
+                (
+                    "https://a.test".to_owned(),
+                    Permission::Microphone,
+                    Decision::Block
+                ),
+                (
+                    "https://b.test".to_owned(),
+                    Permission::Camera,
+                    Decision::Allow
+                ),
             ]
         );
     }
 
     #[test]
     fn a_failed_save_restores_the_previous_decision() {
-        let dir = std::env::temp_dir().join(format!(
-            "bowser-permissions-{}-missing",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bowser-permissions-{}-missing", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut store = PermissionStore::load(&dir.join(FILE_NAME));
         let result = store.set("https://a.test", Permission::Camera, Some(Decision::Allow));

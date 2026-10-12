@@ -279,10 +279,7 @@ pub fn hit_test(layout: &IslandLayout, x: i32, y: i32) -> IslandHit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        chrome::paint::island_colour,
-        theme,
-    };
+    use crate::{chrome::paint::island_colour, theme};
 
     const CLIENT_WIDTH: i32 = 900;
     const DPIS: [u32; 4] = [96, 120, 144, 192];
@@ -476,5 +473,4 @@ mod tests {
         // An id outside the palette falls back to the accent rather than panicking.
         assert_eq!(island_colour(Some(200), accent), accent);
     }
-
 }

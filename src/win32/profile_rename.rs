@@ -386,6 +386,9 @@ fn text(
     colour: theme::Rgba,
 ) {
     let mut wide = value.encode_utf16().collect::<Vec<_>>();
+    if wide.is_empty() {
+        return;
+    }
     unsafe {
         SetTextColor(dc, colorref(colour));
         let _ = DrawTextW(

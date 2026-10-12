@@ -34,8 +34,8 @@ use crate::{
     navigation::{NavigationTarget, SearchProvider, resolve_input},
     performance::{LaunchOptions, PerfLog},
     site_security::{self, LoadState, SiteSecurity},
-    tabs::TabId,
     split_view::{Pane, SplitView},
+    tabs::TabId,
 };
 
 use crate::{
@@ -484,7 +484,10 @@ pub struct App {
     tab_model: crate::tabs::TabList,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
-    split_bounds: Option<(windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT)>,
+    split_bounds: Option<(
+        windows::Win32::Foundation::RECT,
+        windows::Win32::Foundation::RECT,
+    )>,
     group_preferences: crate::tab_groups::GroupPreferences,
     group_preferences_path: Option<PathBuf>,
     /// Marker per tab group, keyed by group identity. In memory only: markers are not persisted.
@@ -754,7 +757,9 @@ impl App {
 
     pub fn save_settings(app: &AppRef) {
         if let Ok(profile) = crate::profile::active() {
-            let settings = app.borrow().settings.clone();
+            let mut settings = app.borrow().settings.clone();
+            settings.side_panel_width =
+                crate::settings::Settings::load(&profile.settings_file()).side_panel_width;
             if let Err(error) = crate::settings::save(&profile.settings_file(), &settings) {
                 win32::show_error_message(&format!("Settings could not be saved: {error}"));
             }
@@ -763,6 +768,79 @@ impl App {
 
     pub fn workspaces(app: &AppRef) -> crate::workspaces::WorkspaceSet {
         app.borrow().workspaces.clone()
+    }
+
+    /// Ordered workspace metadata for the rail and workspace pickers.
+    pub fn workspace_entries(
+        app: &AppRef,
+    ) -> Vec<(
+        crate::workspaces::WorkspaceId,
+        String,
+        crate::workspaces::WorkspaceIcon,
+        Option<crate::workspaces::WorkspaceColour>,
+        usize,
+        bool,
+    )> {
+        let state = app.borrow();
+        let active = state.workspaces.active_id();
+        state
+            .workspaces
+            .all()
+            .iter()
+            .map(|workspace| (
+                workspace.id(),
+                workspace.name().to_owned(),
+                workspace.icon(),
+                workspace.colour(),
+                workspace.tabs().len(),
+                workspace.id() == active,
+            ))
+            .collect()
+    }
+
+    pub fn workspace_set_icon(
+        app: &AppRef,
+        id: crate::workspaces::WorkspaceId,
+        icon: crate::workspaces::WorkspaceIcon,
+    ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+        app.borrow_mut().workspaces.set_icon(id, icon)?;
+        Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
+        Ok(())
+    }
+
+    pub fn workspace_set_colour(
+        app: &AppRef,
+        id: crate::workspaces::WorkspaceId,
+        colour: Option<crate::workspaces::WorkspaceColour>,
+    ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+        app.borrow_mut().workspaces.set_colour(id, colour)?;
+        Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
+        Ok(())
+    }
+
+    pub fn workspace_move(
+        app: &AppRef,
+        id: crate::workspaces::WorkspaceId,
+        new_index: usize,
+    ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+        app.borrow_mut().workspaces.reorder(id, new_index)?;
+        Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
+        Ok(())
+    }
+
+    pub fn workspace_create(
+        app: &AppRef,
+        name: &str,
+    ) -> std::result::Result<crate::workspaces::WorkspaceId, crate::workspaces::WorkspaceError> {
+        Self::create_workspace(app, name)
+    }
+
+    fn notify_rail_changed(app: &AppRef) {
+        let hwnd = app.borrow().hwnd;
+        win32::post(hwnd, win32::WM_RAIL_CHANGED, Default::default(), Default::default());
     }
 
     pub fn switch_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId) -> bool {
@@ -776,12 +854,17 @@ impl App {
         let switched = Self::select_tab(app, selected);
         if switched {
             Self::save_workspaces(app);
+            Self::notify_rail_changed(app);
             Self::schedule_tab_idle_timer(app);
         }
         switched
     }
 
-    pub fn create_workspace(app: &AppRef, name: &str) -> std::result::Result<crate::workspaces::WorkspaceId, crate::workspaces::WorkspaceError> {
+    pub fn create_workspace(
+        app: &AppRef,
+        name: &str,
+    ) -> std::result::Result<crate::workspaces::WorkspaceId, crate::workspaces::WorkspaceError>
+    {
         let tab = Self::new_tab(app);
         let id = {
             let mut state = app.borrow_mut();
@@ -797,35 +880,57 @@ impl App {
         };
         let _ = Self::switch_workspace(app, id);
         Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
         Ok(id)
     }
 
-    pub fn rename_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId, name: &str) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+    pub fn rename_workspace(
+        app: &AppRef,
+        id: crate::workspaces::WorkspaceId,
+        name: &str,
+    ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         app.borrow_mut().workspaces.rename(id, name)?;
         Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
         Self::post_tab_changed(app.borrow().hwnd, Self::active_tab_id(app));
         Ok(())
     }
 
-    pub fn delete_workspace(app: &AppRef, id: crate::workspaces::WorkspaceId) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
+    pub fn delete_workspace(
+        app: &AppRef,
+        id: crate::workspaces::WorkspaceId,
+    ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         let (removed, selected) = {
             let mut state = app.borrow_mut();
             let removed = state.workspaces.remove_workspace(id)?;
             (removed, state.workspaces.active().active_tab())
         };
         let _ = Self::select_tab(app, selected);
-        for tab in removed { let _ = Self::close_tab(app, tab); }
+        for tab in removed {
+            let _ = Self::close_tab(app, tab);
+        }
         Self::save_workspaces(app);
+        Self::notify_rail_changed(app);
         Ok(())
     }
 
     fn save_workspaces(app: &AppRef) {
         let (path, workspaces) = {
             let state = app.borrow();
-            let order = state.tab_model.iter().filter_map(|model| {
-                let url = state.tabs.iter().find(|tab| tab.id == model.id)?.url.as_ref()?;
-                crate::session::persistable_url(url).map(|_| model.id)
-            }).take(crate::session::MAX_TABS).collect::<Vec<_>>();
+            let order = state
+                .tab_model
+                .iter()
+                .filter_map(|model| {
+                    let url = state
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == model.id)?
+                        .url
+                        .as_ref()?;
+                    crate::session::persistable_url(url).map(|_| model.id)
+                })
+                .take(crate::session::MAX_TABS)
+                .collect::<Vec<_>>();
             let mut workspaces = state.workspaces.clone();
             workspaces.set_session_order(&order);
             (state.workspaces_path.clone(), workspaces)
@@ -1084,7 +1189,10 @@ impl App {
                 let was_active = state.tab_model.active() == id;
                 let outcome = state.tab_model.close(id);
                 if let Some(workspace_id) = state.workspaces.workspace_for(id) {
-                    let is_last_member = state.workspaces.get(workspace_id).is_some_and(|workspace| workspace.tabs().len() == 1);
+                    let is_last_member = state
+                        .workspaces
+                        .get(workspace_id)
+                        .is_some_and(|workspace| workspace.tabs().len() == 1);
                     if is_last_member && state.workspaces.workspace_count() > 1 {
                         let _ = state.workspaces.remove_workspace(workspace_id);
                     } else {
@@ -1097,7 +1205,9 @@ impl App {
                 } else {
                     outcome.new_active
                 };
-                if was_active { let _ = state.tab_model.select(active); }
+                if was_active {
+                    let _ = state.tab_model.select(active);
+                }
                 if was_active {
                     let (progress, page_usable) = state
                         .tabs
@@ -1232,13 +1342,19 @@ impl App {
     fn select_split_tab(app: &AppRef, id: TabId) -> bool {
         let (active, hwnd) = {
             let mut state = app.borrow_mut();
-            if state.tab_model.get(id).is_none() { return false; }
-            let Some(mut split) = state.split_view else { return false };
+            if state.tab_model.get(id).is_none() {
+                return false;
+            }
+            let Some(mut split) = state.split_view else {
+                return false;
+            };
             if let Some(pane) = split.pane_for(id) {
                 split.focus(pane);
             } else {
                 let replaced = split.focused_tab();
-                if !split.replace_focused(id) { return false; }
+                if !split.replace_focused(id) {
+                    return false;
+                }
                 if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == replaced) {
                     tab.hidden_since = Some(Instant::now());
                     tab.suspended = false;
@@ -1250,7 +1366,12 @@ impl App {
                 tab.hidden_since = None;
                 tab.suspended = false;
             }
-            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == id).map(|tab| (tab.progress, tab.page_usable)) {
+            if let Some((progress, page_usable)) = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == id)
+                .map(|tab| (tab.progress, tab.page_usable))
+            {
                 state.navigation_progress = progress;
                 state.page_loaded = page_usable;
             }
@@ -1277,7 +1398,9 @@ impl App {
         let active = Self::active_tab_id(app);
         let index = ids.iter().position(|id| *id == active).unwrap_or(0);
         let next = ids[(index as isize + delta).rem_euclid(ids.len().max(1) as isize) as usize];
-        if next != active { let _ = Self::select_tab(app, next); }
+        if next != active {
+            let _ = Self::select_tab(app, next);
+        }
         next
     }
 
@@ -1401,12 +1524,14 @@ impl App {
                 windows::Win32::Foundation::E_ACCESSDENIED,
             ));
         }
-        Self::with_engine(app, |engine| engine.execute_script_for_origin(id, origin, script))
-            .unwrap_or_else(|| {
-                Err(windows::core::Error::from(
-                    windows::Win32::Foundation::E_ABORT,
-                ))
-            })
+        Self::with_engine(app, |engine| {
+            engine.execute_script_for_origin(id, origin, script)
+        })
+        .unwrap_or_else(|| {
+            Err(windows::core::Error::from(
+                windows::Win32::Foundation::E_ABORT,
+            ))
+        })
     }
 
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
@@ -1610,8 +1735,7 @@ impl App {
         change: impl FnOnce(
             &mut crate::tab_groups::GroupPreferences,
             &crate::tab_groups::DomainKey,
-        )
-            -> std::result::Result<bool, crate::tab_groups::PreferencesError>,
+        ) -> std::result::Result<bool, crate::tab_groups::PreferencesError>,
     ) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
@@ -1670,7 +1794,12 @@ impl App {
         let (hwnd, active, released) = {
             let mut state = app.borrow_mut();
             let mut live = tab_groups::live_domains(&state.group_inputs());
-            live.extend(state.pending.as_ref().and_then(tab_groups::DomainKey::from_url));
+            live.extend(
+                state
+                    .pending
+                    .as_ref()
+                    .and_then(tab_groups::DomainKey::from_url),
+            );
             let released = state.group_preferences.release_unused_always(&live);
             (state.hwnd, state.tab_model.active(), released)
         };
@@ -1921,7 +2050,10 @@ impl App {
         };
         let _ = Self::with_engine(app, |engine| {
             if let (Some(split), Some((left, right))) = (split, bounds) {
-                engine.set_visible_tabs(&[(split.left, left), (split.right, right)], split.focused_tab())
+                engine.set_visible_tabs(
+                    &[(split.left, left), (split.right, right)],
+                    split.focused_tab(),
+                )
             } else if let Some(viewport) = viewport {
                 // `select_tab` preserves all currently visible tabs. After leaving split view
                 // that would leave the other pane controller visible over the single page.
@@ -1938,7 +2070,10 @@ impl App {
         left: TabId,
         right: TabId,
         focused: Pane,
-        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+        bounds: (
+            windows::Win32::Foundation::RECT,
+            windows::Win32::Foundation::RECT,
+        ),
     ) -> bool {
         Self::open_split_view_with_ratio(app, left, right, focused, 50, bounds)
     }
@@ -1949,7 +2084,10 @@ impl App {
         right: TabId,
         focused: Pane,
         ratio: u8,
-        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+        bounds: (
+            windows::Win32::Foundation::RECT,
+            windows::Win32::Foundation::RECT,
+        ),
     ) -> bool {
         let (focused_tab, hwnd) = {
             let mut state = app.borrow_mut();
@@ -1959,7 +2097,9 @@ impl App {
             {
                 return false;
             }
-            let Some(mut split) = SplitView::new(left, right, focused) else { return false };
+            let Some(mut split) = SplitView::new(left, right, focused) else {
+                return false;
+            };
             split.set_ratio(ratio);
             state.split_view = Some(split);
             state.split_bounds = Some(bounds);
@@ -1973,7 +2113,12 @@ impl App {
                     tab.hidden_since.get_or_insert_with(Instant::now);
                 }
             }
-            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == focused_tab).map(|tab| (tab.progress, tab.page_usable)) {
+            if let Some((progress, page_usable)) = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == focused_tab)
+                .map(|tab| (tab.progress, tab.page_usable))
+            {
                 state.navigation_progress = progress;
                 state.page_loaded = page_usable;
             }
@@ -1990,7 +2135,10 @@ impl App {
 
     pub fn update_split_bounds(
         app: &AppRef,
-        bounds: (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT),
+        bounds: (
+            windows::Win32::Foundation::RECT,
+            windows::Win32::Foundation::RECT,
+        ),
     ) {
         if app.borrow().split_view.is_some() {
             app.borrow_mut().split_bounds = Some(bounds);
@@ -2008,7 +2156,9 @@ impl App {
     pub fn set_split_ratio(app: &AppRef, ratio: u8) -> bool {
         let changed = {
             let mut state = app.borrow_mut();
-            let Some(split) = state.split_view.as_mut() else { return false };
+            let Some(split) = state.split_view.as_mut() else {
+                return false;
+            };
             let old = split.ratio;
             split.set_ratio(ratio);
             old != split.ratio
@@ -2029,12 +2179,19 @@ impl App {
     pub fn focus_split_pane(app: &AppRef, pane: Pane) -> bool {
         let (active, hwnd) = {
             let mut state = app.borrow_mut();
-            let Some(mut split) = state.split_view else { return false };
+            let Some(mut split) = state.split_view else {
+                return false;
+            };
             split.focus(pane);
             let active = split.focused_tab();
             state.split_view = Some(split);
             state.tab_model.select(active);
-            if let Some((progress, page_usable)) = state.tabs.iter().find(|tab| tab.id == active).map(|tab| (tab.progress, tab.page_usable)) {
+            if let Some((progress, page_usable)) = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == active)
+                .map(|tab| (tab.progress, tab.page_usable))
+            {
                 state.navigation_progress = progress;
                 state.page_loaded = page_usable;
             }
@@ -2052,24 +2209,49 @@ impl App {
     }
 
     pub fn swap_split_panes(app: &AppRef) -> bool {
-        let Some(mut split) = app.borrow().split_view else { return false };
+        let Some(mut split) = app.borrow().split_view else {
+            return false;
+        };
         split.swap();
         let bounds = app.borrow().split_bounds;
         let Some(bounds) = bounds else { return false };
-        Self::open_split_view_with_ratio(app, split.left, split.right, split.focused, split.ratio, bounds)
+        Self::open_split_view_with_ratio(
+            app,
+            split.left,
+            split.right,
+            split.focused,
+            split.ratio,
+            bounds,
+        )
     }
 
     pub fn replace_focused_split_pane(app: &AppRef, tab: TabId) -> bool {
-        let Some(mut split) = app.borrow().split_view else { return false };
-        if !split.replace_focused(tab) { return false; }
-        let Some(bounds) = app.borrow().split_bounds else { return false };
-        Self::open_split_view_with_ratio(app, split.left, split.right, split.focused, split.ratio, bounds)
+        let Some(mut split) = app.borrow().split_view else {
+            return false;
+        };
+        if !split.replace_focused(tab) {
+            return false;
+        }
+        let Some(bounds) = app.borrow().split_bounds else {
+            return false;
+        };
+        Self::open_split_view_with_ratio(
+            app,
+            split.left,
+            split.right,
+            split.focused,
+            split.ratio,
+            bounds,
+        )
     }
 
     pub fn close_split_pane(app: &AppRef, pane: Pane) -> bool {
         let split = { app.borrow().split_view };
         let Some(split) = split else { return false };
-        let closing = match pane { Pane::Left => split.left, Pane::Right => split.right };
+        let closing = match pane {
+            Pane::Left => split.left,
+            Pane::Right => split.right,
+        };
         Self::close_tab(app, closing)
     }
 
@@ -2135,7 +2317,11 @@ impl App {
     }
 
     pub fn tab_has_controller(app: &AppRef, id: TabId) -> bool {
-        app.borrow().tabs.iter().find(|tab| tab.id == id).is_some_and(|tab| tab.controller_created)
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| tab.controller_created)
     }
 
     pub fn tab_title(app: &AppRef, id: TabId) -> Option<String> {
@@ -2161,7 +2347,10 @@ impl App {
             .iter()
             .find(|tab| tab.id == id)
             .is_some_and(|tab| tab.muted)
-            || state.engine.as_ref().is_some_and(|engine| engine.tab_muted(id))
+            || state
+                .engine
+                .as_ref()
+                .is_some_and(|engine| engine.tab_muted(id))
     }
 
     pub fn tab_supports_muting(app: &AppRef, id: TabId) -> bool {
@@ -2188,12 +2377,17 @@ impl App {
             return false;
         };
         state.tab_model.active() != id
-            && !state.split_view.is_some_and(|split| split.pane_for(id).is_some())
+            && !state
+                .split_view
+                .is_some_and(|split| split.pane_for(id).is_some())
             && !state.tab_model.get(id).is_some_and(|model| model.pinned)
             && !tab.loading
             && tab.controller_created
             && !tab.discarded
-            && tab.url.as_ref().is_some_and(|url| matches!(url.scheme(), "http" | "https"))
+            && tab
+                .url
+                .as_ref()
+                .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
     }
 
     /// Suspends one inactive tab after the same unsaved-input/media check used by automatic
@@ -2240,9 +2434,7 @@ impl App {
                 tab.sleep_check_started = None;
             }
             if blocked || playing_audio {
-                win32::show_error_message(
-                    "This tab has unsaved input or audio and was left open.",
-                );
+                win32::show_error_message("This tab has unsaved input or audio and was left open.");
             }
             return;
         }
@@ -2267,17 +2459,25 @@ impl App {
     pub fn site_security(app: &AppRef) -> SiteSecurity {
         let state = app.borrow();
         let active = state.tab_model.active();
-        state.tabs.iter().find(|tab| tab.id == active).map_or(
-            SiteSecurity::NoSite,
-            |tab| site_security::classify(tab.url.as_ref(), tab.load),
-        )
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .map_or(SiteSecurity::NoSite, |tab| {
+                site_security::classify(tab.url.as_ref(), tab.load)
+            })
     }
 
     /// The active tab and its committed page address, when it has one.
     pub fn active_site(app: &AppRef) -> Option<(TabId, url::Url)> {
         let state = app.borrow();
         let active = state.tab_model.active();
-        let url = state.tabs.iter().find(|tab| tab.id == active)?.url.clone()?;
+        let url = state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)?
+            .url
+            .clone()?;
         Some((active, url))
     }
 
@@ -2292,9 +2492,7 @@ impl App {
             .map_or(0, |tab| tab.blocked)
     }
 
-    pub fn privacy_stats_snapshot(
-        app: &AppRef,
-    ) -> (crate::privacy_stats::PrivacyStats, u64) {
+    pub fn privacy_stats_snapshot(app: &AppRef) -> (crate::privacy_stats::PrivacyStats, u64) {
         let state = app.borrow();
         (
             state.privacy_stats.clone().unwrap_or_default(),
@@ -2337,7 +2535,10 @@ impl App {
     pub fn privacy_stats_save_now(app: &AppRef) -> std::io::Result<()> {
         let (path, stats) = {
             let state = app.borrow();
-            (state.privacy_stats_path.clone(), state.privacy_stats.clone())
+            (
+                state.privacy_stats_path.clone(),
+                state.privacy_stats.clone(),
+            )
         };
         match (path, stats) {
             (Some(path), Some(stats)) => stats.save(&path),
@@ -2350,7 +2551,9 @@ impl App {
         let Some(path) = state.privacy_stats_path.clone() else {
             return Ok(());
         };
-        let Some(stats) = state.privacy_stats.as_mut() else { return Ok(()); };
+        let Some(stats) = state.privacy_stats.as_mut() else {
+            return Ok(());
+        };
         let previous = stats.clone();
         stats.clear();
         if let Err(error) = stats.save(&path) {
@@ -2372,15 +2575,9 @@ impl App {
         state.engine.as_mut().map(|engine| f(engine.as_mut()))
     }
 
-    pub fn picture_in_picture_eligible(
-        app: &AppRef,
-        tab: TabId,
-        done: Box<dyn FnOnce(bool)>,
-    ) {
+    pub fn picture_in_picture_eligible(app: &AppRef, tab: TabId, done: Box<dyn FnOnce(bool)>) {
         if app.borrow().engine.is_some() {
-            let _ = Self::call_engine(app, |engine| {
-                engine.picture_in_picture_eligible(tab, done)
-            });
+            let _ = Self::call_engine(app, |engine| engine.picture_in_picture_eligible(tab, done));
         } else {
             done(false);
         }
@@ -2510,7 +2707,11 @@ impl App {
         let profile_result = if options.guest {
             crate::profile::Profile::guest_in(&app_data)
         } else {
-            crate::profile::startup_profile(&app_data, options.profile.as_deref(), interactive_launch)
+            crate::profile::startup_profile(
+                &app_data,
+                options.profile.as_deref(),
+                interactive_launch,
+            )
         };
         let profile = match profile_result {
             Ok(profile) => profile,
@@ -2539,17 +2740,17 @@ impl App {
                     return Ok(());
                 }
             }
-        } else { None };
+        } else {
+            None
+        };
         if interactive_launch && !profile.is_guest() {
             // Remembering is a convenience; an unwritable preferences folder must not block launch.
             let _ = crate::profile::remember_last_profile(&app_data, profile.listed_name());
         }
         crate::profile::set_active(profile.clone());
         let settings = crate::settings::Settings::load(&profile.settings_file());
-        let provider = SearchProvider::from_config(
-            settings.search_engine,
-            &profile.search_provider_file(),
-        );
+        let provider =
+            SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
             .user_data_dir
             .as_ref()
@@ -2681,7 +2882,10 @@ impl App {
     /// Opens the crash-recovery state and, after a crash, asks whether to restore.
     /// Returns `false` when the session could not be opened because another Bowser holds it.
     fn init_session(&mut self, dir: &std::path::Path) -> bool {
-        let workspace_path = self.workspaces_path.clone().unwrap_or_else(|| dir.join(crate::workspaces::FILE_NAME));
+        let workspace_path = self
+            .workspaces_path
+            .clone()
+            .unwrap_or_else(|| dir.join(crate::workspaces::FILE_NAME));
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
@@ -2766,16 +2970,28 @@ impl App {
                 && let Some(mut split) = SplitView::new(
                     *left,
                     *right,
-                    if saved_split.focused_left { Pane::Left } else { Pane::Right },
+                    if saved_split.focused_left {
+                        Pane::Left
+                    } else {
+                        Pane::Right
+                    },
                 )
             {
                 split.set_ratio(saved_split.ratio);
                 state.split_view = Some(split);
                 state.tab_model.select(split.focused_tab());
-                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == split.focused_tab()) {
+                if let Some(tab) = state
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == split.focused_tab())
+                {
                     tab.discarded = false;
                 }
-                active_url = state.tabs.iter().find(|tab| tab.id == split.focused_tab()).and_then(|tab| tab.url.clone());
+                active_url = state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == split.focused_tab())
+                    .and_then(|tab| tab.url.clone());
             }
             let ids = state.tab_model.iter().map(|tab| tab.id).collect::<Vec<_>>();
             let active = state.tab_model.active();
@@ -2842,9 +3058,10 @@ impl App {
             active,
         )?;
         if let Some(split) = state.split_view {
-            if let (Some(&left), Some(&right)) =
-                (saved_indexes.get(&split.left), saved_indexes.get(&split.right))
-            {
+            if let (Some(&left), Some(&right)) = (
+                saved_indexes.get(&split.left),
+                saved_indexes.get(&split.right),
+            ) {
                 session.split = Some(crate::session::SessionSplit {
                     left,
                     right,
@@ -2938,10 +3155,8 @@ impl App {
             return;
         };
         let settings = crate::settings::Settings::load(&profile.settings_file());
-        self.provider = SearchProvider::from_config(
-            settings.search_engine,
-            &profile.search_provider_file(),
-        );
+        self.provider =
+            SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
     }
 
     pub fn submit(app: &AppRef, input: &str) {
@@ -3148,7 +3363,10 @@ impl App {
                         let should_mute = {
                             let mut state = app.borrow_mut();
                             let active = state.tab_model.active() == tab_id;
-                            let visible = active || state.split_view.is_some_and(|split| split.pane_for(tab_id).is_some());
+                            let visible = active
+                                || state
+                                    .split_view
+                                    .is_some_and(|split| split.pane_for(tab_id).is_some());
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.controller_created = true;
                                 tab.hidden_since = (!visible).then(Instant::now);
@@ -3579,7 +3797,10 @@ impl App {
             return;
         };
         let result = if let (Some(split), Some((left, right))) = (split, panes) {
-            engine.set_visible_tabs(&[(split.left, left), (split.right, right)], split.focused_tab())
+            engine.set_visible_tabs(
+                &[(split.left, left), (split.right, right)],
+                split.focused_tab(),
+            )
         } else {
             engine.resize(bounds)
         };
@@ -3717,7 +3938,11 @@ impl App {
 
     pub fn active_navigation_progress_identity(app: &AppRef) -> Option<(u64, u8)> {
         let state = app.borrow();
-        let progress = state.tabs.iter().find(|tab| tab.id == state.tab_model.active())?.progress;
+        let progress = state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == state.tab_model.active())?
+            .progress;
         Some((progress.navigation_id?, progress.percent?))
     }
 
@@ -4246,6 +4471,7 @@ impl App {
             maximised,
             self.settings.tab_layout,
             self.settings.sidebar_width,
+            crate::win32::side_panel::active_width_px(self.hwnd),
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -4262,6 +4488,7 @@ impl App {
                     maximised,
                     self.settings.tab_layout,
                     self.settings.sidebar_width,
+                    crate::win32::side_panel::active_width_px(self.hwnd),
                 );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
@@ -4278,20 +4505,26 @@ fn chrome_viewport_bounds(
     maximised: bool,
     tab_layout: crate::settings::TabLayout,
     sidebar_width: u16,
+    side_panel_width: i32,
 ) -> windows::Win32::Foundation::RECT {
-    let viewport = match tab_layout {
+    let mut viewport = match tab_layout {
         crate::settings::TabLayout::Horizontal => {
-            crate::chrome::layout::content_rect(width, height, dpi, maximised)
+            let inset = crate::chrome::layout::left_rail_inset(dpi);
+            crate::chrome::layout::content_rect(width.max(0) - inset, height, dpi, maximised)
+                .shifted_right(inset)
         }
-        crate::settings::TabLayout::Vertical => crate::vertical_tabs::SidebarLayout::compute(
-            width,
-            height,
-            dpi,
-            i32::from(sidebar_width),
-            maximised,
-        )
-        .viewport,
+        crate::settings::TabLayout::Vertical => {
+            crate::vertical_tabs::SidebarLayout::compute_in_frame(
+                width,
+                height,
+                dpi,
+                i32::from(sidebar_width),
+                maximised,
+            )
+            .viewport
+        }
     };
+    viewport.left = (viewport.left + side_panel_width.max(0)).min(viewport.right);
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
@@ -5331,7 +5564,11 @@ mod tests {
         // Moving it to the end, away from the group, takes it out and it stays out.
         assert!(App::drop_tab(&app, second, 2));
         assert!(!App::tab_is_grouped(&app, second));
-        assert_eq!(tab_domain(&app, second), None, "an ungrouped tab has no group domain");
+        assert_eq!(
+            tab_domain(&app, second),
+            None,
+            "an ungrouped tab has no group domain"
+        );
         // The first and third tabs still share a site, so their own group is untouched.
         assert!(App::tab_is_grouped(&app, first));
     }
@@ -5343,7 +5580,10 @@ mod tests {
         let second = App::new_tab(&app);
         set_addresses(
             &app,
-            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+            &[
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+            ],
         );
         assert!(App::tab_is_grouped(&app, first));
         assert!(!App::can_undo_tab_organisation(&app));
@@ -5366,7 +5606,10 @@ mod tests {
         let second = App::new_tab(&app);
         set_addresses(
             &app,
-            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+            &[
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+            ],
         );
         let example = crate::tab_groups::DomainKey::parse("example.com").unwrap();
 
@@ -5386,7 +5629,10 @@ mod tests {
         let second = App::new_tab(&app);
         set_addresses(
             &app,
-            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+            &[
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+            ],
         );
         assert!(App::tab_is_grouped(&app, first));
 
@@ -5403,7 +5649,10 @@ mod tests {
         let second = App::new_tab(&app);
         set_addresses(
             &app,
-            &[(first, "https://a.example.com/"), (second, "https://b.example.com/")],
+            &[
+                (first, "https://a.example.com/"),
+                (second, "https://b.example.com/"),
+            ],
         );
         assert!(App::apply_tab_progress(
             &app,
@@ -5430,7 +5679,10 @@ mod tests {
         let second = App::new_tab(&app);
         set_addresses(
             &app,
-            &[(first, "https://chatgpt.com/"), (second, "https://chatgpt.com/c/1")],
+            &[
+                (first, "https://chatgpt.com/"),
+                (second, "https://chatgpt.com/c/1"),
+            ],
         );
 
         let (model, _) = App::island_menu(&app, first).expect("two tabs form an island");
@@ -5438,7 +5690,8 @@ mod tests {
         assert_eq!(model.name, None);
         assert_eq!(model.suggested_name.as_deref(), Some("ChatGPT"));
         assert_eq!(
-            App::tab_group_preferences(&app).name(&crate::tab_groups::DomainKey::parse("chatgpt.com").unwrap()),
+            App::tab_group_preferences(&app)
+                .name(&crate::tab_groups::DomainKey::parse("chatgpt.com").unwrap()),
             None
         );
     }
@@ -6316,8 +6569,9 @@ mod tests {
             true,
             crate::settings::TabLayout::Horizontal,
             crate::settings::DEFAULT_SIDEBAR_WIDTH,
+            0,
         );
-        let viewport = crate::chrome::layout::compute(1200, 800, 144, 3, true).viewport;
+        let viewport = crate::chrome::layout::compute_in_frame(1200, 800, 144, 3, 0, true).viewport;
         assert_eq!(
             bounds,
             windows::Win32::Foundation::RECT {
@@ -6341,12 +6595,50 @@ mod tests {
                 true,
                 crate::settings::TabLayout::Vertical,
                 260,
+                0,
             );
-            let sidebar = crate::vertical_tabs::SidebarLayout::compute(1600, 1000, dpi, 260, true);
+            let sidebar =
+                crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 1000, dpi, 260, true);
             assert_eq!(bounds.left, sidebar.viewport.left, "dpi={dpi}");
             assert_eq!(bounds.right, sidebar.viewport.right, "dpi={dpi}");
             assert!(valid_viewport_bounds(bounds), "dpi={dpi}");
         }
+    }
+
+    #[test]
+    fn webview_bounds_reserve_rail_sidebar_and_panel_in_both_tab_layouts() {
+        for dpi in [96, 120, 144, 192] {
+            let inset = crate::chrome::layout::left_rail_inset(dpi);
+            for tab_layout in [crate::settings::TabLayout::Horizontal, crate::settings::TabLayout::Vertical] {
+                let base = chrome_viewport_bounds(1800, 1000, dpi, 4, true, tab_layout, 260, 0);
+                let with_panel = chrome_viewport_bounds(1800, 1000, dpi, 4, true, tab_layout, 260, 320);
+                assert!(base.left >= inset, "rail must be reserved, dpi={dpi}, layout={tab_layout:?}");
+                assert_eq!(with_panel.left, base.left + 320, "panel must be reserved, dpi={dpi}, layout={tab_layout:?}");
+                assert_eq!(with_panel.right, base.right);
+                assert_eq!(with_panel.top, base.top);
+                assert_eq!(with_panel.bottom, base.bottom);
+                assert!(valid_viewport_bounds(with_panel));
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_rail_wrappers_preserve_order_metadata_and_active_state() {
+        let app = app_with_pending(rect(800, 600));
+        let id = App::workspace_create(&app, "Work").unwrap();
+        App::workspace_set_icon(&app, id, crate::workspaces::WorkspaceIcon::Code).unwrap();
+        App::workspace_set_colour(&app, id, Some(crate::workspaces::WorkspaceColour::Teal)).unwrap();
+        App::workspace_move(&app, id, 0).unwrap();
+
+        let entries = App::workspace_entries(&app);
+        assert_eq!(entries[0].0, id);
+        assert_eq!(entries[0].1, "Work");
+        assert_eq!(entries[0].2, crate::workspaces::WorkspaceIcon::Code);
+        assert_eq!(entries[0].3, Some(crate::workspaces::WorkspaceColour::Teal));
+        assert_eq!(entries[0].4, 1);
+        assert!(entries[0].5);
+        assert_eq!(entries[1].1, "Default");
+        assert!(!entries[1].5);
     }
 
     #[test]

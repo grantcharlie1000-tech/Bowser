@@ -1,6 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{process::ExitCode, rc::Rc};
+use std::{
+    backtrace::Backtrace,
+    fs::{self, OpenOptions},
+    io::Write,
+    panic::{AssertUnwindSafe, PanicHookInfo},
+    path::PathBuf,
+    process::ExitCode,
+    rc::Rc,
+};
 
 use bowser::{
     app::App,
@@ -15,6 +23,7 @@ use windows::{
 };
 
 fn main() -> ExitCode {
+    install_panic_hook();
     let options = match LaunchOptions::parse() {
         Ok(options) => options,
         Err(error) => {
@@ -64,6 +73,72 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+const MAX_CRASH_LOG_BYTES: u64 = 256 * 1024;
+
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| append_crash_log(info)));
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| previous(info)));
+    }));
+}
+
+fn append_crash_log(info: &PanicHookInfo<'_>) {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let directory = PathBuf::from(local_app_data).join("Bowser");
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+
+    let message = if let Some(message) = info.payload().downcast_ref::<&str>() {
+        *message
+    } else if let Some(message) = info.payload().downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "<non-string panic payload>"
+    };
+    let location = info
+        .location()
+        .map(|location| {
+            format!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        })
+        .unwrap_or_else(|| "<unknown>".to_owned());
+    let mut entry = format!(
+        "Panic: {message}\nLocation: {location}\nBacktrace:\n{}\n",
+        Backtrace::force_capture()
+    );
+    if entry.len() > MAX_CRASH_LOG_BYTES as usize {
+        let mut end = MAX_CRASH_LOG_BYTES as usize;
+        while !entry.is_char_boundary(end) {
+            end -= 1;
+        }
+        entry.truncate(end);
+    }
+    let path = directory.join("crash.log");
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(path)
+    else {
+        return;
+    };
+    let current_len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    if current_len.saturating_add(entry.len() as u64) > MAX_CRASH_LOG_BYTES
+        && file.set_len(0).is_err()
+    {
+        return;
+    }
+    let _ = file.write_all(entry.as_bytes());
 }
 
 fn show_error(message: &str) {

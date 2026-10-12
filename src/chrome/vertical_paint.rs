@@ -9,7 +9,7 @@ use crate::{
     },
     tab_groups::{self, DomainKey, GroupPreferences, TabGroupInput, TabGroupKey},
     tabs::TabId,
-    vertical_tabs::{self, SidebarLayout, SidebarHit},
+    vertical_tabs::{self, SidebarHit, SidebarLayout},
 };
 
 /// Logical inset of a grouped tab row, so the tabs of an expanded group sit under its header.
@@ -65,15 +65,18 @@ pub fn rows(
                 rows.push(SidebarRow::Group {
                     representative: *id,
                     key: domain.clone(),
-                    name: preferences.name(domain).unwrap_or(domain.as_str()).to_owned(),
+                    name: preferences
+                        .name(domain)
+                        .unwrap_or(domain.as_str())
+                        .to_owned(),
                     colour: preferences.colour(domain),
                     collapsed,
                     members,
                     selected,
                 });
                 if !collapsed {
-                    for (member_index, (member_id, member_title, member_pinned, member_loading))
-                        in tabs.iter().enumerate().skip(index)
+                    for (member_index, (member_id, member_title, member_pinned, member_loading)) in
+                        tabs.iter().enumerate().skip(index)
                     {
                         if keys.get(member_index).and_then(Option::as_ref) == key {
                             rows.push(SidebarRow::Tab {
@@ -132,7 +135,13 @@ pub fn header_ball(
     scroll: i32,
     metrics: Metrics,
 ) -> Option<GroupGeometry> {
-    let SidebarRow::Group { collapsed, members, selected, .. } = rows.get(index)? else {
+    let SidebarRow::Group {
+        collapsed,
+        members,
+        selected,
+        ..
+    } = rows.get(index)?
+    else {
         return None;
     };
     let bounds = row_bounds(layout, index, metrics, scroll);
@@ -169,10 +178,14 @@ pub fn hit_test(
 ) -> Option<SidebarHit> {
     let hit = vertical_tabs::hit_test(layout, x, y, scroll, rows.len())?;
     match hit {
-        SidebarHit::Tab(index) if index < rows.len() && matches!(rows[index], SidebarRow::Tab { .. }) => {
+        SidebarHit::Tab(index)
+            if index < rows.len() && matches!(rows[index], SidebarRow::Tab { .. }) =>
+        {
             Some(SidebarHit::Tab(index))
         }
-        SidebarHit::TabClose(index) if index < rows.len() && matches!(rows[index], SidebarRow::Tab { .. }) => {
+        SidebarHit::TabClose(index)
+            if index < rows.len() && matches!(rows[index], SidebarRow::Tab { .. }) =>
+        {
             Some(SidebarHit::TabClose(index))
         }
         SidebarHit::Tab(index) | SidebarHit::TabClose(index)
@@ -190,7 +203,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        chrome::group_ui::{GroupState, MAX_VISIBLE_STACK_BALLS, MIN_HIT_GAP_LOGICAL, MIN_HIT_LOGICAL},
+        chrome::group_ui::{
+            GroupState, MAX_VISIBLE_STACK_BALLS, MIN_HIT_GAP_LOGICAL, MIN_HIT_LOGICAL,
+        },
         tab_groups::{GroupPreferences, TabGroupInput},
         tabs::TabId,
     };
@@ -237,24 +252,47 @@ mod tests {
             let bounds = row_bounds(&layout, 0, metrics, 0);
             let ball = geometry.ball_rects[0];
 
-            assert_eq!(geometry.ball_rects.len(), 1, "expanded shows one ball at {dpi} dpi");
+            assert_eq!(
+                geometry.ball_rects.len(),
+                1,
+                "expanded shows one ball at {dpi} dpi"
+            );
             assert_eq!(geometry.overflow_count, None);
-            assert!(bounds.contains_rect(ball), "ball inside its row at {dpi} dpi");
+            assert!(
+                bounds.contains_rect(ball),
+                "ball inside its row at {dpi} dpi"
+            );
             assert!(
                 ((ball.top + ball.bottom) - (bounds.top + bounds.bottom)).abs() <= 1,
                 "ball vertically centred at {dpi} dpi"
             );
             let inset = ball.left - (bounds.left + metrics.px(HEADER_BALL_INSET));
-            assert!((0..=1).contains(&inset), "leading inset {inset} at {dpi} dpi");
+            assert!(
+                (0..=1).contains(&inset),
+                "leading inset {inset} at {dpi} dpi"
+            );
 
             // The same ball the horizontal island draws: one island-height shell.
-            let island = Rect::new(0, 0, metrics.px(Metrics::ISLAND_HEIGHT) * 3, metrics.px(Metrics::ISLAND_HEIGHT));
+            let island = Rect::new(
+                0,
+                0,
+                metrics.px(Metrics::ISLAND_HEIGHT) * 3,
+                metrics.px(Metrics::ISLAND_HEIGHT),
+            );
             let horizontal = group_ui::group_geometry(
                 GroupFrame::resting(island, GroupState::Expanded, 2),
                 metrics,
             );
-            assert_eq!(ball.width(), horizontal.ball_rects[0].width(), "ball size at {dpi} dpi");
-            assert_eq!(ball.height(), horizontal.ball_rects[0].height(), "ball size at {dpi} dpi");
+            assert_eq!(
+                ball.width(),
+                horizontal.ball_rects[0].width(),
+                "ball size at {dpi} dpi"
+            );
+            assert_eq!(
+                ball.height(),
+                horizontal.ball_rects[0].height(),
+                "ball size at {dpi} dpi"
+            );
         }
     }
 
@@ -276,7 +314,10 @@ mod tests {
                     "fan step {index} at {dpi} dpi"
                 );
             }
-            assert_ne!(balls[1].top, balls[0].top, "the fan alternates above and below");
+            assert_ne!(
+                balls[1].top, balls[0].top,
+                "the fan alternates above and below"
+            );
             assert!(
                 balls.last().unwrap().right < layout.handle.left,
                 "the fan stays clear of the resize handle at {dpi} dpi"
@@ -292,11 +333,13 @@ mod tests {
     fn collapsed_unselected_header_is_a_single_ball_and_expanded_ignores_fan_count() {
         let metrics = Metrics::new(144);
         let layout = layout(144);
-        let unselected = header_ball(&layout, &[header(6, true, false), tab()], 0, 0, metrics).unwrap();
+        let unselected =
+            header_ball(&layout, &[header(6, true, false), tab()], 0, 0, metrics).unwrap();
         assert_eq!(unselected.ball_rects.len(), 1);
         assert_eq!(unselected.overflow_count, None);
 
-        let expanded = header_ball(&layout, &[header(6, false, true), tab()], 0, 0, metrics).unwrap();
+        let expanded =
+            header_ball(&layout, &[header(6, false, true), tab()], 0, 0, metrics).unwrap();
         assert_eq!(expanded.ball_rects.len(), 1);
         assert_eq!(expanded.overflow_count, None);
     }
@@ -313,7 +356,12 @@ mod tests {
             ] {
                 let geometry = header_ball(&layout, &rows, 0, 0, metrics).unwrap();
                 let bounds = row_bounds(&layout, 0, metrics, 0);
-                let stack_right = geometry.ball_rects.iter().map(|ball| ball.right).max().unwrap();
+                let stack_right = geometry
+                    .ball_rects
+                    .iter()
+                    .map(|ball| ball.right)
+                    .max()
+                    .unwrap();
                 let label = header_label_left(&geometry, metrics);
                 assert!(label > stack_right, "name clears the stack at {dpi} dpi");
                 assert!(label < bounds.right, "name fits the row at {dpi} dpi");
@@ -326,19 +374,35 @@ mod tests {
         for dpi in DPIS {
             let metrics = Metrics::new(dpi);
             let layout = layout(dpi);
-            for header_row in [header(1, false, false), header(9, true, true), header(9, true, false)] {
+            for header_row in [
+                header(1, false, false),
+                header(9, true, true),
+                header(9, true, false),
+            ] {
                 let rows = [tab(), header_row, tab()];
                 let geometry = header_ball(&layout, &rows, 1, 0, metrics).unwrap();
                 let hit = geometry.hit_rect;
                 let above = row_bounds(&layout, 0, metrics, 0);
                 let below = row_bounds(&layout, 2, metrics, 0);
 
-                assert!(logical(hit.width(), dpi) >= MIN_HIT_LOGICAL, "width at {dpi} dpi");
-                assert!(logical(hit.height(), dpi) >= MIN_HIT_LOGICAL, "height at {dpi} dpi");
+                assert!(
+                    logical(hit.width(), dpi) >= MIN_HIT_LOGICAL,
+                    "width at {dpi} dpi"
+                );
+                assert!(
+                    logical(hit.height(), dpi) >= MIN_HIT_LOGICAL,
+                    "height at {dpi} dpi"
+                );
                 let gap_above = logical(hit.top - above.bottom, dpi);
                 let gap_below = logical(below.top - hit.bottom, dpi);
-                assert!(gap_above >= MIN_HIT_GAP_LOGICAL, "gap above {gap_above} at {dpi} dpi");
-                assert!(gap_below >= MIN_HIT_GAP_LOGICAL, "gap below {gap_below} at {dpi} dpi");
+                assert!(
+                    gap_above >= MIN_HIT_GAP_LOGICAL,
+                    "gap above {gap_above} at {dpi} dpi"
+                );
+                assert!(
+                    gap_below >= MIN_HIT_GAP_LOGICAL,
+                    "gap below {gap_below} at {dpi} dpi"
+                );
             }
         }
     }
@@ -350,7 +414,10 @@ mod tests {
             let bounds = row_bounds(&layout(dpi), 1, metrics, 0);
             let member = member_bounds(bounds, metrics);
             assert_eq!(member.left - bounds.left, metrics.px(GROUP_MEMBER_INDENT));
-            assert_eq!((member.top, member.right, member.bottom), (bounds.top, bounds.right, bounds.bottom));
+            assert_eq!(
+                (member.top, member.right, member.bottom),
+                (bounds.top, bounds.right, bounds.bottom)
+            );
         }
     }
 
@@ -382,21 +449,58 @@ mod tests {
         assert_eq!(expanded.len(), 4, "header, two members, loose tab");
         assert!(matches!(
             expanded[0],
-            SidebarRow::Group { members: 2, selected: true, collapsed: false, .. }
+            SidebarRow::Group {
+                members: 2,
+                selected: true,
+                collapsed: false,
+                ..
+            }
         ));
-        assert!(matches!(expanded[1], SidebarRow::Tab { id: TabId(1), grouped: true, .. }));
-        assert!(matches!(expanded[2], SidebarRow::Tab { id: TabId(3), grouped: true, .. }));
-        assert!(matches!(expanded[3], SidebarRow::Tab { id: TabId(2), grouped: false, .. }));
+        assert!(matches!(
+            expanded[1],
+            SidebarRow::Tab {
+                id: TabId(1),
+                grouped: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            expanded[2],
+            SidebarRow::Tab {
+                id: TabId(3),
+                grouped: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            expanded[3],
+            SidebarRow::Tab {
+                id: TabId(2),
+                grouped: false,
+                ..
+            }
+        ));
 
         let unselected = rows(&tabs, &inputs, &preferences, TabId(2));
-        assert!(matches!(unselected[0], SidebarRow::Group { selected: false, .. }));
+        assert!(matches!(
+            unselected[0],
+            SidebarRow::Group {
+                selected: false,
+                ..
+            }
+        ));
 
         preferences.set_collapsed(&key, true).unwrap();
         let collapsed = rows(&tabs, &inputs, &preferences, TabId(3));
         assert_eq!(collapsed.len(), 2, "collapsed members are hidden");
         assert!(matches!(
             collapsed[0],
-            SidebarRow::Group { members: 2, selected: true, collapsed: true, .. }
+            SidebarRow::Group {
+                members: 2,
+                selected: true,
+                collapsed: true,
+                ..
+            }
         ));
     }
 }

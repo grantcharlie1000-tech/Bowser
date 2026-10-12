@@ -795,7 +795,10 @@ mod tests {
         let slots = project_strip(&tabs, 0, &GroupPreferences::default());
 
         assert_eq!(slots[0].group_size, 1);
-        assert_eq!(slots[0].group_key, Some(TabGroupKey::Domain(key("example.com"))));
+        assert_eq!(
+            slots[0].group_key,
+            Some(TabGroupKey::Domain(key("example.com")))
+        );
         assert_eq!(slots[1].group_key, None);
     }
 
@@ -827,7 +830,10 @@ mod tests {
         assert_eq!(merged.name(&example), Some("Renamed"));
         assert_eq!(merged.colour(&example), Some(2));
         assert!(merged.is_collapsed(&example));
-        assert!(!now.with_collapse_from(&GroupPreferences::default()).is_collapsed(&example));
+        assert!(
+            !now.with_collapse_from(&GroupPreferences::default())
+                .is_collapsed(&example)
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod web_app;
 mod webview2;
 pub(crate) use webview2::password_login_messages_enabled;
 
@@ -127,7 +128,11 @@ pub trait EngineAdapter {
         false
     }
     /// Mutes or unmutes one tab. Engines without per-tab audio controls ignore the request.
-    fn set_tab_muted(&mut self, _tab: crate::tabs::TabId, _muted: bool) -> windows::core::Result<()> {
+    fn set_tab_muted(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _muted: bool,
+    ) -> windows::core::Result<()> {
         Ok(())
     }
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
@@ -200,7 +205,9 @@ pub trait EngineAdapter {
         _range: BrowsingDataRange,
         done: Box<dyn FnOnce(Result<(), String>)>,
     ) {
-        done(Err("This browser engine cannot clear browsing data.".to_owned()));
+        done(Err(
+            "This browser engine cannot clear browsing data.".to_owned()
+        ));
     }
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
@@ -241,9 +248,8 @@ pub struct EngineEvents {
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, NavigationProgressEvent)>>,
     pub favicon_changed: Option<FaviconChangedCallback>,
     /// Validated top-frame credential-submit data; never generated from a payload origin claim.
-    pub login_message: Option<
-        std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::passwords::LoginMessage)>,
-    >,
+    pub login_message:
+        Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::passwords::LoginMessage)>>,
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,

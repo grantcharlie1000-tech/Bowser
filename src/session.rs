@@ -235,7 +235,11 @@ impl Session {
         }) {
             split = None;
         }
-        Some(Self { tabs, active, split })
+        Some(Self {
+            tabs,
+            active,
+            split,
+        })
     }
 }
 
@@ -707,13 +711,21 @@ mod tests {
             focused_left: true,
             ratio: 99,
         });
-        assert_eq!(Session::parse(&session.serialize()).unwrap().split, Some(SessionSplit {
-            left: 0,
-            right: 1,
-            focused_left: true,
-            ratio: 80,
-        }));
-        assert!(Session::parse("bowser-session 1\nactive 0\ntab\t0\thttps://example.com/\told\n").unwrap().split.is_none());
+        assert_eq!(
+            Session::parse(&session.serialize()).unwrap().split,
+            Some(SessionSplit {
+                left: 0,
+                right: 1,
+                focused_left: true,
+                ratio: 80,
+            })
+        );
+        assert!(
+            Session::parse("bowser-session 1\nactive 0\ntab\t0\thttps://example.com/\told\n")
+                .unwrap()
+                .split
+                .is_none()
+        );
     }
 
     #[test]
@@ -972,7 +984,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(lock_state(&dir), LockState::Free, "no marker");
         fs::write(dir.join(LOCK_NAME), "bowser-lock 0").unwrap();
-        assert_eq!(lock_state(&dir), LockState::Free, "stale marker left by a crash");
+        assert_eq!(
+            lock_state(&dir),
+            LockState::Free,
+            "stale marker left by a crash"
+        );
         let live = OpenOptions::new()
             .write(true)
             .create(true)

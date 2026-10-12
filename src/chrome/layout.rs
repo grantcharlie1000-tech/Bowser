@@ -20,6 +20,8 @@
 
 use windows::Win32::Foundation::RECT;
 
+use crate::chrome::rail::{self, RailKey, RailView};
+
 /// Logical (96 dpi) chrome metrics, scaled to physical pixels with [`Metrics::px`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Metrics {
@@ -172,6 +174,27 @@ impl Rect {
             self.bottom.min(other.bottom),
         )
     }
+
+    /// The same rect moved `dx` pixels to the right.
+    pub fn shifted_right(self, dx: i32) -> Rect {
+        Rect::new(self.left + dx, self.top, self.right + dx, self.bottom)
+    }
+
+    /// The smallest rect covering both. An empty rect contributes nothing.
+    pub fn union(self, other: Rect) -> Rect {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        Rect::new(
+            self.left.min(other.left),
+            self.top.min(other.top),
+            self.right.max(other.right),
+            self.bottom.max(other.bottom),
+        )
+    }
 }
 
 impl From<RECT> for Rect {
@@ -216,6 +239,8 @@ pub struct Layout {
     /// the omnibox. Empty when the toolbar is too narrow for it.
     pub main_menu_button: Rect,
     pub viewport: Rect,
+    /// Full-height pill at the left edge of the client. Everything else starts to its right.
+    pub rail: Rect,
     tab_count: usize,
     inactive_tab_width: i32,
     active_tab_width: i32,
@@ -240,6 +265,57 @@ const GROUP_SLOT_WORDS: usize = 8;
 pub const fn chrome_height(dpi: u32) -> i32 {
     let m = Metrics::new(dpi);
     m.px(Metrics::STRIP_HEIGHT) + m.px(Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN)
+}
+
+/// Logical width of the left rail. The rail is a pill, rounded at both ends. It holds 30-pixel
+/// buttons with a 5-pixel margin either side, which fits the 18-pixel icons at 96 dpi.
+pub const LEFT_RAIL_WIDTH: i32 = 40;
+
+/// Physical pixels the left rail takes from the window edge, including the gaps either side of it.
+/// Everything else in the window, the chrome and the page viewport, starts at this x.
+pub fn left_rail_inset(dpi: u32) -> i32 {
+    let m = Metrics::new(dpi);
+    m.px(Metrics::OUTER_MARGIN) + m.px(LEFT_RAIL_WIDTH) + m.px(Metrics::OUTER_MARGIN)
+}
+
+/// The left rail for a client of `client_h` physical pixels: full height, inset by the outer margin.
+pub fn left_rail(client_h: i32, dpi: u32) -> Rect {
+    let m = Metrics::new(dpi);
+    let margin = m.px(Metrics::OUTER_MARGIN);
+    let height = client_h.max(0);
+    Rect::new(
+        margin,
+        margin.min(height),
+        margin + m.px(LEFT_RAIL_WIDTH),
+        (height - margin).max(margin.min(height)),
+    )
+}
+
+/// Computes the chrome for a window that has the left rail. The chrome is laid out in the space to
+/// the right of the rail and then moved there, so no toolbar, tab or viewport rect overlaps it.
+pub fn compute_in_frame(
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+) -> Layout {
+    let client_w = client_w.max(0);
+    let client_h = client_h.max(0);
+    let inset = left_rail_inset(dpi);
+    let mut layout = compute_with_active(
+        client_w - inset,
+        client_h,
+        dpi,
+        tab_count,
+        active_index,
+        maximised,
+    )
+    .shifted_right(inset);
+    layout.client = Rect::new(0, 0, client_w, client_h);
+    layout.rail = left_rail(client_h, dpi);
+    layout
 }
 
 /// Rounded page host bounds in client-relative physical pixels. The margins preserve the native
@@ -277,7 +353,9 @@ pub fn split_pane_layout(
     let min_pane_width = min_pane_width.max(1);
     let divider_width = divider_width.max(1);
     let min_left = content.left.saturating_add(min_pane_width);
-    let max_left = content.right.saturating_sub(min_pane_width.saturating_add(divider_width));
+    let max_left = content
+        .right
+        .saturating_sub(min_pane_width.saturating_add(divider_width));
     if max_left < min_left || content.bottom <= content.top {
         return None;
     }
@@ -340,12 +418,17 @@ pub fn compute_with_active(
     let row_right = (client_w - margin).max(tabs_left);
     let active_index = active_index.min(tab_count.saturating_sub(1));
     let active_premium = (min_w / 2).max(1);
-    let initial_capacity = ((row_right - tabs_left + gap - active_premium) / (min_w + gap))
-        .max(0) as usize;
+    let initial_capacity =
+        ((row_right - tabs_left + gap - active_premium) / (min_w + gap)).max(0) as usize;
     let overflow = tab_count > initial_capacity;
     let tab_menu_button = if overflow {
         let left = (row_right - list_size).max(tabs_left);
-        Rect::new(left, tab_row.top + (tab_row_h - list_size) / 2, row_right, tab_row.top + (tab_row_h + list_size) / 2)
+        Rect::new(
+            left,
+            tab_row.top + (tab_row_h - list_size) / 2,
+            row_right,
+            tab_row.top + (tab_row_h + list_size) / 2,
+        )
     } else {
         Rect::default()
     };
@@ -463,6 +546,7 @@ pub fn compute_with_active(
         omnibox,
         main_menu_button,
         viewport,
+        rail: Rect::default(),
         tab_count,
         inactive_tab_width,
         active_tab_width,
@@ -491,6 +575,10 @@ pub enum Hit {
     SidebarTab(usize),
     SidebarTabClose(usize),
     GroupBall(usize),
+    /// A button of the left rail. Only given when the caller supplies the rail's entries.
+    Rail(RailKey),
+    /// The rail's pill outside every button.
+    RailBackground,
     NewTab,
     TabMenu,
     Back,
@@ -511,6 +599,25 @@ pub enum Hit {
 }
 
 impl Layout {
+    /// Moves every horizontal position of the chrome `dx` pixels right. The rail and client are left
+    /// as they are; the caller sets them.
+    fn shifted_right(mut self, dx: i32) -> Self {
+        self.strip = self.strip.shifted_right(dx);
+        self.tab_row = self.tab_row.shifted_right(dx);
+        self.tab_zone = self.tab_zone.shifted_right(dx);
+        self.tab_menu_button = self.tab_menu_button.shifted_right(dx);
+        self.new_tab_button = self.new_tab_button.shifted_right(dx);
+        self.caption_area = self.caption_area.shifted_right(dx);
+        self.back_button = self.back_button.shifted_right(dx);
+        self.forward_button = self.forward_button.shifted_right(dx);
+        self.reload_button = self.reload_button.shifted_right(dx);
+        self.omnibox = self.omnibox.shifted_right(dx);
+        self.main_menu_button = self.main_menu_button.shifted_right(dx);
+        self.viewport = self.viewport.shifted_right(dx);
+        self.tab_left += dx;
+        self
+    }
+
     /// The connection icon at the left of the address pill, centred vertically in it.
     pub fn site_info_button(&self) -> Rect {
         let m = self.metrics;
@@ -893,10 +1000,29 @@ fn square_in(left: i32, size: i32, band: Rect) -> Rect {
 }
 
 /// Classifies a client-relative point. Points in the gaps between the omnibox, viewport and strip
-/// return `None`.
+/// return `None`. The rail reports `RailBackground` here, since without entries its buttons are
+/// unknown; use [`hit_test_with_rail`] to name them.
 pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
+    hit_test_with_rail(layout, None, x, y)
+}
+
+/// [`hit_test`] with the left rail's entries. A point on a visible rail button is `Hit::Rail`, and
+/// the rest of the rail is `Hit::RailBackground`, which takes priority over everything else in its
+/// area.
+pub fn hit_test_with_rail(layout: &Layout, rail: Option<&RailView<'_>>, x: i32, y: i32) -> Hit {
     if !layout.client.contains(x, y) {
         return Hit::None;
+    }
+    if layout.rail.contains(x, y) {
+        let key = rail.and_then(|view| {
+            rail::geometry(layout.rail, view.entries, view.scroll, layout.metrics.dpi()).hit(x, y)
+        });
+        return key.map_or(Hit::RailBackground, Hit::Rail);
+    }
+    // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
+    // Below the toolbar that margin is outside the chrome and takes no hit.
+    if y < layout.strip.bottom && x < layout.strip.left {
+        return Hit::CaptionArea;
     }
     if layout.viewport.contains(x, y) {
         return Hit::Viewport;
@@ -1183,15 +1309,20 @@ mod tests {
 
     #[test]
     fn one_tab_at_1024_matches_hand_computed_geometry() {
-        let l = layout(1024, 96, 1);
+        // The left rail takes 44 px at 96 dpi (2 px margin, 40 px rail, 2 px margin). The chrome is
+        // laid out in the 980 px to its right, so every toolbar rect is 44 px further right than it
+        // would be without the rail.
+        let inset = left_rail_inset(96);
+        assert_eq!(inset, 44);
+        let l = compute_in_frame(1024, HEIGHT, 96, 1, 0, false);
 
-        assert_eq!(l.strip, Rect::new(0, 0, 1024, 34));
-        assert_eq!(l.tab_row, Rect::new(0, 34, 1024, 62));
+        assert_eq!(l.strip, Rect::new(inset, 0, 1024, 34));
+        assert_eq!(l.tab_row, Rect::new(inset, 34, 1024, 62));
         assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 34));
-        assert_eq!(l.tab_zone, Rect::new(2, 34, 1022, 62));
+        assert_eq!(l.tab_zone, Rect::new(46, 34, 1022, 62));
         assert_eq!(
             l.tab(0),
-            Some(Rect::new(2, 36, 1022, 60)),
+            Some(Rect::new(46, 36, 1022, 60)),
             "a lone tab fills the full-width row"
         );
         assert_eq!(l.new_tab_button, Rect::new(856, 3, 884, 31));
@@ -1199,18 +1330,33 @@ mod tests {
             l.tab_menu_button.is_empty(),
             "no overflow menu when tabs fit"
         );
-        assert_eq!(l.main_menu_button, Rect::new(775, 4, 803, 30));
-        assert_eq!(l.back_button, Rect::new(4, 3, 32, 31));
-        assert_eq!(l.forward_button, Rect::new(32, 3, 60, 31));
-        assert_eq!(l.reload_button, Rect::new(63, 3, 91, 31));
-        assert_eq!(l.omnibox, Rect::new(252, 4, 772, 30));
+        assert_eq!(l.main_menu_button, Rect::new(825, 4, 853, 30));
+        assert_eq!(
+            l.main_menu_button.left,
+            l.omnibox.right + 3,
+            "the bubble sits directly right of the address pill"
+        );
+        assert_eq!(l.back_button, Rect::new(48, 3, 76, 31));
+        assert_eq!(l.forward_button, Rect::new(76, 3, 104, 31));
+        assert_eq!(l.reload_button, Rect::new(107, 3, 135, 31));
+        assert_eq!(l.omnibox, Rect::new(198, 4, 822, 30));
+        assert_eq!(hit_test(&l, 839, 17), Hit::MainMenu);
+        assert_eq!(l.viewport, Rect::new(48, 64, 1020, 696));
+        assert_eq!(l.rail, Rect::new(2, 2, 42, 698));
+        assert_eq!(hit_test(&l, 22, 20), Hit::RailBackground);
+    }
+
+    #[test]
+    fn omnibox_is_centred_in_the_window_when_the_toolbar_has_room() {
+        // At 1024 the menu bubble pushes the omnibox left of centre, so centring is checked wider.
+        let l = layout(1440, 96, 1);
+
+        assert_eq!(l.omnibox, Rect::new(408, 4, 1032, 30));
         assert_eq!(
             (l.omnibox.left + l.omnibox.right) / 2,
-            512,
+            720,
             "the omnibox is centred in the window"
         );
-        assert_eq!(hit_test(&l, 789, 17), Hit::MainMenu);
-        assert_eq!(l.viewport, Rect::new(4, 64, 1020, 696));
     }
 
     #[test]
@@ -1286,6 +1432,45 @@ mod tests {
     }
 
     #[test]
+    fn left_rail_is_a_full_height_pill_clear_of_the_chrome() {
+        for dpi in DPIS {
+            for width in WIDTHS {
+                for tabs in [0, 1, 8, 40] {
+                    let l = compute_in_frame(width, HEIGHT, dpi, tabs, 0, false);
+                    let m = Metrics::new(dpi);
+                    let margin = m.px(Metrics::OUTER_MARGIN);
+                    let rail = l.rail;
+                    assert_eq!(rail.width(), m.px(LEFT_RAIL_WIDTH));
+                    assert_eq!((rail.left, rail.top), (margin, margin));
+                    assert_eq!(rail.bottom, HEIGHT - margin);
+
+                    let mut chrome = visible_controls(&l);
+                    chrome.extend([
+                        ("strip".to_owned(), l.strip),
+                        ("viewport".to_owned(), l.viewport),
+                        ("back".to_owned(), l.back_button),
+                        ("forward".to_owned(), l.forward_button),
+                        ("reload".to_owned(), l.reload_button),
+                        ("omnibox".to_owned(), l.omnibox),
+                        ("main menu".to_owned(), l.main_menu_button),
+                    ]);
+                    for (name, rect) in chrome {
+                        if rect.is_empty() {
+                            continue;
+                        }
+                        assert!(
+                            rect.left >= rail.right,
+                            "{name} {rect:?} starts left of the rail {rail:?}"
+                        );
+                    }
+                    assert_disjoint(&l);
+                    assert_inside_client(&l);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tab_controls_sit_in_the_toolbar_beside_the_captions() {
         for dpi in DPIS {
             for width in WIDTHS {
@@ -1309,7 +1494,11 @@ mod tests {
                     }
                     for (name, rect) in [("new tab", new_tab), ("tab menu", list)] {
                         if !rect.is_empty() {
-                            let band = if name == "tab menu" { l.tab_row } else { l.strip };
+                            let band = if name == "tab menu" {
+                                l.tab_row
+                            } else {
+                                l.strip
+                            };
                             assert!(band.contains_rect(rect), "{name} leaves its row");
                         }
                     }
@@ -1545,28 +1734,30 @@ mod tests {
     #[test]
     fn hit_test_identifies_each_region_at_1024() {
         // The active slot is visibly wider; all tab hits remain within their own island.
-        let l = layout(1024, 96, 3);
+        // Window 1024 wide with the rail's 44 px inset. Chrome x positions are the old ones plus 44,
+        // except the caption buttons, which sit at the window's right edge either way.
+        let l = compute_in_frame(1024, HEIGHT, 96, 3, 0, false);
 
-        assert_eq!(hit_test(&l, 100, 48), Hit::Tab(0));
-        assert_eq!(hit_test(&l, 500, 48), Hit::Tab(1));
-        assert_eq!(hit_test(&l, 800, 48), Hit::Tab(2));
+        assert_eq!(hit_test(&l, 144, 48), Hit::Tab(0));
+        assert_eq!(hit_test(&l, 544, 48), Hit::Tab(1));
+        assert_eq!(hit_test(&l, 844, 48), Hit::Tab(2));
         assert_eq!(
-            hit_test(&l, 790, 15),
+            hit_test(&l, 839, 15),
             Hit::MainMenu,
             "the main-menu bubble sits right of the address pill"
         );
         assert_eq!(
-            hit_test(&l, 840, 48),
+            hit_test(&l, 884, 48),
             Hit::Tab(2),
             "the tab row has no controls at its right end"
         );
         assert_eq!(
-            hit_test(&l, 10, 48),
+            hit_test(&l, 54, 48),
             Hit::TabClose(0),
             "close is on the left edge of the tab"
         );
         assert_eq!(
-            hit_test(&l, 100, 35),
+            hit_test(&l, 144, 35),
             Hit::CaptionArea,
             "the row margin is a window drag area"
         );
@@ -1576,24 +1767,93 @@ mod tests {
             Hit::CaptionArea,
             "the gap between islands is a window drag area"
         );
-        assert_eq!(hit_test(&l, 500, 48), Hit::Tab(1));
+        assert_eq!(hit_test(&l, 544, 48), Hit::Tab(1));
         assert_eq!(
             hit_test(&l, 1, 15),
             Hit::CaptionArea,
             "left margin is drag area"
         );
         assert_eq!(hit_test(&l, 870, 15), Hit::NewTab);
-        assert_eq!(hit_test(&l, 150, 15), Hit::CaptionArea);
-        assert_eq!(hit_test(&l, 500, 15), Hit::Omnibox);
-        assert_eq!(hit_test(&l, 500, 1), Hit::CaptionArea, "above the omnibox");
+        assert_eq!(hit_test(&l, 194, 15), Hit::CaptionArea);
+        assert_eq!(hit_test(&l, 544, 15), Hit::Omnibox);
+        assert_eq!(hit_test(&l, 544, 1), Hit::CaptionArea, "above the omnibox");
 
         assert_eq!(hit_test(&l, 900, 20), Hit::CaptionMinimize);
         assert_eq!(hit_test(&l, 950, 20), Hit::CaptionMaximize);
         assert_eq!(hit_test(&l, 1000, 20), Hit::CaptionClose);
-        assert_eq!(hit_test(&l, 500, 63), Hit::None, "margin above viewport");
-        assert_eq!(hit_test(&l, 500, 200), Hit::Viewport);
+        assert_eq!(hit_test(&l, 544, 63), Hit::None, "margin above viewport");
+        assert_eq!(hit_test(&l, 544, 200), Hit::Viewport);
         assert_eq!(hit_test(&l, 1024, 10), Hit::None, "right of client");
         assert_eq!(hit_test(&l, -1, 10), Hit::None, "left of client");
+        assert_eq!(
+            hit_test(&l, 22, 20),
+            Hit::RailBackground,
+            "the rail is not chrome"
+        );
+    }
+
+    #[test]
+    fn rail_buttons_take_hits_before_the_chrome_at_every_dpi() {
+        use crate::chrome::rail::{RailEntry, RailIcon};
+
+        let entries: Vec<RailEntry<'_>> = [RailKey::Home, RailKey::Workspace(9), RailKey::Menu]
+            .into_iter()
+            .map(|key| RailEntry {
+                key,
+                icon: RailIcon::Plus,
+                label: String::new(),
+                active: false,
+                dot: false,
+                accent: None,
+                favicon: None,
+            })
+            .collect();
+        let view = RailView {
+            entries: &entries,
+            fades: &[],
+            open_panel: None,
+            scroll: 0,
+            drop_indicator: None,
+            focused: None,
+            tooltip: None,
+        };
+        for dpi in DPIS {
+            for width in [768, 1024] {
+                let l = compute_in_frame(width, HEIGHT, dpi, 2, 0, false);
+                let geo = rail::geometry(l.rail, &entries, 0, dpi);
+                for item in &geo.items {
+                    let shown = item.visible();
+                    let (x, y) = (
+                        shown.left + shown.width() / 2,
+                        shown.top + shown.height() / 2,
+                    );
+                    assert_eq!(
+                        hit_test_with_rail(&l, Some(&view), x, y),
+                        Hit::Rail(item.key),
+                        "centre of {:?} at dpi {dpi}, width {width}",
+                        item.key
+                    );
+                }
+                let first = geo.items[0].rect;
+                let between_first_two = first.bottom + 1;
+                let rail_x = l.rail.left + l.rail.width() / 2;
+                assert_eq!(
+                    hit_test_with_rail(&l, Some(&view), rail_x, between_first_two),
+                    Hit::RailBackground,
+                    "the gap between two buttons is the rail itself"
+                );
+                assert_eq!(
+                    hit_test(&l, rail_x, between_first_two),
+                    Hit::RailBackground,
+                    "without entries the whole rail is background"
+                );
+                assert_eq!(
+                    hit_test_with_rail(&l, Some(&view), l.viewport.left + 10, 200),
+                    Hit::Viewport,
+                    "the page starts right of the rail"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1659,7 +1919,10 @@ mod tests {
         let inactive = l.tab_parts(l.tab(1).expect("inactive tab"));
         assert!(inactive.close.is_empty());
         assert!(!inactive.favicon.is_empty());
-        assert_eq!(hit_test(&l, inactive.favicon.left + 1, inactive.favicon.top + 1), Hit::Tab(1));
+        assert_eq!(
+            hit_test(&l, inactive.favicon.left + 1, inactive.favicon.top + 1),
+            Hit::Tab(1)
+        );
     }
 
     /// The back, forward and reload buttons, left to right, each with the hit it should return.

@@ -198,12 +198,15 @@ unsafe fn pen(colour: Rgba, width: f32) -> Option<Pen> {
 
 /// A closed rounded-rectangle outline, or a plain rectangle when the radius is zero.
 unsafe fn rounded_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
     let mut path = std::ptr::null_mut();
     if unsafe { GdipCreatePath(FILL_ALTERNATE, &mut path) } != OK {
         return None;
     }
     let path = Path(path);
-    let r = radius.clamp(0.0, (w.min(h)) / 2.0);
+    let r = radius.max(0.0).min(w.min(h) / 2.0);
     unsafe {
         if r <= 0.0 {
             GdipAddPathRectangle(path.0, x, y, w, h);
@@ -424,4 +427,19 @@ fn to_pointf(points: &[POINT]) -> Vec<PointF> {
             y: p.y as f32,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rounded_path;
+
+    #[test]
+    fn rounded_path_rejects_zero_and_negative_dimensions() {
+        unsafe {
+            assert!(rounded_path(0.0, 0.0, 0.0, 10.0, 4.0).is_none());
+            assert!(rounded_path(0.0, 0.0, 10.0, 0.0, 4.0).is_none());
+            assert!(rounded_path(0.0, 0.0, -1.0, 10.0, 4.0).is_none());
+            assert!(rounded_path(0.0, 0.0, 10.0, -1.0, 4.0).is_none());
+        }
+    }
 }

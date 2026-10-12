@@ -1,23 +1,26 @@
+use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use super::{
-    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_LOGIN_MESSAGE, WM_PANE_FOCUSED,
-    WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_NAVIGATION_PROGRESS,
-    WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY, WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, card, frame, glass, island_menu,
-    command_palette, import_panel, menu, notes_panel, passwords_panel, privacy_panel, settings_panel,
+    INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
+    WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
+    WM_PANE_FOCUSED, WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY,
+    WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, WM_RAIL_CHANGED, card, command_palette, frame, glass,
+    import_panel, island_menu, menu, notes_panel, passwords_panel, privacy_panel, settings_panel,
+    side_panel,
     show_error_message, site_info,
 };
-use super::menu::{Entry, Icon, Item, Menu, ProfileHeader};
 use crate::{
     app::{App, AppRef, IdleTimerAction},
-    profile,
     chrome::{
         group_ui::{self, GroupGeometry},
         layout::{self, Hit, Layout, Metrics, Rect},
         motion::{Emphasis, GroupSpec, Motion},
         paint::{self, ChromeSurface, ChromeView, OmniboxView, TabView},
+        rail::{RailDropIndicator, RailEntry, RailIcon, RailKey, RailView, WorkspaceGlyph},
         tab_card::Marker,
     },
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
+    profile,
     shortcuts::{self, Command},
     tab_groups::{self, StripSlot},
     tabs::{FaviconKey, TabId},
@@ -45,39 +48,37 @@ use windows::{
             Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetCapture, GetDoubleClickTime, GetFocus, GetKeyState, GetLastInputInfo, LASTINPUTINFO, ReleaseCapture,
-                SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
-                VK_CONTROL, VK_MENU, VK_SHIFT,
+                GetCapture, GetDoubleClickTime, GetFocus, GetKeyState, GetLastInputInfo,
+                LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT,
+                TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_MENU, VK_RETURN,
+                VK_SHIFT, VK_UP,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
-                DestroyWindow, DispatchMessageW,
-                EN_CHANGE, ES_AUTOHSCROLL, EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE,
-                GWLP_USERDATA, GetCaretBlinkTime, GetClientRect, GetForegroundWindow,
-                GetMessageW, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-                GetWindowTextW, GetWindowThreadProcessId, HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON,
-                HTMINBUTTON, HideCaret, IsIconic, IsZoomed, KillTimer, MINMAXINFO,
-                LoadCursorW, SetCursor, IDC_SIZEWE, MSG,
-                MoveWindow, NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE,
-                SC_KEYMENU, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
+                DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL,
+                EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE, GWLP_USERDATA, GetCaretBlinkTime,
+                GetClientRect, GetForegroundWindow, GetMessageW, GetWindow, GetWindowLongPtrW,
+                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+                HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IDC_SIZEWE,
+                IsIconic, IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow,
+                NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU,
+                SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
                 SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
                 SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
-                SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_CHAR,
-                WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+                SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
+                WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
-                WM_KILLFOCUS,
-                WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST,
-                WM_NCRBUTTONUP,
-                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-                WM_NCMOUSEMOVE, WM_NCPAINT, WM_PAINT, WM_PASTE, WM_RBUTTONUP, WM_SETFOCUS,
-                WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN,
-                WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-                WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-                WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
-                WVR_REDRAW,
+                WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
+                WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
+                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_NCRBUTTONUP, WM_PAINT, WM_PASTE,
+                WM_RBUTTONUP, WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE,
+                WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION,
+                WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+                WS_THICKFRAME, WS_VISIBLE, WVR_REDRAW,
             },
         },
     },
@@ -89,6 +90,7 @@ const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
+const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
@@ -101,6 +103,25 @@ struct TabSnapshot {
     favicon: Option<Rc<favicon::FaviconBitmap>>,
     marker: Option<Marker>,
 }
+
+#[derive(Clone)]
+struct RailEntryData {
+    key: RailKey,
+    icon: RailIcon,
+    label: String,
+    active: bool,
+    accent: Option<crate::theme::Rgba>,
+    favicon: Option<Rc<favicon::FaviconBitmap>>,
+}
+
+#[derive(Clone, Copy)]
+struct RailDrag {
+    key: RailKey,
+    origin: (i32, i32),
+    active: bool,
+    target: Option<(usize, RailDropIndicator)>,
+}
+
 /// A short eased transition for the visible address-bar progress value.
 #[derive(Default)]
 struct ProgressTransition {
@@ -117,8 +138,12 @@ impl ProgressTransition {
     // Values above 100 encode the finish fade for the existing paint path.
     fn paint_value(&self, now: Instant) -> Option<f32> {
         let value = self.value(now)?;
-        if self.to < 100.0 { return Some(value); }
-        let Some(started) = self.started else { return Some(value); };
+        if self.to < 100.0 {
+            return Some(value);
+        }
+        let Some(started) = self.started else {
+            return Some(value);
+        };
         let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
         let fade = ((elapsed - Self::DURATION_MS) / Self::FADE_MS).clamp(0.0, 1.0);
         Some(value + 100.0 * fade * fade * (3.0 - 2.0 * fade))
@@ -133,15 +158,23 @@ impl ProgressTransition {
 
     fn value(&self, now: Instant) -> Option<f32> {
         self.tab?;
-        let Some(started) = self.started else { return Some(self.to) };
-        let t = (now.saturating_duration_since(started).as_secs_f32() * 1000.0
-            / Self::DURATION_MS)
+        let Some(started) = self.started else {
+            return Some(self.to);
+        };
+        let t = (now.saturating_duration_since(started).as_secs_f32() * 1000.0 / Self::DURATION_MS)
             .clamp(0.0, 1.0);
         let eased = 1.0 - (1.0 - t).powi(3);
         Some((self.from + (self.to - self.from) * eased).clamp(0.0, 100.0))
     }
 
-    fn retarget(&mut self, tab: TabId, navigation_id: u64, target: u8, now: Instant, animate: bool) {
+    fn retarget(
+        &mut self,
+        tab: TabId,
+        navigation_id: u64,
+        target: u8,
+        now: Instant,
+        animate: bool,
+    ) {
         if self.tab != Some(tab) || self.navigation_id != Some(navigation_id) {
             self.tab = Some(tab);
             self.navigation_id = Some(navigation_id);
@@ -152,7 +185,9 @@ impl ProgressTransition {
         }
         // Progress is monotonic for one navigation, including when updates arrive mid-transition.
         let target = (target as f32).max(self.to);
-        if target == self.to { return; }
+        if target == self.to {
+            return;
+        }
         self.from = self.value(now).unwrap_or(0.0);
         self.to = target;
         self.started = animate.then_some(now);
@@ -162,7 +197,9 @@ impl ProgressTransition {
         self.value(now).is_some_and(|value| value >= self.to) && !self.running(now)
     }
 
-    fn clear(&mut self) { *self = Self::default(); }
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 struct WindowChrome {
     surface: ChromeSurface,
@@ -179,6 +216,14 @@ struct WindowChrome {
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    rail_entries: Vec<RailEntryData>,
+    rail_scroll: i32,
+    rail_drag: Option<RailDrag>,
+    rail_focus: Option<RailKey>,
+    rail_keyboard_focus: bool,
+    rail_previous_focus: HWND,
+    rail_tooltip_key: Option<RailKey>,
+    rail_tooltip_visible: bool,
     vertical_drag: Option<TabId>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
@@ -219,17 +264,23 @@ impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         let mut history = History::default();
         if let Ok(profile) = crate::profile::active() {
-            if crate::productivity::profile_allows_productivity(&profile) && profile.history_enabled() {
+            if crate::productivity::profile_allows_productivity(&profile)
+                && profile.history_enabled()
+            {
                 for (_, url, title) in crate::productivity::read_history(&profile.history_file()) {
                     history.record(&url, &title);
                 }
             }
         }
         Self {
-            surface: ChromeSurface::new(width, height, dpi),
+            surface: {
+                let mut surface = ChromeSurface::new(width, height, dpi);
+                let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
+                surface
+            },
             overlay,
             client: (width, height),
-            layout: layout::compute(width, height, dpi, 1, false),
+            layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
             palette: glass::palette(),
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
@@ -239,6 +290,14 @@ impl WindowChrome {
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            rail_entries: Vec::new(),
+            rail_scroll: 0,
+            rail_drag: None,
+            rail_focus: None,
+            rail_keyboard_focus: false,
+            rail_previous_focus: HWND::default(),
+            rail_tooltip_key: None,
+            rail_tooltip_visible: false,
             vertical_drag: None,
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
@@ -286,7 +345,11 @@ impl WindowChrome {
         let markers = App::tab_markers(app);
         let mut tabs = Vec::with_capacity(ids.len());
         // The app's own projection inputs, so manual placement and the settle rule apply to the strip.
-        let group_inputs = if reproject { App::tab_group_inputs(app) } else { Vec::new() };
+        let group_inputs = if reproject {
+            App::tab_group_inputs(app)
+        } else {
+            Vec::new()
+        };
         let mut sidebar_tabs = Vec::with_capacity(ids.len());
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         for &id in &ids {
@@ -355,7 +418,9 @@ impl WindowChrome {
             self.sidebar_rows = crate::chrome::vertical_paint::rows(
                 &sidebar_tabs,
                 &group_inputs,
-                preferences.as_ref().expect("preferences loaded for reprojection"),
+                preferences
+                    .as_ref()
+                    .expect("preferences loaded for reprojection"),
                 active,
             );
         }
@@ -429,7 +494,7 @@ impl WindowChrome {
             })
             .unwrap_or(0);
         self.layout =
-            layout::compute_with_active(w, h, self.dpi, self.slots.len().max(1), i, maximised)
+            layout::compute_in_frame(w, h, self.dpi, self.slots.len().max(1), i, maximised)
                 .with_group_slots(
                     self.slots.iter().map(|slot| slot.marker_only),
                     self.slots
@@ -440,7 +505,7 @@ impl WindowChrome {
                         .map(|slot| slot.collapsed && !slot.marker_only),
                 );
         if tab_layout == crate::settings::TabLayout::Vertical {
-            let sidebar = crate::vertical_tabs::SidebarLayout::compute(
+            let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(
                 w,
                 h,
                 self.dpi,
@@ -474,6 +539,7 @@ impl WindowChrome {
     fn retarget_motion(&mut self, now: Instant) {
         let hovered = self.hovered_tab();
         self.motion.retarget(hovered, self.active_tab, now);
+        self.motion.retarget_icons(self.hover, self.pressed, now);
     }
     fn group_specs(&self) -> Vec<GroupSpec> {
         let mut groups = Vec::new();
@@ -481,7 +547,9 @@ impl WindowChrome {
             if !self.visual_group_leader(index) {
                 continue;
             }
-            let Some(key) = slot.group_key.clone() else { continue };
+            let Some(key) = slot.group_key.clone() else {
+                continue;
+            };
             let state = group_ui::state_from_model(slot.collapsed, !slot.marker_only);
             let members = self
                 .slots
@@ -492,7 +560,9 @@ impl WindowChrome {
                         && self.layout.tab(*member_index).is_some()
                 })
                 .collect::<Vec<_>>();
-            let Some((first_index, first_slot)) = members.first().copied() else { continue };
+            let Some((first_index, first_slot)) = members.first().copied() else {
+                continue;
+            };
             let (last_index, _) = members.last().copied().unwrap_or((first_index, first_slot));
             let Some(first) = self
                 .layout
@@ -519,7 +589,11 @@ impl WindowChrome {
         groups
     }
     fn visual_group_leader(&self, index: usize) -> bool {
-        let Some(key) = self.slots.get(index).and_then(|slot| slot.group_key.as_ref()) else {
+        let Some(key) = self
+            .slots
+            .get(index)
+            .and_then(|slot| slot.group_key.as_ref())
+        else {
             return false;
         };
         self.layout.tab(index).is_some()
@@ -571,8 +645,16 @@ impl WindowChrome {
                 invalidate(hwnd, rect);
             }
         }
+        // The rail's press and active motion lives in the painter, so ask it for its own frame.
+        let rail_frame = self.surface.rail_step(now);
+        if !self.motion.rail_repaint().is_empty() || rail_frame.repaint {
+            invalidate(hwnd, self.layout.rail);
+        }
+        for hit in self.motion.icon_repaint() {
+            invalidate(hwnd, rect_for(&self.layout, hit));
+        }
         self.motion.prune(now);
-        running
+        running || rail_frame.running
     }
     fn update_completion(&mut self) {
         self.completion =
@@ -581,6 +663,91 @@ impl WindowChrome {
     }
 }
 thread_local! {static WINDOWS:RefCell<HashMap<isize,WindowChrome>>=RefCell::new(HashMap::new());}
+
+fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
+    use crate::{sidebar::{SidebarConfig, SidebarKind}, workspaces::{WorkspaceColour, WorkspaceIcon}};
+
+    let profile = crate::profile::active().ok();
+    let config = profile.as_ref().map_or_else(SidebarConfig::default, |p| {
+        SidebarConfig::load(p.root()).unwrap_or_default()
+    });
+    let owner = app.borrow().hwnd;
+    match side_panel::active_id(owner) {
+        Some(id @ side_panel::PanelId::Bookmarks)
+            if crate::sidebar::should_close_hidden_panel(Some(SidebarKind::Bookmarks), &config) =>
+        {
+            side_panel::close_content(owner, id);
+        }
+        Some(id @ side_panel::PanelId::History)
+            if crate::sidebar::should_close_hidden_panel(Some(SidebarKind::History), &config) =>
+        {
+            side_panel::close_content(owner, id);
+        }
+        _ => {}
+    }
+    let active_url = App::tab_committed_url(app, App::active_tab_id(app));
+    let bookmark_active = profile.as_ref().zip(active_url.as_ref()).is_some_and(|(profile, url)| {
+        crate::bookmarks::BookmarkStore::load(profile.root()).is_ok_and(|store| store.is_bookmarked(url.as_str()))
+    });
+    let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
+    let mut entries = vec![
+        RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None },
+        RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None },
+    ];
+    if shown(SidebarKind::Workspaces) {
+        for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
+            let glyph = match icon {
+                WorkspaceIcon::Briefcase => WorkspaceGlyph::Briefcase,
+                WorkspaceIcon::Home => WorkspaceGlyph::Home,
+                WorkspaceIcon::Code => WorkspaceGlyph::Code,
+                WorkspaceIcon::Book => WorkspaceGlyph::Book,
+                WorkspaceIcon::Cart => WorkspaceGlyph::Cart,
+                WorkspaceIcon::Game => WorkspaceGlyph::Game,
+                WorkspaceIcon::Music => WorkspaceGlyph::Music,
+                WorkspaceIcon::Heart => WorkspaceGlyph::Heart,
+                WorkspaceIcon::Star => WorkspaceGlyph::Star,
+                WorkspaceIcon::Bolt => WorkspaceGlyph::Bolt,
+                WorkspaceIcon::Globe => WorkspaceGlyph::Globe,
+                WorkspaceIcon::Leaf => WorkspaceGlyph::Leaf,
+            };
+            let accent = colour.map(|value| crate::theme::Rgba::hex(match value {
+                WorkspaceColour::Blue => 0x4385D1,
+                WorkspaceColour::Violet => 0x8B66D9,
+                WorkspaceColour::Teal => 0x32A89B,
+                WorkspaceColour::Amber => 0xD49A32,
+                WorkspaceColour::Rose => 0xD66D91,
+                WorkspaceColour::Red => 0xD55757,
+                WorkspaceColour::Green => 0x56A36B,
+                WorkspaceColour::Slate => 0x778394,
+            }, 0xFF));
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None });
+        }
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None });
+    }
+    if shown(SidebarKind::Apps) {
+        for app_entry in &config.apps {
+            let favicon = profile.as_ref().and_then(|_| {
+                let host = url::Url::parse(&app_entry.url).ok()?.host_str()?.to_owned();
+                let bytes = favicon::load_favicon_bytes(&host).ok()??;
+                favicon::decode(&bytes, Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32).map(Rc::new)
+            });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon: if favicon.is_some() { RailIcon::AppTile } else { RailIcon::Letter }, label: app_entry.name.clone(), active: false, accent: None, favicon });
+        }
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None });
+    }
+    for item in &config.items {
+        let (key, icon, label) = match item.kind {
+            SidebarKind::Bookmarks if item.visible => (RailKey::Bookmarks, RailIcon::Heart, "Bookmarks"),
+            SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
+            _ => continue,
+        };
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None });
+    }
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None });
+    state.rail_entries = entries;
+    state.rail_scroll = state.rail_scroll.max(0);
+}
+
 fn main_window_style() -> WINDOW_STYLE {
     WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN
 }
@@ -614,12 +781,14 @@ fn clear_pointer_state(hwnd: HWND) -> bool {
     with_chrome(hwnd, |s| {
         let had_state = s.drag.take().is_some()
             || s.vertical_drag.take().is_some()
+            || s.rail_drag.take().is_some()
             || s.pressed != Hit::None
             || std::mem::take(&mut s.split_dragging)
             || s.split_drop.take().is_some()
             || std::mem::take(&mut s.sidebar_resizing);
         s.split_drag_companion = None;
         s.pressed = Hit::None;
+        s.rail_tooltip_visible = false;
         had_state
     })
     .unwrap_or(false)
@@ -853,8 +1022,15 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Some(instance),
             Some((&app as *const AppRef).cast()),
         )?;
+        super::panel_bookmarks::register(&app);
+        super::panel_history::register(&app);
+        super::panel_customize::register(&app);
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
+        super::panel_webapp::register(&app);
+        super::panel_webapp::set_on_icon_changed(Box::new(move || {
+            super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+        }));
         MAIN_WINDOW.with(|m| m.set(hwnd.0 as isize));
         let foreground_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -1050,6 +1226,8 @@ unsafe extern "system" fn window_proc(
                 let settled = with_chrome(hwnd, |s| {
                     s.palette = glass::palette();
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
+                    let rail_settled = s.surface.set_rail_snap(!animations_enabled(), Instant::now());
+                    let settled = settled || rail_settled;
                     if !animations_enabled() {
                         s.progress.from = s.progress.to;
                         s.progress.started = None;
@@ -1140,6 +1318,7 @@ unsafe extern "system" fn window_proc(
                     let mut s = WindowChrome::new(r.right, r.bottom, dpi(hwnd), overlay);
                     s.edit = edit;
                     s.refresh(app, true);
+                    rebuild_rail_entries(&mut s, app);
                     WINDOWS.with(|all| {
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
@@ -1175,8 +1354,10 @@ unsafe extern "system" fn window_proc(
                     sync_split_ratio(hwnd, App::split_view(app));
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
-                    notes_panel::sync(hwnd, to_win_rect(l.viewport), dpi(hwnd));
-                    let viewport = notes_panel::adjust_viewport(to_win_rect(l.viewport), hwnd, dpi(hwnd));
+                    let viewport = to_win_rect(l.viewport);
+                    notes_panel::sync(hwnd, viewport, dpi(hwnd));
+                    side_panel::sync(hwnd, viewport, dpi(hwnd));
+                    let viewport = adjusted_viewport(hwnd, viewport, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         queue_split_bounds(hwnd, panes);
                     } else {
@@ -1202,6 +1383,12 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             notes_panel::WM_SIDEBAR_RESIZED => {
+                if let Some(app) = app {
+                    apply_sidebar_bounds(hwnd, app);
+                }
+                LRESULT(0)
+            }
+            side_panel::WM_RESIZED => {
                 if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
                 LRESULT(0)
             }
@@ -1243,8 +1430,10 @@ unsafe extern "system" fn window_proc(
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
-                    notes_panel::sync(hwnd, to_win_rect(l.viewport), dpi(hwnd));
-                    let viewport = notes_panel::adjust_viewport(to_win_rect(l.viewport), hwnd, dpi(hwnd));
+                    let viewport = to_win_rect(l.viewport);
+                    notes_panel::sync(hwnd, viewport, dpi(hwnd));
+                    side_panel::sync(hwnd, viewport, dpi(hwnd));
+                    let viewport = adjusted_viewport(hwnd, viewport, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         App::update_split_bounds(app, panes);
                     } else {
@@ -1280,7 +1469,9 @@ unsafe extern "system" fn window_proc(
                 );
                 LRESULT(0)
             }
-            WM_NCRBUTTONUP if wparam.0 == windows::Win32::UI::WindowsAndMessaging::HTCAPTION as usize => {
+            WM_NCRBUTTONUP
+                if wparam.0 == windows::Win32::UI::WindowsAndMessaging::HTCAPTION as usize =>
+            {
                 show_system_menu(hwnd, frame::point_from_lparam(lparam));
                 LRESULT(0)
             }
@@ -1332,13 +1523,26 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     let navigation_id = wparam.0 as u64;
                     if App::navigation_progress_message(app, navigation_id, lparam.0) {
-                        if let Some(target) = App::tab_progress_percent(app, App::active_tab_id(app)) {
+                        if let Some(target) =
+                            App::tab_progress_percent(app, App::active_tab_id(app))
+                        {
                             let animate = animations_enabled();
                             with_chrome(hwnd, |s| {
-                                s.progress.retarget(App::active_tab_id(app), navigation_id, target, Instant::now(), animate);
+                                s.progress.retarget(
+                                    App::active_tab_id(app),
+                                    navigation_id,
+                                    target,
+                                    Instant::now(),
+                                    animate,
+                                );
                             });
                             if animate {
-                                let _ = SetTimer(Some(hwnd), WM_PROGRESS_TIMER, ANIMATION_FRAME_MS, None);
+                                let _ = SetTimer(
+                                    Some(hwnd),
+                                    WM_PROGRESS_TIMER,
+                                    ANIMATION_FRAME_MS,
+                                    None,
+                                );
                             }
                             invalidate_omni(hwnd)
                         } else {
@@ -1393,10 +1597,18 @@ unsafe extern "system" fn window_proc(
                             .unwrap_or_default();
                         let edit = app.borrow().edit;
                         let _ = SetWindowTextW(edit, &windows::core::HSTRING::from(value));
-                        if let Some((navigation_id, target)) = App::active_navigation_progress_identity(app) {
+                        if let Some((navigation_id, target)) =
+                            App::active_navigation_progress_identity(app)
+                        {
                             with_chrome(hwnd, |s| {
                                 s.progress.clear();
-                                s.progress.retarget(active, navigation_id, target, Instant::now(), false);
+                                s.progress.retarget(
+                                    active,
+                                    navigation_id,
+                                    target,
+                                    Instant::now(),
+                                    false,
+                                );
                             });
                         } else {
                             with_chrome(hwnd, |s| s.progress.clear());
@@ -1433,6 +1645,14 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_RAIL_CHANGED => {
+                if let Some(app) = app {
+                    hide_rail_tooltip(hwnd);
+                    let _ = with_chrome(hwnd, |s| rebuild_rail_entries(s, app));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
+            }
             WM_SHORTCUT_KEY => {
                 if let Some(app) = app {
                     let m = lparam.0 as u8;
@@ -1450,86 +1670,118 @@ unsafe extern "system" fn window_proc(
             WM_MOUSEMOVE => {
                 if GetCapture() == hwnd {
                     let p = frame::point_from_lparam(lparam);
-                    let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
+            let rail_dragging = with_chrome(hwnd, |s| {
+                let Some(mut drag) = s.rail_drag else { return false };
+                if !drag.active && crate::chrome::rail::drag_started(drag.origin, (p.x, p.y)) {
+                    drag.active = true;
+                    s.rail_tooltip_visible = false;
+                    let _ = KillTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER);
+                }
+                if drag.active {
+                    let entries = rail_entries(s);
+                    let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                    drag.target = crate::chrome::rail::drop_indicator(&geometry, drag.key, p.x, p.y);
+                }
+                s.rail_drag = Some(drag);
+                drag.active
+            }).unwrap_or(false);
+            if rail_dragging {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            } else {
+                let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
                         if let Some(app) = app {
-                            let width = ((p.x * 96) / dpi(hwnd).max(96) as i32)
-                                .clamp(i32::from(crate::settings::MIN_SIDEBAR_WIDTH), i32::from(crate::settings::MAX_SIDEBAR_WIDTH));
+                            let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                                i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
+                                i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
+                            );
                             App::set_sidebar_width(app, width as u16);
                             let _ = with_chrome(hwnd, |s| s.refresh(app, true));
                             sync_split_ratio(hwnd, App::split_view(app));
                             apply_sidebar_bounds(hwnd, app);
                         }
                     } else {
-                    let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
-                    if dragging
-                        && let Some(panes) = split_rects(hwnd, Some(p.x))
-                        && let Some(app) = app
-                    {
-                        let divider = panes.0.right;
-                        let _ = with_chrome(hwnd, |s| s.split_divider = divider);
-                        if let Some(viewport) = with_chrome(hwnd, |s| s.layout.viewport) {
-                            let viewport = notes_panel::adjust_viewport(
-                                to_win_rect(viewport),
-                                hwnd,
-                                dpi(hwnd),
-                            );
-                            let ratio = (((divider + 3 - viewport.left) * 100)
-                                / (viewport.right - viewport.left).max(1))
+                        let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
+                        if dragging
+                            && let Some(panes) = split_rects(hwnd, Some(p.x))
+                            && let Some(app) = app
+                        {
+                            let divider = panes.0.right;
+                            let _ = with_chrome(hwnd, |s| s.split_divider = divider);
+                            if let Some(viewport) = with_chrome(hwnd, |s| s.layout.viewport) {
+                                let viewport = adjusted_viewport(hwnd, to_win_rect(viewport), dpi(hwnd));
+                                let ratio = (((divider + 3 - viewport.left) * 100)
+                                    / (viewport.right - viewport.left).max(1))
                                 .clamp(20, 80) as u8;
-                            App::set_split_ratio(app, ratio);
-                        }
-                        queue_split_bounds(hwnd, panes);
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                    } else {
-                        let point = frame::point_from_lparam(lparam);
-                        let target = with_chrome(hwnd, |s| {
-                            let dragging_tab = s.drag.is_some();
-                            let viewport = notes_panel::adjust_viewport(
-                                to_win_rect(s.layout.viewport),
-                                hwnd,
-                                s.dpi,
-                            );
-                            let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
-                            (dragging_tab && viewport.contains(point.x, point.y)).then_some(
-                                if point.x < viewport.left + viewport.width() / 2 {
-                                    crate::split_view::Pane::Left
-                                } else {
-                                    crate::split_view::Pane::Right
-                                },
-                            )
-                        }).flatten();
-                        let changed = with_chrome(hwnd, |s| {
-                            let changed = s.split_drop != target;
-                            s.split_drop = target;
-                            changed
-                        }).unwrap_or(false);
-                        if changed {
+                                App::set_split_ratio(app, ratio);
+                            }
+                            queue_split_bounds(hwnd, panes);
                             let _ = InvalidateRect(Some(hwnd), None, false);
+                        } else {
+                            let point = frame::point_from_lparam(lparam);
+                            let target = with_chrome(hwnd, |s| {
+                                let dragging_tab = s.drag.is_some();
+                                let viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
+                                let viewport = Rect::new(
+                                    viewport.left,
+                                    viewport.top,
+                                    viewport.right,
+                                    viewport.bottom,
+                                );
+                                (dragging_tab && viewport.contains(point.x, point.y)).then_some(
+                                    if point.x < viewport.left + viewport.width() / 2 {
+                                        crate::split_view::Pane::Left
+                                    } else {
+                                        crate::split_view::Pane::Right
+                                    },
+                                )
+                            })
+                            .flatten();
+                            let changed = with_chrome(hwnd, |s| {
+                                let changed = s.split_drop != target;
+                                s.split_drop = target;
+                                changed
+                            })
+                            .unwrap_or(false);
+                            if changed {
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
+                        }
+                        if let Some(app) = app
+                            && with_chrome(hwnd, |s| s.pressed == Hit::Omnibox).unwrap_or(false)
+                        {
+                            omnibox_drag(hwnd, app, frame::point_from_lparam(lparam).x);
                         }
                     }
-                    if let Some(app) = app
-                        && with_chrome(hwnd, |s| s.pressed == Hit::Omnibox).unwrap_or(false)
-                    {
-                        omnibox_drag(hwnd, app, frame::point_from_lparam(lparam).x);
-                    }
-                    }
+                }
                 } else {
                     let p = frame::point_from_lparam(lparam);
                     let h = hit(hwnd, p.x, p.y);
                     if h == Hit::SplitDivider {
                         let cursor = LoadCursorW(None, IDC_SIZEWE);
-                        if let Ok(cursor) = cursor { let _ = SetCursor(Some(cursor)); }
+                        if let Ok(cursor) = cursor {
+                            let _ = SetCursor(Some(cursor));
+                        }
                     }
                     set_hover(hwnd, h);
                     let row = match h {
-                        Hit::SidebarTab(index) | Hit::SidebarTabClose(index) | Hit::SidebarGroup(index) => Some(index),
+                        Hit::SidebarTab(index)
+                        | Hit::SidebarTabClose(index)
+                        | Hit::SidebarGroup(index) => Some(index),
                         _ => None,
                     };
                     let row_changed = with_chrome(hwnd, |s| {
-                        if s.sidebar_hover_row == row { false } else { s.sidebar_hover_row = row; true }
-                    }).unwrap_or(false);
-                    if row_changed { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        if s.sidebar_hover_row == row {
+                            false
+                        } else {
+                            s.sidebar_hover_row = row;
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+                    if row_changed {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
                     if let Some(app) = app {
                         card::hover_changed(hwnd, app, hit_tab(hwnd, h));
                     }
@@ -1552,17 +1804,45 @@ unsafe extern "system" fn window_proc(
             windows::Win32::UI::WindowsAndMessaging::WM_MOUSEWHEEL => {
                 let mut point = frame::point_from_lparam(lparam);
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
-                let in_sidebar = with_chrome(hwnd, |s| s.sidebar.is_some_and(|side| side.sidebar.contains(point.x, point.y))).unwrap_or(false);
+                let in_rail = with_chrome(hwnd, |s| s.layout.rail.contains(point.x, point.y)).unwrap_or(false);
+                if in_rail {
+                    let delta = -((wparam.0 >> 16) as i16 as i32).signum()
+                        * Metrics::new(dpi(hwnd)).px(36);
+                    let changed = with_chrome(hwnd, |s| {
+                        let entries = s.rail_entries.iter().map(|entry| RailEntry {
+                            key: entry.key, icon: entry.icon, label: entry.label.clone(), active: entry.active,
+                            dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
+                        }).collect::<Vec<_>>();
+                        let max = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi).max_scroll;
+                        let next = crate::chrome::rail::scroll_by(s.rail_scroll, delta, max);
+                        let changed = next != s.rail_scroll;
+                        s.rail_scroll = next;
+                        changed
+                    }).unwrap_or(false);
+                    if changed { let _ = InvalidateRect(Some(hwnd), None, false); }
+                    return LRESULT(0);
+                }
+                let in_sidebar = with_chrome(hwnd, |s| {
+                    s.sidebar
+                        .is_some_and(|side| side.sidebar.contains(point.x, point.y))
+                })
+                .unwrap_or(false);
                 if in_sidebar {
                     let delta = ((wparam.0 >> 16) as i16 as i32).signum();
                     let changed = with_chrome(hwnd, |s| {
-                        let Some(sidebar) = s.sidebar else { return false };
-                        let row_height = crate::chrome::layout::Metrics::new(s.dpi).px(crate::vertical_tabs::TAB_ROW_HEIGHT).max(1);
-                        s.sidebar_scroll_target = s.sidebar_scroll_target
+                        let Some(sidebar) = s.sidebar else {
+                            return false;
+                        };
+                        let row_height = crate::chrome::layout::Metrics::new(s.dpi)
+                            .px(crate::vertical_tabs::TAB_ROW_HEIGHT)
+                            .max(1);
+                        s.sidebar_scroll_target = s
+                            .sidebar_scroll_target
                             .saturating_sub(delta * row_height * 3)
                             .clamp(0, sidebar.max_scroll);
                         s.sidebar_scroll != s.sidebar_scroll_target
-                    }).unwrap_or(false);
+                    })
+                    .unwrap_or(false);
                     if changed {
                         let _ = SetTimer(Some(hwnd), WM_SIDEBAR_SCROLL_TIMER, 16, None);
                     }
@@ -1571,19 +1851,24 @@ unsafe extern "system" fn window_proc(
             }
             WM_MOUSELEAVE => {
                 set_hover(hwnd, Hit::None);
+                hide_rail_tooltip(hwnd);
                 card::pointer_left(hwnd);
                 island_menu::pointer_left(hwnd);
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
+                hide_rail_tooltip(hwnd);
                 card::cancel(hwnd);
-                if let Some(app) = app { App::save_settings(app); }
+                if let Some(app) = app {
+                    App::save_settings(app);
+                }
                 if clear_pointer_state(hwnd) {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
+                hide_rail_tooltip(hwnd);
                 let had_pointer_state = clear_pointer_state(hwnd);
                 if had_pointer_state {
                     if GetCapture() == hwnd {
@@ -1595,9 +1880,19 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONDOWN => {
                 let p = frame::point_from_lparam(lparam);
+                hide_rail_tooltip(hwnd);
+                with_chrome(hwnd, |s| s.rail_keyboard_focus = false);
                 // Pressing the strip dismisses a hover card; the press then acts on the strip.
                 card::cancel(hwnd);
                 match hit(hwnd, p.x, p.y) {
+                    Hit::Rail(key) => {
+                        set_pressed(hwnd, Hit::Rail(key));
+                        let reorderable = matches!(key, RailKey::Workspace(_) | RailKey::App(_) | RailKey::Bookmarks | RailKey::History);
+                        if reorderable {
+                            let _ = with_chrome(hwnd, |s| s.rail_drag = Some(RailDrag { key, origin: (p.x, p.y), active: false, target: None }));
+                        }
+                        let _ = SetCapture(hwnd);
+                    }
                     Hit::GroupBall(i) => {
                         if let Some(app) = app {
                             let control = with_chrome(hwnd, |s| {
@@ -1638,10 +1933,15 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     Hit::SidebarWorkspace => {
-                        if let Some(app) = app { show_workspaces_menu(hwnd, app); }
+                        if let Some(app) = app {
+                            show_workspaces_menu(hwnd, app);
+                        }
                     }
                     Hit::SidebarNewTab => {
-                        if let Some(app) = app { App::new_tab(app); focus_omni(hwnd, app, true); }
+                        if let Some(app) = app {
+                            App::new_tab(app);
+                            focus_omni(hwnd, app, true);
+                        }
                     }
                     Hit::SidebarResize => {
                         let _ = with_chrome(hwnd, |s| s.sidebar_resizing = true);
@@ -1649,10 +1949,17 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::SidebarGroup(index) => {
                         if let Some(app) = app {
-                            let group = with_chrome(hwnd, |s| s.sidebar_rows.get(index).and_then(|row| match row {
-                                crate::chrome::vertical_paint::SidebarRow::Group { representative, collapsed, .. } => Some((*representative, *collapsed)),
-                                _ => None,
-                            })).flatten();
+                            let group = with_chrome(hwnd, |s| {
+                                s.sidebar_rows.get(index).and_then(|row| match row {
+                                    crate::chrome::vertical_paint::SidebarRow::Group {
+                                        representative,
+                                        collapsed,
+                                        ..
+                                    } => Some((*representative, *collapsed)),
+                                    _ => None,
+                                })
+                            })
+                            .flatten();
                             if let Some((id, collapsed)) = group {
                                 let _ = App::set_tab_group_collapsed(app, id, !collapsed);
                                 let _ = with_chrome(hwnd, |s| s.refresh(app, true));
@@ -1661,9 +1968,14 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     Hit::SidebarTab(index) => {
-                        if let Some(app) = app && let Some(id) = sidebar_tab_id(hwnd, index) {
+                        if let Some(app) = app
+                            && let Some(id) = sidebar_tab_id(hwnd, index)
+                        {
                             let _ = App::select_tab(app, id);
-                            let _ = with_chrome(hwnd, |s| { s.pressed = Hit::SidebarTab(index); s.vertical_drag = Some(id); });
+                            let _ = with_chrome(hwnd, |s| {
+                                s.pressed = Hit::SidebarTab(index);
+                                s.vertical_drag = Some(id);
+                            });
                             let _ = SetCapture(hwnd);
                         }
                     }
@@ -1707,8 +2019,8 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::SiteInfo => {
                         if let Some(app) = app {
-                            let button =
-                                with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
+                            let button = with_chrome(hwnd, |s| s.layout.site_info_button())
+                                .unwrap_or_default();
                             set_pressed(hwnd, Hit::SiteInfo);
                             site_info::show(hwnd, app, button);
                             set_pressed(hwnd, Hit::None);
@@ -1721,7 +2033,11 @@ unsafe extern "system" fn window_proc(
                             && App::split_view(app).is_some()
                             && let Some((left, _right)) = split_rects(hwnd, None)
                         {
-                            let pane = if p.x < left.right { crate::split_view::Pane::Left } else { crate::split_view::Pane::Right };
+                            let pane = if p.x < left.right {
+                                crate::split_view::Pane::Left
+                            } else {
+                                crate::split_view::Pane::Right
+                            };
                             let _ = App::focus_split_pane(app, pane);
                         }
                     }
@@ -1740,6 +2056,18 @@ unsafe extern "system" fn window_proc(
             }
             WM_LBUTTONUP => {
                 let p = frame::point_from_lparam(lparam);
+                let rail_drag = with_chrome(hwnd, |s| s.rail_drag.take()).flatten();
+                if let Some(drag) = rail_drag.filter(|drag| drag.active) {
+                    if let Some(app) = app {
+                        if let Some((index, _)) = rail_drop_target(hwnd, drag.key, p.x, p.y) {
+                            commit_rail_drop(hwnd, app, drag.key, index);
+                        }
+                    }
+                    set_pressed(hwnd, Hit::None);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    let _ = ReleaseCapture();
+                    return LRESULT(0);
+                }
                 let was_sidebar_resize = with_chrome(hwnd, |s| {
                     let resizing = std::mem::take(&mut s.sidebar_resizing);
                     if resizing {
@@ -1749,9 +2077,12 @@ unsafe extern "system" fn window_proc(
                         s.split_drag_companion = None;
                     }
                     resizing
-                }).unwrap_or(false);
+                })
+                .unwrap_or(false);
                 if was_sidebar_resize {
-                    if let Some(app) = app { App::save_settings(app); }
+                    if let Some(app) = app {
+                        App::save_settings(app);
+                    }
                     let _ = ReleaseCapture();
                     return LRESULT(0);
                 }
@@ -1763,7 +2094,8 @@ unsafe extern "system" fn window_proc(
                         s.vertical_drag = None;
                     }
                     dragging
-                }).unwrap_or(false);
+                })
+                .unwrap_or(false);
                 if was_split_drag {
                     let _ = ReleaseCapture();
                     if let Some(app) = app {
@@ -1772,15 +2104,25 @@ unsafe extern "system" fn window_proc(
                 } else if let Some(id) = with_chrome(hwnd, |s| s.vertical_drag.take()).flatten() {
                     if let Some(app) = app {
                         let target = match hit(hwnd, p.x, p.y) {
-                            Hit::SidebarTab(index) | Hit::SidebarTabClose(index) => sidebar_tab_id(hwnd, index),
-                            Hit::SidebarGroup(index) => with_chrome(hwnd, |s| match s.sidebar_rows.get(index) {
-                                Some(crate::chrome::vertical_paint::SidebarRow::Group { representative, .. }) => Some(*representative),
-                                _ => None,
-                            }).flatten(),
+                            Hit::SidebarTab(index) | Hit::SidebarTabClose(index) => {
+                                sidebar_tab_id(hwnd, index)
+                            }
+                            Hit::SidebarGroup(index) => {
+                                with_chrome(hwnd, |s| match s.sidebar_rows.get(index) {
+                                    Some(crate::chrome::vertical_paint::SidebarRow::Group {
+                                        representative,
+                                        ..
+                                    }) => Some(*representative),
+                                    _ => None,
+                                })
+                                .flatten()
+                            }
                             _ => None,
                         };
                         if let Some(target) = target {
-                            if let Some(index) = App::tab_ids(app).iter().position(|tab| *tab == target) {
+                            if let Some(index) =
+                                App::tab_ids(app).iter().position(|tab| *tab == target)
+                            {
                                 let _ = App::drop_tab(app, id, index);
                             }
                         }
@@ -1791,7 +2133,8 @@ unsafe extern "system" fn window_proc(
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     let (drop, companion) = with_chrome(hwnd, |s| {
                         (s.split_drop.take(), s.split_drag_companion.take())
-                    }).unwrap_or((None, None));
+                    })
+                    .unwrap_or((None, None));
                     if let Some(app) = app {
                         if let Some(pane) = drop {
                             let other = companion
@@ -1824,6 +2167,9 @@ unsafe extern "system" fn window_proc(
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
                     if was == hit(hwnd, p.x, p.y) {
+                            if let (Hit::Rail(key), Some(app)) = (was, app) {
+                                activate_rail(hwnd, app, key);
+                            }
                         if let Hit::TabClose(i) = was {
                             if let Some(app) = app {
                                 if let Some(id) = slot_tab_id(hwnd, i) {
@@ -1833,7 +2179,9 @@ unsafe extern "system" fn window_proc(
                         }
                         if let Hit::SidebarTabClose(i) = was {
                             if let Some(app) = app {
-                                if let Some(id) = sidebar_tab_id(hwnd, i) { let _ = App::close_tab(app, id); }
+                                if let Some(id) = sidebar_tab_id(hwnd, i) {
+                                    let _ = App::close_tab(app, id);
+                                }
                             }
                         }
                         if let (Hit::Back | Hit::Forward | Hit::Reload, Some(app)) = (was, app) {
@@ -1890,14 +2238,18 @@ unsafe extern "system" fn window_proc(
                 };
                 if let Some(id) = target {
                     card::cancel(hwnd);
-                    if let Some(app) = app { let _ = App::close_tab(app, id); }
+                    if let Some(app) = app {
+                        let _ = App::close_tab(app, id);
+                    }
                 }
                 LRESULT(0)
             }
             WM_RBUTTONUP => {
+                hide_rail_tooltip(hwnd);
                 let p = frame::point_from_lparam(lparam);
                 if let Some(app) = app {
                     match hit(hwnd, p.x, p.y) {
+                        Hit::Rail(key) => show_rail_context_menu(hwnd, app, key, p.x, p.y),
                         Hit::GroupBall(i) => {
                             card::cancel(hwnd);
                             if let Some(id) = slot_tab_id(hwnd, i) {
@@ -1917,12 +2269,7 @@ unsafe extern "system" fn window_proc(
                                         id,
                                         Box::new(move |available| {
                                             show_tab_context_menu(
-                                                hwnd,
-                                                &menu_app,
-                                                id,
-                                                p.x,
-                                                p.y,
-                                                available,
+                                                hwnd, &menu_app, id, p.x, p.y, available,
                                             );
                                         }),
                                     );
@@ -1939,12 +2286,7 @@ unsafe extern "system" fn window_proc(
                                     id,
                                     Box::new(move |available| {
                                         show_tab_context_menu(
-                                            hwnd,
-                                            &menu_app,
-                                            id,
-                                            p.x,
-                                            p.y,
-                                            available,
+                                            hwnd, &menu_app, id, p.x, p.y, available,
                                         );
                                     }),
                                 );
@@ -1966,12 +2308,7 @@ unsafe extern "system" fn window_proc(
                                     id,
                                     Box::new(move |available| {
                                         show_tab_context_menu(
-                                            hwnd,
-                                            &menu_app,
-                                            id,
-                                            p.x,
-                                            p.y,
-                                            available,
+                                            hwnd, &menu_app, id, p.x, p.y, available,
                                         );
                                     }),
                                 );
@@ -1983,6 +2320,87 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && with_chrome(hwnd, |s| s.rail_drag.is_some()).unwrap_or(false)
+                {
+                    with_chrome(hwnd, |s| { s.rail_drag = None; s.pressed = Hit::None; });
+                    hide_rail_tooltip(hwnd);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    if GetCapture() == hwnd { let _ = ReleaseCapture(); }
+                    return LRESULT(0);
+                }
+                if message == WM_SYSKEYDOWN && wparam.0 == 0x30 && GetKeyState(VK_MENU.0 as i32) < 0 {
+                    let keys = with_chrome(hwnd, |s| s.rail_entries.iter().map(|entry| entry.key).collect::<Vec<_>>()).unwrap_or_default();
+                    if let Some(first) = crate::chrome::rail::step_focus(&keys, None, 1) {
+                        let current_focus = GetFocus();
+                        let _ = with_chrome(hwnd, |s| {
+                            if !s.rail_keyboard_focus { s.rail_previous_focus = current_focus; }
+                            s.rail_keyboard_focus = true;
+                            s.rail_focus = Some(first);
+                        });
+                        let _ = SetFocus(Some(hwnd));
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        return LRESULT(0);
+                    }
+                }
+                let rail_focus = with_chrome(hwnd, |s| s.rail_keyboard_focus).unwrap_or(false);
+                if rail_focus {
+                    let key = wparam.0 as u32;
+                    if key == VK_UP.0 as u32 || key == VK_DOWN.0 as u32 {
+                        let _ = with_chrome(hwnd, |s| {
+                            let keys: Vec<_> = s.rail_entries.iter().map(|entry| entry.key).collect();
+                            s.rail_focus = crate::chrome::rail::step_focus(&keys, s.rail_focus, if key == VK_UP.0 as u32 { -1 } else { 1 });
+                            let entries = rail_entries(s);
+                            let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                            if let Some(focus) = s.rail_focus
+                                && matches!(focus, RailKey::Workspace(_) | RailKey::AddWorkspace | RailKey::App(_) | RailKey::AddApp)
+                                && let Some(item) = geometry.item(focus)
+                            {
+                                if item.rect.top < geometry.middle.top {
+                                    s.rail_scroll = s.rail_scroll.saturating_sub(geometry.middle.top - item.rect.top);
+                                } else if item.rect.bottom > geometry.middle.bottom {
+                                    s.rail_scroll = s.rail_scroll.saturating_add(item.rect.bottom - geometry.middle.bottom).min(geometry.max_scroll);
+                                }
+                            }
+                        });
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        return LRESULT(0);
+                    }
+                    if key == VK_RETURN.0 as u32 {
+                        if let (Some(app), Some(key)) = (app, with_chrome(hwnd, |s| s.rail_focus).flatten()) {
+                            with_chrome(hwnd, |s| s.rail_keyboard_focus = false);
+                            activate_rail(hwnd, app, key);
+                        }
+                        return LRESULT(0);
+                    }
+                    if key == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as u32 {
+                        let previous = with_chrome(hwnd, |s| {
+                            s.rail_keyboard_focus = false;
+                            s.rail_focus = None;
+                            std::mem::replace(&mut s.rail_previous_focus, HWND::default())
+                        }).unwrap_or_default();
+                        if !previous.0.is_null() { let _ = SetFocus(Some(previous)); }
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        return LRESULT(0);
+                    }
+                }
+                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) >= 0 {
+                    if let Some(app) = app {
+                        match wparam.0 as u32 {
+                            0x42 => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); return LRESULT(0); }
+                            0x48 => { rail_activate(hwnd, app, side_panel::PanelId::History); return LRESULT(0); }
+                            _ => {}
+                        }
+                    }
+                }
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && side_panel::is_open(hwnd)
+                    && !crate::win32::menu::is_tracking()
+                {
+                    side_panel::close(hwnd);
+                    if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
+                    return LRESULT(0);
+                }
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && card::is_open()
                 {
@@ -1998,6 +2416,20 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == crate::win32::passwords_panel::CLIPBOARD_CLEAR_TIMER => {
                 crate::win32::passwords_panel::clear_password_clipboard_timer(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_RAIL_TOOLTIP_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER);
+                let shown = with_chrome(hwnd, |s| {
+                    let key = s.rail_tooltip_key;
+                    if key.is_some() && s.hover == Hit::Rail(key.unwrap()) && s.rail_drag.is_none() {
+                        let entries = rail_entries(s);
+                        let _ = key.map(|key| crate::chrome::rail::rail_tooltip(key, &entries));
+                        s.rail_tooltip_visible = true;
+                        true
+                    } else { false }
+                }).unwrap_or(false);
+                if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
@@ -2048,9 +2480,11 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == WM_SIDEBAR_SCROLL_TIMER => {
                 let moving = with_chrome(hwnd, |s| {
-                    s.sidebar_scroll = super::smooth::approach_scroll(s.sidebar_scroll, s.sidebar_scroll_target);
+                    s.sidebar_scroll =
+                        super::smooth::approach_scroll(s.sidebar_scroll, s.sidebar_scroll_target);
                     s.sidebar_scroll != s.sidebar_scroll_target
-                }).unwrap_or(false);
+                })
+                .unwrap_or(false);
                 if !moving {
                     let _ = KillTimer(Some(hwnd), WM_SIDEBAR_SCROLL_TIMER);
                 }
@@ -2126,13 +2560,22 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == side_panel::TIMER_ID => {
+                let running = side_panel::timer(hwnd);
+                if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
+                if !running { let _ = KillTimer(Some(hwnd), side_panel::TIMER_ID); }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_PROGRESS_TIMER => {
                 let now = Instant::now();
                 let (running, active_matches) = with_chrome(hwnd, |s| {
                     let active = app.map(App::active_tab_id);
                     (s.progress.running(now), active == s.progress.tab)
-                }).unwrap_or((false, false));
-                if active_matches { invalidate_omni(hwnd); }
+                })
+                .unwrap_or((false, false));
+                if active_matches {
+                    invalidate_omni(hwnd);
+                }
                 if !running || !active_matches {
                     let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 }
@@ -2164,6 +2607,9 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_SETFOCUS => {
+                if with_chrome(hwnd, |s| s.rail_keyboard_focus).unwrap_or(false) {
+                    return LRESULT(0);
+                }
                 if let Some(app) = app {
                     let _ = SetFocus(Some(app.borrow().edit));
                 }
@@ -2197,6 +2643,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
@@ -2236,6 +2683,14 @@ unsafe extern "system" fn window_proc(
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
+        if s.layout.rail.contains(x, y) {
+            let entries = s.rail_entries.iter().map(|entry| RailEntry {
+                key: entry.key, icon: entry.icon, label: entry.label.clone(), active: entry.active,
+                dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
+            }).collect::<Vec<_>>();
+            let rail = RailView { entries: &entries, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
+            return layout::hit_test_with_rail(&s.layout, Some(&rail), x, y);
+        }
         if let Some(sidebar) = s.sidebar
             && let Some(sidebar_hit) = crate::chrome::vertical_paint::hit_test(
                 &sidebar,
@@ -2262,17 +2717,13 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
             .filter(|(index, _)| s.visual_group_leader(*index))
             .filter_map(|(index, _)| {
                 s.group_geometry(index, now)
-                    .map(|geometry| {
-                        (index, geometry.hit_rect.intersect(s.layout.tab_zone))
-                    })
+                    .map(|geometry| (index, geometry.hit_rect.intersect(s.layout.tab_zone)))
             })
             .collect::<Vec<_>>();
         let mut hit = layout::hit_test_with_group_balls(&s.layout, &balls, x, y);
         if let Hit::Tab(index) | Hit::TabClose(index) = hit {
             let slot = s.slots.get(index);
-            if s.visual_group_leader(index)
-                && slot.is_some_and(|slot| slot.marker_only)
-            {
+            if s.visual_group_leader(index) && slot.is_some_and(|slot| slot.marker_only) {
                 return Hit::GroupBall(index);
             }
             if let Some(island) = s.layout.tab(index) {
@@ -2303,11 +2754,7 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
             && s.split_active
             && layout::split_pane_layout(
                 {
-                    let viewport = notes_panel::adjust_viewport(
-                        to_win_rect(s.layout.viewport),
-                        hwnd,
-                        s.dpi,
-                    );
+                    let viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
                     Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom)
                 },
                 s.split_divider,
@@ -2319,7 +2766,8 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
             return Hit::SplitDivider;
         }
         hit
-    }).unwrap_or(Hit::None)
+    })
+    .unwrap_or(Hit::None)
 }
 /// The tab a strip hit lands on. Its close button counts as the tab itself for hover.
 fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
@@ -2337,10 +2785,18 @@ fn sidebar_group_ball(hwnd: HWND, index: usize) -> Option<(TabId, Rect)> {
         let layout = s.sidebar?;
         let metrics = Metrics::new(s.dpi);
         let id = match s.sidebar_rows.get(index)? {
-            crate::chrome::vertical_paint::SidebarRow::Group { representative, .. } => *representative,
+            crate::chrome::vertical_paint::SidebarRow::Group { representative, .. } => {
+                *representative
+            }
             crate::chrome::vertical_paint::SidebarRow::Tab { .. } => return None,
         };
-        let geometry = crate::chrome::vertical_paint::header_ball(&layout, &s.sidebar_rows, index, s.sidebar_scroll, metrics)?;
+        let geometry = crate::chrome::vertical_paint::header_ball(
+            &layout,
+            &s.sidebar_rows,
+            index,
+            s.sidebar_scroll,
+            metrics,
+        )?;
         Some((id, geometry.hit_rect))
     })
     .flatten()
@@ -2399,9 +2855,8 @@ fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
             if s.tabs.get(slot.tab_index).map(|tab| tab.id) != Some(id) {
                 return None;
             }
-            s.group_geometry(index, Instant::now()).map(|geometry| {
-                geometry.hit_rect.intersect(s.layout.tab_zone)
-            })
+            s.group_geometry(index, Instant::now())
+                .map(|geometry| geometry.hit_rect.intersect(s.layout.tab_zone))
         })
     })
     .flatten()
@@ -2453,14 +2908,19 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     use windows::Win32::{
         Foundation::{GlobalFree, HANDLE},
         System::{
-            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData},
-            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            DataExchange::{
+                CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
+                SetClipboardData,
+            },
+            Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
         },
     };
     use windows::core::w;
 
     let mut wide = zeroize::Zeroizing::new(
-        text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>(),
+        text.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>(),
     );
     unsafe {
         if OpenClipboard(Some(hwnd)).is_err() {
@@ -2522,13 +2982,10 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     }
 }
 
-fn split_rects(
-    hwnd: HWND,
-    divider_left: Option<i32>,
-) -> Option<(RECT, RECT)> {
+fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
     let (layout, saved_divider) = with_chrome(hwnd, |state| (state.layout, state.split_divider))?;
     let divider = divider_left.unwrap_or(saved_divider);
-    let viewport = notes_panel::adjust_viewport(to_win_rect(layout.viewport), hwnd, dpi(hwnd));
+    let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
     let panes = layout::split_pane_layout(
         viewport,
@@ -2537,19 +2994,25 @@ fn split_rects(
         layout.metrics.px(6),
     )?;
     Some((
-        RECT { left: panes.left.left, top: panes.left.top, right: panes.left.right, bottom: panes.left.bottom },
-        RECT { left: panes.right.left, top: panes.right.top, right: panes.right.right, bottom: panes.right.bottom },
+        RECT {
+            left: panes.left.left,
+            top: panes.left.top,
+            right: panes.left.right,
+            bottom: panes.left.bottom,
+        },
+        RECT {
+            left: panes.right.left,
+            top: panes.right.top,
+            right: panes.right.right,
+            bottom: panes.right.bottom,
+        },
     ))
 }
 
 fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::SplitView>) {
     let Some(split) = split else { return };
     let _ = with_chrome(hwnd, |state| {
-        let viewport = notes_panel::adjust_viewport(
-            to_win_rect(state.layout.viewport),
-            hwnd,
-            state.dpi,
-        );
+        let viewport = adjusted_viewport(hwnd, to_win_rect(state.layout.viewport), state.dpi);
         state.split_divider = viewport.left
             + (viewport.right - viewport.left) * i32::from(split.ratio) / 100
             - state.layout.metrics.px(3);
@@ -2561,33 +3024,222 @@ fn queue_split_bounds(hwnd: HWND, bounds: (RECT, RECT)) {
         let should_arm = s.pending_split_bounds.is_none();
         s.pending_split_bounds = Some(bounds);
         should_arm
-    }).unwrap_or(false);
+    })
+    .unwrap_or(false);
     if should_arm {
-        unsafe { let _ = SetTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER, ANIMATION_FRAME_MS, None); }
+        unsafe {
+            let _ = SetTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER, ANIMATION_FRAME_MS, None);
+        }
     }
 }
 
 fn cancel_split_bounds(hwnd: HWND) {
-    unsafe { let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER); }
+    unsafe {
+        let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
+    }
     let _ = with_chrome(hwnd, |s| s.pending_split_bounds = None);
 }
 
 fn to_win_rect(rect: Rect) -> RECT {
-    RECT { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
+}
+
+fn adjusted_viewport(hwnd: HWND, viewport: RECT, window_dpi: u32) -> RECT {
+    let viewport = notes_panel::adjust_viewport(viewport, hwnd, window_dpi);
+    side_panel::adjust_viewport(viewport, hwnd)
 }
 
 fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
-    let Some(layout) = with_chrome(hwnd, |state| state.layout) else { return; };
+    let Some(layout) = with_chrome(hwnd, |state| state.layout) else {
+        return;
+    };
     sync_split_ratio(hwnd, App::split_view(app));
     let viewport = to_win_rect(layout.viewport);
     notes_panel::sync(hwnd, viewport, dpi(hwnd));
+    side_panel::sync(hwnd, viewport, dpi(hwnd));
     if let Some(panes) = split_rects(hwnd, None) {
         App::update_split_bounds(app, panes);
     } else {
-        let bounds = notes_panel::adjust_viewport(viewport, hwnd, dpi(hwnd));
+        let bounds = adjusted_viewport(hwnd, viewport, dpi(hwnd));
         App::window_size_changed(app, false, bounds);
     }
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// Rail handlers call this with the semantic panel ID; the host stays alive when switching IDs.
+pub fn rail_activate(hwnd: HWND, app: &AppRef, key: side_panel::PanelId) -> bool {
+    let opened = side_panel::toggle(hwnd, key);
+    if opened { apply_sidebar_bounds(hwnd, app); }
+    if !side_panel::is_open(hwnd) {
+        if let Some(message) = side_panel::last_status() { show_error_message(message); return false; }
+    }
+    true
+}
+
+fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
+    match key {
+        RailKey::Home => { App::new_tab(app); focus_omni(hwnd, app, true); }
+        RailKey::Customize | RailKey::Menu | RailKey::AddApp => { rail_activate(hwnd, app, side_panel::PanelId::Customize); }
+        RailKey::Workspace(id) => { let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id as u32)); }
+        RailKey::AddWorkspace => {
+            let count = App::workspace_entries(app).len();
+            let name = format!("Workspace {}", count + 1);
+            if let Ok(id) = App::workspace_create(app, &name) {
+                if let Some(renamed) = super::profile_rename::prompt(hwnd, &name, "New workspace", "Create") {
+                    let _ = App::rename_workspace(app, id, &renamed);
+                }
+            }
+        }
+        RailKey::App(id) => {
+            if let Ok(profile) = crate::profile::active() {
+                if let Ok(config) = crate::sidebar::SidebarConfig::load(profile.root()) {
+                    if let Some(web_app) = config.apps.into_iter().find(|entry| entry.id == id) {
+                        super::panel_webapp::register_app(app, web_app);
+                    }
+                }
+            }
+            rail_activate(hwnd, app, side_panel::PanelId::WebApp(id));
+        }
+        RailKey::Bookmarks => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); }
+        RailKey::History => { rail_activate(hwnd, app, side_panel::PanelId::History); }
+    }
+    let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+}
+
+fn rail_entries(state: &WindowChrome) -> Vec<RailEntry<'_>> {
+    state.rail_entries.iter().map(|entry| RailEntry {
+        key: entry.key,
+        icon: entry.icon,
+        label: entry.label.clone(),
+        active: entry.active,
+        dot: false,
+        accent: entry.accent,
+        favicon: entry.favicon.as_deref(),
+    }).collect()
+}
+
+fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, RailDropIndicator)> {
+    with_chrome(hwnd, |state| {
+        let entries = rail_entries(state);
+        let geometry = crate::chrome::rail::geometry(state.layout.rail, &entries, state.rail_scroll, state.dpi);
+        crate::chrome::rail::drop_indicator(&geometry, key, x, y)
+    }).flatten()
+}
+
+fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32) {
+    super::panel_customize::focus_app(id);
+    if side_panel::open(hwnd, side_panel::PanelId::Customize) {
+        apply_sidebar_bounds(hwnd, app);
+    } else if let Some(message) = side_panel::last_status() {
+        show_error_message(message);
+    }
+}
+
+fn commit_rail_drop(hwnd: HWND, app: &AppRef, key: RailKey, index: usize) {
+    match key {
+        RailKey::Workspace(raw) => {
+            let _ = App::workspace_move(app, crate::workspaces::WorkspaceId(raw as u32), index);
+        }
+        RailKey::App(id) => {
+            if let Ok(profile) = profile::active() {
+                let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                if config.reorder_app(id, index).unwrap_or(false)
+                    && config.save(profile.root()).is_ok()
+                {
+                    super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+        RailKey::Bookmarks | RailKey::History => {
+            if let Ok(profile) = profile::active() {
+                let kind = if key == RailKey::Bookmarks { crate::sidebar::SidebarKind::Bookmarks } else { crate::sidebar::SidebarKind::History };
+                let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                if config.reorder_section(kind, index).is_ok() && config.save(profile.root()).is_ok() {
+                    super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn hide_rail_tooltip(hwnd: HWND) {
+    let visible = with_chrome(hwnd, |state| {
+        let visible = state.rail_tooltip_visible;
+        state.rail_tooltip_visible = false;
+        visible
+    }).unwrap_or(false);
+    unsafe { let _ = KillTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER); }
+    if visible { with_chrome(hwnd, |state| invalidate(hwnd, state.layout.rail)); }
+}
+
+fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32) {
+    let mut point = windows::Win32::Foundation::POINT { x, y };
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    match key {
+        RailKey::Workspace(raw_id) => {
+            let id = crate::workspaces::WorkspaceId(raw_id as u32);
+            let set = App::workspaces(app);
+            let entries = App::workspace_entries(app);
+            let Some((_, name, _, _, _, _)) = entries.iter().find(|(entry_id, ..)| *entry_id == id) else { return; };
+            let mut menu_entries = vec![
+                Entry::Item(Item::new(1, "Rename…", Icon::Person)),
+                Entry::Item(Item::new(2, "Change icon…", Icon::Grid)),
+                Entry::Item(Item::new(3, "Change colour…", Icon::Grid)),
+                Entry::Item(Item::new(4, "Move up", Icon::Grid)),
+                Entry::Item(Item::new(5, "Move down", Icon::Grid)),
+                Entry::Item(Item::new(6, "Delete…", Icon::Close).disabled_if(set.workspace_count() == 1)),
+            ];
+            if let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries: std::mem::take(&mut menu_entries), footer: name.clone() }) {
+                match chosen.id {
+                    1 => if let Some(value) = super::profile_rename::prompt(hwnd, name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
+                    2 => {
+                        let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
+                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid))).collect();
+                        let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
+                        if let Some(icon) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Workspace icon".into() }).and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
+                    }
+                    3 => {
+                        let choices = ["Blue", "Violet", "Teal", "Amber", "Rose", "Red", "Green", "Slate"];
+                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid))).collect();
+                        let colours = [crate::workspaces::WorkspaceColour::Blue, crate::workspaces::WorkspaceColour::Violet, crate::workspaces::WorkspaceColour::Teal, crate::workspaces::WorkspaceColour::Amber, crate::workspaces::WorkspaceColour::Rose, crate::workspaces::WorkspaceColour::Red, crate::workspaces::WorkspaceColour::Green, crate::workspaces::WorkspaceColour::Slate];
+                        if let Some(colour) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Workspace colour".into() }).and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
+                    }
+                    4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index.saturating_sub(1)); },
+                    5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index + 1); },
+                    6 => if set.workspace_count() > 1 && crate::win32::ask_yes_no(&format!("Delete workspace {name} and close its tabs?")) { let _ = App::delete_workspace(app, id); },
+                    _ => {}
+                }
+            }
+        }
+        RailKey::App(id) => {
+            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid)), Entry::Item(Item::new(2, "Edit…", Icon::Person)), Entry::Item(Item::new(3, "Remove…", Icon::Close))];
+            if let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Web app".into() }) {
+                match chosen.id {
+                    1 => activate_rail(hwnd, app, key),
+                    2 => edit_rail_app(hwnd, app, id),
+                    3 if crate::win32::ask_yes_no("Remove this web app from the rail?") => {
+                        if let Ok(profile) = crate::profile::active() {
+                            let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                            config.remove_app(id);
+                            let _ = config.save(profile.root());
+                            super::panel_webapp::forget_app(id);
+                            let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
@@ -2595,11 +3247,14 @@ fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
         .into_iter()
         .filter(|id| Some(*id) != skip)
         .map(|id| {
-            let title = App::tab_title(app, id).filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New tab".to_owned());
-            let favicon = App::tab_favicon(app, id).and_then(|bytes| {
-                crate::favicon::decode(&bytes, 24)
-            });
-            Entry::Item(Item::new(id.0 as usize + 100, title.clone(), Icon::Grid).rich_row(title, favicon))
+            let title = App::tab_title(app, id)
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "New tab".to_owned());
+            let favicon =
+                App::tab_favicon(app, id).and_then(|bytes| crate::favicon::decode(&bytes, 24));
+            Entry::Item(
+                Item::new(id.0 as usize + 100, title.clone(), Icon::Grid).rich_row(title, favicon),
+            )
         })
         .collect()
 }
@@ -2617,30 +3272,53 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
             Entry::Item(Item::new(SWAP, "Swap panes", Icon::Grid)),
             Entry::Item(Item::new(CLOSE_LEFT, "Close left pane", Icon::Close)),
             Entry::Item(Item::new(CLOSE_RIGHT, "Close right pane", Icon::Close)),
-            Entry::Item(Item::new(REPLACE, "Replace pane with tab…", Icon::Grid)
-                .submenu_with(split_tab_rows(app, Some(split.other_tab())))),
+            Entry::Item(
+                Item::new(REPLACE, "Replace pane with tab…", Icon::Grid)
+                    .submenu_with(split_tab_rows(app, Some(split.other_tab()))),
+            ),
         ]
     } else {
         let active = App::active_tab_id(app);
-        let mut entries = vec![Entry::Item(Item::new(OPEN_NEW, "Open split view with a new tab", Icon::Plus))];
+        let mut entries = vec![Entry::Item(Item::new(
+            OPEN_NEW,
+            "Open split view with a new tab",
+            Icon::Plus,
+        ))];
         entries.push(Entry::Separator);
-        entries.push(Entry::Item(Item::new(OPEN_BASE, "Open split view with…", Icon::Grid)
-            .submenu_with(split_tab_rows(app, Some(active)))));
+        entries.push(Entry::Item(
+            Item::new(OPEN_BASE, "Open split view with…", Icon::Grid)
+                .submenu_with(split_tab_rows(app, Some(active))),
+        ));
         entries
     };
     let mut point = main_menu_anchor(hwnd);
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
-    let command = menu::track(hwnd, point, Menu {
-        header: None,
-        entries,
-        footer: "Split view".to_owned(),
-    }).map_or(0, |chosen| chosen.id);
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
+    let command = menu::track(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries,
+            footer: "Split view".to_owned(),
+        },
+    )
+    .map_or(0, |chosen| chosen.id);
     if let Some(split) = split {
         match command {
-            SWAP => { let _ = App::swap_split_panes(app); }
-            CLOSE_LEFT => { let _ = App::close_split_pane(app, crate::split_view::Pane::Left); }
-            CLOSE_RIGHT => { let _ = App::close_split_pane(app, crate::split_view::Pane::Right); }
-            value if value >= OPEN_BASE => { let _ = App::replace_focused_split_pane(app, TabId((value - OPEN_BASE) as u32)); }
+            SWAP => {
+                let _ = App::swap_split_panes(app);
+            }
+            CLOSE_LEFT => {
+                let _ = App::close_split_pane(app, crate::split_view::Pane::Left);
+            }
+            CLOSE_RIGHT => {
+                let _ = App::close_split_pane(app, crate::split_view::Pane::Right);
+            }
+            value if value >= OPEN_BASE => {
+                let _ = App::replace_focused_split_pane(app, TabId((value - OPEN_BASE) as u32));
+            }
             _ => {}
         }
         let _ = split;
@@ -2649,16 +3327,25 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
         if command == OPEN_NEW {
             let new = App::new_tab(app);
             if let Some(bounds) = split_rects(hwnd, None) {
-                let _ = App::open_split_view(app, active, new, crate::split_view::Pane::Right, bounds);
+                let _ =
+                    App::open_split_view(app, active, new, crate::split_view::Pane::Right, bounds);
             }
         } else if command >= OPEN_BASE {
             let other = TabId((command - OPEN_BASE) as u32);
             if let Some(bounds) = split_rects(hwnd, None) {
-                let _ = App::open_split_view(app, active, other, crate::split_view::Pane::Right, bounds);
+                let _ = App::open_split_view(
+                    app,
+                    active,
+                    other,
+                    crate::split_view::Pane::Right,
+                    bounds,
+                );
             }
         }
     }
-    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
 }
 
 fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pip_available: bool) {
@@ -2694,7 +3381,10 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     let mut has_group = false;
     let mut collapsed = false;
     let muted = App::tab_muted(app, id);
-    let host = url.as_ref().and_then(|address| address.host_str()).map(str::to_owned);
+    let host = url
+        .as_ref()
+        .and_then(|address| address.host_str())
+        .map(str::to_owned);
     let site_ids: Vec<TabId> = host
         .as_ref()
         .map(|host| {
@@ -2709,14 +3399,24 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 .collect()
         })
         .unwrap_or_default();
-    let mute_site = site_ids.iter().any(|candidate| !App::tab_muted(app, *candidate));
+    let mute_site = site_ids
+        .iter()
+        .any(|candidate| !App::tab_muted(app, *candidate));
     let can_mute_tab = App::tab_supports_muting(app, id);
     let can_mute_site = !site_ids.is_empty()
-        && site_ids.iter().all(|candidate| App::tab_supports_muting(app, *candidate));
+        && site_ids
+            .iter()
+            .all(|candidate| App::tab_supports_muting(app, *candidate));
     let mut entries = vec![
         Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus)),
-        Entry::Item(Item::new(TAB_SPLIT_VIEW_HOOK, "New split view with current tab", Icon::Grid)
-            .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some())),
+        Entry::Item(
+            Item::new(
+                TAB_SPLIT_VIEW_HOOK,
+                "New split view with current tab",
+                Icon::Grid,
+            )
+            .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some()),
+        ),
         Entry::Separator,
     ];
     if let Some(key) = &key {
@@ -2753,7 +3453,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         entries.push(Entry::Item(
             Item::new(
                 GROUP_AUTO + 1,
-                if collapsed { "Expand group" } else { "Collapse group" },
+                if collapsed {
+                    "Expand group"
+                } else {
+                    "Collapse group"
+                },
                 Icon::None,
             )
             .disabled_if(!has_group),
@@ -2772,20 +3476,38 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
         Entry::Item(Item::new(RELOAD, "Reload", Icon::None)),
         Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).disabled_if(url.is_none())),
-        Entry::Item(Item::new(PIN, if pinned { "Unpin tab" } else { "Pin tab" }, Icon::None).checked(pinned)),
         Entry::Item(
-            Item::new(MUTE_TAB, if muted { "Unmute tab" } else { "Mute tab" }, Icon::None)
-                .checked(muted)
-                .disabled_if(!can_mute_tab),
+            Item::new(
+                PIN,
+                if pinned { "Unpin tab" } else { "Pin tab" },
+                Icon::None,
+            )
+            .checked(pinned),
         ),
         Entry::Item(
-            Item::new(MUTE_SITE, if mute_site { "Mute site" } else { "Unmute site" }, Icon::None)
-                .disabled_if(!can_mute_site),
+            Item::new(
+                MUTE_TAB,
+                if muted { "Unmute tab" } else { "Mute tab" },
+                Icon::None,
+            )
+            .checked(muted)
+            .disabled_if(!can_mute_tab),
+        ),
+        Entry::Item(
+            Item::new(
+                MUTE_SITE,
+                if mute_site {
+                    "Mute site"
+                } else {
+                    "Unmute site"
+                },
+                Icon::None,
+            )
+            .disabled_if(!can_mute_site),
         ),
         Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).disabled_if(!can_hibernate)),
         Entry::Item(
-            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None)
-                .disabled_if(url.is_none()),
+            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None).disabled_if(url.is_none()),
         ),
     ]);
     if pip_available {
@@ -2798,9 +3520,16 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close)),
-        Entry::Item(Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).disabled_if(ids.len() <= 1)),
-        Entry::Item(Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).disabled_if(index == 0)),
-        Entry::Item(Item::new(CLOSE_RIGHT, "Close tabs to the right", Icon::Close).disabled_if(index + 1 == ids.len())),
+        Entry::Item(
+            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).disabled_if(ids.len() <= 1),
+        ),
+        Entry::Item(
+            Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).disabled_if(index == 0),
+        ),
+        Entry::Item(
+            Item::new(CLOSE_RIGHT, "Close tabs to the right", Icon::Close)
+                .disabled_if(index + 1 == ids.len()),
+        ),
     ]);
     let mut point = windows::Win32::Foundation::POINT { x, y };
     unsafe {
@@ -2821,9 +3550,16 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 let created = App::new_tab(app);
                 let current = App::tab_ids(app);
                 let after = if pinned {
-                    current.iter().take_while(|candidate| App::tab_pinned(app, **candidate)).count()
+                    current
+                        .iter()
+                        .take_while(|candidate| App::tab_pinned(app, **candidate))
+                        .count()
                 } else {
-                    current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1
+                    current
+                        .iter()
+                        .position(|candidate| *candidate == id)
+                        .unwrap_or(index)
+                        + 1
                 };
                 let _ = App::move_tab(app, created, after);
                 focus_omni(hwnd, app, true);
@@ -2833,10 +3569,18 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 let companion = if id != active {
                     Some(active)
                 } else {
-                    App::tab_ids(app).into_iter().find(|candidate| *candidate != id)
+                    App::tab_ids(app)
+                        .into_iter()
+                        .find(|candidate| *candidate != id)
                 };
                 if let (Some(companion), Some(bounds)) = (companion, split_rects(hwnd, None)) {
-                    let _ = App::open_split_view(app, id, companion, crate::split_view::Pane::Left, bounds);
+                    let _ = App::open_split_view(
+                        app,
+                        id,
+                        companion,
+                        crate::split_view::Pane::Left,
+                        bounds,
+                    );
                 }
             }
             GROUP_NEW => {
@@ -2878,7 +3622,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                         App::set_tab_muted(app, created, true);
                     }
                     let current = App::tab_ids(app);
-                    let after = current.iter().position(|candidate| *candidate == id).unwrap_or(index) + 1;
+                    let after = current
+                        .iter()
+                        .position(|candidate| *candidate == id)
+                        .unwrap_or(index)
+                        + 1;
                     let _ = App::move_tab(app, created, after);
                 }
             }
@@ -2899,9 +3647,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             MOVE_WINDOW => {
                 if let Some(url) = url.as_ref() {
                     let profile = crate::profile::active();
-                    let launched = profile.is_ok_and(|profile| {
-                        crate::profile::spawn_window_with_url(&profile, url)
-                    });
+                    let launched = profile
+                        .is_ok_and(|profile| crate::profile::spawn_window_with_url(&profile, url));
                     if launched {
                         let _ = App::close_tab(app, id);
                     } else {
@@ -2958,7 +3705,10 @@ impl ProfileMenu {
     fn load(hwnd: HWND) -> Option<Self> {
         use crate::profile;
         let Some(app_data) = profile::app_data_dir() else {
-            show_profile_notice(hwnd, "Bowser could not find this user's LocalAppData directory.");
+            show_profile_notice(
+                hwnd,
+                "Bowser could not find this user's LocalAppData directory.",
+            );
             return None;
         };
         let current = profile::active().ok()?;
@@ -3007,28 +3757,54 @@ impl ProfileMenu {
             ));
         }
         entries.push(Entry::Separator);
-        entries.push(Entry::Item(Item::new(PROFILE_GUEST, "Guest window", Icon::Person)));
+        entries.push(Entry::Item(Item::new(
+            PROFILE_GUEST,
+            "Guest window",
+            Icon::Person,
+        )));
         entries.push(Entry::Item(Item::new(
             PROFILE_NEW,
             "New profile",
             Icon::Plus,
         )));
-        entries.push(Entry::Item(Item::new(20, "Choose avatar", Icon::Person).submenu_with(
-            ["initial", "leaf", "star", "wave", "moon"].iter().enumerate().map(|(index, id)| {
-                Entry::Item(Item::new(PROFILE_AVATAR_BASE + index, avatar_label(id), Icon::Person)
-                    .profile_badge(avatar_label(id), self.current_metadata.accent_colour())
-                    .checked(self.current_metadata.avatar == *id))
-            }).collect(),
-        )));
-        entries.push(Entry::Item(Item::new(21, "Choose accent colour", Icon::Grid).submenu_with(
-            ["blue", "violet", "teal", "amber", "rose"].iter().enumerate().map(|(index, id)| {
-                let mut metadata = self.current_metadata.clone();
-                metadata.accent = (*id).to_owned();
-                Entry::Item(Item::new(PROFILE_ACCENT_BASE + index, accent_label(id), Icon::Grid)
-                    .profile_badge(metadata.avatar_glyph(self.current.listed_name()), metadata.accent_colour())
-                    .checked(self.current_metadata.accent == *id))
-            }).collect(),
-        )));
+        entries.push(Entry::Item(
+            Item::new(20, "Choose avatar", Icon::Person).submenu_with(
+                ["initial", "leaf", "star", "wave", "moon"]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        Entry::Item(
+                            Item::new(PROFILE_AVATAR_BASE + index, avatar_label(id), Icon::Person)
+                                .profile_badge(
+                                    avatar_label(id),
+                                    self.current_metadata.accent_colour(),
+                                )
+                                .checked(self.current_metadata.avatar == *id),
+                        )
+                    })
+                    .collect(),
+            ),
+        ));
+        entries.push(Entry::Item(
+            Item::new(21, "Choose accent colour", Icon::Grid).submenu_with(
+                ["blue", "violet", "teal", "amber", "rose"]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        let mut metadata = self.current_metadata.clone();
+                        metadata.accent = (*id).to_owned();
+                        Entry::Item(
+                            Item::new(PROFILE_ACCENT_BASE + index, accent_label(id), Icon::Grid)
+                                .profile_badge(
+                                    metadata.avatar_glyph(self.current.listed_name()),
+                                    metadata.accent_colour(),
+                                )
+                                .checked(self.current_metadata.accent == *id),
+                        )
+                    })
+                    .collect(),
+            ),
+        ));
         let deletable: Vec<usize> = self
             .names
             .iter()
@@ -3048,14 +3824,23 @@ impl ProfileMenu {
                 )));
             }
         }
-        let renamable: Vec<usize> = self.names.iter().enumerate()
-            .filter(|(_, name)| !name.eq_ignore_ascii_case(profile::DEFAULT_NAME) && !self.is_current(name))
-            .map(|(index, _)| index).collect();
+        let renamable: Vec<usize> = self
+            .names
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| {
+                !name.eq_ignore_ascii_case(profile::DEFAULT_NAME) && !self.is_current(name)
+            })
+            .map(|(index, _)| index)
+            .collect();
         if !renamable.is_empty() {
             entries.push(Entry::SectionHeader("Rename profile".to_owned()));
             for index in renamable {
-                entries.push(Entry::Item(Item::new(PROFILE_RENAME_BASE + index,
-                    Self::label(&self.names[index]).to_string(), Icon::Person)));
+                entries.push(Entry::Item(Item::new(
+                    PROFILE_RENAME_BASE + index,
+                    Self::label(&self.names[index]).to_string(),
+                    Icon::Person,
+                )));
             }
         }
         entries
@@ -3066,18 +3851,31 @@ impl ProfileMenu {
         use crate::profile::{self, Profile};
         match command {
             id if (PROFILE_RENAME_BASE..PROFILE_RENAME_BASE + PROFILE_MAX_LISTED).contains(&id) => {
-                if let Some(name) = self.names.get(id - PROFILE_RENAME_BASE)
+                if let Some(name) = self
+                    .names
+                    .get(id - PROFILE_RENAME_BASE)
                     .filter(|name| !self.is_current(name))
-                    && let Some(new_name) = super::profile_rename::prompt(hwnd, name, "Rename profile", "Save")
-                    && let Err(error) = profile::rename(&self.app_data, name, &new_name, &self.current)
-                { show_profile_notice(hwnd, &format!("The profile could not be renamed. {error}")); }
+                    && let Some(new_name) =
+                        super::profile_rename::prompt(hwnd, name, "Rename profile", "Save")
+                    && let Err(error) =
+                        profile::rename(&self.app_data, name, &new_name, &self.current)
+                {
+                    show_profile_notice(
+                        hwnd,
+                        &format!("The profile could not be renamed. {error}"),
+                    );
+                }
             }
             PROFILE_GUEST => {
-                if !profile::spawn_guest_window() { show_profile_notice(hwnd, "Bowser could not start a guest window."); }
+                if !profile::spawn_guest_window() {
+                    show_profile_notice(hwnd, "Bowser could not start a guest window.");
+                }
             }
             PROFILE_NEW => match profile::create_auto(&self.app_data) {
                 Ok(created) => open_profile_window(&created, hwnd),
-                Err(error) => show_profile_notice(hwnd, &format!("The new profile was not created. {error}")),
+                Err(error) => {
+                    show_profile_notice(hwnd, &format!("The new profile was not created. {error}"))
+                }
             },
             id if (PROFILE_SWITCH_BASE..PROFILE_SWITCH_BASE + PROFILE_MAX_LISTED).contains(&id) => {
                 if let Some(name) = self
@@ -3087,9 +3885,12 @@ impl ProfileMenu {
                 {
                     match Profile::for_listed_name(&self.app_data, name) {
                         Ok(target) => {
-                            if let Err(error) = profile::remember_last_profile(&self.app_data, name) {
+                            if let Err(error) = profile::remember_last_profile(&self.app_data, name)
+                            {
                                 show_profile_notice(hwnd, &error.to_string());
-                            } else { open_profile_window(&target, hwnd); }
+                            } else {
+                                open_profile_window(&target, hwnd);
+                            }
                         }
                         Err(error) => show_profile_notice(hwnd, &error.to_string()),
                     }
@@ -3100,7 +3901,9 @@ impl ProfileMenu {
                 if let Some(avatar) = choices.get(id - PROFILE_AVATAR_BASE) {
                     let mut metadata = self.current_metadata.clone();
                     metadata.avatar = (*avatar).to_owned();
-                    if let Err(error) = metadata.save(&self.current) { show_profile_notice(hwnd, &error.to_string()); }
+                    if let Err(error) = metadata.save(&self.current) {
+                        show_profile_notice(hwnd, &error.to_string());
+                    }
                 }
             }
             id if (PROFILE_ACCENT_BASE..PROFILE_ACCENT_BASE + 5).contains(&id) => {
@@ -3108,14 +3911,19 @@ impl ProfileMenu {
                 if let Some(accent) = choices.get(id - PROFILE_ACCENT_BASE) {
                     let mut metadata = self.current_metadata.clone();
                     metadata.accent = (*accent).to_owned();
-                    if let Err(error) = metadata.save(&self.current) { show_profile_notice(hwnd, &error.to_string()); }
+                    if let Err(error) = metadata.save(&self.current) {
+                        show_profile_notice(hwnd, &error.to_string());
+                    }
                 }
             }
             id if (PROFILE_DELETE_BASE..PROFILE_DELETE_BASE + PROFILE_MAX_LISTED).contains(&id) => {
                 if let Some(name) = self.names.get(id - PROFILE_DELETE_BASE) {
                     if confirm_profile_delete(hwnd, name) {
                         if let Err(error) = profile::delete(&self.app_data, name, &self.current) {
-                            show_profile_notice(hwnd, &format!("The profile \"{name}\" was not deleted. {error}"));
+                            show_profile_notice(
+                                hwnd,
+                                &format!("The profile \"{name}\" was not deleted. {error}"),
+                            );
                         }
                     }
                 }
@@ -3126,38 +3934,64 @@ impl ProfileMenu {
 }
 
 fn avatar_label(id: &str) -> &'static str {
-    match id { "leaf" => "Leaf", "star" => "Star", "wave" => "Wave", "moon" => "Moon", _ => "Initial" }
+    match id {
+        "leaf" => "Leaf",
+        "star" => "Star",
+        "wave" => "Wave",
+        "moon" => "Moon",
+        _ => "Initial",
+    }
 }
 
 fn accent_label(id: &str) -> &'static str {
-    match id { "violet" => "Violet", "teal" => "Teal", "amber" => "Amber", "rose" => "Rose", _ => "Blue" }
+    match id {
+        "violet" => "Violet",
+        "teal" => "Teal",
+        "amber" => "Amber",
+        "rose" => "Rose",
+        _ => "Blue",
+    }
 }
 
 fn show_profile_notice(hwnd: HWND, message: &str) {
     let mut point = main_menu_anchor(hwnd);
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
-    let _ = menu::track(hwnd, point, Menu {
-        header: None,
-        entries: vec![
-            Entry::SectionHeader(message.to_owned()),
-            Entry::Item(Item::new(1, "Close", Icon::Close)),
-        ],
-        footer: "Profile action".to_owned(),
-    });
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
+    let _ = menu::track(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries: vec![
+                Entry::SectionHeader(message.to_owned()),
+                Entry::Item(Item::new(1, "Close", Icon::Close)),
+            ],
+            footer: "Profile action".to_owned(),
+        },
+    );
 }
 
 fn confirm_profile_delete(hwnd: HWND, name: &str) -> bool {
     let mut point = main_menu_anchor(hwnd);
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
-    menu::track(hwnd, point, Menu {
-        header: None,
-        entries: vec![
-            Entry::SectionHeader(format!("Delete profile {name}?")),
-            Entry::Item(Item::new(2, "Delete profile", Icon::Close)),
-            Entry::Item(Item::new(3, "Keep profile", Icon::Person)),
-        ],
-        footer: "Cookies, saved passwords, settings and session data will be removed".to_owned(),
-    }).is_some_and(|chosen| chosen.id == 2)
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
+    menu::track(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries: vec![
+                Entry::SectionHeader(format!("Delete profile {name}?")),
+                Entry::Item(Item::new(2, "Delete profile", Icon::Close)),
+                Entry::Item(Item::new(3, "Keep profile", Icon::Person)),
+            ],
+            footer: "Cookies, saved passwords, settings and session data will be removed"
+                .to_owned(),
+        },
+    )
+    .is_some_and(|chosen| chosen.id == 2)
 }
 
 fn show_profile_menu(hwnd: HWND) {
@@ -3198,15 +4032,28 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
         })
         .collect::<Vec<_>>();
     entries.push(Entry::Separator);
-    entries.push(Entry::Item(Item::new(WORKSPACE_CREATE, "New workspace…", Icon::Plus)));
-    entries.push(Entry::Item(Item::new(WORKSPACE_RENAME, "Rename current workspace…", Icon::Person)));
-    entries.push(Entry::Item(Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close).disabled_if(workspaces.workspace_count() == 1)));
+    entries.push(Entry::Item(Item::new(
+        WORKSPACE_CREATE,
+        "New workspace…",
+        Icon::Plus,
+    )));
+    entries.push(Entry::Item(Item::new(
+        WORKSPACE_RENAME,
+        "Rename current workspace…",
+        Icon::Person,
+    )));
+    entries.push(Entry::Item(
+        Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close)
+            .disabled_if(workspaces.workspace_count() == 1),
+    ));
     entries
 }
 
 fn show_workspaces_menu(hwnd: HWND, app: &AppRef) {
     let mut point = main_menu_anchor(hwnd);
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
     let menu = Menu {
         header: None,
         entries: workspace_menu_entries(app),
@@ -3230,12 +4077,16 @@ fn run_workspace_action(hwnd: HWND, app: &AppRef, command: usize) {
         WORKSPACE_CREATE => {
             if let Some(name) = super::profile_rename::prompt(hwnd, "", "New workspace", "Create") {
                 if let Err(error) = App::create_workspace(app, &name) {
-                    show_profile_notice(hwnd, &format!("Workspace could not be created: {error:?}"));
+                    show_profile_notice(
+                        hwnd,
+                        &format!("Workspace could not be created: {error:?}"),
+                    );
                 }
             }
         }
         WORKSPACE_RENAME => {
-            if let Some(name) = super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
+            if let Some(name) =
+                super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
                 && let Err(error) = App::rename_workspace(app, active.id(), &name)
             {
                 show_profile_notice(hwnd, &format!("Workspace could not be renamed: {error:?}"));
@@ -3252,7 +4103,9 @@ fn run_workspace_action(hwnd: HWND, app: &AppRef, command: usize) {
                 footer: "This cannot be undone".to_owned(),
             };
             let mut point = main_menu_anchor(hwnd);
-            unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+            unsafe {
+                let _ = ClientToScreen(hwnd, &mut point);
+            }
             if menu::track(hwnd, point, confirm).is_some_and(|chosen| chosen.id == 1)
                 && let Err(error) = App::delete_workspace(app, active.id())
             {
@@ -3297,12 +4150,21 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     entries.push(Entry::Item(
         Item::new(NOTES, "Notes & Tasks…", Icon::Info).shortcut("Ctrl+Shift+N"),
     ));
-    entries.push(Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).shortcut("Ctrl+Shift+K")));
-    entries.push(Entry::Item(Item::new(BOOKMARK, "Bookmark this page", Icon::Plus).shortcut("Ctrl+D")
-        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
-    entries.push(Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check)
-        .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest()))));
-    entries.push(Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E")));
+    entries.push(Entry::Item(
+        Item::new(PALETTE, "Command palette…", Icon::Grid).shortcut("Ctrl+Shift+K"),
+    ));
+    entries.push(Entry::Item(
+        Item::new(BOOKMARK, "Bookmark this page", Icon::Plus)
+            .shortcut("Ctrl+D")
+            .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
+    ));
+    entries.push(Entry::Item(
+        Item::new(SESSIONS, "Saved sessions…", Icon::Check)
+            .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
+    ));
+    entries.push(Entry::Item(
+        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E"),
+    ));
     entries.push(Entry::Item(
         Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key)
             .shortcut("Ctrl+,")
@@ -3320,8 +4182,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             .checked(App::tab_layout(app) == crate::settings::TabLayout::Vertical),
     ));
     entries.push(Entry::Item(
-        Item::new(WORKSPACES, "Workspaces", Icon::Grid)
-            .submenu_with(workspace_menu_entries(app)),
+        Item::new(WORKSPACES, "Workspaces", Icon::Grid).submenu_with(workspace_menu_entries(app)),
     ));
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
@@ -3342,12 +4203,19 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     ));
     let menu = Menu {
         header: Some(ProfileHeader {
-            profile: profiles
-                .as_ref()
-                .map_or_else(|| "Bowser".to_owned(), |p| ProfileMenu::label(p.current.listed_name()).to_string()),
+            profile: profiles.as_ref().map_or_else(
+                || "Bowser".to_owned(),
+                |p| ProfileMenu::label(p.current.listed_name()).to_string(),
+            ),
             caption: "Current profile".to_owned(),
-            avatar: profiles.as_ref().map_or_else(|| "B".to_owned(), |p| p.current_metadata.avatar_glyph(p.current.listed_name())),
-            accent: profiles.as_ref().map_or_else(|| crate::profile::ProfileMetadata::default().accent_colour(), |p| p.current_metadata.accent_colour()),
+            avatar: profiles.as_ref().map_or_else(
+                || "B".to_owned(),
+                |p| p.current_metadata.avatar_glyph(p.current.listed_name()),
+            ),
+            accent: profiles.as_ref().map_or_else(
+                || crate::profile::ProfileMetadata::default().accent_colour(),
+                |p| p.current_metadata.accent_colour(),
+            ),
         }),
         entries,
         footer: format!("Bowser {}", env!("CARGO_PKG_VERSION")),
@@ -3369,7 +4237,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 focus_omni(hwnd, app, true);
             }
             PROFILE => {}
-            NOTES => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
+            NOTES => {
+                notes_panel::open(hwnd);
+                apply_sidebar_bounds(hwnd, app);
+            }
             PALETTE => run_command_palette(hwnd, app),
             BOOKMARK => add_current_bookmark(hwnd, app),
             SESSIONS => show_sessions(hwnd, app),
@@ -3378,7 +4249,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 let _ = with_chrome(hwnd, |s| s.refresh(app, true));
                 sync_split_ratio(hwnd, App::split_view(app));
                 apply_sidebar_bounds(hwnd, app);
-                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
             }
             WORKSPACES => show_workspaces_menu(hwnd, app),
             EXTENSIONS => show_extensions_menu(hwnd, app),
@@ -3391,9 +4264,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
             IMPORT => {
                 if let Err(error) = import_panel::open(hwnd) {
-                    show_error_message(&format!(
-                        "Browser import could not be opened: {error}"
-                    ));
+                    show_error_message(&format!("Browser import could not be opened: {error}"));
                 }
             }
             BLOCKER => App::toggle_blocker(app),
@@ -3423,17 +4294,24 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
             id if (PROFILE_AVATAR_BASE..PROFILE_AVATAR_BASE + 5).contains(&id)
                 || (PROFILE_ACCENT_BASE..PROFILE_ACCENT_BASE + 5).contains(&id)
-                || (PROFILE_RENAME_BASE..PROFILE_RENAME_BASE + PROFILE_MAX_LISTED).contains(&id)
-                || id == PROFILE_GUEST => {
-                    if let Some(profiles) = &profiles { profiles.run(id, hwnd); }
+                || (PROFILE_RENAME_BASE..PROFILE_RENAME_BASE + PROFILE_MAX_LISTED)
+                    .contains(&id)
+                || id == PROFILE_GUEST =>
+            {
+                if let Some(profiles) = &profiles {
+                    profiles.run(id, hwnd);
                 }
+            }
             PROFILE_NEW => {
                 if let Some(profiles) = &profiles {
                     profiles.run(PROFILE_NEW, hwnd);
                 }
             }
             id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
-                || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) => run_workspace_action(hwnd, app, id),
+                || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) =>
+            {
+                run_workspace_action(hwnd, app, id)
+            }
             _ => {}
         }
     }
@@ -3442,16 +4320,51 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
 }
 
 fn run_command_palette(hwnd: HWND, app: &AppRef) {
-    let Ok(profile) = crate::profile::active() else { return; };
-    let tabs: Vec<_> = App::tab_ids(app).into_iter().map(|id| {
-        (id.0, App::tab_title(app, id).unwrap_or_else(|| "New tab".into()), App::tab_committed_url(app, id).map_or_else(String::new, |url| url.to_string()))
-    }).collect();
-    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) { Vec::new() } else { crate::productivity::read_bookmarks(&profile.bookmarks_file()) };
-    let history = if !crate::productivity::profile_allows_productivity(&profile) || !profile.history_enabled() { Vec::new() } else { crate::productivity::read_history(&profile.history_file()) };
-    let Some(item) = command_palette::show(hwnd, tabs, bookmarks, history, crate::productivity::browser_commands()) else { return; };
-    if let Some(id) = item.action.strip_prefix("tab:").and_then(|s| s.parse::<u32>().ok()) {
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    let tabs: Vec<_> = App::tab_ids(app)
+        .into_iter()
+        .map(|id| {
+            (
+                id.0,
+                App::tab_title(app, id).unwrap_or_else(|| "New tab".into()),
+                App::tab_committed_url(app, id).map_or_else(String::new, |url| url.to_string()),
+            )
+        })
+        .collect();
+    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) {
+        Vec::new()
+    } else {
+        crate::productivity::read_bookmarks(&profile.bookmarks_file())
+    };
+    let history = if !crate::productivity::profile_allows_productivity(&profile)
+        || !profile.history_enabled()
+    {
+        Vec::new()
+    } else {
+        crate::productivity::read_history(&profile.history_file())
+    };
+    let Some(item) = command_palette::show(
+        hwnd,
+        tabs,
+        bookmarks,
+        history,
+        crate::productivity::browser_commands(),
+    ) else {
+        return;
+    };
+    if let Some(id) = item
+        .action
+        .strip_prefix("tab:")
+        .and_then(|s| s.parse::<u32>().ok())
+    {
         let _ = App::select_tab(app, TabId(id));
-    } else if let Some(url) = item.action.strip_prefix("url:").and_then(|s| url::Url::parse(s).ok()) {
+    } else if let Some(url) = item
+        .action
+        .strip_prefix("url:")
+        .and_then(|s| url::Url::parse(s).ok())
+    {
         App::navigate_current(app, &url);
     } else {
         run_palette_command(hwnd, app, &item.action);
@@ -3460,11 +4373,23 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
 
 fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
     match action {
-        "new-tab" => { App::new_tab(app); focus_omni(hwnd, app, true); }
-        "close-tab" => { let _ = App::close_tab(app, App::active_tab_id(app)); }
-        "settings" => { let _ = settings_panel::open(hwnd, app); }
-        "toggle-sidebar" => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
-        "passwords" => { let _ = passwords_panel::open(hwnd); }
+        "new-tab" => {
+            App::new_tab(app);
+            focus_omni(hwnd, app, true);
+        }
+        "close-tab" => {
+            let _ = App::close_tab(app, App::active_tab_id(app));
+        }
+        "settings" => {
+            let _ = settings_panel::open(hwnd, app);
+        }
+        "toggle-sidebar" => {
+            notes_panel::open(hwnd);
+            apply_sidebar_bounds(hwnd, app);
+        }
+        "passwords" => {
+            let _ = passwords_panel::open(hwnd);
+        }
         "profiles" => show_profile_menu(hwnd),
         "save-session" | "sessions" => show_sessions(hwnd, app),
         "add-bookmark" => add_current_bookmark(hwnd, app),
@@ -3477,68 +4402,163 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
 }
 
 fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
-    let Ok(profile) = crate::profile::active() else { return; };
-    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    if !crate::productivity::profile_allows_productivity(&profile) {
+        return;
+    }
     let id = App::active_tab_id(app);
-    let Some(url) = App::tab_committed_url(app, id) else { return; };
-    let title = App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
-    if let Err(error) = crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title) {
-        show_error_message(&format!("Bookmark could not be saved: {error}"));
-    } else {
-        let _ = menu::track(hwnd, main_menu_anchor(hwnd), Menu { header: None, entries: vec![Entry::Item(Item::new(0, "Bookmark saved", Icon::Check).disabled())], footer: "Bookmarks".into() });
+    let Some(url) = App::tab_committed_url(app, id) else {
+        return;
+    };
+    let title =
+        App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    let mut store = match crate::bookmarks::BookmarkStore::load(profile.root()) {
+        Ok(store) => store,
+        Err(error) => { show_error_message(&format!("Bookmarks could not be loaded: {error}")); return; }
+    };
+    match store.toggle(None, &title, url.as_str()).and_then(|added| {
+        store.save(profile.root())?;
+        Ok(added)
+    }) {
+        Err(error) => show_error_message(&format!("Bookmark could not be saved: {error}")),
+        Ok(added) => {
+        super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+        let mirror = if added {
+            crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title).map(|_| ())
+        } else {
+            crate::productivity::remove_bookmark(&profile.bookmarks_file(), url.as_str()).map(|_| ())
+        };
+        if let Err(error) = mirror {
+            show_error_message(&format!("The bookmark changed, but the legacy mirror could not be updated: {error}"));
+        }
+        let _ = menu::track(
+            hwnd,
+            main_menu_anchor(hwnd),
+            Menu {
+                header: None,
+                entries: vec![Entry::Item(
+                    Item::new(0, if added { "Bookmark saved" } else { "Bookmark removed" }, if added { Icon::Check } else { Icon::Close }).disabled(),
+                )],
+                footer: "Bookmarks".into(),
+            },
+        );
+        }
     }
 }
 
 fn show_sessions(hwnd: HWND, app: &AppRef) {
-    let Ok(profile) = crate::profile::active() else { return; };
-    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    if !crate::productivity::profile_allows_productivity(&profile) {
+        return;
+    }
     let sessions = crate::productivity::read_sessions(&profile.saved_sessions_file());
     const SAVE: usize = 1;
     const RESTORE_BASE: usize = 100;
     const DELETE_BASE: usize = 200;
-    let mut entries = vec![Entry::Item(Item::new(SAVE, "Save current tabs…", Icon::Plus))];
-    if !sessions.is_empty() { entries.push(Entry::Separator); }
+    let mut entries = vec![Entry::Item(Item::new(
+        SAVE,
+        "Save current tabs…",
+        Icon::Plus,
+    ))];
+    if !sessions.is_empty() {
+        entries.push(Entry::Separator);
+    }
     for (index, session) in sessions.iter().enumerate() {
         let restore = RESTORE_BASE + index;
         let delete = DELETE_BASE + index;
-        entries.push(Entry::Item(Item::new(restore, session.name.clone(), Icon::Check).submenu_with(vec![
-            Entry::Item(Item::new(restore, format!("Restore {} tabs", session.urls.len()), Icon::Check)),
-            Entry::Item(Item::new(delete, "Delete session", Icon::Close)),
-        ])));
+        entries.push(Entry::Item(
+            Item::new(restore, session.name.clone(), Icon::Check).submenu_with(vec![
+                Entry::Item(Item::new(
+                    restore,
+                    format!("Restore {} tabs", session.urls.len()),
+                    Icon::Check,
+                )),
+                Entry::Item(Item::new(delete, "Delete session", Icon::Close)),
+            ]),
+        ));
     }
     let mut point = main_menu_anchor(hwnd);
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
-    let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Saved sessions".into() }) else { return; };
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
+    let Some(chosen) = menu::track(
+        hwnd,
+        point,
+        Menu {
+            header: None,
+            entries,
+            footer: "Saved sessions".into(),
+        },
+    ) else {
+        return;
+    };
     if chosen.id == SAVE {
-        let Some(name) = super::profile_rename::prompt(hwnd, "", "Save session", "Save") else { return; };
+        let Some(name) = super::profile_rename::prompt(hwnd, "", "Save session", "Save") else {
+            return;
+        };
         let active_id = App::active_tab_id(app);
-        let entries: Vec<_> = App::tab_ids(app).into_iter()
+        let entries: Vec<_> = App::tab_ids(app)
+            .into_iter()
             .filter_map(|id| App::tab_committed_url(app, id).map(|url| (id, url.to_string())))
-            .filter(|(_, value)| matches!(url::Url::parse(value).map(|u| u.scheme().to_owned()).as_deref(), Ok("http" | "https")))
+            .filter(|(_, value)| {
+                matches!(
+                    url::Url::parse(value)
+                        .map(|u| u.scheme().to_owned())
+                        .as_deref(),
+                    Ok("http" | "https")
+                )
+            })
             .collect();
         let urls: Vec<_> = entries.iter().map(|(_, url)| url.clone()).collect();
-        if urls.is_empty() { return; }
-        let active = entries.iter().position(|(id, _)| *id == active_id).unwrap_or(0);
-        if let Err(error) = crate::productivity::save_session(&profile.saved_sessions_file(), crate::productivity::SavedSession { name, urls, active }) {
+        if urls.is_empty() {
+            return;
+        }
+        let active = entries
+            .iter()
+            .position(|(id, _)| *id == active_id)
+            .unwrap_or(0);
+        if let Err(error) = crate::productivity::save_session(
+            &profile.saved_sessions_file(),
+            crate::productivity::SavedSession { name, urls, active },
+        ) {
             show_error_message(&format!("Session could not be saved: {error}"));
         }
     } else if (RESTORE_BASE..DELETE_BASE).contains(&chosen.id) {
-        let Some(session) = sessions.get(chosen.id - RESTORE_BASE) else { return; };
-        if !super::ask_yes_no("Replace the open tabs with this saved session?") { return; }
-        for id in App::tab_ids(app) { let _ = App::close_tab(app, id); }
+        let Some(session) = sessions.get(chosen.id - RESTORE_BASE) else {
+            return;
+        };
+        if !super::ask_yes_no("Replace the open tabs with this saved session?") {
+            return;
+        }
+        for id in App::tab_ids(app) {
+            let _ = App::close_tab(app, id);
+        }
         let mut ids = vec![App::active_tab_id(app)];
         for value in &session.urls {
-            if let Ok(url) = url::Url::parse(value) { App::navigate_current(app, &url); }
+            if let Ok(url) = url::Url::parse(value) {
+                App::navigate_current(app, &url);
+            }
             if ids.len() < session.urls.len() {
                 ids.push(App::new_tab(app));
                 let _ = App::select_tab(app, *ids.last().unwrap());
             }
         }
-        if let Some(id) = ids.get(session.active) { let _ = App::select_tab(app, *id); }
+        if let Some(id) = ids.get(session.active) {
+            let _ = App::select_tab(app, *id);
+        }
     } else if (DELETE_BASE..DELETE_BASE + sessions.len()).contains(&chosen.id) {
         let index = chosen.id - DELETE_BASE;
         if let Some(session) = sessions.get(index) {
-            if super::ask_yes_no("Delete this saved session?") { let _ = crate::productivity::delete_session(&profile.saved_sessions_file(), &session.name); }
+            if super::ask_yes_no("Delete this saved session?") {
+                let _ = crate::productivity::delete_session(
+                    &profile.saved_sessions_file(),
+                    &session.name,
+                );
+            }
         }
     }
 }
@@ -3565,12 +4585,8 @@ fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
         Entry::Item(
             Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(maximized || minimized),
         ),
-        Entry::Item(
-            Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).disabled_if(minimized),
-        ),
-        Entry::Item(
-            Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).disabled_if(maximized),
-        ),
+        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).disabled_if(minimized)),
+        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).disabled_if(maximized)),
         Entry::Separator,
         Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).shortcut("Alt+F4")),
     ];
@@ -3829,9 +4845,17 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
         })
         .flatten();
         entries.push(Entry::Item(
-            Item::new(index + 1, label.clone(), if id == active { Icon::Check } else { Icon::None })
-                .rich_row(label, favicon)
-                .checked(id == active),
+            Item::new(
+                index + 1,
+                label.clone(),
+                if id == active {
+                    Icon::Check
+                } else {
+                    Icon::None
+                },
+            )
+            .rich_row(label, favicon)
+            .checked(id == active),
         ));
     }
     let mut point = with_chrome(hwnd, |s| {
@@ -3926,6 +4950,7 @@ fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximi
 
 fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
+        Hit::Rail(_) | Hit::RailBackground => l.rail,
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => l.tab(i).unwrap_or_default(),
         Hit::NewTab => l.new_tab_button,
         Hit::TabMenu => l.tab_menu_button,
@@ -3963,6 +4988,7 @@ fn invalidate(hwnd: HWND, r: Rect) {
 /// Repaints a hit. A tab's divider hides beside a hovered tab, so its neighbours repaint too.
 fn invalidate_hover(hwnd: HWND, l: &Layout, h: Hit) {
     match h {
+        Hit::Rail(_) | Hit::RailBackground => invalidate(hwnd, l.rail),
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => {
             for index in i.saturating_sub(1)..=i + 1 {
                 invalidate(hwnd, rect_for(l, Hit::Tab(index)));
@@ -3991,13 +5017,28 @@ fn invalidate_omni(hwnd: HWND) {
     invalidate_hit(hwnd, Hit::Omnibox)
 }
 fn set_hover(hwnd: HWND, h: Hit) {
-    let (old, l) = with_chrome(hwnd, |s| {
+    let (old, l, tooltip_changed, tooltip_key) = with_chrome(hwnd, |s| {
         let o = s.hover;
         s.hover = h;
+        let rail_hover = match h { Hit::Rail(key) => Some(key), _ => None };
+        let tooltip_changed = s.rail_tooltip_key != rail_hover;
+        if tooltip_changed {
+            s.rail_tooltip_key = rail_hover;
+            s.rail_tooltip_visible = false;
+        }
+        s.motion.retarget_rail(rail_hover, Instant::now());
         s.retarget_motion(Instant::now());
-        (o, s.layout)
+        (o, s.layout, tooltip_changed, rail_hover)
     })
-    .unwrap_or_else(|| (Hit::None, layout::compute(0, 0, 96, 0, false)));
+    .unwrap_or_else(|| (Hit::None, layout::compute(0, 0, 96, 0, false), false, None));
+    if tooltip_changed {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER);
+            if tooltip_key.is_some() {
+                let _ = SetTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER, card::HOVER_DELAY_MS, None);
+            }
+        }
+    }
     if old != h {
         invalidate_hover(hwnd, &l, old);
         invalidate_hover(hwnd, &l, h);
@@ -4008,12 +5049,14 @@ fn set_pressed(hwnd: HWND, h: Hit) {
     let (old, l) = with_chrome(hwnd, |s| {
         let o = s.pressed;
         s.pressed = h;
+        s.motion.retarget_icons(s.hover, s.pressed, Instant::now());
         (o, s.layout)
     })
     .unwrap_or_else(|| (Hit::None, layout::compute(0, 0, 96, 0, false)));
     if old != h {
         invalidate(hwnd, rect_for(&l, old));
         invalidate(hwnd, rect_for(&l, h));
+        arm_motion(hwnd);
     }
 }
 
@@ -4095,7 +5138,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let split_view = App::split_view(app);
             let active_has_controller = split_view.map_or_else(
                 || App::active_tab_has_controller(app),
-                |split| App::tab_has_controller(app, split.left) || App::tab_has_controller(app, split.right),
+                |split| {
+                    App::tab_has_controller(app, split.left)
+                        || App::tab_has_controller(app, split.right)
+                },
             );
             let progress_target = App::tab_progress_percent(app, active);
             let can_back = App::tab_can_go_back(app, active);
@@ -4164,14 +5210,39 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let l = &s.layout;
                 let p = s.palette;
                 let views = &s.views;
+                let rail_entries = s.rail_entries.iter().map(|entry| RailEntry {
+                    key: entry.key,
+                    icon: entry.icon,
+                    label: entry.label.clone(),
+                    active: entry.active,
+                    dot: false,
+                    accent: entry.accent,
+                    favicon: entry.favicon.as_deref(),
+                }).collect::<Vec<_>>();
+                let mut rail_fades = Vec::new();
+                s.motion.rail_fades(now, &mut rail_fades);
+                let open_panel = match side_panel::active_id(hwnd) {
+                    Some(side_panel::PanelId::Bookmarks) => Some(RailKey::Bookmarks),
+                    Some(side_panel::PanelId::History) => Some(RailKey::History),
+                    Some(side_panel::PanelId::Customize | side_panel::PanelId::Menu) => Some(RailKey::Customize),
+                    Some(side_panel::PanelId::WebApp(id)) => Some(RailKey::App(id)),
+                    None => None,
+                };
+                let rail = RailView { entries: &rail_entries, fades: &rail_fades, open_panel, scroll: s.rail_scroll, drop_indicator: s.rail_drag.and_then(|drag| drag.target.map(|(_, indicator)| indicator)), focused: s.rail_keyboard_focus.then_some(s.rail_focus).flatten(), tooltip: s.rail_tooltip_visible.then_some(s.rail_tooltip_key).flatten() };
                 if progress_target.is_none() {
                     s.progress.clear();
                 }
                 let progress = match (progress_target, s.progress.tab) {
-                    (Some(target), Some(tab)) if tab == active => s.progress.paint_value(now).or(Some(target as f32)),
+                    (Some(target), Some(tab)) if tab == active => {
+                        s.progress.paint_value(now).or(Some(target as f32))
+                    }
                     (Some(target), _) => Some(target as f32),
                     (None, _) => None,
                 };
+                let maximised = IsZoomed(hwnd).as_bool();
+                s.motion.retarget_icon_active(Hit::CaptionMaximize, maximised, now);
+                s.motion.retarget_icon_active(Hit::SiteInfo,
+                    site == crate::site_security::SiteSecurity::Secure, now);
                 let view = ChromeView {
                     layout: l,
                     palette: p,
@@ -4179,7 +5250,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     active: active_i,
                     hover: s.hover,
                     pressed: s.pressed,
-                    caption_maximised: IsZoomed(hwnd).as_bool(),
+                    caption_maximised: maximised,
                     can_back,
                     can_forward,
                     omnibox: OmniboxView {
@@ -4197,9 +5268,16 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     },
                     now,
                     departures: s.motion.departures(),
+                    rail: Some(rail),
+                    icon_motion: Some(&s.motion),
                 };
-                let sidebar_viewport = notes_panel::adjust_viewport(to_win_rect(s.layout.viewport), hwnd, s.dpi);
-                let sidebar_viewport = Rect::new(sidebar_viewport.left, sidebar_viewport.top, sidebar_viewport.right, sidebar_viewport.bottom);
+                let sidebar_viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
+                let sidebar_viewport = Rect::new(
+                    sidebar_viewport.left,
+                    sidebar_viewport.top,
+                    sidebar_viewport.right,
+                    sidebar_viewport.bottom,
+                );
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
                         layout::split_pane_layout(
@@ -4208,7 +5286,13 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             s.layout.metrics.px(220),
                             s.layout.metrics.px(6),
                         )
-                        .map(|panes| (sidebar_viewport, Some(panes), split.focused == crate::split_view::Pane::Left))
+                        .map(|panes| {
+                            (
+                                sidebar_viewport,
+                                Some(panes),
+                                split.focused == crate::split_view::Pane::Left,
+                            )
+                        })
                     } else {
                         Some((sidebar_viewport, None, false))
                     }
@@ -4238,6 +5322,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let _ = ClientToScreen(hwnd, &mut origin);
                 s.surface.present(s.overlay, origin, dirty);
                 let t2 = std::time::Instant::now();
+                // A rail press or activation that this paint started needs frames to finish.
+                if s.surface.rail_animating(now) || s.motion.animating(now) {
+                    let _ = SetTimer(Some(hwnd), WM_ANIMATION_TIMER, ANIMATION_FRAME_MS, None);
+                }
                 if !s.first_paint_logged {
                     s.first_paint_logged = true;
                     let _ = app.borrow().log.record("chrome_painted");
@@ -4284,8 +5372,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             });
             if did
                 && App::navigation_progress_percent(app) == Some(100)
-                && with_chrome(hwnd, |s| s.progress.tab == Some(active) && s.progress.settled(now))
-                    .unwrap_or(false)
+                && with_chrome(hwnd, |s| {
+                    s.progress.tab == Some(active) && s.progress.settled(now)
+                })
+                .unwrap_or(false)
                 && App::navigation_progress_painted(app)
             {
                 invalidate_omni(hwnd)
@@ -4354,7 +5444,10 @@ pub(crate) fn sync_address_input(hwnd: HWND, edit: HWND, id: TabId, url: &url::U
 fn omnibox_text_index(hwnd: HWND, text: &str, client_x: i32) -> usize {
     let left = with_chrome(hwnd, |s| s.layout.omnibox.left).unwrap_or(0);
     let text_left = Metrics::new(dpi(hwnd)).px(Metrics::OMNIBOX_TEXT_LEFT);
-    with_chrome(hwnd, |s| s.surface.index_at_x(text, client_x - left - text_left)).unwrap_or(0)
+    with_chrome(hwnd, |s| {
+        s.surface.index_at_x(text, client_x - left - text_left)
+    })
+    .unwrap_or(0)
 }
 fn set_omni_selection(edit: HWND, anchor: usize, head: usize) {
     unsafe {
@@ -4473,19 +5566,32 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
                 if let Some(other) = tabs.into_iter().find(|id| *id != active)
                     && let Some(bounds) = split_rects(hwnd, None)
                 {
-                    let _ = App::open_split_view(app, active, other, crate::split_view::Pane::Right, bounds);
+                    let _ = App::open_split_view(
+                        app,
+                        active,
+                        other,
+                        crate::split_view::Pane::Right,
+                        bounds,
+                    );
                 }
             }
         }
-        Command::FocusSplitLeft => { let _ = App::focus_split_pane(app, crate::split_view::Pane::Left); }
-        Command::FocusSplitRight => { let _ = App::focus_split_pane(app, crate::split_view::Pane::Right); }
+        Command::FocusSplitLeft => {
+            let _ = App::focus_split_pane(app, crate::split_view::Pane::Left);
+        }
+        Command::FocusSplitRight => {
+            let _ = App::focus_split_pane(app, crate::split_view::Pane::Right);
+        }
         Command::CloseSplitPane => {
             if let Some(split) = App::split_view(app) {
                 let _ = App::close_split_pane(app, split.focused);
             }
         }
         Command::ShowCommandPalette => run_command_palette(hwnd, app),
-        Command::ToggleNotes => { notes_panel::open(hwnd); apply_sidebar_bounds(hwnd, app); },
+        Command::ToggleNotes => {
+            notes_panel::open(hwnd);
+            apply_sidebar_bounds(hwnd, app);
+        }
         Command::AddBookmark => add_current_bookmark(hwnd, app),
         Command::ToggleTabLayout => {
             let _ = App::toggle_tab_layout(app);
@@ -4725,7 +5831,12 @@ mod tests {
         let mut progress = ProgressTransition::default();
         progress.retarget(TabId(1), 7, 100, start, true);
         assert!(progress.paint_value(start).unwrap() < 100.0);
-        assert!(progress.paint_value(start + Duration::from_millis(300)).unwrap() > 100.0);
+        assert!(
+            progress
+                .paint_value(start + Duration::from_millis(300))
+                .unwrap()
+                > 100.0
+        );
         assert!(!progress.settled(start + Duration::from_millis(300)));
         assert!(progress.settled(start + Duration::from_millis(500)));
     }
@@ -4813,7 +5924,15 @@ mod tests {
     fn overlay_surface_tracks_full_client_height_across_dpi_changes() {
         let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
         for dpi in [96, 120, 144, 192, 96, 120] {
-            s.relayout(1000, 700, dpi, TabId(0), false, crate::settings::TabLayout::Horizontal, 260);
+            s.relayout(
+                1000,
+                700,
+                dpi,
+                TabId(0),
+                false,
+                crate::settings::TabLayout::Horizontal,
+                260,
+            );
             let chrome = layout::chrome_height(dpi);
             assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
             assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");

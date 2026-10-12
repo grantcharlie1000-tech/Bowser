@@ -9,7 +9,7 @@
 //! it came from, or Escape or Left in the flyout, closes only the flyout; a choice or any other press
 //! closes the whole chain.
 
-use std::cell::Cell;
+use std::{cell::Cell, time::{Duration, Instant}};
 
 use windows::{
     Win32::{
@@ -35,14 +35,16 @@ use windows::{
                 CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
                 GWLP_USERDATA, GetClientRect, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
                 GetWindowRect, IDC_ARROW, IsWindow, LoadCursorW, MSG, PostQuitMessage,
-                RegisterClassW, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
+                RegisterClassW, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, SetTimer,
+                KillTimer, ShowWindow, SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_TIMER,
                 WA_INACTIVE, WM_ACTIVATE, WM_CAPTURECHANGED, WM_ERASEBKGND, WM_KEYDOWN,
                 WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
                 WM_RBUTTONDOWN, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
     },
-    core::{PCWSTR, w},
+    core::{BOOL, PCWSTR, w},
 };
 
 use crate::{
@@ -65,9 +67,77 @@ const PAD: i32 = 8;
 const RADIUS: i32 = 12;
 const ROW_RADIUS: i32 = 6;
 const AVATAR: i32 = 36;
+const ICON_FRAME_TIMER: usize = 0xB047;
+const ICON_FRAME_MS: u32 = 16;
+const ICON_EASE: Duration = Duration::from_millis(150);
+
+/// One scalar per menu-row channel. Sampling is allocation-free and retargets from the value
+/// currently on screen; pressing snaps immediately, while hover and release ease out.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IconMotion {
+    from: f32,
+    to: f32,
+    started: Instant,
+}
+
+impl IconMotion {
+    pub(crate) fn new(value: f32, now: Instant) -> Self { Self { from: value, to: value, started: now } }
+
+    fn value(self, now: Instant) -> f32 {
+        let t = now.saturating_duration_since(self.started).as_secs_f32()
+            / ICON_EASE.as_secs_f32();
+        let t = t.clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    pub(crate) fn sample(&mut self, target: f32, now: Instant, snap: bool) -> f32 {
+        if target != self.to {
+            self.from = self.value(now);
+            self.to = target;
+            self.started = now;
+        }
+        if snap { self.from = self.to; }
+        self.value(now)
+    }
+
+    pub(crate) fn running(self, now: Instant) -> bool {
+        self.from != self.to && now.saturating_duration_since(self.started) < ICON_EASE
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RowMotion { hover: IconMotion, press: IconMotion, active: IconMotion }
+
+pub(crate) fn animations_enabled() -> bool {
+    let mut enabled = BOOL(1);
+    let read = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0,
+        Some((&mut enabled as *mut BOOL).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+    read.is_err() || enabled.as_bool()
+}
 
 thread_local! {
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
+    static TRACKING_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn is_tracking() -> bool {
+    TRACKING_DEPTH.with(|depth| depth.get() > 0)
+}
+
+struct TrackingGuard;
+
+impl TrackingGuard {
+    fn new() -> Self {
+        TRACKING_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for TrackingGuard {
+    fn drop(&mut self) {
+        TRACKING_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
 }
 
 /// Monochrome glyph drawn with pen strokes, so it follows the palette and the DPI.
@@ -444,6 +514,7 @@ struct State {
     body: HFONT,
     heading: HFONT,
     rich_bitmaps: Vec<RichBitmap>,
+    icon_motion: Vec<Cell<RowMotion>>,
     /// Entry under the pointer or chosen with the arrow keys.
     current: Cell<Option<usize>>,
     scroll: Cell<i32>,
@@ -492,7 +563,15 @@ pub(crate) fn track_with_default(
     default_item_id: Option<usize>,
 ) -> Option<Chosen> {
     loop {
-        match track_placed(owner, anchor, menu.clone(), false, false, &[], default_item_id) {
+        match track_placed(
+            owner,
+            anchor,
+            menu.clone(),
+            false,
+            false,
+            &[],
+            default_item_id,
+        ) {
             MenuResult::Chosen(chosen) => return Some(chosen),
             MenuResult::Back => continue,
             MenuResult::Dismissed => return None,
@@ -524,6 +603,7 @@ fn track_placed(
     ancestors: &[RECT],
     default_item_id: Option<usize>,
 ) -> MenuResult {
+    let _tracking = TrackingGuard::new();
     let dpi = dpi_of(owner);
     let work = work_area(anchor);
     let layout = Layout::new(&menu, dpi, work.bottom - work.top);
@@ -540,12 +620,18 @@ fn track_placed(
     let heading = unsafe { create_heading_font(body) };
     let rich_bitmaps = unsafe { create_rich_bitmaps(&menu) };
     let initial_item = initial_item_index(&menu.entries, default_item_id);
+    let now = Instant::now();
+    let icon_motion = menu.entries.iter().map(|_| {
+        Cell::new(RowMotion { hover: IconMotion::new(0.0, now),
+            press: IconMotion::new(0.0, now), active: IconMotion::new(0.0, now) })
+    }).collect();
     let state = Box::into_raw(Box::new(State {
         menu,
         layout,
         body,
         heading,
         rich_bitmaps,
+        icon_motion,
         current: Cell::new(initial_item),
         scroll: Cell::new(0),
         pressed: Cell::new(None),
@@ -957,6 +1043,10 @@ unsafe extern "system" fn menu_proc(
                 paint(hwnd);
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == ICON_FRAME_TIMER => {
+                invalidate(hwnd);
+                LRESULT(0)
+            }
             WM_MOUSEMOVE => {
                 if let Some(state) = state(hwnd) {
                     let (x, y) = point(lparam);
@@ -1122,7 +1212,7 @@ unsafe fn paint(hwnd: HWND) {
             let memory = CreateCompatibleDC(Some(dc));
             let bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
             let old = SelectObject(memory, bitmap.into());
-            draw(memory, &client, dpi_of(hwnd), state);
+            draw(memory, hwnd, &client, dpi_of(hwnd), state);
             let _ = BitBlt(
                 dc,
                 0,
@@ -1145,13 +1235,16 @@ unsafe fn paint(hwnd: HWND) {
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {
     unsafe {
         let mut wide: Vec<u16> = text.encode_utf16().collect();
+        if wide.is_empty() {
+            return;
+        }
         let mut bounds = bounds;
         SetTextColor(dc, colorref(colour));
         DrawTextW(dc, &mut wide, &mut bounds, format);
     }
 }
 
-unsafe fn draw(dc: HDC, client: &RECT, dpi: u32, state: &State) {
+unsafe fn draw(dc: HDC, hwnd: HWND, client: &RECT, dpi: u32, state: &State) {
     unsafe {
         let palette = theme::palette(glass::appearance(), true);
         let s = |v: i32| scaled(v, dpi);
@@ -1219,6 +1312,9 @@ unsafe fn draw(dc: HDC, client: &RECT, dpi: u32, state: &State) {
 
         let current = state.current.get();
         let pressed = state.pressed.get();
+        let now = Instant::now();
+        let snap = !animations_enabled();
+        let mut moving = false;
         for row in &state.layout.rows {
             let row_rect = state.layout.row_rect(row, state.scroll.get());
             match &state.menu.entries[row.entry] {
@@ -1255,6 +1351,15 @@ unsafe fn draw(dc: HDC, client: &RECT, dpi: u32, state: &State) {
                 Entry::Item(item) => {
                     let highlighted = row.selectable && current == Some(row.entry);
                     let held = row.selectable && pressed == Some(row.entry);
+                    let cell = &state.icon_motion[row.entry];
+                    let mut motion = cell.get();
+                    let hover = motion.hover.sample(highlighted as u8 as f32, now, snap);
+                    let press = motion.press.sample(held as u8 as f32, now, snap || held);
+                    let active = motion.active.sample((item.checked || item.icon == Icon::Check)
+                        as u8 as f32, now, snap);
+                    moving |= motion.hover.running(now) || motion.press.running(now)
+                        || motion.active.running(now);
+                    cell.set(motion);
                     let favicon_dc = state
                         .rich_bitmaps
                         .iter()
@@ -1265,12 +1370,18 @@ unsafe fn draw(dc: HDC, client: &RECT, dpi: u32, state: &State) {
                         row_rect,
                         item,
                         (highlighted, held),
+                        (hover, press, active),
                         palette,
                         dpi,
                         favicon_dc,
                     );
                 }
             }
+        }
+        if moving {
+            let _ = SetTimer(Some(hwnd), ICON_FRAME_TIMER, ICON_FRAME_MS, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), ICON_FRAME_TIMER);
         }
 
         // The footer explains the highlighted row in full, and otherwise shows the version.
@@ -1303,6 +1414,7 @@ unsafe fn draw_item(
     row: RECT,
     item: &Item,
     (highlighted, held): (bool, bool),
+    (hover, press, active): (f32, f32, f32),
     palette: &theme::Palette,
     dpi: u32,
     favicon_dc: Option<HDC>,
@@ -1332,7 +1444,7 @@ unsafe fn draw_item(
         } else {
             text
         };
-        let glyph_colour = if item.checked {
+        let glyph_colour = if item.checked || item.icon == Icon::Check {
             palette.progress_fill
         } else {
             text
@@ -1387,7 +1499,7 @@ unsafe fn draw_item(
                 inner.left + s(10) + size,
                 centre - size / 2 + size,
             );
-            draw_icon(dc, item.icon, glyph, glyph_colour);
+            draw_icon(dc, item.icon, glyph, glyph_colour, hover, press, active);
         }
         let has_hint = item.submenu || item.shortcut.is_some();
         let label_right = if has_hint {
@@ -1438,160 +1550,163 @@ unsafe fn draw_item(
     }
 }
 
-/// Draws a 16-unit glyph scaled into `r`, antialiased so the curves and diagonals stay smooth.
-unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba) {
+/// Draws the Clean icon set on its shared 24-unit grid. GDI+ still antialiases each stroke.
+unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba,
+    hover: f32, press: f32, active: f32) {
     unsafe {
         let width = (r.right - r.left).max(1);
         let height = (r.bottom - r.top).max(1);
-        let stroke = (width / 10).max(1);
-        let x = |v: i32| r.left + v * width / 16;
-        let y = |v: i32| r.top + v * height / 16;
-        let point = |px: i32, py: i32| POINT { x: x(px), y: y(py) };
-        let line = |x0: i32, y0: i32, x1: i32, y1: i32| {
-            smooth::stroke_line(dc, point(x0, y0), point(x1, y1), colour, stroke);
+        let stroke = ((width as f32 * 1.5 / 24.0).round() as i32).max(1);
+        let resting_scale = 1.0 + 0.06 * hover + 0.02 * active;
+        let scale = resting_scale + (0.96 - resting_scale) * press;
+        let angle = if icon == Icon::Reset { press * 0.61 } else { 0.0_f32 };
+        let grid = |px: f32, py: f32| {
+            let x = (px - 12.0) * scale;
+            let y = (py - 12.0) * scale;
+            POINT {
+                x: r.left + ((12.0 + x * angle.cos() - y * angle.sin())
+                    * width as f32 / 24.0).round() as i32,
+                y: r.top + ((12.0 + x * angle.sin() + y * angle.cos())
+                    * height as f32 / 24.0).round() as i32,
+            }
         };
-        let boxed = |left: i32, top: i32, right: i32, bottom: i32| {
-            rect(x(left), y(top), x(right), y(bottom))
+        let boxed = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let a = grid(x0, y0);
+            let b = grid(x1, y1);
+            rect(a.x, a.y, b.x, b.y)
         };
-        let corner = width / 4;
-        // Fractional 16-unit grid points, for curves that the integer grid above cannot express.
-        let grid = |px: f32, py: f32| POINT {
-            x: r.left + (px * width as f32 / 16.0).round() as i32,
-            y: r.top + (py * height as f32 / 16.0).round() as i32,
+        let line = |x0, y0, x1, y1| {
+            rounded_icon_line(dc, grid(x0, y0), grid(x1, y1), colour, stroke);
+        };
+        let path = |coords: &[(f32, f32)]| {
+            for pair in coords.windows(2) {
+                rounded_icon_line(dc, grid(pair[0].0, pair[0].1),
+                    grid(pair[1].0, pair[1].1), colour, stroke);
+            }
+        };
+        let circle = |cx: f32, cy: f32, radius: f32| {
+            smooth::stroke_ellipse(dc, boxed(cx-radius, cy-radius, cx+radius, cy+radius), colour, stroke);
+        };
+        let round_rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            smooth::stroke_round_rect(dc, boxed(x0, y0, x1, y1),
+                ((width as f32 * 4.0 / 24.0).round() as i32).max(2), colour, stroke);
         };
         match icon {
             Icon::None => {}
-            Icon::Plus => {
-                line(8, 3, 8, 13);
-                line(3, 8, 13, 8);
-            }
+            Icon::Plus => { line(12.0, 4.0, 12.0, 20.0); line(4.0, 12.0, 20.0, 12.0); }
             Icon::Person => {
-                smooth::stroke_ellipse(dc, boxed(5, 0, 11, 6), colour, stroke);
-                smooth::stroke_round_rect(dc, boxed(2, 8, 14, 16), corner, colour, stroke);
+                circle(12.0, 7.0, 3.5);
+                path(&[(4.5, 20.0), (4.5, 18.0)]);
+                let shoulders: [(f32, f32); 13] = std::array::from_fn(|i| {
+                    let t = std::f32::consts::PI * (1.0 - i as f32 / 12.0);
+                    (12.0 + 7.5 * t.cos(), 18.0 - 7.5 * t.sin())
+                });
+                path(&shoulders);
+                line(19.5, 18.0, 19.5, 20.0);
             }
             Icon::Grid => {
-                for (left, top) in [(2, 2), (9, 2), (2, 9), (9, 9)] {
-                    smooth::stroke_rect(dc, boxed(left, top, left + 5, top + 5), colour, stroke);
+                for (x, y) in [(3.0, 3.0), (13.0, 3.0), (3.0, 13.0), (13.0, 13.0)] {
+                    round_rect(x, y, x + 8.0, y + 8.0);
                 }
             }
             Icon::Key => {
-                smooth::stroke_ellipse(dc, boxed(1, 5, 8, 12), colour, stroke);
-                line(8, 8, 15, 8);
-                line(12, 8, 12, 11);
-                line(15, 8, 15, 10);
+                circle(7.5, 11.0, 4.0);
+                path(&[(11.5, 11.0), (21.0, 11.0), (21.0, 14.0)]);
+                line(17.0, 11.0, 17.0, 14.0);
             }
             Icon::Shield => {
-                let points = [(8, 1), (14, 3), (14, 8), (8, 15), (2, 8), (2, 3)]
-                    .map(|(px, py)| point(px, py));
-                smooth::stroke_polygon(dc, &points, colour, stroke);
+                let points = [(12.0, 2.5), (20.0, 6.0), (20.0, 11.0), (18.0, 16.5), (12.0, 21.5), (6.0, 16.5), (4.0, 11.0), (4.0, 6.0), (12.0, 2.5)]
+                    .map(|(x,y)| grid(x,y));
+                polyline(dc, &points, colour, stroke);
             }
             Icon::Gear => {
-                smooth::stroke_ellipse(dc, boxed(1, 1, 15, 15), colour, stroke);
-                smooth::stroke_ellipse(dc, boxed(5, 5, 11, 11), colour, stroke);
+                let points = [(10.0,2.5),(14.0,2.5),(14.5,5.0),(17.0,6.0),(19.0,4.5),(21.5,7.5),(19.5,9.5),(20.0,12.0),(21.5,14.5),(19.0,17.5),(17.0,16.5),(14.5,18.0),(14.0,21.5),(10.0,21.5),(9.5,18.0),(7.0,16.5),(5.0,17.5),(2.5,14.5),(4.5,12.0),(4.5,9.5),(2.5,7.5),(5.0,4.5),(7.0,6.0),(9.5,5.0),(10.0,2.5)]
+                    .map(|(x,y)| grid(x,y));
+                polyline(dc, &points, colour, stroke);
+                circle(12.0, 12.0, 3.0);
             }
-            Icon::Close => {
-                line(3, 3, 13, 13);
-                line(13, 3, 3, 13);
-            }
+            Icon::Close => { line(6.0, 6.0, 18.0, 18.0); line(18.0, 6.0, 6.0, 18.0); }
             Icon::Check => {
-                line(3, 8, 6, 11);
-                line(6, 11, 13, 4);
+                let reveal = active;
+                if reveal <= 0.0 { return; }
+                let first = (reveal * 2.0).min(1.0);
+                let second = (reveal * 2.0 - 1.0).clamp(0.0, 1.0);
+                line(4.0, 12.0, 4.0 + 5.5 * first, 12.0 + 5.5 * first);
+                if second > 0.0 { line(9.5, 17.5,
+                    9.5 + 10.5 * second, 17.5 - 11.0 * second); }
             }
             Icon::Lock | Icon::Unlock => {
-                // Body, then a shackle that is open (not joined to the body) for Unlock.
-                fill_body(dc, boxed(3, 7, 13, 15), colour, corner / 2);
+                round_rect(4.0, 10.0, 20.0, 21.0);
                 let open = icon == Icon::Unlock;
-                let end = if open {
-                    std::f32::consts::PI / 3.0
-                } else {
-                    0.0
-                };
-                let mut path = vec![grid(5.0, 7.0)];
-                path.extend(
-                    arc(8.0, 4.0, 3.0, std::f32::consts::PI, end).map(|(px, py)| grid(px, py)),
-                );
-                if !open {
-                    path.push(grid(11.0, 7.0));
+                line(7.0, 10.0, 7.0, 7.5);
+                let mut prior = (7.0, 7.5);
+                for next in arc(12.0, 7.5, 5.0, std::f32::consts::PI,
+                    if open { std::f32::consts::PI / 3.0 } else { 0.0 }) {
+                    line(prior.0, prior.1, next.0, next.1);
+                    prior = next;
                 }
-                polyline(dc, &path, colour, stroke);
+                if !open { line(prior.0, prior.1, 17.0, 10.0); }
             }
             Icon::Warning => {
-                let triangle = [point(8, 2), point(14, 14), point(2, 14), point(8, 2)];
-                smooth::stroke_polygon(dc, &triangle, colour, stroke);
-                line(8, 6, 8, 10);
-                smooth::fill_ellipse(dc, boxed(7, 11, 9, 13), colour);
+                let triangle = [grid(12.0, 3.0), grid(21.0, 20.0), grid(3.0, 20.0), grid(12.0, 3.0)];
+                polyline(dc, &triangle, colour, stroke);
+                line(12.0, 9.0, 12.0, 14.0);
+                smooth::fill_ellipse(dc, boxed(11.0, 16.5, 13.0, 18.5), colour);
             }
             Icon::Info => {
-                smooth::stroke_ellipse(dc, boxed(1, 1, 15, 15), colour, stroke);
-                smooth::fill_ellipse(dc, boxed(7, 3, 9, 5), colour);
-                line(8, 7, 8, 12);
+                circle(12.0, 12.0, 9.0);
+                smooth::fill_ellipse(dc, boxed(11.0, 6.0, 13.0, 8.0), colour);
+                line(12.0, 11.0, 12.0, 17.0);
             }
             Icon::Mic => {
-                smooth::stroke_round_rect(dc, boxed(5, 1, 11, 10), corner, colour, stroke);
-                // The cradle is the lower half of a circle around the capsule.
-                let cradle: Vec<POINT> = arc(8.0, 7.0, 5.0, 0.0, -std::f32::consts::PI)
-                    .map(|(px, py)| grid(px, py))
-                    .collect();
-                polyline(dc, &cradle, colour, stroke);
-                line(8, 12, 8, 15);
-                line(5, 15, 11, 15);
+                round_rect(9.0, 3.0, 15.0, 15.0);
+                let mut prior = (19.0, 12.0);
+                for next in arc(12.0, 12.0, 7.0, 0.0, -std::f32::consts::PI) {
+                    line(prior.0, prior.1, next.0, next.1); prior = next;
+                }
+                line(12.0, 19.0, 12.0, 21.0);
+                line(8.0, 21.0, 16.0, 21.0);
             }
             Icon::Camera => {
-                smooth::stroke_round_rect(dc, boxed(1, 4, 11, 13), corner, colour, stroke);
-                let lens = [
-                    grid(11.0, 7.0),
-                    grid(15.0, 4.0),
-                    grid(15.0, 12.0),
-                    grid(11.0, 9.0),
-                ];
-                polyline(dc, &lens, colour, stroke);
+                round_rect(3.0, 6.0, 16.0, 18.0);
+                path(&[(16.0, 10.0), (21.0, 7.0), (21.0, 17.0), (16.0, 14.0)]);
             }
             Icon::Location => {
-                smooth::stroke_ellipse(dc, boxed(4, 2, 12, 10), colour, stroke);
-                smooth::fill_ellipse(dc, boxed(6, 4, 10, 8), colour);
-                line(8, 10, 8, 15);
+                let mut prior = (5.0, 10.0);
+                for next in arc(12.0, 10.0, 7.0, std::f32::consts::PI, 0.0) {
+                    line(prior.0, prior.1, next.0, next.1); prior = next;
+                }
+                line(prior.0, prior.1, 12.0, 21.0);
+                line(12.0, 21.0, 5.0, 10.0);
+                circle(12.0, 10.0, 2.5);
             }
             Icon::Bell => {
-                let mut path = vec![grid(4.0, 12.0)];
-                path.extend(
-                    arc(8.0, 7.0, 4.0, std::f32::consts::PI, 0.0).map(|(px, py)| grid(px, py)),
-                );
-                path.push(grid(12.0, 12.0));
-                polyline(dc, &path, colour, stroke);
-                line(3, 12, 13, 12);
-                smooth::fill_ellipse(dc, boxed(7, 13, 9, 15), colour);
+                path(&[(5.0,17.0),(6.5,15.0),(6.5,10.0)]);
+                let mut prior = (6.5, 10.0);
+                for next in arc(12.0, 10.0, 5.5, std::f32::consts::PI, 0.0) {
+                    line(prior.0, prior.1, next.0, next.1); prior = next;
+                }
+                path(&[(17.5,10.0),(17.5,15.0),(19.0,17.0),(5.0,17.0)]);
+                path(&[(10.0,20.0),(11.0,21.0),(13.0,21.0),(14.0,20.0)]);
             }
             Icon::Cookie => {
-                smooth::stroke_ellipse(dc, boxed(1, 1, 15, 15), colour, stroke);
-                for (left, top) in [(4, 5), (9, 9), (5, 10)] {
-                    smooth::fill_ellipse(dc, boxed(left, top, left + 2, top + 2), colour);
+                circle(12.0, 12.0, 9.0);
+                for (x, y) in [(8.0, 9.0), (15.5, 10.0), (10.0, 16.0)] {
+                    smooth::fill_ellipse(dc, boxed(x-1.0,y-1.0,x+1.0,y+1.0), colour);
                 }
             }
             Icon::Reset => {
-                let sweep: Vec<POINT> = arc(8.0, 8.0, 6.0, 0.0, std::f32::consts::PI * 1.75)
-                    .map(|(px, py)| grid(px, py))
-                    .collect();
-                polyline(dc, &sweep, colour, stroke);
-                // Arrowhead at the end of the sweep.
-                let tip = sweep.last().copied().unwrap_or_else(|| grid(8.0, 8.0));
-                let head = [
-                    POINT {
-                        x: tip.x + width / 4,
-                        y: tip.y,
-                    },
-                    tip,
-                    POINT {
-                        x: tip.x,
-                        y: tip.y + height / 4,
-                    },
-                ];
-                polyline(dc, &head, colour, stroke);
+                let mut prior = (20.0, 12.0);
+                for next in arc(12.0, 12.0, 8.0, 0.0, -5.75) {
+                    line(prior.0, prior.1, next.0, next.1); prior = next;
+                }
+                path(&[(19.0,3.0),(19.0,8.0),(14.0,8.0)]);
             }
         }
     }
 }
 
-/// Points along the arc of a circle centred at (`cx`, `cy`) in 16-unit grid space, from angle
+/// Points along the arc of a circle centred at (`cx`, `cy`) in 24-unit grid space, from angle
 /// `from` to `to` (radians, y downwards). Used to build the glyph outlines.
 fn arc(cx: f32, cy: f32, radius: f32, from: f32, to: f32) -> impl Iterator<Item = (f32, f32)> {
     const STEPS: usize = 12;
@@ -1605,19 +1720,52 @@ fn arc(cx: f32, cy: f32, radius: f32, from: f32, to: f32) -> impl Iterator<Item 
 unsafe fn polyline(dc: HDC, points: &[POINT], colour: Rgba, stroke: i32) {
     unsafe {
         for pair in points.windows(2) {
-            smooth::stroke_line(dc, pair[0], pair[1], colour, stroke);
+            rounded_icon_line(dc, pair[0], pair[1], colour, stroke);
         }
     }
 }
 
-/// A solid rounded body for the padlock.
-unsafe fn fill_body(dc: HDC, rect: RECT, colour: Rgba, corner: i32) {
-    unsafe { smooth::fill_round_rect(dc, rect, corner.max(1) * 2, colour) }
+/// Add circular caps at the rasterised endpoints; GDI+'s default pen uses flat caps.
+unsafe fn rounded_icon_line(dc: HDC, from: POINT, to: POINT, colour: Rgba, stroke: i32) {
+    unsafe {
+        smooth::stroke_line(dc, from, to, colour, stroke);
+        for end in [from, to] {
+            let left = end.x - stroke / 2;
+            let top = end.y - stroke / 2;
+            smooth::fill_ellipse(
+                dc,
+                rect(left, top, left + stroke, top + stroke),
+                colour,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_motion_reaches_target_and_stops() {
+        let start = Instant::now();
+        let mut motion = IconMotion::new(0.0, start);
+        assert_eq!(motion.sample(1.0, start, false), 0.0);
+        let middle = start + Duration::from_millis(75);
+        assert!(motion.sample(1.0, middle, false) > 0.5);
+        assert!(motion.running(middle));
+        let end = start + ICON_EASE;
+        assert_eq!(motion.sample(1.0, end, false), 1.0);
+        assert!(!motion.running(end));
+    }
+
+    #[test]
+    fn icon_motion_reduced_motion_snaps_to_end() {
+        let start = Instant::now();
+        let mut motion = IconMotion::new(0.0, start);
+        assert_eq!(motion.sample(1.0, start, true), 1.0);
+        assert!(!motion.running(start));
+        assert_eq!(motion.sample(0.0, start, true), 0.0);
+    }
 
     fn item(id: usize, enabled: bool) -> Entry {
         let item = Item::new(id, format!("Item {id}"), Icon::None);
@@ -1847,5 +1995,17 @@ mod tests {
     fn a_flyout_holding_focus_or_capture_does_not_dismiss_its_parent() {
         assert!(!dismisses_on_focus_loss(true));
         assert!(dismisses_on_focus_loss(false));
+    }
+
+    #[test]
+    fn tracking_state_covers_nested_popups_and_clears_on_drop() {
+        assert!(!is_tracking());
+        let outer = TrackingGuard::new();
+        assert!(is_tracking());
+        let inner = TrackingGuard::new();
+        drop(outer);
+        assert!(is_tracking());
+        drop(inner);
+        assert!(!is_tracking());
     }
 }
