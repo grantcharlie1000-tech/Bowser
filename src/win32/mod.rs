@@ -8,6 +8,9 @@ mod island_menu;
 mod menu;
 // --- popup host (lane M) ---
 mod html_popup;
+// --- hover layer ---
+mod html_hover;
+// --- end hover layer ---
 // --- end popup host ---
 mod notes_panel;
 mod panel_bookmarks;

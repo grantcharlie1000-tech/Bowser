@@ -5,6 +5,7 @@
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
 import { send, sendSide, type TabItem, type TabsMsg } from './protocol';
+import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta } from './tabs-logic';
@@ -63,7 +64,7 @@ function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: Rea
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
-  node.root.title = label;
+  setTip(node.root, label);
   node.root.setAttribute('aria-selected', String(active));
   node.root.setAttribute('aria-level', item.g > 0 ? '2' : '1');
   node.root.dataset.g = String(item.g);
@@ -72,8 +73,9 @@ function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: Rea
   node.root.classList.toggle('muted', item.muted);
   node.root.classList.toggle('in-group', item.g > 0 && !item.pinned);
   node.mute.classList.toggle('on', item.muted);
-  node.close.title = `Close ${item.title || 'tab'}`;
-  node.close.setAttribute('aria-label', node.close.title);
+  const closeLabel = `Close ${item.title || 'tab'}`;
+  setTip(node.close, closeLabel);
+  node.close.setAttribute('aria-label', closeLabel);
   setFace(node, item.fav ? favs.get(item.id) : undefined);
   node.marker.classList.toggle('on', item.marker >= 0);
   if (item.marker >= 0) node.marker.style.setProperty('--mc', colour(item.marker));
@@ -111,7 +113,7 @@ function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, strin
 }
 
 function makeGroup(key: number): SidebarGroupNode {
-  const root = el('div', 'side-group bw-focus-inset');
+  const root = el('div', 'side-group side-group-ball bw-focus-inset');
   root.setAttribute('role', 'treeitem');
   root.setAttribute('aria-level', '1');
   root.dataset.key = String(key);
@@ -150,7 +152,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   header.append(workspaceIcon, workspaceName, icon('chevron-down', { size: 12, fine: true, className: 'side-workspace-chevron' }));
   const add = el('button', 'side-newtab bw-focus-inset');
   add.type = 'button';
-  add.title = 'New tab';
+  setTip(add, 'New tab');
   const addLabel = el('span', 'side-newtab-label');
   addLabel.textContent = 'New tab';
   add.append(icon('plus', { size: 16 }), addLabel);
@@ -226,7 +228,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     applyRoot();
     workspaceName.textContent = workspace.name;
     workspaceIcon.replaceChildren(icon(workspaceIconName(workspace.icon) as IconName, { size: 14 }));
-    header.title = `${workspace.name} - workspace menu`;
+    setTip(header, `${workspace.name} - workspace menu`);
     header.setAttribute('aria-label', `${workspace.name} workspace menu`);
 
     const rows: HTMLElement[] = [];
@@ -249,7 +251,7 @@ export function createSidebarRenderer(root: HTMLElement): {
         node.root.style.setProperty('--gc', colour(entry.colour));
         node.root.setAttribute('aria-expanded', String(!entry.collapsed));
         node.root.setAttribute('aria-label', `${entry.name}, ${entry.count} ${entry.count === 1 ? 'tab' : 'tabs'}`);
-        node.root.title = entry.name;
+        setTip(node.root, entry.name);
         node.name.textContent = entry.name;
         node.count.textContent = String(entry.count);
         rows.push(node.root);
