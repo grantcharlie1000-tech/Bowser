@@ -7,6 +7,7 @@ export interface View {
   readonly forward: HTMLButtonElement;
   readonly reload: HTMLButtonElement;
   readonly site: HTMLButtonElement;
+  readonly split: HTMLButtonElement;
   readonly input: HTMLInputElement;
   readonly progress: HTMLElement;
   readonly menu: HTMLButtonElement;
@@ -60,6 +61,7 @@ export function buildView(root: HTMLElement): View {
   const forward = iconButton('Forward', 'forward');
   const reload = iconButton('Reload', 'reload');
   const site = iconButton('Site information', 'info', 'btn site');
+  const split = iconButton('Split view', 'split', 'btn split');
 
   const input = el('input', 'omni');
   input.type = 'text';
@@ -73,12 +75,15 @@ export function buildView(root: HTMLElement): View {
   progress.setAttribute('aria-hidden', 'true');
 
   const pill = el('div', 'pill');
-  pill.append(site, input, progress);
+  pill.append(site, input, split, progress);
 
   const menu = iconButton('Menu', 'menu');
 
+  // Back and forward share one rounded container; reload is a plain icon beside it.
+  const navGroup = el('div', 'nav-group');
+  navGroup.append(back, forward);
   const nav = el('div', 'nav');
-  nav.append(back, forward, reload);
+  nav.append(navGroup, reload);
   const actions = el('div', 'actions');
   actions.append(menu);
 
@@ -90,7 +95,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, input, progress, menu };
+  return { back, forward, reload, site, split, input, progress, menu };
 }
 
 function setReloadMode(button: HTMLButtonElement, loading: boolean): void {

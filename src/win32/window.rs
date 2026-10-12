@@ -294,6 +294,9 @@ struct WindowChrome {
     html_last_state: Option<String>,
     /// The tab and omnibox text last sent with `setText`, so the text is not re-sent each sync.
     html_text_sent: Option<(TabId, String)>,
+    /// The active tab the last sync saw. A change of tab sends the new tab's text even while the
+    /// omnibox is focused (see `chrome_host::should_set_text`).
+    html_synced_tab: Option<TabId>,
     /// The chrome environment, once created. The tab strip host is created on the same one.
     html_env: Option<ChromeEnv>,
     /// The HTML tab strip's WebView2 host, once created. Dropped (and closed) on failure.
@@ -401,6 +404,7 @@ impl WindowChrome {
             html_omnibox_focused: false,
             html_last_state: None,
             html_text_sent: None,
+            html_synced_tab: None,
             html_env: None,
             html_tabs: None,
             html_tabs_requested: false,
@@ -5358,6 +5362,7 @@ fn html_refresh(hwnd: HWND) {
         // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
         s.html_last_state = None;
         s.html_text_sent = None;
+        s.html_synced_tab = None;
         Some(s.edit)
     })
     .flatten() else {
@@ -5383,9 +5388,10 @@ fn app_of(hwnd: HWND) -> Option<AppRef> {
 }
 
 /// Pushes the toolbar state and the omnibox text when they changed since the last push. Cheap when
-/// nothing changed: the state JSON is compared with the last one sent. The omnibox text is only
-/// sent while the HTML omnibox is not focused, so the user's typing is never overwritten. Holds no
-/// chrome borrow while calling App, which may re-enter this window.
+/// nothing changed: the state JSON is compared with the last one sent. The omnibox text is sent when
+/// the active tab changed (even while the omnibox is focused, so a new tab's blank address replaces
+/// the old one), or, within the same tab, only while the omnibox is not focused, so the user's typing
+/// is never overwritten. Holds no chrome borrow while calling App, which may re-enter this window.
 fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
@@ -5416,26 +5422,34 @@ fn html_sync(hwnd: HWND) {
     let json = state.to_json();
     let display =
         with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
-    let (send_state, send_text) = with_chrome(hwnd, |s| {
+    let (send_state, send_text, select) = with_chrome(hwnd, |s| {
         let send_state = chrome_host::state_changed(&mut s.html_last_state, &json);
         let already_sent = s
             .html_text_sent
             .as_ref()
             .is_some_and(|(tab, text)| *tab == id && *text == display);
-        let send_text = !s.html_omnibox_focused && !already_sent;
+        let prev_tab = s.html_synced_tab.replace(id);
+        let send_text = chrome_host::should_set_text(
+            prev_tab,
+            id,
+            s.html_omnibox_focused,
+            !already_sent,
+        );
+        // A blank tab that takes focus (Ctrl+T) selects its empty text so typing replaces it.
+        let select = send_text && s.html_omnibox_focused && display.is_empty();
         if send_text {
             s.html_text_sent = Some((id, display.clone()));
             s.edit_text.clone_from(&display);
             s.completion = None;
         }
-        (send_state, send_text)
+        (send_state, send_text, select)
     })
     .unwrap_or_default();
     if send_state {
         let _ = host.post_json(&json);
     }
     if send_text {
-        let _ = host.post_json(&set_text_json(&display, false));
+        let _ = host.post_json(&set_text_json(&display, select));
     }
 }
 
@@ -5532,6 +5546,12 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             if let Some(app) = app_of(hwnd) {
                 App::new_tab(&app);
                 focus_omni(hwnd, &app, true);
+            }
+        }
+        ChromeCommand::Open(OpenTarget::Split) => {
+            // Same as the native omnibox split button: open the split menu.
+            if let Some(app) = app_of(hwnd) {
+                show_split_menu(hwnd, &app);
             }
         }
         // Tab strip commands are handled by the tab row integration, not the toolbar.
@@ -6492,6 +6512,28 @@ fn omnibox_drag(hwnd: HWND, app: &AppRef, client_x: i32) {
     set_omni_selection(edit, anchor, index);
     invalidate_omni(hwnd);
 }
+/// Split view toggle: closes the split when one is open, otherwise splits the active tab with the
+/// most recent other tab on the right. Shared by Ctrl+Shift+\ and the HTML toolbar's `open split`.
+fn toggle_split(hwnd: HWND, app: &AppRef) {
+    if let Some(split) = App::split_view(app) {
+        let _ = App::close_split_pane(app, split.focused);
+    } else {
+        let tabs = App::tab_ids(app);
+        let active = App::active_tab_id(app);
+        if let Some(other) = tabs.into_iter().find(|id| *id != active)
+            && let Some(bounds) = split_rects(hwnd, None)
+        {
+            let _ = App::open_split_view(
+                app,
+                active,
+                other,
+                crate::split_view::Pane::Right,
+                bounds,
+            );
+        }
+    }
+}
+
 fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {
     let c = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
     let s = unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 };
@@ -6548,25 +6590,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::TogglePictureInPicture => {
             App::toggle_picture_in_picture(app, App::active_tab_id(app));
         }
-        Command::ToggleSplit => {
-            if let Some(split) = App::split_view(app) {
-                let _ = App::close_split_pane(app, split.focused);
-            } else {
-                let tabs = App::tab_ids(app);
-                let active = App::active_tab_id(app);
-                if let Some(other) = tabs.into_iter().find(|id| *id != active)
-                    && let Some(bounds) = split_rects(hwnd, None)
-                {
-                    let _ = App::open_split_view(
-                        app,
-                        active,
-                        other,
-                        crate::split_view::Pane::Right,
-                        bounds,
-                    );
-                }
-            }
-        }
+        Command::ToggleSplit => toggle_split(hwnd, app),
         Command::FocusSplitLeft => {
             let _ = App::focus_split_pane(app, crate::split_view::Pane::Left);
         }

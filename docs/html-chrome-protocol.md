@@ -32,7 +32,7 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `submit` | `text` string <= 2048 | Enter in omnibox; Rust normalises (never raw navigate) |
 | `escape` | - | Esc in omnibox: Rust restores text and returns focus to tab |
 | `focus` | `on` bool | omnibox gained/lost focus |
-| `open` | `a`: `menu`/`site`/`newtab` | open native menu / site-info / new tab |
+| `open` | `a`: `menu`/`site`/`newtab`/`split` | open native menu / site-info / new tab / toggle split view (same action as Ctrl+Shift+\) |
 | `drag` | - | left mousedown on an empty toolbar area (drag surface only, never a button, input or pill); Rust begins a native window move |
 | `caption` | `a`: `toggleMaximize`/`systemMenu` | double-click (`toggleMaximize`) or right-click (`systemMenu`) on an empty toolbar area |
 
@@ -41,7 +41,7 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `t` | fields |
 |---|---|
 | `state` | `scale` number (device pixel ratio hint), `solid` bool, `dark` bool, `back` bool, `forward` bool, `loading` bool, `progress` int 0-100, `security` one of `secure`/`notsecure`/`certproblem`/`internal`/`unknown`/`none`, `label` string (security summary, short), `theme` object of CSS colour strings keyed by token: `bg`, `fill`, `border`, `focusBorder`, `text`, `placeholder`, `completion`, `selection`, `hover`, `progress` |
-| `setText` | `text` string, `select` bool (Rust-set omnibox text, e.g. on tab switch or Ctrl+L) |
+| `setText` | `text` string, `select` bool (Rust-set omnibox text, e.g. on tab switch or Ctrl+L). Sent when the active tab changes even while the omnibox is focused (a blank new tab sends `""` with `select: true`); within the same tab, only while the omnibox is unfocused, so typing is never overwritten |
 | `focusOmnibox` | `select` bool |
 | `completion` | `seq` int, `suffix` string (inline completion for edit `seq`; JS ignores stale seq or if value no longer matches) |
 

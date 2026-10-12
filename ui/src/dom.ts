@@ -8,16 +8,17 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: st
   return node;
 }
 
-export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'lock' | 'warning' | 'info' | 'globe' | 'close';
+export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'split' | 'plus' | 'lock' | 'warning' | 'info' | 'close';
 
 const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
-  globe: ['M8 1.75a6.25 6.25 0 1 0 0 12.5 6.25 6.25 0 1 0 0-12.5z', 'M1.75 8h12.5', 'M8 1.75c-2.2 2.2-2.2 10.3 0 12.5', 'M8 1.75c2.2 2.2 2.2 10.3 0 12.5'],
   close: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],
-  back: ['M10 3.5 5.5 8l4.5 4.5'],
-  forward: ['M6 3.5 10.5 8 6 12.5'],
+  back: ['M9.5 2.75 4.25 8l5.25 5.25'],
+  forward: ['M6.5 2.75 11.75 8 6.5 13.25'],
   reload: ['M12.8 8a4.8 4.8 0 1 1-1.4-3.4', 'M12.8 2.8v2.6h-2.6'],
   stop: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],
-  menu: ['M8 3.25v.01', 'M8 8v.01', 'M8 12.75v.01'],
+  menu: ['M3.5 4.5h9', 'M3.5 8h9', 'M3.5 11.5h9'],
+  split: ['M2.75 3.25h4.5v9.5h-4.5z', 'M8.75 3.25h4.5v9.5h-4.5z'],
+  plus: ['M8 3.5v9', 'M3.5 8h9'],
   lock: ['M3.5 7.5h9v6h-9z', 'M5.5 7.5V5.25a2.5 2.5 0 0 1 5 0V7.5'],
   warning: ['M8 2.5 14 13H2z', 'M8 6.5v3', 'M8 11.25v.01'],
   info: ['M8 1.75a6.25 6.25 0 1 0 0 12.5 6.25 6.25 0 1 0 0-12.5z', 'M8 7.25v4', 'M8 5v.01'],

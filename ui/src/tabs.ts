@@ -78,18 +78,23 @@ function createTab(id: number): TabNode {
   const img = el('img', 'fav');
   img.alt = '';
   img.draggable = false;
-  const glyph = icon('globe');
-  glyph.classList.add('glyph');
+  // Placeholder for tabs without a favicon: a small rounded tile with a plus.
+  const glyph = el('span', 'glyph');
+  glyph.setAttribute('aria-hidden', 'true');
+  glyph.append(icon('plus'));
   const spin = el('span', 'spin');
   const ico = el('span', 'ico');
   ico.append(img, glyph, spin);
 
   const title = el('span', 'title');
   title.dir = 'auto';
+  // Favicon and title are one centred group, so the group stays centred in the tab.
+  const label = el('span', 'label');
+  label.append(ico, title);
   const marker = el('span', 'marker');
   marker.setAttribute('aria-hidden', 'true');
 
-  root.append(close, ico, title, marker);
+  root.append(close, label, marker);
   return { id, root, img, title, marker, uri: '', shift: 0 };
 }
 

@@ -38,6 +38,8 @@ pub enum OpenTarget {
     Menu,
     Site,
     NewTab,
+    /// Toggles split view, the same action as the Ctrl+Shift+\ shortcut.
+    Split,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,6 +457,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "menu" => OpenTarget::Menu,
             "site" => OpenTarget::Site,
             "newtab" => OpenTarget::NewTab,
+            "split" => OpenTarget::Split,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -831,6 +834,39 @@ mod tests {
         assert_eq!(
             ok(r#"{"v":1,"t":"open","a":"newtab"}"#),
             Command::Open(OpenTarget::NewTab)
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"open","a":"split"}"#),
+            Command::Open(OpenTarget::Split)
+        );
+    }
+
+    #[test]
+    fn open_split_is_exact_and_strict() {
+        for raw in [
+            r#"{"v":1,"t":"open","a":"Split"}"#,
+            r#"{"v":1,"t":"open","a":"split "}"#,
+            r#"{"v":1,"t":"open","a":"toggleSplit"}"#,
+            r#"{"v":1,"t":"open","a":"splitview"}"#,
+            r#"{"v":1,"t":"open","a":""}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::InvalidValue("a"), "{raw}");
+        }
+        assert_eq!(
+            err(r#"{"v":1,"t":"open","a":null}"#),
+            ProtocolError::UnsupportedValue("null")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"open","a":1}"#),
+            ProtocolError::WrongType("a")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"open","a":"split","id":1}"#),
+            ProtocolError::UnknownKey("id".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"open"}"#),
+            ProtocolError::MissingField("a")
         );
     }
 

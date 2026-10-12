@@ -16,7 +16,7 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';

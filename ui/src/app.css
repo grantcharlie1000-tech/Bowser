@@ -10,6 +10,12 @@
   --selection: rgba(138, 180, 248, 0.4);
   --hover: rgba(255, 255, 255, 0.1);
   --progress: #8ab4f8;
+  /* Derived from the themed tokens above, so they follow the theme. */
+  --pill-border: color-mix(in srgb, var(--text) 22%, transparent);
+  --tab-idle: color-mix(in srgb, #000 22%, transparent);
+  --tab-on: color-mix(in srgb, var(--text) 13%, transparent);
+  --tab-edge: color-mix(in srgb, var(--border) 45%, transparent);
+  --glyph-fill: color-mix(in srgb, var(--focus-border) 35%, var(--bg));
 }
 
 *,
@@ -54,18 +60,32 @@ body.solid {
   flex: none;
 }
 
+.nav {
+  gap: 4px;
+}
+
+/* Back and forward share one rounded container, as in the native chrome. */
+.nav-group {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--fill);
+}
+
 .pill {
   position: relative;
   display: flex;
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 720px;
-  height: 24px;
+  max-width: 624px;
+  height: 26px;
   margin: 0 auto;
   background: var(--fill);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid var(--pill-border);
+  border-radius: 13px;
   overflow: hidden;
 }
 
@@ -78,7 +98,7 @@ body.solid {
   min-width: 0;
   height: 100%;
   margin: 0;
-  padding: 0 8px 0 4px;
+  padding: 0 6px 0 4px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -102,22 +122,40 @@ body.solid {
   align-items: center;
   justify-content: center;
   width: 28px;
-  height: 24px;
+  height: 28px;
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 50%;
   background: transparent;
   color: var(--text);
   cursor: default;
   transition: background-color 100ms ease, opacity 100ms ease, transform 100ms ease;
 }
 
+.btn svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+/* Icons inside the omnibox pill are a little smaller than the toolbar icons. */
+.pill .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 .btn.site {
-  width: 22px;
+  width: 20px;
   height: 20px;
   margin-left: 2px;
-  border-radius: 10px;
+}
+
+.btn.split {
+  width: 20px;
+  height: 20px;
+  margin-right: 2px;
 }
 
 .btn:hover:not(:disabled) {
@@ -139,11 +177,6 @@ body.solid {
 
 .btn:focus-visible {
   box-shadow: inset 0 0 0 2px var(--focus-border);
-}
-
-.btn svg {
-  display: block;
-  pointer-events: none;
 }
 
 .progress {
@@ -192,18 +225,21 @@ body.solid {
   align-items: center;
 }
 
+/* Three columns: close button, centred label (favicon and title), marker. The close
+   column is always reserved so the label stays centred when the button appears. */
 .strip .tab {
   position: relative;
   isolation: isolate;
   container-type: inline-size;
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 14px;
   align-items: center;
-  gap: 4px;
+  column-gap: 4px;
   flex: 1 1 0;
   min-width: 26px;
   height: 24px;
-  padding: 0 6px 0 4px;
-  border: 1px solid transparent;
+  padding: 0 6px;
+  border: 1px solid var(--tab-edge);
   border-radius: 9px;
   color: var(--text);
   cursor: default;
@@ -223,12 +259,12 @@ body.solid {
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  transition: opacity 120ms ease-out;
+  transition: opacity 120ms ease-out, background-color 120ms ease-out;
 }
 
+/* Inactive tabs are a darker translucent fill; the active tab is a lighter one. */
 .strip .tab::before {
-  background: var(--fill);
-  opacity: 0.45;
+  background: var(--tab-idle);
 }
 
 .strip .tab::after {
@@ -245,8 +281,7 @@ body.solid {
 }
 
 .strip .tab.active::before {
-  opacity: 1;
-  box-shadow: inset 0 0 0 1px var(--border);
+  background: var(--tab-on);
 }
 
 .strip .tab.dragging {
@@ -263,7 +298,11 @@ body.solid {
   flex: 0 0 30px;
   min-width: 0;
   padding: 0;
-  justify-content: center;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.strip .tab.pinned .label {
+  grid-column: 1;
 }
 
 .strip .tab.pinned .title,
@@ -297,10 +336,23 @@ body.solid {
   object-fit: contain;
 }
 
+/* Placeholder for tabs without a favicon: a 16px rounded tile with a small white plus. */
 .strip .glyph {
-  width: 14px;
-  height: 14px;
-  color: var(--text);
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--glyph-fill);
+  color: #fff;
+}
+
+.strip .glyph svg {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
 }
 
 .strip .tab.muted .fav {
@@ -323,8 +375,18 @@ body.solid {
   }
 }
 
+.strip .label {
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .strip .title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -333,7 +395,8 @@ body.solid {
 }
 
 .strip .close {
-  flex: none;
+  grid-column: 1;
+  justify-self: start;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -365,8 +428,9 @@ body.solid {
 }
 
 .strip .marker {
+  grid-column: 3;
+  justify-self: end;
   display: none;
-  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 50%;

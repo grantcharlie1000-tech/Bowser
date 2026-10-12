@@ -72,6 +72,17 @@ pub fn state_changed(last: &mut Option<String>, json: &str) -> bool {
     true
 }
 
+/// Whether the omnibox text should be sent with `setText` on this sync. `prev_tab` is the tab the
+/// previous sync saw (`None` before the first sync). A change of active tab always sends, even while
+/// the omnibox is focused, so the new tab's address replaces the old one. Within the same tab a
+/// focused omnibox keeps the user's typing; otherwise the text is sent when `text_changed`.
+pub fn should_set_text(prev_tab: Option<TabId>, tab: TabId, focused: bool, text_changed: bool) -> bool {
+    if prev_tab != Some(tab) {
+        return true;
+    }
+    !focused && text_changed
+}
+
 /// Whether the HTML toolbar is enabled. Read once from `BOWSER_UI`; unset means the GDI chrome.
 pub fn html_ui_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -348,6 +359,22 @@ mod tests {
         assert!(state_changed(&mut last, "{\"a\":2}"));
         assert!(state_changed(&mut last, "{\"a\":1}"));
         assert_eq!(last.as_deref(), Some("{\"a\":1}"));
+    }
+
+    #[test]
+    fn set_text_follows_active_tab_changes_even_when_focused() {
+        let (a, b) = (TabId(1), TabId(2));
+        // First sync and any tab change send the text, focused or not.
+        assert!(should_set_text(None, a, false, true));
+        assert!(should_set_text(None, a, true, true));
+        assert!(should_set_text(Some(a), b, true, false), "focused new tab");
+        assert!(should_set_text(Some(a), b, false, false), "switch while unfocused");
+        // Same tab, focused: never rewritten, so typing survives.
+        assert!(!should_set_text(Some(a), a, true, true));
+        assert!(!should_set_text(Some(a), a, true, false));
+        // Same tab, unfocused: sent only when the text changed.
+        assert!(should_set_text(Some(a), a, false, true));
+        assert!(!should_set_text(Some(a), a, false, false));
     }
 
     #[test]
