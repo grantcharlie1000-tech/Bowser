@@ -28,6 +28,12 @@ Missing or invalid configuration uses the default. Search text is percent encode
 
 Browser cookies/cache remain in %LOCALAPPDATA%\Bowser\WebView2, isolated from Edge's profile. Bowser has no hosted backend or first-party telemetry. WebView2's [Microsoft Defender SmartScreen reputation checking](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy) is enabled where allowed by Windows settings; reputation checks may send visited URLs to Microsoft's service. Websites and the selected search provider receive normal network requests when used.
 
+### Isolated data directory (`--data-dir`)
+
+All persistent state (history, bookmarks, workspaces, tab groups, settings, session and `running.lock`, permissions, privacy stats, password vault, profiles, `last-profile.txt`, Guest folders, updater files, `crash.log`, WebView2 data) lives under one app-data root. By default that is `%LOCALAPPDATA%\Bowser`. `--data-dir <absolute path>` (or the `BOWSER_DATA_DIR` environment variable; the flag wins) replaces that root for the whole process, and windows it spawns inherit it. Because the session lock and updater mutex are keyed by the root, an instance with its own data directory never hands off to, refuses because of, or overwrites a running Bowser that uses the real one.
+
+Benchmark launches (`--benchmark-log` and friends) can never write to the real profile: with no `--data-dir` they use a fresh throwaway directory under `%TEMP%` (`bowser-benchmark-data-<pid>-<nonce>`, deleted on exit), and an explicit `--data-dir` that is or sits inside `%LOCALAPPDATA%\Bowser` is refused.
+
 ## Password migration status
 
 `Ctrl+,` opens the themed Passwords & Passkeys panel. It can search by site or username, add and edit entries, delete after confirmation, reveal a password, copy it, generate a password, and preview/commit a user-selected password CSV. Exact duplicates and conflicts are classified before import; new entries are written only after confirmation. The encrypted vault and per-site “Never” choices are stored in the active profile's `Passwords.dat`. Guest profiles do not expose vault access or save prompts.

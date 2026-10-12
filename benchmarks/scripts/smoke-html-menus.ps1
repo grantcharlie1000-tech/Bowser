@@ -55,7 +55,7 @@ New-Item -ItemType Directory -Force $data | Out-Null
 $env:LOCALAPPDATA = $data
 $env:BOWSER_UI = 'html'
 
-$p = Start-Process $Exe -ArgumentList @('--open-url', $Url) -PassThru
+$p = Start-Process $Exe -ArgumentList @('--data-dir', "`"$data`"", '--open-url', $Url) -PassThru
 $h = [IntPtr]::Zero
 for ($i = 0; $i -lt 60 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 500; $p.Refresh(); $h = $p.MainWindowHandle }
 if ($h -eq [IntPtr]::Zero) { throw "No window" }

@@ -191,7 +191,7 @@ function Sample([int] $RootPid, [string] $ProfileDir) {
     }
 }
 function Start-Bowser([string] $ProfileDir, [string] $LogPath) {
-    $launchArgs = @('--benchmark-log', "`"$LogPath`"", '--benchmark-user-data-dir', "`"$ProfileDir`"")
+    $launchArgs = @('--benchmark-log', "`"$LogPath`"", '--benchmark-user-data-dir', "`"$ProfileDir`"", '--data-dir', "`"$ProfileDir-appdata`"")
     if ($MemoryPressure) { $launchArgs += @('--benchmark-memory-pressure', 'on') }
     # Benchmark flags do not isolate app data (history, workspaces, settings), so give the child a throwaway LOCALAPPDATA.
     $appData = "$ProfileDir.appdata"

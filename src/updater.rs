@@ -607,7 +607,7 @@ pub fn load_config(root: &Path) -> Option<Config> {
 }
 
 pub fn data_root() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Bowser"))
+    crate::profile::app_data_dir()
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -443,11 +443,37 @@ impl Profile {
     }
 }
 
-/// `%LOCALAPPDATA%\Bowser`, or `None` when LocalAppData is unset.
-pub fn app_data_dir() -> Option<PathBuf> {
+static DATA_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Installs the process-wide app-data root (`--data-dir`, `BOWSER_DATA_DIR`, or a benchmark's
+/// throwaway directory). Must be called once, before anything reads or writes persistent state.
+/// Creates the directory. Only the first call has an effect.
+pub fn set_data_root(path: PathBuf) -> io::Result<()> {
+    fs::create_dir_all(&path)?;
+    let _ = DATA_ROOT_OVERRIDE.set(path);
+    Ok(())
+}
+
+/// The explicit app-data root, if this process was given one.
+pub fn data_root_override() -> Option<&'static Path> {
+    DATA_ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+/// `%LOCALAPPDATA%\Bowser`, ignoring any override. Only for comparisons; never write here from
+/// code that can run in a benchmark or test instance.
+pub fn real_app_data_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .map(|path| path.join(APP_DIR_NAME))
+}
+
+/// The one authoritative app-data root: the override when set, else `%LOCALAPPDATA%\Bowser`
+/// (`None` when LocalAppData is unset). Every persisted file hangs off this path.
+pub fn app_data_dir() -> Option<PathBuf> {
+    match data_root_override() {
+        Some(path) => Some(path.to_path_buf()),
+        None => real_app_data_dir(),
+    }
 }
 
 /// Records the profile this process runs with. Only the first call has an effect.
@@ -742,10 +768,12 @@ pub fn spawn_guest_window() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    std::process::Command::new(exe)
-        .arg("--guest")
-        .spawn()
-        .is_ok()
+    let mut command = std::process::Command::new(exe);
+    command.arg("--guest");
+    if let Some(root) = data_root_override() {
+        command.arg("--data-dir").arg(root);
+    }
+    command.spawn().is_ok()
 }
 
 /// Starts a new Bowser process for `profile` and opens `url` in its initial tab.
@@ -762,6 +790,10 @@ fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
     // intentionally shares that profile's session and WebView2 folder, so the launch path must not
     // refuse it as a duplicate. `--new-window` is what tells it so.
     command.arg("--new-window");
+    // A spawned window must stay in the same app-data root as its parent.
+    if let Some(root) = data_root_override() {
+        command.arg("--data-dir").arg(root);
+    }
     if let Some(name) = profile.name() {
         command.arg("--profile").arg(name);
     }
@@ -1216,5 +1248,58 @@ mod tests {
         assert!(!guest.root().join(IMPORT_OFFER_FILE_NAME).exists());
         assert!(default.root().join(IMPORT_OFFER_FILE_NAME).exists());
         let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn every_persisted_path_resolves_under_the_data_root() {
+        let root = Path::new(r"D:\sandbox\bowser-data");
+        let profiles = [
+            Profile::default_in(root),
+            Profile::named(root, "Work").unwrap(),
+        ];
+        for profile in &profiles {
+            let table: Vec<(&str, PathBuf)> = vec![
+                ("root", profile.root().to_path_buf()),
+                ("notes", profile.notes_file()),
+                ("tasks", profile.tasks_file()),
+                ("saved sessions", profile.saved_sessions_file()),
+                ("history", profile.history_file()),
+                ("history enabled", profile.history_enabled_file()),
+                ("bookmarks", profile.bookmarks_file()),
+                ("bookmarks v2", profile.bookmarks_v2_file()),
+                ("sidebar", profile.sidebar_file()),
+                ("favicons", profile.favicons_dir()),
+                ("webview2", profile.webview2_dir()),
+                ("web apps", profile.web_apps_dir()),
+                ("session", profile.session_dir().join(crate::session::LOCK_NAME)),
+                ("blocker", profile.blocker_dir().join("blocker-sites.txt")),
+                ("settings", profile.settings_file()),
+                ("metadata", profile.metadata_file()),
+                ("tab groups", profile.tab_groups_file()),
+                ("workspaces", profile.workspaces_file()),
+                ("search provider", profile.search_provider_file()),
+                ("passwords", profile.passwords_file()),
+                ("privacy stats", profile.privacy_stats_file()),
+                ("permissions", profile.permissions_file()),
+                ("extensions dir", profile.extensions_dir()),
+                ("extensions", profile.extensions_file()),
+            ];
+            for (what, path) in table {
+                assert!(path.starts_with(root), "{what}: {}", path.display());
+            }
+        }
+        // App-wide files hang off the same root.
+        assert!(profiles_dir(root).starts_with(root));
+        assert!(root.join(LAST_PROFILE_FILE_NAME).starts_with(root));
+        let layout = crate::updater::Layout::new(PathBuf::from(r"C:\app\bowser.exe"), root);
+        assert!(
+            layout
+                .staged_exe(crate::updater::Version(1, 2, 3))
+                .starts_with(root)
+        );
+        let guest_parent = temp_root("root-guest");
+        let guest = Profile::guest_in(&guest_parent).unwrap();
+        assert!(guest.root().starts_with(&guest_parent));
+        let _ = fs::remove_dir_all(&guest_parent);
     }
 }
