@@ -1854,6 +1854,10 @@ unsafe extern "system" fn window_proc(
                         apply_sidebar_bounds(hwnd, app);
                     }
                     let active = App::active_tab_id(app);
+                    // --- popup host (lane M) ---
+                    // A tab or workspace switch dismisses an open HTML menu.
+                    if let Some(context) = popup_context(hwnd) { html_popup::note_context(hwnd, context); }
+                    // --- end popup host ---
                     if previously_active != Some(active) {
                         card::cancel_card(hwnd);
                         let value = App::tab_committed_url(app, active)
@@ -2764,7 +2768,9 @@ unsafe extern "system" fn window_proc(
                 }
                 if let Ok(profile) = profile::active() {
                     if profile.import_offer_pending() {
-                        let selected = menu::track(hwnd, main_menu_anchor(hwnd), Menu {
+                        // --- popup host (lane M) ---
+                        let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
+                        menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
                             header: None,
                             entries: vec![
                                 Entry::Item(Item::new(1, "Import", Icon::Grid)),
@@ -2772,11 +2778,13 @@ unsafe extern "system" fn window_proc(
                                 Entry::Item(Item::new(3, "Don't ask again", Icon::Close)),
                             ],
                             footer: "Import bookmarks and supported search settings from another browser. You can also import later from the main menu.".into(),
+                        }, "import-offer", move |_, selected| {
+                            let _ = profile.remember_import_offer_choice();
+                            if selected.is_some_and(|item| item.id == 1) {
+                                let _ = import_panel::open(hwnd);
+                            }
                         });
-                        let _ = profile.remember_import_offer_choice();
-                        if selected.is_some_and(|item| item.id == 1) {
-                            let _ = import_panel::open(hwnd);
-                        }
+                        // --- end popup host ---
                     }
                 }
                 LRESULT(0)
@@ -3511,16 +3519,17 @@ fn hide_rail_tooltip(hwnd: HWND) {
     if visible { with_chrome(hwnd, |state| invalidate(hwnd, state.layout.rail)); }
 }
 
+// --- popup host (lane M): async rail context menus ---
 fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32) {
-    let mut point = windows::Win32::Foundation::POINT { x, y };
-    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
     match key {
         RailKey::Workspace(raw_id) => {
             let id = crate::workspaces::WorkspaceId(raw_id as u32);
             let set = App::workspaces(app);
             let entries = App::workspace_entries(app);
             let Some((_, name, _, _, _, _)) = entries.iter().find(|(entry_id, ..)| *entry_id == id) else { return; };
-            let mut menu_entries = vec![
+            let name = name.clone();
+            let menu_entries = vec![
                 Entry::Item(Item::new(1, "Rename…", Icon::Person)),
                 Entry::Item(Item::new(2, "Change icon…", Icon::Grid)),
                 Entry::Item(Item::new(3, "Change colour…", Icon::Grid)),
@@ -3528,31 +3537,44 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 Entry::Item(Item::new(5, "Move down", Icon::Grid)),
                 Entry::Item(Item::new(6, "Delete…", Icon::Close).disabled_if(set.workspace_count() == 1)),
             ];
-            if let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries: std::mem::take(&mut menu_entries), footer: name.clone() }) {
+            let kind = format!("rail-ws:{raw_id}");
+            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
+                let Some(chosen) = chosen else { return; };
+                // The workspace may have been deleted while the menu was open.
+                let set = App::workspaces(app);
+                if !set.all().iter().any(|workspace| workspace.id() == id) { return; }
                 match chosen.id {
-                    1 => if let Some(value) = super::profile_rename::prompt(hwnd, name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
+                    1 => if let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid))).collect();
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
-                        if let Some(icon) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Workspace icon".into() }).and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
+                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
+                            if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
+                        });
                     }
                     3 => {
                         let choices = ["Blue", "Violet", "Teal", "Amber", "Rose", "Red", "Green", "Slate"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid))).collect();
                         let colours = [crate::workspaces::WorkspaceColour::Blue, crate::workspaces::WorkspaceColour::Violet, crate::workspaces::WorkspaceColour::Teal, crate::workspaces::WorkspaceColour::Amber, crate::workspaces::WorkspaceColour::Rose, crate::workspaces::WorkspaceColour::Red, crate::workspaces::WorkspaceColour::Green, crate::workspaces::WorkspaceColour::Slate];
-                        if let Some(colour) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Workspace colour".into() }).and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
+                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
+                            if let Some(colour) = chosen.and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
+                        });
                     }
                     4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index.saturating_sub(1)); },
                     5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index + 1); },
                     6 => if set.workspace_count() > 1 && crate::win32::ask_yes_no(&format!("Delete workspace {name} and close its tabs?")) { let _ = App::delete_workspace(app, id); },
                     _ => {}
                 }
-            }
+            });
         }
         RailKey::App(id) => {
             let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid)), Entry::Item(Item::new(2, "Edit…", Icon::Person)), Entry::Item(Item::new(3, "Remove…", Icon::Close))];
-            if let Some(chosen) = menu::track(hwnd, point, Menu { header: None, entries, footer: "Web app".into() }) {
+            let kind = format!("rail-app:{id}");
+            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
+                let Some(chosen) = chosen else { return; };
+                // The app may have been removed while the menu was open.
+                if !rail_model_keys(hwnd).contains(&key) { return; }
                 match chosen.id {
                     1 => activate_rail(hwnd, app, key),
                     2 => edit_rail_app(hwnd, app, id),
@@ -3568,11 +3590,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     }
                     _ => {}
                 }
-            }
+            });
         }
         _ => {}
     }
 }
+// --- end popup host ---
 
 fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
     App::tab_ids(app)
@@ -3591,6 +3614,7 @@ fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
         .collect()
 }
 
+// --- popup host (lane M): async split menu ---
 fn show_split_menu(hwnd: HWND, app: &AppRef) {
     const OPEN_BASE: usize = 100;
     const SWAP: usize = 1;
@@ -3598,6 +3622,8 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
     const CLOSE_RIGHT: usize = 3;
     const REPLACE: usize = 4;
     const OPEN_NEW: usize = 5;
+    // Submenu parents need ids of their own: the HTML menu rejects duplicate ids.
+    const OPEN_WITH: usize = 6;
     let split = App::split_view(app);
     let entries = if let Some(split) = split {
         vec![
@@ -3618,67 +3644,84 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
         ))];
         entries.push(Entry::Separator);
         entries.push(Entry::Item(
-            Item::new(OPEN_BASE, "Open split view with…", Icon::Grid)
+            Item::new(OPEN_WITH, "Open split view with…", Icon::Grid)
                 .submenu_with(split_tab_rows(app, Some(active))),
         ));
         entries
     };
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
-    let command = menu::track(
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let was_split = split.is_some();
+    menu::show(
         hwnd,
         point,
+        menu::Placement::AboveLeft,
         Menu {
             header: None,
             entries,
             footer: "Split view".to_owned(),
         },
-    )
-    .map_or(0, |chosen| chosen.id);
-    if let Some(split) = split {
-        match command {
-            SWAP => {
-                let _ = App::swap_split_panes(app);
+        "split",
+        move |app, chosen| {
+            let command = chosen.map_or(0, |chosen| chosen.id);
+            // The split may have opened or closed, or the picked tab gone, while the menu was open.
+            let picked_tab = (command >= OPEN_BASE)
+                .then(|| TabId((command - OPEN_BASE) as u32))
+                .filter(|tab| App::tab_ids(app).contains(tab));
+            if command >= OPEN_BASE && picked_tab.is_none() {
+                return;
             }
-            CLOSE_LEFT => {
-                let _ = App::close_split_pane(app, crate::split_view::Pane::Left);
+            if App::split_view(app).is_some() != was_split {
+                return;
             }
-            CLOSE_RIGHT => {
-                let _ = App::close_split_pane(app, crate::split_view::Pane::Right);
+            if was_split {
+                match command {
+                    SWAP => {
+                        let _ = App::swap_split_panes(app);
+                    }
+                    CLOSE_LEFT => {
+                        let _ = App::close_split_pane(app, crate::split_view::Pane::Left);
+                    }
+                    CLOSE_RIGHT => {
+                        let _ = App::close_split_pane(app, crate::split_view::Pane::Right);
+                    }
+                    _ => {
+                        if let Some(tab) = picked_tab {
+                            let _ = App::replace_focused_split_pane(app, tab);
+                        }
+                    }
+                }
+            } else {
+                let active = App::active_tab_id(app);
+                if command == OPEN_NEW {
+                    let new = App::new_tab(app);
+                    if let Some(bounds) = split_rects(hwnd, None) {
+                        let _ = App::open_split_view(
+                            app,
+                            active,
+                            new,
+                            crate::split_view::Pane::Right,
+                            bounds,
+                        );
+                    }
+                } else if let Some(other) = picked_tab.filter(|other| *other != active) {
+                    if let Some(bounds) = split_rects(hwnd, None) {
+                        let _ = App::open_split_view(
+                            app,
+                            active,
+                            other,
+                            crate::split_view::Pane::Right,
+                            bounds,
+                        );
+                    }
+                }
             }
-            value if value >= OPEN_BASE => {
-                let _ = App::replace_focused_split_pane(app, TabId((value - OPEN_BASE) as u32));
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
-            _ => {}
-        }
-        let _ = split;
-    } else {
-        let active = App::active_tab_id(app);
-        if command == OPEN_NEW {
-            let new = App::new_tab(app);
-            if let Some(bounds) = split_rects(hwnd, None) {
-                let _ =
-                    App::open_split_view(app, active, new, crate::split_view::Pane::Right, bounds);
-            }
-        } else if command >= OPEN_BASE {
-            let other = TabId((command - OPEN_BASE) as u32);
-            if let Some(bounds) = split_rects(hwnd, None) {
-                let _ = App::open_split_view(
-                    app,
-                    active,
-                    other,
-                    crate::split_view::Pane::Right,
-                    bounds,
-                );
-            }
-        }
-    }
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+        },
+    );
 }
+// --- end popup host ---
 
 fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pip_available: bool) {
     const NEW_RIGHT: usize = 1;
@@ -3863,19 +3906,20 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 .disabled_if(index + 1 == ids.len()),
         ),
     ]);
-    let mut point = windows::Win32::Foundation::POINT { x, y };
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-        let command = menu::track_below(
-            hwnd,
-            point,
-            Menu {
-                header: None,
-                entries,
-                footer: "Actions for this tab".to_owned(),
-            },
-        )
-        .map_or(0, |chosen| chosen.id);
+    // --- popup host (lane M) ---
+    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
+    let kind = format!("tab:{}", id.0);
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Actions for this tab".to_owned(),
+    };
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| unsafe {
+        let command = chosen.map_or(0, |chosen| chosen.id);
+        // The tab may have closed while the menu was open.
+        if command == 0 || !App::tab_ids(app).contains(&id) {
+            return;
+        }
         match command {
             PICTURE_IN_PICTURE => App::toggle_picture_in_picture(app, id),
             NEW_RIGHT => {
@@ -4009,7 +4053,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             _ => {}
         }
         let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    });
+    // --- end popup host ---
 }
 
 /// Ctrl+Shift+P: native menu to switch, create or delete profiles. Switching starts a new Bowser
@@ -4249,15 +4294,17 @@ impl ProfileMenu {
                 }
             }
             id if (PROFILE_DELETE_BASE..PROFILE_DELETE_BASE + PROFILE_MAX_LISTED).contains(&id) => {
-                if let Some(name) = self.names.get(id - PROFILE_DELETE_BASE) {
-                    if confirm_profile_delete(hwnd, name) {
-                        if let Err(error) = profile::delete(&self.app_data, name, &self.current) {
+                if let Some(name) = self.names.get(id - PROFILE_DELETE_BASE).cloned() {
+                    let app_data = self.app_data.clone();
+                    let current = self.current.clone();
+                    confirm_profile_delete(hwnd, &name.clone(), move || {
+                        if let Err(error) = profile::delete(&app_data, &name, &current) {
                             show_profile_notice(
                                 hwnd,
                                 &format!("The profile \"{name}\" was not deleted. {error}"),
                             );
                         }
-                    }
+                    });
                 }
             }
             _ => {}
@@ -4285,14 +4332,13 @@ fn accent_label(id: &str) -> &'static str {
     }
 }
 
+// --- popup host (lane M): async profile menus ---
 fn show_profile_notice(hwnd: HWND, message: &str) {
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
-    let _ = menu::track(
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    menu::show(
         hwnd,
         point,
+        menu::Placement::AboveLeft,
         Menu {
             header: None,
             entries: vec![
@@ -4301,17 +4347,18 @@ fn show_profile_notice(hwnd: HWND, message: &str) {
             ],
             footer: "Profile action".to_owned(),
         },
+        "profile-notice",
+        |_, _| {},
     );
 }
 
-fn confirm_profile_delete(hwnd: HWND, name: &str) -> bool {
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
-    menu::track(
+/// Asks before deleting a profile; `on_confirm` runs only when the user picks Delete.
+fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce() + 'static) {
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    menu::show(
         hwnd,
         point,
+        menu::Placement::AboveLeft,
         Menu {
             header: None,
             entries: vec![
@@ -4322,27 +4369,32 @@ fn confirm_profile_delete(hwnd: HWND, name: &str) -> bool {
             footer: "Cookies, saved passwords, settings and session data will be removed"
                 .to_owned(),
         },
-    )
-    .is_some_and(|chosen| chosen.id == 2)
+        "profile-delete",
+        move |_, chosen| {
+            if chosen.is_some_and(|chosen| chosen.id == 2) {
+                on_confirm();
+            }
+        },
+    );
 }
 
 fn show_profile_menu(hwnd: HWND) {
     let Some(profiles) = ProfileMenu::load(hwnd) else {
         return;
     };
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    };
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
     let menu = Menu {
         header: None,
         entries: profiles.entries(),
         footer: "Switch, create, rename, or delete".to_owned(),
     };
-    if let Some(chosen) = menu::track(hwnd, point, menu) {
-        profiles.run(chosen.id, hwnd);
-    }
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "profiles", move |_, chosen| {
+        if let Some(chosen) = chosen {
+            profiles.run(chosen.id, hwnd);
+        }
+    });
 }
+// --- end popup host ---
 
 const WORKSPACE_SELECT_BASE: usize = 6100;
 const WORKSPACE_CREATE: usize = 6300;
@@ -4381,27 +4433,50 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     entries
 }
 
+// --- popup host (lane M): async workspace menus ---
+/// Workspace ids in menu order and the active one, read when a workspace menu is built, so a pick
+/// acts on the workspace its row showed.
+fn workspace_menu_snapshot(
+    app: &AppRef,
+) -> (Vec<crate::workspaces::WorkspaceId>, crate::workspaces::WorkspaceId) {
+    let workspaces = App::workspaces(app);
+    (workspaces.all().iter().map(|workspace| workspace.id()).collect(), workspaces.active_id())
+}
+
 fn show_workspaces_menu(hwnd: HWND, app: &AppRef) {
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
     let menu = Menu {
         header: None,
         entries: workspace_menu_entries(app),
         footer: "Tabs stay in their workspace".to_owned(),
     };
-    if let Some(chosen) = menu::track(hwnd, point, menu) {
-        run_workspace_action(hwnd, app, chosen.id);
-    }
+    let (built, active) = workspace_menu_snapshot(app);
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "workspaces", move |app, chosen| {
+        if let Some(chosen) = chosen {
+            run_workspace_action(hwnd, app, chosen.id, &built, active);
+        }
+    });
 }
 
-fn run_workspace_action(hwnd: HWND, app: &AppRef, command: usize) {
+/// Runs a workspace menu command. `built` and `active_at_open` come from
+/// `workspace_menu_snapshot` when the menu was built; a workspace that has gone since is ignored.
+fn run_workspace_action(
+    hwnd: HWND,
+    app: &AppRef,
+    command: usize,
+    built: &[crate::workspaces::WorkspaceId],
+    active_at_open: crate::workspaces::WorkspaceId,
+) {
     let workspaces = App::workspaces(app);
-    if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + workspaces.all().len()).contains(&command) {
-        if let Some(workspace) = workspaces.all().get(command - WORKSPACE_SELECT_BASE) {
-            let _ = App::switch_workspace(app, workspace.id());
+    if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&command) {
+        let live: Vec<_> = workspaces.all().iter().map(|workspace| workspace.id()).collect();
+        if let Some(id) = menu::still_listed(built, &live, command - WORKSPACE_SELECT_BASE) {
+            let _ = App::switch_workspace(app, *id);
         }
+        return;
+    }
+    // Rename and delete act on the workspace that was current when the menu opened.
+    if workspaces.active_id() != active_at_open {
         return;
     }
     let active = workspaces.active();
@@ -4434,19 +4509,21 @@ fn run_workspace_action(hwnd: HWND, app: &AppRef, command: usize) {
                 ],
                 footer: "This cannot be undone".to_owned(),
             };
-            let mut point = main_menu_anchor(hwnd);
-            unsafe {
-                let _ = ClientToScreen(hwnd, &mut point);
-            }
-            if menu::track(hwnd, point, confirm).is_some_and(|chosen| chosen.id == 1)
-                && let Err(error) = App::delete_workspace(app, active.id())
-            {
-                show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
-            }
+            let point = screen_point(hwnd, main_menu_anchor(hwnd));
+            let target = active.id();
+            menu::show(hwnd, point, menu::Placement::AboveLeft, confirm, "workspace-delete", move |app, chosen| {
+                if chosen.is_some_and(|chosen| chosen.id == 1)
+                    && App::workspaces(app).all().iter().any(|workspace| workspace.id() == target)
+                    && let Err(error) = App::delete_workspace(app, target)
+                {
+                    show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
+                }
+            });
         }
         _ => {}
     }
 }
+// --- end popup host ---
 
 /// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
 /// settings. A custom panel in the chrome palette; the profile rows open as the themed native menu.
@@ -4554,12 +4631,11 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     };
 
     // Right-aligned under the button, so the menu grows leftwards and stays on screen.
-    let mut point = main_menu_anchor(hwnd);
+    // --- popup host (lane M) ---
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
     set_pressed(hwnd, Hit::MainMenu);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
-    let chosen = menu::track(hwnd, point, menu);
+    let (built_workspaces, active_workspace) = workspace_menu_snapshot(app);
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "main", move |app, chosen| {
     set_pressed(hwnd, Hit::None);
 
     if let Some(chosen) = chosen {
@@ -4643,13 +4719,15 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
                 || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) =>
             {
-                run_workspace_action(hwnd, app, id)
+                run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace)
             }
             _ => {}
         }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    });
+    // --- end popup host ---
 }
 
 fn run_command_palette(hwnd: HWND, app: &AppRef) {
@@ -4766,9 +4844,11 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
         if let Err(error) = mirror {
             show_error_message(&format!("The bookmark changed, but the legacy mirror could not be updated: {error}"));
         }
-        let _ = menu::track(
+        // --- popup host (lane M) ---
+        menu::show(
             hwnd,
-            main_menu_anchor(hwnd),
+            screen_point(hwnd, main_menu_anchor(hwnd)),
+            menu::Placement::AboveLeft,
             Menu {
                 header: None,
                 entries: vec![Entry::Item(
@@ -4776,12 +4856,15 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
                 )],
                 footer: "Bookmarks".into(),
             },
+            "bookmark-toast",
+            |_, _| {},
         );
+        // --- end popup host ---
         }
     }
 }
 
-fn show_sessions(hwnd: HWND, app: &AppRef) {
+fn show_sessions(hwnd: HWND, _app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
@@ -4800,11 +4883,14 @@ fn show_sessions(hwnd: HWND, app: &AppRef) {
     if !sessions.is_empty() {
         entries.push(Entry::Separator);
     }
+    // --- popup host (lane M) ---
+    // Submenu parents get their own ids: the HTML menu rejects duplicates.
+    const PARENT_BASE: usize = 300;
     for (index, session) in sessions.iter().enumerate() {
         let restore = RESTORE_BASE + index;
         let delete = DELETE_BASE + index;
         entries.push(Entry::Item(
-            Item::new(restore, session.name.clone(), Icon::Check).submenu_with(vec![
+            Item::new(PARENT_BASE + index, session.name.clone(), Icon::Check).submenu_with(vec![
                 Entry::Item(Item::new(
                     restore,
                     format!("Restore {} tabs", session.urls.len()),
@@ -4814,20 +4900,20 @@ fn show_sessions(hwnd: HWND, app: &AppRef) {
             ]),
         ));
     }
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
-    }
-    let Some(chosen) = menu::track(
-        hwnd,
-        point,
-        Menu {
-            header: None,
-            entries,
-            footer: "Saved sessions".into(),
-        },
-    ) else {
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Saved sessions".into(),
+    };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "sessions", move |app, chosen| {
+    let Some(chosen) = chosen else {
         return;
+    };
+    // A session deleted or renamed while the menu was open is not acted on.
+    let live = crate::productivity::read_sessions(&profile.saved_sessions_file());
+    let still_saved = |index: usize| {
+        sessions.get(index).filter(|session| live.iter().any(|other| other.name == session.name))
     };
     if chosen.id == SAVE {
         let Some(name) = super::profile_rename::prompt(hwnd, "", "Save session", "Save") else {
@@ -4861,7 +4947,7 @@ fn show_sessions(hwnd: HWND, app: &AppRef) {
             show_error_message(&format!("Session could not be saved: {error}"));
         }
     } else if (RESTORE_BASE..DELETE_BASE).contains(&chosen.id) {
-        let Some(session) = sessions.get(chosen.id - RESTORE_BASE) else {
+        let Some(session) = still_saved(chosen.id - RESTORE_BASE) else {
             return;
         };
         if !super::ask_yes_no("Replace the open tabs with this saved session?") {
@@ -4885,7 +4971,7 @@ fn show_sessions(hwnd: HWND, app: &AppRef) {
         }
     } else if (DELETE_BASE..DELETE_BASE + sessions.len()).contains(&chosen.id) {
         let index = chosen.id - DELETE_BASE;
-        if let Some(session) = sessions.get(index) {
+        if let Some(session) = still_saved(index) {
             if super::ask_yes_no("Delete this saved session?") {
                 let _ = crate::productivity::delete_session(
                     &profile.saved_sessions_file(),
@@ -4894,6 +4980,8 @@ fn show_sessions(hwnd: HWND, app: &AppRef) {
             }
         }
     }
+    });
+    // --- end popup host ---
 }
 
 fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
@@ -4923,29 +5011,29 @@ fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
         Entry::Separator,
         Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).shortcut("Alt+F4")),
     ];
-    let chosen = menu::track_below(
-        hwnd,
-        point,
-        Menu {
-            header: None,
-            entries,
-            footer: "Window commands".to_owned(),
-        },
-    );
-    if let Some(chosen) = chosen {
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                Some(hwnd),
-                WM_SYSCOMMAND,
-                WPARAM(chosen.id),
-                LPARAM(0),
-            );
+    // --- popup host (lane M) ---
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Window commands".to_owned(),
+    };
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, "system", move |_, chosen| {
+        if let Some(chosen) = chosen {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(hwnd),
+                    WM_SYSCOMMAND,
+                    WPARAM(chosen.id),
+                    LPARAM(0),
+                );
+            }
         }
-    }
+    });
+    // --- end popup host ---
 }
 
 /// Ctrl+Shift+E: themed menu for this profile's unpacked extensions.
-fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
+fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     use crate::extensions::{self, Record};
     const INSTALL: usize = 1;
     const TOGGLE_BASE: usize = 100;
@@ -5012,35 +5100,39 @@ fn show_extensions_menu(hwnd: HWND, app: &AppRef) {
         Icon::Plus,
     )));
 
-    let mut point = main_menu_anchor(hwnd);
-    unsafe {
-        let _ = ClientToScreen(hwnd, &mut point);
+    // --- popup host (lane M) ---
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Unpacked extensions".to_owned(),
     };
-    let command = menu::track(
-        hwnd,
-        point,
-        Menu {
-            header: None,
-            entries,
-            footer: "Unpacked extensions".to_owned(),
-        },
-    )
-    .map_or(0, |chosen| chosen.id);
-
-    match command {
-        INSTALL => install_extension(hwnd, app, &profile),
-        id if (TOGGLE_BASE..TOGGLE_BASE + MAX_LISTED).contains(&id) => {
-            if let Some(record) = records.get(id - TOGGLE_BASE) {
-                toggle_extension(app, &profile, record);
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "extensions", move |app, chosen| {
+        let command = chosen.map_or(0, |chosen| chosen.id);
+        // Act on the record as it is now; one removed while the menu was open is skipped.
+        let live = |index: usize| {
+            let listed = records.get(index)?;
+            extensions::read_records(&profile.extensions_file())
+                .ok()?
+                .into_iter()
+                .find(|record| record.id == listed.id)
+        };
+        match command {
+            INSTALL => install_extension(hwnd, app, &profile),
+            id if (TOGGLE_BASE..TOGGLE_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - TOGGLE_BASE) {
+                    toggle_extension(app, &profile, &record);
+                }
             }
-        }
-        id if (REMOVE_BASE..REMOVE_BASE + MAX_LISTED).contains(&id) => {
-            if let Some(record) = records.get(id - REMOVE_BASE) {
-                remove_extension(app, &profile, record);
+            id if (REMOVE_BASE..REMOVE_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - REMOVE_BASE) {
+                    remove_extension(app, &profile, &record);
+                }
             }
+            _ => {}
         }
-        _ => {}
-    }
+    });
+    // --- end popup host ---
 }
 
 fn toggle_extension(
@@ -5202,25 +5294,24 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
     }
-    let command = menu::track_below(
-        hwnd,
-        point,
-        Menu {
-            header: None,
-            entries,
-            footer: "Select a tab".to_owned(),
-        },
-    )
-    .map_or(0, |chosen| chosen.id);
-    {
+    // --- popup host (lane M) ---
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Select a tab".to_owned(),
+    };
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, "open-tabs", move |app, chosen| {
+        let command = chosen.map_or(0, |chosen| chosen.id);
+        let live = App::tab_ids(app);
         if let Some(id) = command
             .checked_sub(1)
-            .and_then(|index| ids.get(index))
+            .and_then(|index| menu::still_listed(&ids, &live, index))
             .copied()
         {
             let _ = App::select_tab(app, id);
         }
-    }
+    });
+    // --- end popup host ---
 }
 
 /// The work area of the monitor nearest the window, in screen coordinates.
@@ -5996,7 +6087,26 @@ fn open_debug_html_menu(hwnd: HWND) {
         ],
         footer: String::new(),
     };
-    let _ = html_popup::show_menu(hwnd, anchor, html_popup::Placement::BelowLeft, sample, "debug-sample", Box::new(|_, _| {}));
+    menu::show(hwnd, anchor, menu::Placement::BelowLeft, sample, "debug-sample", |_, _| {});
+}
+
+/// The window's App, for `menu::show` callbacks that run without a caller frame.
+pub(super) fn popup_app(hwnd: HWND) -> Option<AppRef> {
+    app_of(hwnd)
+}
+
+/// Active tab and workspace, recorded when a menu opens; a change dismisses the menu.
+pub(super) fn popup_context(hwnd: HWND) -> Option<html_popup::MenuContext> {
+    let app = app_of(hwnd)?;
+    Some((App::active_tab_id(&app).0, App::workspaces(&app).active_id().0))
+}
+
+/// A menu anchor in screen coordinates from a client point.
+fn screen_point(hwnd: HWND, mut point: POINT) -> POINT {
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+    }
+    point
 }
 // --- end popup host ---
 
