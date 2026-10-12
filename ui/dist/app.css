@@ -1,0 +1,172 @@
+/* Fallback colours; Rust overrides every token through the state message theme. */
+:root {
+  --bg: #202124;
+  --fill: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.14);
+  --focus-border: #8ab4f8;
+  --text: #e8eaed;
+  --placeholder: #9aa0a6;
+  --completion: #8ab4f8;
+  --selection: rgba(138, 180, 248, 0.4);
+  --hover: rgba(255, 255, 255, 0.1);
+  --progress: #8ab4f8;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: transparent;
+  color: var(--text);
+  font: 12px/1 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.solid {
+  background: var(--bg);
+}
+
+#app {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 28px;
+  padding: 0 4px;
+}
+
+.nav,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 720px;
+  height: 24px;
+  margin: 0 auto;
+  background: var(--fill);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.pill:focus-within {
+  border-color: var(--focus-border);
+}
+
+.omni {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0 8px 0 4px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+
+.omni::placeholder {
+  color: var(--placeholder);
+}
+
+.omni::selection {
+  background: var(--selection);
+  color: inherit;
+}
+
+.btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+  transition: background-color 100ms ease, opacity 100ms ease, transform 100ms ease;
+}
+
+.btn.site {
+  width: 22px;
+  height: 20px;
+  margin-left: 2px;
+  border-radius: 10px;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.btn:disabled {
+  opacity: 0.35;
+}
+
+.btn:focus-visible,
+.omni:focus-visible {
+  outline: none;
+}
+
+.btn:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus-border);
+}
+
+.btn svg {
+  display: block;
+  pointer-events: none;
+}
+
+.progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--progress);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  pointer-events: none;
+  transition: transform 100ms linear, opacity 100ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .progress {
+    transition: none;
+  }
+
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}

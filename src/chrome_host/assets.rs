@@ -1,0 +1,143 @@
+//! Embedded HTML chrome assets, served to the chrome WebView2 through the `bowser-ui` scheme.
+//!
+//! Everything is compiled in with `include_bytes!` from `ui/dist/`; nothing is read from disk at
+//! runtime. The table is closed: any path not listed here is a 404 for the caller.
+
+pub const SCHEME: &str = "bowser-ui";
+pub const START_URL: &str = "bowser-ui://app/index.html";
+
+const HTML: &str = "text/html;charset=utf-8";
+const JS: &str = "text/javascript;charset=utf-8";
+const CSS: &str = "text/css;charset=utf-8";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Asset {
+    pub bytes: &'static [u8],
+    pub mime: &'static str,
+}
+
+/// Headers sent with every asset, CRLF-separated for `CreateWebResourceResponse`. The caller adds
+/// `Content-Type` from `Asset::mime`.
+pub const RESPONSE_HEADERS: &str = concat!(
+    "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'\r\n",
+    "X-Content-Type-Options: nosniff\r\n",
+    "Cache-Control: no-store",
+);
+
+/// Maps a request path (as seen after the scheme and host) to an embedded asset.
+///
+/// A leading slash is optional, and any query or fragment is ignored. The empty path and
+/// `index.html` both return the page. Anything containing `..` or a backslash is rejected before
+/// the path is interpreted.
+pub fn lookup(path: &str) -> Option<Asset> {
+    if path.contains("..") || path.contains('\\') {
+        return None;
+    }
+    let path = path.split(['?', '#']).next()?;
+    let name = path.strip_prefix('/').unwrap_or(path);
+    match name {
+        "" | "index.html" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/index.html"),
+            mime: HTML,
+        }),
+        "app.js" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/app.js"),
+            mime: JS,
+        }),
+        "app.css" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/app.css"),
+            mime: CSS,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_and_index_serve_the_page() {
+        for path in ["/", "/index.html", "index.html", ""] {
+            let asset = lookup(path).unwrap_or_else(|| panic!("{path:?} not found"));
+            assert_eq!(asset.mime, HTML, "{path:?}");
+            assert!(!asset.bytes.is_empty(), "{path:?}");
+            assert_eq!(asset.bytes, include_bytes!("../../ui/dist/index.html"));
+        }
+    }
+
+    #[test]
+    fn scripts_and_styles_have_their_mime_types() {
+        let js = lookup("/app.js").expect("app.js");
+        assert_eq!(js.mime, JS);
+        assert_eq!(js.bytes, include_bytes!("../../ui/dist/app.js"));
+        assert_eq!(lookup("app.js"), Some(js));
+
+        let css = lookup("/app.css").expect("app.css");
+        assert_eq!(css.mime, CSS);
+        assert_eq!(css.bytes, include_bytes!("../../ui/dist/app.css"));
+        assert_eq!(lookup("app.css"), Some(css));
+    }
+
+    #[test]
+    fn query_and_fragment_are_ignored() {
+        assert_eq!(lookup("/index.html?x=1#frag"), lookup("/index.html"));
+        assert_eq!(lookup("/app.js?v=2"), lookup("/app.js"));
+        assert_eq!(lookup("/?cache=no"), lookup("/"));
+        assert_eq!(lookup("/#top"), lookup("/"));
+    }
+
+    #[test]
+    fn unknown_paths_are_not_found() {
+        for path in [
+            "/missing.html",
+            "/app.js.map",
+            "/APP.JS",
+            "/index",
+            "/index.html/",
+            "//index.html",
+            "/ui/dist/app.js",
+            "/app.js ",
+        ] {
+            assert_eq!(lookup(path), None, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn traversal_is_rejected() {
+        for path in [
+            "/../app.js",
+            "../app.js",
+            "/..%2fapp.js",
+            "/a/../app.js",
+            "/app.js/..",
+            "/..",
+            "..",
+            "/app.js?../x",
+            "/app.js#..",
+            "\\app.js",
+            "/..\\app.js",
+            "/app.js\\..",
+        ] {
+            assert_eq!(lookup(path), None, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn response_headers_are_crlf_joined_without_bare_newlines() {
+        let lines: Vec<&str> = RESPONSE_HEADERS.split("\r\n").collect();
+        assert_eq!(lines.len(), 3);
+        assert!(!RESPONSE_HEADERS.replace("\r\n", "").contains('\n'));
+        assert_eq!(lines[1], "X-Content-Type-Options: nosniff");
+        assert_eq!(lines[2], "Cache-Control: no-store");
+        assert!(lines[0].starts_with("Content-Security-Policy: default-src 'none';"));
+        assert!(lines[0].ends_with("trusted-types 'none'"));
+        assert!(lines.iter().all(|line| !line.starts_with("Content-Type:")));
+    }
+
+    #[test]
+    fn scheme_and_start_url_agree() {
+        assert!(START_URL.starts_with(&format!("{SCHEME}://app/")));
+        assert!(lookup("/index.html").is_some());
+    }
+}

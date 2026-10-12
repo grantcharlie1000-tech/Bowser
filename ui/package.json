@@ -1,0 +1,16 @@
+{
+  "name": "bowser-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HTML toolbar for the Bowser WebView2 chrome host",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "node lint.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}
