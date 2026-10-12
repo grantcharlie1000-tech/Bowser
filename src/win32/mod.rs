@@ -10,6 +10,9 @@ mod menu;
 mod html_popup;
 // --- hover layer ---
 mod html_hover;
+// --- omnibox suggest ---
+mod html_suggest;
+// --- end omnibox suggest ---
 // --- end hover layer ---
 // --- end popup host ---
 mod notes_panel;

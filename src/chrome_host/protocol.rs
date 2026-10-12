@@ -228,6 +228,14 @@ pub enum Command {
     /// An action inside the hover layer's card or island menu, for content token `tok`.
     HoverAct { tok: u32, action: HoverAction },
     // --- end hover layer ---
+    // --- omnibox suggest ---
+    /// Enter (toolbar) or a click (suggest popup) on row `i` of the list for edit `seq`.
+    SuggestPick { seq: u32, i: u8 },
+    /// The toolbar moved the keyboard selection to row `i` of the list for edit `seq`.
+    SuggestPreview { seq: u32, i: u8 },
+    /// The toolbar closed the list (Escape); the typed text stays.
+    SuggestEnd,
+    // --- end omnibox suggest ---
 }
 
 // --- hover layer ---
@@ -754,6 +762,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "hover" => &["k", "id", "r"],
         "hact" => &["tok", "a", "n", "text"],
         // --- end hover layer ---
+        "suggestPick" | "suggestPreview" => &["seq", "i"],
+        "suggestEnd" => &[],
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -888,6 +898,13 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         }),
         "hact" => Command::HoverAct { tok: uint_field(fields, "tok")?, action: hover_action(fields)? },
         // --- end hover layer ---
+        "suggestPick" | "suggestPreview" => {
+            let seq = seq_field(fields)?;
+            let i = uint_field(fields, "i")?;
+            if i >= MAX_SUGGEST_ITEMS as u32 { return Err(ProtocolError::InvalidValue("i")); }
+            if kind == "suggestPick" { Command::SuggestPick { seq, i: i as u8 } } else { Command::SuggestPreview { seq, i: i as u8 } }
+        }
+        "suggestEnd" => Command::SuggestEnd,
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }
@@ -966,6 +983,10 @@ pub struct ViewState {
     pub back: bool,
     pub forward: bool,
     pub loading: bool,
+    /// The window shows a split view (the split button reads as on).
+    pub split: bool,
+    /// The page the tab shows is bookmarked.
+    pub bookmarked: bool,
     /// Clamped to 0..=100 when serialised.
     pub progress: u8,
     pub security: Security,
@@ -988,6 +1009,8 @@ impl ViewState {
             ("back", self.back),
             ("forward", self.forward),
             ("loading", self.loading),
+            ("split", self.split),
+            ("bookmarked", self.bookmarked),
         ] {
             out.push_str(",\"");
             out.push_str(name);
@@ -1297,6 +1320,69 @@ pub fn hover_hide_json() -> String {
 }
 // --- end hover layer ---
 
+// --- omnibox suggest ---
+/// Most rows in one `suggest` message, the default row included.
+pub const MAX_SUGGEST_ITEMS: usize = 8;
+/// Longest suggestion text and URL sent to the page, in characters.
+pub const MAX_SUGGEST_TEXT_CHARS: usize = 256;
+/// Widest dropdown Rust may ask for, in CSS pixels.
+pub const MAX_SUGGEST_WIDTH: u32 = 4000;
+/// Row kinds on the wire: a search, a typed or completed address, history, a bookmark, an open tab.
+pub const SUGGEST_KINDS: [&str; 5] = ["search", "url", "hist", "bm", "tab"];
+
+/// One dropdown row as the page shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SuggestItem {
+    /// One of [`SUGGEST_KINDS`]; anything else is sent as `url`.
+    pub kind: String,
+    /// What the omnibox shows while the row is selected.
+    pub text: String,
+    pub title: String,
+    /// Display form of the address; empty for a search row.
+    pub url: String,
+    /// A favicon PNG, when one is known.
+    pub png: Option<Vec<u8>>,
+}
+
+/// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"items":[{"k","text","title","url","fav"?}]}`.
+/// `seq` is the edit the list answers; `tok` is the hover layer's content token (`0` for the
+/// toolbar's copy, which carries no favicons); `w` is the dropdown width in CSS pixels. At most
+/// `MAX_SUGGEST_ITEMS` rows are sent, with text and URL capped at `MAX_SUGGEST_TEXT_CHARS` and
+/// titles at `MAX_TAB_TITLE_CHARS`. `sel` is clamped to the rows sent. No rows closes the list.
+pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, items: &[SuggestItem]) -> String {
+    let mut budget = MAX_HOVER_FAV_TEXT;
+    let items = &items[..items.len().min(MAX_SUGGEST_ITEMS)];
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "suggest");
+        out.uint("tok", u64::from(tok));
+        out.uint("seq", u64::from(seq));
+        out.uint("w", u64::from(w.min(MAX_SUGGEST_WIDTH)));
+        out.uint("sel", sel.min(items.len().saturating_sub(1)) as u64);
+        out.array("items", |list| {
+            for item in items {
+                list.object(|row| {
+                    let kind = SUGGEST_KINDS.iter().find(|k| **k == item.kind).copied().unwrap_or("url");
+                    row.string("k", kind);
+                    row.string("text", truncate_chars(&item.text, MAX_SUGGEST_TEXT_CHARS));
+                    row.string("title", truncate_chars(&item.title, MAX_TAB_TITLE_CHARS));
+                    row.string("url", truncate_chars(&item.url, MAX_SUGGEST_TEXT_CHARS));
+                    let fav = budgeted_uri(item.png.as_deref(), &mut budget);
+                    if !fav.is_empty() {
+                        row.string("fav", &fav);
+                    }
+                });
+            }
+        });
+    })
+}
+
+/// `{"v":1,"t":"suggestSel","seq":..,"sel":..}`: the keyboard selection moved (hover layer only).
+pub fn suggest_sel_json(seq: u32, sel: usize) -> String {
+    format!("{{\"v\":1,\"t\":\"suggestSel\",\"seq\":{seq},\"sel\":{}}}", sel.min(MAX_SUGGEST_ITEMS - 1))
+}
+// --- end omnibox suggest ---
+
 /// The favicon gate shared by `fav` and `railfav`: a PNG of at most `MAX_FAVICON_BYTES` whose IHDR
 /// size is in range.
 fn png_is_sendable(png: &[u8]) -> bool {
@@ -1581,6 +1667,8 @@ mod tests {
             back: false,
             forward: false,
             loading: false,
+            split: false,
+            bookmarked: false,
             progress: 0,
             security: Security::Secure,
             label: "Secure".to_string(),
@@ -2379,6 +2467,8 @@ mod tests {
             back: true,
             forward: false,
             loading: true,
+            split: true,
+            bookmarked: false,
             progress: 42,
             security: Security::Secure,
             label: "Secure".to_string(),
@@ -2389,7 +2479,7 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"progress":42,"security":"secure","label":"Secure","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
@@ -3573,4 +3663,103 @@ mod tests {
         );
     }
     // --- end hover layer ---
+
+    // --- omnibox suggest ---
+    fn item(kind: &str, text: &str, title: &str, url: &str) -> SuggestItem {
+        SuggestItem { kind: kind.into(), text: text.into(), title: title.into(), url: url.into(), png: None }
+    }
+
+    #[test]
+    fn suggest_commands_parse_with_exact_fields() {
+        let ok = |text: &str| parse_command(text).unwrap();
+        assert_eq!(ok(r#"{"v":1,"t":"suggestPick","seq":9,"i":7}"#), Command::SuggestPick { seq: 9, i: 7 });
+        assert_eq!(ok(r#"{"v":1,"t":"suggestPreview","seq":0,"i":0}"#), Command::SuggestPreview { seq: 0, i: 0 });
+        assert_eq!(ok(r#"{"v":1,"t":"suggestEnd"}"#), Command::SuggestEnd);
+        for bad in [
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":8}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":-1}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":"1"}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9}"#,
+            r#"{"v":1,"t":"suggestPick","i":1}"#,
+            r#"{"v":1,"t":"suggestPick","seq":4294967296,"i":1}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":1,"x":1}"#,
+            r#"{"v":1,"t":"suggestPreview","seq":9,"i":1.5}"#,
+            r#"{"v":1,"t":"suggestEnd","seq":1}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn suggest_json_is_one_flat_object_with_capped_fields() {
+        let rows = [
+            item("search", "rust", "rust", ""),
+            item("tab", "example.com/a", "A \"quoted\" <title>", "example.com/a"),
+            item("weird", &"x".repeat(MAX_SUGGEST_TEXT_CHARS + 50), &"t".repeat(MAX_TAB_TITLE_CHARS + 50), "u"),
+        ];
+        let json = suggest_json(4, 17, 600, 1, &rows);
+        assert!(json.starts_with(r#"{"v":1,"t":"suggest","tok":4,"seq":17,"w":600,"sel":1,"items":[{"k":"search","text":"rust","title":"rust","url":""},"#), "{json}");
+        assert!(json.contains(r#""title":"A \"quoted\" \u003ctitle>""#), "{json}");
+        assert!(json.contains(r#""k":"url""#), "unknown kinds fall back to url");
+        assert!(!json.contains(&"x".repeat(MAX_SUGGEST_TEXT_CHARS + 1)));
+        assert!(!json.contains(&"t".repeat(MAX_TAB_TITLE_CHARS + 1)));
+        assert!(!json.contains("fav"));
+        assert!(!json.contains('\n'));
+    }
+
+    #[test]
+    fn suggest_json_caps_rows_clamps_selection_and_width() {
+        let rows: Vec<SuggestItem> = (0..12).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
+        let json = suggest_json(1, 2, 999_999, 40, &rows);
+        assert_eq!(json.matches(r#""k":"hist""#).count(), MAX_SUGGEST_ITEMS);
+        assert!(json.contains(&format!(r#""w":{MAX_SUGGEST_WIDTH},"sel":{}"#, MAX_SUGGEST_ITEMS - 1)), "{json}");
+        let empty = suggest_json(0, 5, 0, 3, &[]);
+        assert_eq!(empty, r#"{"v":1,"t":"suggest","tok":0,"seq":5,"w":0,"sel":0,"items":[]}"#);
+        assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":7}"#);
+    }
+
+    #[test]
+    fn suggest_json_carries_only_gated_favicons() {
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(&[0, 0, 0, 13]);
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&16u32.to_be_bytes());
+        png.extend_from_slice(&16u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut with = item("tab", "a", "a", "a");
+        with.png = Some(png);
+        let mut bad = item("tab", "b", "b", "b");
+        bad.png = Some(b"not a png".to_vec());
+        let json = suggest_json(1, 1, 500, 0, &[with, bad]);
+        assert_eq!(json.matches("\"fav\":\"data:image/png;base64,").count(), 1, "{json}");
+    }
+
+    /// Writes the cross-language fixture read by `ui/test/suggest.mjs`.
+    #[test]
+    fn suggest_messages_write_the_ui_fixture() {
+        let rows = [
+            item("url", "example.com/", "example.com/", "example.com/"),
+            item("tab", "docs.example.com/guide", "Guide <b>", "docs.example.com/guide"),
+            item("bm", "example.org/", "Example", "example.org/"),
+            item("hist", "example.net/a", "Net", "example.net/a"),
+            item("search", "example", "example", ""),
+        ];
+        let fixture = format!(
+            "{{\"suggest\":{},\"toolbar\":{},\"sel\":{},\"close\":{}}}\n",
+            suggest_json(3, 12, 560, 1, &rows),
+            suggest_json(0, 12, 0, 0, &rows),
+            suggest_sel_json(12, 2),
+            suggest_json(0, 13, 0, 0, &[]),
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/suggest-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).expect("write suggest fixture");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("suggest fixture").replace("\r\n", "\n"),
+            fixture,
+            "set BOWSER_WRITE_FIXTURES=1 cargo test suggest_messages_write_the_ui_fixture --lib"
+        );
+    }
+    // --- end omnibox suggest ---
 }

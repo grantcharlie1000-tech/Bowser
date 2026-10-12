@@ -1,5 +1,18 @@
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
-import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
+import {
+  MAX_TEXT,
+  onInbound,
+  send,
+  sendSuggestEnd,
+  sendSuggestPick,
+  sendSuggestPreview,
+  type CaptionAction,
+  type CompletionMsg,
+  type NavAction,
+  type OpenTarget,
+  type SuggestMsg,
+} from './protocol';
+import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
 import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
@@ -28,6 +41,11 @@ function startToolbar(root: HTMLElement): void {
   let frame = 0;
   let loading = false;
   let composing = false;
+  // --- omnibox suggest ---
+  // The dropdown's rows, as Rust last sent them for the latest edit (the popup draws them).
+  let list: SuggestMsg | null = null;
+  let listSel = 0;
+  // --- end omnibox suggest ---
 
   // At most one edit per animation frame, each with a fresh seq.
   const flush = (): void => {
@@ -96,6 +114,33 @@ function startToolbar(root: HTMLElement): void {
       ev.preventDefault();
       return;
     }
+    // --- omnibox suggest ---
+    if ((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey && list && !pending && list.seq === latestSeq) {
+      ev.preventDefault();
+      listSel = moveSuggestSelection(listSel, list.items.length, ev.key);
+      const row = list.items[listSel];
+      if (!row) return;
+      input.value = suggestPreviewText(latestText, listSel, row.text);
+      input.setSelectionRange(input.value.length, input.value.length);
+      sendSuggestPreview(list.seq, listSel);
+      return;
+    }
+    if (ev.key === 'Enter' && list && listSel > 0 && !pending && list.seq === latestSeq) {
+      ev.preventDefault();
+      const seq = list.seq;
+      list = null;
+      sendSuggestPick(seq, listSel);
+      return;
+    }
+    if (ev.key === 'Escape' && list) {
+      // The first Escape only closes the list and puts back what was typed.
+      ev.preventDefault();
+      if (listSel > 0 && !pending) input.value = latestText;
+      list = null;
+      sendSuggestEnd();
+      return;
+    }
+    // --- end omnibox suggest ---
     if (ev.key === 'Enter') {
       ev.preventDefault();
       if (input.value.length <= MAX_TEXT) send({ v: 1, t: 'submit', text: input.value });
@@ -126,6 +171,7 @@ function startToolbar(root: HTMLElement): void {
     send({ v: 1, t: 'focus', on: true });
   });
   input.addEventListener('blur', () => {
+    list = null; // --- omnibox suggest ---
     showDisplay();
     send({ v: 1, t: 'focus', on: false });
   });
@@ -154,6 +200,7 @@ function startToolbar(root: HTMLElement): void {
         pending = false;
         latestSeq = -1;
         lastInputType = '';
+        list = null; // --- omnibox suggest ---
         input.value = msg.text;
         if (msg.select) input.select();
         showDisplay();
@@ -165,6 +212,15 @@ function startToolbar(root: HTMLElement): void {
       case 'completion':
         acceptCompletion(msg);
         break;
+      // --- omnibox suggest ---
+      case 'suggest':
+        // The toolbar's copy (tok 0) drives the keyboard; a list for an older edit is dropped.
+        if (msg.tok === 0) {
+          list = msg.items.length > 0 && msg.seq === latestSeq ? msg : null;
+          listSel = list ? list.sel : 0;
+        }
+        break;
+      // --- end omnibox suggest ---
     }
   });
 

@@ -25,9 +25,9 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+            BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
             GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
-            PAINTSTRUCT, SetWindowRgn,
+            PAINTSTRUCT, RGN_OR, SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -45,7 +45,12 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-use super::{glass, hover_square};
+use super::{
+    glass, hover_square,
+    // --- omnibox suggest ---
+    html_suggest::{Row, Target},
+    // --- end omnibox suggest ---
+};
 use crate::{
     app::{App, AppRef},
     chrome::{
@@ -73,6 +78,10 @@ const WM_HOVER_RUN: u32 = WM_APP + 0x52;
 /// Posted when the layer was activated without asking (WebView2 focuses its window on click): the
 /// owner gets activation back.
 const WM_HOVER_RETURN: u32 = WM_APP + 0x53;
+// --- omnibox suggest ---
+/// Posted once per queued dropdown click, so the pick runs outside WebView2's callback.
+const WM_HOVER_PICK: u32 = WM_APP + 0x54;
+// --- end omnibox suggest ---
 /// Card or island delay, armed on the layer window.
 const OPEN_TIMER: usize = 1;
 /// Leave check while something is shown.
@@ -98,6 +107,10 @@ pub(crate) enum Kind {
     Tooltip,
     Card,
     Island,
+    // --- omnibox suggest ---
+    /// The omnibox suggestion dropdown (`html_suggest.rs` builds its rows).
+    Suggest,
+    // --- end omnibox suggest ---
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,6 +119,10 @@ enum Content {
     Tooltip { text: String, beside: bool },
     Card { tab: TabId, rows: Vec<TabId>, model: HoverCard },
     Island { tab: TabId, rows: Vec<TabId>, model: HoverIsland },
+    // --- omnibox suggest ---
+    /// `seq` is the omnibox edit the rows answer; `width` is the dropdown width in CSS pixels.
+    Suggest { seq: u32, width: u32, sel: usize, rows: Vec<Row> },
+    // --- end omnibox suggest ---
 }
 
 impl Content {
@@ -114,6 +131,7 @@ impl Content {
             Self::Tooltip { .. } => Kind::Tooltip,
             Self::Card { .. } => Kind::Card,
             Self::Island { .. } => Kind::Island,
+            Self::Suggest { .. } => Kind::Suggest,
         }
     }
 }
@@ -159,6 +177,12 @@ struct Layer {
     actions: VecDeque<(u32, HoverAction)>,
     /// The island's name field asked for the keyboard, so activation is allowed until the layer hides.
     keyboard: bool,
+    // --- omnibox suggest ---
+    /// Clicks on dropdown rows, as (edit seq, row index), run outside WebView2's callback.
+    picks: VecDeque<(u32, u8)>,
+    /// The edit seq of the dropdown last shown, kept after it hides so the toolbar can be told.
+    suggest_seq: u32,
+    // --- end omnibox suggest ---
 }
 
 thread_local! {
@@ -257,6 +281,8 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
                 island: None,
                 actions: VecDeque::new(),
                 keyboard: false,
+                picks: VecDeque::new(),
+                suggest_seq: 0,
             },
         );
     });
@@ -303,6 +329,9 @@ fn layer_command(owner: HWND, command: Command) {
         }
         Command::PopupSize { tok, w, h } => place(owner, tok, w, h),
         Command::HoverAct { tok, action } => queue_action(owner, tok, action),
+        // --- omnibox suggest ---
+        Command::SuggestPick { seq, i } => queue_pick(owner, seq, i),
+        // --- end omnibox suggest ---
         _ => {}
     }
 }
@@ -323,7 +352,7 @@ pub(crate) fn anchor_to_screen(view: RECT, scale: f32, rect: HoverRect) -> RECT 
 /// Ignored while a card or island is up.
 pub(crate) fn tip(owner: HWND, anchor: RECT, text: &str, beside: bool) {
     let busy = with_layer(owner, |layer| {
-        matches!(layer.content, Some(Content::Card { .. } | Content::Island { .. }))
+        matches!(layer.content, Some(Content::Card { .. } | Content::Island { .. } | Content::Suggest { .. }))
     });
     if busy != Some(false) || text.trim().is_empty() {
         return;
@@ -587,6 +616,8 @@ fn theme_json() -> String {
         back: false,
         forward: false,
         loading: false,
+        split: false,
+        bookmarked: false,
         progress: 0,
         security: Security::None,
         label: String::new(),
@@ -601,7 +632,7 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
         return false;
     };
     let state = theme_json();
-    let Some((window, tok, json, post_state)) = with_layer(owner, |layer| {
+    let Some((window, tok, json, post_state, closed_suggest)) = with_layer(owner, |layer| {
         let tok = layer.next_tok;
         layer.next_tok = layer.next_tok.wrapping_add(1).max(1);
         layer.tok = tok;
@@ -609,6 +640,13 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
         let json = match &content {
             Content::Tooltip { text, .. } => protocol::tooltip_json(tok, text),
             Content::Card { model, .. } => protocol::card_json(tok, model),
+            // --- omnibox suggest ---
+            Content::Suggest { seq, width, sel, rows } => {
+                layer.suggest_seq = *seq;
+                let items: Vec<_> = rows.iter().map(|row| row.item.clone()).collect();
+                protocol::suggest_json(tok, *seq, *width, *sel, &items)
+            }
+            // --- end omnibox suggest ---
             Content::Island { tab, model, .. } => {
                 let same_island = layer.island.as_ref().is_some_and(|s| s.tab == *tab);
                 if !same_island || !matches!(layer.content, Some(Content::Island { .. })) {
@@ -623,12 +661,17 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
                 protocol::island_json(tok, model)
             }
         };
+        // --- omnibox suggest ---
+        let was_suggest = matches!(layer.content, Some(Content::Suggest { .. }));
+        let is_suggest = matches!(content, Content::Suggest { .. });
+        let closed_suggest = (was_suggest && !is_suggest).then_some(layer.suggest_seq);
+        // --- end omnibox suggest ---
         layer.content = Some(content);
         let post_state = layer.state_sent.as_deref() != Some(state.as_str());
         if post_state {
             layer.state_sent = Some(state.clone());
         }
-        (layer.window, tok, json, post_state)
+        (layer.window, tok, json, post_state, closed_suggest)
     }) else {
         return false;
     };
@@ -648,6 +691,11 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
         hide(owner);
         return false;
     }
+    // --- omnibox suggest ---
+    if let Some(seq) = closed_suggest {
+        tell_toolbar_closed(owner, seq);
+    }
+    // --- end omnibox suggest ---
     true
 }
 
@@ -681,6 +729,12 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
             scale_px(tab_card::EDGE_MARGIN, dpi),
             work,
         ),
+        // Directly under the pill, left edges aligned, no gap: the top corners attach to it.
+        Kind::Suggest => {
+            let left = clamp_span(anchor.left, width, work.left, work.right);
+            let top = clamp_span(anchor.bottom, height, work.top, work.bottom);
+            RECT { left, top, right: left + width, bottom: top + height }
+        }
     };
     let radius = scale_px(if kind == Kind::Tooltip { TIP_RADIUS } else { OVERLAY_RADIUS }, dpi);
     let (bw, bh) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
@@ -696,6 +750,17 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
             let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
         }
         let region = CreateRoundRectRgn(0, 0, bw + 1, bh + 1, radius * 2, radius * 2);
+        // --- omnibox suggest ---
+        // The dropdown's top corners touch the pill, so they stay square: the rounded region plus
+        // a rectangle over its upper half.
+        if kind == Kind::Suggest && !region.is_invalid() {
+            let top = CreateRectRgn(0, 0, bw + 1, bh / 2);
+            if !top.is_invalid() {
+                let _ = CombineRgn(Some(region), Some(region), Some(top), RGN_OR);
+                let _ = DeleteObject(HGDIOBJ(top.0));
+            }
+        }
+        // --- end omnibox suggest ---
         if !region.is_invalid() && SetWindowRgn(window, Some(region), false) == 0 {
             let _ = DeleteObject(HGDIOBJ(region.0));
         }
@@ -719,16 +784,23 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
 
 /// Hides the layer, gives the keyboard back if it had it, and schedules suspension.
 fn hide(owner: HWND) {
-    let Some((window, host, was_shown)) = with_layer(owner, |layer| {
+    let Some((window, host, was_shown, closed_suggest)) = with_layer(owner, |layer| {
+        // --- omnibox suggest ---
+        let was_suggest = matches!(layer.content, Some(Content::Suggest { .. }));
+        let closed_suggest = was_suggest.then_some(layer.suggest_seq);
+        // --- end omnibox suggest ---
         let was_shown = layer.content.take().is_some() || layer.visible;
         layer.visible = false;
         layer.bounds = RECT::default();
         layer.tok = 0;
         layer.keyboard = false;
-        (layer.window, layer.host.clone(), was_shown)
+        (layer.window, layer.host.clone(), was_shown, closed_suggest)
     }) else {
         return;
     };
+    if let Some(seq) = closed_suggest {
+        tell_toolbar_closed(owner, seq);
+    }
     if !was_shown {
         return;
     }
@@ -765,13 +837,18 @@ fn open_timer(owner: HWND) {
     }
     // As natively, an open island menu keeps the card away.
     let island_open = with_layer(owner, |layer| matches!(layer.content, Some(Content::Island { .. })));
+    // --- omnibox suggest ---
+    if with_layer(owner, |layer| matches!(layer.content, Some(Content::Suggest { .. }))) == Some(true) {
+        return;
+    }
+    // --- end omnibox suggest ---
     match target.kind {
         Kind::Card if island_open == Some(true) => {}
         Kind::Card => show_card(owner, &app, target.tab, target.anchor),
         Kind::Island => {
             let _ = show_island(owner, &app, target.tab, target.anchor);
         }
-        Kind::Tooltip => {}
+        Kind::Tooltip | Kind::Suggest => {}
     }
 }
 
@@ -829,6 +906,8 @@ fn leave_decision(
                 hover_square::Leave::Close
             }
         }
+        // The dropdown stays while the omnibox has the keyboard; focus loss closes it elsewhere.
+        Kind::Suggest => hover_square::Leave::Keep,
         Kind::Card | Kind::Island => hover_square::on_leave(
             hover_square::contains(bounds, cursor),
             hover_square::contains(hover_square::square(anchor, bounds, tolerance), cursor),
@@ -957,7 +1036,7 @@ fn refresh(owner: HWND, app: &AppRef, kind: Kind, tab: TabId, anchor: RECT) {
     let content = match kind {
         Kind::Card => card_content(app, tab),
         Kind::Island => island_content(app, tab),
-        Kind::Tooltip => None,
+        Kind::Tooltip | Kind::Suggest => None,
     };
     match content {
         Some(content) => {
@@ -966,6 +1045,120 @@ fn refresh(owner: HWND, app: &AppRef, kind: Kind, tab: TabId, anchor: RECT) {
         None => hide(owner),
     }
 }
+
+// --- omnibox suggest ---
+// ----- omnibox suggestion dropdown -----
+//
+// The dropdown reuses this layer (one no-activate popup, one WebView2 host, shared theme, DPI and
+// work-area placement) rather than a second host: a second WebView2 would cost another renderer
+// process for a surface that is only ever shown while one toolbar edit is in flight. The toolbar page
+// keeps the keyboard; it gets its own copy of the rows (no favicons) so Up and Down can preview text.
+
+/// Tells the toolbar page the dropdown for edit `seq` is gone.
+fn tell_toolbar_closed(owner: HWND, seq: u32) {
+    super::window::html_toolbar_post(owner, &protocol::suggest_json(0, seq, 0, 0, &[]));
+}
+
+fn suggest_shown(owner: HWND) -> bool {
+    with_layer(owner, |layer| matches!(layer.content, Some(Content::Suggest { .. }))) == Some(true)
+}
+
+/// Shows `rows` for omnibox edit `seq` under `anchor` (the pill, in screen pixels), `width` CSS pixels
+/// wide, with the first row selected. No rows hides the dropdown. False when the layer is not ready.
+pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, rows: Vec<Row>) -> bool {
+    if rows.is_empty() {
+        suggest_hide(owner);
+        return false;
+    }
+    let plain: Vec<_> = rows
+        .iter()
+        .map(|row| protocol::SuggestItem { png: None, ..row.item.clone() })
+        .collect();
+    let toolbar = protocol::suggest_json(0, seq, 0, 0, &plain);
+    if !present(owner, Content::Suggest { seq, width, sel: 0, rows }, anchor) {
+        return false;
+    }
+    super::window::html_toolbar_post(owner, &toolbar);
+    true
+}
+
+/// Closes the dropdown if it is open; the toolbar page is told.
+pub(crate) fn suggest_hide(owner: HWND) {
+    if suggest_shown(owner) {
+        hide(owner);
+    }
+}
+
+/// The toolbar lost the keyboard. A press on the dropdown itself also blurs the omnibox, so the
+/// dropdown stays when the pointer is over it, and closes otherwise.
+pub(crate) fn suggest_focus_lost(owner: HWND) {
+    let Some(bounds) = with_layer(owner, |layer| {
+        matches!(layer.content, Some(Content::Suggest { .. })).then_some(layer.bounds)
+    })
+    .flatten() else {
+        return;
+    };
+    let mut cursor = POINT::default();
+    let over = unsafe { GetCursorPos(&mut cursor) }.is_ok() && hover_square::contains(bounds, cursor);
+    if !over {
+        hide(owner);
+    }
+}
+
+/// The toolbar moved the keyboard selection to row `i` of the list for edit `seq`. Stale or
+/// out-of-range requests are ignored.
+pub(crate) fn suggest_preview(owner: HWND, seq: u32, i: u8) {
+    let moved = with_layer(owner, |layer| match &mut layer.content {
+        Some(Content::Suggest { seq: shown, sel, rows, .. }) if *shown == seq && usize::from(i) < rows.len() => {
+            *sel = usize::from(i);
+            true
+        }
+        _ => false,
+    });
+    if moved == Some(true)
+        && let Some(host) = ready_host(owner)
+    {
+        let _ = host.post_json(&protocol::suggest_sel_json(seq, usize::from(i)));
+    }
+}
+
+/// What picking row `i` of the list for edit `seq` does; the dropdown closes. `None` when the list
+/// is gone, is for another edit, or has no such row.
+pub(crate) fn suggest_take(owner: HWND, seq: u32, i: u8) -> Option<Target> {
+    let target = with_layer(owner, |layer| match &layer.content {
+        Some(Content::Suggest { seq: shown, rows, .. }) if *shown == seq => {
+            rows.get(usize::from(i)).map(|row| row.target.clone())
+        }
+        _ => None,
+    })
+    .flatten()?;
+    hide(owner);
+    Some(target)
+}
+
+fn queue_pick(owner: HWND, seq: u32, i: u8) {
+    let window = with_layer(owner, |layer| {
+        if layer.picks.len() >= ACTION_LIMIT {
+            return None;
+        }
+        layer.picks.push_back((seq, i));
+        Some(layer.window)
+    })
+    .flatten();
+    if let Some(window) = window {
+        crate::win32::post(window, WM_HOVER_PICK, WPARAM(0), LPARAM(0));
+    }
+}
+
+fn run_pick(owner: HWND) {
+    let Some(Some((seq, i))) = with_layer(owner, |layer| layer.picks.pop_front()) else {
+        return;
+    };
+    if let Some(target) = suggest_take(owner, seq, i) {
+        super::window::html_suggest_run(owner, target);
+    }
+}
+// --- end omnibox suggest ---
 
 // ----- geometry -----
 
@@ -1152,6 +1345,14 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        // --- omnibox suggest ---
+        WM_HOVER_PICK => {
+            if let Some(owner) = owner_of_window(hwnd) {
+                run_pick(owner);
+            }
+            LRESULT(0)
+        }
+        // --- end omnibox suggest ---
         WM_HOVER_FAILED => {
             if let Some(owner) = owner_of_window(hwnd) {
                 shutdown(owner);
@@ -1285,6 +1486,8 @@ mod tests {
             island: None,
             actions: VecDeque::new(),
             keyboard: false,
+            picks: VecDeque::new(),
+            suggest_seq: 0,
         };
         assert!(current(&layer(5, true), 5));
         assert!(!current(&layer(5, true), 4));

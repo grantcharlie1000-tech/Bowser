@@ -24,7 +24,7 @@ test('foundation Rust fixture messages parse across the bridge', () => {
   const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'rust-messages.json'), 'utf8'));
   assert.deepEqual(parseInbound(fixture.state), {
     t: 'state', scale: 1.25, pillx: 0, pillw: 624, menux: 627,
-    solid: true, dark: true, back: false, forward: false, loading: false,
+    solid: true, dark: true, back: false, forward: false, loading: false, split: false, bookmarked: false,
     progress: 0, security: 'secure', label: 'Secure', theme: { bg: '#123456', text: '#fff' },
   });
   assert.deepEqual(parseInbound(fixture.panelshow), { t: 'panelshow', p: 'history' });

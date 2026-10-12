@@ -966,7 +966,7 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff),
+        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_)),
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
@@ -975,7 +975,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
-        View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. }),
+        View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
     }
 }
 
@@ -1126,6 +1126,24 @@ mod tests {
             }
         }
     }
+
+    // --- omnibox suggest ---
+    #[test]
+    fn suggest_commands_come_only_from_the_toolbar_and_the_hover_layer() {
+        let pick = parse_command(r#"{"v":1,"t":"suggestPick","seq":3,"i":1}"#).unwrap();
+        let preview = parse_command(r#"{"v":1,"t":"suggestPreview","seq":3,"i":1}"#).unwrap();
+        let end = parse_command(r#"{"v":1,"t":"suggestEnd"}"#).unwrap();
+        for command in [&pick, &preview, &end] {
+            assert!(view_accepts_command(View::Toolbar, command));
+            for view in [View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog] {
+                assert!(!view_accepts_command(view, command), "{view:?}");
+            }
+        }
+        assert!(view_accepts_command(View::Hover, &pick));
+        assert!(!view_accepts_command(View::Hover, &preview));
+        assert!(!view_accepts_command(View::Hover, &end));
+    }
+    // --- end omnibox suggest ---
 
     #[test]
     fn new_views_reject_nearby_urls_and_foreign_command_families() {

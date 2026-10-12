@@ -1530,6 +1530,31 @@ impl App {
             .and_then(|tab| tab.url.clone())
     }
 
+    // --- omnibox suggest ---
+    /// The tabs of the active workspace that have a page, as (id, address, title), in one borrow.
+    /// The omnibox dropdown offers them as "Switch to tab" rows.
+    pub fn tab_suggest_sources(app: &AppRef) -> Vec<(TabId, String, String)> {
+        let state = app.borrow();
+        state
+            .workspaces
+            .active()
+            .tabs()
+            .iter()
+            .filter_map(|id| state.tabs.iter().find(|tab| tab.id == *id))
+            .filter_map(|tab| tab.url.as_ref().map(|url| (tab.id, url.as_str().to_owned(), tab.title.clone())))
+            .collect()
+    }
+
+    /// The address `input` would navigate to, or `None` when Enter would search for it (or it is
+    /// empty or unusable). Uses the search provider as last loaded; reads nothing from disk.
+    pub fn typed_address(app: &AppRef, input: &str) -> Option<url::Url> {
+        match resolve_input(input, &app.borrow().provider) {
+            Ok(NavigationTarget::Web(url)) => Some(url),
+            _ => None,
+        }
+    }
+    // --- end omnibox suggest ---
+
     pub fn queue_login_message(app: &AppRef, tab: TabId, message: crate::passwords::LoginMessage) {
         let hwnd = {
             let mut state = app.borrow_mut();

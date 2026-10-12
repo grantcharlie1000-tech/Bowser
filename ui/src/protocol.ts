@@ -82,8 +82,13 @@ export type Command =
   | { v: 1; t: 'tipoff' }
   | { v: 1; t: 'hover'; k: HoverTargetKind; id: number; r: string }
   | { v: 1; t: 'hover'; k: 'none' }
-  | ({ v: 1; t: 'hact'; tok: number } & HoverActFields);
+  | ({ v: 1; t: 'hact'; tok: number } & HoverActFields)
   // --- end hover layer ---
+  // --- omnibox suggest ---
+  | { v: 1; t: 'suggestPick'; seq: number; i: number }
+  | { v: 1; t: 'suggestPreview'; seq: number; i: number }
+  | { v: 1; t: 'suggestEnd' };
+  // --- end omnibox suggest ---
 
 // --- hover layer ---
 /** Longest tooltip text Rust accepts, in code points. */
@@ -157,6 +162,10 @@ export interface StateMsg {
   readonly back: boolean;
   readonly forward: boolean;
   readonly loading: boolean;
+  /** The window shows a split view. Absent in older hosts. */
+  readonly split?: boolean;
+  /** The page the tab shows is bookmarked. Absent in older hosts. */
+  readonly bookmarked?: boolean;
   readonly progress: number;
   readonly security: Security;
   readonly label: string;
@@ -171,6 +180,40 @@ export interface FocusOmniboxMsg {
   readonly t: 'focusOmnibox';
   readonly select: boolean;
 }
+// --- omnibox suggest ---
+/** Most rows in one `suggest` message, the default row included (Rust MAX_SUGGEST_ITEMS). */
+export const MAX_SUGGEST_ITEMS = 8;
+const MAX_SUGGEST_TEXT = 256;
+const MAX_SUGGEST_WIDTH = 4000;
+export const SUGGEST_KINDS = ['search', 'url', 'hist', 'bm', 'tab'] as const;
+export type SuggestKind = (typeof SUGGEST_KINDS)[number];
+export interface SuggestItem {
+  readonly k: SuggestKind;
+  /** What the omnibox shows while the row is selected. */
+  readonly text: string;
+  readonly title: string;
+  /** Display form of the address; empty for a search row. */
+  readonly url: string;
+  /** A PNG data: URI, or '' when none is known. */
+  readonly fav: string;
+}
+/** The row list for edit `seq`. `tok` is 0 for the toolbar's copy; no items closes the list. */
+export interface SuggestMsg {
+  readonly t: 'suggest';
+  readonly tok: number;
+  readonly seq: number;
+  /** Dropdown width in CSS pixels (0 in the toolbar's copy). */
+  readonly w: number;
+  readonly sel: number;
+  readonly items: readonly SuggestItem[];
+}
+/** The keyboard selection moved (hover layer only). */
+export interface SuggestSelMsg {
+  readonly t: 'suggestSel';
+  readonly seq: number;
+  readonly sel: number;
+}
+// --- end omnibox suggest ---
 export interface CompletionMsg {
   readonly t: 'completion';
   readonly seq: number;
@@ -253,6 +296,10 @@ export type Inbound =
   | HoverMsg
   | HoverHideMsg
   // --- end hover layer ---
+  // --- omnibox suggest ---
+  | SuggestMsg
+  | SuggestSelMsg
+  // --- end omnibox suggest ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -394,6 +441,45 @@ export function sendHoverAct(tok: number, fields: HoverActFields): boolean {
   }
   return send({ v: 1, t: 'hact', tok, ...fields });
 }
+
+// --- omnibox suggest ---
+const SUGGEST_ITEM_KEYS = ['k', 'text', 'title', 'url', 'fav'];
+function parseSuggestItem(v: unknown): SuggestItem | null {
+  if (!isRecord(v) || !hasOnlyKeys(v, SUGGEST_ITEM_KEYS) || !['k', 'text', 'title', 'url'].every(key => key in v)) return null;
+  const { k, text, title, url } = v;
+  if (!isOneOf(k, SUGGEST_KINDS)) return null;
+  if (!isStr(text, MAX_SUGGEST_TEXT) || !isStr(title, MAX_TITLE) || !isStr(url, MAX_SUGGEST_TEXT)) return null;
+  const fav = 'fav' in v ? v.fav : '';
+  if (fav !== '' && !isFavUri(fav)) return null;
+  return { k, text, title, url, fav: fav as string };
+}
+
+/** Strict validation of a `suggest` message. */
+function parseSuggestMsg(raw: Record<string, unknown>): SuggestMsg | null {
+  if (!hasOnlyKeys(raw, ['v', 't', 'tok', 'seq', 'w', 'sel', 'items']) || raw.v !== 1) return null;
+  const { tok, seq, w, sel, items } = raw;
+  if (!isInt(tok, 0, MAX_ID) || !isInt(seq, 0, MAX_SEQ) || !isInt(w, 0, MAX_SUGGEST_WIDTH)) return null;
+  if (!Array.isArray(items) || items.length > MAX_SUGGEST_ITEMS || !isInt(sel, 0, MAX_SUGGEST_ITEMS - 1)) return null;
+  const out: SuggestItem[] = [];
+  for (const v of items) {
+    const item = parseSuggestItem(v);
+    if (!item) return null;
+    out.push(item);
+  }
+  if (out.length > 0 && sel >= out.length) return null;
+  return { t: 'suggest', tok, seq, w, sel, items: out };
+}
+
+export function sendSuggestPick(seq: number, i: number): boolean {
+  return isInt(seq, 0, MAX_SEQ) && isInt(i, 0, MAX_SUGGEST_ITEMS - 1) && send({ v: 1, t: 'suggestPick', seq, i });
+}
+export function sendSuggestPreview(seq: number, i: number): boolean {
+  return isInt(seq, 0, MAX_SEQ) && isInt(i, 0, MAX_SUGGEST_ITEMS - 1) && send({ v: 1, t: 'suggestPreview', seq, i });
+}
+export function sendSuggestEnd(): boolean {
+  return send({ v: 1, t: 'suggestEnd' });
+}
+// --- end omnibox suggest ---
 
 const HOVER_ROW_KEYS = ['title', 'active', 'linked', 'fav'];
 function parseHoverRows(v: unknown): HoverRowMsg[] | null {
@@ -578,6 +664,16 @@ export function parseInbound(data: unknown): Inbound | null {
     case 'hoverhide':
       return hasOnlyKeys(raw, ['v', 't']) && raw.v === 1 ? { t: 'hoverhide' } : null;
     // --- end hover layer ---
+    // --- omnibox suggest ---
+    case 'suggest':
+      return parseSuggestMsg(raw);
+    case 'suggestSel': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'seq', 'sel']) || raw.v !== 1) return null;
+      const { seq, sel } = raw;
+      if (!isInt(seq, 0, MAX_SEQ) || !isInt(sel, 0, MAX_SUGGEST_ITEMS - 1)) return null;
+      return { t: 'suggestSel', seq, sel };
+    }
+    // --- end omnibox suggest ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
       const budget = { keys: 0 };
@@ -585,7 +681,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'progress', 'security', 'label', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'theme'])) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -594,6 +690,7 @@ export function parseInbound(data: unknown): Inbound | null {
       if (placementCount !== 0 && placementKeys.some((key) => !isInt(raw[key], 0, Number.MAX_SAFE_INTEGER))) return null;
       if (!isBool(solid) || !isBool(dark) || !isBool(back) || !isBool(forward) || !isBool(loading)) return null;
       if (!isInt(progress, 0, 100)) return null;
+      if (('split' in raw && !isBool(raw.split)) || ('bookmarked' in raw && !isBool(raw.bookmarked))) return null;
       if (!isOneOf(security, SECURITY)) return null;
       if (!isStr(label, MAX_LABEL)) return null;
       return {
@@ -605,6 +702,8 @@ export function parseInbound(data: unknown): Inbound | null {
         back,
         forward,
         loading,
+        ...(typeof raw.split === 'boolean' ? { split: raw.split } : {}),
+        ...(typeof raw.bookmarked === 'boolean' ? { bookmarked: raw.bookmarked } : {}),
         progress,
         security,
         label,
