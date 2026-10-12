@@ -4,6 +4,7 @@
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
 import { icon, type IconName } from '../icons';
 import { dropSlot } from '../rail-logic';
+import { setTip } from '../tooltip';
 import {
   customizeCommand, customizeDeleteDescription, moveBefore, parseCustomizeSnapshot, sentenceCase, stepDest,
   RAIL_DESCRIPTIONS, RAIL_KEYS, WORKSPACE_COLOURS, WORKSPACE_HEX, WORKSPACE_ICONS,
@@ -131,7 +132,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   function iconButton(name: IconName, label: string, action: () => void): HTMLButtonElement {
     const control = h('button', 'bw-icon-btn');
     control.type = 'button';
-    control.title = label;
+    setTip(control, label);
     control.setAttribute('aria-label', label);
     control.append(icon(name));
     control.addEventListener('click', action);
@@ -295,7 +296,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     const handle = h('button', 'bw-icon-btn cust-handle');
     handle.type = 'button';
     handle.setAttribute('aria-label', `Reorder ${label}`);
-    handle.title = 'Drag to reorder, or use the Up and Down arrow keys';
+    setTip(handle, 'Drag to reorder, or use the Up and Down arrow keys');
     handle.append(icon('grip'));
     return handle;
   }
