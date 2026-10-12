@@ -35,7 +35,7 @@ use windows::{
 
 use super::{
     assets::{
-        self, Asset, DIALOG_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
+        self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
         PRIVACY_DIALOG_START_URL, RAIL_START_URL, RESPONSE_HEADERS, SCHEME,
         SETTINGS_DIALOG_START_URL, START_URL, TABS_START_URL,
     },
@@ -164,6 +164,8 @@ pub enum View {
     DialogNotes,
     DialogSettings,
     DialogPrivacy,
+    /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
+    Hover,
 }
 
 impl View {
@@ -178,6 +180,7 @@ impl View {
             Self::DialogNotes => NOTES_DIALOG_START_URL,
             Self::DialogSettings => SETTINGS_DIALOG_START_URL,
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
+            Self::Hover => HOVER_START_URL,
         }
     }
 }
@@ -258,6 +261,8 @@ struct State {
     webview: ICoreWebView2,
     /// Keeps the shared environment alive for as long as this host exists.
     _env: ChromeEnv,
+    /// The window the controller is a child of; `applied_bounds` are in its client coordinates.
+    parent: HWND,
     applied_bounds: RECT,
     /// What the caller last asked for. Defaults to visible; only shown once the page has said `ready`.
     wanted_visible: bool,
@@ -337,6 +342,25 @@ impl ChromeHost {
         self.observe(unsafe { controller.SetBounds(bounds) })?;
         self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.applied_bounds = bounds;
         Ok(())
+    }
+
+    /// The controller's bounds in screen coordinates, or `None` when the host is closed or busy.
+    pub fn screen_bounds(&self) -> Option<RECT> {
+        let (parent, bounds) = {
+            let state = self.state.try_borrow().ok()?;
+            if state.closed { return None; }
+            (state.parent, state.applied_bounds)
+        };
+        let mut origin = windows::Win32::Foundation::POINT::default();
+        if !unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut origin) }.as_bool() {
+            return None;
+        }
+        Some(RECT {
+            left: origin.x + bounds.left,
+            top: origin.y + bounds.top,
+            right: origin.x + bounds.right,
+            bottom: origin.y + bounds.bottom,
+        })
     }
 
     /// Sends one JSON message to the page and reports failure to the caller.
@@ -543,6 +567,7 @@ fn configure(
             controller,
             webview,
             _env: setup.env.clone(),
+            parent: setup.parent,
             applied_bounds: setup.bounds,
             wanted_visible: true,
             applied_visible: Some(false),
@@ -941,15 +966,16 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_)),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_)),
-        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. }),
+        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff),
+        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_)),
+        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
+        View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. }),
     }
 }
 
@@ -1091,7 +1117,8 @@ mod tests {
         assert_eq!(View::DialogNotes.start_url(), "bowser-ui://app/index.html?view=dialog&p=notes");
         assert_eq!(View::DialogSettings.start_url(), "bowser-ui://app/index.html?view=dialog&p=settings");
         assert_eq!(View::DialogPrivacy.start_url(), "bowser-ui://app/index.html?view=dialog&p=privacy");
-        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy];
+        assert_eq!(View::Hover.start_url(), "bowser-ui://app/index.html?view=hover");
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy, View::Hover];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
@@ -1131,6 +1158,35 @@ mod tests {
         assert!(!view_accepts_command(View::Popup, &panel));
         assert!(view_accepts_command(View::Popup, &popup));
         assert!(!view_accepts_command(View::Panel, &popup));
+    }
+
+    #[test]
+    fn hover_commands_reach_only_their_views() {
+        let tip = parse_command(r#"{"v":1,"t":"tip","text":"Back","r":"0,0,28,28"}"#).unwrap();
+        let off = parse_command(r#"{"v":1,"t":"tipoff"}"#).unwrap();
+        let hover = parse_command(r#"{"v":1,"t":"hover","k":"tab","id":1,"r":"0,0,9,9"}"#).unwrap();
+        let act = parse_command(r#"{"v":1,"t":"hact","tok":1,"a":"next"}"#).unwrap();
+        let size = parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10}"#).unwrap();
+        for view in [View::Toolbar, View::Tabs, View::Rail] {
+            assert!(view_accepts_command(view, &tip), "{view:?}");
+            assert!(view_accepts_command(view, &off), "{view:?}");
+            assert!(!view_accepts_command(view, &act), "{view:?}");
+        }
+        assert!(view_accepts_command(View::Tabs, &hover));
+        assert!(!view_accepts_command(View::Toolbar, &hover));
+        assert!(!view_accepts_command(View::Rail, &hover));
+        assert!(view_accepts_command(View::Hover, &act));
+        assert!(view_accepts_command(View::Hover, &size));
+        for command in [&tip, &off, &hover] {
+            assert!(!view_accepts_command(View::Hover, command));
+        }
+        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes] {
+            assert!(!view_accepts_command(view, &act), "{view:?}");
+            assert!(!view_accepts_command(view, &tip), "{view:?}");
+        }
+        assert!(is_trusted_message(View::Hover, HOVER_START_URL, HOVER_START_URL));
+        assert!(!is_trusted_message(View::Hover, POPUP_START_URL, HOVER_START_URL));
+        assert!(!is_start_url(View::Hover, "bowser-ui://app/index.html?view=hover&x=1"));
     }
 
     #[test]

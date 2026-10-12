@@ -129,7 +129,6 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       const text = document.createElement('span');
       text.className = 'html-menu-label';
       text.textContent = page.label;
-      text.title = page.label;
       backRow.append(chevron, text);
       backRow.addEventListener('mouseup', (event) => {
         if (event.button === 0 && nav && back(nav)) finish({ kind: 'page' });
@@ -191,7 +190,6 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       const label = document.createElement('span');
       label.className = 'html-menu-label';
       label.textContent = entry.label;
-      label.title = entry.label;
       row.append(label);
       if (entry.shortcut) {
         const shortcut = document.createElement('span');

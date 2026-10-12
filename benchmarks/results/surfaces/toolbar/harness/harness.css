@@ -1,0 +1,8 @@
+/* Backdrop standing in for the window glass, so translucent chrome is visible in screenshots. */
+html.h-dark {
+  background: linear-gradient(90deg, #1b2029, #2a2f3a 60%, #1d2a33);
+}
+
+html.h-light {
+  background: linear-gradient(90deg, #dde3ea, #eef1f4 60%, #d8e2ea);
+}

@@ -5673,6 +5673,9 @@ fn html_env_settled(hwnd: HWND) {
 // --- popup host (lane M) ---
 fn prewarm_html_popup(hwnd: HWND) {
     let env = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html_env.clone()).flatten()).flatten();
+    // --- hover layer ---
+    if let Some(env) = env.clone() { super::html_hover::prewarm(hwnd, env); }
+    // --- end hover layer ---
     if let Some(env) = env { html_popup::prewarm(hwnd, env); }
 }
 // --- end popup host ---
@@ -5695,6 +5698,9 @@ fn close_html_chrome(hwnd: HWND) {
     unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
     html_popup::shutdown(hwnd);
     // --- end popup host ---
+    // --- hover layer ---
+    super::html_hover::shutdown(hwnd);
+    // --- end hover layer ---
     // --- panel host (lane P) ---
     html_panel::close(hwnd);
     // --- end panel host ---
@@ -5988,6 +5994,12 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             html_refresh(hwnd);
             return;
         }
+        // --- hover layer ---
+        ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
+            html_hover_command(hwnd, View::Toolbar, command);
+            return;
+        }
+        // --- end hover layer ---
         ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
             html_window_command(hwnd, command, View::Toolbar);
         }
@@ -6068,6 +6080,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::PopupSize { .. }
         | ChromeCommand::PopupPick { .. }
         | ChromeCommand::PopupDismiss { .. }
+        // --- hover layer ---
+        | ChromeCommand::Hover(_)
+        | ChromeCommand::HoverAct { .. }
+        // --- end hover layer ---
         // --- popup host (lane M) ---
         | ChromeCommand::Side(_) => {}
         // --- end popup host ---
@@ -6343,6 +6359,12 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
             html_window_command(hwnd, command, View::Tabs);
             return;
         }
+        // --- hover layer ---
+        ChromeCommand::Tip { .. } | ChromeCommand::TipOff | ChromeCommand::Hover(_) => {
+            html_hover_command(hwnd, View::Tabs, command);
+            return;
+        }
+        // --- end hover layer ---
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
         ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
         ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
@@ -6374,7 +6396,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy | View::Hover => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -6414,6 +6436,50 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
         let _ = with_chrome(hwnd, |s| s.html_deferred.pop_back());
     }
 }
+
+// --- hover layer ---
+/// Routes a tooltip or tab-strip hover message to the HTML hover layer. The anchor is converted from
+/// the sending view's CSS pixels to screen pixels with that view's own host bounds; tab ids and group
+/// keys are checked against the live model (a ball counts only for a domain island).
+fn html_hover_command(hwnd: HWND, view: View, command: ChromeCommand) {
+    let Some((host, dpi)) = with_chrome(hwnd, |s| {
+        let host = match view {
+            View::Toolbar => s.html.clone(),
+            View::Tabs => s.html_tabs.clone(),
+            View::Rail => s.html_rail.clone(),
+            _ => None,
+        };
+        host.map(|host| (host, s.dpi))
+    })
+    .flatten() else {
+        return;
+    };
+    let Some(screen) = host.screen_bounds() else { return };
+    let scale = dpi as f32 / 96.0;
+    match command {
+        ChromeCommand::Tip { text, rect } => {
+            // The rail is a narrow column, so its tooltips sit beside it.
+            super::html_hover::tip(hwnd, super::html_hover::anchor_to_screen(screen, scale, rect), &text, view == View::Rail);
+        }
+        ChromeCommand::TipOff => super::html_hover::tip_off(hwnd),
+        ChromeCommand::Hover(target) => {
+            let Some(app) = app_of(hwnd) else { return };
+            let target = match target {
+                chrome_host::protocol::HoverTarget::Tab { id, rect } => chrome_host::tab_from_wire(id, &App::tab_ids(&app))
+                    .map(|tab| (super::html_hover::Kind::Card, tab, rect)),
+                chrome_host::protocol::HoverTarget::Ball { key, rect } => with_chrome(hwnd, |s| s.html_tabs_groups.get(&key).copied())
+                    .flatten()
+                    .filter(|group| group.collapsible)
+                    .map(|group| (super::html_hover::Kind::Island, group.tab, rect)),
+                chrome_host::protocol::HoverTarget::None => None,
+            };
+            let target = target.map(|(kind, tab, rect)| (kind, tab, super::html_hover::anchor_to_screen(screen, scale, rect)));
+            super::html_hover::hover(hwnd, target);
+        }
+        _ => {}
+    }
+}
+// --- end hover layer ---
 
 // --- popup host (lane M) ---
 pub(super) fn defer_popup_result(hwnd: HWND, tok: u32, id: Option<u32>) {
@@ -6912,6 +6978,12 @@ fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Rail { action, key } => html_rail_action(hwnd, action, key),
         ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
+        // --- hover layer ---
+        ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
+            html_hover_command(hwnd, View::Rail, command);
+            return;
+        }
+        // --- end hover layer ---
         // The rail sends nothing else. Any other message is ignored.
         _ => return,
     }

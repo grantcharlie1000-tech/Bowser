@@ -217,7 +217,91 @@ pub enum Command {
     PopupSize { tok: u32, w: u16, h: u16 },
     PopupPick { tok: u32, id: u32 },
     PopupDismiss { tok: u32 },
+    // --- hover layer ---
+    /// A `data-tip` element was hovered long enough: show `text` under `rect`, a rectangle in CSS
+    /// pixels of the sending view's viewport.
+    Tip { text: String, rect: HoverRect },
+    /// Hide the tooltip: the pointer left its target, or the view scrolled, clicked or typed.
+    TipOff,
+    /// The pointer is over a tab or a group ball of the tab strip, or over neither.
+    Hover(HoverTarget),
+    /// An action inside the hover layer's card or island menu, for content token `tok`.
+    HoverAct { tok: u32, action: HoverAction },
+    // --- end hover layer ---
 }
+
+// --- hover layer ---
+/// Largest coordinate or size accepted in a hover rectangle, in CSS pixels.
+pub const MAX_HOVER_COORD: u32 = 16_384;
+/// Longest tooltip text accepted from a view, in characters.
+pub const MAX_TIP_CHARS: usize = 256;
+/// Largest member-row index a hover action may name. The card and island menu draw fewer rows.
+pub const MAX_HOVER_ROW: u32 = 63;
+/// Largest swatch index a hover action may name. Rust checks it against the island's swatch count.
+pub const MAX_HOVER_SWATCH: u32 = 31;
+/// Number of marker swatches on the tab card (`tab_card::MARKER_COUNT`).
+pub const HOVER_MARKERS: u32 = 5;
+
+/// A rectangle in CSS pixels of the sending view's viewport. Each value is at most
+/// [`MAX_HOVER_COORD`]; the page clamps negative edges to zero before sending.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HoverRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl HoverRect {
+    /// Parses `"x,y,w,h"`: four canonical decimals (no sign, no leading zeros, no spaces).
+    pub fn parse(raw: &str) -> Option<Self> {
+        if raw.len() > 23 {
+            return None;
+        }
+        let mut parts = raw.split(',');
+        let mut next = || {
+            let value = canonical_decimal(parts.next()?, 5)?;
+            u32::try_from(value).ok().filter(|v| *v <= MAX_HOVER_COORD)
+        };
+        let rect = Self { x: next()?, y: next()?, w: next()?, h: next()? };
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(rect)
+    }
+}
+
+/// What the tab strip pointer is over, for the hover card and the island menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoverTarget {
+    /// A tab, by wire id (`TabId + 1`).
+    Tab { id: u32, rect: HoverRect },
+    /// A group ball, by group wire key.
+    Ball { key: u32, rect: HoverRect },
+    None,
+}
+
+/// A click or edit inside the hover layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoverAction {
+    /// Card: a marker swatch, `0..HOVER_MARKERS`.
+    Marker(u8),
+    /// Card: the "+" button, which steps to the next marker.
+    NextMarker,
+    /// Card or island: a member row, by index into the rows last sent.
+    Row(u8),
+    /// Island: a colour swatch slot.
+    Swatch(u8),
+    /// Island: the "Close Tab Island" button.
+    CloseIsland,
+    /// Island: commit this name (at most `MAX_GROUP_NAME_CHARS` characters).
+    Name(String),
+    /// Island: the name field was clicked and needs the keyboard.
+    Focus,
+    /// Escape or Enter in the island menu: close it and give the keyboard back.
+    Dismiss,
+}
+// --- end hover layer ---
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -585,6 +669,46 @@ fn optional_text(fields: &[(String, Value)], name: &'static str) -> Result<Optio
     }
 }
 
+// --- hover layer ---
+fn rect_field(fields: &[(String, Value)]) -> Result<HoverRect, ProtocolError> {
+    HoverRect::parse(str_field(fields, "r")?).ok_or(ProtocolError::InvalidValue("r"))
+}
+
+/// The `a` of a `hact` message, with exactly the fields that action takes: `n` for `marker`, `row`
+/// and `swatch`, `text` for `name`, and neither for the rest.
+fn hover_action(fields: &[(String, Value)]) -> Result<HoverAction, ProtocolError> {
+    let a = str_field(fields, "a")?;
+    let wants_n = matches!(a, "marker" | "row" | "swatch");
+    let wants_text = a == "name";
+    if field(fields, "n").is_some() != wants_n {
+        return Err(if wants_n { ProtocolError::MissingField("n") } else { ProtocolError::UnknownKey("n".into()) });
+    }
+    if field(fields, "text").is_some() != wants_text {
+        return Err(if wants_text { ProtocolError::MissingField("text") } else { ProtocolError::UnknownKey("text".into()) });
+    }
+    let n = |max: u32| -> Result<u8, ProtocolError> {
+        let value = uint_field(fields, "n")?;
+        if value > max { return Err(ProtocolError::InvalidValue("n")); }
+        Ok(value as u8)
+    };
+    Ok(match a {
+        "marker" => HoverAction::Marker(n(HOVER_MARKERS - 1)?),
+        "next" => HoverAction::NextMarker,
+        "row" => HoverAction::Row(n(MAX_HOVER_ROW)?),
+        "swatch" => HoverAction::Swatch(n(MAX_HOVER_SWATCH)?),
+        "close" => HoverAction::CloseIsland,
+        "name" => {
+            let text = str_field(fields, "text")?;
+            if text.chars().count() > MAX_GROUP_NAME_CHARS { return Err(ProtocolError::TooLong("text")); }
+            HoverAction::Name(text.to_owned())
+        }
+        "focus" => HoverAction::Focus,
+        "dismiss" => HoverAction::Dismiss,
+        _ => return Err(ProtocolError::InvalidValue("a")),
+    })
+}
+// --- end hover layer ---
+
 fn panel_token(raw: &str) -> bool {
     !raw.is_empty() && raw.len() <= 24 && raw.bytes().all(|b| b.is_ascii_lowercase())
 }
@@ -624,6 +748,12 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "size" => &["tok", "w", "h"],
         "pick" => &["tok", "id"],
         "dismiss" => &["tok"],
+        // --- hover layer ---
+        "tip" => &["text", "r"],
+        "tipoff" => &[],
+        "hover" => &["k", "id", "r"],
+        "hact" => &["tok", "a", "n", "text"],
+        // --- end hover layer ---
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -739,6 +869,25 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         }
         "pick" => Command::PopupPick { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")? },
         "dismiss" => Command::PopupDismiss { tok: uint_field(fields, "tok")? },
+        // --- hover layer ---
+        "tip" => {
+            let text = str_field(fields, "text")?;
+            if text.trim().is_empty() { return Err(ProtocolError::InvalidValue("text")); }
+            if text.chars().count() > MAX_TIP_CHARS { return Err(ProtocolError::TooLong("text")); }
+            Command::Tip { text: text.to_owned(), rect: rect_field(fields)? }
+        }
+        "tipoff" => Command::TipOff,
+        "hover" => Command::Hover(match str_field(fields, "k")? {
+            "tab" => HoverTarget::Tab { id: uint_field(fields, "id")?, rect: rect_field(fields)? },
+            "ball" => HoverTarget::Ball { key: uint_field(fields, "id")?, rect: rect_field(fields)? },
+            "none" => {
+                if fields.len() != 3 { return Err(ProtocolError::InvalidValue("k")); }
+                HoverTarget::None
+            }
+            _ => return Err(ProtocolError::InvalidValue("k")),
+        }),
+        "hact" => Command::HoverAct { tok: uint_field(fields, "tok")?, action: hover_action(fields)? },
+        // --- end hover layer ---
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }
@@ -998,6 +1147,155 @@ pub fn favicon_data_uri(png: &[u8]) -> Option<String> {
     }
     Some(format!("data:image/png;base64,{}", base64_encode(png)))
 }
+
+// --- hover layer ---
+/// Most member rows in one card or island message (the island menu draws twelve, the card eight).
+pub const MAX_HOVER_ROWS: usize = 12;
+/// Most swatch colours in one island message.
+pub const MAX_HOVER_SWATCHES: usize = 32;
+/// Total base64 favicon text one card or island message may carry; rows past it get no favicon.
+pub const MAX_HOVER_FAV_TEXT: usize = 128 * 1024;
+const MAX_HOVER_HOST_CHARS: usize = 253;
+
+/// `data:image/png;base64,...` for a favicon that passes the `fav` gate, else `None`.
+pub fn favicon_uri(png: &[u8]) -> Option<String> {
+    png_is_sendable(png).then(|| format!("data:image/png;base64,{}", base64_encode(png)))
+}
+
+/// One member row of the hover card or the island menu.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HoverRow {
+    pub title: String,
+    pub active: bool,
+    /// Card only: joined to the hovered tab by an opener link.
+    pub linked: bool,
+    /// Favicon PNG bytes; sent only when they pass the `fav` gate and the message budget.
+    pub png: Option<Vec<u8>>,
+}
+
+/// The tab hover card: what `tab_card` shows natively, plus the favicon and a sleeping badge.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HoverCard {
+    pub title: String,
+    pub host: String,
+    /// Marker id `0..HOVER_MARKERS`, or `None`.
+    pub marker: Option<u8>,
+    /// CSS colours of the marker swatches, in marker order.
+    pub markers: Vec<String>,
+    /// The tab's page was discarded or suspended to save memory.
+    pub sleeping: bool,
+    pub png: Option<Vec<u8>>,
+    pub rows: Vec<HoverRow>,
+    /// Rows the card does not draw.
+    pub more: usize,
+}
+
+/// The island menu: name field, colour swatches, member rows and the close button.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HoverIsland {
+    pub name: String,
+    pub hint: String,
+    /// Selected swatch slot (`0` is the theme accent).
+    pub slot: usize,
+    pub swatches: Vec<String>,
+    pub rows: Vec<HoverRow>,
+    pub more: usize,
+    pub close: String,
+}
+
+fn safe_colour_or_empty(value: &str) -> &str {
+    if is_safe_css_colour(value) { value } else { "" }
+}
+
+fn write_hover_rows(out: &mut super::json::Object<'_>, rows: &[HoverRow], budget: &mut usize) {
+    out.array("rows", |items| {
+        for row in rows.iter().take(MAX_HOVER_ROWS) {
+            items.object(|item| {
+                item.string("title", truncate_chars(&row.title, MAX_TAB_TITLE_CHARS));
+                item.bool("active", row.active);
+                item.bool("linked", row.linked);
+                item.string("fav", &budgeted_uri(row.png.as_deref(), budget));
+            });
+        }
+    });
+}
+
+fn budgeted_uri(png: Option<&[u8]>, budget: &mut usize) -> String {
+    match png.and_then(favicon_uri) {
+        Some(uri) if uri.len() <= *budget => {
+            *budget -= uri.len();
+            uri
+        }
+        _ => String::new(),
+    }
+}
+
+/// `{"v":1,"t":"hover","tok":..,"kind":"tooltip","text":..}`. Text is capped at `MAX_TIP_CHARS`.
+pub fn tooltip_json(tok: u32, text: &str) -> String {
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "hover");
+        out.uint("tok", u64::from(tok));
+        out.string("kind", "tooltip");
+        out.string("text", truncate_chars(text, MAX_TIP_CHARS));
+    })
+}
+
+/// `{"v":1,"t":"hover","tok":..,"kind":"card",...}`. Rows are capped at `MAX_HOVER_ROWS`; rows over
+/// the cap are added to `more`. Unsafe marker colours are sent as `""`.
+pub fn card_json(tok: u32, card: &HoverCard) -> String {
+    let mut budget = MAX_HOVER_FAV_TEXT;
+    let hidden = card.rows.len().saturating_sub(MAX_HOVER_ROWS);
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "hover");
+        out.uint("tok", u64::from(tok));
+        out.string("kind", "card");
+        out.string("title", truncate_chars(&card.title, MAX_TAB_TITLE_CHARS));
+        out.string("host", truncate_chars(&card.host, MAX_HOVER_HOST_CHARS));
+        out.int("marker", card.marker.filter(|m| u32::from(*m) < HOVER_MARKERS).map_or(-1, i64::from));
+        out.array("markers", |items| {
+            for colour in card.markers.iter().take(HOVER_MARKERS as usize) {
+                items.string(safe_colour_or_empty(colour));
+            }
+        });
+        out.bool("sleeping", card.sleeping);
+        out.string("fav", &budgeted_uri(card.png.as_deref(), &mut budget));
+        write_hover_rows(out, &card.rows, &mut budget);
+        out.uint("more", (card.more + hidden) as u64);
+    })
+}
+
+/// `{"v":1,"t":"hover","tok":..,"kind":"island",...}`. Same caps as [`card_json`]; the name and
+/// hint are capped at `MAX_GROUP_NAME_CHARS`.
+pub fn island_json(tok: u32, island: &HoverIsland) -> String {
+    let mut budget = MAX_HOVER_FAV_TEXT;
+    let hidden = island.rows.len().saturating_sub(MAX_HOVER_ROWS);
+    let swatches = island.swatches.len().min(MAX_HOVER_SWATCHES);
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "hover");
+        out.uint("tok", u64::from(tok));
+        out.string("kind", "island");
+        out.string("name", truncate_chars(&island.name, MAX_GROUP_NAME_CHARS));
+        out.string("hint", truncate_chars(&island.hint, MAX_GROUP_NAME_CHARS));
+        out.uint("slot", island.slot.min(swatches.saturating_sub(1)) as u64);
+        out.array("swatches", |items| {
+            for colour in island.swatches.iter().take(MAX_HOVER_SWATCHES) {
+                items.string(safe_colour_or_empty(colour));
+            }
+        });
+        write_hover_rows(out, &island.rows, &mut budget);
+        out.uint("more", (island.more + hidden) as u64);
+        out.string("close", truncate_chars(&island.close, MAX_GROUP_NAME_CHARS));
+    })
+}
+
+/// `{"v":1,"t":"hoverhide"}`: the layer was hidden; the page clears its content.
+pub fn hover_hide_json() -> String {
+    "{\"v\":1,\"t\":\"hoverhide\"}".to_owned()
+}
+// --- end hover layer ---
 
 /// The favicon gate shared by `fav` and `railfav`: a PNG of at most `MAX_FAVICON_BYTES` whose IHDR
 /// size is in range.
@@ -3088,4 +3386,191 @@ mod tests {
         // Same bytes as `fav`, so the two messages agree on what may be sent.
         assert!(fav_json(1, &png).is_some() && railfav_json("app:1", &png).is_some());
     }
+
+    // --- hover layer ---
+    #[test]
+    fn hover_rect_is_four_canonical_bounded_decimals() {
+        assert_eq!(HoverRect::parse("0,0,0,0"), Some(HoverRect::default()));
+        assert_eq!(
+            HoverRect::parse("12,6,28,34"),
+            Some(HoverRect { x: 12, y: 6, w: 28, h: 34 })
+        );
+        assert_eq!(
+            HoverRect::parse("16384,16384,16384,16384").map(|r| r.x),
+            Some(MAX_HOVER_COORD)
+        );
+        for raw in [
+            "", "1,2,3", "1,2,3,4,5", "-1,2,3,4", "01,2,3,4", "1, 2,3,4", "1,2,3,4 ",
+            "16385,0,0,0", "0,0,0,99999", "1.5,2,3,4", "a,b,c,d", "1,,3,4", "+1,2,3,4",
+            "1,2,3,4,", "100000,0,0,0",
+        ] {
+            assert_eq!(HoverRect::parse(raw), None, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn tip_and_hover_commands_parse_strictly() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"tip","text":"Back","r":"4,6,28,28"}"#),
+            Command::Tip { text: "Back".into(), rect: HoverRect { x: 4, y: 6, w: 28, h: 28 } }
+        );
+        assert_eq!(ok(r#"{"v":1,"t":"tipoff"}"#), Command::TipOff);
+        assert_eq!(
+            ok(r#"{"v":1,"t":"hover","k":"tab","id":3,"r":"0,0,200,34"}"#),
+            Command::Hover(HoverTarget::Tab { id: 3, rect: HoverRect { x: 0, y: 0, w: 200, h: 34 } })
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"hover","k":"ball","id":77,"r":"5,5,10,10"}"#),
+            Command::Hover(HoverTarget::Ball { key: 77, rect: HoverRect { x: 5, y: 5, w: 10, h: 10 } })
+        );
+        assert_eq!(ok(r#"{"v":1,"t":"hover","k":"none"}"#), Command::Hover(HoverTarget::None));
+        let long = "x".repeat(MAX_TIP_CHARS + 1);
+        assert_eq!(err(&format!(r#"{{"v":1,"t":"tip","text":"{long}","r":"0,0,1,1"}}"#)), ProtocolError::TooLong("text"));
+        assert!(ok(&format!(r#"{{"v":1,"t":"tip","text":"{}","r":"0,0,1,1"}}"#, "x".repeat(MAX_TIP_CHARS))) != Command::TipOff);
+        for raw in [
+            r#"{"v":1,"t":"tip","text":"","r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"tip","text":"   ","r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"tip","text":"x"}"#,
+            r#"{"v":1,"t":"tip","text":"x","r":"0,0,1"}"#,
+            r#"{"v":1,"t":"tip","text":"x","r":"0,0,1,1","id":1}"#,
+            r#"{"v":1,"t":"tipoff","x":1}"#,
+            r#"{"v":1,"t":"hover","k":"tab","id":3}"#,
+            r#"{"v":1,"t":"hover","k":"tab","r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"hover","k":"none","id":1}"#,
+            r#"{"v":1,"t":"hover","k":"none","r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"hover","k":"card","id":1,"r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"hover","k":"tab","id":-1,"r":"0,0,1,1"}"#,
+            r#"{"v":1,"t":"hover","k":"tab","id":4294967296,"r":"0,0,1,1"}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn hover_actions_take_exactly_their_fields() {
+        let act = |raw: &str| match ok(raw) {
+            Command::HoverAct { tok, action } => (tok, action),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"marker","n":4}"#), (4, HoverAction::Marker(4)));
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"next"}"#).1, HoverAction::NextMarker);
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"row","n":63}"#).1, HoverAction::Row(63));
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"swatch","n":8}"#).1, HoverAction::Swatch(8));
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"close"}"#).1, HoverAction::CloseIsland);
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"name","text":"Docs"}"#).1, HoverAction::Name("Docs".into()));
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"name","text":""}"#).1, HoverAction::Name(String::new()));
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"focus"}"#).1, HoverAction::Focus);
+        assert_eq!(act(r#"{"v":1,"t":"hact","tok":4,"a":"dismiss"}"#).1, HoverAction::Dismiss);
+        let long = "n".repeat(MAX_GROUP_NAME_CHARS + 1);
+        for raw in [
+            r#"{"v":1,"t":"hact","tok":4,"a":"marker","n":5}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"marker"}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"row","n":64}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"swatch","n":32}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"next","n":1}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"close","text":"x"}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"name"}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"name","text":"x","n":1}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"pick"}"#.to_owned(),
+            r#"{"v":1,"t":"hact","a":"next"}"#.to_owned(),
+            r#"{"v":1,"t":"hact","tok":4,"a":"row","n":"1"}"#.to_owned(),
+            format!(r#"{{"v":1,"t":"hact","tok":4,"a":"name","text":"{long}"}}"#),
+        ] {
+            assert!(parse_command(&raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn hover_messages_cap_text_rows_and_colours() {
+        let tooltip = tooltip_json(3, "A < B");
+        assert!(tooltip.starts_with(r#"{"v":1,"t":"hover","tok":3,"kind":"tooltip","text":"A "#));
+        assert!(!tooltip.contains('<'), "{tooltip}");
+        assert_eq!(hover_hide_json(), r#"{"v":1,"t":"hoverhide"}"#);
+        let rows: Vec<HoverRow> = (0..MAX_HOVER_ROWS + 3)
+            .map(|i| HoverRow { title: format!("t{i}"), active: i == 0, linked: false, png: None })
+            .collect();
+        let card = card_json(9, &HoverCard {
+            title: "x".repeat(400),
+            host: "example.com".into(),
+            marker: Some(9),
+            markers: vec!["#fff".into(), "url(x)".into()],
+            sleeping: true,
+            png: Some(vec![1, 2, 3]),
+            rows: rows.clone(),
+            more: 1,
+        });
+        assert!(card.contains(&format!("\"title\":\"{}\"", "x".repeat(MAX_TAB_TITLE_CHARS))));
+        assert!(card.contains("\"marker\":-1"));
+        assert!(card.contains("\"markers\":[\"#fff\",\"\"]"));
+        assert!(card.contains("\"fav\":\"\",\"rows\""));
+        assert!(card.contains("\"more\":4"));
+        assert_eq!(card.matches("\"linked\"").count(), MAX_HOVER_ROWS);
+        let island = island_json(2, &HoverIsland {
+            name: "n".repeat(100),
+            hint: "Docs".into(),
+            slot: 40,
+            swatches: vec!["#123456".into(), "rgb(1,2,3)".into()],
+            rows,
+            more: 0,
+            close: "Close Tab Island · 1 Tab".into(),
+        });
+        assert!(island.contains(&format!("\"name\":\"{}\"", "n".repeat(MAX_GROUP_NAME_CHARS))));
+        assert!(island.contains("\"slot\":1"));
+        assert!(island.contains("\"more\":3"));
+    }
+
+    #[test]
+    fn hover_favicons_respect_the_gate_and_the_budget() {
+        let mut png = vec![0u8; 33];
+        png[..8].copy_from_slice(&PNG_SIGNATURE);
+        png[12..16].copy_from_slice(b"IHDR");
+        png[19] = 16;
+        png[23] = 16;
+        assert!(favicon_uri(&png).is_some_and(|uri| uri.starts_with("data:image/png;base64,")));
+        assert_eq!(favicon_uri(b"GIF89a"), None);
+        let mut budget = 10;
+        assert_eq!(budgeted_uri(Some(&png), &mut budget), "");
+        let mut budget = MAX_HOVER_FAV_TEXT;
+        assert!(!budgeted_uri(Some(&png), &mut budget).is_empty());
+        assert!(budget < MAX_HOVER_FAV_TEXT);
+    }
+
+    /// Writes the cross-language fixture read by `ui/test/hover.mjs`.
+    #[test]
+    fn hover_messages_write_the_ui_fixture() {
+        let card = card_json(7, &HoverCard {
+            title: "Docs".into(),
+            host: "example.com".into(),
+            marker: Some(2),
+            markers: vec!["#e5484d".into(), "#f76b15".into(), "#ffc53d".into(), "#30a46c".into(), "#0090ff".into()],
+            sleeping: false,
+            png: None,
+            rows: vec![HoverRow { title: "Other".into(), active: true, linked: true, png: None }],
+            more: 0,
+        });
+        let island = island_json(8, &HoverIsland {
+            name: String::new(),
+            hint: "Example".into(),
+            slot: 0,
+            swatches: vec!["#0090ff".into(), "#e5484d".into()],
+            rows: vec![HoverRow { title: "Docs".into(), active: false, linked: false, png: None }],
+            more: 0,
+            close: "Close Tab Island · 1 Tab".into(),
+        });
+        let fixture = format!(
+            "{{\"tooltip\":{},\"card\":{card},\"island\":{island},\"hide\":{}}}\n",
+            tooltip_json(6, "Back"),
+            hover_hide_json()
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/hover-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).expect("write hover fixture");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("hover fixture"),
+            fixture,
+            "set BOWSER_WRITE_FIXTURES=1 cargo test hover_messages_write_the_ui_fixture --lib"
+        );
+    }
+    // --- end hover layer ---
 }

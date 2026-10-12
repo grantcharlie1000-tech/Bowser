@@ -5,9 +5,18 @@
  *
  * `#app` is shared by every view; this file holds its default (toolbar) layout. Other surfaces
  * override it with `#app.<surface>`, which is more specific, so import order does not matter.
+ *
+ * Buttons are the shared .bw-icon-btn (components.css); this file only places them and sets the
+ * one toolbar icon weight. Typing is never animated: the pill's hover and focus changes are plain
+ * colour/shadow swaps, and nothing here transitions on the input itself.
  */
 
 #app {
+  /* D10: one icon weight across the toolbar (16px glyphs, --tb-stroke), tuned to sit with the
+     native caption glyphs (10px, ~1px stroke). Propose as a foundation token if others want it. */
+  --tb-stroke: 1.25px;
+  --bw-icon-stroke: var(--tb-stroke);
+  --tb-warn: #9d5d00; /* proposed token: --bw-warning (light) */
   position: relative;
   display: flex;
   align-items: center;
@@ -15,6 +24,10 @@
   width: 100%;
   height: var(--bw-toolbar-h);
   padding: 0;
+}
+
+html[data-scheme="dark"] #app {
+  --tb-warn: #fcd116; /* proposed token: --bw-warning (dark) */
 }
 
 .nav,
@@ -39,6 +52,7 @@
   background: var(--bw-fill);
 }
 
+/* ---- Pill ---- */
 .pill {
   position: relative;
   display: flex;
@@ -48,10 +62,12 @@
   max-width: var(--bw-pill-max-w);
   height: var(--bw-pill-h);
   margin: 0 auto;
-  background: var(--bw-fill);
+  background-color: var(--bw-fill);
   border: 1px solid var(--bw-pill-edge);
   border-radius: var(--bw-r-pill);
   overflow: hidden;
+  container-type: inline-size;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
 /* Rust places the pill and the menu button to line up with the native layout (state pillx/pillw/menux). */
@@ -69,26 +85,48 @@
   left: var(--menu-x);
 }
 
-.pill:focus-within {
-  border-color: var(--bw-focus);
+/* Hover lift: the fill takes a wash of the hover colour (83ms). */
+.pill:hover:not(:focus-within) {
+  background-color: color-mix(in srgb, var(--bw-fill), var(--bw-hover));
 }
 
-.omni {
+/* Focus: accent border, a second accent pixel outside it (2px ring) and a 1px contrast line inside. */
+.pill:focus-within {
+  border-color: var(--bw-focus);
+  box-shadow:
+    0 0 0 1px var(--bw-focus),
+    inset 0 0 0 1px var(--bw-focus-inner);
+}
+
+.omni-field {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
+}
+
+.omni,
+.omni-display {
+  position: absolute;
+  inset: 0;
   margin: 0;
   padding: 0 var(--bw-space-1_5) 0 var(--bw-space-1);
+  font: inherit;
+}
+
+.omni {
+  width: 100%;
+  height: 100%;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--bw-text);
-  font: inherit;
   user-select: text;
 }
 
 .omni::placeholder {
   color: var(--bw-text-2);
+  opacity: 1;
 }
 
 .omni::selection {
@@ -96,72 +134,63 @@
   color: inherit;
 }
 
-.btn {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--bw-nav-h);
-  height: var(--bw-nav-h);
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--bw-text);
-  cursor: default;
-  transition:
-    background-color var(--bw-dur-fast) var(--bw-ease-fade),
-    opacity var(--bw-dur-fast) var(--bw-ease-fade),
-    transform var(--bw-dur-fast) var(--bw-ease-out);
-}
-
-.btn svg {
-  display: block;
-  width: var(--bw-icon);
-  height: var(--bw-icon);
+/* Unfocused URL: the display layer paints host in text, the rest in text-2; the input keeps the
+   real value (and the click target) but hides its own glyphs. */
+.omni-display {
+  display: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: calc(var(--bw-pill-h) - 2px);
+  color: var(--bw-text-2);
   pointer-events: none;
 }
 
-/* Icons inside the omnibox pill are a little smaller than the toolbar icons. */
-.pill .btn svg {
-  width: 14px;
-  height: 14px;
+.pill.is-display .omni-display {
+  display: block;
 }
 
-.btn.site {
-  width: var(--bw-icon-box);
-  height: var(--bw-icon-box);
+.pill.is-display .omni {
+  color: transparent;
+}
+
+.u-host {
+  color: var(--bw-text);
+}
+
+.u-rest {
+  color: var(--bw-text-2);
+}
+
+/* ---- Buttons inside the pill: 20px, round, 16px glyph ---- */
+.tb-site {
   margin-left: var(--bw-space-0_5);
 }
 
-.btn.split {
-  width: var(--bw-icon-box);
-  height: var(--bw-icon-box);
+.tb-split {
   margin-right: var(--bw-space-0_5);
 }
 
-.btn:hover:not(:disabled) {
-  background: var(--bw-hover);
+/* Security state: the lock stays neutral, a problem is warm. */
+.pill[data-security="notsecure"] .tb-site,
+.pill[data-security="certproblem"] .tb-site {
+  color: var(--tb-warn);
 }
 
-.btn:active:not(:disabled) {
-  transform: scale(0.94);
+/* Narrow pill: drop the split button first, then the site button, never the text field. */
+@container (max-width: 190px) {
+  .tb-split {
+    display: none;
+  }
 }
 
-.btn:disabled {
-  opacity: 0.35;
+@container (max-width: 90px) {
+  .tb-site {
+    display: none;
+  }
 }
 
-.btn:focus-visible,
-.omni:focus-visible {
-  outline: none;
-}
-
-.btn:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--bw-focus);
-}
-
+/* ---- Progress: a 2px bar scaled with transform from the pill's left edge ---- */
 .progress {
   position: absolute;
   left: 0;
@@ -174,17 +203,12 @@
   transform-origin: 0 50%;
   pointer-events: none;
   transition:
-    transform var(--bw-dur-fast) linear,
+    transform var(--bw-dur-base) var(--bw-ease-move),
     opacity var(--bw-dur-fast) linear;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .btn,
   .progress {
     transition: none;
-  }
-
-  .btn:active:not(:disabled) {
-    transform: none;
   }
 }

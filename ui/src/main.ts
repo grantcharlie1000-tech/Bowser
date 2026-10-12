@@ -1,11 +1,15 @@
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
-import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
+import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+// --- hover layer ---
+import { startHover } from './hover';
+import { installHoverTargets, installTooltips, tabStripHoverTarget } from './tooltip';
+// --- end hover layer ---
 
 /** True only when the event target is the drag surface itself, never a control inside it. */
 function onDragSurface(target: EventTarget | null): boolean {
@@ -101,10 +105,28 @@ function startToolbar(root: HTMLElement): void {
     }
   });
 
+  // Unfocused, a URL shows host-emphasised (view.display); focused, the real input text shows.
+  // Updated on setText and blur only, never while typing.
+  const showDisplay = (): void => {
+    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value));
+  };
+
+  // A click that focuses the omnibox selects the whole address, as in every browser.
+  let selectOnUp = false;
+  input.addEventListener('pointerdown', () => {
+    selectOnUp = document.activeElement !== input;
+  });
+  input.addEventListener('pointerup', () => {
+    if (selectOnUp && input.selectionStart === input.selectionEnd) input.select();
+    selectOnUp = false;
+  });
+
   input.addEventListener('focus', () => {
+    view.pill.classList.remove('is-display');
     send({ v: 1, t: 'focus', on: true });
   });
   input.addEventListener('blur', () => {
+    showDisplay();
     send({ v: 1, t: 'focus', on: false });
   });
 
@@ -134,6 +156,7 @@ function startToolbar(root: HTMLElement): void {
         lastInputType = '';
         input.value = msg.text;
         if (msg.select) input.select();
+        showDisplay();
         break;
       case 'focusOmnibox':
         input.focus();
@@ -175,12 +198,24 @@ function start(): void {
   }
   // ?view=tabs selects the tab strip and ?view=rail the left rail; anything else, including no query, is the toolbar.
   const view = new URLSearchParams(location.search).get('view');
-  if (view === 'tabs') startTabs(root);
-  else if (view === 'rail') startRail(root);
+  if (view === 'tabs') {
+    startTabs(root);
+    // --- hover layer ---
+    installTooltips(root);
+    installHoverTargets(root, tabStripHoverTarget);
+    // --- end hover layer ---
+  } else if (view === 'rail') {
+    startRail(root);
+    installTooltips(root); // --- hover layer ---
+  }
   else if (view === 'panel') startPanel(root);
   else if (view === 'popup') startPopup(root);
   else if (view === 'dialog') startDialog(root);
-  else startToolbar(root);
+  else if (view === 'hover') startHover(root); // --- hover layer ---
+  else {
+    startToolbar(root);
+    installTooltips(root); // --- hover layer ---
+  }
 }
 
 start();
