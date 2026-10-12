@@ -74,6 +74,8 @@ pub(crate) enum Action {
     RemoveEntry { url: String },
     /// Remove every visit to a site, by host. The window confirms first.
     RemoveSite { host: String },
+    /// Clear one of the native panel's named time ranges after confirmation.
+    ClearRange(Range),
     Dismiss,
 }
 
@@ -292,7 +294,7 @@ impl Model {
 use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 
 use windows::Win32::{
-    Foundation::RECT,
+    Foundation::{HWND, RECT},
     Graphics::Gdi::{DeleteObject, HDC, HFONT, SelectObject, SetBkMode, TRANSPARENT},
     System::SystemInformation::{GetLocalTime, GetSystemTime},
     UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_APPS, VK_CONTROL, VK_F10},
@@ -321,10 +323,6 @@ const ACTION_DIP: i32 = 22;
 const LINE_DIP: i32 = 18;
 const DRAG_DIP: i32 = 4;
 
-thread_local! {
-    static LAST_OFFSET: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
-}
-
 /// Registers the history panel with the host. Call once at startup, on the UI thread.
 pub(crate) fn register(app: &AppRef) {
     let app = app.clone();
@@ -333,7 +331,7 @@ pub(crate) fn register(app: &AppRef) {
 
 /// Local time offset from UTC in seconds, from the two system clocks. Daylight saving follows the
 /// clock at the moment of the reading, so a window open across a change may group a day off by an hour.
-fn local_offset() -> i64 {
+pub(crate) fn local_offset() -> i64 {
     let local = unsafe { GetLocalTime() };
     let utc = unsafe { GetSystemTime() };
     let fields = |t: windows::Win32::Foundation::SYSTEMTIME| {
@@ -349,8 +347,42 @@ fn local_offset() -> i64 {
     w::local_offset_secs(fields(local), fields(utc))
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+pub(crate) fn current_history_file() -> Option<PathBuf> {
+    profile::active().ok().filter(|p| !p.is_guest() && p.history_enabled()).map(|p| p.history_file())
+}
+
+/// Runs a model action for either the native content or the reusable HTML panel host.
+pub(crate) fn execute(app: &AppRef, owner: HWND, action: Action) -> Option<std::io::Result<()>> {
+    let history_file = current_history_file();
+    match action {
+        Action::Nothing | Action::Redraw => None,
+        Action::Open { url, new_tab } => {
+            let Ok(url) = url::Url::parse(&url) else { return None };
+            if !matches!(url.scheme(), "http" | "https") { return None; }
+            if new_tab { App::new_tab(app); }
+            App::navigate_current(app, &url);
+            None
+        }
+        Action::RemoveEntry { url } => history_file.as_deref().map(|path| productivity::delete_history_entry(path, &url).map(|_| ())),
+        Action::RemoveSite { host } => {
+            if !ask_yes_no_owned(owner, &format!("Remove every visit to {host} from history?")) { return None; }
+            history_file.as_deref().map(|path| productivity::delete_history_for_host(path, &host).map(|_| ()))
+        }
+        Action::ClearRange(range) => {
+            let Some(path) = history_file.as_deref() else { return None };
+            if !ask_yes_no_owned(owner, &format!("Clear {} of browsing history? This cannot be undone.", range.label().to_lowercase())) { return None; }
+            let offset = local_offset();
+            Some(match range.bounds(now_secs(), offset) {
+                None => productivity::clear_history(path),
+                Some((start, end)) => productivity::delete_history_range(path, start, end).map(|_| ()),
+            })
+        }
+        Action::Dismiss => { side_panel::close(owner); None }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -516,7 +548,6 @@ impl Content {
     fn reload(&mut self) {
         let now = now_secs();
         let offset = local_offset();
-        LAST_OFFSET.with(|c| c.set(offset));
         let entries = match &self.history_file {
             Some(path) => productivity::search_history(path, &self.model.query, LIMIT),
             None => Vec::new(),
@@ -526,57 +557,19 @@ impl Content {
     }
 
     fn run(&mut self, action: Action) {
-        match action {
-            Action::Nothing => return,
-            Action::Redraw => {}
-            Action::Open { url, new_tab } => self.open(&url, new_tab),
-            Action::RemoveEntry { url } => {
-                if let Some(path) = &self.history_file {
-                    let result = productivity::delete_history_entry(path, &url);
-                    self.finish(result.map(|_| ()));
-                }
-            }
-            Action::RemoveSite { host } => {
-                if ask_yes_no_owned(self.surface.owner(), &format!("Remove every visit to {host} from history?")) {
-                    if let Some(path) = &self.history_file {
-                        let result = productivity::delete_history_for_host(path, &host);
-                        self.finish(result.map(|_| ()));
-                    }
-                }
-            }
-            Action::Dismiss => {
-                side_panel::close(self.surface.owner());
-                return;
-            }
-        }
-        self.surface.invalidate();
-    }
-
-    fn open(&mut self, url: &str, new_tab: bool) {
-        let Ok(url) = url::Url::parse(url) else {
+        if matches!(action, Action::Nothing) { return; }
+        let dismissed = matches!(action, Action::Dismiss);
+        if let Some(result) = execute(&self.app, self.surface.owner(), action) {
+            self.finish(result);
             return;
-        };
-        if new_tab {
-            App::new_tab(&self.app);
         }
-        App::navigate_current(&self.app, &url);
+        if dismissed { return; }
+        self.surface.invalidate();
     }
 
     /// Clears a range after confirmation. `All` clears the file, and the others delete a time span.
     fn clear(&mut self, range: Range) {
-        let Some(path) = self.history_file.clone() else {
-            return;
-        };
-        if !ask_yes_no_owned(self.surface.owner(), &format!("Clear {} of browsing history? This cannot be undone.", range.label().to_lowercase())) {
-            return;
-        }
-        let now = now_secs();
-        let offset = LAST_OFFSET.with(std::cell::Cell::get);
-        let result = match range.bounds(now, offset) {
-            None => productivity::clear_history(&path),
-            Some((start, end)) => productivity::delete_history_range(&path, start, end).map(|_| ()),
-        };
-        self.finish(result);
+        self.run(Action::ClearRange(range));
     }
 
     fn finish(&mut self, result: std::io::Result<()>) {

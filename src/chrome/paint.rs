@@ -342,6 +342,7 @@ impl ChromeSurface {
         active: crate::tabs::TabId,
         scroll: i32,
         hover_row: Option<usize>,
+        html_sidebar: bool,
         dirty: Rect,
         palette: &Palette,
     ) {
@@ -350,6 +351,12 @@ impl ChromeSurface {
             return;
         }
         let m = Metrics::new(self.dpi);
+        // --- vertical sidebar (lane S) ---
+        if html_sidebar {
+            self.fill_rect(layout.handle, palette.hairline, dirty);
+            return;
+        }
+        // --- end vertical sidebar ---
         self.fill_rect(layout.sidebar, palette.window, dirty);
         self.fill_rect(layout.handle, palette.hairline, dirty);
         self.draw_text(

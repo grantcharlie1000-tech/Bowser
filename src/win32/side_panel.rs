@@ -63,6 +63,10 @@ pub trait PanelContent {
     fn on_char(&mut self, _ch: char) {}
     fn on_key(&mut self, _key: u32, _shift: bool, _ctrl: bool) {}
     fn on_focus(&mut self, _focused: bool) {}
+    // --- panel host (lane P) ---
+    /// Called after the native side-panel host takes focus, so embedded views can receive it too.
+    fn after_shown(&mut self) {}
+    // --- end panel host ---
     fn min_width(&self) -> i32 { MIN_WIDTH_DIP }
     fn preferred_width(&self) -> i32 { DEFAULT_WIDTH_DIP }
     fn title(&self) -> &str;
@@ -160,6 +164,9 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             if let Some(current) = state.content.as_mut() { current.on_focus(true); }
             state.animation = Some(Animation { from: state.width, to: desired_width(state.width_dip, owner), started: Instant::now() });
             unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
+            // --- panel host (lane P) ---
+            if let Some(current) = state.content.as_mut() { current.after_shown(); }
+            // --- end panel host ---
             sync(owner, base_viewport(owner), dpi(owner));
             invalidate(hwnd);
             arm_animation(owner);
@@ -190,6 +197,9 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
         content.on_host_created(hwnd);
     }
     unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
+    // --- panel host (lane P) ---
+    if let Some(current) = unsafe { host(hwnd) }.and_then(|state| state.content.as_mut()) { current.after_shown(); }
+    // --- end panel host ---
     sync(owner, client, dpi(owner));
     arm_animation(owner);
     true

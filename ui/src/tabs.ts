@@ -3,6 +3,9 @@
 import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
+// --- vertical sidebar (lane S) ---
+import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
+// --- end vertical sidebar ---
 import {
   beforeId,
   buildEntries,
@@ -173,6 +176,13 @@ function setShift(n: TabNode, px: number): void {
 
 /** Builds the tab strip into `strip` (the #app element) and wires it to the host. */
 export function startTabs(strip: HTMLElement): void {
+  // --- vertical sidebar (lane S) ---
+  const sidebar = createSidebarRenderer(strip);
+  let layoutMode: 'horizontal' | 'vertical' = 'horizontal';
+  let workspace: SidebarWorkspace = { name: 'Workspace', icon: 'g:briefcase' };
+  // --- end vertical sidebar ---
+  strip.classList.remove('sidebar');
+  strip.removeAttribute('aria-orientation');
   strip.classList.add('strip');
   strip.setAttribute('role', 'tablist');
   strip.setAttribute('aria-label', 'Tabs');
@@ -237,6 +247,16 @@ export function startTabs(strip: HTMLElement): void {
   };
 
   const render = (msg: TabsMsg): void => {
+    // --- vertical sidebar (lane S) ---
+    if (layoutMode === 'vertical') {
+      activeId = msg.active;
+      sidebar.render(msg, favs, workspace);
+      return;
+    }
+    strip.classList.remove('sidebar');
+    strip.classList.add('strip');
+    strip.removeAttribute('aria-orientation');
+    // --- end vertical sidebar ---
     activeId = msg.active;
     const entries: Entry[] = buildEntries(msg.items, msg.active);
     const live = new Set<number>(msg.items.map((it) => it.id));
@@ -500,6 +520,27 @@ export function startTabs(strip: HTMLElement): void {
 
   onInbound((msg) => {
     switch (msg.t) {
+      // --- vertical sidebar (lane S) ---
+      case 'layout':
+        layoutMode = msg.mode;
+        if (latest) {
+          dirty = true;
+          schedule();
+        } else if (layoutMode === 'vertical') {
+          strip.classList.remove('strip');
+          strip.classList.add('sidebar');
+          strip.setAttribute('aria-orientation', 'vertical');
+        } else {
+          strip.classList.remove('sidebar');
+          strip.classList.add('strip');
+          strip.removeAttribute('aria-orientation');
+        }
+        break;
+      case 'workspace':
+        workspace = { name: msg.name, icon: msg.icon };
+        if (layoutMode === 'vertical') sidebar.workspace(workspace);
+        break;
+      // --- end vertical sidebar ---
       case 'state':
         // Only the theme and mode reach the tab strip; scale and page state are toolbar concerns.
         applyTheme(msg.theme, msg.solid, msg.dark);

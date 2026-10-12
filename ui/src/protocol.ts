@@ -68,6 +68,9 @@ export type Command =
   | { v: 1; t: 'tab'; a: TabAction; id: number }
   | { v: 1; t: 'tabmove'; id: number; before: number }
   | { v: 1; t: 'group'; a: GroupAction; key: number }
+  // --- vertical sidebar (lane S) ---
+  | { v: 1; t: 'side'; a: 'workspace' | 'newtab' }
+  // --- end vertical sidebar ---
   | { v: 1; t: 'rail'; a: RailAction; k: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
   | ({ v: 1; t: PanelKind } & PanelFields)
@@ -157,6 +160,9 @@ export interface RailFavMsg {
 }
 export interface PanelShowMsg { readonly t: 'panelshow'; readonly p: PanelToken }
 export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
+// --- vertical sidebar (lane S) ---
+export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
+// --- end vertical sidebar ---
 export type SnapshotValue = string | number | boolean | null | readonly SnapshotValue[] | { readonly [key: string]: SnapshotValue };
 export interface SnapshotMsg { readonly t: 'snap'; readonly p: PanelToken; readonly d: { readonly [key: string]: SnapshotValue } }
 export type Inbound =
@@ -170,6 +176,9 @@ export type Inbound =
   | RailFavMsg
   | PanelShowMsg
   | LayoutMsg
+  // --- vertical sidebar (lane S) ---
+  | WorkspaceMsg
+  // --- end vertical sidebar ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -243,6 +252,12 @@ export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
   if (fields.url !== undefined && !isStr(fields.url, MAX_TEXT)) return false;
   return send({ v: 1, t, ...fields });
 }
+
+// --- vertical sidebar (lane S) ---
+export function sendSide(a: 'workspace' | 'newtab'): boolean {
+  return (a === 'workspace' || a === 'newtab') && send({ v: 1, t: 'side', a });
+}
+// --- end vertical sidebar ---
 
 export function sendPopupSize(tok: number, w: number, h: number): boolean {
   return isInt(tok, 0, MAX_ID) && isInt(w, 1, 4000) && isInt(h, 1, 4000) && send({ v: 1, t: 'size', tok, w, h });
@@ -365,6 +380,12 @@ export function parseInbound(data: unknown): Inbound | null {
       if (!hasOnlyKeys(raw, ['v', 't', 'mode']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
       return { t: 'layout', mode: raw.mode };
     }
+    // --- vertical sidebar (lane S) ---
+    case 'workspace': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'name', 'icon']) || raw.v !== 1 || !isStr(raw.name, MAX_RAIL_LABEL) || !isRailIcon(raw.icon) || !raw.icon.startsWith('g:')) return null;
+      return { t: 'workspace', name: raw.name, icon: raw.icon };
+    }
+    // --- end vertical sidebar ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
       const budget = { keys: 0 };

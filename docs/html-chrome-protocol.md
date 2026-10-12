@@ -94,7 +94,7 @@ Popup and window commands run from the UI thread, never inside WebView2's messag
 
 The tab row is a second chrome host (same shared environment and private chrome profile, own controller) showing the same bundle with a view selector. Start URLs (exact match required, one per host): `bowser-ui://app/index.html?view=toolbar` and `bowser-ui://app/index.html?view=tabs`. Asset lookup ignores the query; JS reads `location.search`. Bridge validation checks both the sender's Source and the message's own Source (`args.Source()`) against the host's own start URL. A message that fails either check is dropped.
 
-The tab strip host is a second controller on the same environment, active only while the tab row is horizontal and its page has said `ready`. Its region is the full tab row; the native tab row is not painted there and gives no tab or group hits.
+The Tabs host is active in either layout after its page has said `ready`. Horizontal mode covers the full tab row. Vertical mode covers the sidebar up to (but not including) the native resize handle; native sidebar paint and hits are skipped only inside that region. If the page fails or the region is too narrow, native painting and hits resume.
 
 Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before = 0` means the end of the strip). Group keys are a stable non-zero FNV-1a hash of the group's name (domain or opener).
 
@@ -105,6 +105,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
 | `group` | `a`: `toggle`/`menu`, `key` | group ball click (collapse/expand) or group menu |
+| `side` | `a`: `workspace`/`newtab` | open the native workspace switcher or create a tab in the current workspace |
 
 ### Rust -> JS additions
 
@@ -112,8 +113,10 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 |---|---|
 | `tabs` | `active` id, `items` array of `{id, title, loading, pinned, muted, marker (int, -1 none), g (group key int, 0 none), gl (bool: group leader), gname (leader only), gcol (leader only, int colour id, -1 accent), gcollapsed (leader only), gsize (leader only), fav (bool: a favicon is cached for this id)}`. Titles are length-capped by Rust. |
 | `fav` | `id`, `uri` (`data:image/png;base64,...`, validated PNG, <= 16 KiB) sent once per favicon change |
+| `layout` | `mode`: `vertical`/`horizontal` | tells the Tabs view which renderer to show |
+| `workspace` | `name`, `icon` (`g:` plus a known workspace glyph) | current workspace label and glyph for the vertical header |
 
-`tabs` and `fav` are Rust->JS only, so nested arrays are fine. The toolbar view ignores them and the tabs view ignores `state` except `theme`/`solid`/`dark`/`scale`.
+`tabs`, `fav`, `layout`, and `workspace` are Rust->JS only, so nested arrays are fine. The toolbar view ignores them and the Tabs view ignores `state` except `theme`/`solid`/`dark`/`scale`.
 
 The Limits section above applies to these messages too: at most 512 items, titles and group names capped, favicons validated.
 

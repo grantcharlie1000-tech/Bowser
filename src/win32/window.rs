@@ -5,7 +5,13 @@ use super::{
     WM_PANE_FOCUSED, WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY,
     WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, WM_RAIL_CHANGED, WM_HTML_CHROME_ENV, card, command_palette, frame, glass,
     import_panel, island_menu, menu, notes_panel, passwords_panel, privacy_panel, settings_panel,
+    // --- popup host (lane M) ---
+    html_popup,
+    // --- end popup host ---
     side_panel,
+    // --- panel host (lane P) ---
+    html_panel, WM_HTML_PANEL_FAILED,
+    // --- end panel host ---
     show_error_message, site_info,
 };
 use crate::{
@@ -22,7 +28,7 @@ use crate::{
         self, host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View, accel_command},
         protocol::{
             CaptionAction, Command as ChromeCommand, GroupAction, NavAction, OpenTarget,
-            RailAction, RailKeyWire, TabAction, ViewState, completion_json, fav_json, focus_json,
+            RailAction, RailKeyWire, SideAction, TabAction, ViewState, completion_json, fav_json, focus_json,
             rail_json, railfav_json, set_text_json, tabs_json,
         },
     },
@@ -104,6 +110,10 @@ const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
+// --- popup host (lane M) ---
+const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
+pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
+// --- end popup host ---
 /// Posted from the first paint to start the HTML chrome. Posted, not called, so the paint finishes
 /// before any WebView2 work starts on the UI thread.
 const WM_HTML_CHROME_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7C;
@@ -136,6 +146,12 @@ enum DeferredChromeCommand {
     RailClick { key: RailKey },
     /// A right click on a rail button: the native rail context menu at the client point.
     RailMenu { key: RailKey, x: i32, y: i32 },
+    // --- vertical sidebar (lane S) ---
+    SidebarWorkspaceMenu,
+    // --- end vertical sidebar ---
+    // --- popup host (lane M) ---
+    MenuResult { tok: u32, id: Option<u32> },
+    // --- end popup host ---
 }
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
@@ -343,6 +359,10 @@ struct WindowChrome {
     html_tabs_page_ready: bool,
     /// The last `tabs` JSON posted to the tab strip, so an unchanged strip is not sent again.
     html_tabs_last: Option<String>,
+    // --- vertical sidebar (lane S) ---
+    html_tabs_layout: Option<chrome_host::protocol::LayoutMode>,
+    html_tabs_workspace: Option<(String, String)>,
+    // --- end vertical sidebar ---
     /// Group wire key to the tab a group command acts on, from the last strip sent.
     html_tabs_groups: HashMap<u32, HtmlGroup>,
     /// Each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes.
@@ -463,6 +483,10 @@ impl WindowChrome {
             html_tabs_requested: false,
             html_tabs_page_ready: false,
             html_tabs_last: None,
+            // --- vertical sidebar (lane S) ---
+            html_tabs_layout: None,
+            html_tabs_workspace: None,
+            // --- end vertical sidebar ---
             html_tabs_groups: HashMap::new(),
             html_favicons: HashMap::new(),
             html_favicons_sent: HashMap::new(),
@@ -679,12 +703,22 @@ impl WindowChrome {
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
     }
-    /// The tab row the HTML tab strip covers, in client pixels. `None` until its page is ready and
-    /// while the tabs are vertical (the sidebar), so native paint keeps the row.
+    // --- vertical sidebar (lane S) ---
+    fn html_tabs_bounds(&self) -> Option<RECT> {
+        self.sidebar.as_ref().and_then(chrome_host::sidebar_bounds)
+            .or_else(|| chrome_host::tab_row_bounds(&self.layout))
+    }
+    // --- end vertical sidebar ---
+    /// The tab row or vertical sidebar covered by the Tabs host, in client pixels.
     fn html_tab_region(&self) -> Option<Rect> {
         if self.html_tabs.is_none() || !self.html_tabs_page_ready {
             return None;
         }
+        // --- vertical sidebar (lane S) ---
+        if self.sidebar.is_some() {
+            return sidebar_html_region(self.sidebar.as_ref(), true);
+        }
+        // --- end vertical sidebar ---
         chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
     }
     /// The left rail the HTML rail covers, in client pixels. `None` until its page is ready, so the
@@ -954,11 +988,20 @@ fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
 }
 
+// --- vertical sidebar (lane S) ---
+fn sidebar_html_region(layout: Option<&crate::vertical_tabs::SidebarLayout>, active: bool) -> Option<Rect> {
+    if !active { return None; }
+    layout.and_then(chrome_host::sidebar_bounds).map(Rect::from)
+}
+// --- end vertical sidebar ---
+
 /// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
 fn sync_html_host_bounds(hwnd: HWND) {
     let Some(hosts) = with_chrome(hwnd, |s| [
         (s.html.clone(), chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some())),
-        (s.html_tabs.clone(), chrome_host::tab_row_bounds(&s.layout).filter(|_| s.html_tab_region().is_some())),
+        // --- vertical sidebar (lane S) ---
+        (s.html_tabs.clone(), s.html_tabs_bounds().filter(|_| s.html_tab_region().is_some())),
+        // --- end vertical sidebar ---
         (s.html_rail.clone(), chrome_host::rail_bounds(&s.layout).filter(|_| s.html_rail_region().is_some())),
     ]) else { return; };
     for (host, bounds) in hosts {
@@ -1544,10 +1587,16 @@ unsafe extern "system" fn window_proc(
             WM_MOVE => {
                 sync_overlay_position(hwnd);
                 card::cancel(hwnd);
+                // --- popup host (lane M) ---
+                html_popup::close(hwnd);
+                // --- end popup host ---
                 LRESULT(0)
             }
             WM_SIZE => {
                 card::cancel(hwnd);
+                // --- popup host (lane M) ---
+                html_popup::close(hwnd);
+                // --- end popup host ---
                 if let Some(app) = app {
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
@@ -2679,12 +2728,29 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- panel host (lane P) ---
+            WM_HTML_PANEL_FAILED => {
+                if chrome_host::html_ui_enabled() { html_panel_failed(hwnd); }
+                LRESULT(0)
+            }
+            // --- end panel host ---
             WM_HTML_DEFERRED => {
                 if chrome_host::html_ui_enabled() {
                     run_deferred_html_command(hwnd);
                 }
                 LRESULT(0)
             }
+            // --- popup host (lane M) ---
+            WM_TIMER if wparam.0 == WM_HTML_POPUP_PREWARM_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER);
+                if chrome_host::html_ui_enabled() { prewarm_html_popup(hwnd); }
+                LRESULT(0)
+            }
+            WM_HTML_POPUP_FAILED => {
+                if chrome_host::html_ui_enabled() { html_popup::shutdown(hwnd); }
+                LRESULT(0)
+            }
+            // --- end popup host ---
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 if let Some(app) = app {
@@ -5404,6 +5470,9 @@ fn html_env_settled(hwnd: HWND) {
                 s.html_env_waiting = false;
                 s.html_env = Some(env.clone());
             });
+            // --- panel host (lane P) ---
+            html_panel::register(&app, hwnd, env.clone());
+            // --- end panel host ---
             // The two controllers are requested together and are created concurrently. Each one's
             // failure is its own.
             start_html_toolbar(hwnd, &env);
@@ -5421,7 +5490,27 @@ fn html_env_settled(hwnd: HWND) {
 
 /// Closes both chrome hosts and drops the window's reference to the shared environment, so the
 /// engine can close it next. Nothing restarts the HTML chrome afterwards.
+// --- popup host (lane M) ---
+fn prewarm_html_popup(hwnd: HWND) {
+    let env = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html_env.clone()).flatten()).flatten();
+    if let Some(env) = env { html_popup::prewarm(hwnd, env); }
+}
+// --- end popup host ---
+// --- panel host (lane P) ---
+fn html_panel_failed(hwnd: HWND) {
+    html_panel::fail(hwnd);
+    if let Some(app) = app_of(hwnd) { super::panel_history::register(&app); }
+    side_panel::close_content(hwnd, side_panel::PanelId::History);
+}
+// --- end panel host ---
 fn close_html_chrome(hwnd: HWND) {
+    // --- popup host (lane M) ---
+    unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
+    html_popup::shutdown(hwnd);
+    // --- end popup host ---
+    // --- panel host (lane P) ---
+    html_panel::close(hwnd);
+    // --- end panel host ---
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
@@ -5535,6 +5624,11 @@ fn html_refresh(hwnd: HWND) {
     .flatten() else {
         return;
     };
+    // --- popup host (lane M) ---
+    if activating {
+        unsafe { let _ = SetTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER, 2000, None); }
+    }
+    // --- end popup host ---
     let native_text = (!edit.is_invalid() && activating).then(|| read_edit(edit));
     let native_focused = unsafe { !edit.is_invalid() && GetFocus() == edit };
     let handoff = native_text.and_then(|text| {
@@ -5782,7 +5876,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::Panel { .. }
         | ChromeCommand::PopupSize { .. }
         | ChromeCommand::PopupPick { .. }
-        | ChromeCommand::PopupDismiss { .. } => {}
+        | ChromeCommand::PopupDismiss { .. }
+        // --- popup host (lane M) ---
+        | ChromeCommand::Side(_) => {}
+        // --- end popup host ---
     }
     html_sync(hwnd);
 }
@@ -5795,6 +5892,14 @@ const SHORTCUT_FROM_CHROME: isize = 8;
 /// HTML omnibox is being edited, its editing chords stay with the field (see `accel_command`).
 /// The command runs later through `WM_SHORTCUT_KEY`, the same path the tab WebViews use.
 fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
+    // --- popup host (lane M) ---
+    if cfg!(debug_assertions) && accel.key_down && !accel.repeat && accel.vk == 0x4D
+        && accel.ctrl && accel.alt && accel.shift && chrome_host::html_ui_enabled()
+    {
+        open_debug_html_menu(hwnd);
+        return true;
+    }
+    // --- end popup host ---
     let editing =
         view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false);
     if accel_command(accel, editing).is_none() {
@@ -5814,6 +5919,52 @@ fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
     }
     true
 }
+
+// --- panel host (lane P) ---
+pub(super) fn html_panel_accelerator(hwnd: HWND, accel: Accel) -> bool {
+    html_accelerator(hwnd, accel, View::Panel)
+}
+
+pub(super) fn html_panel_state(hwnd: HWND) -> String {
+    let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
+        .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
+    ViewState {
+        scale: dpi as f32 / 96.0,
+        solid: true,
+        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        back: false,
+        forward: false,
+        loading: false,
+        progress: 0,
+        security: crate::chrome_host::protocol::Security::None,
+        label: String::new(),
+        theme: chrome_host::theme_tokens(&palette),
+    }.to_json()
+}
+// --- end panel host ---
+
+// --- popup host (lane M) ---
+fn open_debug_html_menu(hwnd: HWND) {
+    let mut anchor = POINT::default();
+    if unsafe { GetCursorPos(&mut anchor) }.is_err() { return; }
+    let submenu = vec![
+        Entry::Item(Item::new(3, "Nested option", Icon::Info)),
+        Entry::Item(Item::new(4, "Another option", Icon::Plus)),
+    ];
+    let sample = Menu {
+        header: None,
+        entries: vec![
+            Entry::Item(Item::new(1, "Checked option", Icon::Check).checked(true)),
+            Entry::Item(Item::new(2, "Disabled option", Icon::Close).disabled()),
+            Entry::Item(Item::new(5, "More options", Icon::Plus).submenu_with(submenu)),
+            Entry::Separator,
+            Entry::Item(Item::new(6, "Close sample", Icon::Close)),
+        ],
+        footer: String::new(),
+    };
+    let _ = html_popup::show_menu(hwnd, anchor, html_popup::Placement::BelowLeft, sample, "debug-sample", Box::new(|_, _| {}));
+}
+// --- end popup host ---
 
 /// Commands that make another tab the active one.
 fn changes_active_tab(command: Command) -> bool {
@@ -5837,7 +5988,9 @@ fn start_html_tabs(hwnd: HWND) {
         }
         let env = s.html_env.clone()?;
         s.html_tabs_requested = true;
-        Some((env, chrome_host::tab_row_bounds(&s.layout).unwrap_or_default()))
+        // --- vertical sidebar (lane S) ---
+        Some((env, s.html_tabs_bounds().unwrap_or_default()))
+        // --- end vertical sidebar ---
     })
     .flatten() else {
         return;
@@ -5888,8 +6041,9 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
     });
     if stored.is_some() {
         sync_html_host_bounds(hwnd);
-        if let Some(region) =
-            with_chrome(hwnd, |s| chrome_host::tab_row_bounds(&s.layout)).flatten()
+        // --- vertical sidebar (lane S) ---
+        if let Some(region) = with_chrome(hwnd, |s| s.html_tabs_bounds()).flatten()
+        // --- end vertical sidebar ---
         {
             raise_html_child(hwnd, region);
         }
@@ -5903,6 +6057,10 @@ fn html_tabs_refresh(hwnd: HWND) {
     let _ = with_chrome(hwnd, |s| {
         s.html_tabs_last = None;
         s.html_tabs_last_state = None;
+        // --- vertical sidebar (lane S) ---
+        s.html_tabs_layout = None;
+        s.html_tabs_workspace = None;
+        // --- end vertical sidebar ---
         s.html_state_generation[1] = s.html_state_generation[1].wrapping_add(1);
         s.html_favicons_sent.clear();
         s.sync_html_tabs_bounds();
@@ -5920,6 +6078,10 @@ fn html_tabs_failed(hwnd: HWND) {
     let Some(host) = with_chrome(hwnd, |s| {
         s.html_tabs_page_ready = false;
         s.html_tabs_last = None;
+        // --- vertical sidebar (lane S) ---
+        s.html_tabs_layout = None;
+        s.html_tabs_workspace = None;
+        // --- end vertical sidebar ---
         s.html_tabs_groups.clear();
         s.html_favicons_sent.clear();
         let host = s.html_tabs.take();
@@ -5953,6 +6115,21 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
         ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
         ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
+        // --- vertical sidebar (lane S) ---
+        ChromeCommand::Side(action) => {
+            let vertical = with_chrome(hwnd, |s| s.sidebar.is_some() && s.html_tab_region().is_some()).unwrap_or(false);
+            if !vertical { return; }
+            match action {
+                SideAction::Workspace => defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu),
+                SideAction::NewTab => {
+                    if let Some(app) = app_of(hwnd) {
+                        App::new_tab(&app);
+                        focus_omni(hwnd, &app, true);
+                    }
+                }
+            }
+        }
+        // --- end vertical sidebar ---
         // The strip sends nothing else. Any other message is ignored.
         _ => return,
     }
@@ -6007,6 +6184,45 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
     }
 }
 
+// --- popup host (lane M) ---
+pub(super) fn defer_popup_result(hwnd: HWND, tok: u32, id: Option<u32>) {
+    defer_html_command(hwnd, DeferredChromeCommand::MenuResult { tok, id });
+}
+
+pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
+    match command {
+        ChromeCommand::PopupSize { tok, w, h } => html_popup::show_sized(hwnd, tok, w, h),
+        ChromeCommand::PopupPick { tok, id } => {
+            if html_popup::valid_pick(hwnd, tok, id) { defer_popup_result(hwnd, tok, Some(id)); }
+        }
+        ChromeCommand::PopupDismiss { tok } => {
+            if html_popup::valid_token(hwnd, tok) { defer_popup_result(hwnd, tok, None); }
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
+    let app = app_of(hwnd)?;
+    let (palette, dpi) = with_chrome(hwnd, |s| (s.palette, s.dpi))?;
+    let id = App::active_tab_id(&app);
+    let site = App::site_security(&app);
+    let state = ViewState {
+        scale: dpi as f32 / 96.0,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
+        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        back: App::tab_can_go_back(&app, id),
+        forward: App::tab_can_go_forward(&app, id),
+        loading: App::tab_loading(&app, id),
+        progress: App::tab_progress_percent(&app, id).unwrap_or(0),
+        security: chrome_host::security_of(site),
+        label: site.summary().to_owned(),
+        theme: chrome_host::theme_tokens(palette),
+    };
+    Some(state.to_json())
+}
+// --- end popup host ---
+
 /// Runs the oldest queued chrome command. Each `WM_HTML_DEFERRED` runs exactly one, so a modal loop
 /// that one command starts pumps its own messages without losing the rest of the queue.
 fn run_deferred_html_command(hwnd: HWND) {
@@ -6050,6 +6266,12 @@ fn run_deferred_html_command(hwnd: HWND) {
                 show_rail_context_menu(hwnd, &app, key, x, y);
             }
         }
+        // --- vertical sidebar (lane S) ---
+        DeferredChromeCommand::SidebarWorkspaceMenu => show_workspaces_menu(hwnd, &app),
+        // --- end vertical sidebar ---
+        // --- popup host (lane M) ---
+        DeferredChromeCommand::MenuResult { tok, id } => html_popup::run_result(hwnd, tok, id, &app),
+        // --- end popup host ---
     }
     html_sync(hwnd);
     html_tabs_sync(hwnd);
@@ -6198,14 +6420,20 @@ fn html_tabs_sync(hwnd: HWND) {
         return;
     };
     // Titles, loading and markers come from the snapshot the native strip paints.
-    let Some((host, snapshot)) = with_chrome(hwnd, |s| {
+    let Some((host, snapshot, mode)) = with_chrome(hwnd, |s| {
         s.html_tab_region()?;
+        // --- vertical sidebar (lane S) ---
+        let mode = if s.sidebar.is_some() { chrome_host::protocol::LayoutMode::Vertical } else { chrome_host::protocol::LayoutMode::Horizontal };
+        // --- end vertical sidebar ---
         Some((
             s.html_tabs.clone()?,
             s.tabs
                 .iter()
                 .map(|tab| (tab.id, tab.title.clone(), tab.loading, tab.marker))
                 .collect::<Vec<_>>(),
+            // --- vertical sidebar (lane S) ---
+            mode,
+            // --- end vertical sidebar ---
         ))
     })
     .flatten() else {
@@ -6213,6 +6441,25 @@ fn html_tabs_sync(hwnd: HWND) {
     };
     let ids: Vec<TabId> = snapshot.iter().map(|(id, ..)| *id).collect();
     let active = App::active_tab_id(&app);
+    // --- vertical sidebar (lane S) ---
+    let layout = chrome_host::protocol::layout_json(mode);
+    let layout_pending = with_chrome(hwnd, |s| s.html_tabs_layout != Some(mode)).unwrap_or(false);
+    if layout_pending && host.post_json(&layout).is_ok() {
+        let _ = with_chrome(hwnd, |s| s.html_tabs_layout = Some(mode));
+    }
+    let workspace_set = App::workspaces(&app);
+    let workspace = workspace_set.active();
+    let workspace_name = workspace.name().to_owned();
+    let workspace_icon = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
+    if let Some(json) = chrome_host::protocol::workspace_json(&workspace_name, &workspace_icon) {
+        let already_sent = with_chrome(hwnd, |s| {
+            s.html_tabs_workspace.as_ref().is_some_and(|(name, icon)| name == &workspace_name && icon == &workspace_icon)
+        }).unwrap_or(false);
+        if !already_sent && host.post_json(&json).is_ok() {
+            let _ = with_chrome(hwnd, |s| s.html_tabs_workspace = Some((workspace_name, workspace_icon)));
+        }
+    }
+    // --- end vertical sidebar ---
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
     let keys = tab_groups::group_keys(&inputs, &preferences);
@@ -6889,6 +7136,9 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         active,
                         s.sidebar_scroll,
                         s.sidebar_hover_row,
+                        // --- vertical sidebar (lane S) ---
+                        s.html_tab_region().is_some(),
+                        // --- end vertical sidebar ---
                         dirty,
                         p,
                     );
@@ -7451,6 +7701,19 @@ mod tests {
         assert_ne!(style.0 & WS_SYSMENU.0, 0);
         assert_ne!(style.0 & WS_MAXIMIZEBOX.0, 0);
     }
+
+    // --- vertical sidebar (lane S) ---
+    #[test]
+    fn html_sidebar_region_skips_native_sidebar_hits_but_leaves_resize_handle() {
+        let layout = crate::vertical_tabs::SidebarLayout::compute_in_frame(1200, 700, 96, 260, false);
+        let region = sidebar_html_region(Some(&layout), true).expect("active HTML sidebar");
+        assert_eq!(region.right, layout.handle.left);
+        assert!(region.contains(layout.sidebar.left + 1, layout.sidebar.top + 1));
+        assert!(!region.contains(layout.handle.left, layout.handle.top + 1));
+        assert!(sidebar_html_region(Some(&layout), false).is_none());
+        assert!(sidebar_html_region(None, true).is_none());
+    }
+    // --- end vertical sidebar ---
 
     #[test]
     fn overflow_menu_contains_only_tabs_outside_the_visible_window() {

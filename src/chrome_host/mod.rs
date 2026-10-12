@@ -9,6 +9,9 @@ mod guard;
 pub mod host;
 pub mod json;
 pub mod protocol;
+// --- panel host (lane P) ---
+pub mod panels;
+// --- end panel host ---
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -134,6 +137,16 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
         bottom: row.bottom,
     })
 }
+
+// --- vertical sidebar (lane S) ---
+/// Client-relative HTML sidebar bounds, stopping at the native resize handle's left edge.
+pub fn sidebar_bounds(layout: &crate::vertical_tabs::SidebarLayout) -> Option<RECT> {
+    let bounds = layout.sidebar;
+    let right = layout.handle.left;
+    if right <= bounds.left || bounds.bottom <= bounds.top { return None; }
+    Some(RECT { left: bounds.left, top: bounds.top, right, bottom: bounds.bottom })
+}
+// --- end vertical sidebar ---
 
 /// Wire id of a tab: `TabId + 1`, so `0` stays free for "no tab" (`before: 0` is the end of the
 /// strip). `None` only when the id has no wire form (`u32::MAX`).
@@ -518,6 +531,25 @@ mod tests {
         layout.tab_row = Rect::new(0, 34, 0, 62);
         assert!(tab_row_bounds(&layout).is_none());
     }
+
+    // --- vertical sidebar (lane S) ---
+    #[test]
+    fn html_sidebar_bounds_end_before_the_native_resize_handle() {
+        for dpi in [96, 120, 144, 192] {
+            let layout = crate::vertical_tabs::SidebarLayout::compute_in_frame(1200, 700, dpi, 260, false);
+            let bounds = sidebar_bounds(&layout).expect("usable sidebar area");
+            assert_eq!(bounds.left, layout.sidebar.left, "dpi={dpi}");
+            assert_eq!(bounds.top, layout.sidebar.top, "dpi={dpi}");
+            assert_eq!(bounds.right, layout.handle.left, "dpi={dpi}");
+            assert_eq!(bounds.bottom, layout.sidebar.bottom, "dpi={dpi}");
+        }
+        let mut narrow = crate::vertical_tabs::SidebarLayout::compute(20, 300, 96, 260, false);
+        narrow.handle.left = narrow.sidebar.left;
+        assert!(sidebar_bounds(&narrow).is_none());
+        narrow.sidebar.bottom = narrow.sidebar.top;
+        assert!(sidebar_bounds(&narrow).is_none());
+    }
+    // --- end vertical sidebar ---
 
     #[test]
     fn tab_wire_ids_are_offset_and_checked() {

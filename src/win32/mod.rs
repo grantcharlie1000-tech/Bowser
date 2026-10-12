@@ -6,10 +6,21 @@ mod hover_square;
 mod import_panel;
 mod island_menu;
 mod menu;
+// --- popup host (lane M) ---
+mod html_popup;
+// --- end popup host ---
 mod notes_panel;
 mod panel_bookmarks;
 mod panel_customize;
 mod panel_history;
+// --- panel host (lane P) ---
+pub(crate) use panel_history::{
+    Action as HistoryAction, Line as HistoryLine, Model as HistoryModel, Range as HistoryRange,
+    Row as HistoryRow, LIMIT as HISTORY_LIMIT, current_history_file, execute as execute_history_action,
+    local_offset as history_local_offset, now_secs as history_now_secs,
+};
+mod html_panel;
+// --- end panel host ---
 mod panel_widgets;
 pub mod panel_webapp;
 pub mod passwords_import;
@@ -96,6 +107,10 @@ pub(crate) const WM_LOGIN_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging
 /// HTML chrome mode only: the tab engine's environment creation finished (with or without an
 /// environment the chrome can use). The window then creates, or gives up on, its HTML chrome.
 pub(crate) const WM_HTML_CHROME_ENV: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7D;
+// --- panel host (lane P) ---
+/// HTML history view failed; native content factories are restored on the UI thread.
+pub(crate) const WM_HTML_PANEL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x82;
+// --- end panel host ---
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;

@@ -102,6 +102,11 @@ pub struct PanelFields {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutMode { Vertical, Horizontal }
+// --- vertical sidebar (lane S) ---
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideAction { Workspace, NewTab }
+// --- end vertical sidebar ---
+
 
 /// A rail button key as it travels on the wire. Grammar: `home`, `customize`, `addws`, `addapp`,
 /// `bookmarks`, `history`, `menu`, `ws:<digits>` (at most 20 digits, a u64) and `app:<digits>` (at
@@ -197,6 +202,9 @@ pub enum Command {
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
     Group { action: GroupAction, key: u32 },
+    // --- vertical sidebar (lane S) ---
+    Side(SideAction),
+    // --- end vertical sidebar ---
     /// A click or right click on a rail button.
     Rail { action: RailAction, key: RailKeyWire },
     /// Drag-reorder drop of a workspace or app: before `before`, or at the end of its section when
@@ -597,6 +605,9 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "tab" => &["a", "id"],
         "tabmove" => &["id", "before"],
         "group" => &["a", "key"],
+        // --- vertical sidebar (lane S) ---
+        "side" => &["a"],
+        // --- end vertical sidebar ---
         "rail" => &["a", "k"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
@@ -665,6 +676,13 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             },
             key: uint_field(fields, "key")?,
         },
+        // --- vertical sidebar (lane S) ---
+        "side" => Command::Side(match str_field(fields, "a")? {
+            "workspace" => SideAction::Workspace,
+            "newtab" => SideAction::NewTab,
+            _ => return Err(ProtocolError::InvalidValue("a")),
+        }),
+        // --- end vertical sidebar ---
         "rail" => Command::Rail {
             action: match str_field(fields, "a")? {
                 "click" => RailAction::Click,
@@ -726,6 +744,20 @@ pub fn layout_json(mode: LayoutMode) -> String {
     let mode = match mode { LayoutMode::Vertical => "vertical", LayoutMode::Horizontal => "horizontal" };
     format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"{mode}\"}}")
 }
+
+// --- vertical sidebar (lane S) ---
+/// Active workspace metadata for the vertical sidebar. Only the known glyph tokens are emitted.
+pub fn workspace_json(name: &str, icon: &str) -> Option<String> {
+    const ICONS: [&str; 12] = ["g:briefcase", "g:home", "g:code", "g:book", "g:cart", "g:game", "g:music", "g:heart", "g:star", "g:bolt", "g:globe", "g:leaf"];
+    if !ICONS.contains(&icon) { return None; }
+    Some(format!(
+        "{{\"v\":1,\"t\":\"workspace\",\"name\":{},\"icon\":{}}}",
+        json_string(truncate_utf16(name, MAX_RAIL_LABEL_CHARS)),
+        json_string(icon),
+    ))
+}
+// --- end vertical sidebar ---
+
 
 /// Builds a versioned snapshot envelope with a structurally-written data object.
 pub fn snap_json(p: &str, build: impl FnOnce(&mut super::json::Object<'_>)) -> Option<String> {
@@ -1028,6 +1060,9 @@ pub fn is_popup_command(command: &Command) -> bool {
             | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split)
             | Command::Tab { action: TabAction::Menu, .. }
             | Command::Group { action: GroupAction::Menu, .. }
+            // --- vertical sidebar (lane S) ---
+            | Command::Side(SideAction::Workspace)
+            // --- end vertical sidebar ---
             | Command::Rail { action: RailAction::Menu, .. }
     )
 }
@@ -1271,6 +1306,34 @@ mod tests {
         }
     }
 
+    // --- vertical sidebar (lane S) ---
+    #[test]
+    fn sidebar_messages_match_own_committed_fixture() {
+        let content = format!(
+            "{{\"layoutVertical\":{},\"layoutHorizontal\":{},\"workspace\":{}}}\n",
+            layout_json(LayoutMode::Vertical),
+            layout_json(LayoutMode::Horizontal),
+            workspace_json("Work & Play", "g:code").expect("workspace glyph"),
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("ui/test/fixtures/sidebar-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::create_dir_all(path.parent().expect("fixtures directory")).expect("create fixtures directory");
+            std::fs::write(&path, content).expect("write sidebar messages fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed sidebar messages fixture"), content);
+        }
+    }
+
+    #[test]
+    fn parses_side_commands_strictly() {
+        assert_eq!(ok(r#"{"v":1,"t":"side","a":"workspace"}"#), Command::Side(SideAction::Workspace));
+        assert_eq!(ok(r#"{"v":1,"t":"side","a":"newtab"}"#), Command::Side(SideAction::NewTab));
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"menu"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"workspace","id":1}"#).is_err());
+    }
+    // --- end vertical sidebar ---
+
     #[test]
     fn foundation_commands_accept_boundaries_and_reject_bad_fields() {
         let cases = [
@@ -1317,6 +1380,10 @@ mod tests {
         assert_eq!(panelshow_json("History"), None);
         assert_eq!(layout_json(LayoutMode::Vertical), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
+        // --- vertical sidebar (lane S) ---
+        assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
+        assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);
+        // --- end vertical sidebar ---
         assert_eq!(snap_json("history", |d| d.int("count", 0)).as_deref(), Some(r#"{"v":1,"t":"snap","p":"history","d":{"count":0}}"#));
         assert_eq!(snap_json("History", |_| {}), None);
     }
