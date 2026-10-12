@@ -34,7 +34,7 @@ export const MENU_ICONS: readonly string[] = [
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
   'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'profile', 'puzzle', 'refresh', 'reload', 'reset', 'search', 'settings',
   'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-view', 'star', 'stop', 'tab-close', 'tab-group', 'trash', 'unlock',
-  'volume', 'warning', 'workspace', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
+  'volume', 'warning', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',
 ];
