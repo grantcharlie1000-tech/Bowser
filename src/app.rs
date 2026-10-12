@@ -2625,16 +2625,52 @@ impl App {
         state.engine.as_mut().map(|engine| f(engine.as_mut()))
     }
 
+    /// `done` always runs with App unborrowed: callers open menus that read App. An engine that
+    /// answers synchronously (a tab with no live page) is answered after `call_engine` returns.
     pub fn picture_in_picture_eligible(app: &AppRef, tab: TabId, done: Box<dyn FnOnce(bool)>) {
-        if app.borrow().engine.is_some() {
-            let _ = Self::call_engine(app, |engine| engine.picture_in_picture_eligible(tab, done));
-        } else {
-            done(false);
+        let done = Rc::new(RefCell::new(Some(done)));
+        let early = Rc::new(std::cell::Cell::new(None::<bool>));
+        let in_call = Rc::new(std::cell::Cell::new(true));
+        let answer = {
+            let (done, early, in_call) = (done.clone(), early.clone(), in_call.clone());
+            Box::new(move |available: bool| {
+                if in_call.get() {
+                    early.set(Some(available));
+                } else if let Some(done) = done.borrow_mut().take() {
+                    done(available);
+                }
+            }) as Box<dyn FnOnce(bool)>
+        };
+        let called = Self::call_engine(app, |engine| engine.picture_in_picture_eligible(tab, answer));
+        in_call.set(false);
+        let available = match (called, early.take()) {
+            (None, _) => Some(false),
+            (Some(()), early) => early,
+        };
+        if let Some(available) = available {
+            let done = done.borrow_mut().take();
+            if let Some(done) = done {
+                done(available);
+            }
         }
     }
 
     pub fn toggle_picture_in_picture(app: &AppRef, tab: TabId) {
         let _ = Self::call_engine(app, |engine| engine.toggle_picture_in_picture(tab));
+    }
+
+    /// Copies the engine's real back/forward availability for `id` into the tab, which the native
+    /// and HTML toolbars read. Called whenever the tab's address changes, which includes history
+    /// navigations. Keeps the previous values while the engine is out of `self` (during a call).
+    fn sync_tab_history(&mut self, id: TabId) {
+        let Some((back, forward)) = self.engine.as_ref().and_then(|engine| engine.tab_history(id))
+        else {
+            return;
+        };
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.can_back = back;
+            tab.can_forward = forward;
+        }
     }
 
     pub fn tab_can_go_back(app: &AppRef, id: TabId) -> bool {
@@ -3434,11 +3470,13 @@ impl App {
                         let found =
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.url = Some(url.clone());
-                                tab.can_back = true;
                                 true
                             } else {
                                 false
                             };
+                        if found {
+                            state.sync_tab_history(tab_id);
+                        }
                         if found {
                             state.tab_model.set_url(tab_id, Some(url.as_str()));
                         }
@@ -5926,6 +5964,101 @@ mod tests {
         assert!(progress.reset());
         assert_eq!(progress, NavigationProgress::default());
         assert!(!progress.reset());
+    }
+
+    /// Engine whose per-tab session history is set by the test.
+    struct HistoryEngine {
+        history: Rc<RefCell<HashMap<TabId, (bool, bool)>>>,
+    }
+
+    impl EngineAdapter for HistoryEngine {
+        fn navigate(&mut self, _url: &url::Url) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn can_go_back(&self) -> bool {
+            false
+        }
+        fn go_back(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn can_go_forward(&self) -> bool {
+            false
+        }
+        fn go_forward(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn tab_history(&self, tab: TabId) -> Option<(bool, bool)> {
+            self.history.borrow().get(&tab).copied()
+        }
+        fn resize(&mut self, _bounds: windows::Win32::Foundation::RECT) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn set_memory_usage_target(
+            &mut self,
+            _target: MemoryUsageTarget,
+        ) -> windows::core::Result<MemoryTargetApply> {
+            Ok(MemoryTargetApply::Applied)
+        }
+        fn close(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn picture_in_picture_answer_runs_after_the_app_borrow_is_released() {
+        // A tab with no live page answers synchronously (the default engine method does). The
+        // tab context menu then reads App, which used to panic with "already mutably borrowed".
+        let app = app_with_pending(rect(800, 600));
+        let tab = App::new_tab(&app);
+        app.borrow_mut().engine = Some(Box::new(HistoryEngine {
+            history: Rc::new(RefCell::new(HashMap::new())),
+        }));
+        let answered = Rc::new(std::cell::Cell::new(None));
+        let (menu_app, seen) = (app.clone(), answered.clone());
+        App::picture_in_picture_eligible(
+            &app,
+            tab,
+            Box::new(move |available| {
+                let _pinned = App::tab_pinned(&menu_app, tab);
+                seen.set(Some(available));
+            }),
+        );
+        assert_eq!(answered.get(), Some(false));
+    }
+
+    #[test]
+    fn toolbar_back_and_forward_follow_the_engines_tab_history() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::new_tab(&app);
+        let second = App::new_tab(&app);
+        let history = Rc::new(RefCell::new(HashMap::new()));
+        app.borrow_mut().engine = Some(Box::new(HistoryEngine { history: history.clone() }));
+
+        // First page of a tab: nothing to go back to.
+        history.borrow_mut().insert(first, (false, false));
+        app.borrow_mut().sync_tab_history(first);
+        assert!(!App::tab_can_go_back(&app, first));
+        assert!(!App::tab_can_go_forward(&app, first));
+
+        // After a second page and then Back, Forward becomes available.
+        history.borrow_mut().insert(first, (true, false));
+        app.borrow_mut().sync_tab_history(first);
+        assert!(App::tab_can_go_back(&app, first));
+        history.borrow_mut().insert(first, (false, true));
+        app.borrow_mut().sync_tab_history(first);
+        assert!(!App::tab_can_go_back(&app, first));
+        assert!(App::tab_can_go_forward(&app, first));
+
+        // Each tab keeps its own state.
+        assert!(!App::tab_can_go_forward(&app, second));
+
+        // A tab the engine has no page for, or a moment when the engine is out of App, keeps
+        // the last known values.
+        app.borrow_mut().sync_tab_history(second);
+        let engine = app.borrow_mut().engine.take();
+        app.borrow_mut().sync_tab_history(first);
+        assert!(App::tab_can_go_forward(&app, first));
+        app.borrow_mut().engine = engine;
     }
 
     struct TabRecordingEngine {

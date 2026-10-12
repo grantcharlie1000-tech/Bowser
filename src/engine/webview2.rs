@@ -1788,6 +1788,12 @@ impl EngineAdapter for WebView2Engine {
             .and_then(|id| state.tabs.get(&id))
             .is_some_and(EngineAdapter::can_go_forward)
     }
+    fn tab_history(&self, tab: crate::tabs::TabId) -> Option<(bool, bool)> {
+        let state = self.core.borrow();
+        let tab = state.tabs.get(&tab)?;
+        tab.webview.as_ref()?;
+        Some((EngineAdapter::can_go_back(tab), EngineAdapter::can_go_forward(tab)))
+    }
     fn go_forward(&mut self) -> Result<()> {
         let mut state = self.core.borrow_mut();
         if let Some(active) = state.active_tab

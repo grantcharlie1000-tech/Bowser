@@ -80,6 +80,11 @@ pub trait EngineAdapter {
     fn go_back(&mut self) -> windows::core::Result<()>;
     fn can_go_forward(&self) -> bool;
     fn go_forward(&mut self) -> windows::core::Result<()>;
+    /// `(can_go_back, can_go_forward)` from one tab's real session history, or `None` when the
+    /// tab has no live page. The toolbar's back/forward buttons follow this.
+    fn tab_history(&self, _tab: crate::tabs::TabId) -> Option<(bool, bool)> {
+        None
+    }
     fn resize(&mut self, bounds: RECT) -> windows::core::Result<()>;
     fn reload(&mut self) -> windows::core::Result<()> {
         Ok(())
