@@ -58,3 +58,25 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 - `protocol.rs`: `pub enum Command { Ready, Nav(NavAction), Edit{seq:u32,text:String}, Submit(String), Escape, Focus(bool), Open(OpenTarget) }`, `pub enum NavAction{Back,Forward,Reload,Stop}`, `pub enum OpenTarget{Menu,Site,NewTab}`, `pub fn parse_command(raw:&str)->Result<Command,ProtocolError>` (strict, size-capped, pure), `pub struct ViewState{...}` with `pub fn to_json(&self)->String`, `pub fn set_text_json(text:&str,select:bool)->String`, `pub fn focus_json(select:bool)->String`, `pub fn completion_json(seq:u32,suffix:&str)->String`. No external JSON dependency.
 - `assets.rs`: `pub const SCHEME:&str="bowser-ui"; pub const START_URL:&str="bowser-ui://app/index.html"; pub fn lookup(path:&str)->Option<Asset>` where `Asset{bytes:&'static [u8], mime:&'static str}`; `pub const RESPONSE_HEADERS:&str` (CRLF-joined for `CreateWebResourceResponse`).
 - `host.rs`: `ChromeHost::begin_create(parent:HWND, bounds:RECT, user_data_dir:&Path, on_command:Rc<dyn Fn(Command)>, on_failed:Rc<dyn Fn()>, on_ready:impl FnOnce(Result<ChromeHost>))`, `set_bounds`, `post_json(&str)`, `focus()`, `set_visible(bool)`, `close()`.
+
+## Milestone 2: tab strip view (second controller)
+
+The tab row is a second chrome host (same ChromeUI environment, own controller) showing the same bundle with a view selector. Start URLs (exact match required, one per host): `bowser-ui://app/index.html?view=toolbar` and `bowser-ui://app/index.html?view=tabs`. Asset lookup ignores the query; JS reads `location.search`. Bridge validation compares the sender's Source to the host's own start URL.
+
+### JS -> Rust additions (flat objects, ids are unsigned ints that must exist or are ignored)
+
+| `t` | fields | meaning |
+|---|---|---|
+| `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
+| `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
+| `group` | `a`: `toggle`/`menu`, `key` | group ball click (collapse/expand) or group menu |
+| `tabscroll` | - | reserved |
+
+### Rust -> JS additions
+
+| `t` | fields |
+|---|---|
+| `tabs` | `active` id, `items` array of `{id, title, loading, pinned, muted, marker (int, -1 none), g (group key int, 0 none), gl (bool: group leader), gname (leader only), gcol (leader only, int colour id, -1 accent), gcollapsed (leader only), gsize (leader only), fav (bool: a favicon is cached for this id)}`. Titles are length-capped by Rust. |
+| `fav` | `id`, `uri` (`data:image/png;base64,...`, validated PNG, <= 16 KiB) sent once per favicon change |
+
+`tabs` and `fav` are Rust->JS only, so nested arrays are fine. The toolbar view ignores them and the tabs view ignores `state` except `theme`/`solid`/`dark`/`scale`.
