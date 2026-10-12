@@ -15,3 +15,6 @@ Source: `benchmarks/results/baseline-ui/*.png` (HEAD 2086c05 + pending fixes). E
 | D9 | Shortcuts | Ctrl+H, Ctrl+J, Ctrl+Shift+Del, Shift+F10, Ctrl+Shift+\ produced nothing visible; Ctrl+D only toggles the heart. Verify bindings and give every action visible feedback. | 07, 08, 11, 13, 14, 16 |
 | D10 | Toolbar | Back/forward/reload/menu/new-tab glyph weights differ from the pill lock and split icons; caption buttons heavier than toolbar icons. | 01 |
 | D11 | Blank tab | New/blank tab is fully transparent (shows desktop through acrylic) — needs a proper new-tab surface. | 02, 03 |
+| D12 | Customize panel | "Choose a preset" is a native `<select>` (unstyled Windows dropdown). Replace with an HTML listbox/menu built on `.bw-menu`. | surfaces/rail/customize-dark.png |
+| D13 | Toggles | `.bw-toggle` on-state is grey; on must use `--bw-accent` with `--bw-on-accent` knob (>=3:1). Secondary buttons ("Create workspace", "Add web app") low contrast. | surfaces/rail/customize-dark.png |
+| D14 | Sidebar focus | Focus shots show no visible focus ring on the focused row. | surfaces/sidebar/*-focus.png |
