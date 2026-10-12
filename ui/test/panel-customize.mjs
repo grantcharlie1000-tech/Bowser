@@ -37,3 +37,21 @@ test('customize deletion copy describes both workspace tabs and pinned app data 
   assert.match(logic.customizeDeleteDescription('app', 'Mail'), /remove.*rail/i);
   assert.match(logic.customizeDeleteDescription('app', 'Mail'), /saved data stays/i);
 });
+
+test('moveBefore and stepDest match the drop-slot convention used by the rail', () => {
+  const ids = [10, 20, 30, 40];
+  assert.equal(logic.moveBefore(ids, 10, 0), 20, 'dest 0 among the others is before the first other');
+  assert.equal(logic.moveBefore(ids, 10, 3), undefined, 'dest past the last is the end');
+  assert.equal(logic.moveBefore(ids, 40, 1), 20);
+  assert.equal(logic.stepDest(4, 0, -1), null);
+  assert.equal(logic.stepDest(4, 3, 1), null);
+  assert.equal(logic.stepDest(4, 1, 1), 2);
+  assert.equal(logic.moveBefore(ids, 20, logic.stepDest(4, 1, 1)), 40, 'one step down lands before the item two below');
+  assert.equal(logic.moveBefore(ids, 30, logic.stepDest(4, 2, -1)), 20, 'one step up lands before the one above');
+});
+
+test('workspace swatches cover every colour and every sidebar section has a description', () => {
+  for (const colour of logic.WORKSPACE_COLOURS) assert.match(logic.WORKSPACE_HEX[colour], /^#[0-9a-f]{6}$/);
+  for (const key of logic.RAIL_KEYS) assert.ok(logic.RAIL_DESCRIPTIONS[key].length > 0);
+  assert.equal(logic.sentenceCase('briefcase'), 'Briefcase');
+});

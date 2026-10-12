@@ -1,63 +1,60 @@
+// Sidebar customisation panel: setting rows with switches, reorderable workspace and web app lists.
+// Text reaches the DOM only through textContent and attributes. Styles live in styles/rail.css
+// under `.panel-customize`; controls are the shared .bw-* components.
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
+import { icon, type IconName } from '../icons';
+import { dropSlot } from '../rail-logic';
 import {
-  customizeCommand, customizeDeleteDescription, parseCustomizeSnapshot,
-  RAIL_KEYS, WORKSPACE_COLOURS, WORKSPACE_ICONS,
+  customizeCommand, customizeDeleteDescription, moveBefore, parseCustomizeSnapshot, sentenceCase, stepDest,
+  RAIL_DESCRIPTIONS, RAIL_KEYS, WORKSPACE_COLOURS, WORKSPACE_HEX, WORKSPACE_ICONS,
   type CustomizeApp, type CustomizeSnapshot, type CustomizeWorkspace,
 } from './customize-logic';
 
 type DeleteTarget = { kind: 'app' | 'workspace'; id: number; label: string } | null;
 const labels: Record<typeof RAIL_KEYS[number], string> = { workspaces: 'Workspaces', apps: 'Web apps', bookmarks: 'Bookmarks', history: 'History' };
+const DRAG_START_PX = 4;
+
+function h<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
 
 export function startCustomizePanel(root: HTMLElement): (message: Inbound) => void {
   let snapshot: CustomizeSnapshot | null = null;
   let deleting: DeleteTarget = null;
   let editingApp: number | null = null;
-  const host = document.createElement('section');
-  host.className = 'customize-panel';
+  let editingWorkspace: number | null = null;
+  let uid = 0;
+  const nextId = (prefix: string): string => `${prefix}-${++uid}`;
+
+  const host = h('section', 'panel-customize');
   host.setAttribute('aria-label', 'Customize sidebar');
-  const title = document.createElement('h1');
-  title.textContent = 'Customize';
-  const visibility = document.createElement('section');
-  const visibilityTitle = document.createElement('h2');
-  visibilityTitle.textContent = 'Sidebar';
-  visibility.append(visibilityTitle);
-  const workspaceSection = document.createElement('section');
-  const workspaceTitle = document.createElement('h2');
-  workspaceTitle.textContent = 'Workspaces';
-  const workspaceRows = document.createElement('div');
-  const createWorkspace = document.createElement('form');
-  const workspaceName = document.createElement('input');
-  workspaceName.maxLength = 128;
-  workspaceName.required = true;
-  workspaceName.placeholder = 'Workspace name';
-  workspaceName.setAttribute('aria-label', 'New workspace name');
-  const createButton = button('Create workspace', () => {
+  const title = h('h1', 'cust-title', 'Customize');
+
+  const visibility = section('Sidebar', 'Choose what appears in the left rail.');
+  const workspaces = section('Workspaces', 'Reorder with the handle, or focus it and press the Up and Down arrow keys.');
+  const workspaceRows = h('div', 'cust-list');
+  workspaceRows.setAttribute('role', 'list');
+  const createWorkspace = h('form', 'cust-form');
+  const workspaceName = input('New workspace name', 'Workspace name');
+  createWorkspace.append(workspaceName, submitButton('Create workspace'));
+  createWorkspace.addEventListener('submit', event => {
+    event.preventDefault();
     const fields = customizeCommand('workspace-create', { text: workspaceName.value.trim() });
-    if (fields) sendPanel('cust', fields);
+    if (fields) { sendPanel('cust', fields); workspaceName.value = ''; } else workspaceName.focus();
   });
-  createWorkspace.append(workspaceName, createButton);
-  createWorkspace.addEventListener('submit', event => { event.preventDefault(); createButton.click(); });
-  workspaceSection.append(workspaceTitle, workspaceRows, createWorkspace);
-  const appSection = document.createElement('section');
-  const appTitle = document.createElement('h2');
-  appTitle.textContent = 'Pinned web apps';
-  const appRows = document.createElement('div');
-  const appForm = document.createElement('form');
-  const appName = document.createElement('input');
-  appName.maxLength = 128;
-  appName.required = true;
-  appName.placeholder = 'Name';
-  appName.setAttribute('aria-label', 'Web app name');
-  const appUrl = document.createElement('input');
-  appUrl.type = 'url';
-  appUrl.required = true;
-  appUrl.placeholder = 'https://example.com/';
-  appUrl.setAttribute('aria-label', 'Web app address');
-  const preset = document.createElement('select');
+  workspaces.root.append(workspaceRows, createWorkspace);
+
+  const apps = section('Pinned web apps', 'Sites pinned to the rail open in the side panel.');
+  const appRows = h('div', 'cust-list');
+  appRows.setAttribute('role', 'list');
+  const appForm = h('form', 'cust-form is-stack');
+  const preset = h('select', 'bw-input');
   preset.setAttribute('aria-label', 'Choose a web app preset');
-  const presetPrompt = document.createElement('option');
+  const presetPrompt = h('option', undefined, 'Choose a preset');
   presetPrompt.value = '';
-  presetPrompt.textContent = 'Choose a preset';
   preset.append(presetPrompt);
   for (const [name, url] of ([
     ['Spotify', 'https://open.spotify.com/'],
@@ -65,37 +62,93 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     ['WhatsApp', 'https://web.whatsapp.com/'],
     ['Notion', 'https://www.notion.so/'],
   ] as const)) {
-    const option = document.createElement('option');
+    const option = h('option', undefined, name);
     option.value = url;
-    option.textContent = name;
     preset.append(option);
   }
+  const appName = input('Web app name', 'Name');
+  const appUrl = input('Web app address', 'https://example.com/');
+  appUrl.type = 'url';
   preset.addEventListener('change', () => {
     const option = preset.selectedOptions[0];
     if (option && option.value) { appName.value = option.textContent ?? ''; appUrl.value = option.value; }
   });
-  const addApp = button('Add web app', () => {
+  const appFields = h('div', 'cust-form-fields');
+  appFields.append(appName, appUrl);
+  appForm.append(preset, appFields, submitButton('Add web app'));
+  appForm.addEventListener('submit', event => {
+    event.preventDefault();
     const fields = customizeCommand('app-add', { text: appName.value.trim(), url: appUrl.value.trim() });
-    if (fields) { sendPanel('cust', fields); appName.value = ''; appUrl.value = ''; }
+    if (fields) { sendPanel('cust', fields); appName.value = ''; appUrl.value = ''; preset.value = ''; } else (appName.value.trim() === '' ? appName : appUrl).focus();
   });
-  appForm.append(preset, appName, appUrl, addApp);
-  appForm.addEventListener('submit', event => { event.preventDefault(); addApp.click(); });
-  appSection.append(appTitle, appRows, appForm);
-  const confirm = document.createElement('p');
+  apps.root.append(appRows, appForm);
+
+  const data = section('Profile and data');
+  const profile = button('Switch', () => sendAction('switch-profile'));
+  const clearData = button('Clear', () => sendAction('clear-app-data'));
+  data.root.append(
+    settingRow('Switch profile', 'Open another browser profile', profile, profile),
+    settingRow('Clear web app data', 'Sign out of every pinned web app and remove its saved data', clearData, clearData),
+  );
+
+  // Confirmation bar: pinned to the bottom of the panel so it is never scrolled out of view.
+  const confirm = h('div', 'cust-confirm');
   confirm.setAttribute('role', 'status');
-  const actions = document.createElement('section');
-  const profile = button('Switch profile', () => sendAction('switch-profile'));
-  const clearData = button('Clear web app data', () => sendAction('clear-app-data'));
-  actions.append(profile, clearData);
-  host.append(title, visibility, workspaceSection, appSection, confirm, actions);
+  confirm.hidden = true;
+
+  host.append(title, visibility.root, workspaces.root, apps.root, data.root, confirm);
   root.replaceChildren(host);
 
-  function button(text: string, action: () => void): HTMLButtonElement {
-    const control = document.createElement('button');
+  function section(heading: string, hint?: string): { root: HTMLElement; list: HTMLElement } {
+    const wrap = h('section', 'cust-section');
+    const id = nextId('cust-h');
+    const head = h('h2', 'cust-heading', heading);
+    head.id = id;
+    wrap.setAttribute('aria-labelledby', id);
+    wrap.append(head);
+    if (hint) wrap.append(h('p', 'cust-hint', hint));
+    return { root: wrap, list: wrap };
+  }
+  function input(label: string, placeholder: string): HTMLInputElement {
+    const control = h('input', 'bw-input');
+    control.maxLength = 128;
+    control.required = true;
+    control.placeholder = placeholder;
+    control.setAttribute('aria-label', label);
+    return control;
+  }
+  function button(text: string, action: () => void, variant = ''): HTMLButtonElement {
+    const control = h('button', `bw-button ${variant}`.trim(), text);
     control.type = 'button';
-    control.textContent = text;
     control.addEventListener('click', action);
     return control;
+  }
+  function submitButton(text: string): HTMLButtonElement {
+    const control = h('button', 'bw-button is-primary', text);
+    control.type = 'submit';
+    return control;
+  }
+  function iconButton(name: IconName, label: string, action: () => void): HTMLButtonElement {
+    const control = h('button', 'bw-icon-btn');
+    control.type = 'button';
+    control.title = label;
+    control.setAttribute('aria-label', label);
+    control.append(icon(name));
+    control.addEventListener('click', action);
+    return control;
+  }
+  /** A 48px settings row: title and description on the left, the control on the right. */
+  function settingRow(name: string, description: string, control: HTMLElement, labelled: HTMLElement): HTMLElement {
+    const row = h('div', 'bw-row is-setting cust-row');
+    row.setAttribute('role', 'listitem');
+    const text = h('div', 'bw-row-text');
+    const titleId = nextId('cust-t');
+    const label = h('span', 'bw-row-title', name);
+    label.id = titleId;
+    text.append(label, h('span', 'bw-row-meta', description));
+    labelled.setAttribute('aria-labelledby', titleId);
+    row.append(text, control);
+    return row;
   }
   function sendAction(a: string, payload: Parameters<typeof customizeCommand>[1] = {}): void {
     const fields = customizeCommand(a, payload);
@@ -104,121 +157,207 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   function askDelete(target: DeleteTarget): void {
     deleting = target;
     confirm.replaceChildren();
+    confirm.hidden = target === null;
     if (!target) return;
-    const message = document.createElement('span');
-    message.textContent = customizeDeleteDescription(target.kind, target.label);
+    const message = h('span', 'cust-confirm-text', customizeDeleteDescription(target.kind, target.label));
+    const actions = h('div', 'cust-confirm-actions');
     const yes = button(target.kind === 'workspace' ? 'Delete workspace' : 'Remove web app', () => {
       sendAction(target.kind === 'workspace' ? 'workspace-delete' : 'app-remove', { id: target.id });
-      deleting = null;
-      renderConfirm();
-    });
-    const no = button('Cancel', () => { deleting = null; renderConfirm(); });
-    confirm.append(message, yes, no);
+      askDelete(null);
+    }, 'is-primary');
+    const no = button('Cancel', () => askDelete(null));
+    actions.append(no, yes);
+    confirm.append(message, actions);
+    yes.focus();
   }
-  function renderConfirm(): void {
-    if (!deleting) confirm.replaceChildren();
-    else askDelete(deleting);
-  }
-  function select<T extends string>(options: readonly T[], value: T | null, label: string, changed: (value: T | null) => void): HTMLSelectElement {
-    const control = document.createElement('select');
+  function select<T extends string>(options: readonly T[], value: T | null, label: string, changed: (value: T | null) => void, none = 'None'): HTMLSelectElement {
+    const control = h('select', 'bw-input');
     control.setAttribute('aria-label', label);
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = 'None';
-    control.append(none);
+    if (none !== '') {
+      const empty = h('option', undefined, none);
+      empty.value = '';
+      control.append(empty);
+    }
     for (const option of options) {
-      const item = document.createElement('option');
+      const item = h('option', undefined, sentenceCase(option));
       item.value = option;
-      item.textContent = option.charAt(0).toUpperCase() + option.slice(1);
       control.append(item);
     }
     control.value = value ?? '';
     control.addEventListener('change', () => changed(control.value === '' ? null : control.value as T));
     return control;
   }
+
+  /** Pointer drag on a row's handle, and Up / Down arrows on the focused handle. */
+  function wireHandle(handle: HTMLButtonElement, row: HTMLElement, list: HTMLElement, ids: readonly number[], id: number, onMove: (before: number | undefined) => void, focusKey: string): void {
+    const from = ids.indexOf(id);
+    handle.dataset.fk = focusKey;
+    handle.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      const dest = stepDest(ids.length, from, event.key === 'ArrowUp' ? -1 : 1);
+      if (dest !== null) onMove(moveBefore(ids, id, dest));
+    });
+    handle.addEventListener('pointerdown', down => {
+      if (down.button !== 0) return;
+      down.preventDefault();
+      const rows = Array.from(list.querySelectorAll<HTMLElement>(':scope > .cust-item'));
+      const centres = rows.map(item => { const r = item.getBoundingClientRect(); return r.top + r.height / 2; });
+      let dest = from;
+      let active = false;
+      try { handle.setPointerCapture(down.pointerId); } catch { /* window listeners still end the drag */ }
+      const mark = (): void => {
+        rows.forEach(item => item.classList.remove('drop-before', 'drop-end'));
+        if (dest === from) return;
+        const others = rows.filter(item => item !== row);
+        const target = others[dest];
+        if (target) target.classList.add('drop-before'); else others[others.length - 1]?.classList.add('drop-end');
+      };
+      const finish = (commit: boolean): void => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', cancel);
+        window.removeEventListener('keydown', esc, true);
+        try { handle.releasePointerCapture(down.pointerId); } catch { /* already released */ }
+        row.classList.remove('is-dragging');
+        row.style.removeProperty('transform');
+        rows.forEach(item => item.classList.remove('drop-before', 'drop-end'));
+        if (active && commit && dest !== from) onMove(moveBefore(ids, id, dest));
+      };
+      const move = (ev: PointerEvent): void => {
+        const dy = ev.clientY - down.clientY;
+        if (!active) {
+          if (Math.abs(dy) < DRAG_START_PX) return;
+          active = true;
+          row.classList.add('is-dragging');
+          window.addEventListener('keydown', esc, true);
+        }
+        row.style.setProperty('transform', `translateY(${dy}px)`);
+        dest = dropSlot(centres, from, (centres[from] ?? 0) + dy);
+        mark();
+      };
+      const up = (): void => finish(true);
+      const cancel = (): void => finish(false);
+      const esc = (ev: KeyboardEvent): void => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        finish(false);
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', cancel);
+    });
+  }
+
   function render(): void {
     if (!snapshot) return;
-    visibility.replaceChildren(visibilityTitle);
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.fk : undefined;
+    visibility.root.replaceChildren(visibility.root.querySelector('h2') as Node, visibility.root.querySelector('p') as Node);
     for (const key of RAIL_KEYS) {
-      const label = document.createElement('label');
-      const toggle = document.createElement('input');
-      toggle.type = 'checkbox';
-      toggle.checked = snapshot.visible[key];
-      toggle.addEventListener('change', () => sendAction('visibility', { text: key, on: toggle.checked }));
-      label.append(toggle, document.createTextNode(labels[key]));
-      visibility.append(label);
+      const toggle = h('button', 'bw-toggle');
+      toggle.type = 'button';
+      toggle.setAttribute('role', 'switch');
+      toggle.setAttribute('aria-checked', String(snapshot.visible[key]));
+      toggle.dataset.fk = `vis:${key}`;
+      toggle.addEventListener('click', () => {
+        const on = toggle.getAttribute('aria-checked') !== 'true';
+        toggle.setAttribute('aria-checked', String(on));
+        sendAction('visibility', { text: key, on });
+      });
+      visibility.root.append(settingRow(labels[key], RAIL_DESCRIPTIONS[key], toggle, toggle));
     }
     workspaceRows.replaceChildren();
-    for (const workspace of snapshot.workspaces) renderWorkspace(workspace);
+    const workspaceIds = snapshot.workspaces.map(item => item.id);
+    for (const workspace of snapshot.workspaces) workspaceRows.append(renderWorkspace(workspace, workspaceIds));
     appRows.replaceChildren();
-    for (const app of snapshot.apps) renderApp(app, snapshot.apps);
+    const appIds = snapshot.apps.map(item => item.id);
+    for (const app of snapshot.apps) appRows.append(renderApp(app, appIds));
+    if (snapshot.apps.length === 0) appRows.append(h('p', 'cust-empty', 'No web apps pinned yet. Add one below.'));
     clearData.disabled = snapshot.apps.length === 0;
-    renderConfirm();
+    if (deleting) askDelete(deleting);
+    if (focused) host.querySelector<HTMLElement>(`[data-fk="${focused}"]`)?.focus();
   }
-  function renderWorkspace(workspace: CustomizeWorkspace): void {
-    const row = document.createElement('article');
-    const heading = document.createElement('h3');
-    heading.textContent = `${workspace.name}${workspace.active ? ' (current)' : ''}`;
-    const details = document.createElement('p');
-    details.textContent = `${workspace.tabs} ${workspace.tabs === 1 ? 'tab' : 'tabs'} · ${workspace.icon} · ${workspace.colour ?? 'no colour'}`;
-    const rename = document.createElement('input');
-    rename.value = workspace.name;
-    rename.maxLength = 128;
-    rename.setAttribute('aria-label', `Rename workspace ${workspace.name}`);
-    const save = button('Save name', () => sendAction('workspace-rename', { id: workspace.id, text: rename.value.trim() }));
-    const icon = select(WORKSPACE_ICONS, workspace.icon, `Icon for ${workspace.name}`, value => { if (value) sendAction('workspace-icon', { id: workspace.id, text: value }); });
-    const colour = select(WORKSPACE_COLOURS, workspace.colour, `Colour for ${workspace.name}`, value => sendAction('workspace-colour', { id: workspace.id, n: value === null ? -1 : WORKSPACE_COLOURS.indexOf(value) }));
-    const index = snapshot?.workspaces.findIndex(item => item.id === workspace.id) ?? -1;
-    const up = button('Move up', () => moveWorkspace(workspace, index - 1));
-    const down = button('Move down', () => moveWorkspace(workspace, index + 1));
-    up.disabled = index <= 0;
-    down.disabled = index < 0 || index >= (snapshot?.workspaces.length ?? 0) - 1;
-    const remove = button('Delete', () => askDelete({ kind: 'workspace', id: workspace.id, label: workspace.name }));
-    row.append(heading, details, rename, save, icon, colour, up, down, remove);
-    workspaceRows.append(row);
+
+  function itemRow(name: string, meta: string, lead: HTMLElement, handle: HTMLButtonElement, actions: HTMLElement[]): { item: HTMLElement; row: HTMLElement } {
+    const item = h('div', 'cust-item');
+    item.setAttribute('role', 'listitem');
+    const row = h('div', 'bw-row is-setting cust-row');
+    const text = h('div', 'bw-row-text');
+    text.append(h('span', 'bw-row-title', name), h('span', 'bw-row-meta', meta));
+    const end = h('div', 'cust-actions');
+    end.append(...actions);
+    row.append(handle, lead, text, end);
+    item.append(row);
+    return { item, row };
   }
-  function moveWorkspace(workspace: CustomizeWorkspace, target: number): void {
-    const list = snapshot?.workspaces ?? [];
-    const from = list.findIndex(item => item.id === workspace.id);
-    const before = list[target > from ? target + 1 : target]?.id;
-    sendAction('workspace-move', { id: workspace.id, ...(before ? { before } : {}) });
+  function handleButton(label: string): HTMLButtonElement {
+    const handle = h('button', 'bw-icon-btn cust-handle');
+    handle.type = 'button';
+    handle.setAttribute('aria-label', `Reorder ${label}`);
+    handle.title = 'Drag to reorder, or use the Up and Down arrow keys';
+    handle.append(icon('grip'));
+    return handle;
   }
-  function renderApp(app: CustomizeApp, apps: readonly CustomizeApp[]): void {
-    const row = document.createElement('article');
-    const heading = document.createElement('h3');
-    heading.textContent = app.name;
-    const address = document.createElement('p');
-    address.textContent = app.url;
-    const index = apps.findIndex(item => item.id === app.id);
-    const up = button('Move up', () => moveApp(app, index - 1, apps));
-    const down = button('Move down', () => moveApp(app, index + 1, apps));
-    up.disabled = index <= 0;
-    down.disabled = index >= apps.length - 1;
-    const edit = button(editingApp === app.id ? 'Cancel edit' : 'Edit', () => { editingApp = editingApp === app.id ? null : app.id; render(); });
-    if (editingApp === app.id) {
-      const name = document.createElement('input');
+
+  function renderWorkspace(workspace: CustomizeWorkspace, ids: readonly number[]): HTMLElement {
+    const lead = h('span', 'cust-lead');
+    lead.append(icon(`workspace-${workspace.icon}` as IconName));
+    if (workspace.colour) lead.style.setProperty('--ws-c', WORKSPACE_HEX[workspace.colour]);
+    const meta = `${workspace.tabs} ${workspace.tabs === 1 ? 'tab' : 'tabs'}${workspace.active ? ' · Current workspace' : ''}`;
+    const handle = handleButton(workspace.name);
+    const editing = editingWorkspace === workspace.id;
+    const edit = iconButton('edit', editing ? `Close editor for ${workspace.name}` : `Edit ${workspace.name}`, () => { editingWorkspace = editing ? null : workspace.id; render(); });
+    edit.setAttribute('aria-expanded', String(editing));
+    edit.dataset.fk = `ws-edit:${workspace.id}`;
+    const remove = iconButton('trash', `Delete ${workspace.name}`, () => askDelete({ kind: 'workspace', id: workspace.id, label: workspace.name }));
+    const { item, row } = itemRow(workspace.name, meta, lead, handle, [edit, remove]);
+    wireHandle(handle, row, workspaceRows, ids, workspace.id, before => sendAction('workspace-move', { id: workspace.id, ...(before !== undefined ? { before } : {}) }), `ws-handle:${workspace.id}`);
+    if (editing) {
+      const editor = h('form', 'cust-editor');
+      const rename = input(`Rename workspace ${workspace.name}`, 'Workspace name');
+      rename.value = workspace.name;
+      const iconSelect = select(WORKSPACE_ICONS, workspace.icon, `Icon for ${workspace.name}`, value => { if (value) sendAction('workspace-icon', { id: workspace.id, text: value }); }, '');
+      const colour = select(WORKSPACE_COLOURS, workspace.colour, `Colour for ${workspace.name}`, value => sendAction('workspace-colour', { id: workspace.id, n: value === null ? -1 : WORKSPACE_COLOURS.indexOf(value) }));
+      editor.addEventListener('submit', event => {
+        event.preventDefault();
+        if (rename.value.trim() !== '') sendAction('workspace-rename', { id: workspace.id, text: rename.value.trim() });
+      });
+      editor.append(rename, iconSelect, colour, submitButton('Save name'));
+      item.append(editor);
+    }
+    return item;
+  }
+
+  function renderApp(app: CustomizeApp, ids: readonly number[]): HTMLElement {
+    const lead = h('span', 'cust-lead');
+    lead.append(icon('grid'));
+    const handle = handleButton(app.name);
+    const editing = editingApp === app.id;
+    const edit = iconButton('edit', editing ? `Close editor for ${app.name}` : `Edit ${app.name}`, () => { editingApp = editing ? null : app.id; render(); });
+    edit.setAttribute('aria-expanded', String(editing));
+    edit.dataset.fk = `app-edit:${app.id}`;
+    const remove = iconButton('trash', `Remove ${app.name}`, () => askDelete({ kind: 'app', id: app.id, label: app.name }));
+    const { item, row } = itemRow(app.name, app.url, lead, handle, [edit, remove]);
+    wireHandle(handle, row, appRows, ids, app.id, before => sendAction('app-move', { id: app.id, ...(before !== undefined ? { before } : {}) }), `app-handle:${app.id}`);
+    if (editing) {
+      const editor = h('form', 'cust-editor');
+      const name = input(`Name for ${app.name}`, 'Name');
       name.value = app.name;
-      name.maxLength = 128;
-      name.setAttribute('aria-label', `Name for ${app.name}`);
-      const url = document.createElement('input');
+      const url = input(`Address for ${app.name}`, 'https://example.com/');
       url.type = 'url';
       url.value = app.url;
-      url.setAttribute('aria-label', `Address for ${app.name}`);
-      const save = button('Save web app', () => {
+      editor.addEventListener('submit', event => {
+        event.preventDefault();
         const fields = customizeCommand('app-update', { id: app.id, text: name.value.trim(), url: url.value.trim() });
         if (fields) { sendPanel('cust', fields); editingApp = null; }
       });
-      row.append(name, url, save);
+      editor.append(name, url, submitButton('Save web app'));
+      item.append(editor);
     }
-    const remove = button('Remove', () => askDelete({ kind: 'app', id: app.id, label: app.name }));
-    row.append(heading, address, up, down, edit, remove);
-    appRows.append(row);
+    return item;
   }
-  function moveApp(app: CustomizeApp, target: number, apps: readonly CustomizeApp[]): void {
-    const from = apps.findIndex(item => item.id === app.id);
-    const before = apps[target > from ? target + 1 : target]?.id;
-    sendAction('app-move', { id: app.id, ...(before ? { before } : {}) });
-  }
+
   const receive = (message: SnapshotMsg): void => {
     if (message.p !== 'customize') return;
     snapshot = parseCustomizeSnapshot(message.d);

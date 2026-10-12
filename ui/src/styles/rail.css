@@ -1,7 +1,9 @@
 /*
  * Surface: LEFT RAIL (?view=rail). Owner: rail agent.
  * Built by ui/src/rail.ts; glyphs come from the icon family (ui/src/icons.ts). The rail is one
- * island the width of the pill height. Motion is background/transform/opacity only.
+ * island the width of the pill height: 20px buttons, 16px glyphs, active workspace = accent-soft
+ * island plus a 2px accent bar that slides. Motion is background/transform/opacity only.
+ * The sidebar customisation panel (panels/customize.ts) is styled at the end under `.panel-customize`.
  */
 
 
@@ -9,10 +11,10 @@
   position: relative;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: var(--bw-space-1);
   width: var(--bw-pill-h); /* the rail is as wide as the pill is tall */
   height: 100%;
-  padding: 4px 0;
+  padding: var(--bw-space-1) 0;
   background: var(--bw-island-idle);
   border: 1px solid var(--bw-island-edge);
   border-radius: var(--bw-r-tab);
@@ -25,22 +27,29 @@
   flex: none;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: var(--bw-space-1);
 }
 
-/* The only scroll container: workspaces and apps. The scrollbar is hidden but scrolling works. */
+/* The only scroll container: workspaces and apps. The scrollbar is hidden; edge fades show overflow. */
 .rail-scroll {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  position: relative;
   display: flex;
   flex: 0 1 auto;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: var(--bw-space-1);
   width: 100%;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%);
 }
+
+.rail-scroll.can-up { --fade-top: 14px; }
+.rail-scroll.can-down { --fade-bottom: 14px; }
 
 .rail-scroll::-webkit-scrollbar {
   display: none;
@@ -55,11 +64,12 @@
 
 .rail-rule {
   flex: none;
-  width: 16px;
+  width: var(--bw-icon);
   height: 1px;
   background: var(--bw-pill-edge);
 }
 
+/* 20px box, 16px glyph. Idle glyphs are secondary text; the pointer or selection lifts them. */
 .rb {
   --ac: var(--bw-focus);
   position: relative;
@@ -67,113 +77,146 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: var(--bw-icon-box);
+  height: var(--bw-icon-box);
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--bw-r-control);
   background: transparent;
   color: var(--bw-text);
   cursor: default;
   transition:
     background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade),
     transform var(--bw-dur-fast) var(--bw-ease-out),
     opacity var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.rb.ws {
-  color: var(--ac);
+.rb.ws,
+.rb.add {
+  color: var(--bw-text-2);
 }
 
 .rb:hover {
-  background: var(--bw-hover);
+  background: var(--bw-island-hover);
+  color: var(--bw-text);
 }
 
 .rb:active {
   transform: scale(0.94);
 }
 
+/* Selected: accent-soft island (workspaces, and the panel buttons while their panel is open). */
 .rb.on {
-  background: var(--bw-island);
-}
-
-.rb.ws.on {
-  background: color-mix(in srgb, var(--ac) 22%, transparent);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
 }
 
 .rb.dragging {
   z-index: 2;
+  background: var(--bw-island);
+  box-shadow: var(--bw-sh-tip);
+  color: var(--bw-text);
   transition: none;
 }
 
 .rb:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--bw-focus);
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
 }
 
 .rb-face {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
   pointer-events: none;
 }
 
 .rb-face svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
 }
 
+/* Favicons are drawn 1:1 at 16 CSS px; the host sends them at device size, so no filtering hints. */
 .rb-fav {
-  width: 16px;
-  height: 16px;
+  display: block;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
   object-fit: contain;
   border-radius: 3px;
+  image-rendering: auto;
 }
 
 .rb-tile {
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--ac) 55%, var(--bw-window));
-  color: var(--bw-text);
-  font-size: 10px;
-  font-weight: 600;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  border-radius: 4px;
+  background: var(--bw-glyph-fill);
+  color: var(--bw-on-glyph);
+  font-size: 11px;
+  font-weight: var(--bw-weight-strong);
   line-height: 1;
 }
 
-/* Active workspace: a 3px accent bar on the pill's left edge (the scroll container's left edge). */
-.rb-bar {
-  display: none;
+/* One 2px accent bar for the active workspace, on the rail's left edge. It slides with transform;
+   the first placement does not animate. */
+.rail-indicator {
   position: absolute;
-  left: -1px;
-  top: 50%;
+  left: 0;
+  top: 0;
   width: 2px;
   height: 12px;
-  margin-top: -6px;
   border-radius: 0 2px 2px 0;
+  background: var(--bw-accent);
+  opacity: 0;
+  transform: translateY(var(--ind-y, 0px));
+  pointer-events: none;
+}
+
+.rail-indicator.is-shown {
+  opacity: 1;
+}
+
+.rail-indicator.is-ready {
+  transition:
+    transform var(--bw-dur-base) var(--bw-ease-move),
+    opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+/* A workspace's own colour: a small swatch on the button's top-right corner. */
+.rb-swatch {
+  display: none;
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
   background: var(--ac);
   pointer-events: none;
 }
 
-.rb.ws.on .rb-bar {
+.rb.has-ac .rb-swatch {
   display: block;
 }
 
 .rb-dot {
   display: none;
   position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 5px;
-  height: 5px;
+  right: 1px;
+  bottom: 1px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--ac);
+  background: var(--bw-accent);
+  box-shadow: 0 0 0 1.5px var(--bw-island-idle);
   pointer-events: none;
 }
 
@@ -184,8 +227,8 @@
 /* Drag insertion line: 2px accent, moved with transform by rail.ts. */
 .rail-slot {
   position: absolute;
-  left: 4px;
-  right: 4px;
+  left: var(--bw-space-1);
+  right: var(--bw-space-1);
   top: 0;
   height: 2px;
   border-radius: 1px;
@@ -194,12 +237,240 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rb {
-    transition: none;
-  }
-
   .rb:active {
     transform: none;
   }
+
+  .rail-indicator.is-ready {
+    transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  }
 }
 
+/* ===== Customize panel (?view=panel, panels/customize.ts). Scoped under .panel-customize. ===== */
+.panel-customize {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+  width: 100%;
+  height: 100vh;
+  overflow-y: auto;
+  padding: var(--bw-space-4);
+  padding-bottom: 0;
+  box-sizing: border-box;
+  color: var(--bw-text);
+  background: var(--bw-window);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+.panel-customize :is(h1, h2, p) {
+  margin: 0;
+}
+
+.panel-customize .cust-title {
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+}
+
+.panel-customize .cust-section {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Breathing room under the last section, above the pinned confirmation bar. */
+.panel-customize .cust-section:last-of-type {
+  padding-bottom: var(--bw-space-6);
+}
+
+/* BodyStrong, sentence case, no card behind it. */
+.panel-customize .cust-heading {
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.panel-customize .cust-hint,
+.panel-customize .cust-empty {
+  padding-bottom: var(--bw-space-2);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.panel-customize .cust-empty {
+  padding: var(--bw-space-3) 0;
+}
+
+.panel-customize .cust-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-customize .bw-row.is-setting {
+  padding: 0 var(--bw-space-1);
+}
+
+/* Last row of a group has no rule under it; the next heading provides the break. */
+.panel-customize .cust-section > .bw-row.is-setting:last-child,
+.panel-customize .cust-list > .cust-item:last-child .bw-row {
+  border-bottom-color: transparent;
+}
+
+.panel-customize .bw-row:hover {
+  background: transparent;
+}
+
+.panel-customize .bw-row-title {
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+.panel-customize .bw-toggle {
+  flex: none;
+}
+
+.panel-customize .cust-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+}
+
+.panel-customize .cust-handle {
+  color: var(--bw-text-2);
+  cursor: grab;
+  touch-action: none;
+  margin-inline-end: calc(var(--bw-space-1) * -1);
+}
+
+.panel-customize .cust-handle:hover {
+  color: var(--bw-text);
+}
+
+.panel-customize .cust-lead {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--bw-icon-box);
+  height: var(--bw-icon-box);
+  color: var(--bw-text-2);
+}
+
+/* Workspace colour: a small swatch on the glyph, as on the rail. */
+.panel-customize .cust-lead[style*="--ws-c"]::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ws-c);
+}
+
+.panel-customize .cust-item {
+  position: relative;
+  transition: transform var(--bw-dur-base) var(--bw-ease-move);
+}
+
+.panel-customize .cust-item.is-dragging {
+  z-index: 2;
+  border-radius: var(--bw-r-row);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  transition: none;
+}
+
+.panel-customize .cust-item.is-dragging .cust-handle {
+  cursor: grabbing;
+}
+
+/* Insertion line while dragging. */
+.panel-customize .cust-item.drop-before::before,
+.panel-customize .cust-item.drop-end::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--bw-focus);
+}
+
+.panel-customize .cust-item.drop-before::before { top: -1px; }
+.panel-customize .cust-item.drop-end::after { bottom: -1px; }
+
+.panel-customize .cust-editor,
+.panel-customize .cust-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-2) var(--bw-space-1);
+}
+
+.panel-customize .cust-editor {
+  padding-inline-start: calc(var(--bw-icon-box) * 2 + var(--bw-space-3) * 2 + var(--bw-space-1));
+  border-bottom: 1px solid var(--bw-hairline);
+}
+
+.panel-customize .cust-form {
+  padding-top: var(--bw-space-3);
+  padding-inline: 0;
+}
+
+.panel-customize .cust-form.is-stack,
+.panel-customize .cust-form-fields {
+  flex-direction: column;
+}
+
+.panel-customize .cust-form-fields {
+  display: flex;
+  gap: var(--bw-space-2);
+  width: 100%;
+}
+
+.panel-customize .cust-form.is-stack > .bw-button {
+  align-self: flex-start;
+}
+
+.panel-customize :is(.cust-editor, .cust-form) > .bw-input:not(select) {
+  flex: 1 1 140px;
+}
+
+.panel-customize select.bw-input {
+  padding-inline-end: var(--bw-space-1);
+}
+
+.panel-customize .cust-form.is-stack > select.bw-input,
+.panel-customize .cust-form-fields > .bw-input {
+  flex: none;
+  width: 100%;
+}
+
+/* Delete confirmation: pinned to the bottom edge, one hairline above it, no card. */
+.cust-confirm {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--bw-z-chrome);
+  flex: none;
+  margin: 0 calc(var(--bw-space-4) * -1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  padding: var(--bw-space-3) var(--bw-space-4);
+  border-top: 1px solid var(--bw-hairline);
+  background: var(--bw-overlay);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+.cust-confirm[hidden] {
+  display: none;
+}
+
+.cust-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bw-space-2);
+}

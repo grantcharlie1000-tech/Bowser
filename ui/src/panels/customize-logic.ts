@@ -65,6 +65,38 @@ export function customizeCommand(a: string, payload: Payload): ({ a: string } & 
   return { a, ...payload };
 }
 
+/** Swatch colours, the same values Rust uses for the rail accents (src/win32/window.rs). */
+export const WORKSPACE_HEX: Readonly<Record<typeof WORKSPACE_COLOURS[number], string>> = {
+  blue: '#4385d1', violet: '#8b66d9', teal: '#32a89b', amber: '#d49a32', rose: '#d66d91', red: '#d55757', green: '#56a36b', slate: '#778394',
+};
+
+/** What each sidebar section is for, shown under its toggle. */
+export const RAIL_DESCRIPTIONS: Readonly<Record<typeof RAIL_KEYS[number], string>> = {
+  workspaces: 'Switch between groups of tabs',
+  apps: 'Pinned sites that open in the side panel',
+  bookmarks: 'Open your bookmarks from the sidebar',
+  history: 'Open your browsing history from the sidebar',
+};
+
+/** The sentence-case label of a wire name such as `briefcase`. */
+export function sentenceCase(value: string): string {
+  return value === '' ? value : value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * The id a dragged or keyboard-moved row lands before (undefined for the end). `dest` is the index
+ * among the other rows, 0 to n-1, the same convention as the rail's drop slot.
+ */
+export function moveBefore(ids: readonly number[], id: number, dest: number): number | undefined {
+  return ids.filter(other => other !== id)[dest];
+}
+
+/** The destination index (among the other rows) for a one-step keyboard move, or null at the edge. */
+export function stepDest(count: number, from: number, dir: -1 | 1): number | null {
+  const dest = from + dir;
+  return from < 0 || dest < 0 || dest >= count ? null : dest;
+}
+
 export function customizeDeleteDescription(kind: 'workspace' | 'app', label: string): string {
   return kind === 'workspace'
     ? `Delete workspace “${label}”? Its tabs move to another workspace.`

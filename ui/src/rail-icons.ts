@@ -12,7 +12,7 @@ export const RAIL_ICON: Readonly<Record<Exclude<RailIconName, 'letter'>, IconNam
   heart: 'heart',
   clock: 'clock',
   dots: 'more-vertical',
-  apptile: 'app-tile',
+  apptile: 'grid', // a pinned app without a favicon; the grid+plus family glyph 'app-tile' is the add-app button
   'g:briefcase': 'workspace-briefcase',
   'g:home': 'workspace-home',
   'g:code': 'workspace-code',

@@ -29,6 +29,21 @@ export const RAIL_GLYPHS = [
 export type RailGlyph = (typeof RAIL_GLYPHS)[number];
 export type RailIconName = (typeof RAIL_ICON_NAMES)[number] | `g:${RailGlyph}`;
 
+/** The two add buttons are told apart by key (Rust sends `plus` for both): own glyph and own name. */
+export const ADD_BUTTONS: Readonly<Record<string, { readonly icon: 'workspace-add' | 'app-tile'; readonly label: string }>> = {
+  addws: { icon: 'workspace-add', label: 'New workspace' },
+  addapp: { icon: 'app-tile', label: 'Add web app' },
+};
+
+/** Where a draggable moves with Alt+Up / Alt+Down: the key to drop before ('' for the end), or null at the edge. */
+export function keyboardMoveBefore(sectionKeys: readonly string[], key: string, dir: -1 | 1): string | null {
+  const at = sectionKeys.indexOf(key);
+  if (at < 0) return null;
+  if (dir < 0) return at === 0 ? null : (sectionKeys[at - 1] ?? null);
+  if (at >= sectionKeys.length - 1) return null;
+  return sectionKeys[at + 2] ?? '';
+}
+
 export type Section = 'top' | 'workspaces' | 'apps' | 'bottom';
 
 export function isRailKey(v: string): boolean {
