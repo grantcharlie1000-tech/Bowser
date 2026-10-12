@@ -103,14 +103,13 @@ const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
-/// One-shot timer that starts the HTML toolbar after the first paint.
-const WM_HTML_CHROME_START_TIMER: usize = 0xB05A;
+/// Posted from the first paint to start the HTML chrome. Posted, not called, so the paint finishes
+/// before any WebView2 work starts on the UI thread.
+const WM_HTML_CHROME_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7C;
 /// Posted when the HTML toolbar's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_CHROME_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7A;
 /// Posted when the HTML tab strip's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7B;
-/// Delay between the first paint and starting the HTML toolbar, so the first tab starts first.
-const HTML_CHROME_START_DELAY_MS: u32 = 1000;
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
@@ -2576,8 +2575,7 @@ unsafe extern "system" fn window_proc(
                 if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
-            WM_TIMER if wparam.0 == WM_HTML_CHROME_START_TIMER => {
-                let _ = KillTimer(Some(hwnd), WM_HTML_CHROME_START_TIMER);
+            WM_HTML_CHROME_START => {
                 start_html_chrome(hwnd);
                 LRESULT(0)
             }
@@ -6324,11 +6322,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     let _ = app.borrow().log.record("chrome_painted");
                     let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1800, None);
                     if chrome_host::html_ui_enabled() {
-                        let _ = SetTimer(
+                        // Native mode never reaches this: no message, no WebView2 work.
+                        let _ = PostMessageW(
                             Some(hwnd),
-                            WM_HTML_CHROME_START_TIMER,
-                            HTML_CHROME_START_DELAY_MS,
-                            None,
+                            WM_HTML_CHROME_START,
+                            WPARAM(0),
+                            LPARAM(0),
                         );
                     }
                 }
