@@ -433,7 +433,7 @@ body.solid {
   column-gap: 4px;
   flex: 1 1 0;
   min-width: 26px;
-  height: 24px;
+  height: 26px;
   padding: 0 6px;
   border: 1px solid var(--tab-edge);
   border-radius: 9px;
@@ -658,7 +658,7 @@ body.solid {
   gap: 3px;
   flex: 1 1 0;
   min-width: 0;
-  height: 24px;
+  height: 26px;
   padding: 0 2px 0 4px;
   border-radius: 9px;
 }
@@ -723,13 +723,13 @@ body.solid {
   position: relative;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 40px;
+  gap: 3px;
+  width: 26px;
   height: 100%;
-  padding: 8px 0;
-  background: var(--fill);
-  border: 1px solid var(--border);
-  border-radius: 20px;
+  padding: 4px 0;
+  background: var(--tab-idle);
+  border: 1px solid var(--tab-edge);
+  border-radius: 9px;
   overflow: hidden;
 }
 
@@ -739,7 +739,7 @@ body.solid {
   flex: none;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 3px;
 }
 
 /* The only scroll container: workspaces and apps. The scrollbar is hidden but scrolling works. */
@@ -748,7 +748,7 @@ body.solid {
   flex: 0 1 auto;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 3px;
   width: 100%;
   min-height: 0;
   overflow-y: auto;
@@ -769,7 +769,7 @@ body.solid {
 
 .rail-rule {
   flex: none;
-  width: 22px;
+  width: 16px;
   height: 1px;
   background: var(--pill-border);
 }
@@ -781,12 +781,12 @@ body.solid {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 22px;
+  height: 22px;
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text);
   cursor: default;
@@ -827,20 +827,20 @@ body.solid {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   pointer-events: none;
 }
 
 .rb-face svg {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 
 .rb-fav {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
   border-radius: 3px;
 }
@@ -848,12 +848,12 @@ body.solid {
 .rb-tile {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
   background: color-mix(in srgb, var(--ac) 55%, var(--bg));
   color: var(--text);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 1;
 }
@@ -862,11 +862,11 @@ body.solid {
 .rb-bar {
   display: none;
   position: absolute;
-  left: -4px;
+  left: -1px;
   top: 50%;
-  width: 3px;
-  height: 18px;
-  margin-top: -9px;
+  width: 2px;
+  height: 12px;
+  margin-top: -6px;
   border-radius: 0 2px 2px 0;
   background: var(--ac);
   pointer-events: none;
@@ -879,8 +879,8 @@ body.solid {
 .rb-dot {
   display: none;
   position: absolute;
-  right: 4px;
-  bottom: 4px;
+  right: 2px;
+  bottom: 2px;
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -895,8 +895,8 @@ body.solid {
 /* Drag insertion line: 2px accent, moved with transform by rail.ts. */
 .rail-slot {
   position: absolute;
-  left: 6px;
-  right: 6px;
+  left: 4px;
+  right: 4px;
   top: 0;
   height: 2px;
   border-radius: 1px;
@@ -1089,7 +1089,7 @@ body.solid {
 .side-tab.active::before { background: var(--tab-on); }
 .side-tab.dragging { z-index: 2; transition: none; }
 .side-tab:focus-visible { outline: 2px solid var(--focus-border); outline-offset: -2px; }
-.side-tab.pinned::after { grid-column: 1 / -1; position: absolute; right: 5px; color: var(--placeholder); content: "◆"; font-size: 8px; }
+.side-tab.pinned::after { grid-column: 1 / -1; position: absolute; right: 5px; color: var(--placeholder); content: "â—†"; font-size: 8px; }
 .side-tab.muted .side-fav { opacity: .55; }
 
 .side-tab-icon { position: relative; display: grid; width: 18px; height: 18px; place-items: center; }

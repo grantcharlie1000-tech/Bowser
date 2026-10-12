@@ -268,7 +268,7 @@ mod tests {
             );
             let inset = ball.left - (bounds.left + metrics.px(HEADER_BALL_INSET));
             assert!(
-                (0..=1).contains(&inset),
+                (0..=2).contains(&inset), // integer halving of an odd shell/diameter can add a pixel
                 "leading inset {inset} at {dpi} dpi"
             );
 

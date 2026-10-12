@@ -21,37 +21,37 @@
 use std::time::{Duration, Instant};
 
 use crate::{
-    chrome::layout::{Metrics, Rect},
+    chrome::layout::{LEFT_RAIL_WIDTH, Metrics, Rect},
     favicon::FaviconBitmap,
     theme::Rgba,
 };
 
 /// Logical padding between the rail's ends and its first and last button.
-const PAD: i32 = 6;
-/// Logical side of a button. The rail is wide enough to hold one with a margin either side.
-const BUTTON: i32 = 30;
+const PAD: i32 = 4;
+/// Logical side of a button: the rail width less a 2-pixel margin either side.
+const BUTTON: i32 = LEFT_RAIL_WIDTH - 4;
 /// Logical gap between two buttons in the same section.
 const BUTTON_GAP: i32 = 3;
 /// Logical height reserved for a boundary between two sections. The hairline sits in its middle.
 const SECTION_GAP: i32 = 9;
 /// Logical inset of a section hairline from the rail's edges.
-const RULE_INSET: i32 = 9;
+const RULE_INSET: i32 = 5;
 
 /// Logical corner radius of a button.
-pub const BUTTON_RADIUS: i32 = 9;
+pub const BUTTON_RADIUS: i32 = 7;
 /// Logical side of the square the outlined icons are drawn in, centred in the button.
-pub const ICON: i32 = 18;
+pub const ICON: i32 = 16;
 /// Logical side of the coloured tile that holds a letter.
-pub const TILE: i32 = 20;
+pub const TILE: i32 = 16;
 /// Logical corner radius of the letter tile.
-pub const TILE_RADIUS: i32 = 6;
+pub const TILE_RADIUS: i32 = 5;
 /// Logical pen width of an outlined icon, which the painter scales by dpi.
 pub const STROKE: f32 = 1.5;
 /// Logical diameter of the dot shown on a button that needs attention.
-pub const DOT: i32 = 6;
+pub const DOT: i32 = 5;
 /// Logical width and height of the accent bar on the active workspace.
-pub const ACTIVE_BAR_WIDTH: i32 = 3;
-pub const ACTIVE_BAR_HEIGHT: i32 = 14;
+pub const ACTIVE_BAR_WIDTH: i32 = 2;
+pub const ACTIVE_BAR_HEIGHT: i32 = 12;
 
 /// Identifies one button. Workspaces and apps are keyed by stable ids, never by their position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

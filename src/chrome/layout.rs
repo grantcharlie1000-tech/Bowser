@@ -35,7 +35,7 @@ impl Metrics {
     pub const TOP_MARGIN: i32 = 6;
     /// Height of the full-width tab row under the toolbar.
     pub const TAB_ROW_HEIGHT: i32 = 28;
-    pub const ISLAND_HEIGHT: i32 = 24;
+    pub const ISLAND_HEIGHT: i32 = Self::OMNIBOX_HEIGHT;
     pub const TAB_RADIUS: i32 = 9;
     /// The omnibox stays this wide at most and is centred in the toolbar.
     pub const OMNIBOX_MAX_WIDTH: i32 = 624;
@@ -269,9 +269,9 @@ pub const fn chrome_height(dpi: u32) -> i32 {
     m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT) + m.px(Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN)
 }
 
-/// Logical width of the left rail. The rail is a pill, rounded at both ends. It holds 30-pixel
-/// buttons with a 5-pixel margin either side, which fits the 18-pixel icons at 96 dpi.
-pub const LEFT_RAIL_WIDTH: i32 = 40;
+/// Logical width of the left rail. The rail is a pill, rounded at both ends. It is exactly as wide as the omnibox is tall
+/// and holds 22-pixel buttons with a 2-pixel margin either side, which fits the 16-pixel icons.
+pub const LEFT_RAIL_WIDTH: i32 = Metrics::OMNIBOX_HEIGHT;
 
 /// Physical pixels the left rail takes from the window edge, including the gaps either side of it.
 /// Everything else in the window, the chrome and the page viewport, starts at this x.
@@ -1227,7 +1227,7 @@ mod tests {
 
         assert_eq!(m.px(Metrics::STRIP_HEIGHT), 34);
         assert_eq!(m.px(Metrics::TAB_ROW_HEIGHT), 28);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 24);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 26);
         assert_eq!(m.px(Metrics::ISLAND_MARGIN), 2);
         assert_eq!(m.px(Metrics::ISLAND_GAP), 3);
         assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 100_000);
@@ -1251,7 +1251,7 @@ mod tests {
 
         assert_eq!(m.px(Metrics::STRIP_HEIGHT), 43, "42.5 rounds up");
         assert_eq!(m.px(Metrics::TAB_ROW_HEIGHT), 35);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 30);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 33);
         assert_eq!(m.px(Metrics::ISLAND_MARGIN), 3, "2.5 rounds up");
         assert_eq!(m.px(Metrics::ISLAND_GAP), 4, "3.75 rounds up");
         assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 125_000);
@@ -1276,7 +1276,7 @@ mod tests {
 
         assert_eq!(m.px(Metrics::STRIP_HEIGHT), 51);
         assert_eq!(m.px(Metrics::TAB_ROW_HEIGHT), 42);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 36);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 39);
         assert_eq!(m.px(Metrics::ISLAND_MARGIN), 3);
         assert_eq!(m.px(Metrics::ISLAND_GAP), 5, "4.5 rounds up");
         assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 150_000);
@@ -1299,7 +1299,7 @@ mod tests {
 
         assert_eq!(m.px(Metrics::STRIP_HEIGHT), 68);
         assert_eq!(m.px(Metrics::TAB_ROW_HEIGHT), 56);
-        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 48);
+        assert_eq!(m.px(Metrics::ISLAND_HEIGHT), 52);
         assert_eq!(m.px(Metrics::ISLAND_MARGIN), 4);
         assert_eq!(m.px(Metrics::ISLAND_GAP), 6);
         assert_eq!(m.px(Metrics::TAB_MAX_WIDTH), 200_000);
@@ -1363,20 +1363,20 @@ mod tests {
 
     #[test]
     fn one_tab_at_1024_matches_hand_computed_geometry() {
-        // The left rail takes 44 px at 96 dpi (2 px margin, 40 px rail, 2 px margin). The chrome is
-        // laid out in the 980 px to its right, so every toolbar rect is 44 px further right than it
+        // The left rail takes 30 px at 96 dpi (2 px margin, 26 px rail, 2 px margin). The chrome is
+        // laid out in the 994 px to its right, so every toolbar rect is 30 px further right than it
         // would be without the rail.
         let inset = left_rail_inset(96);
-        assert_eq!(inset, 44);
+        assert_eq!(inset, 30);
         let l = compute_in_frame(1024, HEIGHT, 96, 1, 0, false);
 
         assert_eq!(l.strip, Rect::new(inset, 6, 1024, 40));
         assert_eq!(l.tab_row, Rect::new(inset, 40, 1024, 68));
         assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 40));
-        assert_eq!(l.tab_zone, Rect::new(46, 40, 1022, 68));
+        assert_eq!(l.tab_zone, Rect::new(32, 40, 1022, 68));
         assert_eq!(
             l.tab(0),
-            Some(Rect::new(46, 42, 1022, 66)),
+            Some(Rect::new(32, 41, 1022, 67)),
             "a lone tab fills the full-width row"
         );
         assert_eq!(l.new_tab_button, Rect::new(856, 9, 884, 37));
@@ -1390,13 +1390,13 @@ mod tests {
             l.omnibox.right + 3,
             "the bubble sits directly right of the address pill"
         );
-        assert_eq!(l.back_button, Rect::new(48, 9, 76, 37));
-        assert_eq!(l.forward_button, Rect::new(76, 9, 104, 37));
-        assert_eq!(l.reload_button, Rect::new(107, 9, 135, 37));
+        assert_eq!(l.back_button, Rect::new(34, 9, 62, 37));
+        assert_eq!(l.forward_button, Rect::new(62, 9, 90, 37));
+        assert_eq!(l.reload_button, Rect::new(93, 9, 121, 37));
         assert_eq!(l.omnibox, Rect::new(198, 10, 822, 36));
         assert_eq!(hit_test(&l, 839, 23), Hit::MainMenu);
-        assert_eq!(l.viewport, Rect::new(48, 70, 1020, 696));
-        assert_eq!(l.rail, Rect::new(2, 8, 42, 698));
+        assert_eq!(l.viewport, Rect::new(34, 70, 1020, 696));
+        assert_eq!(l.rail, Rect::new(2, 8, 28, 698));
         assert_eq!(hit_test(&l, 22, 20), Hit::RailBackground);
     }
 
@@ -1788,7 +1788,7 @@ mod tests {
     #[test]
     fn hit_test_identifies_each_region_at_1024() {
         // The active slot is visibly wider; all tab hits remain within their own island.
-        // Window 1024 wide with the rail's 44 px inset. Chrome x positions are the old ones plus 44,
+        // Window 1024 wide with the rail's 30 px inset. Chrome x positions are the old ones plus 30,
         // except the caption buttons, which sit at the window's right edge either way.
         let l = compute_in_frame(1024, HEIGHT, 96, 3, 0, false);
 
@@ -1806,7 +1806,7 @@ mod tests {
             "the tab row has no controls at its right end"
         );
         assert_eq!(
-            hit_test(&l, 54, 48),
+            hit_test(&l, 40, 48),
             Hit::TabClose(0),
             "close is on the left edge of the tab"
         );

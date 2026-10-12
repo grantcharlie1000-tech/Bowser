@@ -811,7 +811,7 @@ impl ChromeSurface {
 
     fn paint_left_rail(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let pill = view.layout.rail;
-        let radius = pill.width() / 2;
+        let radius = view.layout.metrics.tab_radius();
         self.round(pill, radius, view.palette.tab_active, dirty);
         let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
         let colour = scale_alpha(view.palette.tab_active_border, stroke);
