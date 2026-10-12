@@ -183,6 +183,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     let Ok(window) = window else {
         return;
     };
+    super::window::perf_event(owner, "html_popup_prewarm");
     let raw = owner.0 as isize;
     let command = Rc::new(move |command| popup_command(HWND(raw as *mut _), command));
     let failed = Rc::new(move || {
@@ -297,6 +298,7 @@ pub(crate) fn show_menu(
     // adopting it earlier would suspend the page before it loads, and a menu posted then is lost.
     let key = owner.0 as isize;
     if !PAGE_READY.with(|ready| ready.borrow().contains(&key)) {
+        super::window::perf_event(owner, "html_popup_fallback");
         return Err(ShowRefused::Unavailable(on_result));
     }
     let mut on_result = Some(on_result);
@@ -476,6 +478,9 @@ pub(crate) fn shutdown(owner: HWND) {
 fn popup_command(owner: HWND, command: Command) {
     match command {
         Command::Ready => {
+            if !PAGE_READY.with(|ready| ready.borrow().contains(&(owner.0 as isize))) {
+                super::window::perf_event(owner, "html_popup_ready");
+            }
             adopt_ready(owner);
             PAGE_READY.with(|ready| ready.borrow_mut().insert(owner.0 as isize));
         }

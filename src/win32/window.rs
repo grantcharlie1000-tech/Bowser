@@ -5726,6 +5726,7 @@ fn html_refresh(hwnd: HWND) {
     };
     // --- popup host (lane M) ---
     if activating {
+        perf_event(hwnd, "html_toolbar_ready");
         unsafe { let _ = SetTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER, 2000, None); }
     }
     // --- end popup host ---
@@ -6094,6 +6095,18 @@ fn open_debug_html_menu(hwnd: HWND) {
 pub(super) fn popup_app(hwnd: HWND) -> Option<AppRef> {
     app_of(hwnd)
 }
+
+// --- popup surfaces (lane PP) ---
+/// Records a perf-log event (`--benchmark-log`) for this window's app. Never panics: a busy app
+/// borrow skips the event.
+pub(super) fn perf_event(hwnd: HWND, event: &str) {
+    if let Some(app) = app_of(hwnd) {
+        if let Ok(app) = app.try_borrow() {
+            let _ = app.log.record(event);
+        }
+    }
+}
+// --- end popup surfaces ---
 
 /// Active tab and workspace, recorded when a menu opens; a change dismisses the menu.
 pub(super) fn popup_context(hwnd: HWND) -> Option<html_popup::MenuContext> {
