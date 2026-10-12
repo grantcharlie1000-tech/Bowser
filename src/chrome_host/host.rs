@@ -9,6 +9,7 @@
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
+    time::Instant,
 };
 
 use url::Url;
@@ -34,7 +35,10 @@ use windows::{
 
 use super::{
     assets::{self, Asset, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
-    protocol::{Command, parse_command},
+    protocol::{
+        Command, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
+        TokenBucket, is_popup_command, parse_command,
+    },
 };
 use crate::shortcuts::{self, Command as Shortcut};
 
@@ -647,19 +651,32 @@ fn install_handlers(
             let _ = w.remove_ProcessFailed(token);
         }));
 
-        // The bridge: top-level page only, string payloads only.
+        // The bridge: top-level page only, string payloads only, and a rate limit per host. Dropped
+        // messages never reach the parser or the caller.
         let on_command = setup.on_command.clone();
         let weak_bridge = weak.clone();
+        let mut bucket = TokenBucket::new(MESSAGE_BURST, MESSAGE_RATE_PER_SEC);
+        let mut popup_gate = Throttle::new(POPUP_COMMAND_INTERVAL);
         webview.add_WebMessageReceived(
             &WebMessageReceivedEventHandler::create(Box::new(move |sender, args| {
                 let (Some(sender), Some(args)) = (sender, args) else {
                     return Ok(());
                 };
-                let mut source = PWSTR::null();
-                if sender.Source(&mut source).is_err() {
+                // Both the sender's source and the message's own source must be this host's page.
+                let mut sender_source = PWSTR::null();
+                if sender.Source(&mut sender_source).is_err() {
                     return Ok(());
                 }
-                if !is_start_url(view, &CoTaskMemPWSTR::from(source).to_string()) {
+                let sender_uri = CoTaskMemPWSTR::from(sender_source).to_string();
+                let mut message_source = PWSTR::null();
+                if args.Source(&mut message_source).is_err() {
+                    return Ok(());
+                }
+                let message_uri = CoTaskMemPWSTR::from(message_source).to_string();
+                if !is_trusted_message(view, &sender_uri, &message_uri) {
+                    return Ok(());
+                }
+                if !bucket.take(Instant::now()) {
                     return Ok(());
                 }
                 let mut raw = PWSTR::null();
@@ -672,6 +689,8 @@ fn install_handlers(
                 };
                 if matches!(command, Command::Ready) {
                     reveal(&weak_bridge);
+                } else if is_popup_command(&command) && !popup_gate.allow(Instant::now()) {
+                    return Ok(());
                 }
                 on_command(command);
                 Ok(())
@@ -806,6 +825,12 @@ fn is_start_url(view: View, uri: &str) -> bool {
     uri == view.start_url()
 }
 
+/// Whether a web message came from this host's own page: the sender's source and the message's
+/// source must both be exactly its start URL.
+fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
+    is_start_url(view, sender_uri) && is_start_url(view, message_uri)
+}
+
 /// The path of a `bowser-ui://app/...` URI, or `None` for any other scheme or host.
 fn request_path(uri: &str) -> Option<String> {
     let url = Url::parse(uri).ok()?;
@@ -857,6 +882,21 @@ mod tests {
                 !is_start_url(View::Tabs, uri),
                 "{uri:?} should not be the tabs start URL"
             );
+        }
+    }
+
+    #[test]
+    fn web_messages_need_both_sources_to_be_the_host_page() {
+        assert!(is_trusted_message(View::Toolbar, START_URL, START_URL));
+        assert!(is_trusted_message(View::Tabs, TABS_START_URL, TABS_START_URL));
+        for (view, sender, message) in [
+            (View::Toolbar, START_URL, "https://example.com/"),
+            (View::Toolbar, "https://example.com/", START_URL),
+            (View::Toolbar, TABS_START_URL, START_URL),
+            (View::Tabs, TABS_START_URL, START_URL),
+            (View::Toolbar, "", ""),
+        ] {
+            assert!(!is_trusted_message(view, sender, message), "{view:?} {sender:?} {message:?}");
         }
     }
 

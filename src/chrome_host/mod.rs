@@ -460,8 +460,12 @@ mod tests {
 
     #[test]
     fn favicon_gate_is_png_and_at_most_the_protocol_cap() {
+        // Signature, then an IHDR chunk of 16x16, padded to `len` bytes.
         let png = |len: usize| {
             let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            bytes.extend_from_slice(&[0, 0, 0, 13]);
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0]);
             bytes.resize(len, 0);
             bytes
         };
@@ -469,6 +473,10 @@ mod tests {
         assert!(!favicon_sendable(&png(protocol::MAX_FAVICON_BYTES + 1)));
         assert!(!favicon_sendable(b"GIF89a"));
         assert!(!favicon_sendable(&[]));
+        // A PNG whose IHDR is 300 pixels wide is not sent.
+        let mut wide = png(64);
+        wide[16..20].copy_from_slice(&300u32.to_be_bytes());
+        assert!(!favicon_sendable(&wide));
     }
 
     #[test]

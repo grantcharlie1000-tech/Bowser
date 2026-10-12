@@ -1,10 +1,10 @@
 # HTML chrome: architecture and bridge contract (v1)
 
-Status: milestone 1 (toolbar row only). The GDI chrome remains the default; the HTML chrome is opt-in with `BOWSER_UI=html` and falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
+Status: the toolbar row (milestone 1) and the tab strip (milestone 2) are implemented. The GDI chrome remains the default; the HTML chrome is opt-in with `BOWSER_UI=html` and falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
 
 ## Architecture (reviewed by Opus)
 
-- One extra WebView2 **chrome host** controller, child of a Bowser-owned container window, covering only the 28 px toolbar row (back/forward/reload, omnibox, site-info, menu). Caption buttons, tab strip, resize border and every native hit-test stay native in milestone 1.
+- Two WebView2 **chrome host** controllers, each a child of a Bowser-owned container window: the toolbar host covers the 28 px toolbar row (back/forward/reload, omnibox, site-info, menu), and the tab strip host covers the tab row when it is horizontal (see Milestone 2). Caption buttons, the resize border and every other native hit-test stay native.
 - **Shared environment, private chrome profile.** The chrome views are controllers in the active browsing profile's own tab environment (the engine's `ICoreWebView2Environment`, same user-data folder, same browser/GPU/network/utility processes), so the HTML chrome adds no WebView2 browser process of its own. Each chrome controller is created with `ICoreWebView2Environment10::CreateCoreWebView2ControllerOptions` + `CreateCoreWebView2ControllerWithOptions`, `ControllerOptions.ProfileName = "BowserChrome"` and `IsInPrivateModeEnabled = true`: a separate WebView2 profile, so its cookies, storage, cache and permissions never mix with the browsing profile's, and it writes nothing to disk. After creation the host verifies (`ICoreWebView2_13::Profile`) that the webview really is in that profile and InPrivate, otherwise it fails. The browsing profile's extensions are added to its own profile only and never load in the chrome profile. There is no `ChromeUI` folder any more.
 - **Startup.** In native mode the engine environment is created lazily (when the user starts typing or a page is opened). In HTML mode the window asks for it right after the first paint (`App::request_chrome_environment`): it reuses an environment that is already ready or being created, or starts creation with no tab controller and no navigation (a navigation submitted meanwhile waits for, then reuses, the same environment). When creation settles, the window gets `WM_HTML_CHROME_ENV` and requests both chrome controllers (toolbar, tabs) concurrently.
 - **Lifetime and failure.** The engine owns the environment. On window close the chrome hosts are closed before the engine closes. Any failure (environment creation, scheme registration, controller creation, profile check) leaves the native chrome. A `ProcessFailed` for a browser-process exit or the chrome's own renderer exiting/hanging falls back to native chrome; a browser-process crash now also affects the tabs, which is expected. Failures of shared processes that WebView2 restarts itself (GPU, utility, sandbox helper, plugin, unknown) leave the chrome in place.
@@ -12,7 +12,12 @@ Status: milestone 1 (toolbar row only). The GDI chrome remains the default; the 
 - Controller `DefaultBackgroundColor` is alpha 0 (set through ControllerOptions at creation, not an env var). The controller stays hidden until the page posts `ready`, so there is no white flash. Translucency comes from CSS over a transparent body. When the native backdrop is solid, Rust sends `solid:true` plus an opaque `--bg` and CSS paints it.
 - Assets are embedded with `include_bytes!` from `ui/dist/` and served by a **custom scheme** `bowser-ui://app/`. In HTML mode only (`BOWSER_UI=html`), the scheme is registered on the tab environment's options at creation (`ICoreWebView2EnvironmentOptions4`, treat-as-secure, authority component, no allowed origins); native mode creates the environment exactly as before. Only the chrome webviews have a `WebResourceRequested` handler (filter `*`) that serves it: every request is answered from the embedded table, otherwise 404. No network, no files on disk. Tabs have no handler for the scheme, so a tab-origin request fails, and the tab policy blocks it outright: `bowser-ui` is in the tab `NavigationStarting` Block list (never the external-protocol path), frame navigation allows only web/document schemes, `navigate_tab` accepts only http(s), and popups only open http(s).
 - Rust owns all geometry. JS never sizes the webview.
+
+WM_HTML_CHROME_START, the WM_HTML_*_FAILED and WM_HTML_CHROME_ENV handlers, and WM_HTML_DEFERRED act only when `html_ui_enabled()` is true, so native mode never starts or touches a chrome host.
 - Page-controlled text (titles, URLs, completions) is rendered with `textContent` only. No `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`eval`/`new Function`/inline handlers. Trusted Types enforced by CSP.
+- The same CSP is also in the page as a `<meta http-equiv="Content-Security-Policy">` (`ui/src/index.html`), so it holds even if header delivery fails. Meta cannot carry `frame-ancestors`, `report-uri` or `sandbox`, so those are left out of both copies. A test checks that the two policies match.
+- Startup self-test (`ui/src/main.ts`): before any `ready`, the page assigns a string to an HTML sink on a detached element. With Trusted Types enforced that throws. If it does not throw, the page sets `document.title = 'csp-not-enforced'` and sends nothing, so the host keeps the native chrome.
+- `ui/lint.mjs` fails the build on any banned sink in `src/` or in the built `dist/app.js`. The rules live in `ui/lint-rules.mjs`.
 
 ## Response headers for every asset
 
@@ -39,6 +44,8 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `drag` | - | left mousedown on an empty toolbar area (drag surface only, never a button, input or pill); Rust begins a native window move |
 | `caption` | `a`: `toggleMaximize`/`systemMenu` | double-click (`toggleMaximize`) or right-click (`systemMenu`) on an empty toolbar area |
 
+Any message with more than six keys is rejected as soon as the seventh key starts (`v` and `t` count). Rate and popup limits are listed under "Limits" below.
+
 ## Rust -> JS (`PostWebMessageAsJson`, object)
 
 | `t` | fields |
@@ -54,18 +61,38 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 
 - Rust formats display URLs; JS never parses URLs.
 - `dir="auto"`, `unicode-bidi: isolate` on text from pages.
-- Favicons are not used in milestone 1.
+- Favicons are used by the tab strip: a `fav` message carries the tab's PNG, sent when that tab's favicon changes (see Milestone 2 and Limits).
 
 ## Rust module API contract (`src/chrome_host/`)
 
-- `protocol.rs`: `pub enum Command { Ready, Nav(NavAction), Edit{seq:u32,text:String}, Submit(String), Escape, Focus(bool), Open(OpenTarget) }`, `pub enum NavAction{Back,Forward,Reload,Stop}`, `pub enum OpenTarget{Menu,Site,NewTab}`, `pub fn parse_command(raw:&str)->Result<Command,ProtocolError>` (strict, size-capped, pure), `pub struct ViewState{...}` with `pub fn to_json(&self)->String`, `pub fn set_text_json(text:&str,select:bool)->String`, `pub fn focus_json(select:bool)->String`, `pub fn completion_json(seq:u32,suffix:&str)->String`. No external JSON dependency.
-- `assets.rs`: `pub const SCHEME:&str="bowser-ui"; pub const START_URL:&str="bowser-ui://app/index.html"; pub fn lookup(path:&str)->Option<Asset>` where `Asset{bytes:&'static [u8], mime:&'static str}`; `pub const RESPONSE_HEADERS:&str` (CRLF-joined for `CreateWebResourceResponse`).
-- `host.rs`: `CHROME_PROFILE`, `valid_profile_name(&str)`, `register_ui_scheme(&options)` (called by the engine when creating the tab environment in HTML mode), `ChromeEnv::new(ICoreWebView2Environment)` (thin wrapper over the shared tab environment, from `WebView2Engine::chrome_environment()`), `ChromeHost::create(env:&ChromeEnv, parent:HWND, bounds:RECT, view:View, on_command:Rc<dyn Fn(Command)>, on_failed:Rc<dyn Fn()>, on_accelerator:Option<AccelHandler>, on_ready:impl FnOnce(Result<ChromeHost>))`, `set_bounds`, `post_json(&str)`, `focus()`, `set_visible(bool)`, `close()`.
-- Chrome webview lock-down (unchanged): only the exact start URL may navigate; subframe navigations are cancelled; new windows swallowed; downloads cancelled; every permission denied; devtools only in debug builds; external drop off; host objects off; context menus, zoom, autofill, password autosave, swipe and browser accelerator keys off; web messages accepted only from the exact start URL.
+- `protocol.rs`: `pub enum Command { Ready, Nav(NavAction), Edit{seq,text}, Submit(String), Escape, Focus(bool), Open(OpenTarget), BeginDrag, Caption(CaptionAction), Tab{action,id}, TabMove{id,before}, Group{action,key} }`, `pub fn parse_command(raw:&str)->Result<Command,ProtocolError>` (strict, size-capped, field-capped, pure), `pub struct ViewState{...}` with `pub fn to_json(&self)->String`, `pub fn tabs_json(active:u32, items:&[TabItem])->String`, `pub fn fav_json(id:u32, png:&[u8])->Option<String>`, `pub fn set_text_json(text:&str,select:bool)->String`, `pub fn focus_json(select:bool)->String`, `pub fn completion_json(seq:u32,suffix:&str)->String`, `pub fn is_popup_command(&Command)->bool`, and the rate helpers `TokenBucket` and `Throttle` (time is passed in). No external JSON dependency.
+- `assets.rs`: `pub const SCHEME:&str="bowser-ui"; pub const START_URL:&str="bowser-ui://app/index.html?view=toolbar"; pub const TABS_START_URL:&str="bowser-ui://app/index.html?view=tabs"; pub fn lookup(path:&str)->Option<Asset>` where `Asset{bytes:&'static [u8], mime:&'static str}`; `pub const RESPONSE_HEADERS:&str` (CRLF-joined for `CreateWebResourceResponse`).
+- `host.rs`: `pub enum View { Toolbar, Tabs }` with `start_url()`; `CHROME_PROFILE`, `valid_profile_name(&str)`, `register_ui_scheme(&options)` (called by the engine when creating the tab environment in HTML mode), `pub struct ChromeEnv` (`ChromeEnv::new(ICoreWebView2Environment)`, a clone-able wrapper over the shared tab environment, from `WebView2Engine::chrome_environment()`), `pub type AccelHandler = Rc<dyn Fn(Accel) -> bool>` with `pub fn accel_command(Accel, omnibox_editing) -> Option<Command>` (`on_accelerator` sees keys the page did not consume), `ChromeHost::create(env:&ChromeEnv, parent:HWND, bounds:RECT, view:View, on_command:Rc<dyn Fn(Command)>, on_failed:Rc<dyn Fn()>, on_accelerator:Option<AccelHandler>, on_ready:impl FnOnce(Result<ChromeHost>))`, `set_bounds`, `post_json(&str)`, `focus()`, `set_visible(bool)`, `close()`.
+- `mod.rs`: the pure glue: `security_of`, `css_colour`, `theme_tokens`, `toolbar_bounds`, `tab_row_bounds`, `tab_items`, `tab_to_wire`/`tab_from_wire`, `drop_index`, `group_wire_key`, `favicon_sendable`, `state_changed`, `should_set_text`, `html_ui_enabled`.
+- Chrome webview lock-down (unchanged): only the exact start URL may navigate; subframe navigations are cancelled; new windows swallowed; downloads cancelled; every permission denied; devtools only in debug builds; external drop off; host objects off; context menus, zoom, autofill, password autosave, swipe and browser accelerator keys off; web messages accepted only when both the sender's source and the message's own source are exactly the host's start URL.
+
+## Limits
+
+Enforced by Rust (`protocol.rs`, `host.rs`, `window.rs`), with the matching limits in `ui/src/protocol.ts`:
+
+| Limit | Value |
+|---|---|
+| Raw message from the page | <= 16 KiB (`MAX_RAW_BYTES`) |
+| Keys in one JS -> Rust object | <= 6 (`MAX_FIELDS`); the seventh key is rejected before the duplicate check |
+| Text field (`edit`, `submit`) | <= 2048 characters |
+| Page message rate, per host | token bucket: 120 per second, burst 60 (`MESSAGE_RATE_PER_SEC`, `MESSAGE_BURST`); excess messages are dropped unparsed |
+| Menu, popup and window commands, per host | at most one per 250 ms (`POPUP_COMMAND_INTERVAL`): `drag`, `caption`, `open` with `menu`/`site`/`split`, `tab` with `menu`, `group` with `menu`; extra ones are dropped |
+| Deferred command queue, per host | 8 (`HTML_DEFERRED_LIMIT`); a full queue drops the command |
+| Tabs per `tabs` message | <= 512 (`MAX_TABS`). Rust keeps the first 512 in order; when the active tab lies beyond them it replaces the last one, so the active tab is always sent. The page rejects a larger message |
+| Tab title / group name | 200 / 64 characters |
+| Favicon (`fav`) | PNG <= 16 KiB (`MAX_FAVICON_BYTES`), IHDR present first, width and height each 1 to 256 (`MAX_FAVICON_DIMENSION`) |
+| Theme colour | only the forms in `is_safe_css_colour`: `#` with 3, 4, 6 or 8 hex digits, or `rgb(`/`rgba(` over digits, commas, dots, spaces and `%`, at most 64 characters. Anything else (`url(`, other functions, `;`, `}`) is dropped |
+
+Popup and window commands run from the UI thread, never inside WebView2's message callback. Each one is queued and posted as `WM_HTML_DEFERRED`, and each post runs the oldest queued command, so a modal menu or move loop never runs inside the callback. `drag` and `caption` count only when the cursor is inside the sending host's own region (toolbar region or tab row region). `drag` also needs the primary button held: the right button when the system buttons are swapped.
 
 ## Milestone 2: tab strip view (second controller)
 
-The tab row is a second chrome host (same shared environment and private chrome profile, own controller) showing the same bundle with a view selector. Start URLs (exact match required, one per host): `bowser-ui://app/index.html?view=toolbar` and `bowser-ui://app/index.html?view=tabs`. Asset lookup ignores the query; JS reads `location.search`. Bridge validation compares the sender's Source to the host's own start URL.
+The tab row is a second chrome host (same shared environment and private chrome profile, own controller) showing the same bundle with a view selector. Start URLs (exact match required, one per host): `bowser-ui://app/index.html?view=toolbar` and `bowser-ui://app/index.html?view=tabs`. Asset lookup ignores the query; JS reads `location.search`. Bridge validation checks both the sender's Source and the message's own Source (`args.Source()`) against the host's own start URL. A message that fails either check is dropped.
 
 The tab strip host is a second controller on the same environment, active only while the tab row is horizontal and its page has said `ready`. Its region is the full tab row; the native tab row is not painted there and gives no tab or group hits.
 
@@ -78,7 +105,6 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
 | `group` | `a`: `toggle`/`menu`, `key` | group ball click (collapse/expand) or group menu |
-| `tabscroll` | - | reserved |
 
 ### Rust -> JS additions
 
@@ -88,3 +114,5 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 | `fav` | `id`, `uri` (`data:image/png;base64,...`, validated PNG, <= 16 KiB) sent once per favicon change |
 
 `tabs` and `fav` are Rust->JS only, so nested arrays are fine. The toolbar view ignores them and the tabs view ignores `state` except `theme`/`solid`/`dark`/`scale`.
+
+The Limits section above applies to these messages too: at most 512 items, titles and group names capped, favicons validated.

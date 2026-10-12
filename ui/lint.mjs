@@ -1,20 +1,13 @@
-// Fails (exit 1) if any file under src/ uses APIs the CSP-locked chrome must not use.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+// Fails (exit 1) if any file under src/, or the built dist/app.js, uses APIs the CSP-locked chrome
+// must not use. The rules live in lint-rules.mjs. dist/app.js must exist: run `npm run build` first.
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findViolations } from './lint-rules.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const srcDir = join(root, 'src');
-
-const RULES = [
-  { name: 'innerHTML', re: /innerHTML/ },
-  { name: 'outerHTML', re: /outerHTML/ },
-  { name: 'insertAdjacentHTML', re: /insertAdjacentHTML/ },
-  { name: 'eval(', re: /eval\(/ },
-  { name: 'new Function', re: /new Function/ },
-  { name: 'document.write', re: /document\.write/ },
-  { name: 'inline event handler attribute', re: /\son[a-z]+=/ },
-];
+const bundle = join(root, 'dist', 'app.js');
 
 function walk(dir) {
   const files = [];
@@ -27,16 +20,22 @@ function walk(dir) {
 }
 
 let violations = 0;
+const report = (file, found) => {
+  for (const { line, rule } of found) {
+    violations += 1;
+    console.error(`${relative(root, file)}:${line}: forbidden ${rule}`);
+  }
+};
+
 for (const file of walk(srcDir)) {
-  const lines = readFileSync(file, 'utf8').split(/\r?\n/);
-  lines.forEach((line, index) => {
-    for (const rule of RULES) {
-      if (rule.re.test(line)) {
-        violations += 1;
-        console.error(`${relative(root, file)}:${index + 1}: forbidden ${rule.name}`);
-      }
-    }
-  });
+  report(file, findViolations(readFileSync(file, 'utf8')));
+}
+
+if (!existsSync(bundle)) {
+  violations += 1;
+  console.error('dist/app.js is missing: run npm run build before lint');
+} else {
+  report(bundle, findViolations(readFileSync(bundle, 'utf8')));
 }
 
 if (violations > 0) {

@@ -5,12 +5,24 @@
 //! helpers build the messages Rust posts to the page; every string is escaped so a value cannot
 //! break out of its JSON literal, and theme colours are checked before they are emitted.
 
-use std::fmt;
+use std::{fmt, time::{Duration, Instant}};
 
 /// Largest raw message accepted from the page, in bytes.
 pub const MAX_RAW_BYTES: usize = 16 * 1024;
 /// Longest text field accepted from the page, in characters.
 pub const MAX_TEXT_CHARS: usize = 2048;
+/// Most keys one page message may carry (`v` and `t` included). The largest message type uses four
+/// more; a seventh key is rejected before its duplicate check runs.
+pub const MAX_FIELDS: usize = 6;
+/// Most tabs in one `tabs` message. The active tab is always among them.
+pub const MAX_TABS: usize = 512;
+/// Largest favicon side, in pixels, read from the PNG header.
+pub const MAX_FAVICON_DIMENSION: u32 = 256;
+/// Sustained page messages per second accepted by one host, and the burst it may send at once.
+pub const MESSAGE_RATE_PER_SEC: u32 = 120;
+pub const MESSAGE_BURST: u32 = 60;
+/// Least time between two menu, caption or drag commands from one host.
+pub const POPUP_COMMAND_INTERVAL: Duration = Duration::from_millis(250);
 /// Theme keys Rust may send to the page. Anything else is dropped.
 pub const THEME_TOKENS: [&str; 10] = [
     "bg",
@@ -103,12 +115,15 @@ pub enum ProtocolError {
     InvalidValue(&'static str),
     /// Text longer than `MAX_TEXT_CHARS` characters.
     TooLong(&'static str),
+    /// More than `MAX_FIELDS` keys in one object.
+    TooManyFields,
 }
 
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLarge => write!(f, "message exceeds {MAX_RAW_BYTES} bytes"),
+            Self::TooManyFields => write!(f, "message has more than {MAX_FIELDS} fields"),
             Self::Syntax(what) => write!(f, "malformed message: {what}"),
             Self::UnsupportedValue(what) => write!(f, "unsupported value: {what}"),
             Self::DuplicateKey(key) => write!(f, "duplicate key {key:?}"),
@@ -187,6 +202,10 @@ impl Parser<'_> {
         }
         loop {
             self.skip_ws();
+            // Checked before the key is read, so the duplicate scan below never sees a long object.
+            if fields.len() == MAX_FIELDS {
+                return Err(ProtocolError::TooManyFields);
+            }
             if self.peek() != Some(b'"') {
                 return Err(ProtocolError::Syntax("expected key"));
             }
@@ -631,9 +650,11 @@ pub struct TabItem {
 
 /// `{"v":1,"t":"tabs","active":...,"items":[...]}`: the whole tab strip. Titles are capped at
 /// `MAX_TAB_TITLE_CHARS` and group names at `MAX_GROUP_NAME_CHARS`, both on character boundaries.
+/// At most `MAX_TABS` items are sent, in their order: the first ones, with the active tab kept in
+/// place of the last one when it lies beyond them.
 pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
     let mut out = format!("{{\"v\":1,\"t\":\"tabs\",\"active\":{active},\"items\":[");
-    for (index, item) in items.iter().enumerate() {
+    for (index, item) in capped_items(active, items).into_iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
@@ -663,16 +684,122 @@ pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
     out
 }
 
+/// The items `tabs_json` sends: all of them up to `MAX_TABS`. Beyond that, the first `MAX_TABS` are
+/// kept, except that the active tab replaces the last kept one when it lies further on. Order holds.
+fn capped_items(active: u32, items: &[TabItem]) -> Vec<&TabItem> {
+    if items.len() <= MAX_TABS {
+        return items.iter().collect();
+    }
+    let mut keep: Vec<usize> = (0..MAX_TABS).collect();
+    if let Some(position) = items.iter().position(|item| item.id == active)
+        && position >= MAX_TABS
+    {
+        keep[MAX_TABS - 1] = position;
+    }
+    keep.into_iter().map(|index| &items[index]).collect()
+}
+
 /// `{"v":1,"t":"fav","id":...,"uri":"data:image/png;base64,..."}` for a favicon. `None` unless
-/// `png` starts with the PNG signature and is at most `MAX_FAVICON_BYTES` long.
+/// `png` starts with the PNG signature, is at most `MAX_FAVICON_BYTES` long and its IHDR header
+/// gives a width and height from 1 to `MAX_FAVICON_DIMENSION`.
 pub fn fav_json(id: u32, png: &[u8]) -> Option<String> {
-    if png.len() > MAX_FAVICON_BYTES || !png.starts_with(&PNG_SIGNATURE) {
+    if png.len() > MAX_FAVICON_BYTES || !png.starts_with(&PNG_SIGNATURE) || !png_size_ok(png) {
         return None;
     }
     Some(format!(
         "{{\"v\":1,\"t\":\"fav\",\"id\":{id},\"uri\":\"data:image/png;base64,{}\"}}",
         base64_encode(png)
     ))
+}
+
+/// Reads the IHDR chunk, which must come first: its type at bytes 12..16, then the big-endian width
+/// and height at 16..24. Both must be within `1..=MAX_FAVICON_DIMENSION`.
+fn png_size_ok(png: &[u8]) -> bool {
+    if png.len() < 24 || &png[12..16] != b"IHDR" {
+        return false;
+    }
+    let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+    let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+    let sides = 1..=MAX_FAVICON_DIMENSION;
+    sides.contains(&width) && sides.contains(&height)
+}
+
+/// Commands that open a native menu or popup, or move or caption the window. A host lets at most
+/// one of these through per `POPUP_COMMAND_INTERVAL`.
+pub fn is_popup_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::BeginDrag
+            | Command::Caption(_)
+            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split)
+            | Command::Tab { action: TabAction::Menu, .. }
+            | Command::Group { action: GroupAction::Menu, .. }
+    )
+}
+
+/// Token bucket bounding how fast one host may send messages: each message takes one token, and
+/// tokens refill at `per_second` up to `burst`. Time is passed in, so the bucket has no clock of its
+/// own. A new bucket starts full.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TokenBucket {
+    burst: f64,
+    per_second: f64,
+    tokens: f64,
+    last: Option<Instant>,
+}
+
+impl TokenBucket {
+    pub fn new(burst: u32, per_second: u32) -> Self {
+        Self {
+            burst: f64::from(burst),
+            per_second: f64::from(per_second),
+            tokens: f64::from(burst),
+            last: None,
+        }
+    }
+
+    /// Takes one token at `now`. False means the message is over the limit and must be dropped.
+    pub fn take(&mut self, now: Instant) -> bool {
+        if let Some(last) = self.last {
+            let elapsed = now.saturating_duration_since(last).as_secs_f64();
+            self.tokens = (self.tokens + elapsed * self.per_second).min(self.burst);
+        }
+        self.last = Some(now);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Lets one event through per `interval`. Events inside the interval are dropped and do not restart
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Throttle {
+    interval: Duration,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    /// True when the event at `now` may pass; it then starts the interval.
+    pub fn allow(&mut self, now: Instant) -> bool {
+        if let Some(last) = self.last
+            && now.saturating_duration_since(last) < self.interval
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
 }
 
 /// The first `max` characters of `text`, cut on a character boundary.
@@ -2020,19 +2147,30 @@ mod tests {
         assert_eq!(base64_encode(&PNG_SIGNATURE), "iVBORw0KGgo=");
     }
 
+    /// A PNG prefix: signature, then an IHDR chunk with the given size, padded with zeros to `len`.
+    fn png_with_size(width: u32, height: u32, len: usize) -> Vec<u8> {
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(&[0, 0, 0, 13]);
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&width.to_be_bytes());
+        png.extend_from_slice(&height.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0]);
+        png.resize(len.max(png.len()), 0);
+        png
+    }
+
     #[test]
     fn fav_json_wraps_a_valid_png() {
-        assert_eq!(
-            fav_json(5, &PNG_SIGNATURE).as_deref(),
-            Some(r#"{"v":1,"t":"fav","id":5,"uri":"data:image/png;base64,iVBORw0KGgo="}"#)
-        );
-        let mut png = PNG_SIGNATURE.to_vec();
-        png.extend_from_slice(b"fo");
+        let png = png_with_size(16, 16, 64);
         let json = fav_json(u32::MAX, &png).expect("png accepted");
         assert_eq!(
             json,
-            r#"{"v":1,"t":"fav","id":4294967295,"uri":"data:image/png;base64,iVBORw0KGgpmbw=="}"#
+            format!(
+                r#"{{"v":1,"t":"fav","id":4294967295,"uri":"data:image/png;base64,{}"}}"#,
+                base64_encode(&png)
+            )
         );
+        assert!(json.starts_with(r#"{"v":1,"t":"fav","id":4294967295,"uri":"data:image/png;base64,"#));
     }
 
     #[test]
@@ -2041,19 +2179,139 @@ mod tests {
         assert_eq!(fav_json(1, &[0xFF, 0xD8, 0xFF]), None);
         assert_eq!(fav_json(1, b"GIF89a"), None);
         // One byte off the signature (0x0B instead of 0x0A at the end).
-        assert_eq!(
-            fav_json(1, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0B]),
-            None
-        );
+        let mut off = png_with_size(16, 16, 64);
+        off[7] = 0x0B;
+        assert_eq!(fav_json(1, &off), None);
         // Signature must be at the very start.
         let mut shifted = vec![0u8];
-        shifted.extend_from_slice(&PNG_SIGNATURE);
+        shifted.extend_from_slice(&png_with_size(16, 16, 64));
         assert_eq!(fav_json(1, &shifted), None);
 
-        let mut exact = PNG_SIGNATURE.to_vec();
-        exact.resize(MAX_FAVICON_BYTES, 0);
+        let mut exact = png_with_size(16, 16, MAX_FAVICON_BYTES);
+        assert_eq!(exact.len(), MAX_FAVICON_BYTES);
         assert!(fav_json(1, &exact).is_some());
         exact.push(0);
         assert_eq!(fav_json(1, &exact), None);
+    }
+
+    #[test]
+    fn fav_json_checks_the_ihdr_size() {
+        // Dimensions 1 to 256 pass; 0 and 257 fail on either side.
+        for (width, height) in [(1, 1), (256, 256), (16, 256), (256, 1)] {
+            assert!(fav_json(1, &png_with_size(width, height, 64)).is_some(), "{width}x{height}");
+        }
+        for (width, height) in [(0, 16), (16, 0), (0, 0), (257, 16), (16, 257), (u32::MAX, 16)] {
+            assert_eq!(fav_json(1, &png_with_size(width, height, 64)), None, "{width}x{height}");
+        }
+        // The chunk type must be IHDR at bytes 12..16.
+        let mut wrong_chunk = png_with_size(16, 16, 64);
+        wrong_chunk[12..16].copy_from_slice(b"IDAT");
+        assert_eq!(fav_json(1, &wrong_chunk), None);
+        // A header cut off before the height is refused.
+        assert_eq!(fav_json(1, &png_with_size(16, 16, 64)[..23]), None);
+    }
+
+    #[test]
+    fn too_many_fields_fail_as_soon_as_the_seventh_key_starts() {
+        assert_eq!(err(r#"{"v":1,"t":"tab","a":"select","id":1,"x":1,"y":2,"z":3}"#), ProtocolError::TooManyFields);
+        // Exactly six keys: rejected for their names, not for the count.
+        assert_eq!(
+            err(r#"{"v":1,"t":"ready","a":"x","b":"y","c":"z","d":"w"}"#),
+            ProtocolError::UnknownKey("a".to_string())
+        );
+        // A seventh key is refused even when the object is otherwise malformed later on.
+        assert_eq!(
+            err(r#"{"v":1,"t":"ready","a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":"#),
+            ProtocolError::TooManyFields
+        );
+    }
+
+    #[test]
+    fn tabs_json_sends_at_most_max_tabs_and_keeps_the_active_tab() {
+        let items: Vec<TabItem> = (1..=600).map(|id| plain_tab(id, "t")).collect();
+        let count = |json: &str| json.matches(r#""id":"#).count();
+        let json = tabs_json(3, &items);
+        assert_eq!(count(&json), MAX_TABS);
+        assert!(json.contains(r#""id":1,"#) && json.contains(r#""id":512,"#));
+        assert!(!json.contains(r#""id":513,"#));
+        // Active tab beyond the cap replaces the last kept tab and keeps its place in order.
+        let json = tabs_json(600, &items);
+        assert_eq!(count(&json), MAX_TABS);
+        assert!(json.contains(r#""id":600,"#));
+        assert!(!json.contains(r#""id":512,"#));
+        assert!(json.find(r#""id":511,"#) < json.find(r#""id":600,"#));
+        // Exactly MAX_TABS items are all sent.
+        assert_eq!(count(&tabs_json(1, &items[..MAX_TABS])), MAX_TABS);
+    }
+
+    #[test]
+    fn token_bucket_allows_a_burst_then_refills_at_the_rate() {
+        let t0 = Instant::now();
+        let mut bucket = TokenBucket::new(60, 120);
+        assert_eq!((0..60).filter(|_| bucket.take(t0)).count(), 60, "burst");
+        assert!(!bucket.take(t0), "empty bucket drops");
+        // 10 ms refills 1.2 tokens: one message passes.
+        let t1 = t0 + Duration::from_millis(10);
+        assert!(bucket.take(t1));
+        assert!(!bucket.take(t1));
+        // A long pause refills only up to the burst.
+        let t2 = t1 + Duration::from_secs(60);
+        assert_eq!((0..100).filter(|_| bucket.take(t2)).count(), 60);
+    }
+
+    #[test]
+    fn token_bucket_sustains_the_configured_rate() {
+        let t0 = Instant::now();
+        let mut bucket = TokenBucket::new(MESSAGE_BURST, MESSAGE_RATE_PER_SEC);
+        // Drain the burst, then one message every 10 ms (100 per second) never runs dry.
+        for _ in 0..MESSAGE_BURST {
+            assert!(bucket.take(t0));
+        }
+        for step in 1..=500u32 {
+            assert!(bucket.take(t0 + Duration::from_millis(u64::from(step) * 10)), "step {step}");
+        }
+        // Clock going backwards neither refills nor breaks the bucket.
+        let mut back = TokenBucket::new(1, 1);
+        assert!(back.take(t0 + Duration::from_secs(5)));
+        assert!(!back.take(t0));
+    }
+
+    #[test]
+    fn throttle_passes_one_event_per_interval() {
+        let t0 = Instant::now();
+        let mut gate = Throttle::new(POPUP_COMMAND_INTERVAL);
+        assert!(gate.allow(t0));
+        assert!(!gate.allow(t0 + Duration::from_millis(249)));
+        // Dropped events do not restart the interval.
+        assert!(gate.allow(t0 + Duration::from_millis(250)));
+        assert!(!gate.allow(t0 + Duration::from_millis(300)));
+        assert!(gate.allow(t0 + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn popup_commands_are_the_menu_caption_and_drag_set() {
+        for command in [
+            Command::BeginDrag,
+            Command::Caption(CaptionAction::ToggleMaximize),
+            Command::Caption(CaptionAction::SystemMenu),
+            Command::Open(OpenTarget::Menu),
+            Command::Open(OpenTarget::Site),
+            Command::Open(OpenTarget::Split),
+            Command::Tab { action: TabAction::Menu, id: 2 },
+            Command::Group { action: GroupAction::Menu, key: 2 },
+        ] {
+            assert!(is_popup_command(&command), "{command:?}");
+        }
+        for command in [
+            Command::Ready,
+            Command::Nav(NavAction::Back),
+            Command::Open(OpenTarget::NewTab),
+            Command::Tab { action: TabAction::Select, id: 2 },
+            Command::Tab { action: TabAction::Close, id: 2 },
+            Command::Group { action: GroupAction::Toggle, key: 2 },
+            Command::TabMove { id: 2, before: 0 },
+        ] {
+            assert!(!is_popup_command(&command), "{command:?}");
+        }
     }
 }

@@ -59,7 +59,7 @@ use windows::{
                 GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetFocus, GetKeyState,
                 GetLastInputInfo, LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE,
                 TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_LBUTTON,
-                VK_MENU, VK_RETURN, VK_SHIFT, VK_UP,
+                VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT, VK_UP,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
@@ -67,13 +67,13 @@ use windows::{
                 DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL,
                 EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE, GWLP_USERDATA, GetCaretBlinkTime,
                 EnumChildWindows, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW,
-                GetParent, GetSystemMenu, GetWindow, GetWindowLongPtrW, GetWindowRect,
+                GetParent, GetSystemMenu, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
                 GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HTCAPTION,
                 HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, HideCaret, IDC_SIZEWE, IsIconic,
                 IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow, NCCALCSIZE_PARAMS,
                 PostMessageW, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE,
                 SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
-                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOW,
+                SM_CXPADDEDBORDER, SM_CYFRAME, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOW,
                 SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
                 SendMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
@@ -110,6 +110,26 @@ const WM_HTML_CHROME_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 const WM_HTML_CHROME_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7A;
 /// Posted when the HTML tab strip's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7B;
+/// Posted once per queued menu, popup or window command from an HTML chrome view. Each post runs
+/// the oldest queued command on the UI thread, outside WebView2's message callback.
+const WM_HTML_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7E;
+/// Most deferred chrome commands waiting at once. A command that finds the queue full is dropped.
+const HTML_DEFERRED_LIMIT: usize = 8;
+
+/// A menu, popup or window command from an HTML chrome view, waiting to run on the UI thread. Each
+/// one may start a modal loop (a popup menu, the site info panel, a native window move), which must
+/// not run inside WebView2's WebMessageReceived callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeferredChromeCommand {
+    MainMenu,
+    SiteInfo,
+    SplitMenu,
+    TabMenu { id: TabId, x: i32, y: i32 },
+    IslandMenu { id: TabId, x: i32, y: i32 },
+    BeginDrag,
+    ToggleMaximize,
+    SystemMenu,
+}
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
@@ -315,6 +335,9 @@ struct WindowChrome {
     html_favicons: HashMap<TabId, HtmlFavicon>,
     /// The favicon key last sent to the tab strip for each tab.
     html_favicons_sent: HashMap<TabId, FaviconKey>,
+    /// Menu, popup and window commands from the HTML chrome views, oldest first, run one per
+    /// `WM_HTML_DEFERRED` (see `DeferredChromeCommand`). Bounded by `HTML_DEFERRED_LIMIT`.
+    html_deferred: VecDeque<DeferredChromeCommand>,
 }
 
 /// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
@@ -416,6 +439,7 @@ impl WindowChrome {
             html_tabs_groups: HashMap::new(),
             html_favicons: HashMap::new(),
             html_favicons_sent: HashMap::new(),
+            html_deferred: VecDeque::new(),
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -2579,20 +2603,35 @@ unsafe extern "system" fn window_proc(
                 if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
+            // Only an HTML chrome run starts or fails these; in native mode they do nothing.
             WM_HTML_CHROME_START => {
-                start_html_chrome(hwnd);
+                if chrome_host::html_ui_enabled() {
+                    start_html_chrome(hwnd);
+                }
                 LRESULT(0)
             }
             WM_HTML_CHROME_ENV => {
-                html_env_settled(hwnd);
+                if chrome_host::html_ui_enabled() {
+                    html_env_settled(hwnd);
+                }
                 LRESULT(0)
             }
             WM_HTML_CHROME_FAILED => {
-                html_failed(hwnd);
+                if chrome_host::html_ui_enabled() {
+                    html_failed(hwnd);
+                }
                 LRESULT(0)
             }
             WM_HTML_TABS_FAILED => {
-                html_tabs_failed(hwnd);
+                if chrome_host::html_ui_enabled() {
+                    html_tabs_failed(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_HTML_DEFERRED => {
+                if chrome_host::html_ui_enabled() {
+                    run_deferred_html_command(hwnd);
+                }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
@@ -5552,7 +5591,9 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             html_refresh(hwnd);
             return;
         }
-        ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => html_window_command(hwnd, command),
+        ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
+            html_window_command(hwnd, command, View::Toolbar);
+        }
         ChromeCommand::Nav(action) => {
             let Some(app) = app_of(hwnd) else { return };
             match action {
@@ -5600,14 +5641,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             });
         }
         ChromeCommand::Open(OpenTarget::Menu) => {
-            if let Some(app) = app_of(hwnd) {
-                show_main_menu(hwnd, &app);
-            }
+            defer_html_command(hwnd, DeferredChromeCommand::MainMenu);
         }
         ChromeCommand::Open(OpenTarget::Site) => {
-            let Some(app) = app_of(hwnd) else { return };
-            let button = with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
-            site_info::show(hwnd, &app, button);
+            defer_html_command(hwnd, DeferredChromeCommand::SiteInfo);
         }
         ChromeCommand::Open(OpenTarget::NewTab) => {
             if let Some(app) = app_of(hwnd) {
@@ -5617,9 +5654,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Open(OpenTarget::Split) => {
             // Same as the native omnibox split button: open the split menu.
-            if let Some(app) = app_of(hwnd) {
-                show_split_menu(hwnd, &app);
-            }
+            defer_html_command(hwnd, DeferredChromeCommand::SplitMenu);
         }
         // Tab strip commands are handled by the tab row integration, not the toolbar.
         ChromeCommand::Tab { .. } | ChromeCommand::TabMove { .. } | ChromeCommand::Group { .. } => {}
@@ -5782,7 +5817,7 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
             return;
         }
         ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
-            html_window_command(hwnd, command);
+            html_window_command(hwnd, command, View::Tabs);
             return;
         }
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
@@ -5794,14 +5829,87 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
     html_tabs_sync(hwnd);
 }
 
-/// Window drag and caption actions, shared by both HTML chrome hosts.
-fn html_window_command(hwnd: HWND, command: ChromeCommand) {
-    match command {
-        ChromeCommand::BeginDrag => begin_html_drag(hwnd),
-        ChromeCommand::Caption(CaptionAction::ToggleMaximize) => toggle_max(hwnd),
-        ChromeCommand::Caption(CaptionAction::SystemMenu) => html_system_menu(hwnd),
-        _ => {}
+/// Window drag and caption actions, shared by both HTML chrome hosts. Only a cursor inside the
+/// sending host's own region counts, and the action is queued to run on the UI thread.
+fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
+    let region = with_chrome(hwnd, |s| match view {
+        View::Toolbar => s.html_region(),
+        View::Tabs => s.html_tab_region(),
+    })
+    .flatten();
+    let Some(region) = region else {
+        return;
+    };
+    let Some((x, y)) = cursor_client_point(hwnd) else {
+        return;
+    };
+    if !region.contains(x, y) {
+        return;
     }
+    let deferred = match command {
+        ChromeCommand::BeginDrag => DeferredChromeCommand::BeginDrag,
+        ChromeCommand::Caption(CaptionAction::ToggleMaximize) => DeferredChromeCommand::ToggleMaximize,
+        ChromeCommand::Caption(CaptionAction::SystemMenu) => DeferredChromeCommand::SystemMenu,
+        _ => return,
+    };
+    defer_html_command(hwnd, deferred);
+}
+
+/// Queues a menu, popup or window command and posts `WM_HTML_DEFERRED` to run it. A full queue drops
+/// the command. A post that fails takes the command back out, so the queue and the posts stay equal.
+fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
+    let queued = with_chrome(hwnd, |s| {
+        if s.html_deferred.len() >= HTML_DEFERRED_LIMIT {
+            return false;
+        }
+        s.html_deferred.push_back(command);
+        true
+    })
+    .unwrap_or(false);
+    if !queued {
+        return;
+    }
+    let posted = unsafe { PostMessageW(Some(hwnd), WM_HTML_DEFERRED, WPARAM(0), LPARAM(0)) };
+    if posted.is_err() {
+        let _ = with_chrome(hwnd, |s| s.html_deferred.pop_back());
+    }
+}
+
+/// Runs the oldest queued chrome command. Each `WM_HTML_DEFERRED` runs exactly one, so a modal loop
+/// that one command starts pumps its own messages without losing the rest of the queue.
+fn run_deferred_html_command(hwnd: HWND) {
+    let Some(command) = with_chrome(hwnd, |s| s.html_deferred.pop_front()).flatten() else {
+        return;
+    };
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    match command {
+        DeferredChromeCommand::MainMenu => show_main_menu(hwnd, &app),
+        DeferredChromeCommand::SiteInfo => {
+            let button = with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
+            site_info::show(hwnd, &app, button);
+        }
+        DeferredChromeCommand::SplitMenu => show_split_menu(hwnd, &app),
+        DeferredChromeCommand::TabMenu { id, x, y } => {
+            // The tab may have closed while the command waited.
+            if App::tab_ids(&app).contains(&id) {
+                card::cancel(hwnd);
+                show_html_tab_menu(hwnd, &app, id, x, y);
+            }
+        }
+        DeferredChromeCommand::IslandMenu { id, x, y } => {
+            if App::tab_ids(&app).contains(&id) {
+                card::cancel(hwnd);
+                island_menu::open_now(hwnd, &app, id, Rect::new(x, y, x + 1, y + 1));
+            }
+        }
+        DeferredChromeCommand::BeginDrag => begin_html_drag(hwnd),
+        DeferredChromeCommand::ToggleMaximize => toggle_max(hwnd),
+        DeferredChromeCommand::SystemMenu => html_system_menu(hwnd),
+    }
+    html_sync(hwnd);
+    html_tabs_sync(hwnd);
 }
 
 /// The client point under the cursor. Native menus take client points.
@@ -5848,8 +5956,7 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
         }
         TabAction::Menu => {
             if let Some((x, y)) = cursor_client_point(hwnd) {
-                card::cancel(hwnd);
-                show_html_tab_menu(hwnd, &app, id, x, y);
+                defer_html_command(hwnd, DeferredChromeCommand::TabMenu { id, x, y });
             }
         }
     }
@@ -5891,12 +5998,13 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
             let Some((x, y)) = cursor_client_point(hwnd) else {
                 return;
             };
-            card::cancel(hwnd);
-            if group.collapsible {
-                island_menu::open_now(hwnd, &app, group.tab, Rect::new(x, y, x + 1, y + 1));
+            let id = group.tab;
+            let menu = if group.collapsible {
+                DeferredChromeCommand::IslandMenu { id, x, y }
             } else {
-                show_html_tab_menu(hwnd, &app, group.tab, x, y);
-            }
+                DeferredChromeCommand::TabMenu { id, x, y }
+            };
+            defer_html_command(hwnd, menu);
         }
     }
 }
@@ -6060,7 +6168,13 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
 /// counts, so a stale message cannot start a drag.
 fn begin_html_drag(hwnd: HWND) {
     unsafe {
-        if (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) == 0 {
+        // With the mouse buttons swapped, the button that starts a drag is the right one.
+        let primary = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            VK_RBUTTON
+        } else {
+            VK_LBUTTON
+        };
+        if (GetAsyncKeyState(primary.0 as i32) as u16 & 0x8000) == 0 {
             return;
         }
         let mut point = POINT::default();

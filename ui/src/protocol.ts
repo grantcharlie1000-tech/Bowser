@@ -10,7 +10,8 @@ const MAX_INBOUND = 256 * 1024;
 const MAX_SEQ = 0x7fffffff;
 export const MAX_ID = 0xffffffff;
 export const MAX_TITLE = 512;
-const MAX_TABS = 512;
+/** Most items in one `tabs` message; Rust sends at most this many. */
+export const MAX_TABS = 512;
 const FAV_PREFIX = 'data:image/png;base64,';
 export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -124,7 +125,14 @@ declare global {
   }
 }
 
-const COLOR_RE = /^[#(),.%+\-\w\s]+$/;
+// Exactly the colours `is_safe_css_colour` accepts in Rust: `#` with 3, 4, 6 or 8 hex digits, or
+// `rgb(`/`rgba(` over digits, commas, dots, spaces and percent signs with at least one digit.
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const RGB_COLOR_RE = /^rgba?\((?=[0-9,. %]*[0-9])[0-9,. %]*\)$/;
+
+function isSafeColour(v: string): boolean {
+  return HEX_COLOR_RE.test(v) || RGB_COLOR_RE.test(v);
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -177,7 +185,7 @@ function parseTheme(v: unknown): Theme {
   if (!isRecord(v)) return out;
   for (const token of THEME_TOKENS) {
     const colour = v[token];
-    if (isStr(colour, MAX_COLOR) && COLOR_RE.test(colour)) out[token] = colour;
+    if (isStr(colour, MAX_COLOR) && isSafeColour(colour)) out[token] = colour;
   }
   return out;
 }

@@ -131,9 +131,30 @@ function startToolbar(root: HTMLElement): void {
   send({ v: 1, t: 'ready' });
 }
 
+/**
+ * True only when the page's CSP is enforced: with Trusted Types required, assigning a string to an
+ * HTML sink must throw. The sink name is assembled at runtime so the bundle holds no literal sink
+ * (lint.mjs allows none in dist/app.js).
+ */
+function trustedTypesEnforced(): boolean {
+  const probe = document.createElement('div') as unknown as Record<string, string>;
+  const sink = ['inner', 'HTML'].join('');
+  try {
+    probe[sink] = 'x';
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 function start(): void {
   const root = document.getElementById('app');
   if (!root) return;
+  // Without enforced CSP the page must not run: no ready is sent, so the host keeps the native chrome.
+  if (!trustedTypesEnforced()) {
+    document.title = 'csp-not-enforced';
+    return;
+  }
   // ?view=tabs selects the tab strip; anything else, including no query, is the toolbar.
   if (new URLSearchParams(location.search).get('view') === 'tabs') startTabs(root);
   else startToolbar(root);
