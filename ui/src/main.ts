@@ -87,6 +87,11 @@ function startToolbar(root: HTMLElement): void {
 
   input.addEventListener('keydown', (ev) => {
     if (ev.isComposing || ev.keyCode === 229) return;
+    // Ctrl+Shift+V is the tab layout toggle (owned by Rust); never a plain-text paste.
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyV') {
+      ev.preventDefault();
+      return;
+    }
     if (ev.key === 'Enter') {
       ev.preventDefault();
       if (input.value.length <= MAX_TEXT) send({ v: 1, t: 'submit', text: input.value });
