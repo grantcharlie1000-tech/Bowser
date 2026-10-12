@@ -1,0 +1,33 @@
+# Headless render diff: HEAD dist (before) vs the Tailwind/token migration (css).
+# Rendered by harness/render.mjs, compared by harness/diff.py (changed pixels, peak channel delta).
+# Explained differences, none from the CSS migration:
+#  - tabs/sidebar: loading-spinner animation phase; toolbar-narrow-dark: disabled-button fade caught mid-transition.
+#  - popup: the committed HEAD dist/app.js was stale against HEAD's ui/src; a fresh build of HEAD src
+#    with the OLD app.css renders identically to the migrated build (focus lands on the menu root, not
+#    the first row). Verified by rendering HEAD-src JS + old CSS (no diff vs migrated build).
+#  - *@1.25x: headless fractional-DPR rounding at the bottom of the view (unchanged at 1x/1.5x/2x).
+panel-dark                   changed=     0 peak=0
+panel-light                  changed=     0 peak=0
+popup-dark                   changed=  1564 peak=224
+popup-light                  changed=  1558 peak=233
+rail-dark                    changed=     0 peak=0
+rail-dark@1.25x              changed=   633 peak=234
+rail-dark@1.5x               changed=     0 peak=0
+rail-dark@2x                 changed=     0 peak=0
+rail-light                   changed=     0 peak=0
+sidebar-dark                 changed=   146 peak=104
+sidebar-light                changed=   130 peak=45
+tabs-dark                    changed=   293 peak=91
+tabs-light                   changed=   290 peak=47
+tabs-narrow-dark             changed=   291 peak=91
+tabs-narrow-light            changed=   286 peak=35
+toolbar-dark                 changed=     0 peak=0
+toolbar-dark@1.25x           changed=   194 peak=15
+toolbar-dark@1.5x            changed=     0 peak=0
+toolbar-dark@2x              changed=     0 peak=0
+toolbar-flex-dark            changed=     0 peak=0
+toolbar-flex-light           changed=     0 peak=0
+toolbar-light                changed=     0 peak=0
+toolbar-narrow-dark          changed=    46 peak=101
+toolbar-narrow-light         changed=     0 peak=0
+total changed pixels: 5431

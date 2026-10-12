@@ -1,0 +1,29 @@
+# Headless render diff: HEAD dist (before) vs the final foundation build (after = migration + icon family).
+# All remaining differences are glyph pixels from the unified 24-grid icon family (see ba-*.png crops):
+# toolbar back/forward become arrows (matching the native toolbar), pill lock/info/split and menu
+# icons use the family drawings, rail strokes are 1.5px instead of ~1.07px. No geometry changed.
+panel-dark                   changed=     0 peak=0
+panel-light                  changed=     0 peak=0
+popup-dark                   changed=  2326 peak=224
+popup-light                  changed=  2324 peak=233
+rail-dark                    changed=   957 peak=114
+rail-dark@1.25x              changed=  1641 peak=234
+rail-dark@1.5x               changed=  1751 peak=191
+rail-dark@2x                 changed=  2375 peak=234
+rail-light                   changed=   956 peak=75
+sidebar-dark                 changed=    32 peak=104
+sidebar-light                changed=    32 peak=78
+tabs-dark                    changed=   104 peak=67
+tabs-light                   changed=    88 peak=54
+tabs-narrow-dark             changed=   104 peak=67
+tabs-narrow-light            changed=   374 peak=54
+toolbar-dark                 changed=   535 peak=200
+toolbar-dark@1.25x           changed=   884 peak=207
+toolbar-dark@1.5x            changed=   946 peak=224
+toolbar-dark@2x              changed=  1514 peak=227
+toolbar-flex-dark            changed=   450 peak=121
+toolbar-flex-light           changed=   453 peak=110
+toolbar-light                changed=   544 peak=217
+toolbar-narrow-dark          changed=   536 peak=200
+toolbar-narrow-light         changed=   541 peak=216
+total changed pixels: 19467
