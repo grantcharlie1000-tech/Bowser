@@ -40,6 +40,12 @@ pub enum OpenTarget {
     NewTab,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptionAction {
+    ToggleMaximize,
+    SystemMenu,
+}
+
 /// A validated message from the chrome page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -50,6 +56,9 @@ pub enum Command {
     Escape,
     Focus(bool),
     Open(OpenTarget),
+    /// Left mousedown on an empty toolbar area: start a native window move.
+    BeginDrag,
+    Caption(CaptionAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,6 +390,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "edit" => &["seq", "text"],
         "submit" => &["text"],
         "focus" => &["on"],
+        "drag" => &[],
+        "caption" => &["a"],
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -405,12 +416,19 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         },
         "submit" => Command::Submit(text_field(fields)?),
         "focus" => Command::Focus(bool_field(fields, "on")?),
-        _ => Command::Open(match str_field(fields, "a")? {
+        "drag" => Command::BeginDrag,
+        "caption" => Command::Caption(match str_field(fields, "a")? {
+            "toggleMaximize" => CaptionAction::ToggleMaximize,
+            "systemMenu" => CaptionAction::SystemMenu,
+            _ => return Err(ProtocolError::InvalidValue("a")),
+        }),
+        "open" => Command::Open(match str_field(fields, "a")? {
             "menu" => OpenTarget::Menu,
             "site" => OpenTarget::Site,
             "newtab" => OpenTarget::NewTab,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
+        _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }
 
@@ -649,6 +667,72 @@ mod tests {
         assert_eq!(
             ok(r#"{"v":1,"t":"open","a":"newtab"}"#),
             Command::Open(OpenTarget::NewTab)
+        );
+    }
+
+    #[test]
+    fn parses_drag() {
+        assert_eq!(ok(r#"{"v":1,"t":"drag"}"#), Command::BeginDrag);
+        assert_eq!(ok(r#"{"t":"drag","v":1}"#), Command::BeginDrag);
+    }
+
+    #[test]
+    fn parses_every_caption_action() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"caption","a":"toggleMaximize"}"#),
+            Command::Caption(CaptionAction::ToggleMaximize)
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"caption","a":"systemMenu"}"#),
+            Command::Caption(CaptionAction::SystemMenu)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_caption_values() {
+        for raw in [
+            r#"{"v":1,"t":"caption","a":"close"}"#,
+            r#"{"v":1,"t":"caption","a":"ToggleMaximize"}"#,
+            r#"{"v":1,"t":"caption","a":"toggle_maximize"}"#,
+            r#"{"v":1,"t":"caption","a":""}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::InvalidValue("a"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn caption_requires_string_action() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"caption"}"#),
+            ProtocolError::MissingField("a")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"caption","a":1}"#),
+            ProtocolError::WrongType("a")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"caption","a":null}"#),
+            ProtocolError::UnsupportedValue("null")
+        );
+    }
+
+    #[test]
+    fn drag_and_caption_reject_extra_keys() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"drag","a":"systemMenu"}"#),
+            ProtocolError::UnknownKey("a".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"drag","x":0}"#),
+            ProtocolError::UnknownKey("x".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"caption","a":"systemMenu","x":0}"#),
+            ProtocolError::UnknownKey("x".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"caption","a":"systemMenu","text":"x"}"#),
+            ProtocolError::UnknownKey("text".to_string())
         );
     }
 

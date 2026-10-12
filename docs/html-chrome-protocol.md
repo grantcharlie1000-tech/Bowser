@@ -33,6 +33,8 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `escape` | - | Esc in omnibox: Rust restores text and returns focus to tab |
 | `focus` | `on` bool | omnibox gained/lost focus |
 | `open` | `a`: `menu`/`site`/`newtab` | open native menu / site-info / new tab |
+| `drag` | - | left mousedown on an empty toolbar area (drag surface only, never a button, input or pill); Rust begins a native window move |
+| `caption` | `a`: `toggleMaximize`/`systemMenu` | double-click (`toggleMaximize`) or right-click (`systemMenu`) on an empty toolbar area |
 
 ## Rust -> JS (`PostWebMessageAsJson`, object)
 

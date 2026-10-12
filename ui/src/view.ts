@@ -13,6 +13,9 @@ export interface View {
   readonly menu: HTMLButtonElement;
 }
 
+/** Attribute marking a non-interactive toolbar area as the drag surface (see main.ts). */
+export const DRAG_ATTR = 'data-drag';
+
 const SECURITY_ICON: Readonly<Record<Security, IconName>> = {
   secure: 'lock',
   notsecure: 'info',
@@ -80,6 +83,13 @@ export function buildView(root: HTMLElement): View {
   nav.append(back, forward, reload);
   const actions = el('div', 'actions');
   actions.append(newTab, menu);
+
+  // Empty areas of the toolbar (the root and its flex wrappers) are the window drag surface.
+  // Buttons, the omnibox and the pill are not marked, so they keep their own behaviour.
+  root.setAttribute(DRAG_ATTR, '');
+  nav.setAttribute(DRAG_ATTR, '');
+  actions.setAttribute(DRAG_ATTR, '');
+  root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
   return { back, forward, reload, site, input, progress, newTab, menu };

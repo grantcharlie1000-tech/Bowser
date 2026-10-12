@@ -1,6 +1,11 @@
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
-import { MAX_TEXT, onInbound, send, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
-import { applyState, applyTheme, buildView } from './view';
+import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
+import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
+
+/** True only when the event target is the drag surface itself, never a control inside it. */
+function onDragSurface(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.hasAttribute(DRAG_ATTR);
+}
 
 function start(): void {
   const root = document.getElementById('app');
@@ -36,6 +41,25 @@ function start(): void {
   const open = (a: OpenTarget): void => {
     send({ v: 1, t: 'open', a });
   };
+  const caption = (a: CaptionAction): void => {
+    send({ v: 1, t: 'caption', a });
+  };
+
+  // Empty toolbar areas: left press starts a native move, double-click toggles maximise,
+  // right-click opens the system menu. Controls keep their own mouse behaviour.
+  root.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 || !onDragSurface(ev.target)) return;
+    send({ v: 1, t: 'drag' });
+  });
+  root.addEventListener('dblclick', (ev) => {
+    if (!onDragSurface(ev.target)) return;
+    caption('toggleMaximize');
+  });
+  root.addEventListener('contextmenu', (ev) => {
+    if (!onDragSurface(ev.target)) return;
+    ev.preventDefault();
+    caption('systemMenu');
+  });
 
   view.back.addEventListener('click', () => nav('back'));
   view.forward.addEventListener('click', () => nav('forward'));

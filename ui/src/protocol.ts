@@ -10,6 +10,7 @@ const MAX_SEQ = 0x7fffffff;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
 export type OpenTarget = 'menu' | 'site' | 'newtab';
+export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 
 export const THEME_TOKENS = [
@@ -35,7 +36,9 @@ export type Command =
   | { v: 1; t: 'submit'; text: string }
   | { v: 1; t: 'escape' }
   | { v: 1; t: 'focus'; on: boolean }
-  | { v: 1; t: 'open'; a: OpenTarget };
+  | { v: 1; t: 'open'; a: OpenTarget }
+  | { v: 1; t: 'drag' }
+  | { v: 1; t: 'caption'; a: CaptionAction };
 
 // Rust -> JS messages (validated by parseInbound).
 export interface StateMsg {

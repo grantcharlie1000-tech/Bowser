@@ -2,4 +2,5 @@
 //! See docs/html-chrome-protocol.md.
 
 pub mod assets;
+pub mod host;
 pub mod protocol;
