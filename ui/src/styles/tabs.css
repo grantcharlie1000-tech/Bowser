@@ -2,8 +2,8 @@
  * Surface: TAB STRIP (?view=tabs, horizontal layout). Owner: tabs agent.
  * Built by ui/src/tabs.ts (the same page switches to the vertical sidebar, see sidebar.css).
  * Geometry is hand-tuned to the 26px omnibox pill: islands are --bw-tab-h tall with --bw-r-tab
- * corners and sit 4px apart. A tab is 240px wide at most, 88px at least (the strip scrolls
- * beyond that); pinned tabs are 32px icon tiles. Motion is transform/opacity only: new tabs
+ * corners and sit 4px apart. Tabs fill the row and subdivide as more are added; the active tab
+ * is 1.5x an inactive one (the strip scrolls only below the minimum width); pinned tabs are 32px icon tiles. Motion is transform/opacity only: new tabs
  * scale in, closed tabs fade as a ghost, moved tabs slide (FLIP) and the dragged tab lifts.
  */
 
@@ -30,8 +30,8 @@
   display: flex;
   align-items: center;
   gap: var(--bw-space-1);
-  flex: 0 1 240px;
-  min-width: 88px;
+  flex: 1 1 0;
+  min-width: var(--bw-tab-h);
   height: var(--bw-tab-h);
   padding: 0 var(--bw-space-0_5) 0 7px; /* 1px border + 7px = the 8px favicon inset */
   border: 1px solid var(--bw-island-edge);
@@ -56,6 +56,9 @@
     opacity var(--bw-dur-fast) var(--bw-ease-fade),
     background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
+
+/* The selected tab is always the widest: 1.5x an inactive tab's share of the row. */
+.strip .tab.active { flex-grow: 1.5; }
 
 /* Inactive tabs are a darker translucent fill; the active tab is a lighter one. */
 .strip .tab::before { background: var(--bw-island-idle); }
