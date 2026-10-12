@@ -1,60 +1,301 @@
 /*
  * Surface: MENU POPUP (?view=popup). Owner: menu agent.
- * Built by ui/src/menu-view.ts (renderMenu) inside ui/src/popup.ts. Class names below are the
- * ones menu-view.ts emits today; restyle here or move rows onto the shared .bw-menu / .bw-menu-item
- * components (components.css), which already follow reference-spec.md (8px overlay, 4px padding,
- * 32px items, 4px item radius, 12px icon gap, 1px separator with 4px margin).
+ * Built by ui/src/menu-view.ts inside ui/src/popup.ts; rows follow the .bw-menu / .bw-menu-item
+ * spec of components.css (8px overlay radius, 4px padding, 4px item radius, 12px icon-text gap,
+ * 1px hairline separators with 4px margin, 16px icons, accelerators in Caption at --bw-text-2).
  *
- * Legacy: kept exactly as it rendered before the token migration (12px radius, 34px rows,
- * 13px "Segoe UI"); colours are on tokens.
+ * Item height is 28px, not the component's 32px: the main menu has 15 rows plus a header and a
+ * footer, and on a 1366x768 panel at 150% (910x512 CSS px) or a 1080p panel at 150% (1280x720) a
+ * 32px list would be taller than the work area and scroll, while at 28px it fits 720. 28px is the
+ * toolbar's --bw-nav-h, still above the 24px WCAG 2.2 target minimum, and matches Fluent's compact
+ * menu density. Menus taller than the work area scroll inside .html-menu-list (header and footer
+ * stay pinned); Rust caps the window to the work area and flips or clamps its position.
+ *
+ * The popup is solid, not glass: the overlay tint is painted over the opaque window colour.
  */
 
 #app.html-menu {
+  --menu-item-h: 28px;
+  --menu-icon-gap: var(--bw-space-3);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0;
   width: max-content;
   height: max-content;
-  min-height: 0;
-  max-height: 80vh;
-  min-width: 240px;
-  max-width: 420px;
-  padding: 8px;
-  overflow: auto;
-  border: 1px solid var(--bw-border);
-  border-radius: 12px;
-  background: var(--bw-window);
+  min-width: 200px;
+  max-width: 360px;
+  max-height: 100vh;
+  padding: var(--bw-space-1);
+  overflow: hidden;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window);
+  box-shadow: var(--bw-sh-flyout);
   color: var(--bw-text);
-  font: 13px/1.2 var(--bw-font-panel);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
   outline: none;
+}
+
+/* ---- Header card (main menu, site information). ---- */
+.html-menu-header {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: var(--bw-space-3);
+  align-items: center;
+  flex: none;
+  margin: 0 0 var(--bw-space-1);
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-3);
+  border-bottom: 1px solid var(--bw-hairline);
+}
+
+.html-menu-avatar {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--bw-r-pill);
+  background: var(--menu-accent, var(--bw-accent));
+  color: var(--menu-on-accent, var(--bw-on-accent));
+  font-size: var(--bw-text-body);
+  font-weight: var(--bw-weight-strong);
+  line-height: 1;
+}
+
+.html-menu-name {
+  align-self: end;
+  overflow: hidden;
+  font-weight: var(--bw-weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-menu-caption {
+  align-self: start;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- The scrolling list. ---- */
+.html-menu-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .html-menu-row,
 .html-menu-back {
   box-sizing: border-box;
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 10px;
   width: 100%;
-  min-height: 34px;
-  padding: 0 10px;
+  min-height: var(--menu-item-h);
+  margin: 0;
+  padding: 0 var(--bw-space-2);
   border: 0;
-  border-radius: var(--bw-r-row);
+  border-radius: var(--bw-r-control);
   background: transparent;
   color: inherit;
   font: inherit;
-  text-align: left;
+  text-align: start;
+  cursor: default;
 }
 
-.html-menu-row.selected,
-.html-menu-back:hover { background: var(--bw-hover); }
-.html-menu-row:disabled { color: var(--bw-text-2); }
-.html-menu-row svg { flex: none; width: 16px; height: 16px; }
-.html-menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.html-menu-shortcut { margin-left: auto; color: var(--bw-text-2); white-space: nowrap; }
-.html-menu-arrow { margin-left: 4px; font-size: 18px; }
-.html-menu-separator { height: 1px; margin: 4px 8px; background: var(--bw-border); }
-.html-menu-section { padding: 8px 10px 4px; color: var(--bw-text-2); font-size: 11px; font-weight: 600; }
-.html-menu-back { margin-bottom: 4px; color: var(--bw-text-2); }
+.html-menu-row.selected:not(:disabled),
+.html-menu-back:hover {
+  background: color-mix(in srgb, var(--bw-text) 10%, transparent);
+}
+
+/* Keyboard selection also gets the focus ring (the menu root owns focus; rows are active descendants). */
+#app.html-menu[data-input="key"] .html-menu-row.selected {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+/* Disabled: --bw-text-2 at 65% keeps glyphs and text >= 3:1 on both overlays (test/menu.mjs checks it)
+   while reading clearly as unavailable next to full-strength --bw-text rows. */
+.html-menu-row:disabled {
+  color: color-mix(in srgb, var(--bw-text-2) 65%, transparent);
+}
+
+.html-menu-lead {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  margin-inline-end: var(--menu-icon-gap);
+}
+
+.html-menu-lead svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.html-menu-favicon {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  border-radius: 2px;
+  object-fit: contain;
+}
+
+/* Profile avatar or colour swatch in the icon slot. */
+.html-menu-badge {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-pill);
+  background: var(--menu-accent, var(--bw-accent));
+  color: var(--menu-on-accent, var(--bw-on-accent));
+  font-size: 10px;
+  font-weight: var(--bw-weight-strong);
+  line-height: 1;
+}
+
+.html-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-menu-shortcut {
+  flex: none;
+  margin-inline-start: var(--bw-space-4);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  white-space: nowrap;
+}
+
+/* Check or chevron column, reserved on every row of a page that has any, so shortcuts align. */
+.html-menu-trail {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  margin-inline-start: var(--bw-space-3);
+  color: var(--bw-text-2);
+}
+
+.html-menu-row[aria-checked="true"] .html-menu-trail {
+  color: var(--bw-text);
+}
+
+.html-menu-trail svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.html-menu-separator {
+  flex: none;
+  height: 1px;
+  margin: var(--bw-space-1) 0;
+  background: var(--bw-hairline);
+}
+
+/* Sentence-case group heading: Caption strong, secondary colour. */
+.html-menu-section {
+  flex: none;
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.html-menu-section:first-child {
+  padding-top: var(--bw-space-1);
+}
+
+/* Back row of a drill-in page: chevron and the parent's name. */
+.html-menu-back {
+  margin-bottom: var(--bw-space-1);
+  padding-inline-start: var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-weight: var(--bw-weight-strong);
+}
+
+.html-menu-back svg {
+  flex: none;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  margin-inline-end: var(--bw-space-2);
+}
+
+/* ---- Footer note (version, or the explanation under a confirmation). ---- */
+.html-menu-footer {
+  flex: none;
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  overflow-wrap: anywhere;
+}
+
+/* ---- Motion. Open: fade 83ms with the content dropping 4px from the anchor over 167ms. Drill-in:
+   the list slides 8px in from the side it came from. Close is instant (the window hides). Only
+   opacity and transform; input is never blocked while it runs. ---- */
+@keyframes html-menu-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes html-menu-drop {
+  from {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes html-menu-drill-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes html-menu-drill-back {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+
+#app.html-menu.is-entering {
+  animation: html-menu-fade var(--bw-dur-fast) var(--bw-ease-fade) both;
+}
+
+#app.html-menu.is-entering > :not(.html-menu-list, .html-menu-footer),
+#app.html-menu.is-entering > .html-menu-list:not(.is-drill) {
+  animation: html-menu-drop var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+#app.html-menu[data-drill="1"] .html-menu-list.is-drill {
+  animation: html-menu-drill-in var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+#app.html-menu[data-drill="-1"] .html-menu-list.is-drill {
+  animation: html-menu-drill-back var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.html-menu.is-entering > *,
+  #app.html-menu .html-menu-list.is-drill {
+    animation: none;
+  }
+}

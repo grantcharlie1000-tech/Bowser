@@ -75,7 +75,7 @@ export interface UrlParts {
   readonly rest: string;
 }
 
-/** Null when `text` is not a plain http(s) URL (search text, other schemes, credentials, partial input). */
+/** Null when `text` is not a plain http(s) URL (search text, other schemes, user-info, partial input). */
 export function splitUrl(text: string): UrlParts | null {
   if (text.length > MAX_TEXT || /\s/.test(text)) return null;
   const m = /^(https?):\/\/([^/?#@]+)(.*)$/i.exec(text);

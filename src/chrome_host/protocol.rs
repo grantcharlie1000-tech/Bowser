@@ -1139,6 +1139,15 @@ pub fn fav_json(id: u32, png: &[u8]) -> Option<String> {
     ))
 }
 
+/// `data:image/png;base64,...` for a favicon shown in a popup menu row, under the same gate as
+/// `fav_json`. `None` when `png` fails the gate.
+pub fn favicon_data_uri(png: &[u8]) -> Option<String> {
+    if !png_is_sendable(png) {
+        return None;
+    }
+    Some(format!("data:image/png;base64,{}", base64_encode(png)))
+}
+
 // --- hover layer ---
 /// Most member rows in one card or island message (the island menu draws twelve, the card eight).
 pub const MAX_HOVER_ROWS: usize = 12;
