@@ -7,6 +7,11 @@ export function moveHistorySelection(ids: readonly number[], selected: number | 
   return ids[next] ?? null;
 }
 
+/** A panel child that already handled Escape gets first chance to clear its own inline state. */
+export function shouldDismissPanelEscape(defaultPrevented: boolean): boolean {
+  return !defaultPrevented;
+}
+
 /** Builds an open command only for ids that fit the bridge's unsigned 64 bit range. */
 export function historyOpenCommand(id: number, newTab: boolean): { v: 1; t: 'hist'; a: 'open' | 'newtab'; id: number } | null {
   if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) return null;

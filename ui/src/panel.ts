@@ -1,10 +1,17 @@
 // --- panel host (lane P) ---
-import { onInbound, send, type Inbound, type PanelToken } from './protocol';
+import { onInbound, send, sendPanel, type Inbound, type PanelToken } from './protocol';
 import { applyTheme } from './view';
 import { panels } from './panels';
+import { shouldDismissPanelEscape } from './panels/history-logic';
 
 export function startPanel(root: HTMLElement): void {
   root.classList.add('panel-root');
+  root.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && shouldDismissPanelEscape(event.defaultPrevented)) {
+      event.preventDefault();
+      sendPanel('panel', { a: 'dismiss' });
+    }
+  });
   let active: PanelToken | undefined;
   let receive: ((message: Inbound) => void) | undefined;
   onInbound((message) => {

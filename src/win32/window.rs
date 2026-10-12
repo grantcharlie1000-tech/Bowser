@@ -651,6 +651,7 @@ impl WindowChrome {
     ) {
         self.client = (w, h);
         self.dpi = dpi.max(96);
+        let was_vertical = self.sidebar.is_some();
         let i = self
             .slots
             .iter()
@@ -660,34 +661,30 @@ impl WindowChrome {
                     .is_some_and(|tab| tab.id == active)
             })
             .unwrap_or(0);
-        self.layout =
-            layout::compute_in_frame(w, h, self.dpi, self.slots.len().max(1), i, maximised)
-                .with_group_slots(
-                    self.slots.iter().map(|slot| slot.marker_only),
-                    self.slots
-                        .iter()
-                        .map(|slot| slot.group_control && !slot.collapsed),
-                    self.slots
-                        .iter()
-                        .map(|slot| slot.collapsed && !slot.marker_only),
-                );
-        if tab_layout == crate::settings::TabLayout::Vertical {
-            let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(
-                w,
-                h,
-                self.dpi,
+        let (layout, sidebar) = if tab_layout == crate::settings::TabLayout::Vertical {
+            let (layout, sidebar) = layout::compute_vertical_in_frame(
+                w, h, self.dpi, self.slots.len().max(1), i, maximised,
                 i32::from(sidebar_width),
-                maximised,
-            )
-            .with_tab_count(self.sidebar_rows.len(), self.dpi);
-            self.layout.viewport = sidebar.viewport;
-            self.layout.tab_zone = Rect::default();
-            self.layout.tab_row = Rect::default();
+            );
+            (layout, Some(sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi)))
+        } else {
+            (layout::compute_in_frame(w, h, self.dpi, self.slots.len().max(1), i, maximised), None)
+        };
+        self.layout = layout.with_group_slots(
+            self.slots.iter().map(|slot| slot.marker_only),
+            self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
+            self.slots.iter().map(|slot| slot.collapsed && !slot.marker_only),
+        );
+        if let Some(sidebar) = sidebar {
             self.sidebar_scroll = self.sidebar_scroll.clamp(0, sidebar.max_scroll);
             self.sidebar_scroll_target = self.sidebar_scroll_target.clamp(0, sidebar.max_scroll);
             self.sidebar = Some(sidebar);
         } else {
             self.sidebar = None;
+        }
+        if was_vertical != self.sidebar.is_some() {
+            self.html_tabs_layout = None;
+            self.html_tabs_workspace = None;
         }
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.sync_html_bounds();
@@ -4584,6 +4581,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 let _ = with_chrome(hwnd, |s| s.refresh(app, true));
                 sync_split_ratio(hwnd, App::split_view(app));
                 apply_sidebar_bounds(hwnd, app);
+                html_tabs_sync(hwnd);
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -5910,6 +5908,15 @@ fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
     // --- end popup host ---
     let editing =
         view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false);
+    if view != View::Panel
+        && side_panel::should_dismiss_panel_accelerator(
+            accel.vk, accel.key_down, side_panel::is_open(hwnd), editing,
+        )
+    {
+        side_panel::close(hwnd);
+        if let Some(app) = app_of(hwnd) { apply_sidebar_bounds(hwnd, &app); }
+        return true;
+    }
     if accel_command(accel, editing).is_none() {
         return false;
     }
@@ -6457,7 +6464,7 @@ fn html_tabs_sync(hwnd: HWND) {
     let active = App::active_tab_id(&app);
     // --- vertical sidebar (lane S) ---
     let layout = chrome_host::protocol::layout_json(mode);
-    let layout_pending = with_chrome(hwnd, |s| s.html_tabs_layout != Some(mode)).unwrap_or(false);
+    let layout_pending = with_chrome(hwnd, |s| chrome_host::protocol::layout_needs_sync(s.html_tabs_layout, mode)).unwrap_or(false);
     if layout_pending && host.post_json(&layout).is_ok() {
         let _ = with_chrome(hwnd, |s| s.html_tabs_layout = Some(mode));
     }
@@ -7464,6 +7471,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             let _ = with_chrome(hwnd, |s| s.refresh(app, true));
             sync_split_ratio(hwnd, App::split_view(app));
             apply_sidebar_bounds(hwnd, app);
+            html_tabs_sync(hwnd);
         }
         Command::OpenPasswords => {
             if let Err(error) = passwords_panel::open(hwnd) {

@@ -233,9 +233,10 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
         let hwnd = HWND(raw as *mut c_void);
         let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return };
         let inset = crate::chrome::layout::left_rail_inset(window_dpi);
+        let origin = panel_origin(viewport.left, inset);
         state.client = viewport;
         if state.id.is_some() {
-            if let Some(width) = panel_width_px(state.width_dip, window_dpi, viewport.right-inset) {
+            if let Some(width) = panel_width_px(state.width_dip, window_dpi, viewport.right-origin) {
                 state.width = state.width.min(width);
                 if let Some(animation) = &mut state.animation { animation.to = width; }
                 else { state.width = width; }
@@ -248,7 +249,8 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
                 STATUS.with(|status| status.set(Some("The window is too narrow for a side panel and a readable page.")));
             }
         }
-        let _ = SetWindowPos(hwnd, None, inset, viewport.top, state.width.max(0), (viewport.bottom - viewport.top).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
+        let bounds = panel_bounds(viewport, inset, state.width.max(0));
+        let _ = SetWindowPos(hwnd, None, bounds.left, bounds.top, bounds.right-bounds.left, bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
         if let Some(child) = state.content.as_ref().and_then(|c| c.wants_native_child()) {
             let header = scale(HEADER_DIP, window_dpi);
             let _ = SetWindowPos(child, None, scale(12, window_dpi), header, (state.width-scale(24, window_dpi)).max(0), (viewport.bottom-viewport.top-header).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
@@ -270,7 +272,8 @@ pub fn adjust_viewport(viewport: RECT, owner: HWND) -> RECT {
     let width = active_width_px(owner);
     if width == 0 { return viewport; }
     let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
-    RECT { left: (viewport.left + width).max(inset + width), ..viewport }
+    let left = (viewport.left + width).max(inset + width);
+    RECT { left, ..viewport }
 }
 
 pub fn timer(owner: HWND) -> bool {
@@ -286,7 +289,9 @@ pub fn timer(owner: HWND) -> bool {
         let t = (elapsed / ANIMATION_MS).clamp(0.0, 1.0);
         state.width = animation_width(anim.from, anim.to, t);
         if t >= 1.0 { state.width = anim.to; state.animation = None; }
-        let _ = SetWindowPos(hwnd, None, crate::chrome::layout::left_rail_inset(dpi(owner)), state.client.top, state.width, state.client.bottom-state.client.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
+        let origin = panel_origin(state.client.left, inset);
+        let _ = SetWindowPos(hwnd, None, origin, state.client.top, state.width, state.client.bottom-state.client.top, SWP_NOZORDER | SWP_NOACTIVATE);
         if state.width == 0 && state.id.is_none() { let _ = ShowWindow(hwnd, SW_HIDE); }
         let _ = InvalidateRect(Some(hwnd), None, false);
         (state.animation.is_some() && animation_running(elapsed)) || !state.retired.is_empty()
@@ -323,7 +328,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_NCCREATE => { let create=&*(lp.0 as *const CREATESTRUCTW); SetWindowLongPtrW(hwnd,GWLP_USERDATA,create.lpCreateParams as isize); DefWindowProcW(hwnd,msg,wp,lp) }
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => { paint(hwnd); LRESULT(0) }
-        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.width=width_from_drag(s.owner,x); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); let _=SetWindowPos(hwnd,None,crate::chrome::layout::left_rail_inset(dpi(s.owner)),s.client.top,s.width,s.client.bottom-s.client.top,SWP_NOZORDER|SWP_NOACTIVATE); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if x>=s.width-scale(RESIZE_DIP,dpi(hwnd)) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
+        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.width=width_from_drag(s.owner,x); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); let _=SetWindowPos(hwnd,None,panel_origin(s.client.left,crate::chrome::layout::left_rail_inset(dpi(s.owner))),s.client.top,s.width,s.client.bottom-s.client.top,SWP_NOZORDER|SWP_NOACTIVATE); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if x>=s.width-scale(RESIZE_DIP,dpi(hwnd)) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
         WM_LBUTTONDOWN => {
             let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32;
             let close_owner = if let Some(s)=host(hwnd) {
@@ -382,7 +387,15 @@ fn paint(hwnd: HWND) {
 }
 
 fn save_width(_owner: HWND, width: i32) { let width=width.clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); if let Ok(profile)=crate::profile::active() { if profile.is_guest() { GUEST_WIDTH.with(|v|v.set(width)); } else { let path=profile.settings_file(); let mut settings=crate::settings::Settings::load(&path); settings.side_panel_width=width as u16; let _=crate::settings::save(&path,&settings); } } else { GUEST_WIDTH.with(|v|v.set(width)); } }
-fn width_from_drag(owner: HWND, x: i32) -> i32 { let mut r=RECT::default(); unsafe { let _=GetClientRect(owner,&mut r); } let inset=crate::chrome::layout::left_rail_inset(dpi(owner)); panel_width_px(x.saturating_mul(96)/dpi(owner) as i32,dpi(owner),(r.right-inset).max(0)).unwrap_or(0) }
+fn panel_origin(viewport_left: i32, inset: i32) -> i32 { viewport_left.max(inset) }
+pub(crate) fn should_dismiss_panel_accelerator(vk: u32, key_down: bool, open: bool, text_focused: bool) -> bool {
+    vk == 0x1B && key_down && open && !text_focused
+}
+fn panel_bounds(viewport: RECT, inset: i32, width: i32) -> RECT {
+    let left = panel_origin(viewport.left, inset);
+    RECT { left, top: viewport.top, right: left + width.max(0), bottom: viewport.bottom }
+}
+fn width_from_drag(owner: HWND, x: i32) -> i32 { let mut r=RECT::default(); unsafe { let _=GetClientRect(owner,&mut r); } let inset=crate::chrome::layout::left_rail_inset(dpi(owner)); let viewport_left=HOSTS.with(|hosts| unsafe { let raw=hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0); host(HWND(raw as *mut c_void)).map_or(0,|state|state.client.left) }); let origin=panel_origin(viewport_left,inset); panel_width_px(x.saturating_mul(96)/dpi(owner) as i32,dpi(owner),(r.right-origin).max(0)).unwrap_or(0) }
 
 pub fn panel_width_px(width_dip: i32, dpi: u32, available: i32) -> Option<i32> {
     let available=available.max(0); let min=scale(MIN_WIDTH_DIP,dpi.max(96));
@@ -413,6 +426,24 @@ mod tests {
     fn viewport_reservation_starts_after_rail() {
         assert_eq!(reserve_viewport(RECT { left: 80, top: 90, right: 1200, bottom: 800 }, 340),
             RECT { left: 420, top: 90, right: 1200, bottom: 800 });
+    }
+
+    #[test]
+    fn vertical_sidebar_places_panel_after_sidebar_and_reserves_its_width() {
+        let viewport = RECT { left: 300, top: 80, right: 1600, bottom: 900 };
+        let panel = panel_bounds(viewport, 44, 360);
+        let page = reserve_viewport(viewport, panel.right - panel.left);
+        assert_eq!(panel, RECT { left: 300, top: 80, right: 660, bottom: 900 });
+        assert_eq!(page.left, panel.right);
+    }
+
+    #[test]
+    fn escape_accelerator_dismisses_only_an_open_panel_without_text_focus() {
+        assert!(should_dismiss_panel_accelerator(0x1B, true, true, false));
+        assert!(!should_dismiss_panel_accelerator(0x1B, true, false, false));
+        assert!(!should_dismiss_panel_accelerator(0x1B, false, true, false));
+        assert!(!should_dismiss_panel_accelerator(0x1B, true, true, true));
+        assert!(!should_dismiss_panel_accelerator(0x41, true, true, false));
     }
 
     #[test]

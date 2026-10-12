@@ -32,7 +32,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
   }
   const host = document.createElement('section');
   host.className = 'history-panel';
-  host.append(search, clear, list, empty);
+  host.append(search, clear, empty, list);
   root.replaceChildren(host);
 
   const render = (): void => {
@@ -48,6 +48,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       }
       const item = document.createElement('div');
       item.className = 'history-row';
+      item.tabIndex = selected === row.id ? 0 : -1;
       item.setAttribute('role', 'option');
       item.setAttribute('aria-selected', String(selected === row.id));
       item.dataset.id = String(row.id);
@@ -85,6 +86,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
         const command = historyOpenCommand(row.id, false);
         if (command) sendPanel('hist', { a: command.a, id: command.id });
         render();
+        list.querySelector<HTMLElement>(`[data-id="${row.id}"]`)?.focus();
       });
       list.append(item);
     }

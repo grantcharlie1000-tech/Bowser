@@ -102,6 +102,9 @@ pub struct PanelFields {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutMode { Vertical, Horizontal }
+pub fn layout_needs_sync(cached: Option<LayoutMode>, current: LayoutMode) -> bool {
+    cached != Some(current)
+}
 // --- vertical sidebar (lane S) ---
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SideAction { Workspace, NewTab }
@@ -1334,6 +1337,13 @@ mod tests {
         } else {
             assert_eq!(std::fs::read_to_string(path).expect("committed sidebar messages fixture"), content);
         }
+    }
+
+    #[test]
+    fn layout_sync_is_required_after_mode_changes_and_host_ready() {
+        assert!(layout_needs_sync(None, LayoutMode::Vertical));
+        assert!(layout_needs_sync(Some(LayoutMode::Horizontal), LayoutMode::Vertical));
+        assert!(!layout_needs_sync(Some(LayoutMode::Vertical), LayoutMode::Vertical));
     }
 
     #[test]

@@ -970,6 +970,31 @@ impl Layout {
     }
 }
 
+/// Computes vertical-mode chrome using the native sidebar's width as the toolbar's left origin.
+/// The tab row remains absent; the viewport starts at the sidebar's right edge.
+pub fn compute_vertical_in_frame(
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    sidebar_width: i32,
+) -> (Layout, crate::vertical_tabs::SidebarLayout) {
+    let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(
+        client_w, client_h, dpi, sidebar_width, maximised,
+    );
+    let offset = sidebar.sidebar.right;
+    let mut layout = compute_with_active(client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised)
+        .shifted_right(offset);
+    layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
+    layout.rail = left_rail(client_h, dpi);
+    layout.tab_row = Rect::default();
+    layout.tab_zone = Rect::default();
+    layout.viewport = sidebar.viewport;
+    (layout, sidebar)
+}
+
 fn append_drag_regions(band: Rect, controls: &[Rect], rects: &mut Vec<Rect>) {
     let mut cursor = band.left;
     for control in controls {

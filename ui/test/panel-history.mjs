@@ -21,6 +21,11 @@ test('history arrow navigation skips headings and clamps at both ends', () => {
   assert.equal(logic.moveHistorySelection([], null, 'ArrowDown'), null);
 });
 
+test('panel Escape dismisses only when a child has not consumed it for inline state', () => {
+  assert.equal(logic.shouldDismissPanelEscape(false), true);
+  assert.equal(logic.shouldDismissPanelEscape(true), false);
+});
+
 test('history open commands carry only a validated positive row id', () => {
   assert.deepEqual(logic.historyOpenCommand(17, true), { v: 1, t: 'hist', a: 'newtab', id: 17 });
   assert.equal(logic.historyOpenCommand(0, false), null);

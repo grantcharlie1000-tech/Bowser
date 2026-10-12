@@ -603,6 +603,41 @@ mod tests {
         narrow.sidebar.bottom = narrow.sidebar.top;
         assert!(sidebar_bounds(&narrow).is_none());
     }
+
+    #[test]
+    fn vertical_html_regions_match_native_geometry_without_overlaps_at_supported_dpis() {
+        for dpi in [96, 120, 144, 192] {
+            let width = 1600;
+            let height = 1000;
+            let (layout, native_sidebar) = crate::chrome::layout::compute_vertical_in_frame(width, height, dpi, 12, 0, false, 260);
+            let sidebar = crate::chrome::layout::Rect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
+            let toolbar = toolbar_bounds(&layout).expect("toolbar");
+            let toolbar = crate::chrome::layout::Rect::from(toolbar);
+            let rail = crate::chrome::layout::Rect::from(rail_bounds(&layout).expect("rail"));
+            let caption = layout.caption_area;
+            let new_tab = layout.new_tab_button;
+            assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
+            let disjoint = |a: crate::chrome::layout::Rect, b: crate::chrome::layout::Rect| {
+                a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top
+            };
+            for (name_a, a, name_b, b) in [
+                ("toolbar", toolbar, "sidebar", sidebar),
+                ("toolbar", toolbar, "rail", rail),
+                ("toolbar", toolbar, "caption", caption),
+                ("toolbar", toolbar, "new-tab", new_tab),
+                ("sidebar", sidebar, "rail", rail),
+                ("sidebar", sidebar, "caption", caption),
+                ("sidebar", sidebar, "new-tab", new_tab),
+                ("rail", rail, "caption", caption),
+                ("rail", rail, "new-tab", new_tab),
+                ("caption", caption, "new-tab", new_tab),
+            ] {
+                assert!(disjoint(a, b), "dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
+            }
+            assert_eq!(sidebar.top, crate::chrome::layout::Metrics::new(dpi).px(crate::chrome::layout::Metrics::TOP_MARGIN));
+            assert!(sidebar.left >= rail.right, "dpi={dpi}");
+        }
+    }
     // --- end vertical sidebar ---
 
     #[test]
