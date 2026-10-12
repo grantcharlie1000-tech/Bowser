@@ -7,3 +7,4 @@
 .context/
 /target-*/
 /target-*.log
+/benchmarks/bin/

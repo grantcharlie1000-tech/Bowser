@@ -1,0 +1,1851 @@
+﻿{
+    "label":  "before",
+    "recorded":  "2026-10-12T23:13:59",
+    "executable":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\bin\\bowser-before.exe",
+    "sha256":  "a5206312c35e24a6f216f31d283d6fce498ccf8c750c27ef0418ca155e00fcad",
+    "git_head_at_run":  "7979633",
+    "ui_mode":  "default",
+    "machine":  {
+                    "cpu":  "Intel(R) Core(TM) i5-7300HQ CPU @ 2.50GHz",
+                    "logical_cores":  4,
+                    "ram_gib":  15.9,
+                    "os":  "Microsoft Windows 10 Home 10.0.19045",
+                    "webview2_runtime":  "154.0.4258.62",
+                    "power_plan":  "Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance)",
+                    "ac_power":  2
+                },
+    "runs_requested":  8,
+    "webview2_orphans_stopped":  481,
+    "real_site_runs":  4,
+    "note":  "Times are ms. Mark metrics are cumulative from process_start in Bowser\u0027s event log; p_* are phase durations; outer_* are harness wall clock from just before process creation. Statistics use only runs where page_usable was reached.",
+    "summary":  {
+                    "fixture":  {
+                                    "cold":  {
+                                                 "url":  "http://127.0.0.1:57267/light.html",
+                                                 "runs":  8,
+                                                 "valid_runs":  8,
+                                                 "quiet_valid_runs":  0,
+                                                 "metrics":  {
+                                                                 "outer_visible_ms":  {
+                                                                                          "n":  8,
+                                                                                          "median":  586.3,
+                                                                                          "p95":  2778.7,
+                                                                                          "min":  245.5,
+                                                                                          "max":  2997
+                                                                                      },
+                                                                 "outer_title_ms":  {
+                                                                                        "n":  8,
+                                                                                        "median":  9094.4,
+                                                                                        "p95":  15390.5,
+                                                                                        "min":  3528.5,
+                                                                                        "max":  15718.2
+                                                                                    },
+                                                                 "window_visible":  {
+                                                                                        "n":  8,
+                                                                                        "median":  179.4,
+                                                                                        "p95":  818.2,
+                                                                                        "min":  112,
+                                                                                        "max":  933.5
+                                                                                    },
+                                                                 "chrome_painted":  {
+                                                                                        "n":  8,
+                                                                                        "median":  235.2,
+                                                                                        "p95":  1003.9,
+                                                                                        "min":  169.8,
+                                                                                        "max":  1009.3
+                                                                                    },
+                                                                 "env_ready":  {
+                                                                                   "n":  8,
+                                                                                   "median":  191.6,
+                                                                                   "p95":  856.1,
+                                                                                   "min":  122.7,
+                                                                                   "max":  962.9
+                                                                               },
+                                                                 "chrome_controller_ready":  {
+                                                                                                 "n":  8,
+                                                                                                 "median":  6392.2,
+                                                                                                 "p95":  8097.3,
+                                                                                                 "min":  1687.9,
+                                                                                                 "max":  8375.1
+                                                                                             },
+                                                                 "submitted":  {
+                                                                                   "n":  8,
+                                                                                   "median":  179.6,
+                                                                                   "p95":  818.3,
+                                                                                   "min":  112,
+                                                                                   "max":  933.5
+                                                                               },
+                                                                 "content_controller_ready":  {
+                                                                                                  "n":  8,
+                                                                                                  "median":  6392.2,
+                                                                                                  "p95":  8097.3,
+                                                                                                  "min":  1687.9,
+                                                                                                  "max":  8375.1
+                                                                                              },
+                                                                 "navigate_called":  {
+                                                                                         "n":  8,
+                                                                                         "median":  6393.4,
+                                                                                         "p95":  8109.6,
+                                                                                         "min":  1688.6,
+                                                                                         "max":  8377.4
+                                                                                     },
+                                                                 "navigation_started":  {
+                                                                                            "n":  8,
+                                                                                            "median":  6509.4,
+                                                                                            "p95":  8627.6,
+                                                                                            "min":  1801.9,
+                                                                                            "max":  8698.6
+                                                                                        },
+                                                                 "content_loading":  {
+                                                                                         "n":  8,
+                                                                                         "median":  8612.2,
+                                                                                         "p95":  13324.1,
+                                                                                         "min":  3239.3,
+                                                                                         "max":  13546.5
+                                                                                     },
+                                                                 "navigation_completed":  {
+                                                                                              "n":  8,
+                                                                                              "median":  8654.2,
+                                                                                              "p95":  13379.2,
+                                                                                              "min":  3281.6,
+                                                                                              "max":  13609
+                                                                                          },
+                                                                 "page_usable":  {
+                                                                                     "n":  8,
+                                                                                     "median":  8667.5,
+                                                                                     "p95":  13395.5,
+                                                                                     "min":  3292.3,
+                                                                                     "max":  13628.1
+                                                                                 },
+                                                                 "usable":  {
+                                                                                "n":  8,
+                                                                                "median":  8667.5,
+                                                                                "p95":  13395.5,
+                                                                                "min":  3292.3,
+                                                                                "max":  13628.1
+                                                                            },
+                                                                 "p_window_visible":  {
+                                                                                          "n":  8,
+                                                                                          "median":  179.4,
+                                                                                          "p95":  818.2,
+                                                                                          "min":  112,
+                                                                                          "max":  933.5
+                                                                                      },
+                                                                 "p_chrome_paint":  {
+                                                                                        "n":  8,
+                                                                                        "median":  55.2,
+                                                                                        "p95":  284,
+                                                                                        "min":  48.8,
+                                                                                        "max":  389.8
+                                                                                    },
+                                                                 "p_env_create":  {
+                                                                                      "n":  8,
+                                                                                      "median":  11.3,
+                                                                                      "p95":  43.6,
+                                                                                      "min":  9.7,
+                                                                                      "max":  51.8
+                                                                                  },
+                                                                 "p_chrome_controller":  {
+                                                                                             "n":  8,
+                                                                                             "median":  6066.8,
+                                                                                             "p95":  7846.2,
+                                                                                             "min":  1545.1,
+                                                                                             "max":  8223.5
+                                                                                         },
+                                                                 "p_content_controller":  {
+                                                                                              "n":  8,
+                                                                                              "median":  6066.8,
+                                                                                              "p95":  7846.2,
+                                                                                              "min":  1545.1,
+                                                                                              "max":  8223.5
+                                                                                          },
+                                                                 "p_to_submitted":  {
+                                                                                        "n":  8,
+                                                                                        "median":  179.5,
+                                                                                        "p95":  818.3,
+                                                                                        "min":  112,
+                                                                                        "max":  933.5
+                                                                                    },
+                                                                 "p_submit_to_navigate":  {
+                                                                                              "n":  8,
+                                                                                              "median":  6116,
+                                                                                              "p95":  7860.6,
+                                                                                              "min":  1556.8,
+                                                                                              "max":  8239.3
+                                                                                          },
+                                                                 "p_navigate_to_started":  {
+                                                                                               "n":  8,
+                                                                                               "median":  96,
+                                                                                               "p95":  770.9,
+                                                                                               "min":  9.8,
+                                                                                               "max":  1086.4
+                                                                                           },
+                                                                 "p_started_to_loading":  {
+                                                                                              "n":  8,
+                                                                                              "median":  1861,
+                                                                                              "p95":  6857.3,
+                                                                                              "min":  498.2,
+                                                                                              "max":  8281.4
+                                                                                          },
+                                                                 "p_loading_to_completed":  {
+                                                                                                "n":  8,
+                                                                                                "median":  40.2,
+                                                                                                "p95":  56.3,
+                                                                                                "min":  35,
+                                                                                                "max":  62.5
+                                                                                            },
+                                                                 "p_completed_to_usable":  {
+                                                                                               "n":  8,
+                                                                                               "median":  11.1,
+                                                                                               "p95":  17.8,
+                                                                                               "min":  9.4,
+                                                                                               "max":  19.1
+                                                                                           },
+                                                                 "p_submit_to_usable":  {
+                                                                                            "n":  8,
+                                                                                            "median":  8464.8,
+                                                                                            "p95":  12577.2,
+                                                                                            "min":  3160.5,
+                                                                                            "max":  12694.5
+                                                                                        }
+                                                             },
+                                                 "metrics_quiet":  {
+
+                                                                   }
+                                             },
+                                    "warm":  {
+                                                 "url":  "http://127.0.0.1:57267/light.html",
+                                                 "runs":  8,
+                                                 "valid_runs":  8,
+                                                 "quiet_valid_runs":  0,
+                                                 "metrics":  {
+                                                                 "outer_visible_ms":  {
+                                                                                          "n":  8,
+                                                                                          "median":  744.4,
+                                                                                          "p95":  16147.6,
+                                                                                          "min":  188.6,
+                                                                                          "max":  23969.5
+                                                                                      },
+                                                                 "outer_title_ms":  {
+                                                                                        "n":  8,
+                                                                                        "median":  5187.1,
+                                                                                        "p95":  21958.8,
+                                                                                        "min":  2250.3,
+                                                                                        "max":  29511.4
+                                                                                    },
+                                                                 "window_visible":  {
+                                                                                        "n":  8,
+                                                                                        "median":  225.3,
+                                                                                        "p95":  725.8,
+                                                                                        "min":  80.8,
+                                                                                        "max":  960.1
+                                                                                    },
+                                                                 "chrome_painted":  {
+                                                                                        "n":  8,
+                                                                                        "median":  313.3,
+                                                                                        "p95":  1858.9,
+                                                                                        "min":  128.8,
+                                                                                        "max":  2291.5
+                                                                                    },
+                                                                 "env_ready":  {
+                                                                                   "n":  8,
+                                                                                   "median":  237.4,
+                                                                                   "p95":  810,
+                                                                                   "min":  92,
+                                                                                   "max":  1028.4
+                                                                               },
+                                                                 "chrome_controller_ready":  {
+                                                                                                 "n":  8,
+                                                                                                 "median":  3244.4,
+                                                                                                 "p95":  5538.8,
+                                                                                                 "min":  1710.7,
+                                                                                                 "max":  6126
+                                                                                             },
+                                                                 "submitted":  {
+                                                                                   "n":  8,
+                                                                                   "median":  225.4,
+                                                                                   "p95":  726,
+                                                                                   "min":  80.8,
+                                                                                   "max":  960.3
+                                                                               },
+                                                                 "content_controller_ready":  {
+                                                                                                  "n":  8,
+                                                                                                  "median":  3244.4,
+                                                                                                  "p95":  5538.8,
+                                                                                                  "min":  1710.7,
+                                                                                                  "max":  6126
+                                                                                              },
+                                                                 "navigate_called":  {
+                                                                                         "n":  8,
+                                                                                         "median":  3247.8,
+                                                                                         "p95":  5541.6,
+                                                                                         "min":  1714.1,
+                                                                                         "max":  6129.3
+                                                                                     },
+                                                                 "navigation_started":  {
+                                                                                            "n":  8,
+                                                                                            "median":  3268.6,
+                                                                                            "p95":  5733.1,
+                                                                                            "min":  1902,
+                                                                                            "max":  6181.7
+                                                                                        },
+                                                                 "content_loading":  {
+                                                                                         "n":  8,
+                                                                                         "median":  4862.4,
+                                                                                         "p95":  6802.9,
+                                                                                         "min":  2094.3,
+                                                                                         "max":  7334.2
+                                                                                     },
+                                                                 "navigation_completed":  {
+                                                                                              "n":  8,
+                                                                                              "median":  5087.3,
+                                                                                              "p95":  6839.8,
+                                                                                              "min":  2132.3,
+                                                                                              "max":  7368
+                                                                                          },
+                                                                 "page_usable":  {
+                                                                                     "n":  8,
+                                                                                     "median":  5099.6,
+                                                                                     "p95":  6853,
+                                                                                     "min":  2143.8,
+                                                                                     "max":  7382.9
+                                                                                 },
+                                                                 "usable":  {
+                                                                                "n":  8,
+                                                                                "median":  5099.6,
+                                                                                "p95":  6853,
+                                                                                "min":  2143.8,
+                                                                                "max":  7382.9
+                                                                            },
+                                                                 "p_window_visible":  {
+                                                                                          "n":  8,
+                                                                                          "median":  225.2,
+                                                                                          "p95":  725.6,
+                                                                                          "min":  80.8,
+                                                                                          "max":  959.8
+                                                                                      },
+                                                                 "p_chrome_paint":  {
+                                                                                        "n":  8,
+                                                                                        "median":  98.4,
+                                                                                        "p95":  1133.1,
+                                                                                        "min":  43.2,
+                                                                                        "max":  1331.4
+                                                                                    },
+                                                                 "p_env_create":  {
+                                                                                      "n":  8,
+                                                                                      "median":  10.9,
+                                                                                      "p95":  101.8,
+                                                                                      "min":  6.8,
+                                                                                      "max":  120.5
+                                                                                  },
+                                                                 "p_chrome_controller":  {
+                                                                                             "n":  8,
+                                                                                             "median":  3019.9,
+                                                                                             "p95":  4755.1,
+                                                                                             "min":  1615.3,
+                                                                                             "max":  5097.1
+                                                                                         },
+                                                                 "p_content_controller":  {
+                                                                                              "n":  8,
+                                                                                              "median":  3019.9,
+                                                                                              "p95":  4755.1,
+                                                                                              "min":  1615.3,
+                                                                                              "max":  5097.1
+                                                                                          },
+                                                                 "p_to_submitted":  {
+                                                                                        "n":  8,
+                                                                                        "median":  225.2,
+                                                                                        "p95":  725.8,
+                                                                                        "min":  80.8,
+                                                                                        "max":  960
+                                                                                    },
+                                                                 "p_submit_to_navigate":  {
+                                                                                              "n":  8,
+                                                                                              "median":  3031.2,
+                                                                                              "p95":  4818.4,
+                                                                                              "min":  1633.2,
+                                                                                              "max":  5169
+                                                                                          },
+                                                                 "p_navigate_to_started":  {
+                                                                                               "n":  8,
+                                                                                               "median":  81.6,
+                                                                                               "p95":  358.1,
+                                                                                               "min":  6.6,
+                                                                                               "max":  449.8
+                                                                                           },
+                                                                 "p_started_to_loading":  {
+                                                                                              "n":  8,
+                                                                                              "median":  877.6,
+                                                                                              "p95":  2105.4,
+                                                                                              "min":  192.3,
+                                                                                              "max":  2618.5
+                                                                                          },
+                                                                 "p_loading_to_completed":  {
+                                                                                                "n":  8,
+                                                                                                "median":  38.2,
+                                                                                                "p95":  278.4,
+                                                                                                "min":  28.3,
+                                                                                                "max":  403.1
+                                                                                            },
+                                                                 "p_completed_to_usable":  {
+                                                                                               "n":  8,
+                                                                                               "median":  11.4,
+                                                                                               "p95":  14.8,
+                                                                                               "min":  9.9,
+                                                                                               "max":  14.9
+                                                                                           },
+                                                                 "p_submit_to_usable":  {
+                                                                                            "n":  8,
+                                                                                            "median":  4850.6,
+                                                                                            "p95":  6179,
+                                                                                            "min":  2062.9,
+                                                                                            "max":  6422.6
+                                                                                        }
+                                                             },
+                                                 "metrics_quiet":  {
+
+                                                                   }
+                                             }
+                                },
+                    "example":  {
+                                    "cold":  {
+                                                 "url":  "https://example.com/",
+                                                 "runs":  4,
+                                                 "valid_runs":  4,
+                                                 "quiet_valid_runs":  0,
+                                                 "metrics":  {
+                                                                 "outer_visible_ms":  {
+                                                                                          "n":  4,
+                                                                                          "median":  313.2,
+                                                                                          "p95":  657.7,
+                                                                                          "min":  135.1,
+                                                                                          "max":  693.3
+                                                                                      },
+                                                                 "outer_title_ms":  {
+                                                                                        "n":  4,
+                                                                                        "median":  3779.3,
+                                                                                        "p95":  7402.1,
+                                                                                        "min":  2157,
+                                                                                        "max":  7878.7
+                                                                                    },
+                                                                 "window_visible":  {
+                                                                                        "n":  4,
+                                                                                        "median":  128,
+                                                                                        "p95":  289.8,
+                                                                                        "min":  72,
+                                                                                        "max":  311.5
+                                                                                    },
+                                                                 "chrome_painted":  {
+                                                                                        "n":  4,
+                                                                                        "median":  183.4,
+                                                                                        "p95":  343.4,
+                                                                                        "min":  126.5,
+                                                                                        "max":  364.8
+                                                                                    },
+                                                                 "env_ready":  {
+                                                                                   "n":  4,
+                                                                                   "median":  137.6,
+                                                                                   "p95":  302.7,
+                                                                                   "min":  81.5,
+                                                                                   "max":  324.9
+                                                                               },
+                                                                 "chrome_controller_ready":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  1665.2,
+                                                                                                 "p95":  2448.4,
+                                                                                                 "min":  1086.4,
+                                                                                                 "max":  2523.2
+                                                                                             },
+                                                                 "submitted":  {
+                                                                                   "n":  4,
+                                                                                   "median":  128,
+                                                                                   "p95":  289.8,
+                                                                                   "min":  72,
+                                                                                   "max":  311.5
+                                                                               },
+                                                                 "content_controller_ready":  {
+                                                                                                  "n":  4,
+                                                                                                  "median":  1665.2,
+                                                                                                  "p95":  2448.4,
+                                                                                                  "min":  1086.4,
+                                                                                                  "max":  2523.2
+                                                                                              },
+                                                                 "navigate_called":  {
+                                                                                         "n":  4,
+                                                                                         "median":  1666.2,
+                                                                                         "p95":  2452.8,
+                                                                                         "min":  1087.5,
+                                                                                         "max":  2528.2
+                                                                                     },
+                                                                 "navigation_started":  {
+                                                                                            "n":  4,
+                                                                                            "median":  1717.6,
+                                                                                            "p95":  2495.7,
+                                                                                            "min":  1356.7,
+                                                                                            "max":  2572.9
+                                                                                        },
+                                                                 "content_loading":  {
+                                                                                         "n":  4,
+                                                                                         "median":  3575.4,
+                                                                                         "p95":  7000.6,
+                                                                                         "min":  2068,
+                                                                                         "max":  7456.2
+                                                                                     },
+                                                                 "navigation_completed":  {
+                                                                                              "n":  4,
+                                                                                              "median":  3703,
+                                                                                              "p95":  7295.8,
+                                                                                              "min":  2131.8,
+                                                                                              "max":  7776.2
+                                                                                          },
+                                                                 "usable":  {
+                                                                                "n":  4,
+                                                                                "median":  3703,
+                                                                                "p95":  7295.8,
+                                                                                "min":  2131.8,
+                                                                                "max":  7776.2
+                                                                            },
+                                                                 "p_window_visible":  {
+                                                                                          "n":  4,
+                                                                                          "median":  127.9,
+                                                                                          "p95":  289.7,
+                                                                                          "min":  70,
+                                                                                          "max":  311.4
+                                                                                      },
+                                                                 "p_chrome_paint":  {
+                                                                                        "n":  4,
+                                                                                        "median":  54.7,
+                                                                                        "p95":  55.9,
+                                                                                        "min":  53.3,
+                                                                                        "max":  56.1
+                                                                                    },
+                                                                 "p_env_create":  {
+                                                                                      "n":  4,
+                                                                                      "median":  9,
+                                                                                      "p95":  12.2,
+                                                                                      "min":  8.5,
+                                                                                      "max":  12.7
+                                                                                  },
+                                                                 "p_chrome_controller":  {
+                                                                                             "n":  4,
+                                                                                             "median":  1535.6,
+                                                                                             "p95":  2145.5,
+                                                                                             "min":  987.9,
+                                                                                             "max":  2198.1
+                                                                                         },
+                                                                 "p_content_controller":  {
+                                                                                              "n":  4,
+                                                                                              "median":  1535.6,
+                                                                                              "p95":  2145.5,
+                                                                                              "min":  987.9,
+                                                                                              "max":  2198.1
+                                                                                          },
+                                                                 "p_to_submitted":  {
+                                                                                        "n":  4,
+                                                                                        "median":  128,
+                                                                                        "p95":  289.8,
+                                                                                        "min":  70,
+                                                                                        "max":  311.5
+                                                                                    },
+                                                                 "p_submit_to_navigate":  {
+                                                                                              "n":  4,
+                                                                                              "median":  1546.6,
+                                                                                              "p95":  2163,
+                                                                                              "min":  998.6,
+                                                                                              "max":  2216.7
+                                                                                          },
+                                                                 "p_navigate_to_started":  {
+                                                                                               "n":  4,
+                                                                                               "median":  47.4,
+                                                                                               "p95":  253.7,
+                                                                                               "min":  32.5,
+                                                                                               "max":  289.6
+                                                                                           },
+                                                                 "p_started_to_loading":  {
+                                                                                              "n":  4,
+                                                                                              "median":  1857.8,
+                                                                                              "p95":  4505,
+                                                                                              "min":  711.3,
+                                                                                              "max":  4883.3
+                                                                                          },
+                                                                 "p_loading_to_completed":  {
+                                                                                                "n":  4,
+                                                                                                "median":  127.6,
+                                                                                                "p95":  295.2,
+                                                                                                "min":  63.8,
+                                                                                                "max":  320
+                                                                                            },
+                                                                 "p_submit_to_usable":  {
+                                                                                            "n":  4,
+                                                                                            "median":  3575,
+                                                                                            "p95":  7006,
+                                                                                            "min":  2059.8,
+                                                                                            "max":  7464.7
+                                                                                        }
+                                                             },
+                                                 "metrics_quiet":  {
+
+                                                                   }
+                                             },
+                                    "warm":  {
+                                                 "url":  "https://example.com/",
+                                                 "runs":  4,
+                                                 "valid_runs":  4,
+                                                 "quiet_valid_runs":  0,
+                                                 "metrics":  {
+                                                                 "outer_visible_ms":  {
+                                                                                          "n":  4,
+                                                                                          "median":  159.6,
+                                                                                          "p95":  516.4,
+                                                                                          "min":  117.3,
+                                                                                          "max":  576.4
+                                                                                      },
+                                                                 "outer_title_ms":  {
+                                                                                        "n":  4,
+                                                                                        "median":  1578,
+                                                                                        "p95":  3803,
+                                                                                        "min":  1081,
+                                                                                        "max":  4143
+                                                                                    },
+                                                                 "window_visible":  {
+                                                                                        "n":  4,
+                                                                                        "median":  67.8,
+                                                                                        "p95":  228.6,
+                                                                                        "min":  58.3,
+                                                                                        "max":  255.8
+                                                                                    },
+                                                                 "chrome_painted":  {
+                                                                                        "n":  4,
+                                                                                        "median":  121.8,
+                                                                                        "p95":  358.3,
+                                                                                        "min":  109.1,
+                                                                                        "max":  397.9
+                                                                                    },
+                                                                 "env_ready":  {
+                                                                                   "n":  4,
+                                                                                   "median":  77.6,
+                                                                                   "p95":  238.9,
+                                                                                   "min":  66.3,
+                                                                                   "max":  265.7
+                                                                               },
+                                                                 "chrome_controller_ready":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  828.6,
+                                                                                                 "p95":  1597,
+                                                                                                 "min":  661,
+                                                                                                 "max":  1731.5
+                                                                                             },
+                                                                 "submitted":  {
+                                                                                   "n":  4,
+                                                                                   "median":  67.8,
+                                                                                   "p95":  228.6,
+                                                                                   "min":  58.3,
+                                                                                   "max":  255.8
+                                                                               },
+                                                                 "content_controller_ready":  {
+                                                                                                  "n":  4,
+                                                                                                  "median":  828.6,
+                                                                                                  "p95":  1597,
+                                                                                                  "min":  661,
+                                                                                                  "max":  1731.5
+                                                                                              },
+                                                                 "navigate_called":  {
+                                                                                         "n":  4,
+                                                                                         "median":  829.3,
+                                                                                         "p95":  1597.7,
+                                                                                         "min":  662.3,
+                                                                                         "max":  1732.3
+                                                                                     },
+                                                                 "navigation_started":  {
+                                                                                            "n":  4,
+                                                                                            "median":  864,
+                                                                                            "p95":  1649.5,
+                                                                                            "min":  736.7,
+                                                                                            "max":  1787.6
+                                                                                        },
+                                                                 "content_loading":  {
+                                                                                         "n":  4,
+                                                                                         "median":  1475.2,
+                                                                                         "p95":  3559.4,
+                                                                                         "min":  1004.5,
+                                                                                         "max":  3877.6
+                                                                                     },
+                                                                 "navigation_completed":  {
+                                                                                              "n":  4,
+                                                                                              "median":  1577.8,
+                                                                                              "p95":  3931.9,
+                                                                                              "min":  1141.2,
+                                                                                              "max":  4295
+                                                                                          },
+                                                                 "usable":  {
+                                                                                "n":  4,
+                                                                                "median":  1577.8,
+                                                                                "p95":  3931.9,
+                                                                                "min":  1141.2,
+                                                                                "max":  4295
+                                                                            },
+                                                                 "p_window_visible":  {
+                                                                                          "n":  4,
+                                                                                          "median":  67.7,
+                                                                                          "p95":  228.5,
+                                                                                          "min":  58.2,
+                                                                                          "max":  255.7
+                                                                                      },
+                                                                 "p_chrome_paint":  {
+                                                                                        "n":  4,
+                                                                                        "median":  55,
+                                                                                        "p95":  129.8,
+                                                                                        "min":  48.8,
+                                                                                        "max":  142.2
+                                                                                    },
+                                                                 "p_env_create":  {
+                                                                                      "n":  4,
+                                                                                      "median":  8.3,
+                                                                                      "p95":  10,
+                                                                                      "min":  6.9,
+                                                                                      "max":  10.1
+                                                                                  },
+                                                                 "p_chrome_controller":  {
+                                                                                             "n":  4,
+                                                                                             "median":  750.6,
+                                                                                             "p95":  1360.5,
+                                                                                             "min":  594.4,
+                                                                                             "max":  1465.4
+                                                                                         },
+                                                                 "p_content_controller":  {
+                                                                                              "n":  4,
+                                                                                              "median":  750.6,
+                                                                                              "p95":  1360.5,
+                                                                                              "min":  594.4,
+                                                                                              "max":  1465.4
+                                                                                          },
+                                                                 "p_to_submitted":  {
+                                                                                        "n":  4,
+                                                                                        "median":  67.7,
+                                                                                        "p95":  228.5,
+                                                                                        "min":  58.3,
+                                                                                        "max":  255.7
+                                                                                    },
+                                                                 "p_submit_to_navigate":  {
+                                                                                              "n":  4,
+                                                                                              "median":  761.6,
+                                                                                              "p95":  1371.2,
+                                                                                              "min":  604,
+                                                                                              "max":  1476.5
+                                                                                          },
+                                                                 "p_navigate_to_started":  {
+                                                                                               "n":  4,
+                                                                                               "median":  46.5,
+                                                                                               "p95":  71.5,
+                                                                                               "min":  31.7,
+                                                                                               "max":  74.4
+                                                                                           },
+                                                                 "p_started_to_loading":  {
+                                                                                              "n":  4,
+                                                                                              "median":  611.2,
+                                                                                              "p95":  1910.8,
+                                                                                              "min":  267.8,
+                                                                                              "max":  2090
+                                                                                          },
+                                                                 "p_loading_to_completed":  {
+                                                                                                "n":  4,
+                                                                                                "median":  127.2,
+                                                                                                "p95":  375.3,
+                                                                                                "min":  87.4,
+                                                                                                "max":  417.4
+                                                                                            },
+                                                                 "p_submit_to_usable":  {
+                                                                                            "n":  4,
+                                                                                            "median":  1510,
+                                                                                            "p95":  3703.3,
+                                                                                            "min":  1082.9,
+                                                                                            "max":  4039.2
+                                                                                        }
+                                                             },
+                                                 "metrics_quiet":  {
+
+                                                                   }
+                                             }
+                                },
+                    "wikipedia":  {
+                                      "cold":  {
+                                                   "url":  "https://en.wikipedia.org/wiki/Web_browser",
+                                                   "runs":  4,
+                                                   "valid_runs":  4,
+                                                   "quiet_valid_runs":  0,
+                                                   "metrics":  {
+                                                                   "outer_visible_ms":  {
+                                                                                            "n":  4,
+                                                                                            "median":  487.3,
+                                                                                            "p95":  1299.9,
+                                                                                            "min":  155.4,
+                                                                                            "max":  1413.8
+                                                                                        },
+                                                                   "outer_title_ms":  {
+                                                                                          "n":  4,
+                                                                                          "median":  4619,
+                                                                                          "p95":  5204.2,
+                                                                                          "min":  3593.4,
+                                                                                          "max":  5249.8
+                                                                                      },
+                                                                   "window_visible":  {
+                                                                                          "n":  4,
+                                                                                          "median":  223.9,
+                                                                                          "p95":  403.7,
+                                                                                          "min":  77.2,
+                                                                                          "max":  418.5
+                                                                                      },
+                                                                   "chrome_painted":  {
+                                                                                          "n":  4,
+                                                                                          "median":  328,
+                                                                                          "p95":  466.3,
+                                                                                          "min":  130.6,
+                                                                                          "max":  481.7
+                                                                                      },
+                                                                   "env_ready":  {
+                                                                                     "n":  4,
+                                                                                     "median":  237.2,
+                                                                                     "p95":  420.5,
+                                                                                     "min":  92.5,
+                                                                                     "max":  436.5
+                                                                                 },
+                                                                   "chrome_controller_ready":  {
+                                                                                                   "n":  4,
+                                                                                                   "median":  2039.3,
+                                                                                                   "p95":  2273.3,
+                                                                                                   "min":  1666.4,
+                                                                                                   "max":  2296.1
+                                                                                               },
+                                                                   "submitted":  {
+                                                                                     "n":  4,
+                                                                                     "median":  224,
+                                                                                     "p95":  403.7,
+                                                                                     "min":  77.2,
+                                                                                     "max":  418.5
+                                                                                 },
+                                                                   "content_controller_ready":  {
+                                                                                                    "n":  4,
+                                                                                                    "median":  2039.3,
+                                                                                                    "p95":  2273.3,
+                                                                                                    "min":  1666.4,
+                                                                                                    "max":  2296.1
+                                                                                                },
+                                                                   "navigate_called":  {
+                                                                                           "n":  4,
+                                                                                           "median":  2041.1,
+                                                                                           "p95":  2274.5,
+                                                                                           "min":  1667.3,
+                                                                                           "max":  2297.3
+                                                                                       },
+                                                                   "navigation_started":  {
+                                                                                              "n":  4,
+                                                                                              "median":  2082.4,
+                                                                                              "p95":  2316,
+                                                                                              "min":  1708.5,
+                                                                                              "max":  2339.2
+                                                                                          },
+                                                                   "content_loading":  {
+                                                                                           "n":  4,
+                                                                                           "median":  4191.5,
+                                                                                           "p95":  4481.7,
+                                                                                           "min":  3444.4,
+                                                                                           "max":  4529.9
+                                                                                       },
+                                                                   "navigation_completed":  {
+                                                                                                "n":  4,
+                                                                                                "median":  6587.5,
+                                                                                                "p95":  6951.1,
+                                                                                                "min":  5984.6,
+                                                                                                "max":  6955.6
+                                                                                            },
+                                                                   "usable":  {
+                                                                                  "n":  4,
+                                                                                  "median":  6587.5,
+                                                                                  "p95":  6951.1,
+                                                                                  "min":  5984.6,
+                                                                                  "max":  6955.6
+                                                                              },
+                                                                   "p_window_visible":  {
+                                                                                            "n":  4,
+                                                                                            "median":  223.9,
+                                                                                            "p95":  403.6,
+                                                                                            "min":  77.1,
+                                                                                            "max":  418.4
+                                                                                        },
+                                                                   "p_chrome_paint":  {
+                                                                                          "n":  4,
+                                                                                          "median":  61.1,
+                                                                                          "p95":  136.2,
+                                                                                          "min":  53.4,
+                                                                                          "max":  149.1
+                                                                                      },
+                                                                   "p_env_create":  {
+                                                                                        "n":  4,
+                                                                                        "median":  14.8,
+                                                                                        "p95":  16.7,
+                                                                                        "min":  8.6,
+                                                                                        "max":  17
+                                                                                    },
+                                                                   "p_chrome_controller":  {
+                                                                                               "n":  4,
+                                                                                               "median":  1801.7,
+                                                                                               "p95":  1852.4,
+                                                                                               "min":  1573.6,
+                                                                                               "max":  1859.3
+                                                                                           },
+                                                                   "p_content_controller":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1801.7,
+                                                                                                "p95":  1852.4,
+                                                                                                "min":  1573.6,
+                                                                                                "max":  1859.3
+                                                                                            },
+                                                                   "p_to_submitted":  {
+                                                                                          "n":  4,
+                                                                                          "median":  223.9,
+                                                                                          "p95":  403.6,
+                                                                                          "min":  77.2,
+                                                                                          "max":  418.4
+                                                                                      },
+                                                                   "p_submit_to_navigate":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1817.2,
+                                                                                                "p95":  1870.7,
+                                                                                                "min":  1590.1,
+                                                                                                "max":  1878.8
+                                                                                            },
+                                                                   "p_navigate_to_started":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  41.6,
+                                                                                                 "p95":  42.8,
+                                                                                                 "min":  39.5,
+                                                                                                 "max":  43
+                                                                                             },
+                                                                   "p_started_to_loading":  {
+                                                                                                "n":  4,
+                                                                                                "median":  2107.4,
+                                                                                                "p95":  2447.9,
+                                                                                                "min":  1464.2,
+                                                                                                "max":  2466
+                                                                                            },
+                                                                   "p_loading_to_completed":  {
+                                                                                                  "n":  4,
+                                                                                                  "median":  2468.1,
+                                                                                                  "p95":  2745,
+                                                                                                  "min":  2040.6,
+                                                                                                  "max":  2781.1
+                                                                                              },
+                                                                   "p_submit_to_usable":  {
+                                                                                              "n":  4,
+                                                                                              "median":  6231.2,
+                                                                                              "p95":  6837.5,
+                                                                                              "min":  5830.6,
+                                                                                              "max":  6878.4
+                                                                                          }
+                                                               },
+                                                   "metrics_quiet":  {
+
+                                                                     }
+                                               },
+                                      "warm":  {
+                                                   "url":  "https://en.wikipedia.org/wiki/Web_browser",
+                                                   "runs":  4,
+                                                   "valid_runs":  4,
+                                                   "quiet_valid_runs":  0,
+                                                   "metrics":  {
+                                                                   "outer_visible_ms":  {
+                                                                                            "n":  4,
+                                                                                            "median":  470.2,
+                                                                                            "p95":  594.6,
+                                                                                            "min":  232,
+                                                                                            "max":  607
+                                                                                        },
+                                                                   "outer_title_ms":  {
+                                                                                          "n":  4,
+                                                                                          "median":  4360.8,
+                                                                                          "p95":  5667.3,
+                                                                                          "min":  3171,
+                                                                                          "max":  5878.1
+                                                                                      },
+                                                                   "window_visible":  {
+                                                                                          "n":  4,
+                                                                                          "median":  255.1,
+                                                                                          "p95":  389.2,
+                                                                                          "min":  103.2,
+                                                                                          "max":  399.8
+                                                                                      },
+                                                                   "chrome_painted":  {
+                                                                                          "n":  4,
+                                                                                          "median":  326.7,
+                                                                                          "p95":  448.4,
+                                                                                          "min":  165.1,
+                                                                                          "max":  459.2
+                                                                                      },
+                                                                   "env_ready":  {
+                                                                                     "n":  4,
+                                                                                     "median":  267.5,
+                                                                                     "p95":  405.4,
+                                                                                     "min":  116.1,
+                                                                                     "max":  416.3
+                                                                                 },
+                                                                   "chrome_controller_ready":  {
+                                                                                                   "n":  4,
+                                                                                                   "median":  2016.4,
+                                                                                                   "p95":  3035.5,
+                                                                                                   "min":  1508.7,
+                                                                                                   "max":  3133.7
+                                                                                               },
+                                                                   "submitted":  {
+                                                                                     "n":  4,
+                                                                                     "median":  255.2,
+                                                                                     "p95":  389.2,
+                                                                                     "min":  103.2,
+                                                                                     "max":  399.8
+                                                                                 },
+                                                                   "content_controller_ready":  {
+                                                                                                    "n":  4,
+                                                                                                    "median":  2016.4,
+                                                                                                    "p95":  3035.5,
+                                                                                                    "min":  1508.7,
+                                                                                                    "max":  3133.7
+                                                                                                },
+                                                                   "navigate_called":  {
+                                                                                           "n":  4,
+                                                                                           "median":  2018.4,
+                                                                                           "p95":  3038.1,
+                                                                                           "min":  1509.8,
+                                                                                           "max":  3136.2
+                                                                                       },
+                                                                   "navigation_started":  {
+                                                                                              "n":  4,
+                                                                                              "median":  2096.8,
+                                                                                              "p95":  3179.4,
+                                                                                              "min":  1594,
+                                                                                              "max":  3295.6
+                                                                                          },
+                                                                   "content_loading":  {
+                                                                                           "n":  4,
+                                                                                           "median":  4079.4,
+                                                                                           "p95":  5161,
+                                                                                           "min":  2939.5,
+                                                                                           "max":  5315.5
+                                                                                       },
+                                                                   "navigation_completed":  {
+                                                                                                "n":  4,
+                                                                                                "median":  7589,
+                                                                                                "p95":  8473.2,
+                                                                                                "min":  5099.2,
+                                                                                                "max":  8574.8
+                                                                                            },
+                                                                   "usable":  {
+                                                                                  "n":  4,
+                                                                                  "median":  7589,
+                                                                                  "p95":  8473.2,
+                                                                                  "min":  5099.2,
+                                                                                  "max":  8574.8
+                                                                              },
+                                                                   "p_window_visible":  {
+                                                                                            "n":  4,
+                                                                                            "median":  255.1,
+                                                                                            "p95":  389.1,
+                                                                                            "min":  103.1,
+                                                                                            "max":  399.7
+                                                                                        },
+                                                                   "p_chrome_paint":  {
+                                                                                          "n":  4,
+                                                                                          "median":  60.7,
+                                                                                          "p95":  82,
+                                                                                          "min":  57.6,
+                                                                                          "max":  85.5
+                                                                                      },
+                                                                   "p_env_create":  {
+                                                                                        "n":  4,
+                                                                                        "median":  12.5,
+                                                                                        "p95":  15.2,
+                                                                                        "min":  9.6,
+                                                                                        "max":  15.5
+                                                                                    },
+                                                                   "p_chrome_controller":  {
+                                                                                               "n":  4,
+                                                                                               "median":  1749.8,
+                                                                                               "p95":  2679.9,
+                                                                                               "min":  1315.3,
+                                                                                               "max":  2788.9
+                                                                                           },
+                                                                   "p_content_controller":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1749.8,
+                                                                                                "p95":  2679.9,
+                                                                                                "min":  1315.3,
+                                                                                                "max":  2788.9
+                                                                                            },
+                                                                   "p_to_submitted":  {
+                                                                                          "n":  4,
+                                                                                          "median":  255.1,
+                                                                                          "p95":  389.1,
+                                                                                          "min":  103.2,
+                                                                                          "max":  399.7
+                                                                                      },
+                                                                   "p_submit_to_navigate":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1766.8,
+                                                                                                "p95":  2698.2,
+                                                                                                "min":  1328.8,
+                                                                                                "max":  2806.9
+                                                                                            },
+                                                                   "p_navigate_to_started":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  99.4,
+                                                                                                 "p95":  162.6,
+                                                                                                 "min":  38.8,
+                                                                                                 "max":  163.2
+                                                                                             },
+                                                                   "p_started_to_loading":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1892.2,
+                                                                                                "p95":  2173.4,
+                                                                                                "min":  1345.6,
+                                                                                                "max":  2200.5
+                                                                                            },
+                                                                   "p_loading_to_completed":  {
+                                                                                                  "n":  4,
+                                                                                                  "median":  3333,
+                                                                                                  "p95":  3581.7,
+                                                                                                  "min":  2159.6,
+                                                                                                  "max":  3612.6
+                                                                                              },
+                                                                   "p_submit_to_usable":  {
+                                                                                              "n":  4,
+                                                                                              "median":  7298.6,
+                                                                                              "p95":  8133.5,
+                                                                                              "min":  4996,
+                                                                                              "max":  8245.6
+                                                                                          }
+                                                               },
+                                                   "metrics_quiet":  {
+
+                                                                     }
+                                               }
+                                  },
+                    "github":  {
+                                   "cold":  {
+                                                "url":  "https://github.com/",
+                                                "runs":  4,
+                                                "valid_runs":  4,
+                                                "quiet_valid_runs":  0,
+                                                "metrics":  {
+                                                                "outer_visible_ms":  {
+                                                                                         "n":  4,
+                                                                                         "median":  468.1,
+                                                                                         "p95":  821.4,
+                                                                                         "min":  386.9,
+                                                                                         "max":  873.7
+                                                                                     },
+                                                                "outer_title_ms":  {
+                                                                                       "n":  4,
+                                                                                       "median":  6433,
+                                                                                       "p95":  9673,
+                                                                                       "min":  3846,
+                                                                                       "max":  9841.4
+                                                                                   },
+                                                                "window_visible":  {
+                                                                                       "n":  4,
+                                                                                       "median":  247.8,
+                                                                                       "p95":  547,
+                                                                                       "min":  164.5,
+                                                                                       "max":  586.6
+                                                                                   },
+                                                                "chrome_painted":  {
+                                                                                       "n":  4,
+                                                                                       "median":  375.2,
+                                                                                       "p95":  630.5,
+                                                                                       "min":  234.7,
+                                                                                       "max":  654.7
+                                                                                   },
+                                                                "env_ready":  {
+                                                                                  "n":  4,
+                                                                                  "median":  261.6,
+                                                                                  "p95":  564.3,
+                                                                                  "min":  179.4,
+                                                                                  "max":  604.8
+                                                                              },
+                                                                "chrome_controller_ready":  {
+                                                                                                "n":  4,
+                                                                                                "median":  4816.2,
+                                                                                                "p95":  7396.8,
+                                                                                                "min":  2204.7,
+                                                                                                "max":  7406.4
+                                                                                            },
+                                                                "submitted":  {
+                                                                                  "n":  4,
+                                                                                  "median":  247.8,
+                                                                                  "p95":  547.1,
+                                                                                  "min":  164.7,
+                                                                                  "max":  586.7
+                                                                              },
+                                                                "content_controller_ready":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  4816.2,
+                                                                                                 "p95":  7396.8,
+                                                                                                 "min":  2204.7,
+                                                                                                 "max":  7406.4
+                                                                                             },
+                                                                "navigate_called":  {
+                                                                                        "n":  4,
+                                                                                        "median":  4817.2,
+                                                                                        "p95":  7418,
+                                                                                        "min":  2205.3,
+                                                                                        "max":  7431.1
+                                                                                    },
+                                                                "navigation_started":  {
+                                                                                           "n":  4,
+                                                                                           "median":  4864.3,
+                                                                                           "p95":  7534.8,
+                                                                                           "min":  2286,
+                                                                                           "max":  7557.7
+                                                                                       },
+                                                                "content_loading":  {
+                                                                                        "n":  4,
+                                                                                        "median":  6105.7,
+                                                                                        "p95":  9222.4,
+                                                                                        "min":  3424.7,
+                                                                                        "max":  9369.9
+                                                                                    },
+                                                                "navigation_completed":  {
+                                                                                             "n":  4,
+                                                                                             "median":  8879.8,
+                                                                                             "p95":  12260.3,
+                                                                                             "min":  6600.5,
+                                                                                             "max":  12619.6
+                                                                                         },
+                                                                "usable":  {
+                                                                               "n":  4,
+                                                                               "median":  8879.8,
+                                                                               "p95":  12260.3,
+                                                                               "min":  6600.5,
+                                                                               "max":  12619.6
+                                                                           },
+                                                                "p_window_visible":  {
+                                                                                         "n":  4,
+                                                                                         "median":  247.8,
+                                                                                         "p95":  547,
+                                                                                         "min":  164.5,
+                                                                                         "max":  586.6
+                                                                                     },
+                                                                "p_chrome_paint":  {
+                                                                                       "n":  4,
+                                                                                       "median":  80.2,
+                                                                                       "p95":  159,
+                                                                                       "min":  61.7,
+                                                                                       "max":  170.7
+                                                                                   },
+                                                                "p_env_create":  {
+                                                                                     "n":  4,
+                                                                                     "median":  13.9,
+                                                                                     "p95":  16.5,
+                                                                                     "min":  11,
+                                                                                     "max":  16.8
+                                                                                 },
+                                                                "p_chrome_controller":  {
+                                                                                            "n":  4,
+                                                                                            "median":  4419.2,
+                                                                                            "p95":  7153.3,
+                                                                                            "min":  1868.9,
+                                                                                            "max":  7226.7
+                                                                                        },
+                                                                "p_content_controller":  {
+                                                                                             "n":  4,
+                                                                                             "median":  4419.2,
+                                                                                             "p95":  7153.3,
+                                                                                             "min":  1868.9,
+                                                                                             "max":  7226.7
+                                                                                         },
+                                                                "p_to_submitted":  {
+                                                                                       "n":  4,
+                                                                                       "median":  247.8,
+                                                                                       "p95":  547,
+                                                                                       "min":  164.7,
+                                                                                       "max":  586.6
+                                                                                   },
+                                                                "p_submit_to_navigate":  {
+                                                                                             "n":  4,
+                                                                                             "median":  4437.4,
+                                                                                             "p95":  7190,
+                                                                                             "min":  1882.6,
+                                                                                             "max":  7266.4
+                                                                                         },
+                                                                "p_navigate_to_started":  {
+                                                                                              "n":  4,
+                                                                                              "median":  70.8,
+                                                                                              "p95":  119.6,
+                                                                                              "min":  33.2,
+                                                                                              "max":  126.5
+                                                                                          },
+                                                                "p_started_to_loading":  {
+                                                                                             "n":  4,
+                                                                                             "median":  1319.8,
+                                                                                             "p95":  1771.2,
+                                                                                             "min":  982,
+                                                                                             "max":  1812.2
+                                                                                         },
+                                                                "p_loading_to_completed":  {
+                                                                                               "n":  4,
+                                                                                               "median":  3212.8,
+                                                                                               "p95":  3641.1,
+                                                                                               "min":  1838,
+                                                                                               "max":  3710.2
+                                                                                           },
+                                                                "p_submit_to_usable":  {
+                                                                                           "n":  4,
+                                                                                           "median":  8425.1,
+                                                                                           "p95":  12032.4,
+                                                                                           "min":  6427.5,
+                                                                                           "max":  12454.9
+                                                                                       }
+                                                            },
+                                                "metrics_quiet":  {
+
+                                                                  }
+                                            },
+                                   "warm":  {
+                                                "url":  "https://github.com/",
+                                                "runs":  4,
+                                                "valid_runs":  4,
+                                                "quiet_valid_runs":  0,
+                                                "metrics":  {
+                                                                "outer_visible_ms":  {
+                                                                                         "n":  4,
+                                                                                         "median":  489.2,
+                                                                                         "p95":  1344.9,
+                                                                                         "min":  283.9,
+                                                                                         "max":  1488.4
+                                                                                     },
+                                                                "outer_title_ms":  {
+                                                                                       "n":  4,
+                                                                                       "median":  2934.2,
+                                                                                       "p95":  5620.5,
+                                                                                       "min":  2481.5,
+                                                                                       "max":  6081.6
+                                                                                   },
+                                                                "window_visible":  {
+                                                                                       "n":  4,
+                                                                                       "median":  165.2,
+                                                                                       "p95":  232.8,
+                                                                                       "min":  87.1,
+                                                                                       "max":  234.9
+                                                                                   },
+                                                                "chrome_painted":  {
+                                                                                       "n":  4,
+                                                                                       "median":  250.3,
+                                                                                       "p95":  283.2,
+                                                                                       "min":  137.9,
+                                                                                       "max":  285.8
+                                                                                   },
+                                                                "env_ready":  {
+                                                                                  "n":  4,
+                                                                                  "median":  174.8,
+                                                                                  "p95":  242.3,
+                                                                                  "min":  96.7,
+                                                                                  "max":  244.5
+                                                                              },
+                                                                "chrome_controller_ready":  {
+                                                                                                "n":  4,
+                                                                                                "median":  1261.9,
+                                                                                                "p95":  1687,
+                                                                                                "min":  1163.3,
+                                                                                                "max":  1752.5
+                                                                                            },
+                                                                "submitted":  {
+                                                                                  "n":  4,
+                                                                                  "median":  165.2,
+                                                                                  "p95":  232.8,
+                                                                                  "min":  87.1,
+                                                                                  "max":  234.9
+                                                                              },
+                                                                "content_controller_ready":  {
+                                                                                                 "n":  4,
+                                                                                                 "median":  1261.9,
+                                                                                                 "p95":  1687,
+                                                                                                 "min":  1163.3,
+                                                                                                 "max":  1752.5
+                                                                                             },
+                                                                "navigate_called":  {
+                                                                                        "n":  4,
+                                                                                        "median":  1264.8,
+                                                                                        "p95":  1687.8,
+                                                                                        "min":  1164.5,
+                                                                                        "max":  1753.3
+                                                                                    },
+                                                                "navigation_started":  {
+                                                                                           "n":  4,
+                                                                                           "median":  1391.3,
+                                                                                           "p95":  1812.9,
+                                                                                           "min":  1205.6,
+                                                                                           "max":  1875.1
+                                                                                       },
+                                                                "content_loading":  {
+                                                                                        "n":  4,
+                                                                                        "median":  2506.4,
+                                                                                        "p95":  4010.5,
+                                                                                        "min":  2158.7,
+                                                                                        "max":  4267.3
+                                                                                    },
+                                                                "navigation_completed":  {
+                                                                                             "n":  4,
+                                                                                             "median":  5592.4,
+                                                                                             "p95":  7230,
+                                                                                             "min":  4223.3,
+                                                                                             "max":  7291.7
+                                                                                         },
+                                                                "usable":  {
+                                                                               "n":  4,
+                                                                               "median":  5592.4,
+                                                                               "p95":  7230,
+                                                                               "min":  4223.3,
+                                                                               "max":  7291.7
+                                                                           },
+                                                                "p_window_visible":  {
+                                                                                         "n":  4,
+                                                                                         "median":  165.2,
+                                                                                         "p95":  232.7,
+                                                                                         "min":  87.1,
+                                                                                         "max":  234.8
+                                                                                     },
+                                                                "p_chrome_paint":  {
+                                                                                       "n":  4,
+                                                                                       "median":  50.8,
+                                                                                       "p95":  112.1,
+                                                                                       "min":  47.2,
+                                                                                       "max":  122.9
+                                                                                   },
+                                                                "p_env_create":  {
+                                                                                     "n":  4,
+                                                                                     "median":  8.8,
+                                                                                     "p95":  9.4,
+                                                                                     "min":  8.3,
+                                                                                     "max":  9.5
+                                                                                 },
+                                                                "p_chrome_controller":  {
+                                                                                            "n":  4,
+                                                                                            "median":  1131.1,
+                                                                                            "p95":  1473.1,
+                                                                                            "min":  963.5,
+                                                                                            "max":  1522.1
+                                                                                        },
+                                                                "p_content_controller":  {
+                                                                                             "n":  4,
+                                                                                             "median":  1131.1,
+                                                                                             "p95":  1473.1,
+                                                                                             "min":  963.5,
+                                                                                             "max":  1522.1
+                                                                                         },
+                                                                "p_to_submitted":  {
+                                                                                       "n":  4,
+                                                                                       "median":  165.2,
+                                                                                       "p95":  232.8,
+                                                                                       "min":  87.1,
+                                                                                       "max":  234.9
+                                                                                   },
+                                                                "p_submit_to_navigate":  {
+                                                                                             "n":  4,
+                                                                                             "median":  1142.2,
+                                                                                             "p95":  1483.4,
+                                                                                             "min":  978.2,
+                                                                                             "max":  1532.2
+                                                                                         },
+                                                                "p_navigate_to_started":  {
+                                                                                              "n":  4,
+                                                                                              "median":  115.3,
+                                                                                              "p95":  140.7,
+                                                                                              "min":  41,
+                                                                                              "max":  144.1
+                                                                                          },
+                                                                "p_started_to_loading":  {
+                                                                                             "n":  4,
+                                                                                             "median":  1173.2,
+                                                                                             "p95":  2235.8,
+                                                                                             "min":  836.7,
+                                                                                             "max":  2392.2
+                                                                                         },
+                                                                "p_loading_to_completed":  {
+                                                                                               "n":  4,
+                                                                                               "median":  2338.8,
+                                                                                               "p95":  4500.8,
+                                                                                               "min":  1749.7,
+                                                                                               "max":  4834
+                                                                                           },
+                                                                "p_submit_to_usable":  {
+                                                                                           "n":  4,
+                                                                                           "median":  5438.2,
+                                                                                           "p95":  7103.8,
+                                                                                           "min":  3988.4,
+                                                                                           "max":  7182.3
+                                                                                       }
+                                                            },
+                                                "metrics_quiet":  {
+
+                                                                  }
+                                            }
+                               },
+                    "bbc":  {
+                                "cold":  {
+                                             "url":  "https://www.bbc.co.uk/news",
+                                             "runs":  4,
+                                             "valid_runs":  4,
+                                             "quiet_valid_runs":  0,
+                                             "metrics":  {
+                                                             "outer_visible_ms":  {
+                                                                                      "n":  4,
+                                                                                      "median":  346,
+                                                                                      "p95":  469.5,
+                                                                                      "min":  184.7,
+                                                                                      "max":  489.6
+                                                                                  },
+                                                             "outer_title_ms":  {
+                                                                                    "n":  4,
+                                                                                    "median":  5339,
+                                                                                    "p95":  8452.5,
+                                                                                    "min":  3694,
+                                                                                    "max":  8846.1
+                                                                                },
+                                                             "window_visible":  {
+                                                                                    "n":  4,
+                                                                                    "median":  195.8,
+                                                                                    "p95":  235.4,
+                                                                                    "min":  72.3,
+                                                                                    "max":  240.1
+                                                                                },
+                                                             "chrome_painted":  {
+                                                                                    "n":  4,
+                                                                                    "median":  273.7,
+                                                                                    "p95":  361.4,
+                                                                                    "min":  153.8,
+                                                                                    "max":  371.4
+                                                                                },
+                                                             "env_ready":  {
+                                                                               "n":  4,
+                                                                               "median":  212.6,
+                                                                               "p95":  250.5,
+                                                                               "min":  81.8,
+                                                                               "max":  254.8
+                                                                           },
+                                                             "chrome_controller_ready":  {
+                                                                                             "n":  4,
+                                                                                             "median":  2328.4,
+                                                                                             "p95":  2825.8,
+                                                                                             "min":  1587.5,
+                                                                                             "max":  2890.7
+                                                                                         },
+                                                             "submitted":  {
+                                                                               "n":  4,
+                                                                               "median":  195.8,
+                                                                               "p95":  235.5,
+                                                                               "min":  72.3,
+                                                                               "max":  240.2
+                                                                           },
+                                                             "content_controller_ready":  {
+                                                                                              "n":  4,
+                                                                                              "median":  2328.4,
+                                                                                              "p95":  2825.8,
+                                                                                              "min":  1587.5,
+                                                                                              "max":  2890.7
+                                                                                          },
+                                                             "navigate_called":  {
+                                                                                     "n":  4,
+                                                                                     "median":  2329.1,
+                                                                                     "p95":  2828.3,
+                                                                                     "min":  1588.7,
+                                                                                     "max":  2893.5
+                                                                                 },
+                                                             "navigation_started":  {
+                                                                                        "n":  4,
+                                                                                        "median":  2428.9,
+                                                                                        "p95":  2890.4,
+                                                                                        "min":  1625.7,
+                                                                                        "max":  2940.4
+                                                                                    },
+                                                             "content_loading":  {
+                                                                                     "n":  4,
+                                                                                     "median":  4912.4,
+                                                                                     "p95":  8094.8,
+                                                                                     "min":  3545.8,
+                                                                                     "max":  8528.9
+                                                                                 },
+                                                             "navigation_completed":  {
+                                                                                          "n":  4,
+                                                                                          "median":  6402.6,
+                                                                                          "p95":  10050.1,
+                                                                                          "min":  4622.5,
+                                                                                          "max":  10501.8
+                                                                                      },
+                                                             "usable":  {
+                                                                            "n":  4,
+                                                                            "median":  6402.6,
+                                                                            "p95":  10050.1,
+                                                                            "min":  4622.5,
+                                                                            "max":  10501.8
+                                                                        },
+                                                             "p_window_visible":  {
+                                                                                      "n":  4,
+                                                                                      "median":  195.7,
+                                                                                      "p95":  235.4,
+                                                                                      "min":  72.2,
+                                                                                      "max":  240.1
+                                                                                  },
+                                                             "p_chrome_paint":  {
+                                                                                    "n":  4,
+                                                                                    "median":  73,
+                                                                                    "p95":  150.3,
+                                                                                    "min":  60.3,
+                                                                                    "max":  162.4
+                                                                                },
+                                                             "p_env_create":  {
+                                                                                  "n":  4,
+                                                                                  "median":  14.6,
+                                                                                  "p95":  15.7,
+                                                                                  "min":  8.8,
+                                                                                  "max":  15.8
+                                                                              },
+                                                             "p_chrome_controller":  {
+                                                                                         "n":  4,
+                                                                                         "median":  2101,
+                                                                                         "p95":  2595,
+                                                                                         "min":  1505.4,
+                                                                                         "max":  2664.2
+                                                                                     },
+                                                             "p_content_controller":  {
+                                                                                          "n":  4,
+                                                                                          "median":  2101,
+                                                                                          "p95":  2595,
+                                                                                          "min":  1505.4,
+                                                                                          "max":  2664.2
+                                                                                      },
+                                                             "p_to_submitted":  {
+                                                                                    "n":  4,
+                                                                                    "median":  195.7,
+                                                                                    "p95":  235.4,
+                                                                                    "min":  72.3,
+                                                                                    "max":  240.1
+                                                                                },
+                                                             "p_submit_to_navigate":  {
+                                                                                          "n":  4,
+                                                                                          "median":  2117.8,
+                                                                                          "p95":  2614.6,
+                                                                                          "min":  1516.3,
+                                                                                          "max":  2684.5
+                                                                                      },
+                                                             "p_navigate_to_started":  {
+                                                                                           "n":  4,
+                                                                                           "median":  48.8,
+                                                                                           "p95":  134.1,
+                                                                                           "min":  37.1,
+                                                                                           "max":  148.8
+                                                                                       },
+                                                             "p_started_to_loading":  {
+                                                                                          "n":  4,
+                                                                                          "median":  2652.2,
+                                                                                          "p95":  5257.9,
+                                                                                          "min":  1582.7,
+                                                                                          "max":  5588.5
+                                                                                      },
+                                                             "p_loading_to_completed":  {
+                                                                                            "n":  4,
+                                                                                            "median":  1490.2,
+                                                                                            "p95":  1955.3,
+                                                                                            "min":  1076.6,
+                                                                                            "max":  1972.9
+                                                                                        },
+                                                             "p_submit_to_usable":  {
+                                                                                        "n":  4,
+                                                                                        "median":  6191.2,
+                                                                                        "p95":  9845,
+                                                                                        "min":  4550.2,
+                                                                                        "max":  10292.8
+                                                                                    }
+                                                         },
+                                             "metrics_quiet":  {
+
+                                                               }
+                                         },
+                                "warm":  {
+                                             "url":  "https://www.bbc.co.uk/news",
+                                             "runs":  4,
+                                             "valid_runs":  4,
+                                             "quiet_valid_runs":  0,
+                                             "metrics":  {
+                                                             "outer_visible_ms":  {
+                                                                                      "n":  4,
+                                                                                      "median":  492.6,
+                                                                                      "p95":  774.1,
+                                                                                      "min":  196.9,
+                                                                                      "max":  794.7
+                                                                                  },
+                                                             "outer_title_ms":  {
+                                                                                    "n":  4,
+                                                                                    "median":  3638.5,
+                                                                                    "p95":  4437.5,
+                                                                                    "min":  2814.1,
+                                                                                    "max":  4524.1
+                                                                                },
+                                                             "window_visible":  {
+                                                                                    "n":  4,
+                                                                                    "median":  181.6,
+                                                                                    "p95":  399.8,
+                                                                                    "min":  90,
+                                                                                    "max":  433.1
+                                                                                },
+                                                             "chrome_painted":  {
+                                                                                    "n":  4,
+                                                                                    "median":  244.1,
+                                                                                    "p95":  499.3,
+                                                                                    "min":  152.6,
+                                                                                    "max":  538.8
+                                                                                },
+                                                             "env_ready":  {
+                                                                               "n":  4,
+                                                                               "median":  197,
+                                                                               "p95":  411.7,
+                                                                               "min":  102.5,
+                                                                               "max":  444.1
+                                                                           },
+                                                             "chrome_controller_ready":  {
+                                                                                             "n":  4,
+                                                                                             "median":  2181.2,
+                                                                                             "p95":  2602.4,
+                                                                                             "min":  1462.3,
+                                                                                             "max":  2665.4
+                                                                                         },
+                                                             "submitted":  {
+                                                                               "n":  4,
+                                                                               "median":  181.6,
+                                                                               "p95":  399.8,
+                                                                               "min":  90,
+                                                                               "max":  433.1
+                                                                           },
+                                                             "content_controller_ready":  {
+                                                                                              "n":  4,
+                                                                                              "median":  2181.2,
+                                                                                              "p95":  2602.4,
+                                                                                              "min":  1462.3,
+                                                                                              "max":  2665.4
+                                                                                          },
+                                                             "navigate_called":  {
+                                                                                     "n":  4,
+                                                                                     "median":  2182.2,
+                                                                                     "p95":  2606.4,
+                                                                                     "min":  1463.1,
+                                                                                     "max":  2669.9
+                                                                                 },
+                                                             "navigation_started":  {
+                                                                                        "n":  4,
+                                                                                        "median":  2391.6,
+                                                                                        "p95":  2674.7,
+                                                                                        "min":  1503.6,
+                                                                                        "max":  2723.9
+                                                                                    },
+                                                             "content_loading":  {
+                                                                                     "n":  4,
+                                                                                     "median":  3161,
+                                                                                     "p95":  4234.6,
+                                                                                     "min":  2579.6,
+                                                                                     "max":  4392.9
+                                                                                 },
+                                                             "navigation_completed":  {
+                                                                                          "n":  4,
+                                                                                          "median":  4714.8,
+                                                                                          "p95":  6121.6,
+                                                                                          "min":  3826.3,
+                                                                                          "max":  6268.7
+                                                                                      },
+                                                             "usable":  {
+                                                                            "n":  4,
+                                                                            "median":  4714.8,
+                                                                            "p95":  6121.6,
+                                                                            "min":  3826.3,
+                                                                            "max":  6268.7
+                                                                        },
+                                                             "p_window_visible":  {
+                                                                                      "n":  4,
+                                                                                      "median":  181.5,
+                                                                                      "p95":  399.8,
+                                                                                      "min":  90,
+                                                                                      "max":  433.1
+                                                                                  },
+                                                             "p_chrome_paint":  {
+                                                                                    "n":  4,
+                                                                                    "median":  63.2,
+                                                                                    "p95":  99.4,
+                                                                                    "min":  61.1,
+                                                                                    "max":  105.7
+                                                                                },
+                                                             "p_env_create":  {
+                                                                                  "n":  4,
+                                                                                  "median":  11.9,
+                                                                                  "p95":  15.2,
+                                                                                  "min":  10.3,
+                                                                                  "max":  15.6
+                                                                              },
+                                                             "p_chrome_controller":  {
+                                                                                         "n":  4,
+                                                                                         "median":  1984,
+                                                                                         "p95":  2489.3,
+                                                                                         "min":  1017.5,
+                                                                                         "max":  2561.7
+                                                                                     },
+                                                             "p_content_controller":  {
+                                                                                          "n":  4,
+                                                                                          "median":  1984,
+                                                                                          "p95":  2489.3,
+                                                                                          "min":  1017.5,
+                                                                                          "max":  2561.7
+                                                                                      },
+                                                             "p_to_submitted":  {
+                                                                                    "n":  4,
+                                                                                    "median":  181.5,
+                                                                                    "p95":  399.8,
+                                                                                    "min":  90,
+                                                                                    "max":  433.1
+                                                                                },
+                                                             "p_submit_to_navigate":  {
+                                                                                          "n":  4,
+                                                                                          "median":  2000.6,
+                                                                                          "p95":  2507,
+                                                                                          "min":  1030,
+                                                                                          "max":  2579.8
+                                                                                      },
+                                                             "p_navigate_to_started":  {
+                                                                                           "n":  4,
+                                                                                           "median":  97.6,
+                                                                                           "p95":  257.1,
+                                                                                           "min":  40.5,
+                                                                                           "max":  277.5
+                                                                                       },
+                                                             "p_started_to_loading":  {
+                                                                                          "n":  4,
+                                                                                          "median":  1009,
+                                                                                          "p95":  1580,
+                                                                                          "min":  596.9,
+                                                                                          "max":  1669
+                                                                                      },
+                                                             "p_loading_to_completed":  {
+                                                                                            "n":  4,
+                                                                                            "median":  1561.2,
+                                                                                            "p95":  1939.1,
+                                                                                            "min":  1157.2,
+                                                                                            "max":  1950.3
+                                                                                        },
+                                                             "p_submit_to_usable":  {
+                                                                                        "n":  4,
+                                                                                        "median":  4533.2,
+                                                                                        "p95":  6013.4,
+                                                                                        "min":  3393.2,
+                                                                                        "max":  6178.7
+                                                                                    }
+                                                         },
+                                             "metrics_quiet":  {
+
+                                                               }
+                                         }
+                            }
+                }
+}

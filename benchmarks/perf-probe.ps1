@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $BowserExecutable,
     [string] $Label = 'current',
@@ -193,8 +193,13 @@ function Sample([int] $RootPid, [string] $ProfileDir) {
 function Start-Bowser([string] $ProfileDir, [string] $LogPath) {
     $launchArgs = @('--benchmark-log', "`"$LogPath`"", '--benchmark-user-data-dir', "`"$ProfileDir`"")
     if ($MemoryPressure) { $launchArgs += @('--benchmark-memory-pressure', 'on') }
+    # Benchmark flags do not isolate app data (history, workspaces, settings), so give the child a throwaway LOCALAPPDATA.
+    $appData = "$ProfileDir.appdata"
+    New-Item -ItemType Directory -Force $appData | Out-Null
+    $savedLocalAppData = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $appData
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $p = Start-Process -FilePath $exe -ArgumentList $launchArgs -PassThru
+    try { $p = Start-Process -FilePath $exe -ArgumentList $launchArgs -PassThru } finally { $env:LOCALAPPDATA = $savedLocalAppData }
     $main = [IntPtr]::Zero
     while ($main.ToInt64() -eq 0 -and $sw.ElapsedMilliseconds -lt 15000) { $main = [BowserPerfProbe.Native]::FindMain([uint32]$p.Id); if ($main.ToInt64() -eq 0) { Start-Sleep -Milliseconds 2 } }
     $visible = $null
