@@ -1,5 +1,7 @@
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
-import { historyOpenCommand, moveHistorySelection } from './history-logic';
+import { el } from '../dom';
+import { historyOpenCommand } from './history-logic';
+import { emptyState, enter, faviconTile, iconButton, moveFocus, panelHeader, searchField, sectionHeader, textButton } from './kit';
 
 type Entry = { id: number; title: string; host: string; clock: string };
 type Day = { label: string; count: number };
@@ -9,123 +11,140 @@ const isEntry = (row: Row): row is Entry => 'id' in row;
 export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void {
   let rows: Row[] = [];
   let selected: number | null = null;
+  let pendingFocus: number | null = null;
   let composing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const search = document.createElement('input');
-  search.type = 'search';
-  search.placeholder = 'Search history';
-  search.setAttribute('aria-label', 'Search history');
-  const list = document.createElement('div');
-  list.className = 'history-list';
-  list.tabIndex = 0;
+
+  const header = panelHeader('History', 'Close history');
+  const search = searchField('Search history');
+  const bar = el('div', 'pn-bar');
+  bar.append(search.root);
+  const list = el('div', 'pn-scroll bw-scroll');
   list.setAttribute('role', 'listbox');
-  const empty = document.createElement('p');
-  empty.className = 'history-empty';
-  const clear = document.createElement('div');
-  clear.className = 'history-clear';
+  list.setAttribute('aria-label', 'History');
+  const footer = el('footer', 'pn-footer');
+  const footerLabel = el('span', 'pn-footer-label');
+  footerLabel.textContent = 'Clear history';
+  footer.append(footerLabel);
   for (const [label, range] of [['Last hour', 0], ['Today', 1], ['All time', 2]] as const) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = `Clear ${label.toLowerCase()}`;
-    button.addEventListener('click', () => sendPanel('hist', { a: 'clear', n: range }));
-    clear.append(button);
+    footer.append(textButton(label, () => sendPanel('hist', { a: 'clear', n: range }), { subtle: true, aria: `Clear history: ${label.toLowerCase()}` }));
   }
-  const host = document.createElement('section');
-  host.className = 'history-panel';
-  host.append(search, clear, empty, list);
+  const host = el('section', 'pn');
+  host.append(header.root, bar, list, footer);
+  enter(host);
   root.replaceChildren(host);
 
-  const render = (): void => {
-    list.replaceChildren();
-    const ids = rows.filter(isEntry).map((row) => row.id);
-    if (selected !== null && !ids.includes(selected)) selected = null;
-    for (const row of rows) {
-      if (!isEntry(row)) {
-        const heading = document.createElement('h2');
-        heading.textContent = `${row.label} (${row.count})`;
-        list.append(heading);
-        continue;
-      }
-      const item = document.createElement('div');
-      item.className = 'history-row';
-      item.tabIndex = selected === row.id ? 0 : -1;
-      item.setAttribute('role', 'option');
-      item.setAttribute('aria-selected', String(selected === row.id));
-      item.dataset.id = String(row.id);
-      const favicon = document.createElement('span');
-      favicon.className = 'history-favicon';
-      favicon.setAttribute('aria-hidden', 'true');
-      const text = document.createElement('span');
-      text.className = 'history-text';
-      const title = document.createElement('span');
-      title.className = 'history-title';
-      title.textContent = row.title || row.host;
-      const details = document.createElement('span');
-      details.className = 'history-details';
-      details.textContent = `${row.host} · ${row.clock}`;
-      text.append(title, details);
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.textContent = 'Remove';
-      remove.setAttribute('aria-label', `Remove ${row.title || row.host} from history`);
-      remove.addEventListener('click', (event) => {
-        event.stopPropagation();
-        sendPanel('hist', { a: 'remove', id: row.id });
-      });
-      const removeSite = document.createElement('button');
-      removeSite.type = 'button';
-      removeSite.textContent = 'Remove site';
-      removeSite.setAttribute('aria-label', `Remove all visits to ${row.host} from history`);
-      removeSite.addEventListener('click', (event) => {
-        event.stopPropagation();
-        sendPanel('hist', { a: 'removesite', id: row.id });
-      });
-      item.append(favicon, text, remove, removeSite);
-      item.addEventListener('click', () => {
-        selected = row.id;
-        const command = historyOpenCommand(row.id, false);
-        if (command) sendPanel('hist', { a: command.a, id: command.id });
-        render();
-        list.querySelector<HTMLElement>(`[data-id="${row.id}"]`)?.focus();
-      });
-      list.append(item);
+  const entries = (): Entry[] => rows.filter(isEntry);
+  const rowEls = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.pn-row'));
+  const rowFor = (id: number | null): HTMLElement | undefined => rowEls().find((node) => node.dataset.id === String(id));
+  const openRow = (id: number, newTab: boolean): void => {
+    const command = historyOpenCommand(id, newTab);
+    if (command) sendPanel('hist', { a: command.a, id: command.id });
+  };
+  /** Moves the roving tab stop and selection to `id` without rebuilding the list. */
+  const select = (id: number | null): void => {
+    selected = id;
+    const items = rowEls();
+    const stop = items.find((node) => node.dataset.id === String(id)) ?? items[0];
+    for (const node of items) {
+      const on = node === stop;
+      node.tabIndex = on ? 0 : -1;
+      node.setAttribute('aria-selected', String(node.dataset.id === String(id)));
+      for (const button of Array.from(node.querySelectorAll('button'))) button.tabIndex = on ? 0 : -1;
     }
-    empty.textContent = rows.length === 0 ? (search.value.trim() === '' ? 'Nothing in your history yet. Pages you visit appear here.' : 'No matches. Try a shorter word or check the spelling.') : '';
+  };
+  const removeAndAdvance = (id: number, command: 'remove' | 'removesite'): void => {
+    const all = entries();
+    const index = all.findIndex((row) => row.id === id);
+    pendingFocus = (all[index + 1] ?? all[index - 1])?.id ?? null;
+    sendPanel('hist', { a: command, id });
   };
 
-  search.addEventListener('input', () => {
-    if (composing) return;
+  const render = (): void => {
+    const focused = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('.pn-row')?.dataset.id : undefined;
+    const ids = entries().map((row) => row.id);
+    if (selected !== null && !ids.includes(selected)) selected = null;
+    const nodes: HTMLElement[] = [];
+    for (const row of rows) {
+      if (!isEntry(row)) {
+        const heading = sectionHeader(row.label);
+        const count = el('span', 'pn-day-count');
+        count.textContent = String(row.count);
+        heading.append(count);
+        nodes.push(heading);
+        continue;
+      }
+      const item = el('div', 'bw-row bw-focus-inset pn-row');
+      item.setAttribute('role', 'option');
+      item.dataset.id = String(row.id);
+      const name = row.title || row.host;
+      const title = el('span', 'pn-row-title');
+      title.textContent = name;
+      title.setAttribute('data-tip', row.title && row.host ? `${row.title}\n${row.host}` : name);
+      const trail = el('span', 'pn-trail');
+      const meta = el('span', 'pn-meta');
+      const where = el('span', 'pn-meta-host');
+      where.textContent = row.host;
+      const when = el('span', 'pn-meta-when');
+      when.textContent = row.clock;
+      meta.append(where, when);
+      const actions = el('span', 'pn-actions');
+      actions.append(
+        iconButton('trash', `Remove ${name} from history`, (event) => { event.stopPropagation(); removeAndAdvance(row.id, 'remove'); }),
+        iconButton('workspace-globe', `Remove all visits to ${row.host} from history`, (event) => { event.stopPropagation(); removeAndAdvance(row.id, 'removesite'); }),
+      );
+      trail.append(meta, actions);
+      item.append(faviconTile(row.host || name), title, trail);
+      item.addEventListener('click', () => { select(row.id); openRow(row.id, false); });
+      nodes.push(item);
+    }
+    const searching = search.input.value.trim() !== '';
+    if (rows.length === 0) {
+      nodes.push(searching ? emptyState('search', 'No matches. Try a shorter word.') : emptyState('history', 'Pages you visit appear here.'));
+    }
+    list.replaceChildren(...nodes);
+    footer.hidden = rows.length === 0 && !searching;
+    select(selected);
+    const wanted = pendingFocus ?? (focused ? Number(focused) : null);
+    pendingFocus = null;
+    if (wanted !== null) rowFor(wanted)?.focus();
+  };
+
+  const sendSearch = (): void => {
     if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => sendPanel('hist', { a: 'search', text: search.value }), 120);
+    timer = setTimeout(() => sendPanel('hist', { a: 'search', text: search.input.value }), 120);
+  };
+  search.input.addEventListener('input', () => { if (!composing) sendSearch(); });
+  search.input.addEventListener('compositionstart', () => { composing = true; });
+  search.input.addEventListener('compositionend', () => { composing = false; sendSearch(); });
+  list.addEventListener('focusin', (event) => {
+    const item = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('.pn-row') : null;
+    if (item && item.dataset.id !== String(selected)) select(Number(item.dataset.id));
   });
-  search.addEventListener('compositionstart', () => { composing = true; });
-  search.addEventListener('compositionend', () => {
-    composing = false;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => sendPanel('hist', { a: 'search', text: search.value }), 120);
-  });
+
   host.addEventListener('keydown', (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    const ids = rows.filter(isEntry).map((row) => row.id);
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      selected = moveHistorySelection(ids, selected, event.key);
-      render();
-      list.querySelector(`[data-id="${selected ?? ''}"]`)?.scrollIntoView({ block: 'nearest' });
-    } else if (event.key === 'Enter' && selected !== null) {
-      const row = rows.find((item): item is Entry => isEntry(item) && item.id === selected);
-      const command = row && historyOpenCommand(selected, event.ctrlKey);
-      if (command) sendPanel('hist', { a: command.a, id: command.id });
-    } else if (event.key === 'Delete' && selected !== null) {
-      const row = rows.find((item): item is Entry => isEntry(item) && item.id === selected);
-      if (row) sendPanel('hist', { a: 'remove', id: selected });
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      if (search.value !== '') {
-        search.value = '';
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const item = target?.closest<HTMLElement>('.pn-row') ?? null;
+    const id = item ? Number(item.dataset.id) : null;
+    if (event.key === 'Escape') {
+      if (search.input.value !== '') {
+        event.preventDefault();
+        search.input.value = '';
         sendPanel('hist', { a: 'search', text: '' });
-      } else sendPanel('panel', { a: 'dismiss' });
+      }
+      return;
     }
+    if (target === search.input) {
+      if (event.key === 'ArrowDown') { event.preventDefault(); (rowFor(selected) ?? rowEls()[0])?.focus(); }
+      else if (event.key === 'Enter' && selected !== null) openRow(selected, event.ctrlKey);
+      return;
+    }
+    if (id === null) return;
+    if (event.key === 'ArrowUp' && item === rowEls()[0]) { event.preventDefault(); search.input.focus(); return; }
+    if (target === item && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); openRow(id, event.ctrlKey); return; }
+    if (target === item && event.key === 'Delete') { event.preventDefault(); removeAndAdvance(id, 'remove'); return; }
+    moveFocus(list, '.pn-row', event);
   });
 
   const receive = (message: SnapshotMsg): void => {
@@ -140,5 +159,6 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
     });
     render();
   };
+  render();
   return (message) => { if (message.t === 'snap') receive(message); };
 }

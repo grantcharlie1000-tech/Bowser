@@ -1,5 +1,6 @@
 import { onInbound, send, sendPanel, type PanelToken } from './protocol';
 import { applyTheme } from './view';
+import { installTooltips } from './tooltip';
 import { panels } from './panels';
 
 const isPanelToken = (value: string | null): value is PanelToken =>
@@ -7,6 +8,7 @@ const isPanelToken = (value: string | null): value is PanelToken =>
 
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');
+  installTooltips(root);
   root.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !event.defaultPrevented) {
       event.preventDefault();

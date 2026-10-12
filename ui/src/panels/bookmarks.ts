@@ -1,5 +1,8 @@
 import { sendPanel, type Inbound, type SnapshotMsg, type PanelFields } from '../protocol';
+import { el, icon } from '../dom';
 import { bookmarkActionCommand, bookmarkMoveCommand, validateBookmarkSnapshot, type BookmarkItem, type BookmarkSnapshot } from './bookmarks-logic';
+import { dropZone, type DropZone } from './kit-logic';
+import { emptyState, enter, faviconTile, iconButton, moveFocus, panelHeader, searchField, textButton } from './kit';
 
 function emit(command: ReturnType<typeof bookmarkActionCommand> | ReturnType<typeof bookmarkMoveCommand>): void {
   if (!command) return;
@@ -7,54 +10,46 @@ function emit(command: ReturnType<typeof bookmarkActionCommand> | ReturnType<typ
   sendPanel(t, fields as PanelFields);
 }
 
-function button(label: string, action: () => void, ariaLabel = label): HTMLButtonElement {
-  const result = document.createElement('button');
-  result.type = 'button';
-  result.textContent = label;
-  result.setAttribute('aria-label', ariaLabel);
-  result.addEventListener('click', action);
-  return result;
-}
-
-function input(label: string, value: string, type: 'text' | 'url' = 'text'): HTMLInputElement {
-  const result = document.createElement('input');
-  result.type = type;
-  result.value = value;
-  result.setAttribute('aria-label', label);
-  result.autocomplete = 'off';
-  return result;
+function field(label: string, value: string, type: 'text' | 'url' = 'text'): HTMLInputElement {
+  const input = el('input', 'bw-input');
+  input.type = type;
+  input.value = value;
+  input.placeholder = label;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('aria-label', label);
+  return input;
 }
 
 export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => void {
   let snapshot: BookmarkSnapshot | null = null;
-  let localFolder: number | null = null;
-  let localNavigation = false;
+  const expanded = new Set<number>();
+  let seeded = false;
+  let selected: number | null = null;
   let composing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let issue = '';
+  let draft: { item?: BookmarkItem; folder: boolean } | null = null;
+  let dragId: number | null = null;
+  let dropTarget: { id: number; zone: DropZone } | null = null;
 
-  const host = document.createElement('section');
-  host.className = 'bookmarks-panel';
-  const search = input('Search bookmarks', '', 'text');
-  search.placeholder = 'Search bookmarks';
-  search.type = 'search';
-  const toolbar = document.createElement('div');
-  toolbar.className = 'bookmarks-toolbar';
-  const crumb = document.createElement('div');
-  crumb.className = 'bookmarks-location';
-  crumb.setAttribute('aria-live', 'polite');
-  const list = document.createElement('div');
-  list.className = 'bookmarks-list';
-  list.setAttribute('role', 'list');
-  const status = document.createElement('p');
-  status.className = 'bookmarks-status';
+  const header = panelHeader('Bookmarks', 'Close bookmarks');
+  const search = searchField('Search bookmarks');
+  const bar = el('div', 'pn-bar');
+  bar.append(search.root);
+  const list = el('div', 'pn-scroll bw-scroll');
+  list.setAttribute('role', 'tree');
+  list.setAttribute('aria-label', 'Bookmarks');
+  const status = el('p', 'pn-status');
   status.setAttribute('role', 'status');
-  host.append(search, toolbar, crumb, status, list);
+  const host = el('section', 'pn');
+  host.append(header.root, bar, status, list);
+  enter(host);
   root.replaceChildren(host);
 
-  const sendSearch = (): void => { sendPanel('bm', { a: 'search', text: search.value }); }
-  const folders = (): BookmarkItem[] => snapshot?.items.filter((item) => item.kind === 'folder') ?? [];
-  const getItem = (id: number): BookmarkItem | undefined => snapshot?.items.find((item) => item.id === id);
+  const items = (): BookmarkItem[] => snapshot?.items ?? [];
+  const getItem = (id: number | null): BookmarkItem | undefined => (id === null ? undefined : items().find((item) => item.id === id));
+  const children = (parent: number | null): BookmarkItem[] => items().filter((item) => item.parent === parent);
   const folderPath = (item: BookmarkItem): string => {
     if (item.folderPath) return item.folderPath.join(' / ');
     const path: string[] = [];
@@ -79,162 +74,257 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     }
     return false;
   };
+  const depthOf = (item: BookmarkItem): number => {
+    let depth = 0;
+    const seen = new Set<number>();
+    let parent = item.parent;
+    while (parent !== null && !seen.has(parent)) { seen.add(parent); depth += 1; parent = getItem(parent)?.parent ?? null; }
+    return depth;
+  };
+  const rowEls = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.pn-row'));
+  const rowFor = (id: number | null): HTMLElement | undefined => rowEls().find((node) => node.dataset.id === String(id));
+  const searching = (): boolean => search.input.value.trim().length > 0;
 
-  const openDraft = (item?: BookmarkItem): void => {
-    const form = document.createElement('form');
-    form.className = 'bookmarks-editor';
-    const title = input(item ? 'Bookmark title' : 'Bookmark title', item?.title ?? '');
-    const url = !item || item.kind === 'link' ? input('Bookmark URL', item?.kind === 'link' ? item.url ?? '' : '', 'url') : null;
-    const save = document.createElement('button');
-    save.type = 'submit';
-    save.textContent = item ? 'Save' : 'Add bookmark';
-    const cancel = button('Cancel', render);
-    form.append(title);
-    if (url) form.append(url);
-    form.append(save, cancel);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const text = title.value.trim();
-      if (!text) { title.setCustomValidity('Enter a title.'); title.reportValidity(); return; }
-      if (item?.kind === 'link') {
-        const nextUrl = url?.value.trim() ?? '';
-        if (!nextUrl) { url?.setCustomValidity('Enter a URL.'); url?.reportValidity(); return; }
-        emit(bookmarkActionCommand('update', item.id, { text, url: nextUrl }));
-      } else if (item) emit(bookmarkActionCommand('rename', item.id, { text }));
-      else emit(bookmarkActionCommand('addlink', undefined, { parent: localFolder, text, url: url?.value.trim() ?? '' }));
-      render();
-    });
-    list.prepend(form);
-    title.focus();
+  /** The folder a new bookmark or folder lands in: the selected folder, or the selection's parent. */
+  const targetParent = (): number | null => {
+    const item = getItem(selected);
+    if (!item) return null;
+    return item.kind === 'folder' ? item.id : item.parent;
+  };
+  const toggle = (id: number, open?: boolean): void => {
+    const next = open ?? !expanded.has(id);
+    if (next) expanded.add(id); else expanded.delete(id);
+    render();
+    rowFor(id)?.focus();
+  };
+  const select = (id: number | null): void => {
+    selected = id;
+    const all = rowEls();
+    const stop = all.find((node) => node.dataset.id === String(id)) ?? all[0];
+    for (const node of all) {
+      const on = node === stop;
+      node.tabIndex = on ? 0 : -1;
+      node.setAttribute('aria-selected', String(node.dataset.id === String(id)));
+      for (const button of Array.from(node.querySelectorAll('button'))) button.tabIndex = on ? 0 : -1;
+    }
+  };
+  const moveWithin = (item: BookmarkItem, delta: -1 | 1): void => {
+    const siblings = children(item.parent);
+    const index = siblings.findIndex((other) => other.id === item.id);
+    if (delta < 0) {
+      const before = siblings[index - 1];
+      if (before) emit(bookmarkMoveCommand(item.id, item.parent, before.id));
+    } else if (siblings[index + 1]) {
+      emit(bookmarkMoveCommand(item.id, item.parent, siblings[index + 2]?.id ?? 0));
+    }
   };
 
-  const openFolderDraft = (): void => {
-    const form = document.createElement('form');
-    form.className = 'bookmarks-editor';
-    const title = input('Folder name', '');
-    const save = document.createElement('button');
+  const openEditor = (item?: BookmarkItem, folder = false): void => {
+    draft = { item, folder: item ? item.kind === 'folder' : folder };
+    render();
+    list.querySelector<HTMLInputElement>('.pn-form input')?.focus();
+  };
+  const buildForm = (): HTMLElement | null => {
+    if (!draft) return null;
+    const { item, folder } = draft;
+    const form = el('form', 'pn-form');
+    const title = field(folder ? 'Folder name' : 'Title', item?.title ?? '');
+    const url = !folder ? field('Address', item?.kind === 'link' ? item.url ?? '' : '', 'url') : null;
+    const actions = el('div', 'pn-form-actions');
+    const save = el('button', 'bw-button is-primary');
     save.type = 'submit';
-    save.textContent = 'Add folder';
-    form.append(title, save, button('Cancel', render));
+    save.textContent = item ? 'Save' : folder ? 'Add folder' : 'Add bookmark';
+    actions.append(textButton('Cancel', () => { draft = null; render(); }), save);
+    form.append(title);
+    if (url) form.append(url);
+    form.append(actions);
+    form.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); draft = null; render(); (item ? rowFor(item.id) : header.tools.querySelector<HTMLElement>('button'))?.focus(); }
+    });
     form.addEventListener('submit', (event) => {
       event.preventDefault();
       const text = title.value.trim();
-      if (!text) { title.setCustomValidity('Enter a folder name.'); title.reportValidity(); return; }
-      emit(bookmarkActionCommand('addfolder', undefined, { parent: localFolder, text }));
+      if (!text) { title.setCustomValidity(folder ? 'Enter a folder name.' : 'Enter a title.'); title.reportValidity(); title.setCustomValidity(''); return; }
+      if (item?.kind === 'link') {
+        const nextUrl = url?.value.trim() ?? '';
+        if (!nextUrl) { url?.setCustomValidity('Enter an address.'); url?.reportValidity(); url?.setCustomValidity(''); return; }
+        emit(bookmarkActionCommand('update', item.id, { text, url: nextUrl }));
+      } else if (item) emit(bookmarkActionCommand('rename', item.id, { text }));
+      else if (folder) emit(bookmarkActionCommand('addfolder', undefined, { parent: targetParent(), text }));
+      else {
+        const nextUrl = url?.value.trim() ?? '';
+        if (!nextUrl) { url?.setCustomValidity('Enter an address.'); url?.reportValidity(); url?.setCustomValidity(''); return; }
+        emit(bookmarkActionCommand('addlink', undefined, { parent: targetParent(), text, url: nextUrl }));
+        if (targetParent() !== null) expanded.add(targetParent() as number);
+      }
+      if (folder && !item && targetParent() !== null) expanded.add(targetParent() as number);
+      draft = null;
       render();
     });
-    list.prepend(form);
-    title.focus();
+    return form;
+  };
+
+  const buildRow = (item: BookmarkItem, flat: boolean): HTMLElement => {
+    const isFolder = item.kind === 'folder';
+    const name = item.title || (isFolder ? 'Untitled folder' : item.url ?? 'Untitled bookmark');
+    const row = el('div', 'bw-row bw-focus-inset pn-row');
+    row.setAttribute('role', 'treeitem');
+    row.dataset.id = String(item.id);
+    const depth = flat ? 0 : depthOf(item);
+    row.setAttribute('aria-level', String(depth + 1));
+    row.style.setProperty('--pn-depth', String(depth));
+    if (isFolder) row.setAttribute('aria-expanded', String(!flat && expanded.has(item.id)));
+    row.draggable = !flat;
+
+    const chevron = el('span', 'pn-chevron');
+    chevron.setAttribute('aria-hidden', 'true');
+    if (isFolder && !flat) {
+      chevron.append(icon('chevron-right', { size: 12, fine: true }));
+      chevron.addEventListener('click', (event) => { event.stopPropagation(); toggle(item.id); });
+    }
+    const lead = isFolder ? (() => { const holder = el('span', 'pn-lead'); holder.append(icon('folder')); return holder; })() : faviconTile(item.title || item.url || '');
+    const title = el('span', 'pn-row-title');
+    title.textContent = name;
+    title.setAttribute('data-tip', isFolder ? name : `${name}\n${item.url ?? ''}`);
+    const trail = el('span', 'pn-trail');
+    const meta = el('span', 'pn-meta');
+    meta.textContent = flat ? folderPath(item) : isFolder ? String(children(item.id).length) : hostOf(item.url ?? '');
+    const actions = el('span', 'pn-actions');
+    if (!isFolder) actions.append(iconButton('external', `Open ${name} in a new tab`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('newtab', item.id)); }));
+    actions.append(
+      iconButton('pencil', `Edit ${name}`, (event) => { event.stopPropagation(); openEditor(item); }),
+      iconButton('trash', `Delete ${name}`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('delete', item.id)); }),
+    );
+    trail.append(meta, actions);
+    row.append(chevron, lead, title, trail);
+    row.addEventListener('click', () => {
+      select(item.id);
+      if (isFolder) { if (!flat) toggle(item.id); } else emit(bookmarkActionCommand('open', item.id));
+    });
+
+    // Drag to reorder or move into a folder.
+    row.addEventListener('dragstart', (event) => {
+      dragId = item.id;
+      row.classList.add('is-dragging');
+      if (event.dataTransfer) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', name); }
+    });
+    row.addEventListener('dragend', () => { dragId = null; clearDrop(); row.classList.remove('is-dragging'); });
+    row.addEventListener('dragover', (event) => {
+      if (dragId === null || flat || dragId === item.id || isDescendant(item.id, dragId)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      const box = row.getBoundingClientRect();
+      const zone = dropZone(event.clientY - box.top, box.height, isFolder);
+      if (dropTarget?.id !== item.id || dropTarget.zone !== zone) { clearDrop(); dropTarget = { id: item.id, zone }; row.classList.add(`is-drop-${zone}`); }
+    });
+    row.addEventListener('dragleave', (event) => { if (!row.contains(event.relatedTarget as Node | null)) { row.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-into'); if (dropTarget?.id === item.id) dropTarget = null; } });
+    row.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const moving = dragId;
+      const zone = dropTarget?.id === item.id ? dropTarget.zone : 'after';
+      dragId = null;
+      clearDrop();
+      if (moving === null || moving === item.id || isDescendant(item.id, moving)) return;
+      if (zone === 'into') { expanded.add(item.id); emit(bookmarkMoveCommand(moving, item.id, 0)); }
+      else if (zone === 'before') emit(bookmarkMoveCommand(moving, item.parent, item.id));
+      else {
+        const next = children(item.parent).filter((other) => other.id !== moving);
+        const at = next.findIndex((other) => other.id === item.id);
+        emit(bookmarkMoveCommand(moving, item.parent, next[at + 1]?.id ?? 0));
+      }
+    });
+    return row;
+  };
+  const clearDrop = (): void => {
+    dropTarget = null;
+    for (const node of Array.from(list.querySelectorAll('.is-drop-before, .is-drop-after, .is-drop-into'))) node.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-into');
   };
 
   const render = (): void => {
-    toolbar.replaceChildren(button('New folder', openFolderDraft), button('Add bookmark', () => openDraft()));
-    crumb.replaceChildren();
-    list.replaceChildren();
-    if (!snapshot) {
-      status.textContent = issue || 'Loading bookmarks…';
-      return;
-    }
+    const focusedRow = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('.pn-row')?.dataset.id : undefined;
+    const keepFocus = list.querySelector('.pn-form')?.contains(document.activeElement) === true;
     status.textContent = issue;
-    const searching = search.value.trim().length > 0;
-    const current = localFolder;
-    const currentItem = current === null ? undefined : getItem(current);
-    if (current !== null && !currentItem) localFolder = null;
-    if (!searching && currentItem) {
-      crumb.append(button('Bookmarks', () => { localFolder = null; localNavigation = true; render(); }, 'Go to bookmarks root'));
-      crumb.append(document.createTextNode(` / ${currentItem.title}`));
-    } else crumb.textContent = searching ? 'Search results' : 'Bookmarks';
-
-    const visible = searching
-      ? snapshot.items
-      : snapshot.items.filter((item) => item.parent === localFolder);
-    if (visible.length === 0) {
-      status.textContent = searching
-        ? 'No bookmarks match this search.'
-        : snapshot.items.length === 0
-          ? 'No bookmarks yet. Add a bookmark or create a folder.'
-          : 'This folder is empty.';
+    status.hidden = issue === '';
+    const nodes: HTMLElement[] = [];
+    const form = buildForm();
+    if (form && !draft?.item) nodes.push(form);
+    if (!snapshot) {
+      if (!issue) status.hidden = false, status.textContent = 'Loading bookmarks…';
+      list.replaceChildren(...nodes);
       return;
     }
-
-    for (const item of visible) {
-      const row = document.createElement('article');
-      row.className = 'bookmarks-row';
-      row.setAttribute('role', 'listitem');
-      row.dataset.id = String(item.id);
-      const primary = document.createElement('div');
-      primary.className = 'bookmarks-primary';
-      const label = button(item.title || (item.kind === 'folder' ? 'Untitled folder' : item.url ?? 'Untitled bookmark'), () => {
-        if (item.kind === 'folder') { localFolder = item.id; localNavigation = true; search.value = ''; render(); }
-        else emit(bookmarkActionCommand('open', item.id));
-      }, item.kind === 'folder' ? `Open folder ${item.title}` : `Open bookmark ${item.title}`);
-      label.className = 'bookmarks-name';
-      primary.append(label);
-      if (searching) {
-        const path = document.createElement('span');
-        path.className = 'bookmarks-path';
-        path.textContent = folderPath(item);
-        primary.append(path);
-      } else if (item.kind === 'link') {
-        const address = document.createElement('span');
-        address.className = 'bookmarks-path';
-        address.textContent = item.url ?? '';
-        primary.append(address);
-      }
-      row.append(primary);
-      if (item.kind === 'link') row.append(button('New tab', () => emit(bookmarkActionCommand('newtab', item.id)), `Open ${item.title} in a new tab`));
-      row.append(button('Edit', () => openDraft(item), `Edit ${item.title}`));
-      row.append(button('Delete', () => emit(bookmarkActionCommand('delete', item.id)), `Delete ${item.title}`));
-
-      const siblings = snapshot.items.filter((other) => other.parent === item.parent);
-      const index = siblings.findIndex((other) => other.id === item.id);
-      if (!searching) {
-        row.append(button('Move up', () => {
-          const before = siblings[index - 1];
-          if (before) emit(bookmarkMoveCommand(item.id, item.parent, before.id));
-        }, `Move ${item.title} up`));
-        row.append(button('Move down', () => {
-          const next = siblings[index + 1];
-          const after = siblings[index + 2];
-          if (next) emit(bookmarkMoveCommand(item.id, item.parent, after?.id ?? 0));
-        }, `Move ${item.title} down`));
-        const moveTo = document.createElement('select');
-        moveTo.setAttribute('aria-label', `Move ${item.title} to folder`);
-        const currentOption = document.createElement('option');
-        currentOption.value = '';
-        currentOption.textContent = `Move to…`;
-        moveTo.append(currentOption);
-        for (const folder of folders()) {
-          if (folder.id === item.id || (item.kind === 'folder' && isDescendant(folder.id, item.id)) || folder.id === item.parent) continue;
-          const option = document.createElement('option');
-          option.value = String(folder.id);
-          option.textContent = folderPath(folder) ? `${folderPath(folder)} / ${folder.title}` : folder.title;
-          moveTo.append(option);
+    const flat = searching();
+    const add = (item: BookmarkItem): void => {
+      nodes.push(buildRow(item, flat));
+      if (draft?.item?.id === item.id && form) nodes.push(form);
+      if (!flat && item.kind === 'folder' && expanded.has(item.id)) {
+        const kids = children(item.id);
+        if (kids.length === 0) {
+          const none = el('div', 'pn-none');
+          none.style.setProperty('--pn-depth', String(depthOf(item) + 1));
+          none.textContent = 'Empty folder';
+          nodes.push(none);
         }
-        moveTo.addEventListener('change', () => {
-          if (!moveTo.value) return;
-          const parent = Number(moveTo.value);
-          emit(bookmarkMoveCommand(item.id, parent, 0));
-          moveTo.value = '';
-        });
-        row.append(moveTo);
+        for (const kid of kids) add(kid);
       }
-      list.append(row);
+    };
+    if (flat) for (const item of snapshot.items) add(item);
+    else for (const item of children(null)) add(item);
+    if (nodes.length === 0 || (nodes.length === 1 && form && !draft?.item)) {
+      nodes.push(flat ? emptyState('search', 'No bookmarks match.') : emptyState('bookmark', 'Bookmarks you add appear here.'));
     }
+    list.replaceChildren(...nodes);
+    if (selected !== null && !rowFor(selected)) selected = null;
+    select(selected);
+    if (!keepFocus && focusedRow) rowFor(Number(focusedRow))?.focus();
   };
 
-  search.addEventListener('input', () => {
-    if (composing) return;
+  const sendSearch = (): void => {
     if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(sendSearch, 120);
-    render();
+    timer = setTimeout(() => sendPanel('bm', { a: 'search', text: search.input.value }), 120);
+  };
+  search.input.addEventListener('input', () => { if (!composing) sendSearch(); render(); });
+  search.input.addEventListener('compositionstart', () => { composing = true; });
+  search.input.addEventListener('compositionend', () => { composing = false; sendSearch(); render(); });
+  header.tools.append(
+    iconButton('plus', 'Add bookmark', () => openEditor(undefined, false)),
+    iconButton('folder', 'New folder', () => openEditor(undefined, true)),
+  );
+  list.addEventListener('focusin', (event) => {
+    const row = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('.pn-row') : null;
+    if (row && row.dataset.id !== String(selected)) select(Number(row.dataset.id));
   });
-  search.addEventListener('compositionstart', () => { composing = true; });
-  search.addEventListener('compositionend', () => {
-    composing = false;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(sendSearch, 120);
-    render();
+
+  host.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (event.key === 'Escape' && target === search.input && search.input.value !== '') {
+      event.preventDefault();
+      search.input.value = '';
+      sendPanel('bm', { a: 'search', text: '' });
+      render();
+      return;
+    }
+    if (target === search.input && event.key === 'ArrowDown') { event.preventDefault(); (rowFor(selected) ?? rowEls()[0])?.focus(); return; }
+    const row = target?.closest<HTMLElement>('.pn-row') ?? null;
+    if (!row || target !== row) return;
+    const item = getItem(Number(row.dataset.id));
+    if (!item) return;
+    const all = rowEls();
+    if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && !searching()) { event.preventDefault(); moveWithin(item, event.key === 'ArrowUp' ? -1 : 1); return; }
+    if (event.key === 'ArrowUp' && row === all[0]) { event.preventDefault(); search.input.focus(); return; }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (item.kind === 'folder') { if (!searching()) toggle(item.id); } else emit(bookmarkActionCommand(event.ctrlKey ? 'newtab' : 'open', item.id));
+    } else if (event.key === 'ArrowRight' && item.kind === 'folder' && !searching()) {
+      event.preventDefault();
+      if (!expanded.has(item.id)) toggle(item.id, true); else rowEls()[all.indexOf(row) + 1]?.focus();
+    } else if (event.key === 'ArrowLeft' && !searching()) {
+      event.preventDefault();
+      if (item.kind === 'folder' && expanded.has(item.id)) toggle(item.id, false); else if (item.parent !== null) rowFor(item.parent)?.focus();
+    } else if (event.key === 'Delete') { event.preventDefault(); emit(bookmarkActionCommand('delete', item.id)); }
+    else if (event.key === 'F2') { event.preventDefault(); openEditor(item); }
+    else moveFocus(list, '.pn-row', event);
   });
 
   const receive = (message: SnapshotMsg): void => {
@@ -248,10 +338,19 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     }
     issue = '';
     snapshot = incoming;
-    if (search.value !== incoming.query) search.value = incoming.query;
-    if (!localNavigation) localFolder = incoming.currentFolder;
+    if (search.input.value !== incoming.query) search.input.value = incoming.query;
+    if (!seeded) {
+      seeded = true;
+      let folder = getItem(incoming.currentFolder);
+      const seen = new Set<number>();
+      while (folder && !seen.has(folder.id)) { seen.add(folder.id); expanded.add(folder.id); folder = getItem(folder.parent); }
+    }
     render();
   };
   render();
   return (message) => { if (message.t === 'snap') receive(message); };
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).host || url; } catch { return url; }
 }
