@@ -7608,6 +7608,10 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         }
         Command::FillPassword => passwords_panel::offer_fill(hwnd, app),
         Command::OpenPrivacyDashboard => privacy_panel::open(hwnd, app),
+        Command::ShowHistory => {
+            side_panel::open(hwnd, side_panel::PanelId::History);
+            apply_sidebar_bounds(hwnd, app);
+        }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
@@ -7751,6 +7755,11 @@ unsafe extern "system" fn edit_subclass(
                     }
                 }
             }
+        }
+        // Ctrl+Shift+V is the tab layout toggle. TranslateMessage still queues its Ctrl+V character
+        // (SYN), which an EDIT would treat as a paste.
+        if msg == WM_CHAR && w.0 == 0x16 && GetKeyState(VK_SHIFT.0 as i32) < 0 {
+            return LRESULT(0);
         }
         if msg == WM_CHAR && w.0 == 0x0d {
             if let Some(app) = app {

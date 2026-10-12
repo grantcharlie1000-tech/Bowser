@@ -104,8 +104,12 @@ pub fn accel_command(accel: Accel, omnibox_editing: bool) -> Option<Shortcut> {
 /// Key chords the text field uses for editing or selection, so the omnibox keeps them.
 fn is_editing_chord(accel: Accel) -> bool {
     match accel.vk {
+        // Ctrl+Shift+Delete opens the Privacy dashboard even from the field.
+        VK_DELETE if accel.ctrl && accel.shift => false,
         VK_LEFT | VK_RIGHT | VK_HOME | VK_END | VK_BACK | VK_DELETE => accel.ctrl || accel.shift,
-        VK_A | VK_C | VK_V | VK_X | VK_Z => accel.ctrl,
+        // Ctrl+Shift+V is the tab layout toggle, never a plain-text paste.
+        VK_V => accel.ctrl && !accel.shift,
+        VK_A | VK_C | VK_X | VK_Z => accel.ctrl,
         VK_Y => accel.ctrl && !accel.shift,
         _ => false,
     }
@@ -1286,12 +1290,27 @@ mod tests {
             key(0x24, false, true, false), // Shift+Home
             key(0x23, true, true, false),  // Ctrl+Shift+End
             key(0x08, true, false, false), // Ctrl+Backspace
-            key(0x2E, true, true, false),  // Ctrl+Shift+Delete
             key(0x2E, false, true, false), // Shift+Delete
             key(0x25, false, true, false), // Shift+Left
         ] {
             assert_eq!(accel_command(accel, true), None, "{accel:?}");
         }
+    }
+
+    #[test]
+    fn omnibox_editing_does_not_swallow_ctrl_shift_v_or_ctrl_shift_delete() {
+        assert_eq!(
+            accel_command(key(0x56, true, true, false), true),
+            Some(Shortcut::ToggleTabLayout)
+        );
+        assert_eq!(
+            accel_command(key(0x2E, true, true, false), true),
+            Some(Shortcut::OpenPrivacyDashboard)
+        );
+        assert_eq!(
+            accel_command(key(0xDC, true, true, false), true),
+            Some(Shortcut::ToggleSplit)
+        );
     }
 
     #[test]
