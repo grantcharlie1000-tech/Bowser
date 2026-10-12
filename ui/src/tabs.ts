@@ -3,6 +3,7 @@
 import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
+import { setTip } from './tooltip';
 // --- vertical sidebar (lane S) ---
 import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
@@ -109,7 +110,7 @@ function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): v
   const label = item.title !== '' ? item.title : 'Tab';
   if (n.root.getAttribute('aria-label') !== label) {
     n.root.setAttribute('aria-label', label);
-    n.root.title = label;
+    setTip(n.root, label);
   }
   n.root.setAttribute('aria-selected', String(selected));
   const close = n.root.querySelector<HTMLButtonElement>('.close');
@@ -149,7 +150,7 @@ function syncGroup(g: GroupNode, e: GroupEntry): void {
   const label = name !== undefined && name !== '' ? name : 'Tab group';
   if (g.label !== label) {
     g.label = label;
-    g.ball.title = label;
+    setTip(g.ball, label);
     g.ball.setAttribute('aria-label', label);
   }
   const expanded = String(!e.collapsed);

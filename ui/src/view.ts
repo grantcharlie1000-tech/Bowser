@@ -1,6 +1,7 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
 import { MAX_TEXT, THEME_TOKENS, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
 import { el, icon, type IconName } from './dom';
+import { setTip } from './tooltip';
 
 export interface View {
   readonly back: HTMLButtonElement;
@@ -51,7 +52,7 @@ function iconButton(label: string, name: IconName, className = 'btn'): HTMLButto
   const button = el('button', className);
   button.type = 'button';
   button.setAttribute('aria-label', label);
-  button.title = label;
+  setTip(button, label);
   button.append(icon(name));
   return button;
 }
@@ -104,7 +105,7 @@ function setReloadMode(button: HTMLButtonElement, loading: boolean): void {
   button.dataset.mode = mode;
   const label = loading ? 'Stop' : 'Reload';
   button.setAttribute('aria-label', label);
-  button.title = label;
+  setTip(button, label);
   button.replaceChildren(icon(mode));
 }
 
@@ -137,7 +138,7 @@ export function applyState(view: View, state: StateMsg): void {
   }
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
   site.setAttribute('aria-label', text);
-  site.title = text;
+  setTip(site, text);
 }
 
 export function applyTheme(theme: Theme, solid: boolean, dark: boolean): void {
