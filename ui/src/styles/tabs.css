@@ -151,7 +151,6 @@
   top: 3px;
   width: 10px;
   height: 10px;
-  stroke-width: 2.4;
 }
 
 .strip .tab.muted .fav {
@@ -213,6 +212,7 @@
 }
 
 .strip .close svg {
+  --bw-icon-stroke: var(--bw-icon-stroke-fine);
   width: 10px;
   height: 10px;
 }

@@ -139,7 +139,7 @@
 .side-marker { width: 5px; height: 5px; border-radius: 50%; background: var(--mc, var(--bw-focus)); opacity: 0; }
 .side-marker.on { opacity: 1; }
 .side-close { display: grid; width: 20px; height: 20px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: transparent; opacity: 0; }
-.side-close svg { width: 12px; height: 12px; }
+.side-close svg { --bw-icon-stroke: var(--bw-icon-stroke-fine); width: 12px; height: 12px; }
 .side-tab:hover .side-close,
 .side-tab:focus-within .side-close { opacity: .85; }
 .side-close:hover { background: var(--bw-hover) !important; }
