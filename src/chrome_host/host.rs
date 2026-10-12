@@ -236,6 +236,15 @@ impl ChromeEnv {
     }
 }
 
+/// Where a chrome controller sits while its page loads: one pixel at the parent's top-left corner.
+///
+/// The controller must be visible while it loads. Chromium treats a hidden WebView2 as a background
+/// page and drops its renderer to idle priority, so under CPU contention (parallel builds, benchmark
+/// workloads) the page can take many seconds, or never, to run its script and post `ready`, and the
+/// window keeps the native chrome. One visible pixel keeps the renderer at normal priority without
+/// covering native controls (whose clicks a transparent full-size view would swallow) while it loads.
+const LOADING_BOUNDS: RECT = RECT { left: 0, top: 0, right: 1, bottom: 1 };
+
 /// Everything the creation callbacks need. Cheap to clone; all fields are shared or Copy.
 #[derive(Clone)]
 struct Setup {
@@ -255,6 +264,9 @@ struct State {
     /// Keeps the shared environment alive for as long as this host exists.
     _env: ChromeEnv,
     applied_bounds: RECT,
+    /// Where the caller wants the view. Applied once the page has said `ready`; until then the
+    /// controller is parked at `LOADING_BOUNDS`.
+    wanted_bounds: RECT,
     /// What the caller last asked for. Defaults to visible; only shown once the page has said `ready`.
     wanted_visible: bool,
     applied_visible: Option<bool>,
@@ -325,8 +337,10 @@ impl ChromeHost {
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
         let controller = {
-            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
             if state.closed { return Err(fail("Chrome host is closed")); }
+            state.wanted_bounds = bounds;
+            if !state.revealed { return Ok(()); }
             if same_rect(state.applied_bounds, bounds) { return Ok(()); }
             state.controller.clone()
         };
@@ -539,9 +553,10 @@ fn configure(
             controller,
             webview,
             _env: setup.env.clone(),
-            applied_bounds: setup.bounds,
+            applied_bounds: LOADING_BOUNDS,
+            wanted_bounds: setup.bounds,
             wanted_visible: true,
-            applied_visible: Some(false),
+            applied_visible: Some(true),
             revealed: false,
             closed: false,
             removers: Vec::new(),
@@ -565,8 +580,9 @@ fn prepare(
         (state.controller.clone(), state.webview.clone())
     };
     unsafe {
-        controller.SetBounds(setup.bounds)?;
-        controller.SetIsVisible(false)?;
+        // Loads while visible but parked at one pixel (see `LOADING_BOUNDS`); `reveal` moves it.
+        controller.SetBounds(LOADING_BOUNDS)?;
+        controller.SetIsVisible(true)?;
         if !background_at_creation {
             let controller2: ICoreWebView2Controller2 = controller.cast()?;
             controller2.SetDefaultBackgroundColor(TRANSPARENT)?;
@@ -908,18 +924,26 @@ fn asset_response(
     }
 }
 
-/// The page said `ready`: show the controller if the caller wants it visible.
+/// The page said `ready`: move the controller from its loading spot to the caller's bounds, and
+/// show it there if the caller wants it visible (otherwise hide it before it moves).
 fn reveal(weak: &Weak<RefCell<State>>) {
     let Some(shared) = weak.upgrade() else {
         return;
     };
-    let wanted = {
+    let (wanted_bounds, wanted_visible) = {
         let Ok(mut state) = shared.try_borrow_mut() else { return; };
-        if state.closed { return; }
+        if state.closed || state.revealed { return; }
         state.revealed = true;
-        state.wanted_visible
+        (state.wanted_bounds, state.wanted_visible)
     };
-    let _ = (ChromeHost { state: shared }).set_visible(wanted);
+    let host = ChromeHost { state: shared };
+    if wanted_visible {
+        let _ = host.set_bounds(wanted_bounds);
+        let _ = host.set_visible(true);
+    } else {
+        let _ = host.set_visible(false);
+        let _ = host.set_bounds(wanted_bounds);
+    }
 }
 
 /// Exact match against the start URL of `view`. Nothing else may load in that chrome webview.
@@ -972,6 +996,13 @@ mod tests {
         assert!(!failures.record(false));
         assert!(failures.record(false));
         assert!(!failures.record(false));
+    }
+
+    #[test]
+    fn loading_bounds_are_one_visible_pixel_and_never_match_real_bounds() {
+        assert_eq!((LOADING_BOUNDS.right - LOADING_BOUNDS.left, LOADING_BOUNDS.bottom - LOADING_BOUNDS.top), (1, 1));
+        assert!(!same_rect(LOADING_BOUNDS, RECT { left: 0, top: 0, right: 800, bottom: 40 }));
+        assert!(same_rect(LOADING_BOUNDS, LOADING_BOUNDS));
     }
 
     #[test]

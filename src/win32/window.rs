@@ -5648,6 +5648,12 @@ fn html_refresh(hwnd: HWND) {
             .then_some((id, text))
     });
     sync_html_host_bounds(hwnd);
+    if activating {
+        // Benchmark harnesses assert on this event to know the HTML chrome, not the native one, is live.
+        if let Some(app) = app_of(hwnd) {
+            let _ = app.borrow().log.record("html_chrome_shown");
+        }
+    }
     html_sync(hwnd);
     if let Some((id, text)) = handoff {
         if host.post_json(&set_text_json(&text, false)).is_ok() {
