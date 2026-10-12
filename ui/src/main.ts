@@ -65,7 +65,6 @@ function start(): void {
   view.forward.addEventListener('click', () => nav('forward'));
   view.reload.addEventListener('click', () => nav(loading ? 'stop' : 'reload'));
   view.site.addEventListener('click', () => open('site'));
-  view.newTab.addEventListener('click', () => open('newtab'));
   view.menu.addEventListener('click', () => open('menu'));
 
   input.addEventListener('input', (ev) => {

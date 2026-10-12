@@ -9,7 +9,6 @@ export interface View {
   readonly site: HTMLButtonElement;
   readonly input: HTMLInputElement;
   readonly progress: HTMLElement;
-  readonly newTab: HTMLButtonElement;
   readonly menu: HTMLButtonElement;
 }
 
@@ -76,13 +75,12 @@ export function buildView(root: HTMLElement): View {
   const pill = el('div', 'pill');
   pill.append(site, input, progress);
 
-  const newTab = iconButton('New tab', 'plus');
   const menu = iconButton('Menu', 'menu');
 
   const nav = el('div', 'nav');
   nav.append(back, forward, reload);
   const actions = el('div', 'actions');
-  actions.append(newTab, menu);
+  actions.append(menu);
 
   // Empty areas of the toolbar (the root and its flex wrappers) are the window drag surface.
   // Buttons, the omnibox and the pill are not marked, so they keep their own behaviour.
@@ -92,7 +90,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, input, progress, newTab, menu };
+  return { back, forward, reload, site, input, progress, menu };
 }
 
 function setReloadMode(button: HTMLButtonElement, loading: boolean): void {

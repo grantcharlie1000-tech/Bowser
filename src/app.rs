@@ -2278,6 +2278,11 @@ impl App {
         }
     }
 
+    /// Moves keyboard focus into the active page. Used after the HTML toolbar submits or escapes.
+    pub fn focus_page(app: &AppRef) {
+        let _ = Self::with_engine(app, |engine| engine.focus_page());
+    }
+
     pub fn can_go_back(app: &AppRef) -> bool {
         app.borrow()
             .engine

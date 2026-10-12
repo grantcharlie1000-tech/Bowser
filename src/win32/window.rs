@@ -20,7 +20,10 @@ use crate::{
     },
     chrome_host::{
         self, host::ChromeHost,
-        protocol::{CaptionAction, Command as ChromeCommand, Security, ViewState, focus_json},
+        protocol::{
+            CaptionAction, Command as ChromeCommand, NavAction, OpenTarget, ViewState,
+            completion_json, focus_json, set_text_json,
+        },
     },
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
@@ -283,6 +286,12 @@ struct WindowChrome {
     /// True only when the host exists and the page is ready. The HTML region then replaces the
     /// native back, forward, reload, omnibox and main menu controls.
     html_toolbar_active: bool,
+    /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
+    html_omnibox_focused: bool,
+    /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
+    html_last_state: Option<String>,
+    /// The tab and omnibox text last sent with `setText`, so the text is not re-sent each sync.
+    html_text_sent: Option<(TabId, String)>,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -357,6 +366,9 @@ impl WindowChrome {
             html_requested: false,
             html_page_ready: false,
             html_toolbar_active: false,
+            html_omnibox_focused: false,
+            html_last_state: None,
+            html_text_sent: None,
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -5238,7 +5250,7 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
 /// page its state. The native controls it replaces stop painting and the native address input is
 /// hidden. Runs again on every `ready`, so a reloaded page gets state too.
 fn html_refresh(hwnd: HWND) {
-    let Some((host, edit, state)) = with_chrome(hwnd, |s| {
+    let Some(edit) = with_chrome(hwnd, |s| {
         if s.html.is_some() && s.html_page_ready && !s.html_toolbar_active {
             s.html_toolbar_active = true;
             s.sync_html_bounds();
@@ -5246,26 +5258,15 @@ fn html_refresh(hwnd: HWND) {
         if !s.html_toolbar_active {
             return None;
         }
-        let host = s.html.clone()?;
-        // Placeholder state. Theme tokens and live tab state arrive in step I2.
-        let state = ViewState {
-            scale: s.layout.metrics.dpi() as f32 / 96.0,
-            solid: false,
-            dark: false,
-            back: false,
-            forward: false,
-            loading: false,
-            progress: 0,
-            security: Security::None,
-            label: String::new(),
-            theme: Vec::new(),
-        };
-        Some((host, s.edit, state.to_json()))
+        // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
+        s.html_last_state = None;
+        s.html_text_sent = None;
+        Some(s.edit)
     })
     .flatten() else {
         return;
     };
-    let _ = host.post_json(&state);
+    html_sync(hwnd);
     unsafe {
         if !edit.is_invalid() {
             if GetFocus() == edit {
@@ -5277,12 +5278,77 @@ fn html_refresh(hwnd: HWND) {
     }
 }
 
+/// The application state behind this window, if it is still alive. The clone is an `Rc` handle, so
+/// no borrow of the window table or the app is held by the caller.
+fn app_of(hwnd: HWND) -> Option<AppRef> {
+    let raw = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppRef).as_ref() }?;
+    Some(raw.clone())
+}
+
+/// Pushes the toolbar state and the omnibox text when they changed since the last push. Cheap when
+/// nothing changed: the state JSON is compared with the last one sent. The omnibox text is only
+/// sent while the HTML omnibox is not focused, so the user's typing is never overwritten. Holds no
+/// chrome borrow while calling App, which may re-enter this window.
+fn html_sync(hwnd: HWND) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    let Some((host, palette, dpi)) = with_chrome(hwnd, |s| {
+        if !s.html_toolbar_active {
+            return None;
+        }
+        Some((s.html.clone()?, s.palette, s.dpi))
+    })
+    .flatten() else {
+        return;
+    };
+    let id = App::active_tab_id(&app);
+    let site = App::site_security(&app);
+    let state = ViewState {
+        scale: dpi as f32 / 96.0,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
+        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        back: App::tab_can_go_back(&app, id),
+        forward: App::tab_can_go_forward(&app, id),
+        loading: App::tab_loading(&app, id),
+        progress: App::tab_progress_percent(&app, id).unwrap_or(0),
+        security: chrome_host::security_of(site),
+        label: site.summary().to_string(),
+        theme: chrome_host::theme_tokens(palette),
+    };
+    let json = state.to_json();
+    let display =
+        with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
+    let (send_state, send_text) = with_chrome(hwnd, |s| {
+        let send_state = chrome_host::state_changed(&mut s.html_last_state, &json);
+        let already_sent = s
+            .html_text_sent
+            .as_ref()
+            .is_some_and(|(tab, text)| *tab == id && *text == display);
+        let send_text = !s.html_omnibox_focused && !already_sent;
+        if send_text {
+            s.html_text_sent = Some((id, display.clone()));
+            s.edit_text.clone_from(&display);
+            s.completion = None;
+        }
+        (send_state, send_text)
+    })
+    .unwrap_or_default();
+    if send_state {
+        let _ = host.post_json(&json);
+    }
+    if send_text {
+        let _ = host.post_json(&set_text_json(&display, false));
+    }
+}
+
 /// Falls back to the native toolbar: the HTML region is released, the native address input comes
 /// back and the host is closed. Safe to call more than once.
 fn html_failed(hwnd: HWND) {
     let Some((host, edit)) = with_chrome(hwnd, |s| {
         s.html_toolbar_active = false;
         s.html_page_ready = false;
+        s.html_omnibox_focused = false;
         s.sync_html_bounds();
         (s.html.take(), s.edit)
     }) else {
@@ -5306,13 +5372,99 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Ready => {
             let _ = with_chrome(hwnd, |s| s.html_page_ready = true);
             html_refresh(hwnd);
+            return;
         }
         ChromeCommand::BeginDrag => begin_html_drag(hwnd),
         ChromeCommand::Caption(CaptionAction::ToggleMaximize) => toggle_max(hwnd),
         ChromeCommand::Caption(CaptionAction::SystemMenu) => html_system_menu(hwnd),
-        // step I2: navigation, omnibox editing, menus.
-        _ => {}
+        ChromeCommand::Nav(action) => {
+            let Some(app) = app_of(hwnd) else { return };
+            match action {
+                NavAction::Back => navigate_back_for_focused_pane(&app),
+                NavAction::Forward => navigate_forward_for_focused_pane(&app),
+                NavAction::Reload => App::reload(&app),
+                NavAction::Stop => App::stop(&app),
+            }
+        }
+        ChromeCommand::Edit { seq, text } => html_edit(hwnd, seq, &text),
+        ChromeCommand::Submit(text) => {
+            let Some(app) = app_of(hwnd) else { return };
+            // Same path as the native omnibox: remember the typed text, then let App normalise it.
+            remember_url(hwnd, App::active_tab_id(&app), &text);
+            App::submit(&app, &text);
+            App::focus_page(&app);
+        }
+        ChromeCommand::Escape => {
+            let Some(app) = app_of(hwnd) else { return };
+            let id = App::active_tab_id(&app);
+            let display = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())
+                .unwrap_or_default();
+            // Restore the address the tab shows, then hand the keyboard back to the page.
+            let host = with_chrome(hwnd, |s| {
+                s.html_text_sent = Some((id, display.clone()));
+                s.edit_text.clone_from(&display);
+                s.completion = None;
+                s.html.clone()
+            })
+            .flatten();
+            if let Some(host) = host {
+                let _ = host.post_json(&set_text_json(&display, false));
+            }
+            App::focus_page(&app);
+        }
+        ChromeCommand::Focus(on) => {
+            let _ = with_chrome(hwnd, |s| {
+                s.html_omnibox_focused = on;
+                if !on {
+                    // Leaving the omnibox discards typed text, as the native edit does. The next
+                    // sync sends the tab's address again.
+                    s.html_text_sent = None;
+                    s.completion = None;
+                }
+            });
+        }
+        ChromeCommand::Open(OpenTarget::Menu) => {
+            if let Some(app) = app_of(hwnd) {
+                show_main_menu(hwnd, &app);
+            }
+        }
+        ChromeCommand::Open(OpenTarget::Site) => {
+            let Some(app) = app_of(hwnd) else { return };
+            let button = with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
+            site_info::show(hwnd, &app, button);
+        }
+        ChromeCommand::Open(OpenTarget::NewTab) => {
+            if let Some(app) = app_of(hwnd) {
+                App::new_tab(&app);
+                focus_omni(hwnd, &app, true);
+            }
+        }
     }
+    html_sync(hwnd);
+}
+
+/// Inline completion for the HTML omnibox. Mirrors the native EN_CHANGE path: the text is kept for
+/// the next backspace check, prewarming runs, and the suffix goes back to the page tagged with `seq`.
+/// Empty text gets no reply.
+fn html_edit(hwnd: HWND, seq: u32, text: &str) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    let suffix = with_chrome(hwnd, |s| {
+        // Shorter text means Backspace or Delete, where completion must not reappear.
+        s.suppress_completion = text.chars().count() < s.edit_text.chars().count();
+        s.edit_text.clear();
+        s.edit_text.push_str(text);
+        s.update_completion();
+        s.completion.as_ref().map(|c| c.completed_suffix.clone())
+    })
+    .flatten();
+    App::prewarm(&app, text);
+    if text.is_empty() {
+        return;
+    }
+    let reply = completion_json(seq, suffix.as_deref().unwrap_or(""));
+    let _ = with_chrome(hwnd, |s| s.html.clone()).flatten().map(|host| host.post_json(&reply));
 }
 
 /// Starts a native window move for a press on an empty toolbar area. Only a press still held
@@ -5455,6 +5607,8 @@ fn position_edit(hwnd: HWND) {
 }
 fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     static PAINT_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // The HTML toolbar has no paint of its own here; this is where its state is refreshed.
+    html_sync(hwnd);
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);

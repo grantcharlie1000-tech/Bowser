@@ -91,6 +91,10 @@ pub trait EngineAdapter {
     fn stop(&mut self) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Moves keyboard focus into the active tab's page, out of whatever control had it.
+    fn focus_page(&mut self) -> windows::core::Result<()> {
+        Ok(())
+    }
     fn set_visible(&mut self, _visible: bool) -> windows::core::Result<()> {
         Ok(())
     }

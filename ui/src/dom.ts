@@ -8,14 +8,13 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: st
   return node;
 }
 
-export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'plus' | 'menu' | 'lock' | 'warning' | 'info';
+export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'lock' | 'warning' | 'info';
 
 const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   back: ['M10 3.5 5.5 8l4.5 4.5'],
   forward: ['M6 3.5 10.5 8 6 12.5'],
   reload: ['M12.8 8a4.8 4.8 0 1 1-1.4-3.4', 'M12.8 2.8v2.6h-2.6'],
   stop: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],
-  plus: ['M8 3v10', 'M3 8h10'],
   menu: ['M8 3.25v.01', 'M8 8v.01', 'M8 12.75v.01'],
   lock: ['M3.5 7.5h9v6h-9z', 'M5.5 7.5V5.25a2.5 2.5 0 0 1 5 0V7.5'],
   warning: ['M8 2.5 14 13H2z', 'M8 6.5v3', 'M8 11.25v.01'],

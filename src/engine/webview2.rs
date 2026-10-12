@@ -1417,6 +1417,22 @@ impl WebView2Engine {
 }
 
 impl EngineAdapter for WebView2Engine {
+    fn focus_page(&mut self) -> Result<()> {
+        let controller = {
+            let state = self.core.borrow();
+            state
+                .active_tab
+                .and_then(|active| state.tabs.get(&active))
+                .and_then(|tab| tab.controller.clone())
+        };
+        match controller {
+            Some(controller) => unsafe {
+                controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+            },
+            None => Ok(()),
+        }
+    }
+
     fn set_extension_enabled(
         &mut self,
         id: &str,
