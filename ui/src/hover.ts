@@ -10,12 +10,15 @@ import {
   send,
   sendHoverAct,
   sendPopupSize,
+  sendSuggestPick, // --- omnibox suggest ---
   type HoverActFields,
   type HoverCardMsg,
   type HoverIslandMsg,
   type HoverMsg,
   type HoverRowMsg,
+  type SuggestMsg,
 } from './protocol';
+import { suggestGlyph } from './suggest-logic'; // --- omnibox suggest ---
 import { applyTheme } from './view';
 
 type Act = (fields: HoverActFields) => void;
@@ -117,6 +120,49 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   card.append(markers, head, ...rowList(msg.rows, msg.more, 'bw-card', act));
   return card;
 }
+
+// --- omnibox suggest ---
+const SUGGEST_BADGE: Readonly<Partial<Record<SuggestMsg['items'][number]['k'], string>>> = { tab: 'Switch to tab' };
+
+/** The omnibox dropdown: one row per suggestion. Rows never take focus; the toolbar keeps the keyboard. */
+function renderSuggest(msg: SuggestMsg): HTMLElement {
+  const list = el('div', 'bw-suggest');
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'Suggestions');
+  list.style.width = `${msg.w}px`;
+  msg.items.forEach((item, index) => {
+    const row = el('div', 'bw-suggest-row');
+    row.setAttribute('role', 'option');
+    row.dataset.kind = item.k;
+    row.classList.toggle('is-selected', index === msg.sel);
+    row.setAttribute('aria-selected', String(index === msg.sel));
+    const lead = item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : el('span', 'bw-suggest-fav is-glyph');
+    if (item.fav === '') lead.append(icon(suggestGlyph(item.k)));
+    lead.setAttribute('aria-hidden', 'true');
+    const title = el('span', 'bw-suggest-title');
+    title.dir = 'auto';
+    title.textContent = item.title !== '' ? item.title : item.text;
+    row.append(lead, title);
+    if (item.url !== '' && item.url !== item.title) {
+      const url = el('span', 'bw-suggest-url');
+      url.dir = 'auto';
+      url.textContent = item.url;
+      row.append(url);
+    }
+    const badge = SUGGEST_BADGE[item.k];
+    if (badge) {
+      const tag = el('span', 'bw-suggest-badge');
+      tag.textContent = badge;
+      row.append(tag);
+    }
+    // A press must not move the keyboard away from the omnibox.
+    row.addEventListener('pointerdown', (ev) => { ev.preventDefault(); });
+    row.addEventListener('click', () => { sendSuggestPick(msg.seq, index); });
+    list.append(row);
+  });
+  return list;
+}
+// --- end omnibox suggest ---
 
 /** The island menu's DOM. The name field is built once and kept while the menu refreshes. */
 interface IslandView {
@@ -220,11 +266,13 @@ export function startHover(root: HTMLElement): void {
   document.body.classList.add('bw-hover-body');
   let tok = 0;
   let island: IslandView | null = null;
+  let suggestSeq = -1; // --- omnibox suggest ---
   // Actions always carry the token of the content now shown.
   const act: Act = (fields) => { if (tok !== 0) sendHoverAct(tok, fields); };
 
   const render = (msg: HoverMsg): void => {
     tok = msg.tok;
+    suggestSeq = -1; // --- omnibox suggest ---
     let content: HTMLElement;
     if (msg.kind === 'island') {
       const typing = island !== null && document.activeElement === island.input;
@@ -242,11 +290,39 @@ export function startHover(root: HTMLElement): void {
     sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));
   };
 
+  // --- omnibox suggest ---
+  const renderSuggestMsg = (msg: SuggestMsg): void => {
+    if (msg.tok === 0 || msg.items.length === 0) return;
+    tok = msg.tok;
+    suggestSeq = msg.seq;
+    island = null;
+    const content = renderSuggest(msg);
+    document.body.dataset.hoverKind = 'suggest';
+    root.replaceChildren(content);
+    const box = content.getBoundingClientRect();
+    sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));
+  };
+  // --- end omnibox suggest ---
+
   onInbound((msg) => {
     switch (msg.t) {
       case 'state':
         applyTheme(msg.theme, msg.solid, msg.dark);
         break;
+      // --- omnibox suggest ---
+      case 'suggest':
+        renderSuggestMsg(msg);
+        break;
+      case 'suggestSel': {
+        if (msg.seq !== suggestSeq) break;
+        const rows = root.querySelectorAll('.bw-suggest-row');
+        rows.forEach((row, index) => {
+          row.classList.toggle('is-selected', index === msg.sel);
+          row.setAttribute('aria-selected', String(index === msg.sel));
+        });
+        break;
+      }
+      // --- end omnibox suggest ---
       case 'hover':
         render(msg);
         break;
@@ -255,6 +331,7 @@ export function startHover(root: HTMLElement): void {
         // island it was typed for.
         if (island && island.input.value !== island.committed) act({ a: 'name', text: island.input.value });
         tok = 0;
+        suggestSeq = -1; // --- omnibox suggest ---
         island = null;
         delete document.body.dataset.hoverKind;
         root.replaceChildren();

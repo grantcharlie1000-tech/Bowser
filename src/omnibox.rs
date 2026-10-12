@@ -252,9 +252,339 @@ fn host_part(text: &str) -> &str {
     text.split(['/', '?', '#']).next().unwrap_or("")
 }
 
+// --- omnibox suggest ---
+/// Most rows in the suggestion dropdown, including the default (what-you-typed) row.
+pub const MAX_SUGGESTIONS: usize = 8;
+
+/// What a suggestion row stands for. The wire names are `search`, `url`, `hist`, `bm` and `tab`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuggestKind {
+    Search,
+    Url,
+    History,
+    Bookmark,
+    Tab,
+}
+
+impl SuggestKind {
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Search => "search",
+            Self::Url => "url",
+            Self::History => "hist",
+            Self::Bookmark => "bm",
+            Self::Tab => "tab",
+        }
+    }
+}
+
+/// A bookmark or open tab offered to [`suggest`]: a full URL and its title.
+#[derive(Clone, Copy, Debug)]
+pub struct SuggestSource<'a> {
+    pub url: &'a str,
+    pub title: &'a str,
+}
+
+/// One row of the dropdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Suggestion {
+    pub kind: SuggestKind,
+    /// What the omnibox shows while the row is selected (display form of the URL, or the query).
+    pub text: String,
+    pub title: String,
+    /// Display form of the URL; empty for a search row.
+    pub url: String,
+    /// What picking the row submits: the full URL, or the query for a search row.
+    pub target: String,
+    /// Index into the `tabs` slice given to [`suggest`], for a tab row.
+    pub tab: Option<usize>,
+}
+
+/// The URL text without `https://`, `http://` and a leading `www.`, the same body the omnibox
+/// matches on, found without parsing (bookmarks can number thousands).
+fn match_body(url: &str) -> &str {
+    let rest = strip_prefix_ignore_case(url, HTTPS_PREFIX)
+        .or_else(|| strip_prefix_ignore_case(url, HTTP_PREFIX))
+        .unwrap_or(url);
+    strip_prefix_ignore_case(rest, WWW_PREFIX).unwrap_or(rest)
+}
+
+/// Byte offset of the first ASCII-case-insensitive occurrence of `needle` in `hay`. No allocation.
+pub fn find_ignore_ascii_case(hay: &str, needle: &str) -> Option<usize> {
+    let (hay, needle) = (hay.as_bytes(), needle.as_bytes());
+    let (&first, rest) = needle.split_first()?;
+    if needle.len() > hay.len() {
+        return None;
+    }
+    let first = first.to_ascii_lowercase();
+    let last = hay.len() - needle.len();
+    let mut at = 0;
+    while at <= last {
+        if hay[at].to_ascii_lowercase() == first && hay[at + 1..at + needle.len()].eq_ignore_ascii_case(rest) {
+            return Some(at);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Relevance of one candidate for `needle` (already stripped of scheme and `www.`), or `None`
+/// when it does not match. Host prefix beats a later host label, which beats a title word, which
+/// beats any other substring.
+fn match_score(url: &str, title: &str, needle: &str) -> Option<u32> {
+    let body = match_body(url);
+    let host = host_part(body);
+    let url_score = match find_ignore_ascii_case(body, needle) {
+        Some(0) => Some(1000),
+        Some(at) if at < host.len() && host.as_bytes()[at - 1] == b'.' => Some(600),
+        Some(_) => Some(250),
+        None => None,
+    };
+    let title_score = find_ignore_ascii_case(title, needle).map(|at| {
+        let word_start = at == 0 || !title.as_bytes()[at - 1].is_ascii_alphanumeric();
+        if word_start { 450 } else { 200 }
+    });
+    url_score.max(title_score)
+}
+
+/// Fragment-free key for de-duplicating rows that point at the same page.
+fn dedupe_key(url: &str) -> &str {
+    let body = match_body(url);
+    let body = body.split('#').next().unwrap_or(body);
+    body.strip_suffix('/').unwrap_or(body)
+}
+
+fn display_of(url: &str) -> String {
+    Url::parse(url).map_or_else(|_| url.to_owned(), |parsed| display_form(&parsed))
+}
+
+/// Ranked dropdown rows for `typed`: `first` (the default row: what Enter does) and then open
+/// tabs, bookmarks and history that match, at most [`MAX_SUGGESTIONS`] in all. Matching ignores
+/// scheme, `www.` and ASCII case; each candidate scores by match quality plus frecency (visit count
+/// and recency for history, a fixed boost for tabs and bookmarks). A page appears once: an open tab
+/// beats a bookmark, which beats history. Pure and allocation-light: only the kept rows allocate.
+pub fn suggest(
+    history: &History,
+    bookmarks: &[SuggestSource<'_>],
+    tabs: &[SuggestSource<'_>],
+    typed: &str,
+    first: Option<Suggestion>,
+) -> Vec<Suggestion> {
+    let mut rows: Vec<Suggestion> = first.into_iter().collect();
+    let (_, needle) = strip_typed_prefixes(typed.trim());
+    if needle.is_empty() || needle.len() > MAX_URL_BYTES {
+        return rows;
+    }
+    // (score, kind, index): on equal scores a tab ranks before a bookmark before history.
+    let mut scored: Vec<(u32, SuggestKind, usize)> = Vec::new();
+    for (index, tab) in tabs.iter().enumerate() {
+        if let Some(score) = match_score(tab.url, tab.title, needle) {
+            scored.push((score + 300, SuggestKind::Tab, index));
+        }
+    }
+    for (index, mark) in bookmarks.iter().enumerate() {
+        if let Some(score) = match_score(mark.url, mark.title, needle) {
+            scored.push((score + 200, SuggestKind::Bookmark, index));
+        }
+    }
+    for (index, entry) in history.entries.iter().enumerate() {
+        if let Some(score) = match_score(&entry.url, &entry.title, needle) {
+            let age = history.sequence.saturating_sub(entry.last_visit);
+            let recency = 150u32.saturating_sub(age.min(150) as u32);
+            let frequency = entry.visits.min(20) * 15;
+            scored.push((score + recency + frequency, SuggestKind::History, index));
+        }
+    }
+    let rank = |kind: SuggestKind| match kind {
+        SuggestKind::Tab => 0,
+        SuggestKind::Bookmark => 1,
+        _ => 2,
+    };
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(rank(a.1).cmp(&rank(b.1))).then(a.2.cmp(&b.2)));
+
+    let source = |kind: SuggestKind, index: usize| -> (&str, &str) {
+        match kind {
+            SuggestKind::Tab => (tabs[index].url, tabs[index].title),
+            SuggestKind::Bookmark => (bookmarks[index].url, bookmarks[index].title),
+            _ => (&history.entries[index].url, &history.entries[index].title),
+        }
+    };
+    let key_of = |url: &str| dedupe_key(url).to_ascii_lowercase();
+    let mut taken: Vec<String> = rows
+        .iter()
+        .filter(|row| row.kind != SuggestKind::Search)
+        .map(|row| key_of(&row.target))
+        .collect();
+    // The best kind per page, so an open tab or bookmark wins its page wherever it ranks.
+    let mut best_kind: Vec<(String, SuggestKind)> = Vec::new();
+    for &(_, kind, index) in scored.iter().take(MAX_SUGGESTIONS * 8) {
+        let key = key_of(source(kind, index).0);
+        match best_kind.iter_mut().find(|(k, _)| *k == key) {
+            Some(entry) if rank(kind) < rank(entry.1) => entry.1 = kind,
+            Some(_) => {}
+            None => best_kind.push((key, kind)),
+        }
+    }
+    for &(_, kind, index) in scored.iter().take(MAX_SUGGESTIONS * 8) {
+        if rows.len() >= MAX_SUGGESTIONS {
+            break;
+        }
+        let (url, title) = source(kind, index);
+        let key = key_of(url);
+        if taken.contains(&key) || best_kind.iter().any(|(k, best)| *k == key && *best != kind) {
+            continue;
+        }
+        taken.push(key);
+        let display = display_of(url);
+        rows.push(Suggestion {
+            kind,
+            text: display.clone(),
+            title: if title.trim().is_empty() { display.clone() } else { title.trim().to_owned() },
+            url: display,
+            target: url.to_owned(),
+            tab: (kind == SuggestKind::Tab).then_some(index),
+        });
+    }
+    rows
+}
+
+/// The default row for `typed`: the inline completion's page when there is one, else the typed
+/// address when it is one (`url` is its normalised URL), else a search for the text.
+pub fn default_suggestion(typed: &str, completion: Option<&Completion>, url: Option<&Url>) -> Option<Suggestion> {
+    let text = typed.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let page = |target: String, display: String| Suggestion {
+        kind: SuggestKind::Url,
+        text: display.clone(),
+        title: display.clone(),
+        url: display,
+        target,
+        tab: None,
+    };
+    if let Some(completion) = completion {
+        return Some(page(completion.full_url.clone(), display_of(&completion.full_url)));
+    }
+    Some(match url {
+        Some(url) => page(url.as_str().to_owned(), display_form(url)),
+        None => Suggestion {
+            kind: SuggestKind::Search,
+            text: text.to_owned(),
+            title: text.to_owned(),
+            url: String::new(),
+            target: text.to_owned(),
+            tab: None,
+        },
+    })
+}
+// --- end omnibox suggest ---
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- omnibox suggest ---
+    fn src<'a>(url: &'a str, title: &'a str) -> SuggestSource<'a> {
+        SuggestSource { url, title }
+    }
+
+    fn kinds(rows: &[Suggestion]) -> Vec<(SuggestKind, &str)> {
+        rows.iter().map(|row| (row.kind, row.target.as_str())).collect()
+    }
+
+    #[test]
+    fn suggest_ranks_host_prefix_over_title_and_substring_matches() {
+        let history = history_of(&[
+            ("https://example.org/wiki", "A page"),
+            ("https://en.wikipedia.org/", "Wikipedia"),
+            ("https://wikipedia.org/", "Wikipedia"),
+            ("https://other.example/kiwi", "Nothing"),
+        ]);
+        let rows = suggest(&history, &[], &[], "wiki", None);
+        assert_eq!(rows[0].target, "https://wikipedia.org/", "host prefix first");
+        assert_eq!(rows[1].target, "https://en.wikipedia.org/", "host label next");
+        assert_eq!(rows[2].target, "https://example.org/wiki", "path substring last");
+        assert!(rows.iter().all(|row| row.kind == SuggestKind::History));
+        assert!(!rows.iter().any(|row| row.target.contains("kiwi")));
+    }
+
+    #[test]
+    fn suggest_dedupes_by_page_and_prefers_tab_then_bookmark() {
+        let history = history_of(&[("https://rust-lang.org/", "Rust"), ("https://docs.rs/", "Docs")]);
+        let marks = [src("https://www.rust-lang.org/", "Rust bookmark"), src("https://docs.rs/", "Docs")];
+        let tabs = [src("https://rust-lang.org/", "Rust tab")];
+        let rows = suggest(&history, &marks, &tabs, "rust", None);
+        assert_eq!(kinds(&rows), vec![(SuggestKind::Tab, "https://rust-lang.org/")]);
+        assert_eq!(rows[0].tab, Some(0));
+        assert_eq!(rows[0].title, "Rust tab");
+        let rows = suggest(&history, &marks, &[], "docs", None);
+        assert_eq!(kinds(&rows), vec![(SuggestKind::Bookmark, "https://docs.rs/")]);
+    }
+
+    #[test]
+    fn suggest_caps_rows_and_keeps_the_default_row_first() {
+        let mut history = History::default();
+        for index in 0..40 {
+            history.record(&format!("https://site{index}.example/"), "");
+        }
+        let first = default_suggestion("site", None, None);
+        let rows = suggest(&history, &[], &[], "site", first);
+        assert_eq!(rows.len(), MAX_SUGGESTIONS);
+        assert_eq!(rows[0].kind, SuggestKind::Search);
+        assert_eq!(rows[0].text, "site");
+        // The most recent visit wins among equal matches; an untitled page shows its address.
+        assert_eq!(rows[1].target, "https://site39.example/");
+        assert_eq!(rows[1].title, "site39.example/");
+    }
+
+    #[test]
+    fn default_row_follows_completion_then_url_then_search() {
+        let history = history_of(&[("https://www.wikipedia.org/", "Wikipedia")]);
+        let completion = inline_completion(&history, "wiki", true);
+        let row = default_suggestion("wiki", completion.as_ref(), None).unwrap();
+        assert_eq!((row.kind, row.text.as_str()), (SuggestKind::Url, "wikipedia.org/"));
+        // The default row's page is not repeated as a history row.
+        let rows = suggest(&history, &[], &[], "wiki", Some(row));
+        assert_eq!(rows.len(), 1);
+
+        let url = Url::parse("https://example.com/").unwrap();
+        let row = default_suggestion("example.com", None, Some(&url)).unwrap();
+        assert_eq!((row.kind, row.target.as_str()), (SuggestKind::Url, "https://example.com/"));
+        assert_eq!(default_suggestion("   ", None, None), None);
+    }
+
+    #[test]
+    fn suggest_matches_titles_case_insensitively_and_ignores_blank_input() {
+        let history = history_of(&[("https://news.example/", "The Daily Paper")]);
+        assert_eq!(suggest(&history, &[], &[], "daily", None).len(), 1);
+        assert_eq!(suggest(&history, &[], &[], "DAILY", None).len(), 1);
+        assert!(suggest(&history, &[], &[], "", None).is_empty());
+        assert!(suggest(&history, &[], &[], "https://www.", None).is_empty());
+        assert!(suggest(&history, &[], &[], &"x".repeat(10_000), None).is_empty());
+        assert_eq!(find_ignore_ascii_case("Hello", "LL"), Some(2));
+        assert_eq!(find_ignore_ascii_case("é", "x"), None);
+    }
+
+    #[test]
+    fn suggest_over_a_full_history_and_many_bookmarks_is_fast() {
+        let mut history = History::default();
+        for index in 0..HISTORY_LIMIT {
+            history.record(&format!("https://host{index}.example.com/path/{index}"), &format!("Page title number {index}"));
+        }
+        let urls: Vec<String> = (0..5000).map(|i| format!("https://bookmark{i}.example.net/")).collect();
+        let marks: Vec<SuggestSource<'_>> = urls.iter().map(|u| src(u, "Bookmark title")).collect();
+        let runs = 50;
+        let start = Instant::now();
+        for _ in 0..runs {
+            let rows = suggest(&history, &marks, &[], "host1", default_suggestion("host1", None, None));
+            assert_eq!(rows.len(), MAX_SUGGESTIONS);
+        }
+        let each = start.elapsed() / runs;
+        eprintln!("suggest over {HISTORY_LIMIT} history + 5000 bookmarks: {each:?} per keystroke");
+        assert!(each < Duration::from_millis(if cfg!(debug_assertions) { 60 } else { 5 }));
+    }
+    // --- end omnibox suggest ---
 
     fn history_of(entries: &[(&str, &str)]) -> History {
         let mut history = History::default();

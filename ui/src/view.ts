@@ -191,6 +191,7 @@ export function applyState(view: View, state: StateMsg): void {
       root.style.removeProperty('--menu-x');
     }
   }
+  if (state.split !== undefined) view.split.setAttribute('aria-pressed', String(state.split)); // --- omnibox suggest ---
   view.back.disabled = !state.back;
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);

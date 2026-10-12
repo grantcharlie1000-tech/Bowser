@@ -27,14 +27,16 @@ body.bw-hover-body {
 
 .bw-tooltip,
 .bw-card,
-.bw-island-menu {
+.bw-island-menu,
+.bw-suggest {
   animation: bw-hover-in var(--bw-dur-fast) var(--bw-ease-out) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bw-tooltip,
   .bw-card,
-  .bw-island-menu {
+  .bw-island-menu,
+  .bw-suggest {
     animation: none;
   }
 }
@@ -331,5 +333,81 @@ body.bw-hover-body {
 
 @media (prefers-reduced-motion: reduce) {
   .bw-island-clear { transition: none; }
+}
+
+/* ----- omnibox suggestions ----- */
+/* Sits directly under the pill: Rust squares the top corners, so the top edge has no border. */
+
+.bw-suggest {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 4px 6px 6px;
+  border: 1px solid var(--bw-hairline);
+  border-top: 0;
+  border-radius: var(--bw-r-overlay);
+  background: var(--bw-overlay);
+  color: var(--bw-text);
+  box-shadow: none;
+}
+
+.bw-suggest-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: var(--bw-r-control);
+  cursor: default;
+}
+
+.bw-suggest-row:hover { background: var(--bw-hover); }
+.bw-suggest-row.is-selected { background: color-mix(in srgb, var(--bw-accent) 16%, transparent); }
+
+.bw-suggest-fav {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.bw-suggest-fav.is-glyph,
+.bw-suggest-fav.is-empty {
+  display: grid;
+  place-items: center;
+  color: var(--bw-text-2);
+}
+
+.bw-suggest-fav svg { width: 16px; height: 16px; }
+
+.bw-suggest-title {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.bw-suggest-url {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bw-text-2);
+  unicode-bidi: isolate;
+}
+
+.bw-suggest-badge {
+  flex: none;
+  margin-inline-start: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bw-hover);
+  color: var(--bw-text-2);
+  font-size: 11px;
+  line-height: 16px;
 }
 /* --- end hover layer --- */

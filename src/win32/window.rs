@@ -5990,6 +5990,11 @@ fn html_sync(hwnd: HWND) {
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
         loading: App::tab_loading(&app, id),
+        // --- omnibox suggest ---
+        split: App::split_view(&app).is_some(),
+        bookmarked: App::tab_committed_url(&app, id)
+            .is_some_and(|url| super::html_suggest::is_bookmarked(url.as_str())),
+        // --- end omnibox suggest ---
         progress: App::tab_progress_percent(&app, id).unwrap_or(0),
         security: chrome_host::security_of(site),
         label: site.summary().to_string(),
@@ -6108,8 +6113,24 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             }
         }
         ChromeCommand::Edit { seq, text } => html_edit(hwnd, seq, &text),
+        // --- omnibox suggest ---
+        ChromeCommand::SuggestPick { seq, i } => {
+            if let Some(target) = super::html_hover::suggest_take(hwnd, seq, i) {
+                html_suggest_run(hwnd, target);
+            }
+        }
+        ChromeCommand::SuggestPreview { seq, i } => {
+            super::html_hover::suggest_preview(hwnd, seq, i);
+            return;
+        }
+        ChromeCommand::SuggestEnd => {
+            super::html_hover::suggest_hide(hwnd);
+            return;
+        }
+        // --- end omnibox suggest ---
         ChromeCommand::Submit(text) => {
             let Some(app) = app_of(hwnd) else { return };
+            super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             // Same path as the native omnibox: remember the typed text, then let App normalise it.
             remember_url(hwnd, App::active_tab_id(&app), &text);
             App::submit(&app, &text);
@@ -6117,6 +6138,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Escape => {
             let Some(app) = app_of(hwnd) else { return };
+            super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             let id = App::active_tab_id(&app);
             let display = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())
                 .unwrap_or_default();
@@ -6139,6 +6161,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             App::focus_page(&app);
         }
         ChromeCommand::Focus(on) => {
+            // --- omnibox suggest ---
+            if !on {
+                super::html_hover::suggest_focus_lost(hwnd);
+            }
+            // --- end omnibox suggest ---
             let _ = with_chrome(hwnd, |s| {
                 s.html_omnibox_focused = on;
                 if !on {
@@ -6250,6 +6277,8 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         back: false,
         forward: false,
         loading: false,
+        split: false,
+        bookmarked: false,
         progress: 0,
         security: crate::chrome_host::protocol::Security::None,
         label: String::new(),
@@ -6630,6 +6659,8 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
         loading: App::tab_loading(&app, id),
+        split: false,
+        bookmarked: false,
         progress: App::tab_progress_percent(&app, id).unwrap_or(0),
         security: chrome_host::security_of(site),
         label: site.summary().to_owned(),
@@ -7233,11 +7264,81 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
     .flatten();
     App::prewarm(&app, text);
     if text.is_empty() {
+        super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
         return;
     }
     let reply = completion_json(seq, suffix.as_deref().unwrap_or(""));
     let _ = with_chrome(hwnd, |s| s.html.clone()).flatten().map(|host| host.post_json(&reply));
+    html_suggest_edit(hwnd, &app, seq, text); // --- omnibox suggest ---
 }
+
+// --- omnibox suggest ---
+/// Posts `json` to the HTML toolbar page, if it is ready.
+pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
+    if let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() {
+        let _ = host.post_json(json);
+    }
+}
+
+/// Computes the dropdown rows for edit `seq` and shows them under the pill. Runs once per edit, after
+/// the inline completion, so the default row follows it. Nothing here touches the disk except one
+/// `stat` of the bookmark file.
+fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
+    use super::html_suggest::{self as suggest, Target};
+    let started = Instant::now();
+    let typed_url = App::typed_address(app, text);
+    let active = App::active_tab_id(app);
+    let tabs: Vec<_> =
+        App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
+    let bookmarks = suggest::bookmarks();
+    let Some(mut rows) = with_chrome(hwnd, |s| {
+        suggest::rows(&s.history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, &bookmarks)
+    }) else {
+        return;
+    };
+    // A favicon is known for a row's page only through an open tab on the same site.
+    for row in &mut rows {
+        let tab = match row.target {
+            Target::Tab(id) => Some(id),
+            _ if row.fav_url.is_empty() => None,
+            _ => suggest::tab_with_host(&tabs, &row.fav_url),
+        };
+        row.item.png = tab.and_then(|id| App::tab_favicon(app, id)).filter(|png| chrome_host::favicon_sendable(png));
+    }
+    let Some((anchor, width)) = with_chrome(hwnd, |s| {
+        let omnibox = s.layout.omnibox;
+        let mut origin = windows::Win32::Foundation::POINT { x: omnibox.left, y: omnibox.top };
+        unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
+        let css = chrome_host::css_px_from_physical(omnibox.width(), s.dpi).max(0) as u32;
+        (RECT { left: origin.x, top: origin.y, right: origin.x + omnibox.width(), bottom: origin.y + omnibox.height() }, css.max(480))
+    }) else {
+        return;
+    };
+    let computed = started.elapsed();
+    super::html_hover::suggest_show(hwnd, seq, anchor, width, rows);
+    if std::env::var_os("BOWSER_SUGGEST_TRACE").is_some() {
+        eprintln!("suggest seq={seq} compute={computed:?} total={:?}", started.elapsed());
+    }
+}
+
+/// Does what picking a dropdown row does: switch to the tab, or go to the address or search, the
+/// same path as typing it and pressing Enter.
+pub(super) fn html_suggest_run(hwnd: HWND, target: super::html_suggest::Target) {
+    use super::html_suggest::Target;
+    let Some(app) = app_of(hwnd) else { return };
+    match target {
+        Target::Tab(id) => {
+            let _ = App::select_tab(&app, id);
+        }
+        Target::Navigate(text) | Target::Search(text) => {
+            remember_url(hwnd, App::active_tab_id(&app), &text);
+            App::submit(&app, &text);
+        }
+    }
+    App::focus_page(&app);
+    html_sync(hwnd);
+}
+// --- end omnibox suggest ---
 
 /// Starts a native window move for a press on an empty toolbar area. Only a press still held
 /// counts, so a stale message cannot start a drag.
