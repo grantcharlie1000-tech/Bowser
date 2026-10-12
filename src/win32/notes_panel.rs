@@ -140,6 +140,7 @@ pub(crate) fn sync(owner: HWND, viewport: RECT, dpi: u32) {
         state.right_screen = origin.x + viewport.right;
         position_controls(hwnd, state);
         let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        super::html_dialog::resize(hwnd);
     }
 }
 
@@ -222,6 +223,7 @@ pub(crate) fn open(owner: HWND) {
         }
     };
     OPEN.with(|slot| slot.set(hwnd.0 as isize));
+    super::window::attach_html_dialog(owner, hwnd, super::html_dialog::Kind::Notes);
     sync(
         owner,
         RECT {
@@ -242,6 +244,26 @@ pub(crate) fn open(owner: HWND) {
         }
         populate_edits(hwnd);
     }
+}
+
+pub(crate) fn html_notes(profile: &Profile) -> Vec<data::Note> {
+    if profile.is_guest() { GUEST_DATA.with(|data| data.borrow().0.clone()) }
+    else { data::read_note_list(&profile.notes_file()) }
+}
+
+pub(crate) fn html_tasks(profile: &Profile) -> Vec<data::Task> {
+    if profile.is_guest() { GUEST_DATA.with(|data| data.borrow().1.clone()) }
+    else { data::read_tasks(&profile.tasks_file()) }
+}
+
+pub(crate) fn save_html_notes(profile: &Profile, notes: &[data::Note]) -> std::io::Result<()> {
+    if profile.is_guest() { GUEST_DATA.with(|data| data.borrow_mut().0 = notes.to_vec()); Ok(()) }
+    else { data::write_note_list(&profile.notes_file(), notes) }
+}
+
+pub(crate) fn save_html_tasks(profile: &Profile, tasks: &[data::Task]) -> std::io::Result<()> {
+    if profile.is_guest() { GUEST_DATA.with(|data| data.borrow_mut().1 = tasks.to_vec()); Ok(()) }
+    else { data::write_tasks(&profile.tasks_file(), tasks) }
 }
 
 fn register_class() -> Option<()> {
@@ -1048,6 +1070,7 @@ unsafe extern "system" fn proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                super::html_dialog::close(hwnd);
                 OPEN.with(|slot| {
                     if slot.get() == hwnd.0 as isize {
                         slot.set(0);

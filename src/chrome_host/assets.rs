@@ -13,6 +13,9 @@ pub const RAIL_START_URL: &str = "bowser-ui://app/index.html?view=rail";
 pub const PANEL_START_URL: &str = "bowser-ui://app/index.html?view=panel";
 pub const POPUP_START_URL: &str = "bowser-ui://app/index.html?view=popup";
 pub const DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog";
+pub const NOTES_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=notes";
+pub const SETTINGS_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=settings";
+pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=privacy";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
@@ -163,7 +166,7 @@ mod tests {
     #[test]
     fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_DIALOG_START_URL, PRIVACY_DIALOG_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");

@@ -5500,9 +5500,16 @@ fn prewarm_html_popup(hwnd: HWND) {
 // --- end popup host ---
 // --- panel host (lane P) ---
 fn html_panel_failed(hwnd: HWND) {
+    let active = side_panel::active_id(hwnd);
     html_panel::fail(hwnd);
-    if let Some(app) = app_of(hwnd) { super::panel_history::register(&app); }
-    side_panel::close_content(hwnd, side_panel::PanelId::History);
+    if let Some(app) = app_of(hwnd) {
+        super::panel_history::register(&app);
+        super::panel_bookmarks::register(&app);
+        super::panel_customize::register(&app);
+    }
+    if let Some(id @ (side_panel::PanelId::History | side_panel::PanelId::Bookmarks | side_panel::PanelId::Customize)) = active {
+        side_panel::close_content(hwnd, id);
+    }
 }
 // --- end panel host ---
 fn close_html_chrome(hwnd: HWND) {
@@ -5959,6 +5966,15 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
+
+pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
+    with_chrome(hwnd, |state| state.html_env.clone()).flatten()
+}
+
+pub(super) fn attach_html_dialog(owner: HWND, parent: HWND, kind: super::html_dialog::Kind) {
+    let (Some(app), Some(env)) = (app_of(owner), html_environment(owner)) else { return; };
+    super::html_dialog::attach(&app, owner, parent, env, kind);
+}
 // --- end panel host ---
 
 // --- popup host (lane M) ---
@@ -6161,7 +6177,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy => None,
     })
     .flatten();
     let Some(region) = region else {

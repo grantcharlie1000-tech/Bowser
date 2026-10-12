@@ -589,6 +589,11 @@ fn panel_token(raw: &str) -> bool {
     !raw.is_empty() && raw.len() <= 24 && raw.bytes().all(|b| b.is_ascii_lowercase())
 }
 
+fn panel_action(raw: &str) -> bool {
+    !raw.is_empty() && raw.len() <= 24 && raw.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+        && !raw.starts_with('-') && !raw.ends_with('-') && !raw.contains("--")
+}
+
 fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     match field(fields, "v") {
         Some(Value::Number(raw)) if raw == "1" => {}
@@ -707,7 +712,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         }
         "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" => {
             let a = str_field(fields, "a")?;
-            if !panel_token(a) { return Err(ProtocolError::InvalidValue("a")); }
+            if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
                 "panel" => PanelType::Panel, "hist" => PanelType::History,
                 "bm" => PanelType::Bookmarks, "cust" => PanelType::Customize,

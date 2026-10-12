@@ -1229,6 +1229,7 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             }
         };
         OPEN.with(|open| open.set(window.0 as isize));
+        super::window::attach_html_dialog(owner, window, super::html_dialog::Kind::Settings);
 
         match loaded {
             Ok(settings) => populate(window, &settings),
@@ -1333,6 +1334,7 @@ unsafe extern "system" fn settings_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                super::html_dialog::close(hwnd);
                 OPEN.with(|open| {
                     if open.get() == hwnd.0 as isize {
                         open.set(0);

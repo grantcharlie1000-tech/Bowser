@@ -238,6 +238,31 @@ body.solid {
   font: 13px/1.4 "Segoe UI", sans-serif;
 }
 
+.privacy-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: auto;
+  padding: 24px max(24px, 8vw);
+  box-sizing: border-box;
+  color: var(--text);
+  background: var(--bg);
+  font: 13px/1.5 "Segoe UI", sans-serif;
+}
+
+.privacy-panel button {
+  min-height: 32px;
+  margin: 4px;
+  padding: 6px 10px;
+  color: var(--text);
+  background: var(--fill);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.privacy-panel button:hover { background: var(--hover); }
+
 .history-panel input[type="search"] {
   width: 100%;
   min-height: 32px;
@@ -302,6 +327,68 @@ body.solid {
 .history-details { color: var(--placeholder); font-size: 11px; }
 .history-row button { color: var(--text); background: transparent; border: 0; cursor: pointer; }
 .history-empty { flex: none; margin: 8px 0 0; color: var(--placeholder); text-align: left; }
+
+.bookmarks-panel,
+.customize-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  height: 100vh;
+  padding: 12px;
+  box-sizing: border-box;
+  overflow: auto;
+  color: var(--text);
+  background: var(--bg);
+  font: 13px/1.4 "Segoe UI", sans-serif;
+}
+.bookmarks-panel button,
+.bookmarks-panel input,
+.bookmarks-panel select,
+.customize-panel button,
+.customize-panel input,
+.customize-panel select {
+  min-height: 30px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: var(--fill);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font: inherit;
+}
+.bookmarks-panel button,
+.customize-panel button { cursor: pointer; }
+.bookmarks-panel button:hover,
+.customize-panel button:hover { background: var(--hover); }
+.bookmarks-panel button:focus-visible,
+.bookmarks-panel input:focus-visible,
+.bookmarks-panel select:focus-visible,
+.customize-panel button:focus-visible,
+.customize-panel input:focus-visible,
+.customize-panel select:focus-visible { outline: 2px solid var(--focus-border); outline-offset: 1px; }
+.bookmarks-toolbar,
+.bookmarks-location,
+.bookmarks-editor { display: flex; align-items: center; gap: 6px; }
+.bookmarks-panel > input[type="search"] { width: 100%; box-sizing: border-box; }
+.bookmarks-list { display: flex; flex-direction: column; gap: 4px; overflow: auto; min-height: 0; }
+.bookmarks-row { display: flex; align-items: center; gap: 5px; padding: 5px; border-radius: 6px; }
+.bookmarks-row:hover { background: var(--hover); }
+.bookmarks-primary { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.bookmarks-name { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.bookmarks-path,
+.bookmarks-status { overflow: hidden; color: var(--placeholder); font-size: 11px; text-overflow: ellipsis; }
+.bookmarks-editor input { min-width: 0; flex: 1; }
+.customize-panel h1 { margin: 0; font-size: 16px; }
+.customize-panel h2 { margin: 5px 0; font-size: 13px; }
+.customize-panel h3 { margin: 0; font-size: 12px; }
+.customize-panel section { display: flex; flex-direction: column; gap: 5px; }
+.customize-panel article { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px; border-radius: 6px; background: var(--fill); }
+.customize-panel article p { flex-basis: 100%; margin: 0; color: var(--placeholder); font-size: 11px; overflow-wrap: anywhere; }
+.customize-panel label { display: flex; align-items: center; gap: 7px; min-height: 28px; }
+.customize-panel input[type="checkbox"] { min-height: auto; accent-color: var(--focus-border); }
+.customize-panel form { display: flex; flex-wrap: wrap; gap: 5px; }
+.customize-panel form input { min-width: 0; flex: 1; }
+.customize-panel [role="status"] { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
 /* --- end panel host --- */
 
 /* ---- Tab strip (?view=tabs). Motion is transform/opacity only, <= 160ms. ---- */

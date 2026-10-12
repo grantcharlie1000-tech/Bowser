@@ -35,8 +35,9 @@ use windows::{
 
 use super::{
     assets::{
-        self, Asset, DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL, RAIL_START_URL,
-        RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL,
+        self, Asset, DIALOG_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RESPONSE_HEADERS, SCHEME,
+        SETTINGS_DIALOG_START_URL, START_URL, TABS_START_URL,
     },
     protocol::{
         Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
@@ -156,6 +157,9 @@ pub enum View {
     Panel,
     Popup,
     Dialog,
+    DialogNotes,
+    DialogSettings,
+    DialogPrivacy,
 }
 
 impl View {
@@ -167,6 +171,9 @@ impl View {
             Self::Panel => PANEL_START_URL,
             Self::Popup => POPUP_START_URL,
             Self::Dialog => DIALOG_START_URL,
+            Self::DialogNotes => NOTES_DIALOG_START_URL,
+            Self::DialogSettings => SETTINGS_DIALOG_START_URL,
+            Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
         }
     }
 }
@@ -935,7 +942,10 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. }),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. }),
-        View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes | PanelType::Settings | PanelType::Privacy, .. }),
+        View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
+        View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
+        View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
+        View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
     }
 }
 
@@ -1074,7 +1084,10 @@ mod tests {
         assert_eq!(View::Panel.start_url(), "bowser-ui://app/index.html?view=panel");
         assert_eq!(View::Popup.start_url(), "bowser-ui://app/index.html?view=popup");
         assert_eq!(View::Dialog.start_url(), "bowser-ui://app/index.html?view=dialog");
-        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog];
+        assert_eq!(View::DialogNotes.start_url(), "bowser-ui://app/index.html?view=dialog&p=notes");
+        assert_eq!(View::DialogSettings.start_url(), "bowser-ui://app/index.html?view=dialog&p=settings");
+        assert_eq!(View::DialogPrivacy.start_url(), "bowser-ui://app/index.html?view=dialog&p=privacy");
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
@@ -1085,7 +1098,7 @@ mod tests {
 
     #[test]
     fn new_views_reject_nearby_urls_and_foreign_command_families() {
-        for view in [View::Panel, View::Popup, View::Dialog] {
+        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy] {
             let url = view.start_url();
             assert!(is_trusted_message(view, url, url));
             assert!(!is_start_url(view, &format!("{url}&x=1")));
@@ -1102,8 +1115,15 @@ mod tests {
         assert!(view_accepts_command(View::Panel, &panel));
         assert!(!view_accepts_command(View::Dialog, &panel));
         let dialog = parse_command(r#"{"v":1,"t":"set","a":"open"}"#).unwrap();
-        assert!(view_accepts_command(View::Dialog, &dialog));
+        assert!(view_accepts_command(View::DialogSettings, &dialog));
+        assert!(!view_accepts_command(View::DialogNotes, &dialog));
         assert!(!view_accepts_command(View::Panel, &dialog));
+        let notes = parse_command(r#"{"v":1,"t":"notes","a":"add-note"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogNotes, &notes));
+        assert!(!view_accepts_command(View::DialogPrivacy, &notes));
+        let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogPrivacy, &privacy));
+        assert!(!view_accepts_command(View::DialogSettings, &privacy));
         assert!(!view_accepts_command(View::Popup, &panel));
         assert!(view_accepts_command(View::Popup, &popup));
         assert!(!view_accepts_command(View::Panel, &popup));

@@ -32,27 +32,33 @@ const PERMISSION_CHOICES: [Option<Decision>; 3] =
     [Some(Decision::Allow), Some(Decision::Block), None];
 const PERMISSION_LABELS: [&str; 3] = ["Allow", "Block", "Clear choice (blocked by default)"];
 
-struct Snapshot {
-    profile: String,
-    guest: bool,
-    stats: PrivacyStats,
-    session_total: u64,
-    host: Option<String>,
-    site_total: u64,
-    top_sites: Vec<(String, u64)>,
-    days: Vec<(String, u64)>,
-    security: SiteSecurity,
-    blocking: Option<bool>,
-    tracking: Option<&'static str>,
-    smart_screen: Option<bool>,
-    blocker_setting: bool,
-    sleeping: bool,
-    sleep_after: u64,
-    permissions: Vec<(String, Permission, Decision)>,
-    status: Option<String>,
+pub(crate) struct Snapshot {
+    pub(crate) profile: String,
+    pub(crate) guest: bool,
+    pub(crate) stats: PrivacyStats,
+    pub(crate) session_total: u64,
+    pub(crate) host: Option<String>,
+    pub(crate) site_total: u64,
+    pub(crate) top_sites: Vec<(String, u64)>,
+    pub(crate) days: Vec<(String, u64)>,
+    pub(crate) security: SiteSecurity,
+    pub(crate) blocking: Option<bool>,
+    pub(crate) tracking: Option<&'static str>,
+    pub(crate) smart_screen: Option<bool>,
+    pub(crate) blocker_setting: bool,
+    pub(crate) sleeping: bool,
+    pub(crate) sleep_after: u64,
+    pub(crate) permissions: Vec<(String, Permission, Decision)>,
+    pub(crate) status: Option<String>,
 }
 
 pub(crate) fn open(hwnd: HWND, app: &AppRef) {
+    if crate::chrome_host::html_ui_enabled() {
+        if let Some(env) = super::window::html_environment(hwnd) {
+            super::html_dialog::open_privacy(hwnd, app, env);
+            return;
+        }
+    }
     let profile = crate::profile::active().ok();
     let mut status = None;
     loop {
@@ -70,7 +76,7 @@ pub(crate) fn open(hwnd: HWND, app: &AppRef) {
     }
 }
 
-fn gather(
+pub(crate) fn gather(
     app: &AppRef,
     profile: Option<&crate::profile::Profile>,
     status: Option<String>,
@@ -334,7 +340,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
     }
 }
 
-fn apply(hwnd: HWND, app: &AppRef, snapshot: &Snapshot, id: usize) -> bool {
+pub(crate) fn apply(hwnd: HWND, app: &AppRef, snapshot: &Snapshot, id: usize) -> bool {
     if id == CLEAR_STATS {
         if !confirm(
             hwnd,

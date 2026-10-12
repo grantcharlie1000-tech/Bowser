@@ -38,6 +38,7 @@ impl Object<'_> {
     pub fn int(&mut self, key: &str, value: i64) { self.key(key); self.out.push_str(&value.to_string()); }
     pub fn uint(&mut self, key: &str, value: u64) { self.key(key); self.out.push_str(&value.to_string()); }
     pub fn bool(&mut self, key: &str, value: bool) { self.key(key); self.out.push_str(if value { "true" } else { "false" }); }
+    pub fn null(&mut self, key: &str) { self.key(key); self.out.push_str("null"); }
     pub fn object(&mut self, key: &str, build: impl FnOnce(&mut Object<'_>)) { self.key(key); write_object(self.out, build); }
     pub fn array(&mut self, key: &str, build: impl FnOnce(&mut Array<'_>)) { self.key(key); write_array(self.out, build); }
 }
