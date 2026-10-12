@@ -126,6 +126,8 @@ function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): v
   }
   n.root.setAttribute('aria-selected', String(selected));
   n.close.setAttribute('aria-label', `Close tab: ${label}`);
+  setTip(n.close, 'Close tab');
+  setTip(n.audio, 'Unmute tab');
   if (n.audio.hidden !== !item.muted) n.audio.hidden = !item.muted;
   n.audio.setAttribute('aria-label', `Unmute tab: ${label}`);
   n.root.classList.toggle('active', selected);
