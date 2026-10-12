@@ -1,21 +1,20 @@
 //! Isolated WebView2 host for the HTML chrome toolbar (see docs/html-chrome-protocol.md).
 //!
-//! One controller in its own environment (exclusive user-data folder, never shared with browsing
-//! profiles). The page can reach nothing except the embedded assets served through the `bowser-ui`
-//! custom scheme, and its only channel back to Rust is the string bridge in `protocol.rs`.
+//! Each chrome view is one controller in the active browsing profile's tab environment (shared
+//! browser, GPU and network processes), but in its own private, InPrivate WebView2 profile
+//! (`CHROME_PROFILE`), so it shares no cookies, storage or permissions with browsing. The page can
+//! reach nothing except the embedded assets served through the `bowser-ui` custom scheme, and its
+//! only channel back to Rust is the string bridge in `protocol.rs`.
 
 use std::{
     cell::RefCell,
-    os::windows::ffi::OsStrExt,
-    path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
 
 use url::Url;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration,
-    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, DownloadStartingEventHandler,
+    CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
     FrameCreatedEventHandler, FrameNavigationStartingEventHandler, IFixedEnvironmentOptions4,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
@@ -157,78 +156,60 @@ impl View {
     }
 }
 
-/// The WebView2 environment shared by every chrome host: one exclusive user-data folder and the
-/// `bowser-ui` scheme registration. Clones share one environment. Each live host keeps a clone, so
-/// the environment is released when the last clone drops. Closing a host never touches it.
+/// WebView2 profile that every chrome host runs in. It lives in the browsing profile's environment
+/// (sharing its browser, GPU, network and utility processes) but is a separate, InPrivate WebView2
+/// profile, so the chrome's cookies, storage, cache and permissions never mix with the tabs' and
+/// nothing is written to disk.
+pub const CHROME_PROFILE: &str = "BowserChrome";
+
+/// Whether `name` is a valid WebView2 profile name: 1 to 64 ASCII letters, digits, `_` or `-`.
+/// (WebView2 also accepts a few more punctuation characters; Bowser keeps to this strict subset.)
+pub fn valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// Registers the `bowser-ui` scheme on environment options that are about to create the tab
+/// environment. Only the chrome webviews have a `WebResourceRequested` handler that serves it, and
+/// tab navigation blocks the scheme, so a tab can never load chrome assets.
+pub fn register_ui_scheme(options: &impl Interface) -> Result<()> {
+    let options4: IFixedEnvironmentOptions4 = options.cast()?;
+    let scheme: ICoreWebView2CustomSchemeRegistration =
+        CoreWebView2CustomSchemeRegistration::new(SCHEME.to_owned()).into();
+    unsafe {
+        scheme.SetTreatAsSecure(true)?;
+        scheme.SetHasAuthorityComponent(true)?;
+        // The generated wrapper method is private (the macro drops the trait's visibility), so the
+        // COM slot is called through the vtable; the signature is the same one webview2-com uses
+        // in its own tests. No allowed origins are set, so no other origin may request the scheme.
+        let schemes = [scheme.as_raw()];
+        (Interface::vtable(&options4).SetCustomSchemeRegistrations)(
+            Interface::as_raw(&options4),
+            1,
+            schemes.as_ptr(),
+        )
+        .ok()
+    }
+}
+
+/// The WebView2 environment the chrome hosts are created in: the active browsing profile's tab
+/// environment, created with the `bowser-ui` scheme registered (see [`register_ui_scheme`]). The
+/// chrome itself runs in the private [`CHROME_PROFILE`]. Clones share one environment. Each live
+/// host keeps a clone; the engine owns the environment's lifetime, and the window closes its chrome
+/// hosts before the engine closes. Closing a host never touches the environment.
 #[derive(Clone)]
 pub struct ChromeEnv {
     inner: Rc<ICoreWebView2Environment>,
 }
 
 impl ChromeEnv {
-    /// Starts creating the environment. `on_ready` runs once, with the environment or the reason
-    /// creation failed. `user_data_dir` must be the chrome-only folder; it is verified against
-    /// WebView2's report. Returns an error only when the request could not be started; then
-    /// `on_ready` never runs.
-    pub fn begin_create(
-        user_data_dir: &Path,
-        on_ready: impl FnOnce(Result<ChromeEnv>) + 'static,
-    ) -> Result<()> {
-        std::fs::create_dir_all(user_data_dir).map_err(|error| {
-            fail(&format!("Could not create isolated chrome profile: {error}"))
-        })?;
-        let profile: Vec<u16> = user_data_dir
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let expected = std::fs::canonicalize(user_data_dir)
-            .unwrap_or_else(|_| user_data_dir.to_path_buf());
-
-        let options = CoreWebView2EnvironmentOptions::default();
-        let options4: IFixedEnvironmentOptions4 = options.into();
-        let scheme: ICoreWebView2CustomSchemeRegistration =
-            CoreWebView2CustomSchemeRegistration::new(SCHEME.to_owned()).into();
-        unsafe {
-            scheme.SetTreatAsSecure(true)?;
-            scheme.SetHasAuthorityComponent(true)?;
-            // The generated wrapper method is private (the macro drops the trait's visibility), so
-            // the COM slot is called through the vtable; the signature is the same one webview2-com
-            // uses in its own tests.
-            let schemes = [scheme.as_raw()];
-            (Interface::vtable(&options4).SetCustomSchemeRegistrations)(
-                Interface::as_raw(&options4),
-                1,
-                schemes.as_ptr(),
-            )
-            .ok()?;
-        }
-        let options1: ICoreWebView2EnvironmentOptions = options4.cast()?;
-        let options2: ICoreWebView2EnvironmentOptions2 = options4.cast()?;
-        unsafe { options2.SetExclusiveUserDataFolderAccess(true)? };
-
-        let ready: ReadySlot<ChromeEnv> = Rc::new(RefCell::new(Some(Box::new(on_ready))));
-        let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
-            move |status, environment| {
-                let result = match (status, environment) {
-                    (Ok(()), Some(environment)) => verify_user_data_folder(&environment, &expected)
-                        .map(|()| ChromeEnv {
-                            inner: Rc::new(environment),
-                        }),
-                    (Err(error), _) => Err(error),
-                    _ => Err(Error::from(E_POINTER)),
-                };
-                finish(&ready, result);
-                Ok(())
-            },
-        ));
-        unsafe {
-            CreateCoreWebView2EnvironmentWithOptions(
-                PCWSTR::null(),
-                PCWSTR(profile.as_ptr()),
-                &options1,
-                &handler,
-            )
+    /// Wraps the shared tab environment. It must have been created with [`register_ui_scheme`].
+    pub fn new(environment: ICoreWebView2Environment) -> Self {
+        Self {
+            inner: Rc::new(environment),
         }
     }
 }
@@ -378,25 +359,38 @@ fn finish<T>(ready: &ReadySlot<T>, result: Result<T>) {
     }
 }
 
-fn verify_user_data_folder(environment: &ICoreWebView2Environment, expected: &Path) -> Result<()> {
-    let environment7: ICoreWebView2Environment7 = environment.cast()?;
-    let mut actual_path = PWSTR::null();
-    unsafe { environment7.UserDataFolder(&mut actual_path)? };
-    let actual = CoTaskMemPWSTR::from(actual_path).to_string();
-    let actual = std::fs::canonicalize(&actual).unwrap_or_else(|_| PathBuf::from(&actual));
-    if actual
-        .to_string_lossy()
-        .eq_ignore_ascii_case(expected.to_string_lossy().as_ref())
-    {
-        Ok(())
-    } else {
-        Err(fail("WebView2 did not use the isolated chrome profile directory"))
-    }
+/// Whether a chrome host should fall back to native chrome after a `ProcessFailed` of `kind`.
+///
+/// The chrome shares the tab environment, so it also hears about shared processes that WebView2
+/// restarts on its own (GPU, utility, sandbox helper, plugin, unknown); the chrome page survives
+/// those and stays. A browser-process exit, or the chrome's own renderer exiting or hanging, ends
+/// the chrome page: fall back. A failure whose kind cannot be read also falls back (`None`).
+fn process_failure_is_fatal(kind: Option<COREWEBVIEW2_PROCESS_FAILED_KIND>) -> bool {
+    !matches!(
+        kind,
+        Some(
+            COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_SANDBOX_HELPER_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_PPAPI_PLUGIN_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_PPAPI_BROKER_PROCESS_EXITED
+                | COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED
+        )
+    )
 }
 
 fn create_controller(environment: &ICoreWebView2Environment, setup: Setup) -> Result<()> {
+    debug_assert!(valid_profile_name(CHROME_PROFILE));
     let environment10: ICoreWebView2Environment10 = environment.cast()?;
     let options = unsafe { environment10.CreateCoreWebView2ControllerOptions()? };
+    // A separate, in-memory WebView2 profile: the chrome never shares cookies, storage, cache or
+    // permissions with the browsing profile, and nothing persists on disk. Both are required; a
+    // runtime that refuses either fails creation and the window keeps its native chrome.
+    let profile_name = wide(CHROME_PROFILE);
+    unsafe {
+        options.SetProfileName(PCWSTR(profile_name.as_ptr()))?;
+        options.SetIsInPrivateModeEnabled(true)?;
+    }
     // Preferred path: transparent background set at creation. If the runtime lacks
     // ControllerOptions3 the value is applied right after creation instead (see `prepare`).
     let background_at_creation = unsafe {
@@ -478,10 +472,30 @@ fn prepare(
             controller4.SetAllowExternalDrop(false)?;
         }
     }
+    verify_chrome_profile(&webview)?;
     configure_settings(&webview)?;
     install_handlers(host, environment, setup, &webview)?;
     let start = wide(setup.view.start_url());
     unsafe { webview.Navigate(PCWSTR(start.as_ptr())) }
+}
+
+/// Confirms the controller really runs in the private chrome profile, so a runtime that ignored the
+/// controller options can never put the chrome in the browsing profile.
+fn verify_chrome_profile(webview: &ICoreWebView2) -> Result<()> {
+    let webview13: ICoreWebView2_13 = webview.cast()?;
+    let profile = unsafe { webview13.Profile()? };
+    let mut name = PWSTR::null();
+    let mut in_private = windows::core::BOOL::default();
+    unsafe {
+        profile.ProfileName(&mut name)?;
+        profile.IsInPrivateModeEnabled(&mut in_private)?;
+    }
+    let name = CoTaskMemPWSTR::from(name).to_string();
+    if name.eq_ignore_ascii_case(CHROME_PROFILE) && in_private.as_bool() {
+        Ok(())
+    } else {
+        Err(fail("WebView2 did not use the private chrome profile"))
+    }
 }
 
 fn configure_settings(webview: &ICoreWebView2) -> Result<()> {
@@ -616,8 +630,14 @@ fn install_handlers(
 
         let on_failed = setup.on_failed.clone();
         webview.add_ProcessFailed(
-            &ProcessFailedEventHandler::create(Box::new(move |_sender, _args| {
-                on_failed();
+            &ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
+                let kind = args.and_then(|args| {
+                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                    args.ProcessFailedKind(&mut kind).ok().map(|()| kind)
+                });
+                if process_failure_is_fatal(kind) {
+                    on_failed();
+                }
                 Ok(())
             })),
             &mut token,
@@ -837,6 +857,52 @@ mod tests {
                 !is_start_url(View::Tabs, uri),
                 "{uri:?} should not be the tabs start URL"
             );
+        }
+    }
+
+    #[test]
+    fn chrome_profile_name_is_a_valid_webview2_profile_name() {
+        assert!(valid_profile_name(CHROME_PROFILE));
+        assert_eq!(CHROME_PROFILE, "BowserChrome");
+        for name in ["a", "Default_2", "x-y", &"a".repeat(64)] {
+            assert!(valid_profile_name(name), "{name:?}");
+        }
+        for name in [
+            "",
+            &"a".repeat(65),
+            "Bowser Chrome",
+            "Bowser.Chrome",
+            "..",
+            "a/b",
+            "a\\b",
+            "Bowsér",
+            "name\0",
+        ] {
+            assert!(!valid_profile_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn only_restartable_shared_process_failures_keep_the_chrome() {
+        for kind in [
+            COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_SANDBOX_HELPER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_PPAPI_PLUGIN_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_PPAPI_BROKER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED,
+        ] {
+            assert!(!process_failure_is_fatal(Some(kind)), "{kind:?}");
+        }
+        for kind in [
+            Some(COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED),
+            Some(COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED),
+            Some(COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE),
+            Some(COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED),
+            Some(COREWEBVIEW2_PROCESS_FAILED_KIND(99)),
+            None,
+        ] {
+            assert!(process_failure_is_fatal(kind), "{kind:?}");
         }
     }
 

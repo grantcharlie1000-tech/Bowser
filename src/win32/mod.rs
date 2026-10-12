@@ -93,6 +93,9 @@ pub(crate) const WM_SHORTCUT_KEY: u32 = windows::Win32::UI::WindowsAndMessaging:
 pub(crate) const WM_PANE_FOCUSED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
 /// A validated top-frame login submission was queued from a WebView2 callback.
 pub(crate) const WM_LOGIN_MESSAGE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 18;
+/// HTML chrome mode only: the tab engine's environment creation finished (with or without an
+/// environment the chrome can use). The window then creates, or gives up on, its HTML chrome.
+pub(crate) const WM_HTML_CHROME_ENV: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7D;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;

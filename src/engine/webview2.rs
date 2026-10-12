@@ -231,7 +231,10 @@ fn navigation_start_policy(uri: &Url, allowed_file: Option<&Url>) -> NavigationS
         | "ms-browser-extension"
         | "res"
         | "vbscript"
-        | "view-source" => NavigationStartPolicy::Block,
+        | "view-source"
+        // The HTML chrome's scheme is registered in the shared environment in HTML chrome mode.
+        // Tabs must never load it, whatever the mode.
+        | "bowser-ui" => NavigationStartPolicy::Block,
         _ => NavigationStartPolicy::ExternalProtocol,
     }
 }
@@ -438,6 +441,9 @@ struct EngineCore {
     extension_ids: HashMap<String, String>,
     /// Stored per-site permission decisions. `None` denies every request, as before the store.
     permissions: Option<PermissionsHandle>,
+    /// The environment was created with the `bowser-ui` scheme registered (HTML chrome mode), so
+    /// the chrome views may be hosted in it.
+    chrome_ui_scheme: bool,
 }
 
 /// Completion for an extension operation. It runs once, on the UI thread.
@@ -452,6 +458,17 @@ enum MemoryTargetApi {
 impl WebView2Engine {
     pub fn availability() -> std::result::Result<String, RuntimeUnavailable> {
         query_runtime(PCWSTR::null())
+    }
+
+    /// The tab environment, for hosting the HTML chrome views in it (each in its own private
+    /// WebView2 profile). `None` unless the environment was created with the `bowser-ui` scheme
+    /// registered (`EngineExtras::chrome_ui_scheme`), or once the engine is closed.
+    pub fn chrome_environment(&self) -> Option<ICoreWebView2Environment> {
+        let state = self.core.borrow();
+        if state.closed || !state.chrome_ui_scheme {
+            return None;
+        }
+        state.environment.clone()
     }
 }
 
@@ -1238,6 +1255,7 @@ impl WebView2Engine {
         let known_extensions = extras.known_extensions;
         let extension_ids_file = extras.extension_ids_file;
         let permissions = extras.permissions;
+        let chrome_ui_scheme_requested = extras.chrome_ui_scheme;
         let extension_ids = extension_ids_file
             .as_deref()
             .map(load_extension_ids)
@@ -1271,6 +1289,9 @@ impl WebView2Engine {
         })));
         let completion_env = completion.clone();
         let event_handlers = events.clone();
+        // Set below, before the environment is requested, once the scheme is registered.
+        let chrome_ui_scheme = Rc::new(Cell::new(false));
+        let chrome_ui_scheme_env = chrome_ui_scheme.clone();
         let expected_user_data_dir =
             std::fs::canonicalize(user_data_dir).unwrap_or_else(|_| user_data_dir.to_path_buf());
         if let Some(log) = creation_log.as_ref() {
@@ -1364,6 +1385,7 @@ impl WebView2Engine {
                         extension_ids_file: extension_ids_file.clone(),
                         extension_ids: extension_ids.clone(),
                         permissions: permissions.clone(),
+                        chrome_ui_scheme: chrome_ui_scheme_env.get(),
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -1392,6 +1414,14 @@ impl WebView2Engine {
                 .and_then(|options6| unsafe { options6.SetAreBrowserExtensionsEnabled(true) });
             if enabled.is_err() {
                 event(creation_log.as_ref(), "browser_extensions_unavailable");
+            }
+        }
+        if chrome_ui_scheme_requested {
+            // HTML chrome mode only. A runtime without custom schemes still runs the tabs; the
+            // window then keeps its native chrome (no chrome environment is offered).
+            match crate::chrome_host::host::register_ui_scheme(&options2) {
+                Ok(()) => chrome_ui_scheme.set(true),
+                Err(_) => event(creation_log.as_ref(), "chrome_ui_scheme_unavailable"),
             }
         }
         let options1: ICoreWebView2EnvironmentOptions = options2.cast().map_err(request_error)?;
@@ -3637,6 +3667,7 @@ mod tests {
             "devtools://devtools/",
             "ms-appx-web://example/index.html",
             "vbscript:msgbox(1)",
+            "bowser-ui://app/index.html?view=toolbar",
         ] {
             assert_eq!(
                 navigation_start_policy(&Url::parse(value).unwrap(), Some(&allowed_file)),
@@ -3654,6 +3685,38 @@ mod tests {
                 NavigationStartPolicy::ExternalProtocol,
                 "{value} must reach the LaunchingExternalUriScheme cancellation handler"
             );
+        }
+    }
+
+    #[test]
+    fn tabs_never_load_the_html_chrome_scheme() {
+        let scheme = crate::chrome_host::assets::SCHEME;
+        assert_eq!(scheme, "bowser-ui");
+        for value in [
+            crate::chrome_host::assets::START_URL,
+            crate::chrome_host::assets::TABS_START_URL,
+            "bowser-ui://app/",
+            "bowser-ui://app/app.js",
+            "BOWSER-UI://app/index.html",
+            "bowser-ui://other/x",
+            "bowser-ui:index.html",
+        ] {
+            let url = Url::parse(value).unwrap();
+            assert_eq!(url.scheme(), scheme, "{value}");
+            // Block arm, not the external-protocol fallback, even with a file grant present.
+            assert_eq!(
+                navigation_start_policy(&url, None),
+                NavigationStartPolicy::Block,
+                "{value} must be blocked in tabs"
+            );
+            assert_eq!(
+                navigation_start_policy(&url, Some(&url)),
+                NavigationStartPolicy::Block,
+                "{value} must be blocked in tabs"
+            );
+            assert!(!navigation_scheme_allowed(&url), "{value}");
+            assert!(!frame_navigation_scheme_allowed(&url), "{value}");
+            assert_eq!(popup_decision(&url, true), PopupDecision::Block, "{value}");
         }
     }
 

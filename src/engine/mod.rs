@@ -298,4 +298,8 @@ pub struct EngineExtras {
     pub extension_ids_file: Option<std::path::PathBuf>,
     /// Stored per-site permission decisions, consulted for every permission request.
     pub permissions: Option<PermissionsHandle>,
+    /// HTML chrome mode: registers the `bowser-ui` scheme on the environment so the chrome views
+    /// can be hosted in it (in their own private WebView2 profile). Off in native mode, which
+    /// leaves the environment options exactly as before.
+    pub chrome_ui_scheme: bool,
 }

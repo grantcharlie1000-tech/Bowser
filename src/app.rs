@@ -42,6 +42,45 @@ use crate::{
     engine::{self, EngineAdapter, MemoryTargetApply, MemoryUsageTarget, TrackingPreventionLevel},
     win32,
 };
+use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment;
+
+/// What the HTML chrome can expect from the tab environment (see `App::request_chrome_environment`).
+pub enum ChromeEnvironment {
+    /// The environment exists and has the `bowser-ui` scheme registered.
+    Ready(ICoreWebView2Environment),
+    /// The engine is being created; `win32::WM_HTML_CHROME_ENV` is posted when it settles.
+    Pending,
+    /// No usable environment (creation failed, the scheme could not be registered, or closing).
+    Unavailable,
+}
+
+/// Pure decision behind `App::request_chrome_environment`, given whether an environment is ready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChromeEnvironmentStep {
+    Ready,
+    Wait,
+    StartEngine,
+    Unavailable,
+}
+
+pub fn chrome_environment_step(
+    ready: bool,
+    closing: bool,
+    settled: bool,
+    initializing: bool,
+) -> ChromeEnvironmentStep {
+    if closing {
+        ChromeEnvironmentStep::Unavailable
+    } else if ready {
+        ChromeEnvironmentStep::Ready
+    } else if settled {
+        ChromeEnvironmentStep::Unavailable
+    } else if initializing {
+        ChromeEnvironmentStep::Wait
+    } else {
+        ChromeEnvironmentStep::StartEngine
+    }
+}
 
 const EDIT_HEIGHT: i32 = 28;
 const INPUT_PADDING: i32 = 8;
@@ -456,6 +495,12 @@ pub struct App {
     pending_tab: Option<TabId>,
     pub initializing: bool,
     prewarm_requested: bool,
+    /// HTML chrome mode: the tab environment, once the engine has been created with the
+    /// `bowser-ui` scheme. The chrome views are hosted in it, in their own private profile.
+    chrome_environment: Option<ICoreWebView2Environment>,
+    /// The engine's first creation attempt has finished, successfully or not. Until then the HTML
+    /// chrome waits for the environment; afterwards a missing environment means native chrome.
+    engine_creation_settled: bool,
     pub closing: bool,
     /// When the window title last changed for blocked-request counts.
     title_synced_at: Option<Instant>,
@@ -2834,6 +2879,8 @@ impl App {
             pending_tab: None,
             initializing: false,
             prewarm_requested: false,
+            chrome_environment: None,
+            engine_creation_settled: false,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -3255,6 +3302,13 @@ impl App {
                 Self::with_engine(app, |engine| engine.prewarm_tab(active));
                 return;
             }
+            if state.initializing && state.pending.is_none() {
+                // The environment is already being created (by an earlier prewarm, or early for
+                // the HTML chrome): prewarm the active tab once it is ready. For an earlier
+                // prewarm this flag is already set.
+                state.prewarm_requested = true;
+                return;
+            }
             if !should_prewarm(false, state.initializing, state.closing, text) {
                 return;
             }
@@ -3266,6 +3320,80 @@ impl App {
         if start_environment {
             Self::start_engine_creation(app);
         }
+    }
+
+    /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
+    /// not been started yet (native mode starts it lazily, when the user begins typing), this starts
+    /// it now, with no tab controller and no navigation, so the chrome can appear at startup. The
+    /// first tab is not delayed: a navigation submitted meanwhile waits for, then reuses, this
+    /// same environment. `Pending` is answered later with `win32::WM_HTML_CHROME_ENV`.
+    pub fn request_chrome_environment(app: &AppRef) -> ChromeEnvironment {
+        let step = {
+            let mut state = app.borrow_mut();
+            let step = chrome_environment_step(
+                state.chrome_environment.is_some(),
+                state.closing,
+                state.engine_creation_settled,
+                state.initializing,
+            );
+            match step {
+                ChromeEnvironmentStep::Ready => {
+                    if let Some(environment) = state.chrome_environment.clone() {
+                        return ChromeEnvironment::Ready(environment);
+                    }
+                    return ChromeEnvironment::Unavailable;
+                }
+                ChromeEnvironmentStep::Wait => return ChromeEnvironment::Pending,
+                ChromeEnvironmentStep::Unavailable => return ChromeEnvironment::Unavailable,
+                ChromeEnvironmentStep::StartEngine => {
+                    state.initializing = true;
+                    let _ = state.log.record("engine_started_for_chrome");
+                }
+            }
+            step
+        };
+        debug_assert_eq!(step, ChromeEnvironmentStep::StartEngine);
+        Self::start_engine_creation(app);
+        let mut state = app.borrow_mut();
+        if let Some(environment) = state.chrome_environment.clone() {
+            return ChromeEnvironment::Ready(environment);
+        }
+        if !state.initializing {
+            // The request could not even be started (the error was already shown).
+            state.engine_creation_settled = true;
+            return ChromeEnvironment::Unavailable;
+        }
+        ChromeEnvironment::Pending
+    }
+
+    /// Records the outcome of engine creation for the HTML chrome and tells the window. Native
+    /// mode never posts anything.
+    fn settle_chrome_environment(app: &AppRef, environment: Option<ICoreWebView2Environment>) {
+        if !crate::chrome_host::html_ui_enabled() {
+            return;
+        }
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            state.engine_creation_settled = true;
+            if state.closing || state.engine.is_none() {
+                state.chrome_environment = None;
+            } else {
+                state.chrome_environment = environment;
+            }
+            state.hwnd
+        };
+        win32::post(
+            hwnd,
+            win32::WM_HTML_CHROME_ENV,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    }
+
+    /// Drops the app's reference to the shared environment. Called when the window closes, after
+    /// its chrome hosts are closed and before the engine closes.
+    pub fn release_chrome_environment(app: &AppRef) {
+        app.borrow_mut().chrome_environment = None;
     }
 
     fn start_engine_creation(app: &AppRef) {
@@ -3615,6 +3743,7 @@ impl App {
             known_extensions: known_extensions.unwrap_or_default(),
             extension_ids_file,
             permissions: app.borrow().permissions.clone(),
+            chrome_ui_scheme: crate::chrome_host::html_ui_enabled(),
         };
         let create_result = engine::WebView2Engine::begin_create_with_extras(
             hwnd,
@@ -3644,10 +3773,13 @@ impl App {
                     match result {
                         Ok(engine) => {
                             drop(state);
+                            let chrome_environment = engine.chrome_environment();
                             App::complete_engine_creation(&app, Box::new(engine));
+                            App::settle_chrome_environment(&app, chrome_environment);
                         }
                         Err(error) => {
                             drop(state);
+                            App::settle_chrome_environment(&app, None);
                             win32::show_error_message(&format!(
                                 "WebView2 could not create its isolated profile or browser controller: {error}"
                             ));
@@ -5977,6 +6109,8 @@ mod tests {
             pending_tab: Some(TabId(0)),
             initializing: true,
             prewarm_requested: false,
+            chrome_environment: None,
+            engine_creation_settled: false,
             closing: false,
             title_synced_at: None,
             title_dirty: false,
@@ -6667,6 +6801,37 @@ mod tests {
         assert!(!should_prewarm(true, false, false, "hello"));
         assert!(!should_prewarm(false, true, false, "hello"));
         assert!(!should_prewarm(false, false, true, "hello"));
+    }
+
+    #[test]
+    fn chrome_environment_waits_for_or_starts_the_one_tab_engine() {
+        use ChromeEnvironmentStep::*;
+        // (ready, closing, settled, initializing)
+        assert_eq!(chrome_environment_step(true, false, true, false), Ready);
+        assert_eq!(chrome_environment_step(true, true, true, false), Unavailable, "closing");
+        assert_eq!(chrome_environment_step(false, true, false, false), Unavailable, "closing");
+        // Creation finished without a usable environment: native chrome, never a second engine.
+        assert_eq!(chrome_environment_step(false, false, true, false), Unavailable);
+        assert_eq!(chrome_environment_step(false, false, true, true), Unavailable);
+        // Already being created (by a submit or prewarm): wait for that same environment.
+        assert_eq!(chrome_environment_step(false, false, false, true), Wait);
+        // Not started yet (native mode starts it lazily): start it now.
+        assert_eq!(chrome_environment_step(false, false, false, false), StartEngine);
+    }
+
+    #[test]
+    fn prewarm_during_early_environment_creation_is_kept_for_when_it_is_ready() {
+        let app = app_with_pending(rect(800, 600));
+        {
+            let mut state = app.borrow_mut();
+            state.pending = None;
+            state.pending_tab = None;
+            state.initializing = true;
+            state.prewarm_requested = false;
+        }
+        App::prewarm(&app, "exa");
+        assert!(app.borrow().prewarm_requested);
+        assert!(app.borrow().initializing);
     }
 
     #[test]

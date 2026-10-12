@@ -3,13 +3,13 @@ use super::{
     INPUT_ID, WM_ANIMATION_TIMER, WM_CARET_BLINK_TIMER, WM_FOREGROUND_SYNC, WM_HISTORY_BACK,
     WM_HISTORY_FORWARD, WM_IDLE_TRIM_TIMER, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
     WM_PANE_FOCUSED, WM_PROGRESS_TIMER, WM_SESSION_SAVE_TIMER, WM_SHORTCUT_KEY,
-    WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, WM_RAIL_CHANGED, card, command_palette, frame, glass,
+    WM_SPLIT_BOUNDS_TIMER, WM_SUBMIT, WM_TABS_CHANGED, WM_RAIL_CHANGED, WM_HTML_CHROME_ENV, card, command_palette, frame, glass,
     import_panel, island_menu, menu, notes_panel, passwords_panel, privacy_panel, settings_panel,
     side_panel,
     show_error_message, site_info,
 };
 use crate::{
-    app::{App, AppRef, IdleTimerAction},
+    app::{App, AppRef, ChromeEnvironment, IdleTimerAction},
     chrome::{
         group_ui::{self, GroupGeometry},
         layout::{self, Hit, Layout, Metrics, Rect},
@@ -296,8 +296,11 @@ struct WindowChrome {
     /// The active tab the last sync saw. A change of tab sends the new tab's text even while the
     /// omnibox is focused (see `chrome_host::should_set_text`).
     html_synced_tab: Option<TabId>,
-    /// The chrome environment, once created. The tab strip host is created on the same one.
+    /// The shared tab environment the chrome hosts live in, once the engine offered it. Both
+    /// hosts are created on it, each in the private chrome profile.
     html_env: Option<ChromeEnv>,
+    /// The HTML chrome was requested and is waiting for the tab engine's environment.
+    html_env_waiting: bool,
     /// The HTML tab strip's WebView2 host, once created. Dropped (and closed) on failure.
     html_tabs: Option<ChromeHost>,
     /// Set once the HTML tab strip has been started, so it is never started twice.
@@ -405,6 +408,7 @@ impl WindowChrome {
             html_text_sent: None,
             html_synced_tab: None,
             html_env: None,
+            html_env_waiting: false,
             html_tabs: None,
             html_tabs_requested: false,
             html_tabs_page_ready: false,
@@ -2579,6 +2583,10 @@ unsafe extern "system" fn window_proc(
                 start_html_chrome(hwnd);
                 LRESULT(0)
             }
+            WM_HTML_CHROME_ENV => {
+                html_env_settled(hwnd);
+                LRESULT(0)
+            }
             WM_HTML_CHROME_FAILED => {
                 html_failed(hwnd);
                 LRESULT(0)
@@ -2784,7 +2792,10 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 card::cancel(hwnd);
+                // The chrome hosts live in the engine's environment: close them first.
+                close_html_chrome(hwnd);
                 if let Some(app) = app {
+                    App::release_chrome_environment(app);
                     let _ = App::privacy_stats_save_now(app);
                     App::session_finish(app);
                     let (mut engine, log) = {
@@ -5267,23 +5278,89 @@ fn caption_command(hwnd: HWND, h: Hit) {
 fn toggle_max(hwnd: HWND) {
     caption_command(hwnd, Hit::CaptionMaximize)
 }
-/// Starts the HTML toolbar's WebView2 controller, once per window. The controller uses the
-/// chrome-only folder under the app data root. If it cannot start, the native toolbar stays.
+/// Starts the HTML chrome, once per window. The chrome views are hosted in the active profile's
+/// tab environment (shared browser, GPU and network processes), each in the private chrome
+/// profile. When that environment does not exist yet, the engine is asked to create it now, and
+/// `WM_HTML_CHROME_ENV` continues here once it settles. If anything fails, the native chrome stays.
 fn start_html_chrome(hwnd: HWND) {
-    let Some(bounds) = with_chrome(hwnd, |s| {
+    let started = with_chrome(hwnd, |s| {
         if s.html_requested {
-            return None;
+            return false;
         }
         s.html_requested = true;
-        Some(chrome_host::toolbar_bounds(&s.layout).unwrap_or_default())
+        s.html_env_waiting = true;
+        true
     })
-    .flatten() else {
+    .unwrap_or(false);
+    if started {
+        html_env_settled(hwnd);
+    }
+}
+
+/// Continues a waiting HTML chrome start with the engine's environment: both hosts are created
+/// on it, or, when there is none, the native chrome stays. Ignored unless the window is waiting.
+fn html_env_settled(hwnd: HWND) {
+    if !with_chrome(hwnd, |s| s.html_env_waiting).unwrap_or(false) {
+        return;
+    }
+    let Some(app) = app_of(hwnd) else {
         return;
     };
-    let Some(root) = profile::app_data_dir() else {
-        html_failed(hwnd);
-        return;
-    };
+    match App::request_chrome_environment(&app) {
+        ChromeEnvironment::Pending => {}
+        ChromeEnvironment::Ready(environment) => {
+            let env = ChromeEnv::new(environment);
+            let _ = with_chrome(hwnd, |s| {
+                s.html_env_waiting = false;
+                s.html_env = Some(env.clone());
+            });
+            // The two controllers are requested together and are created concurrently. Each one's
+            // failure is its own.
+            start_html_toolbar(hwnd, &env);
+            start_html_tabs(hwnd);
+        }
+        ChromeEnvironment::Unavailable => {
+            let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
+            html_failed(hwnd);
+            html_tabs_failed(hwnd);
+        }
+    }
+}
+
+/// Closes both chrome hosts and drops the window's reference to the shared environment, so the
+/// engine can close it next. Nothing restarts the HTML chrome afterwards.
+fn close_html_chrome(hwnd: HWND) {
+    let hosts = with_chrome(hwnd, |s| {
+        s.html_requested = true;
+        s.html_tabs_requested = true;
+        s.html_env_waiting = false;
+        s.html_toolbar_active = false;
+        s.html_page_ready = false;
+        s.html_tabs_page_ready = false;
+        s.html_env = None;
+        (s.html.take(), s.html_tabs.take())
+    });
+    // Closed outside the borrow: closing a controller can pump messages.
+    if let Some((toolbar, tabs)) = hosts {
+        if let Some(host) = toolbar {
+            host.close();
+        }
+        if let Some(host) = tabs {
+            host.close();
+        }
+    }
+}
+
+/// True once the window has started closing; a chrome host that finishes creation then is closed
+/// at once instead of being stored.
+fn window_closing(hwnd: HWND) -> bool {
+    app_of(hwnd).is_some_and(|app| app.borrow().closing)
+}
+
+/// Requests the HTML toolbar's controller on the shared environment.
+fn start_html_toolbar(hwnd: HWND, env: &ChromeEnv) {
+    let bounds = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout).unwrap_or_default())
+        .unwrap_or_default();
     let raw = hwnd.0 as isize;
     let on_command: Rc<dyn Fn(ChromeCommand)> =
         Rc::new(move |command| html_command(HWND(raw as *mut _), command));
@@ -5298,28 +5375,16 @@ fn start_html_chrome(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeEnv::begin_create(&root.join("ChromeUI"), move |env| {
-        let hwnd = HWND(raw as *mut _);
-        let result = env.and_then(|env| {
-            let created = ChromeHost::create(
-                &env,
-                hwnd,
-                bounds,
-                View::Toolbar,
-                on_command,
-                on_failed,
-                Some(on_accelerator),
-                move |result| html_created(hwnd, result),
-            );
-            // The tab strip is a second host on the same environment. Its failure is its own.
-            let _ = with_chrome(hwnd, |s| s.html_env = Some(env.clone()));
-            start_html_tabs(hwnd);
-            created
-        });
-        if result.is_err() {
-            html_failed(hwnd);
-        }
-    });
+    let created = ChromeHost::create(
+        env,
+        hwnd,
+        bounds,
+        View::Toolbar,
+        on_command,
+        on_failed,
+        Some(on_accelerator),
+        move |result| html_created(hwnd, result),
+    );
     if created.is_err() {
         html_failed(hwnd);
     }
@@ -5332,6 +5397,10 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         html_failed(hwnd);
         return;
     };
+    if window_closing(hwnd) {
+        host.close();
+        return;
+    }
     let stored = with_chrome(hwnd, move |s| {
         s.html = Some(host);
         s.sync_html_bounds();
@@ -5598,8 +5667,9 @@ fn changes_active_tab(command: Command) -> bool {
     )
 }
 
-/// Starts the HTML tab strip's WebView2 controller on the chrome environment, once per window. It
-/// is independent of the toolbar: if it cannot start, the native tab row stays.
+/// Starts the HTML tab strip's WebView2 controller on the shared environment (private chrome
+/// profile), once per window. It is independent of the toolbar: if it cannot start, the native tab
+/// row stays.
 fn start_html_tabs(hwnd: HWND) {
     let Some((env, bounds)) = with_chrome(hwnd, |s| {
         if s.html_tabs_requested {
@@ -5648,6 +5718,10 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         html_tabs_failed(hwnd);
         return;
     };
+    if window_closing(hwnd) {
+        host.close();
+        return;
+    }
     let stored = with_chrome(hwnd, move |s| {
         s.html_tabs = Some(host);
         s.sync_html_tabs_bounds();
