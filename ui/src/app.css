@@ -1,3 +1,6 @@
+/* --- hover layer --- */
+@import "./styles/hover.css";
+/* --- end hover layer --- */
 /* Fallback colours; Rust overrides every token through the state message theme. */
 :root {
   --bg: #202124;

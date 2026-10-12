@@ -18,7 +18,7 @@ Done and live-verified: toolbar, horizontal tab strip, left rail (three controll
 - Show: Rust posts `{t:"menu",tok,...}`; JS replies `{t:"size",tok,w,h}`; Rust places (existing `menu::place`), shows, activates, focuses; prior focus restored on close.
 - Dismiss on popup deactivation, owner move/size/deactivate, Esc, tab/workspace switch; 300 ms reopen guard; submenus are drill-in pages.
 - Contract: keep `menu::Menu/Entry`; add async `menu::show(owner, anchor, placement, menu, kind, callback)`; HTML picks are validated (`tok`, enabled `id`) and the callback runs from `DeferredChromeCommand::MenuResult` (never inside `WebMessageReceived`); callbacks re-validate ids. Native dialogs (passwords, import) keep synchronous `track`.
-- Stay native: hover cards, island hover menu, tooltips (need no-activate behaviour).
+- Hover cards, the island hover menu and tooltips moved to the no-activate HTML hover layer (`html_hover.rs`, `View::Hover`; see the protocol doc). Native versions remain the fallback when the HTML chrome is off.
 
 **Vertical sidebar**: reuse the Tabs controller (idle in vertical mode); Rust sends `{t:"layout",mode}` and re-bounds it to the sidebar rect (right edge at the resize handle). Rust keeps the workspace/group model, drop semantics, width setting and the resize handle; TS owns rows, group headers, workspace header, scrolling and drag visuals.
 
@@ -42,7 +42,7 @@ Done and live-verified: toolbar, horizontal tab strip, left rail (three controll
 Conflict rules: only task 1 edits `protocol.rs`; registries get one line per panel; `window.rs` is edited only by tasks 2, 6, 8, 9 in that order, inside new delimited functions.
 
 ## Not migrating
-Passwords panel and import (secrets), `panel_webapp.rs` (third-party WebViews), native message boxes/confirmations/file pickers, `import_panel.rs`, `profile_rename.rs`, caption buttons/frame/resize borders/glass backdrop, sidebar and panel resize handles, hover cards, island hover menu, tooltips.
+Passwords panel and import (secrets), `panel_webapp.rs` (third-party WebViews), native message boxes/confirmations/file pickers, `import_panel.rs`, `profile_rename.rs`, caption buttons/frame/resize borders/glass backdrop, sidebar and panel resize handles. (Hover cards, the island hover menu and tooltips now have an HTML hover layer; the native ones are the fallback.)
 
 ## Top risks
 Memory/renderer count (benchmark gate), popup dismissal and DPI races (reopen guard, native fallback), sync-to-async menu bugs (tokens, re-validation, deferred queue), focus regressions (`after_shown`, JS Escape, accelerators on every view), larger bridge surface (fixed field whitelist, ids vs live model, http(s) normaliser, exact start URLs, static secrets guard).

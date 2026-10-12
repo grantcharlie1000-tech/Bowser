@@ -6,6 +6,10 @@ import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+// --- hover layer ---
+import { startHover } from './hover';
+import { installHoverTargets, installTooltips, tabStripHoverTarget } from './tooltip';
+// --- end hover layer ---
 
 /** True only when the event target is the drag surface itself, never a control inside it. */
 function onDragSurface(target: EventTarget | null): boolean {
@@ -170,12 +174,24 @@ function start(): void {
   }
   // ?view=tabs selects the tab strip and ?view=rail the left rail; anything else, including no query, is the toolbar.
   const view = new URLSearchParams(location.search).get('view');
-  if (view === 'tabs') startTabs(root);
-  else if (view === 'rail') startRail(root);
+  if (view === 'tabs') {
+    startTabs(root);
+    // --- hover layer ---
+    installTooltips(root);
+    installHoverTargets(root, tabStripHoverTarget);
+    // --- end hover layer ---
+  } else if (view === 'rail') {
+    startRail(root);
+    installTooltips(root); // --- hover layer ---
+  }
   else if (view === 'panel') startPanel(root);
   else if (view === 'popup') startPopup(root);
   else if (view === 'dialog') startDialog(root);
-  else startToolbar(root);
+  else if (view === 'hover') startHover(root); // --- hover layer ---
+  else {
+    startToolbar(root);
+    installTooltips(root); // --- hover layer ---
+  }
 }
 
 start();

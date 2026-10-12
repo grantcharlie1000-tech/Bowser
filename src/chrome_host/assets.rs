@@ -16,6 +16,8 @@ pub const DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog";
 pub const NOTES_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=notes";
 pub const SETTINGS_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=settings";
 pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=privacy";
+/// Start URL of the no-activate hover layer (tooltips, tab hover card, island menu).
+pub const HOVER_START_URL: &str = "bowser-ui://app/index.html?view=hover";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";

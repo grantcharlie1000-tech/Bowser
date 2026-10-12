@@ -25,3 +25,14 @@ await esbuild.build({
 for (const file of ['index.html', 'app.css']) {
   copyFileSync(join(srcDir, file), join(distDir, file));
 }
+
+// --- hover layer ---
+// app.css @imports the stylesheets under src/styles/; inline them into the one dist/app.css the CSP
+// and the embedded asset table allow.
+await esbuild.build({
+  entryPoints: [join(srcDir, 'app.css')],
+  bundle: true,
+  outfile: join(distDir, 'app.css'),
+  logLevel: 'info',
+});
+// --- end hover layer ---

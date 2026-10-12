@@ -142,7 +142,7 @@ Rust validates the key against the current rail model; unknown keys are ignored.
 | `rail` | `items`: array of `{k, icon, label, active, dot, accent, fav}`; `icon` is one of `home`, `customize`, `plus`, `heart`, `clock`, `dots`, `apptile`, `letter`, or `g:` + one of `briefcase`, `home`, `code`, `book`, `cart`, `game`, `music`, `heart`, `star`, `bolt`, `globe`, `leaf`; `label` string (also the tooltip and the letter-tile source; capped 64 chars); `active` bool (current workspace or open panel); `dot` bool; `accent` CSS colour string from Rust's safe-colour set or `""` for the theme accent; `fav` bool (a favicon is cached for `k`) |
 | `railfav` | `k`, `uri` (`data:image/png;base64,...`, same validation as `fav`) |
 
-`state` still supplies theme/solid/dark/scale. Tooltips use the element `title` attribute (WebView2 shows it as a native tooltip that may overflow the 40px-wide view).
+`state` still supplies theme/solid/dark/scale. Tooltips use the element's `data-tip` attribute and are drawn by the hover layer (below), so they escape the 40px-wide view.
 
 ## Foundation extension: panel, popup and dialog views
 
@@ -179,3 +179,70 @@ malformed values are rejected. The Rust `json.rs` writer closes containers struc
 `ChromeHost::try_suspend()` starts WebView2 suspension and returns initiation errors; asynchronous
 failure invokes the host failure callback. `resume()` returns WebView2 errors. Both reject closed
 or re-entered host state without panicking.
+
+## Hover layer (tooltips, tab hover card, island menu)
+
+One lazily created, owned `WS_POPUP` per window (`src/win32/html_hover.rs`), created hidden with the
+popup host ~2 s after the toolbar activates, hosting `View::Hover` at the exact start URL
+`bowser-ui://app/index.html?view=hover`. Styles `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, plus
+`WS_EX_TRANSPARENT` while it shows a tooltip; `WM_MOUSEACTIVATE` returns `MA_NOACTIVATE`, and it is
+shown with `SWP_NOACTIVATE`, so hovering or clicking it never takes focus. Only the island menu's
+name field activates it, when the page asks (`hact` `focus`) after a click on the field; Escape,
+Enter or closing gives the keyboard back to the window. The host is `TrySuspend`ed 2 s after the
+layer hides. HTML mode only: native mode keeps `card.rs`, `island_menu.rs` and the native tooltips.
+
+Flow: Rust posts content with a fresh token, the page renders and measures it and replies
+`{v:1,t:"size",tok,w,h}`, and Rust places the popup (tooltip centred under its anchor with a 6 px
+gap, above it when there is no room; card and island left-aligned under it with a 4 px gap, 8 px
+inside the edge), clamped to the anchor monitor's work area and scaled by that monitor's DPI, then
+clips it to a rounded region (4 px tooltip, 8 px overlay). A 100 ms leave check closes a tooltip once
+the pointer is off its anchor or on the tooltip, and the card or island once the pointer leaves the
+hover square (`hover_square`), unless the island's name field has the keyboard; any of them closes
+when another application comes to the front.
+
+Tooltips: views mark elements with `data-tip` (never `title`). The toolbar, tab strip and rail
+report a target after a 500 ms rest, at once when moving on to a neighbour (while one is up or
+within 300 ms of it hiding), and hide on pointer leave, scroll, wheel, key press, pointer down and
+blur (`ui/src/tooltip-logic.ts`). The card opens after `card::HOVER_DELAY_MS` on a non-active tab and
+the island menu after `island_menu::HOVER_DELAY_MS` on a domain island's ball; a right-click on a ball
+(`island_menu::open_now`) opens the HTML island menu at once when the layer is ready.
+
+### JS -> Rust
+
+| `t` | fields | from | meaning |
+|---|---|---|---|
+| `tip` | `text` (1-256 chars, not blank), `r` | toolbar, tabs, rail | show a tooltip under rectangle `r` |
+| `tipoff` | - | toolbar, tabs, rail | hide the tooltip |
+| `hover` | `k`: `tab`/`ball` with `id` (tab wire id / group key) and `r`; or `k`: `none` alone | tabs | pointer over a tab or ball, or neither |
+| `hact` | `tok`, `a`, `n`/`text` | hover | `a`: `marker` (`n` 0-4), `next`, `row` (`n` 0-63), `swatch` (`n` 0-31), `close`, `name` (`text` <= 64 chars), `focus`, `dismiss` |
+| `size` | `tok`, `w`, `h` | hover (and popup) | measured content size |
+
+`r` is `"x,y,w,h"`: four canonical decimals (no sign, spaces or leading zeros), each <= 16384, in CSS
+pixels of the sending view; the page clamps negative edges to 0. Rust converts it with the sending
+host's own screen bounds and the window DPI. `n` and `text` appear exactly for the actions that take
+them. Tab ids and group keys are checked against the live model (a ball only for a domain island),
+and every action is checked against the token of the content shown and run from a posted window
+message, outside WebView2's callback; row and swatch indices are checked against the rows and slots
+last sent. `name` is accepted for the island session it was typed in, even after the menu closed (a
+commit sent from the field's blur).
+
+### Rust -> JS
+
+| `t` | fields |
+|---|---|
+| `hover` | `tok` (>= 1), `kind: "tooltip"`, `text` |
+| `hover` | `tok`, `kind: "card"`, `title`, `host`, `marker` (-1-4), `markers` (<= 5 colours), `sleeping`, `fav`, `rows`, `more` |
+| `hover` | `tok`, `kind: "island"`, `name`, `hint`, `slot`, `swatches` (<= 32 colours), `rows`, `more`, `close` |
+| `hoverhide` | - (the layer hid; the page clears its content, committing a changed island name first) |
+
+`rows` is at most 12 `{title, active, linked, fav}`; `fav` is `""` or a validated PNG data URI, and
+all favicons in one message share a 128 KiB budget. Colours are `""` (theme accent) or pass
+`is_safe_css_colour`. Every key is required and no other key is accepted. The card mirrors
+`tab_card.rs` (marker swatches and "+", title clamped to two lines, host, group rows with linked
+underline, "+N more") and adds the tab's favicon and a "Sleeping" badge for discarded or suspended
+tabs; the island menu mirrors `island_menu.rs` (name field with clear button and placeholder hint,
+swatches, member rows, "+N more", "Close Tab Island · N Tabs").
+
+Markup uses stable class names (`.bw-tooltip`, `.bw-card`, `.bw-island-menu` and their `-*` parts);
+styles live in `ui/src/styles/hover.css` over the `--bw-*` design tokens with fallbacks to the
+themed tokens, imported by `app.css` and inlined into `dist/app.css` by `build.mjs`.

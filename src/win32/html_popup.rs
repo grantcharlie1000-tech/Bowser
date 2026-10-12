@@ -261,6 +261,9 @@ pub(crate) fn show_menu(
         return false;
     }
     adopt_ready(owner);
+    // --- hover layer ---
+    super::html_hover::cancel(owner);
+    // --- end hover layer ---
     let key = owner.0 as isize;
     let popup_data = POPUPS.with(|p| {
         let mut all = p.borrow_mut();
