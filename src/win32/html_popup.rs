@@ -21,8 +21,8 @@ use windows::{
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, HWND_TOP,
                 IsWindow, RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow, SetWindowPos,
-                ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
-                WS_EX_TOOLWINDOW, WS_POPUP,
+                SWP_NOACTIVATE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_NCCREATE, WM_NCDESTROY,
+                WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
     },
@@ -34,8 +34,8 @@ use crate::{
     chrome_host::{
         self,
         host::{Accel, ChromeEnv, ChromeHost, View},
-        json::Json,
-        protocol::Command,
+        json::{Json, Object},
+        protocol::{Command, MAX_ACT_CHOICE},
     },
     win32::menu::{self, Chosen, Entry, Icon, Menu},
 };
@@ -48,6 +48,13 @@ const MAX_SHORTCUT: usize = 48;
 const MAX_FOOTER: usize = 256;
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const FALLBACK_DPI: u32 = 96;
+/// Largest page message (palette, site info) posted to the popup page. The page's own inbound cap
+/// is 256 KiB; a larger page is refused and the caller falls back to its native surface.
+pub(crate) const MAX_PAGE_BYTES: usize = 240 * 1024;
+/// The command palette's top edge sits this far down the owner window (reference spec: 12%).
+const TOP_CENTER_PERCENT: i32 = 12;
+/// Popup kinds that are pages, not menus (8px overlay radius).
+const PAGE_KINDS: [&str; 2] = ["palette", "site-info"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
@@ -56,6 +63,91 @@ pub(crate) enum Placement {
 }
 
 pub(crate) type ResultCallback = Box<dyn FnOnce(&AppRef, Option<Chosen>)>;
+
+// --- popup surfaces (lane PP) ---
+/// Where a popup page is placed once the page reports its size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Anchor {
+    /// A menu or flyout at a screen point (`menu::place` / `menu::place_below`).
+    Point(POINT, Placement),
+    /// Centred on a window rectangle (screen coordinates), its top edge 12% down the window:
+    /// the command palette.
+    TopCenter(RECT),
+}
+
+impl Anchor {
+    /// The screen point whose monitor supplies the DPI and work area.
+    fn monitor_point(self) -> POINT {
+        match self {
+            Self::Point(point, _) => point,
+            Self::TopCenter(window) => POINT {
+                x: (window.left + window.right) / 2,
+                y: window.top + (window.bottom - window.top) * TOP_CENTER_PERCENT / 100,
+            },
+        }
+    }
+}
+
+/// A non-menu popup page (`{t:"palette"}`, `{t:"siteinfo"}`): its wire type, the fields Rust
+/// writes after `v`, `t`, `tok` and `kind`, the ids a `pick` may name, and the ids an `act` may
+/// name with the largest choice each accepts. Anything outside those sets is rejected.
+pub(crate) struct Page {
+    t: &'static str,
+    write: Box<dyn FnOnce(&mut Object<'_>)>,
+    picks: HashSet<u32>,
+    acts: HashMap<u32, u8>,
+}
+
+impl Page {
+    pub(crate) fn new(t: &'static str, write: impl FnOnce(&mut Object<'_>) + 'static) -> Self {
+        Self { t, write: Box::new(write), picks: HashSet::new(), acts: HashMap::new() }
+    }
+    /// Lets a `pick` name `id` (it closes the popup and runs the result callback).
+    pub(crate) fn pick(&mut self, id: u32) {
+        self.picks.insert(id);
+    }
+    /// Lets an `act` name `id` with a choice from 0 to `max` (the popup stays open).
+    pub(crate) fn act(&mut self, id: u32, max: u8) {
+        self.acts.insert(id, max.min(MAX_ACT_CHOICE));
+    }
+    /// The message this page posts, for tests and fixtures.
+    #[cfg(test)]
+    pub(crate) fn debug_json(page: Self, tok: u32) -> String {
+        let kind = page.t;
+        page_json(tok, if kind == "siteinfo" { "site-info" } else { kind }, page).map(|built| built.0).unwrap_or_default()
+    }
+}
+
+/// What an in-place action did. `Refresh` re-posts the page under the same token.
+pub(crate) enum ActOutcome {
+    Refresh(Page),
+    Close,
+    Keep,
+}
+
+pub(crate) type ActHandler = Rc<dyn Fn(&AppRef, u32, u8) -> ActOutcome>;
+
+type Built = (String, HashSet<u32>, HashMap<u32, u8>);
+
+fn page_json(tok: u32, kind: &str, page: Page) -> Option<Built> {
+    if kind.is_empty() || kind.encode_utf16().count() > 32 {
+        return None;
+    }
+    let Page { t, write, picks, acts } = page;
+    let json = Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", t);
+        out.uint("tok", u64::from(tok));
+        out.string("kind", kind);
+        write(out);
+    });
+    (json.len() <= MAX_PAGE_BYTES).then_some((json, picks, acts))
+}
+
+fn act_allowed(active: bool, current: u32, requested: u32, id: u32, n: u8, acts: &HashMap<u32, u8>) -> bool {
+    popup_token_matches(active, current, requested) && acts.get(&id).is_some_and(|max| n <= *max)
+}
+// --- end popup surfaces ---
 
 /// Why `show_menu` did not take a menu. The callback is handed back either way.
 pub(crate) enum ShowRefused {
@@ -80,8 +172,12 @@ struct Popup {
     prior_focus: HWND,
     callback: Option<ResultCallback>,
     enabled_ids: HashSet<u32>,
-    anchor: POINT,
-    placement: Placement,
+    /// In-place actions the open page accepts (`act`), id -> largest choice.
+    acts: HashMap<u32, u8>,
+    on_act: Option<ActHandler>,
+    at: Anchor,
+    /// The page has been placed and shown; a later `size` only re-bounds it, without refocusing.
+    shown: bool,
     dpi: u32,
     work: RECT,
     bounds: RECT,
@@ -157,6 +253,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     if !chrome_host::html_ui_enabled()
         || owner.is_invalid()
         || POPUPS.with(|p| p.borrow().contains_key(&(owner.0 as isize)))
+        || PENDING.with(|p| p.borrow().contains_key(&(owner.0 as isize)))
     {
         return;
     }
@@ -260,8 +357,10 @@ fn adopt_ready(owner: HWND) {
                     prior_focus: HWND::default(),
                     callback: None,
                     enabled_ids: HashSet::new(),
-                    anchor: POINT::default(),
-                    placement: Placement::BelowLeft,
+                    acts: HashMap::new(),
+                    on_act: None,
+                    at: Anchor::Point(POINT::default(), Placement::BelowLeft),
+                    shown: false,
                     dpi,
                     work,
                     bounds: RECT::default(),
@@ -291,6 +390,60 @@ pub(crate) fn show_menu(
     context: Option<MenuContext>,
     on_result: ResultCallback,
 ) -> Result<(), ShowRefused> {
+    open(
+        owner,
+        Anchor::Point(anchor, placement),
+        kind,
+        context,
+        |token| {
+            let mut ids = HashSet::new();
+            menu_json(token, kind, menu, &mut ids).map(|json| (json, ids, HashMap::new()))
+        },
+        on_result,
+        None,
+    )
+}
+
+// --- popup surfaces (lane PP) ---
+/// Posts a non-menu page (command palette, site info). Same contract as `show_menu`: on success
+/// the page measures itself and the popup shows at `at`; a `pick` runs `on_result` from the
+/// deferred queue, and an `act` runs `on_act` (popup stays open). On refusal the caller shows its
+/// native surface (or nothing, when guarded).
+pub(crate) fn show_page(
+    owner: HWND,
+    at: Anchor,
+    kind: &str,
+    context: Option<MenuContext>,
+    page: Page,
+    on_result: ResultCallback,
+    on_act: Option<ActHandler>,
+) -> Result<(), ShowRefused> {
+    open(owner, at, kind, context, |token| page_json(token, kind, page), on_result, on_act)
+}
+
+/// Whether a popup page could be shown now (host adopted and page ready). Callers that build an
+/// expensive page check this first; it also starts creating the host when it does not exist yet.
+pub(crate) fn page_ready(owner: HWND) -> bool {
+    let key = owner.0 as isize;
+    let ready = PAGE_READY.with(|ready| ready.borrow().contains(&key))
+        && POPUPS.with(|p| p.borrow().contains_key(&key));
+    if !ready {
+        super::window::request_popup_prewarm(owner);
+    }
+    ready
+}
+// --- end popup surfaces ---
+
+#[allow(clippy::too_many_arguments)]
+fn open(
+    owner: HWND,
+    at: Anchor,
+    kind: &str,
+    context: Option<MenuContext>,
+    build: impl FnOnce(u32) -> Option<Built>,
+    on_result: ResultCallback,
+    on_act: Option<ActHandler>,
+) -> Result<(), ShowRefused> {
     if !chrome_host::html_ui_enabled() || kind.is_empty() || kind.len() > 32 {
         return Err(ShowRefused::Unavailable(on_result));
     }
@@ -299,6 +452,7 @@ pub(crate) fn show_menu(
     let key = owner.0 as isize;
     if !PAGE_READY.with(|ready| ready.borrow().contains(&key)) {
         super::window::perf_event(owner, "html_popup_fallback");
+        super::window::request_popup_prewarm(owner);
         return Err(ShowRefused::Unavailable(on_result));
     }
     let mut on_result = Some(on_result);
@@ -312,19 +466,20 @@ pub(crate) fn show_menu(
         if !popup.dismiss.can_open(kind, now) {
             return Err(true);
         }
-        let mut ids = HashSet::new();
         let token = popup.next_token;
-        let json = menu_json(token, kind, menu, &mut ids).ok_or(false)?;
+        let (json, ids, acts) = build(token).ok_or(false)?;
         if !popup.dismiss.open(kind, now) {
             return Err(true);
         }
         popup.token = token;
         popup.next_token = popup.next_token.wrapping_add(1).max(1);
         popup.enabled_ids = ids;
-        popup.anchor = anchor;
-        popup.placement = placement;
+        popup.acts = acts;
+        popup.on_act = on_act;
+        popup.at = at;
+        popup.shown = false;
         popup.context = context;
-        (popup.dpi, popup.work) = monitor_data(anchor);
+        (popup.dpi, popup.work) = monitor_data(at.monitor_point());
         popup.callback = on_result.take();
         popup.prior_focus = unsafe { GetFocus() };
         Ok((popup.host.clone(), json))
@@ -427,6 +582,9 @@ fn close_now(owner: HWND) {
         p.borrow_mut().get_mut(&key).map(|popup| {
             let was_active = popup.dismiss.close(Instant::now());
             popup.callback = None;
+            popup.on_act = None;
+            popup.acts.clear();
+            popup.shown = false;
             (
                 popup.window,
                 popup.host.clone(),
@@ -486,7 +644,8 @@ fn popup_command(owner: HWND, command: Command) {
         }
         command @ (Command::PopupSize { .. }
         | Command::PopupPick { .. }
-        | Command::PopupDismiss { .. }) => crate::win32::window::html_popup_command(owner, command),
+        | Command::PopupDismiss { .. }
+        | Command::PopupAct { .. }) => crate::win32::window::html_popup_command(owner, command),
         _ => {}
     }
 }
@@ -535,6 +694,58 @@ pub(super) fn valid_pick(owner: HWND, token: u32, id: u32) -> bool {
     })
 }
 
+// --- popup surfaces (lane PP) ---
+pub(super) fn valid_act(owner: HWND, token: u32, id: u32, n: u8) -> bool {
+    POPUPS.with(|p| {
+        p.borrow().get(&(owner.0 as isize)).is_some_and(|p| {
+            act_allowed(p.dismiss.is_active(), p.token, token, id, n, &p.acts)
+        })
+    })
+}
+
+/// Runs an in-place action from the deferred queue. The handler may pump messages (site info asks
+/// the browser for cookies), so the token is checked again before the refreshed page is posted.
+pub(crate) fn run_act(owner: HWND, token: u32, id: u32, n: u8, app: &AppRef) {
+    if !valid_act(owner, token, id, n) {
+        return;
+    }
+    let Some(handler) = POPUPS.with(|p| p.borrow().get(&(owner.0 as isize)).and_then(|p| p.on_act.clone())) else {
+        return;
+    };
+    match handler(app, id, n) {
+        ActOutcome::Keep => {}
+        ActOutcome::Close => run_result(owner, token, None, app),
+        ActOutcome::Refresh(page) => {
+            let key = owner.0 as isize;
+            let Some(kind) = POPUPS.with(|p| {
+                p.borrow()
+                    .get(&key)
+                    .filter(|p| popup_token_matches(p.dismiss.is_active(), p.token, token))
+                    .map(|p| p.dismiss.kind.clone())
+            }) else {
+                return;
+            };
+            let Some((json, picks, acts)) = page_json(token, &kind, page) else {
+                close(owner);
+                return;
+            };
+            let host = POPUPS.with(|p| {
+                p.borrow_mut().get_mut(&key).map(|popup| {
+                    popup.enabled_ids = picks;
+                    popup.acts = acts;
+                    popup.host.clone()
+                })
+            });
+            if let Some(host) = host {
+                if host.post_json(&json).is_err() {
+                    close(owner);
+                }
+            }
+        }
+    }
+}
+// --- end popup surfaces ---
+
 pub(crate) fn run_result(owner: HWND, token: u32, id: Option<u32>, app: &AppRef) {
     if !valid_token(owner, token) || id.is_some_and(|id| !valid_pick(owner, token, id)) {
         return;
@@ -565,29 +776,36 @@ pub(crate) fn run_result(owner: HWND, token: u32, id: Option<u32>, app: &AppRef)
 
 pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
     let key = owner.0 as isize;
-    let Some((window, host, anchor, placement, dpi, work)) = POPUPS.with(|p| {
+    let Some((window, host, at, dpi, work, shown, previous)) = POPUPS.with(|p| {
         p.borrow().get(&key).and_then(|popup| {
             (popup.dismiss.is_active() && popup.token == token).then(|| {
                 (
                     popup.window,
                     popup.host.clone(),
-                    popup.anchor,
-                    popup.placement,
+                    popup.at,
                     popup.dpi,
                     popup.work,
+                    popup.shown,
+                    popup.bounds,
                 )
             })
         })
     }) else {
         return;
     };
-    let bounds = popup_bounds(anchor, i32::from(w), i32::from(h), dpi, work, placement);
+    let bounds = page_bounds(at, i32::from(w), i32::from(h), dpi, work);
+    if shown && bounds == previous {
+        return;
+    }
     POPUPS.with(|p| {
         if let Some(popup) = p.borrow_mut().get_mut(&key) {
             popup.bounds = bounds;
+            popup.shown = true;
         }
     });
-    let radius = ((12 * dpi + 48) / 96).max(1) as i32;
+    // Menus keep their 12px legacy radius; palette and site info use the 8px overlay radius.
+    let page = POPUPS.with(|p| p.borrow().get(&key).is_some_and(|p| !p.acts.is_empty() || matches!(p.at, Anchor::TopCenter(_)) || PAGE_KINDS.contains(&p.dismiss.kind.as_str())));
+    let radius = (((if page { 8 } else { 12 }) * dpi + 48) / 96).max(1) as i32;
     unsafe {
         let region = CreateRoundRectRgn(
             0,
@@ -607,7 +825,7 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
             bounds.top,
             bounds.right - bounds.left,
             bounds.bottom - bounds.top,
-            Default::default(),
+            if shown { SWP_NOACTIVATE } else { Default::default() },
         );
         let _ = host.set_bounds(RECT {
             left: 0,
@@ -615,6 +833,11 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
             right: bounds.right - bounds.left,
             bottom: bounds.bottom - bounds.top,
         });
+        // A page that grows or shrinks while open (palette results, site info rows) is only
+        // re-bounded: focus stays where the user is typing.
+        if shown {
+            return;
+        }
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
         let _ = host.focus();
@@ -784,6 +1007,27 @@ fn popup_bounds(
     }
 }
 
+// --- popup surfaces (lane PP) ---
+fn page_bounds(at: Anchor, width_css: i32, height_css: i32, dpi: u32, work: RECT) -> RECT {
+    match at {
+        Anchor::Point(anchor, placement) => popup_bounds(anchor, width_css, height_css, dpi, work, placement),
+        Anchor::TopCenter(window) => top_center_bounds(window, width_css, height_css, dpi, work),
+    }
+}
+
+/// Centred on `window`, top edge 12% down it, kept inside the work area.
+fn top_center_bounds(window: RECT, width_css: i32, height_css: i32, dpi: u32, work: RECT) -> RECT {
+    let dpi = dpi.max(1) as i32;
+    let width = ((width_css * dpi + 48) / 96).clamp(1, (work.right - work.left).max(1));
+    let height = ((height_css * dpi + 48) / 96).clamp(1, (work.bottom - work.top).max(1));
+    let x = (window.left + window.right - width) / 2;
+    let y = window.top + (window.bottom - window.top) * TOP_CENTER_PERCENT / 100;
+    let x = x.clamp(work.left, (work.right - width).max(work.left));
+    let y = y.clamp(work.top, (work.bottom - height).max(work.top));
+    RECT { left: x, top: y, right: x + width, bottom: y + height }
+}
+// --- end popup surfaces ---
+
 fn monitor_data(anchor: POINT) -> (u32, RECT) {
     unsafe {
         let monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
@@ -893,6 +1137,41 @@ mod tests {
             (anchored.left, anchored.top, anchored.right, anchored.bottom),
             (100, 50, 400, 250)
         );
+    }
+
+    #[test]
+    fn palette_sits_centred_twelve_percent_down_the_window_inside_the_work_area() {
+        let work = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        let window = RECT { left: 100, top: 100, right: 1100, bottom: 900 };
+        let bounds = top_center_bounds(window, 560, 300, 96, work);
+        assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (320, 196, 880, 496));
+        // 150%: 840 x 450 device px, still centred.
+        let scaled = top_center_bounds(window, 560, 300, 144, work);
+        assert_eq!((scaled.left, scaled.top, scaled.right - scaled.left, scaled.bottom - scaled.top), (180, 196, 840, 450));
+        // A window hanging off the left edge keeps the palette on screen.
+        let off = top_center_bounds(RECT { left: -900, top: 0, right: 100, bottom: 800 }, 560, 300, 96, work);
+        assert_eq!(off.left, 0);
+        assert_eq!(page_bounds(Anchor::TopCenter(window), 560, 300, 96, work), bounds);
+    }
+
+    #[test]
+    fn page_json_carries_token_kind_and_only_declared_ids() {
+        let mut page = Page::new("siteinfo", |out| out.string("host", "a<b"));
+        page.pick(3);
+        page.act(1, 2);
+        page.act(9, 200);
+        let (json, picks, acts) = page_json(5, "site-info", page).expect("small page");
+        assert_eq!(json, "{\"v\":1,\"t\":\"siteinfo\",\"tok\":5,\"kind\":\"site-info\",\"host\":\"a\\u003cb\"}");
+        assert_eq!(picks, HashSet::from([3]));
+        assert_eq!(acts.get(&9), Some(&MAX_ACT_CHOICE), "choices are capped to the wire limit");
+        assert!(act_allowed(true, 5, 5, 1, 2, &acts));
+        assert!(!act_allowed(true, 5, 5, 1, 3, &acts), "choice above the row's range");
+        assert!(!act_allowed(true, 5, 5, 2, 0, &acts), "undeclared row");
+        assert!(!act_allowed(true, 6, 5, 1, 0, &acts), "stale token");
+        assert!(!act_allowed(false, 5, 5, 1, 0, &acts), "closed popup");
+        let huge = Page::new("palette", |out| out.string("x", &"a".repeat(MAX_PAGE_BYTES)));
+        assert!(page_json(1, "palette", huge).is_none(), "oversized pages are refused");
+        assert!(page_json(1, "", Page::new("palette", |_| {})).is_none());
     }
 
     #[test]

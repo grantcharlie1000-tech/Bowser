@@ -1,0 +1,151 @@
+/*
+ * Surface: COMMAND PALETTE (?view=popup, `palette` page). Owner: popup surfaces agent.
+ * Built by ui/src/palette.ts (markup contract at the top of that file). Reference spec: 560px
+ * wide, anchored 12% from the top of the window (Rust places the popup), 44px search input,
+ * 36px result rows, one overlay, 83ms fade + 8px rise (.bw-enter.is-rise).
+ *
+ * Also holds the shared root of the popup pages (`#app.popup-pages`, palette and site info):
+ * the popup window is sized to the page's natural size, so the root shrinks to its content.
+ */
+
+#app.popup-pages {
+  display: block;
+  width: max-content;
+  height: auto;
+  padding: 0;
+  outline: none;
+}
+
+.popup-page {
+  overflow: hidden;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  /* Opaque: the popup window is not glass. */
+  background: var(--bw-window);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+}
+
+.bw-palette {
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+}
+
+.bw-palette-search {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  height: 44px;
+  padding: 0 var(--bw-space-4);
+  border-bottom: 1px solid var(--bw-hairline);
+  color: var(--bw-text-2);
+}
+
+.bw-palette-search:focus-within {
+  border-bottom-color: var(--bw-accent);
+}
+
+.bw-palette-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+  user-select: text;
+}
+
+.bw-palette-input::placeholder {
+  color: var(--bw-text-2);
+}
+
+.bw-palette-input::selection {
+  background: var(--bw-selection);
+}
+
+.bw-palette-list {
+  max-height: 392px;
+  overflow-y: auto;
+  padding: var(--bw-space-1);
+}
+
+.bw-palette-section {
+  padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.bw-palette-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  height: 36px;
+  padding: 0 var(--bw-space-3);
+  border-radius: var(--bw-r-control);
+  cursor: default;
+}
+
+.bw-palette-row > svg {
+  flex: none;
+  color: var(--bw-text-2);
+}
+
+.bw-palette-row[aria-selected="true"] {
+  background: var(--bw-island);
+}
+
+.bw-palette-row[aria-selected="true"] > svg {
+  color: var(--bw-text);
+}
+
+.bw-palette-text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--bw-space-2);
+  min-width: 0;
+}
+
+.bw-palette-label,
+.bw-palette-detail {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
+}
+
+.bw-palette-label {
+  flex: 0 1 auto;
+  max-width: 70%;
+}
+
+.bw-palette-detail {
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bw-palette-accel {
+  flex: none;
+  color: var(--bw-text);
+  opacity: 0.6;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bw-palette-empty {
+  padding: var(--bw-space-3) var(--bw-space-3) var(--bw-space-4);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}

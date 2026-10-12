@@ -33,8 +33,8 @@ Done and live-verified: toolbar, horizontal tab strip, left rail (three controll
 7. Popup host (`html_popup.rs`, `popup.ts`, `menu-view.ts`). Depends on 1. Parallel with 2, 6.
 8. Async menu API + first conversions (main, split, tab/group/rail context menus). Depends on 7.
 9. Remaining `window.rs` menus (workspace chain etc.). Depends on 8.
-10. Site info popup page. Depends on 8.
-11. Command palette popup page. Depends on 8.
+10. Site info popup page. Depends on 8. **Done** (`{t:"siteinfo"}`, `act` command; see protocol doc).
+11. Command palette popup page. Depends on 8. **Done** (`{t:"palette"}`; name prompt also moved to the dialog host).
 12. Dialog host + Settings (`html_dialog.rs`, on demand). Depends on 1.
 13. Privacy and Notes pages in the dialog host. Depends on 12.
 14. Hardening and benchmark gate (<= +40 MB private memory per added live host, idle CPU <= 0.02 s/10 s, secrets guard green). Depends on all.
@@ -42,7 +42,7 @@ Done and live-verified: toolbar, horizontal tab strip, left rail (three controll
 Conflict rules: only task 1 edits `protocol.rs`; registries get one line per panel; `window.rs` is edited only by tasks 2, 6, 8, 9 in that order, inside new delimited functions.
 
 ## Not migrating
-Passwords panel and import (secrets), `panel_webapp.rs` (third-party WebViews), native message boxes/confirmations/file pickers, `import_panel.rs`, `profile_rename.rs`, caption buttons/frame/resize borders/glass backdrop, sidebar and panel resize handles, hover cards, island hover menu, tooltips.
+Passwords panel and import (secrets), `panel_webapp.rs` (third-party WebViews), native message boxes/confirmations/file pickers, `import_panel.rs`, caption buttons/frame/resize borders/glass backdrop, sidebar and panel resize handles, hover cards, island hover menu, tooltips.
 
 ## Top risks
 Memory/renderer count (benchmark gate), popup dismissal and DPI races (reopen guard, native fallback), sync-to-async menu bugs (tokens, re-validation, deferred queue), focus regressions (`after_shown`, JS Escape, accelerators on every view), larger bridge surface (fixed field whitelist, ids vs live model, http(s) normaliser, exact start URLs, static secrets guard).

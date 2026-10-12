@@ -4,6 +4,14 @@
 //! cookies WebView2 holds for the page's address, the profile's tracking-prevention level, the blocker
 //! state for the site, and the stored permission decisions. Choices write to the permission store or
 //! to the browser, then the panel reopens showing what is now stored.
+//!
+//! With the HTML chrome the panel is a dedicated page in the popup host (`{t:"siteinfo"}`): the
+//! controls send `act` messages, Rust applies them here and re-sends the page, and the popup stays
+//! open. NATIVE FALLBACK: when the popup host is not ready (or the HTML chrome is off) the panel is
+//! the menu built by `panel`, shown with `menu::show`.
+//!
+//! Policy (unchanged): a permission is granted only by a stored Allow. Default means blocked, and
+//! Bowser never prompts.
 
 use std::{
     cell::RefCell,
@@ -79,9 +87,194 @@ pub(crate) fn show(hwnd: HWND, app: &AppRef, button: Rect) {
     open_at(hwnd, app, anchor);
 }
 
+// --- popup surfaces (lane PP) ---
+/// Act ids of the HTML page. A permission row is `PERMISSION_ROW + index` in
+/// [`Permission::ALL`]; its choice follows [`CHOICES`] (0 Allow, 1 Block, 2 Default).
+const PERMISSION_ROW: u32 = 1;
+const ACT_CLEAR_COOKIES: u32 = 10;
+const ACT_BLOCKER: u32 = 11;
+const ACT_RESET: u32 = 12;
+/// Display order of the permission rows.
+const ROW_ORDER: [Permission; 4] = [
+    Permission::Camera,
+    Permission::Microphone,
+    Permission::Geolocation,
+    Permission::Notifications,
+];
+
+fn permission_index(permission: Permission) -> usize {
+    Permission::ALL.iter().position(|p| *p == permission).unwrap_or(0)
+}
+
+fn permission_key(permission: Permission) -> &'static str {
+    match permission {
+        Permission::Microphone => "mic",
+        Permission::Camera => "camera",
+        Permission::Geolocation => "location",
+        Permission::Notifications => "notifications",
+    }
+}
+
+/// The HTML page for `snapshot`: every control the user may act on is declared with its range.
+fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page {
+    let host = snapshot
+        .url
+        .as_ref()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "No site".to_owned());
+    let origin = snapshot
+        .url
+        .as_ref()
+        .map_or_else(String::new, |url| url.origin().ascii_serialization());
+    let security = crate::chrome_host::security_of(snapshot.security).as_str();
+    let summary = snapshot.security.summary();
+    let has_origin = snapshot.origin.is_some();
+    let decisions = snapshot.decisions;
+    let cookies = snapshot.cookies.clone();
+    let blocking = snapshot.blocking;
+    let blocked = snapshot.blocked;
+    let tracking = snapshot.tracking.unwrap_or("");
+    let any_stored = decisions.iter().any(Option::is_some);
+    let can_clear = matches!(cookies, Some(Ok(count)) if count > 0);
+    let mut page = super::html_popup::Page::new("siteinfo", move |out| {
+        out.string("host", &host);
+        out.string("origin", &origin);
+        out.string("security", security);
+        out.string("summary", summary);
+        out.array("perms", |rows| {
+            if !has_origin {
+                return;
+            }
+            for permission in ROW_ORDER {
+                let index = permission_index(permission);
+                rows.object(|row| {
+                    row.uint("id", u64::from(PERMISSION_ROW) + index as u64);
+                    row.string("k", permission_key(permission));
+                    row.string("label", permission.label());
+                    row.string("state", match decisions[index] {
+                        Some(Decision::Allow) => "allow",
+                        Some(Decision::Block) => "block",
+                        None => "default",
+                    });
+                });
+            }
+        });
+        out.object("cookies", |c| {
+            match &cookies {
+                Some(Ok(count)) => { c.string("state", "count"); c.uint("n", *count as u64); }
+                Some(Err(_)) => { c.string("state", "unavailable"); c.uint("n", 0); }
+                None => { c.string("state", "none"); c.uint("n", 0); }
+            }
+            c.bool("clear", can_clear);
+        });
+        out.object("blocker", |b| {
+            b.string("state", match blocking { Some(true) => "on", Some(false) => "off", None => "unavailable" });
+            b.uint("n", u64::from(blocked));
+        });
+        out.string("tracking", tracking);
+        out.bool("reset", has_origin && any_stored);
+        out.bool("blockedHere", blocked_here);
+    });
+    if snapshot.origin.is_some() {
+        for index in 0..Permission::ALL.len() {
+            page.act(PERMISSION_ROW + index as u32, (CHOICES.len() - 1) as u8);
+        }
+        if any_stored {
+            page.act(ACT_RESET, 0);
+        }
+    }
+    if can_clear {
+        page.act(ACT_CLEAR_COOKIES, 0);
+    }
+    if snapshot.blocking.is_some() {
+        page.act(ACT_BLOCKER, 1);
+    }
+    page
+}
+
+/// Maps a validated page action to the native command id `apply` already handles. The blocker
+/// choice is the wanted state (1 on, 0 off), so a repeated click never flips it back.
+fn act_command(snapshot: &Snapshot, id: u32, n: u8) -> Option<usize> {
+    match id {
+        ACT_CLEAR_COOKIES => Some(CLEAR_COOKIES),
+        ACT_RESET => Some(RESET_PERMISSIONS),
+        ACT_BLOCKER => (snapshot.blocking.is_some_and(|on| on != (n == 1))).then_some(BLOCKER),
+        id if (PERMISSION_ROW..PERMISSION_ROW + Permission::ALL.len() as u32).contains(&id)
+            && usize::from(n) < CHOICES.len() =>
+        {
+            Some(PERMISSION + (id - PERMISSION_ROW) as usize * CHOICES.len() + usize::from(n))
+        }
+        _ => None,
+    }
+}
+
+/// The HTML page; `false` when the popup host could not take it (the caller shows the menu).
+fn open_html(hwnd: HWND, app: &AppRef, anchor: POINT) -> bool {
+    use super::html_popup::{self, ActOutcome, Anchor, ShowRefused};
+    if !html_popup::page_ready(hwnd) {
+        return false;
+    }
+    if html_popup::is_active(hwnd) {
+        html_popup::cancel(hwnd, app);
+    }
+    let snapshot = gather(app);
+    let page = html_page(&snapshot, App::active_permission_blocked(app));
+    let showing = snapshot.tab.zip(snapshot.url.as_ref().map(Url::origin));
+    let state = Rc::new(RefCell::new(snapshot));
+    let on_act: html_popup::ActHandler = Rc::new(move |app, id, n| {
+        // The page may have changed while the panel was open: act only on the site it showed.
+        if App::active_site(app).map(|(tab, url)| (tab, url.origin())) != showing {
+            return ActOutcome::Close;
+        }
+        let command = act_command(&state.borrow(), id, n);
+        if let Some(command) = command {
+            let snapshot = gather_light(&state.borrow());
+            apply(app, &snapshot, command);
+        }
+        let fresh = gather(app);
+        let page = html_page(&fresh, App::active_permission_blocked(app));
+        *state.borrow_mut() = fresh;
+        ActOutcome::Refresh(page)
+    });
+    match html_popup::show_page(
+        hwnd,
+        Anchor::Point(anchor, menu::Placement::BelowLeft),
+        "site-info",
+        super::window::popup_context(hwnd),
+        page,
+        Box::new(|_, _| {}),
+        Some(on_act),
+    ) {
+        Ok(()) | Err(ShowRefused::Guarded(_)) => true,
+        Err(ShowRefused::Unavailable(_)) => false,
+    }
+}
+
+/// A copy of `shown` for `apply` (which may pump messages), without asking the browser again.
+fn gather_light(shown: &Snapshot) -> Snapshot {
+    Snapshot {
+        tab: shown.tab,
+        url: shown.url.clone(),
+        security: shown.security,
+        origin: shown.origin.clone(),
+        decisions: shown.decisions,
+        cookies: None,
+        blocked: shown.blocked,
+        blocking: shown.blocking,
+        tracking: shown.tracking,
+    }
+}
+// --- end popup surfaces ---
+
 // --- popup host (lane M) ---
 /// One showing of the panel. A choice runs, then the panel opens again with fresh state.
 fn open_at(hwnd: HWND, app: &AppRef, anchor: POINT) {
+    // --- popup surfaces (lane PP) ---
+    if open_html(hwnd, app, anchor) {
+        return;
+    }
+    // NATIVE FALLBACK (HTML chrome off or popup host not ready): the panel as a menu.
+    // --- end popup surfaces ---
     let snapshot = gather(app);
     let menu = panel(&snapshot);
     menu::show(hwnd, anchor, menu::Placement::BelowLeft, menu, "site-info", move |app, chosen| {
@@ -353,4 +546,92 @@ fn pump() -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(decisions: [Option<Decision>; 4], cookies: Option<Result<usize, String>>, blocking: Option<bool>) -> Snapshot {
+        Snapshot {
+            tab: Some(TabId(1)),
+            url: Url::parse("https://en.wikipedia.org/wiki/Main_Page").ok(),
+            security: SiteSecurity::Secure,
+            origin: Some("https://en.wikipedia.org".to_owned()),
+            decisions,
+            cookies,
+            blocked: 3,
+            blocking,
+            tracking: Some("balanced"),
+        }
+    }
+
+    #[test]
+    fn page_actions_map_to_the_stored_decisions_and_never_widen_the_policy() {
+        let shown = snapshot([None; 4], Some(Ok(2)), Some(true));
+        let camera = PERMISSION_ROW + permission_index(Permission::Camera) as u32;
+        // Allow / Block / Default for the camera row map to the same ids the menu used.
+        let camera_base = PERMISSION + permission_index(Permission::Camera) * CHOICES.len();
+        assert_eq!(act_command(&shown, camera, 0), Some(camera_base));
+        assert_eq!(CHOICES[act_command(&shown, camera, 0).unwrap() - camera_base], Some(Decision::Allow));
+        assert_eq!(CHOICES[act_command(&shown, camera, 1).unwrap() - camera_base], Some(Decision::Block));
+        assert_eq!(CHOICES[act_command(&shown, camera, 2).unwrap() - camera_base], None, "Default stores nothing: blocked");
+        assert_eq!(act_command(&shown, camera, 3), None);
+        assert_eq!(act_command(&shown, 99, 0), None);
+        // The blocker choice is the wanted state.
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 1), None, "already on");
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 0), Some(BLOCKER));
+        assert_eq!(act_command(&snapshot([None; 4], None, None), ACT_BLOCKER, 0), None);
+    }
+
+    #[test]
+    fn page_declares_only_the_controls_it_shows() {
+        let json = crate::win32::html_popup::Page::debug_json(
+            html_page(&snapshot([Some(Decision::Allow), None, None, Some(Decision::Block)], Some(Ok(0)), Some(true)), true),
+            4,
+        );
+        assert!(json.starts_with("{\"v\":1,\"t\":\"siteinfo\",\"tok\":4,\"kind\":\"site-info\",\"host\":\"en.wikipedia.org\""), "{json}");
+        assert!(json.contains("\"security\":\"secure\""));
+        assert!(json.contains("{\"id\":2,\"k\":\"camera\",\"label\":\"Camera\",\"state\":\"default\"}"), "{json}");
+        assert!(json.contains("{\"id\":1,\"k\":\"mic\",\"label\":\"Microphone\",\"state\":\"allow\"}"), "{json}");
+        assert!(json.contains("\"cookies\":{\"state\":\"count\",\"n\":0,\"clear\":false}"), "{json}");
+        assert!(json.contains("\"reset\":true"));
+        assert!(json.contains("\"blockedHere\":true"));
+        // No http(s) origin: no permission rows at all.
+        let mut internal = snapshot([None; 4], None, None);
+        internal.origin = None;
+        internal.url = None;
+        let json = crate::win32::html_popup::Page::debug_json(html_page(&internal, false), 1);
+        assert!(json.contains("\"perms\":[]"), "{json}");
+        assert!(json.contains("\"reset\":false"));
+    }
+
+    #[test]
+    fn site_info_page_fixture_matches_the_ui_contract() {
+        let page = html_page(&snapshot([None, Some(Decision::Allow), None, None], Some(Ok(5)), Some(true)), false);
+        let siteinfo = crate::win32::html_popup::Page::debug_json(page, 7);
+        let palette_items = super::super::command_palette::html_items(
+            &[(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],
+            &[("Docs".into(), "https://docs.example/".into(), "Work".into())],
+            &[(1, "https://news.example/".into(), "News".into())],
+            &crate::productivity::browser_commands(),
+        );
+        let palette = crate::win32::html_popup::Page::debug_json(super::super::command_palette::html_page(&palette_items), 8);
+        let fixture = format!(
+            "{{\"siteinfo\":{siteinfo},\"palette\":{palette},\"act\":{{\"v\":1,\"t\":\"act\",\"tok\":7,\"id\":2,\"n\":0}}}}\n"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/popup-pages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).expect("write popup pages fixture");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("popup pages fixture"),
+            fixture,
+            "set BOWSER_WRITE_FIXTURES=1 cargo test site_info_page_fixture --lib"
+        );
+        assert!(matches!(
+            crate::chrome_host::protocol::parse_command(r#"{"v":1,"t":"act","tok":7,"id":2,"n":0}"#),
+            Ok(crate::chrome_host::protocol::Command::PopupAct { tok: 7, id: 2, n: 0 })
+        ));
+    }
 }

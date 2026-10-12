@@ -152,6 +152,10 @@ enum DeferredChromeCommand {
     // --- popup host (lane M) ---
     MenuResult { tok: u32, id: Option<u32> },
     // --- end popup host ---
+    // --- popup surfaces (lane PP) ---
+    /// An in-place action on an open popup page (site info toggle).
+    PopupAct { tok: u32, id: u32, n: u8 },
+    // --- end popup surfaces ---
 }
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
@@ -3563,7 +3567,8 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     }
                     4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index.saturating_sub(1)); },
                     5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index + 1); },
-                    6 => if set.workspace_count() > 1 && crate::win32::ask_yes_no(&format!("Delete workspace {name} and close its tabs?")) { let _ = App::delete_workspace(app, id); },
+                    // --- popup surfaces (lane PP) --- confirm in the HTML popup, not a MessageBox
+                    6 => if set.workspace_count() > 1 { confirm_rail_workspace_delete(hwnd, point, id, &name); },
                     _ => {}
                 }
             });
@@ -4232,8 +4237,14 @@ impl ProfileMenu {
                     .names
                     .get(id - PROFILE_RENAME_BASE)
                     .filter(|name| !self.is_current(name))
-                    && let Some(new_name) =
-                        super::profile_rename::prompt(hwnd, name, "Rename profile", "Save")
+                    && let Some(new_name) = super::profile_rename::prompt_validated(
+                        hwnd,
+                        name,
+                        "Rename profile",
+                        "Save",
+                        "1 to 32 letters, digits, - or _",
+                        Box::new(|name| profile::validate_name(name).map_err(|error| error.to_string())),
+                    )
                     && let Err(error) =
                         profile::rename(&self.app_data, name, &new_name, &self.current)
                 {
@@ -4351,6 +4362,30 @@ fn show_profile_notice(hwnd: HWND, message: &str) {
         |_, _| {},
     );
 }
+
+// --- popup surfaces (lane PP) ---
+/// The rail's "Delete workspace" confirmation, in the same menu form as the main menu's.
+fn confirm_rail_workspace_delete(hwnd: HWND, point: POINT, id: crate::workspaces::WorkspaceId, name: &str) {
+    let confirm = Menu {
+        header: None,
+        entries: vec![
+            Entry::SectionHeader(format!("Delete {name} and close its tabs?")),
+            Entry::Item(Item::new(1, "Delete workspace", Icon::Close)),
+            Entry::Item(Item::new(2, "Keep workspace", Icon::Person)),
+        ],
+        footer: "This cannot be undone".to_owned(),
+    };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, confirm, "workspace-delete", move |app, chosen| {
+        if chosen.is_some_and(|chosen| chosen.id == 1)
+            && App::workspaces(app).workspace_count() > 1
+            && App::workspaces(app).all().iter().any(|workspace| workspace.id() == id)
+            && let Err(error) = App::delete_workspace(app, id)
+        {
+            show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
+        }
+    });
+}
+// --- end popup surfaces ---
 
 /// Asks before deleting a profile; `on_confirm` runs only when the user picks Delete.
 fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce() + 'static) {
@@ -4756,29 +4791,60 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     } else {
         crate::productivity::read_history(&profile.history_file())
     };
-    let Some(item) = command_palette::show(
-        hwnd,
-        tabs,
-        bookmarks,
-        history,
-        crate::productivity::browser_commands(),
-    ) else {
+    let commands = crate::productivity::browser_commands();
+    // --- popup surfaces (lane PP) ---
+    if html_popup::page_ready(hwnd) {
+        if html_popup::is_active(hwnd) {
+            html_popup::cancel(hwnd, app);
+        }
+        let items = command_palette::html_items(&tabs, &bookmarks, &history, &commands);
+        let page = command_palette::html_page(&items);
+        let mut window = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(hwnd, &mut window);
+        }
+        let actions: Vec<String> = items.into_iter().map(|item| item.action).collect();
+        let shown = html_popup::show_page(
+            hwnd,
+            html_popup::Anchor::TopCenter(window),
+            "palette",
+            popup_context(hwnd),
+            page,
+            Box::new(move |app, chosen| {
+                // The id was checked against the page's set; map it back to the action Rust built.
+                if let Some(action) = chosen.and_then(|chosen| actions.get(chosen.id)) {
+                    run_palette_item(hwnd, app, action);
+                }
+            }),
+            None,
+        );
+        match shown {
+            Ok(()) | Err(html_popup::ShowRefused::Guarded(_)) => return,
+            Err(html_popup::ShowRefused::Unavailable(_)) => {}
+        }
+    }
+    // NATIVE FALLBACK: HTML chrome off, or the popup host is not ready yet.
+    // --- end popup surfaces ---
+    let Some(item) = command_palette::show(hwnd, tabs, bookmarks, history, commands) else {
         return;
     };
-    if let Some(id) = item
-        .action
-        .strip_prefix("tab:")
-        .and_then(|s| s.parse::<u32>().ok())
-    {
-        let _ = App::select_tab(app, TabId(id));
-    } else if let Some(url) = item
-        .action
+    run_palette_item(hwnd, app, &item.action);
+}
+
+/// Runs one palette result: a tab id that is still open, an http(s) address, or a command.
+fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
+    if let Some(id) = action.strip_prefix("tab:").and_then(|s| s.parse::<u32>().ok()) {
+        if App::tab_ids(app).contains(&TabId(id)) {
+            let _ = App::select_tab(app, TabId(id));
+        }
+    } else if let Some(url) = action
         .strip_prefix("url:")
         .and_then(|s| url::Url::parse(s).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
     {
         App::navigate_current(app, &url);
     } else {
-        run_palette_command(hwnd, app, &item.action);
+        run_palette_command(hwnd, app, action);
     }
 }
 
@@ -5571,6 +5637,12 @@ fn html_env_settled(hwnd: HWND) {
             start_html_toolbar(hwnd, &env);
             start_html_tabs(hwnd);
             start_html_rail(hwnd);
+            // --- popup surfaces (lane PP) ---
+            // Requested last, with the visible chrome: the chrome controllers share one renderer,
+            // so the hidden popup page is ready about when the toolbar is, instead of a separate
+            // (slow, on a loaded machine) start 2 s after it. It stays suspended while hidden.
+            html_popup::prewarm(hwnd, env.clone());
+            // --- end popup surfaces ---
         }
         ChromeEnvironment::Unavailable => {
             let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
@@ -5585,9 +5657,20 @@ fn html_env_settled(hwnd: HWND) {
 /// engine can close it next. Nothing restarts the HTML chrome afterwards.
 // --- popup host (lane M) ---
 fn prewarm_html_popup(hwnd: HWND) {
-    let env = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html_env.clone()).flatten()).flatten();
+    let env = with_chrome(hwnd, |s| s.html_env.clone()).flatten();
     if let Some(env) = env { html_popup::prewarm(hwnd, env); }
 }
+// --- popup surfaces (lane PP) ---
+/// A menu or page wanted the popup before it was ready (or the toolbar just activated): create it
+/// now if it does not exist. Idempotent: an existing or pending host is kept.
+pub(super) fn request_popup_prewarm(hwnd: HWND) {
+    if !chrome_host::html_ui_enabled() {
+        return;
+    }
+    unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
+    prewarm_html_popup(hwnd);
+}
+// --- end popup surfaces ---
 // --- end popup host ---
 // --- panel host (lane P) ---
 fn html_panel_failed(hwnd: HWND) {
@@ -5727,7 +5810,9 @@ fn html_refresh(hwnd: HWND) {
     // --- popup host (lane M) ---
     if activating {
         perf_event(hwnd, "html_toolbar_ready");
-        unsafe { let _ = SetTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER, 2000, None); }
+        // Normally created with the other chrome controllers; this only covers a host that
+        // failed and was shut down.
+        request_popup_prewarm(hwnd);
     }
     // --- end popup host ---
     let native_text = (!edit.is_invalid() && activating).then(|| read_edit(edit));
@@ -5807,6 +5892,7 @@ fn html_sync(hwnd: HWND) {
         progress: App::tab_progress_percent(&app, id).unwrap_or(0),
         security: chrome_host::security_of(site),
         label: site.summary().to_string(),
+        permblocked: App::active_permission_blocked(&app),
         theme: chrome_host::theme_tokens(palette),
     };
     let json = state.to_json();
@@ -5982,6 +6068,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::PopupSize { .. }
         | ChromeCommand::PopupPick { .. }
         | ChromeCommand::PopupDismiss { .. }
+        | ChromeCommand::PopupAct { .. }
         // --- popup host (lane M) ---
         | ChromeCommand::Side(_) => {}
         // --- end popup host ---
@@ -6055,6 +6142,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         progress: 0,
         security: crate::chrome_host::protocol::Security::None,
         label: String::new(),
+        permblocked: false,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -6300,7 +6388,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy | View::DialogRename => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -6355,6 +6443,13 @@ pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::PopupDismiss { tok } => {
             if html_popup::valid_token(hwnd, tok) { defer_popup_result(hwnd, tok, None); }
         }
+        // --- popup surfaces (lane PP) ---
+        ChromeCommand::PopupAct { tok, id, n } => {
+            if html_popup::valid_act(hwnd, tok, id, n) {
+                defer_html_command(hwnd, DeferredChromeCommand::PopupAct { tok, id, n });
+            }
+        }
+        // --- end popup surfaces ---
         _ => {}
     }
 }
@@ -6377,6 +6472,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         progress: App::tab_progress_percent(&app, id).unwrap_or(0),
         security: chrome_host::security_of(site),
         label: site.summary().to_owned(),
+        permblocked: App::active_permission_blocked(&app),
         theme: chrome_host::theme_tokens(palette),
     };
     Some(state.to_json())
@@ -6431,6 +6527,7 @@ fn run_deferred_html_command(hwnd: HWND) {
         // --- end vertical sidebar ---
         // --- popup host (lane M) ---
         DeferredChromeCommand::MenuResult { tok, id } => html_popup::run_result(hwnd, tok, id, &app),
+        DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
         // --- end popup host ---
     }
     html_sync(hwnd);

@@ -1,0 +1,143 @@
+/*
+ * Surface: SITE INFO (?view=popup, `siteinfo` page). Owner: popup surfaces agent.
+ * Built by ui/src/siteinfo.ts (markup contract at the top of that file). Reference spec: 320px
+ * wide, 8px radius, 44px header (connection icon, host, connection text), 36px permission rows
+ * with a 16px icon and a control, anchored under the pill's site button (Rust places it), no
+ * arrow. The shared page frame (.popup-page, #app.popup-pages) is in palette.css.
+ */
+
+.bw-siteinfo {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  padding-bottom: var(--bw-space-1);
+}
+
+.bw-siteinfo-header {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 44px;
+  padding: var(--bw-space-2) var(--bw-space-4);
+  border-bottom: 1px solid var(--bw-hairline);
+}
+
+.bw-siteinfo-header > svg {
+  flex: none;
+  color: var(--bw-text-2);
+}
+
+.bw-siteinfo-header[data-security="secure"] > svg {
+  color: var(--bw-text);
+}
+
+.bw-siteinfo-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bw-siteinfo-host {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
+  font-weight: var(--bw-weight-strong);
+}
+
+.bw-siteinfo-summary,
+.bw-siteinfo-meta,
+.bw-siteinfo-policy,
+.bw-siteinfo-empty {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bw-siteinfo-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bw-space-2);
+  margin: var(--bw-space-2) var(--bw-space-3) 0;
+  padding: var(--bw-space-2);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-accent-soft);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.bw-siteinfo-notice > svg {
+  flex: none;
+}
+
+.bw-siteinfo .bw-section-header {
+  padding: var(--bw-space-2) var(--bw-space-4) var(--bw-space-1);
+}
+
+.bw-siteinfo-empty {
+  margin: 0;
+  padding: var(--bw-space-1) var(--bw-space-4) var(--bw-space-2);
+}
+
+.bw-siteinfo-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 36px;
+  padding: 0 var(--bw-space-3) 0 var(--bw-space-4);
+}
+
+.bw-siteinfo-row > svg {
+  flex: none;
+  color: var(--bw-text-2);
+}
+
+.bw-siteinfo-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bw-siteinfo-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bw-siteinfo-row .bw-segmented {
+  flex: none;
+}
+
+.bw-siteinfo-row .bw-segmented > button {
+  padding: 0 var(--bw-space-1_5);
+}
+
+.bw-siteinfo-row > .bw-toggle,
+.bw-siteinfo-row > .bw-button {
+  flex: none;
+}
+
+.bw-siteinfo .bw-separator {
+  margin: var(--bw-space-1) 0;
+}
+
+.bw-siteinfo-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-1) var(--bw-space-4) var(--bw-space-2);
+}
+
+.bw-siteinfo-policy {
+  margin: 0;
+}
+
+.bw-siteinfo .is-pending {
+  opacity: 0.6;
+}
+
+.bw-siteinfo[aria-busy="true"] :is(button, [role="switch"]) {
+  cursor: progress;
+}

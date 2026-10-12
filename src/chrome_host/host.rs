@@ -36,7 +36,7 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RESPONSE_HEADERS, SCHEME,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, RESPONSE_HEADERS, SCHEME,
         SETTINGS_DIALOG_START_URL, START_URL, TABS_START_URL,
     },
     protocol::{
@@ -164,6 +164,7 @@ pub enum View {
     DialogNotes,
     DialogSettings,
     DialogPrivacy,
+    DialogRename,
 }
 
 impl View {
@@ -178,6 +179,7 @@ impl View {
             Self::DialogNotes => NOTES_DIALOG_START_URL,
             Self::DialogSettings => SETTINGS_DIALOG_START_URL,
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
+            Self::DialogRename => RENAME_DIALOG_START_URL,
         }
     }
 }
@@ -945,11 +947,12 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_)),
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. }),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
-        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. }),
+        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
+        View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
     }
 }
 
@@ -1091,7 +1094,8 @@ mod tests {
         assert_eq!(View::DialogNotes.start_url(), "bowser-ui://app/index.html?view=dialog&p=notes");
         assert_eq!(View::DialogSettings.start_url(), "bowser-ui://app/index.html?view=dialog&p=settings");
         assert_eq!(View::DialogPrivacy.start_url(), "bowser-ui://app/index.html?view=dialog&p=privacy");
-        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy];
+        assert_eq!(View::DialogRename.start_url(), "bowser-ui://app/index.html?view=dialog&p=rename");
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy, View::DialogRename];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
@@ -1102,7 +1106,7 @@ mod tests {
 
     #[test]
     fn new_views_reject_nearby_urls_and_foreign_command_families() {
-        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy] {
+        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy, View::DialogRename] {
             let url = view.start_url();
             assert!(is_trusted_message(view, url, url));
             assert!(!is_start_url(view, &format!("{url}&x=1")));
@@ -1131,6 +1135,20 @@ mod tests {
         assert!(!view_accepts_command(View::Popup, &panel));
         assert!(view_accepts_command(View::Popup, &popup));
         assert!(!view_accepts_command(View::Panel, &popup));
+        // Popup page actions (site info toggles) reach only the popup host; the rename dialog's
+        // family reaches only the rename dialog.
+        let act = parse_command(r#"{"v":1,"t":"act","tok":1,"id":2,"n":0}"#).unwrap();
+        assert!(view_accepts_command(View::Popup, &act));
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Dialog, View::DialogRename] {
+            assert!(!view_accepts_command(view, &act), "{view:?}");
+        }
+        let rename = parse_command(r#"{"v":1,"t":"ren","a":"save","text":"Work"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogRename, &rename));
+        for view in [View::Popup, View::Panel, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy] {
+            assert!(!view_accepts_command(view, &rename), "{view:?}");
+        }
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogRename, &dismiss));
     }
 
     #[test]

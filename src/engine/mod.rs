@@ -268,6 +268,9 @@ pub struct EngineEvents {
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
+    /// A camera, microphone, location or notification request from this tab's page was denied
+    /// (no stored Allow). Bowser never prompts; the toolbar shows a passive indicator.
+    pub permission_denied: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }
 

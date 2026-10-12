@@ -179,3 +179,64 @@ malformed values are rejected. The Rust `json.rs` writer closes containers struc
 `ChromeHost::try_suspend()` starts WebView2 suspension and returns initiation errors; asynchronous
 failure invokes the host failure callback. `resume()` returns WebView2 errors. Both reject closed
 or re-entered host state without panicking.
+
+## Popup pages: command palette and site information; name prompt dialog
+
+The popup host (`?view=popup`) shows one page at a time, chosen by the message `t`: `menu` (menus),
+`palette` and `siteinfo`. Rust owns every model; the page only renders and reports intent.
+
+### Rust -> JS
+
+| `t` | fields |
+|---|---|
+| `palette` | `v`, `tok`, `kind` (`"palette"`), `placeholder`, `items`: array (<= 1024) of `{id, s, label, detail, acc?}`; `id` unique u32 (the index Rust maps back to its action), `s` one of `tab`/`command`/`bookmark`/`history`, `label` <= 128 and `detail` <= 256 UTF-16 units, `acc` (accelerator label, <= 32) only for commands bound in `shortcuts.rs`. Rust caps tabs 100, bookmarks 200, history 200 (newest first, one row per address, http(s) only) and the whole message to 240 KiB (`html_popup::MAX_PAGE_BYTES`). |
+| `siteinfo` | `v`, `tok`, `kind` (`"site-info"`), `host`, `origin`, `security` (as in `state`), `summary`, `perms`: array (0 or 4) of `{id, k, label, state}` with `k` `camera`/`mic`/`location`/`notifications` and `state` `allow`/`block`/`default` (`default` = nothing stored = blocked), `cookies` `{state: count/unavailable/none, n, clear}`, `blocker` `{state: on/off/unavailable, n}`, `tracking` (level or `""`), `reset` bool, `blockedHere` bool. Every key is required; the page rejects extra keys. |
+
+The page filters the palette itself (exact, prefix, word prefix, detail prefix, then ordered fuzzy
+matches, the same scoring as `productivity::rank_items`; 12 results grouped by section) and reports
+its natural size with `size` as menus do; a page that grows or shrinks while open sends `size`
+again and Rust only re-bounds the popup (no refocus). Placement: menus and site info at their
+anchor; the palette centred on the window, its top edge 12% down the window, 560 CSS px wide.
+
+### JS -> Rust
+
+| `t` | fields | meaning |
+|---|---|---|
+| `pick` | `tok`, `id` | palette row chosen; `id` must be in the set Rust declared for that page (every row), then the action runs from the deferred queue (`MenuResult`) and the popup closes |
+| `act` | `tok`, `id`, `n` (0..=7, `MAX_ACT_CHOICE`) | in-place action on an open page (site info); the popup stays open. Rust checks `tok` and that `id` was declared by the page with `n` within its range, runs it from the deferred queue (`DeferredChromeCommand::PopupAct`), then re-posts the page under the same `tok` |
+
+Site info act ids: permission row `id` (1 + index in `Permission::ALL`: 1 microphone, 2 camera,
+3 location, 4 notifications) with `n` 0 Allow, 1 Block, 2 Default; `10` clear cookies (only
+declared when there are cookies); `11` blocker with `n` the wanted state (1 on, 0 off; only when
+the blocker is available); `12` reset permissions (only when something is stored). Policy is
+unchanged: a request is granted only by a stored Allow, Default is blocked, and nothing ever
+prompts. If the active site changed since the page opened, an `act` closes the popup instead.
+
+### Toolbar indicator: `state.permblocked`
+
+`state` carries `permblocked` (bool): a camera, microphone, location or notification request from
+the active tab's current page was denied (no stored Allow). It is set by the WebView2
+`PermissionRequested` handler (`EngineEvents::permission_denied`) and cleared when the tab starts a
+new navigation. It is passive (the decision is already final; nothing prompts). The toolbar owner
+styles it as a small icon in the pill; the site info page shows the same fact as `blockedHere`.
+The field is optional for the page parser (older states omit it) and must be a bool.
+
+### Name prompt dialog (`?view=dialog&p=rename`, `View::DialogRename`)
+
+`profile_rename::prompt` (rename profile or workspace, new workspace, save session) hosts this
+page in its own small window with `html_dialog` (`Kind::Rename`); the window stays hidden until
+the page is ready and falls back to its native EDIT control after 2.5 s or on failure.
+Rust -> JS: `{t:"snap",p:"rename",d:{title,save,value,hint,error,max}}`. JS -> Rust: the `ren`
+family (`{v:1,t:"ren",a:"save",text}` or `{v:1,t:"ren",a:"cancel"}`, the usual panel field caps)
+and `{t:"panel",a:"dismiss"}` (Escape). Rust validates again (trimmed, non-empty, <= `max`, no
+control characters, plus the caller's rules: profile names use `profile::validate_name`) and
+answers an invalid name with `error` in a fresh snapshot. Only the rename dialog host accepts `ren`.
+
+### Popup readiness
+
+The popup controller is requested together with the toolbar, tab strip and rail controllers when
+the environment settles (last in that order), instead of 2 s after the toolbar became ready. The
+chrome controllers share one renderer, so the hidden popup page is ready about when the toolbar
+is. A menu requested earlier still falls back to native (and asks for the host if it is missing).
+Perf-log events (`--benchmark-log`): `html_toolbar_ready`, `html_popup_prewarm`,
+`html_popup_ready`, `html_popup_fallback`.
