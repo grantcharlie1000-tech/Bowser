@@ -1,7 +1,10 @@
 export type MenuEntry =
   | { separator: true; label?: string }
   | { section: string }
-  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; submenu?: MenuEntry[] };
+  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; fav?: number; badge?: MenuBadge; submenu?: MenuEntry[] };
+
+/** A coloured disc in the icon slot: a profile avatar (one glyph) or a colour swatch (empty). */
+export interface MenuBadge { avatar: string; accent: string }
 
 export type MenuItem = Extract<MenuEntry, { id: number }>;
 
@@ -14,10 +17,66 @@ export interface MenuMessage {
   kind: string;
   header?: MenuHeader;
   footer?: string;
+  /** PNG data: URIs of the favicons rows refer to by index (`fav`). */
+  favs?: string[];
   entries: MenuEntry[];
 }
 
-export const MENU_ICONS: readonly string[] = ['plus', 'person', 'grid', 'key', 'shield', 'gear', 'close', 'check', 'lock', 'unlock', 'warning', 'info', 'mic', 'camera', 'location', 'bell', 'cookie', 'reset'];
+/**
+ * Icon names a row may carry: the whole family in icons.gen.ts (test/menu.mjs fails when the two
+ * drift, and when a Rust `.glyph("...")` is not in the family).
+ */
+export const MENU_ICONS: readonly string[] = [
+  'app-tile', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
+  'caption-minimize', 'caption-restore', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
+  'close', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'extensions', 'external', 'eye',
+  'find', 'folder', 'forward', 'gear', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu',
+  'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
+  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'profile', 'puzzle', 'refresh', 'reload', 'reset', 'search', 'settings',
+  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-view', 'star', 'stop', 'tab-close', 'tab-group', 'trash', 'unlock',
+  'volume', 'warning', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
+  'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
+  'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',
+];
+
+/** Most favicons one menu carries, and the longest data: URI of one (the tab strip's limit). */
+export const MAX_MENU_FAVS = 48;
+const MAX_FAV_URI = 24 * 1024;
+const FAV_URI = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+
+/** Kinds whose footer is real information; for every other kind it only names the menu (aria-label). */
+const FOOTER_KINDS: readonly string[] = ['main', 'site-info', 'profile-delete', 'import-offer'];
+
+export function footerVisible(kind: string): boolean {
+  return FOOTER_KINDS.includes(kind);
+}
+
+/** Whether any row of the page has an icon, favicon or badge, so rows without one reserve the column. */
+export function hasLeadColumn(entries: readonly MenuEntry[]): boolean {
+  return entries.some(entry => 'id' in entry && (entry.icon !== undefined || entry.fav !== undefined || entry.badge !== undefined));
+}
+
+/** Whether any row has a check or a submenu chevron, so every row reserves the trailing column. */
+export function hasTrailColumn(entries: readonly MenuEntry[]): boolean {
+  return entries.some(entry => 'id' in entry && (entry.checked || entry.submenu !== undefined));
+}
+
+function channel(value: number): number {
+  const c = value / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG relative luminance of `#rrggbb`. */
+export function luminance(hex: string): number {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+}
+
+/** The text colour (black or white) that reads better on the `#rrggbb` fill. */
+export function onFill(hex: string): '#000000' | '#ffffff' {
+  const l = luminance(hex);
+  return (l + 0.05) / 0.05 >= 1.05 / (l + 0.05) ? '#000000' : '#ffffff';
+}
 
 /** Typed characters within this many milliseconds of each other build one typeahead string. */
 export const TYPEAHEAD_MS = 700;
@@ -151,6 +210,13 @@ export function menuKey(nav: MenuNav, key: string, mods: KeyMods, now: number): 
   return move(found);
 }
 
+function validBadge(value: unknown): value is MenuBadge {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const b = value as Record<string, unknown>;
+  return Object.keys(b).every(key => key === 'avatar' || key === 'accent') &&
+    typeof b.avatar === 'string' && b.avatar.length <= 4 && typeof b.accent === 'string' && /^#[0-9a-f]{6}$/.test(b.accent);
+}
+
 function validHeader(value: unknown): value is MenuHeader {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const h = value as Record<string, unknown>;
@@ -162,11 +228,14 @@ function validHeader(value: unknown): value is MenuHeader {
 export function validMenuPayload(value: unknown): value is MenuMessage {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const msg = value as Record<string, unknown>;
-  if (Object.keys(msg).some(key => !['v', 't', 'tok', 'kind', 'header', 'footer', 'entries'].includes(key)) || msg.v !== 1 || msg.t !== 'menu' ||
+  if (Object.keys(msg).some(key => !['v', 't', 'tok', 'kind', 'header', 'footer', 'favs', 'entries'].includes(key)) || msg.v !== 1 || msg.t !== 'menu' ||
       !Number.isSafeInteger(msg.tok) || (msg.tok as number) < 0 || (msg.tok as number) > 0xffffffff ||
       typeof msg.kind !== 'string' || msg.kind.length < 1 || msg.kind.length > 32 || !Array.isArray(msg.entries) || msg.entries.length > 128) return false;
   if (msg.header !== undefined && !validHeader(msg.header)) return false;
   if (msg.footer !== undefined && (typeof msg.footer !== 'string' || msg.footer.length > 256)) return false;
+  if (msg.favs !== undefined && (!Array.isArray(msg.favs) || msg.favs.length > MAX_MENU_FAVS ||
+      msg.favs.some(uri => typeof uri !== 'string' || uri.length > MAX_FAV_URI || !FAV_URI.test(uri)))) return false;
+  const favCount = Array.isArray(msg.favs) ? msg.favs.length : 0;
   let count = 0;
   const validEntries = (entries: unknown[], depth: number): boolean => {
     if (depth > 8) return false;
@@ -183,11 +252,13 @@ export function validMenuPayload(value: unknown): value is MenuMessage {
         if (Object.keys(item).length !== 1 || item.section.length > 128) return false;
         continue;
       }
-      if (Object.keys(item).some(key => !['id', 'label', 'enabled', 'checked', 'shortcut', 'icon', 'submenu'].includes(key)) ||
+      if (Object.keys(item).some(key => !['id', 'label', 'enabled', 'checked', 'shortcut', 'icon', 'fav', 'badge', 'submenu'].includes(key)) ||
           !Number.isSafeInteger(item.id) || (item.id as number) < 0 || (item.id as number) > 0xffffffff || typeof item.label !== 'string' || item.label.length > 128 ||
           typeof item.enabled !== 'boolean' || typeof item.checked !== 'boolean') return false;
       if (item.shortcut !== undefined && (typeof item.shortcut !== 'string' || item.shortcut.length > 48)) return false;
       if (item.icon !== undefined && (typeof item.icon !== 'string' || !MENU_ICONS.includes(item.icon))) return false;
+      if (item.fav !== undefined && (!Number.isSafeInteger(item.fav) || (item.fav as number) < 0 || (item.fav as number) >= favCount)) return false;
+      if (item.badge !== undefined && !validBadge(item.badge)) return false;
       if (item.submenu !== undefined && (!Array.isArray(item.submenu) || item.submenu.length > 128 || !validEntries(item.submenu, depth + 1))) return false;
     }
     return true;

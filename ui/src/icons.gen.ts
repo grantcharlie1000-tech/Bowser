@@ -24,6 +24,7 @@ const SHAPES = {
   "copy": [["rect",{"height":"12","rx":"2","width":"12","x":"8","y":"8"}],["path",{"d":"M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"}]],
   "customize": [["path",{"d":"M3 7H13.5M18.5 7H21M3 17H5.5M10.5 17H21"}],["circle",{"cx":"16","cy":"7","r":"2.5"}],["circle",{"cx":"8","cy":"17","r":"2.5"}]],
   "download": [["path",{"d":"M12 4v11M7 10.5l5 5 5-5M5 19.5h14"}]],
+  "droplet": [["path",{"d":"M12 3.5S5.5 10.2 5.5 14.5a6.5 6.5 0 0 0 13 0C18.5 10.2 12 3.5 12 3.5Z"}]],
   "edit": [["path",{"d":"M15 4.5 19.5 9 9 19.5H4.5V15zM12.5 7l4.5 4.5"}]],
   "external": [["path",{"d":"M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"}]],
   "eye": [["path",{"d":"M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"}],["circle",{"cx":"12","cy":"12","r":"3"}]],
@@ -36,6 +37,7 @@ const SHAPES = {
   "home": [["path",{"d":"M3 11.5L12 3.5L21 11.5"}],["path",{"d":"M5 10V18.5Q5 20.5 7 20.5H17Q19 20.5 19 18.5V10"}],["path",{"d":"M10 20.5V16Q10 14.5 11.5 14.5H12.5Q14 14.5 14 16V20.5"}]],
   "info": [["circle",{"cx":"12","cy":"12","r":"9"}],["circle",{"cx":"12","cy":"7","fill":"currentColor","r":"1","stroke":"none"}],["path",{"d":"M12 11v6"}]],
   "key": [["circle",{"cx":"7.5","cy":"11","r":"4"}],["path",{"d":"M11.5 11H21v3M17 11v3"}]],
+  "link": [["path",{"d":"M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"}]],
   "location": [["path",{"d":"M5 10a7 7 0 0 1 14 0l-7 11z"}],["circle",{"cx":"12","cy":"10","r":"2.5"}]],
   "lock": [["rect",{"height":"11","rx":"2","width":"16","x":"4","y":"10"}],["path",{"d":"M7 10V7.5a5 5 0 0 1 10 0V10"}]],
   "menu": [["path",{"d":"M5 6h14M5 12h14M5 18h14"}]],
@@ -108,4 +110,4 @@ export type IconName = DrawnIconName | keyof typeof ALIASES;
 
 export const ICON_SHAPES: Readonly<Record<DrawnIconName, readonly IconShape[]>> = SHAPES;
 export const ICON_ALIASES: Readonly<Record<keyof typeof ALIASES, DrawnIconName>> = ALIASES;
-export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","command","cookie","copy","customize","dots","download","edit","extensions","external","eye","find","folder","forward","gear","grid","grip","heart","history","home","info","key","location","lock","menu","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","profile","puzzle","refresh","reload","reset","search","settings","shield","sidebar","sidebar-toggle","split","split-view","star","stop","tab-close","tab-group","trash","unlock","volume","warning","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];
+export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","command","cookie","copy","customize","dots","download","droplet","edit","extensions","external","eye","find","folder","forward","gear","grid","grip","heart","history","home","info","key","link","location","lock","menu","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","profile","puzzle","refresh","reload","reset","search","settings","shield","sidebar","sidebar-toggle","split","split-view","star","stop","tab-close","tab-group","trash","unlock","volume","warning","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];

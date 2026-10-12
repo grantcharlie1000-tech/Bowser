@@ -103,3 +103,55 @@ test('payload accepts the main menu header and footer and rejects bad ones', () 
   assert.equal(logic.validMenuPayload({ ...msg, footer: 'x'.repeat(257) }), false);
   assert.equal(logic.validMenuPayload({ ...msg, entries: [item(1, 'x', { icon: 'javascript' })] }), false);
 });
+
+const repo = join(here, '..', '..');
+
+test('MENU_ICONS is exactly the icon family and every Rust glyph is in it', () => {
+  const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');
+  const family = [...gen.match(/ICON_NAMES[^=]*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]).sort();
+  assert.deepEqual([...logic.MENU_ICONS].sort(), family);
+  for (const file of ['window.rs', 'site_info.rs']) {
+    const rust = readFileSync(join(repo, 'src', 'win32', file), 'utf8');
+    for (const m of rust.matchAll(/\.glyph\("([^"]+)"\)/g)) assert.ok(family.includes(m[1]), `${file}: ${m[1]}`);
+    for (const m of rust.matchAll(/=> "(workspace-[a-z]+)"/g)) assert.ok(family.includes(m[1]), `${file}: ${m[1]}`);
+  }
+});
+
+test('column helpers reserve the icon and trailing columns only when a page needs them', () => {
+  assert.equal(logic.hasLeadColumn([item(1, 'A'), item(2, 'B')]), false);
+  assert.equal(logic.hasLeadColumn([item(1, 'A'), item(2, 'B', { icon: 'plus' })]), true);
+  assert.equal(logic.hasLeadColumn([item(1, 'A', { badge: { avatar: 'D', accent: '#3366ff' } })]), true);
+  assert.equal(logic.hasTrailColumn([item(1, 'A')]), false);
+  assert.equal(logic.hasTrailColumn([item(1, 'A', { checked: true })]), true);
+  assert.equal(logic.hasTrailColumn([item(1, 'A', { submenu: [item(2, 'B')] })]), true);
+  assert.equal(logic.footerVisible('main'), true);
+  assert.equal(logic.footerVisible('tab:12'), false);
+});
+
+test('avatar text colour is the better of black and white on the accent', () => {
+  assert.equal(logic.onFill('#ffffff'), '#000000');
+  assert.equal(logic.onFill('#2b5fa8'), '#ffffff');
+  assert.equal(logic.onFill('#d49a32'), '#000000');
+});
+
+test('payload accepts favicons by index and badges, and rejects bad ones', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgo=';
+  const msg = { v: 1, t: 'menu', tok: 1, kind: 'open-tabs', favs: [png], entries: [item(1, 'Tab', { fav: 0, icon: 'workspace-globe' }), item(2, 'Swatch', { badge: { avatar: '', accent: '#4385d1' } })] };
+  assert.equal(logic.validMenuPayload(msg), true);
+  assert.equal(logic.validMenuPayload({ ...msg, entries: [item(1, 'Tab', { fav: 1 })] }), false, 'index out of range');
+  assert.equal(logic.validMenuPayload({ ...msg, favs: ['https://example.com/a.png'] }), false, 'only PNG data URIs');
+  assert.equal(logic.validMenuPayload({ ...msg, favs: [png.replace('png', 'svg+xml')] }), false);
+  assert.equal(logic.validMenuPayload({ ...msg, favs: Array(49).fill(png) }), false);
+  assert.equal(logic.validMenuPayload({ ...msg, entries: [item(2, 'S', { badge: { avatar: 'D', accent: 'red' } })] }), false);
+});
+
+test('disabled rows keep >= 3:1 contrast on the solid dark and light overlays', () => {
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
+  const pct = Number(/color-mix\(in srgb, var\(--bw-text-2\) (\d+)%, transparent\)/.exec(css)[1]) / 100;
+  const mix = (fg, bg) => fg.map((c, i) => c * pct + bg[i] * (1 - pct));
+  const lum = (rgb) => { const f = (v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]); };
+  const ratio = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  // --bw-text-2 over the overlay: dark placeholder #dde2e9 on rgb(44,44,44); light #4b5159 on #f4f6f8.
+  assert.ok(ratio(mix([0xdd, 0xe2, 0xe9], [44, 44, 44]), [44, 44, 44]) >= 3);
+  assert.ok(ratio(mix([0x4b, 0x51, 0x59], [0xf4, 0xf6, 0xf8]), [0xf4, 0xf6, 0xf8]) >= 3);
+});
