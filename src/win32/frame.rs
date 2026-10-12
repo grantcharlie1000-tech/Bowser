@@ -50,9 +50,10 @@ impl FrameHit {
     }
 }
 
-/// Height of the tab strip, which is also the caption button height.
+/// Height from the top edge through the caption hit strip.
 pub fn caption_strip_height(dpi: u32) -> i32 {
-    Metrics::new(dpi).px(Metrics::STRIP_HEIGHT)
+    let m = Metrics::new(dpi);
+    m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT)
 }
 
 pub fn content_top_inset(dpi: u32) -> i32 {
@@ -115,6 +116,9 @@ pub fn frame_hit_test(
     }
     if buttons.min.contains(button_x, button_y) {
         return FrameHit::Minimize;
+    }
+    if y < m.px(Metrics::TOP_MARGIN) {
+        return FrameHit::Caption;
     }
     if chrome_hit == ChromeHit::Interactive {
         return FrameHit::Client;
@@ -231,16 +235,26 @@ mod tests {
 
     #[test]
     fn top_grip_does_not_overlap_the_tab_islands() {
-        // Islands start 2 px below the top, at x >= 2, so a click on a tab never starts a resize.
+        // The toolbar inset keeps the top resize grip above the tab islands.
         assert_eq!(hit(100, 1, ChromeHit::Interactive), FrameHit::Top);
-        for y in 2..30 {
+        for y in 2..Metrics::TOP_MARGIN {
+            assert_eq!(
+                hit(100, y, ChromeHit::Interactive),
+                FrameHit::Caption,
+                "the headroom remains draggable at y {y}"
+            );
+        }
+        for y in Metrics::TOP_MARGIN..40 {
             assert_eq!(
                 hit(100, y, ChromeHit::Interactive),
                 FrameHit::Client,
                 "y {y}"
             );
         }
-        let island_top = Metrics::new(120).px(Metrics::ISLAND_MARGIN);
+        let m = Metrics::new(120);
+        let island_top = m.px(Metrics::TOP_MARGIN)
+            + m.px(Metrics::STRIP_HEIGHT)
+            + m.px(Metrics::TAB_ROW_HEIGHT - Metrics::ISLAND_HEIGHT) / 2;
         assert_eq!(
             frame_hit_test(p(100, island_top), SIZE, 120, false, ChromeHit::Interactive),
             FrameHit::Client,
@@ -254,11 +268,11 @@ mod tests {
         assert_eq!(hit(400, 20, ChromeHit::Interactive), FrameHit::Client);
         assert_eq!(hit(790, 20, ChromeHit::None), FrameHit::Close);
         let strip = caption_strip_height(96);
-        assert_eq!(strip, 34, "the strip is 34 px at 96 dpi");
+        assert_eq!(strip, 40, "the caption hit strip includes 6 px of headroom");
         assert_eq!(
             hit(730, strip - 1, ChromeHit::None),
             FrameHit::Maximize,
-            "the caption button hit target covers the full 34 px strip"
+            "the caption hit target covers the headroom and toolbar row"
         );
         assert_eq!(hit(730, strip, ChromeHit::None), FrameHit::Client);
     }
@@ -299,6 +313,6 @@ mod tests {
             frame_hit_test(p(200, 80), (1600, 900), 192, true, ChromeHit::None),
             FrameHit::Client
         );
-        assert_eq!(caption_strip_height(120), 43, "42.5 rounds up");
+        assert_eq!(caption_strip_height(120), 51, "headroom plus strip scale at 125%");
     }
 }

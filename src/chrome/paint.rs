@@ -1582,8 +1582,9 @@ impl ChromeSurface {
             } else {
                 color.a = (u32::from(color.a) * 0x55 / 0xFF) as u8;
             }
-            let (cx, cy) = center(rect);
-            let (cx, cy) = (cx as f32, cy as f32);
+            let (cx, _) = center(rect);
+            let cy = (view.layout.strip.top + view.layout.strip.height() / 2) as f32;
+            let cx = cx as f32;
             let scale = m.px(20) as f32 / 24.0 * frame.scale();
             let nudge = match hit {
                 Hit::Back => -m.px(2) as f32 * frame.press,

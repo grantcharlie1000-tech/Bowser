@@ -123,6 +123,23 @@ pub fn toolbar_bounds(layout: &Layout) -> Option<RECT> {
     })
 }
 
+/// Rounds physical toolbar coordinates to CSS pixels with the same half-up convention as
+/// `Metrics::px`, expressed in the inverse direction.
+pub fn css_px_from_physical(physical: i32, dpi: u32) -> i32 {
+    let dpi = crate::chrome::layout::Metrics::new(dpi).dpi() as i64;
+    ((i64::from(physical.max(0)) * 96 + dpi / 2) / dpi) as i32
+}
+
+/// Pill x, pill width and menu x in CSS px relative to the HTML toolbar host's left edge.
+pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32)> {
+    let bounds = toolbar_bounds(layout)?;
+    Some((
+        css_px_from_physical(layout.omnibox.left - bounds.left, dpi),
+        css_px_from_physical(layout.omnibox.width(), dpi),
+        css_px_from_physical(layout.main_menu_button.left - bounds.left, dpi),
+    ))
+}
+
 /// Client-relative physical pixels of the HTML tab strip: the whole tab row, including its
 /// rail-shifted left edge. `None` when the row is empty (vertical sidebar mode has no tab row).
 pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
@@ -403,7 +420,7 @@ mod tests {
         assert!(should_handoff_edit(true, "https://a.test", "https://a.test"));
         assert!(should_handoff_edit(false, "https://typed.test", "https://a.test"));
     }
-    use crate::chrome::layout::{Rect, compute_in_frame};
+    use crate::chrome::layout::{Metrics, Rect, compute_in_frame};
 
     #[test]
     fn only_html_enables_the_html_chrome() {
@@ -424,6 +441,43 @@ mod tests {
         assert_eq!(bounds.top, layout.strip.top);
         assert_eq!(bounds.bottom, layout.strip.bottom);
         assert!(bounds.right > bounds.left);
+    }
+
+    #[test]
+    fn toolbar_placement_uses_window_geometry_in_css_pixels() {
+        for (dpi, physical, expected) in [
+            (120, 13, 10), // 125%
+            (144, 16, 11), // 150%
+            (192, 19, 10), // 200%, half rounds up
+        ] {
+            assert_eq!(css_px_from_physical(physical, dpi), expected, "dpi={dpi}");
+        }
+        for dpi in [96, 120, 144, 192] {
+            let layout = compute_in_frame(1600, 900, dpi, 3, 0, false);
+            let (pill_x, pill_w, menu_x) = toolbar_css_placement(&layout, dpi).expect("toolbar");
+            let bounds = toolbar_bounds(&layout).expect("toolbar bounds");
+            assert_eq!(pill_x, css_px_from_physical(layout.omnibox.left - bounds.left, dpi));
+            assert_eq!(pill_w, css_px_from_physical(layout.omnibox.width(), dpi));
+            assert_eq!(menu_x, css_px_from_physical(layout.main_menu_button.left - bounds.left, dpi));
+        }
+    }
+
+    #[test]
+    fn html_bounds_and_toolbar_placement_follow_resize_and_dpi_relayout() {
+        for dpi in [96, 120, 144, 192] {
+            let narrow = compute_in_frame(1100, 700, dpi, 3, 0, false);
+            let wide = compute_in_frame(1600, 900, dpi, 3, 0, true);
+            let narrow_toolbar = toolbar_bounds(&narrow).expect("narrow toolbar");
+            let wide_toolbar = toolbar_bounds(&wide).expect("wide toolbar");
+            assert_eq!(wide_toolbar.top, wide.strip.top, "dpi={dpi}");
+            assert_eq!(wide_toolbar.bottom, wide.strip.bottom, "dpi={dpi}");
+            assert_ne!(narrow_toolbar.right, wide_toolbar.right, "resize updates toolbar bounds dpi={dpi}");
+            assert_ne!(toolbar_css_placement(&narrow, dpi), toolbar_css_placement(&wide, dpi), "resize updates pill state dpi={dpi}");
+            assert_eq!(tab_row_bounds(&wide).unwrap().top, wide.tab_row.top);
+            assert_eq!(rail_bounds(&wide).unwrap().top, wide.rail.top);
+            let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 900, dpi, 260, true);
+            assert_eq!(sidebar_bounds(&sidebar).unwrap().top, Metrics::new(dpi).px(Metrics::TOP_MARGIN));
+        }
     }
 
     #[test]

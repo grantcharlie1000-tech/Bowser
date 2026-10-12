@@ -29,8 +29,10 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Height of the toolbar row, which is also the caption button height.
+    /// Height of the toolbar controls row below the top inset.
     pub const STRIP_HEIGHT: i32 = 34;
+    /// Clear draggable space above the toolbar controls.
+    pub const TOP_MARGIN: i32 = 6;
     /// Height of the full-width tab row under the toolbar.
     pub const TAB_ROW_HEIGHT: i32 = 28;
     pub const ISLAND_HEIGHT: i32 = 24;
@@ -260,11 +262,11 @@ pub struct Layout {
 
 const GROUP_SLOT_WORDS: usize = 8;
 
-/// Height of the painted chrome: the strip, the omnibox row and the margin below it. This is where
+/// Height of the painted chrome: the top inset, toolbar, tab row and margin below it. This is where
 /// `Layout::viewport` starts.
 pub const fn chrome_height(dpi: u32) -> i32 {
     let m = Metrics::new(dpi);
-    m.px(Metrics::STRIP_HEIGHT) + m.px(Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN)
+    m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT) + m.px(Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN)
 }
 
 /// Logical width of the left rail. The rail is a pill, rounded at both ends. It holds 30-pixel
@@ -282,12 +284,13 @@ pub fn left_rail_inset(dpi: u32) -> i32 {
 pub fn left_rail(client_h: i32, dpi: u32) -> Rect {
     let m = Metrics::new(dpi);
     let margin = m.px(Metrics::OUTER_MARGIN);
+    let top_margin = m.px(Metrics::TOP_MARGIN);
     let height = client_h.max(0);
     Rect::new(
         margin,
-        margin.min(height),
+        top_margin.saturating_add(margin).min(height),
         margin + m.px(LEFT_RAIL_WIDTH),
-        (height - margin).max(margin.min(height)),
+        (height - margin).max(top_margin.saturating_add(margin).min(height)),
     )
 }
 
@@ -325,7 +328,7 @@ pub fn content_rect(client_w: i32, client_h: i32, dpi: u32, maximised: bool) -> 
     let width = client_w.max(0);
     let height = client_h.max(0);
     let margin = m.px(Metrics::OUTER_MARGIN);
-    let top = (m.px(Metrics::STRIP_HEIGHT + Metrics::TAB_ROW_HEIGHT) + margin).min(height);
+    let top = (m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT + Metrics::TAB_ROW_HEIGHT) + margin).min(height);
     let rim = if maximised {
         0
     } else {
@@ -399,6 +402,7 @@ pub fn compute_with_active(
     let margin = m.px(Metrics::OUTER_MARGIN);
     let gap = m.px(Metrics::ISLAND_GAP);
     let strip_h = m.px(Metrics::STRIP_HEIGHT);
+    let top_margin = m.px(Metrics::TOP_MARGIN);
     let tab_row_h = m.px(Metrics::TAB_ROW_HEIGHT);
     let new_tab_size = m.px(Metrics::NEW_TAB_SIZE);
     let list_size = m.px(Metrics::TAB_MENU_SIZE);
@@ -406,12 +410,12 @@ pub fn compute_with_active(
     let min_w = m.px(Metrics::TAB_MIN_WIDTH);
 
     let client = Rect::new(0, 0, client_w, client_h);
-    let strip = Rect::new(0, 0, client_w, strip_h);
-    let tab_row = Rect::new(0, strip_h, client_w, strip_h + tab_row_h);
+    let strip = Rect::new(0, top_margin, client_w, top_margin + strip_h);
+    let tab_row = Rect::new(0, strip.bottom, client_w, strip.bottom + tab_row_h);
 
     let caption_w = 3 * m.px(Metrics::CAPTION_BUTTON_WIDTH);
     let caption_left = (client_w - caption_w).max(0);
-    let caption_area = Rect::new(caption_left, 0, client_w, strip_h);
+    let caption_area = Rect::new(caption_left, 0, client_w, top_margin + strip_h);
 
     // The tab overflow picker occupies the trailing edge of the tab row, beside the tab slots.
     let tabs_left = margin;
@@ -473,7 +477,7 @@ pub fn compute_with_active(
     let nav_size = m.px(Metrics::NAV_BUTTON_SIZE);
     let nav_gap = m.px(Metrics::NAV_BUTTON_GAP);
     let nav_left = m.px(Metrics::NAV_LEFT_INSET);
-    let nav_top = (strip_h - nav_size) / 2;
+    let nav_top = strip.top + (strip_h - nav_size) / 2;
     let nav_button = |slot: i32| {
         let left = match slot {
             0 => nav_left,
@@ -493,7 +497,7 @@ pub fn compute_with_active(
         let left = right_edge - size;
         if toolbar_fits && left >= nav_right + gap {
             right_edge = left - gap;
-            let top = (strip_h - size) / 2;
+            let top = strip.top + (strip_h - size) / 2;
             Rect::new(left, top, left + size, top + size)
         } else {
             toolbar_fits = false;
@@ -514,7 +518,7 @@ pub fn compute_with_active(
     let omnibox_w = (omnibox_max - omnibox_min).min(m.px(Metrics::OMNIBOX_MAX_WIDTH));
     let omnibox_left = (client_w / 2 - omnibox_w / 2)
         .clamp(omnibox_min, (omnibox_max - omnibox_w).max(omnibox_min));
-    let omnibox_top = (strip_h - omnibox_h) / 2;
+    let omnibox_top = strip.top + (strip_h - omnibox_h) / 2;
     let omnibox = Rect::new(
         omnibox_left,
         omnibox_top,
@@ -951,6 +955,11 @@ impl Layout {
         controls.sort_by_key(|control| control.left);
 
         let mut rects = Vec::new();
+        append_drag_regions(
+            Rect::new(self.client.left, self.client.top, self.client.right, self.strip.top),
+            &controls,
+            &mut rects,
+        );
         append_drag_regions(self.strip, &controls, &mut rects);
         let tabs: Vec<Rect> = (self.first_visible..self.first_visible + self.visible_count)
             .filter_map(|index| self.tab(index))
@@ -1090,9 +1099,6 @@ pub fn hit_test_native(
             Hit::Tab(index)
         };
     }
-    if !layout.strip.contains(x, y) {
-        return Hit::None;
-    }
     if layout.caption_area.contains(x, y) {
         if layout.caption_button(Hit::CaptionClose).contains(x, y) {
             return Hit::CaptionClose;
@@ -1101,6 +1107,12 @@ pub fn hit_test_native(
             return Hit::CaptionMaximize;
         }
         return Hit::CaptionMinimize;
+    }
+    if y >= 0 && y < layout.strip.top {
+        return Hit::CaptionArea;
+    }
+    if !layout.strip.contains(x, y) {
+        return Hit::None;
     }
     Hit::CaptionArea
 }
@@ -1333,33 +1345,33 @@ mod tests {
         assert_eq!(inset, 44);
         let l = compute_in_frame(1024, HEIGHT, 96, 1, 0, false);
 
-        assert_eq!(l.strip, Rect::new(inset, 0, 1024, 34));
-        assert_eq!(l.tab_row, Rect::new(inset, 34, 1024, 62));
-        assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 34));
-        assert_eq!(l.tab_zone, Rect::new(46, 34, 1022, 62));
+        assert_eq!(l.strip, Rect::new(inset, 6, 1024, 40));
+        assert_eq!(l.tab_row, Rect::new(inset, 40, 1024, 68));
+        assert_eq!(l.caption_area, Rect::new(886, 0, 1024, 40));
+        assert_eq!(l.tab_zone, Rect::new(46, 40, 1022, 68));
         assert_eq!(
             l.tab(0),
-            Some(Rect::new(46, 36, 1022, 60)),
+            Some(Rect::new(46, 42, 1022, 66)),
             "a lone tab fills the full-width row"
         );
-        assert_eq!(l.new_tab_button, Rect::new(856, 3, 884, 31));
+        assert_eq!(l.new_tab_button, Rect::new(856, 9, 884, 37));
         assert!(
             l.tab_menu_button.is_empty(),
             "no overflow menu when tabs fit"
         );
-        assert_eq!(l.main_menu_button, Rect::new(825, 4, 853, 30));
+        assert_eq!(l.main_menu_button, Rect::new(825, 10, 853, 36));
         assert_eq!(
             l.main_menu_button.left,
             l.omnibox.right + 3,
             "the bubble sits directly right of the address pill"
         );
-        assert_eq!(l.back_button, Rect::new(48, 3, 76, 31));
-        assert_eq!(l.forward_button, Rect::new(76, 3, 104, 31));
-        assert_eq!(l.reload_button, Rect::new(107, 3, 135, 31));
-        assert_eq!(l.omnibox, Rect::new(198, 4, 822, 30));
-        assert_eq!(hit_test(&l, 839, 17), Hit::MainMenu);
-        assert_eq!(l.viewport, Rect::new(48, 64, 1020, 696));
-        assert_eq!(l.rail, Rect::new(2, 2, 42, 698));
+        assert_eq!(l.back_button, Rect::new(48, 9, 76, 37));
+        assert_eq!(l.forward_button, Rect::new(76, 9, 104, 37));
+        assert_eq!(l.reload_button, Rect::new(107, 9, 135, 37));
+        assert_eq!(l.omnibox, Rect::new(198, 10, 822, 36));
+        assert_eq!(hit_test(&l, 839, 23), Hit::MainMenu);
+        assert_eq!(l.viewport, Rect::new(48, 70, 1020, 696));
+        assert_eq!(l.rail, Rect::new(2, 8, 42, 698));
         assert_eq!(hit_test(&l, 22, 20), Hit::RailBackground);
     }
 
@@ -1368,7 +1380,7 @@ mod tests {
         // At 1024 the menu bubble pushes the omnibox left of centre, so centring is checked wider.
         let l = layout(1440, 96, 1);
 
-        assert_eq!(l.omnibox, Rect::new(408, 4, 1032, 30));
+        assert_eq!(l.omnibox, Rect::new(408, 10, 1032, 36));
         assert_eq!(
             (l.omnibox.left + l.omnibox.right) / 2,
             720,
@@ -1395,9 +1407,9 @@ mod tests {
 
         // 26 whole islands fit at the 26 px minimum across the full row.
         assert_eq!(l.tab(0).map(Rect::width), Some(39));
-        assert_eq!(l.tab_zone, Rect::new(2, 34, 737, 62));
-        assert_eq!(l.new_tab_button, Rect::new(600, 3, 628, 31));
-        assert_eq!(l.tab_menu_button, Rect::new(740, 35, 766, 61));
+        assert_eq!(l.tab_zone, Rect::new(2, 40, 737, 68));
+        assert_eq!(l.new_tab_button, Rect::new(600, 9, 628, 37));
+        assert_eq!(l.tab_menu_button, Rect::new(740, 41, 766, 67));
         assert_eq!(l.caption_area.left, 630);
         assert!(
             !l.tab_menu_button.is_empty(),
@@ -1458,7 +1470,7 @@ mod tests {
                     let margin = m.px(Metrics::OUTER_MARGIN);
                     let rail = l.rail;
                     assert_eq!(rail.width(), m.px(LEFT_RAIL_WIDTH));
-                    assert_eq!((rail.left, rail.top), (margin, margin));
+                    assert_eq!((rail.left, rail.top), (margin, m.px(Metrics::TOP_MARGIN) + margin));
                     assert_eq!(rail.bottom, HEIGHT - margin);
 
                     let mut chrome = visible_controls(&l);
@@ -1536,7 +1548,7 @@ mod tests {
                 let m = Metrics::new(dpi);
                 let l = layout(width, dpi, 3);
                 let margin = m.px(Metrics::OUTER_MARGIN);
-                assert_eq!(l.strip.top, 0);
+                assert_eq!(l.strip.top, m.px(Metrics::TOP_MARGIN));
                 assert_eq!(l.strip.bottom, l.tab_row.top);
                 assert_eq!(l.tab_row.bottom + margin, l.viewport.top);
                 let rim = m.px(Metrics::RESIZE_RIM);
@@ -1717,7 +1729,7 @@ mod tests {
             assert_eq!(buttons[1].1.right, buttons[2].1.left);
             assert_eq!(buttons[2].1.right, l.caption_area.right);
             for (hit, rect) in buttons {
-                assert_eq!(rect.height(), l.strip.height());
+                assert_eq!(rect.height(), l.caption_area.height());
                 assert_eq!(hit_test(&l, rect.left, rect.top), hit, "dpi {dpi}");
                 assert_eq!(hit_test(&l, rect.right - 1, rect.bottom - 1), hit);
             }
@@ -1798,7 +1810,7 @@ mod tests {
         assert_eq!(hit_test(&l, 900, 20), Hit::CaptionMinimize);
         assert_eq!(hit_test(&l, 950, 20), Hit::CaptionMaximize);
         assert_eq!(hit_test(&l, 1000, 20), Hit::CaptionClose);
-        assert_eq!(hit_test(&l, 544, 63), Hit::None, "margin above viewport");
+        assert_eq!(hit_test(&l, 544, 69), Hit::None, "margin above viewport");
         assert_eq!(hit_test(&l, 544, 200), Hit::Viewport);
         assert_eq!(hit_test(&l, 1024, 10), Hit::None, "right of client");
         assert_eq!(hit_test(&l, -1, 10), Hit::None, "left of client");
@@ -2234,12 +2246,37 @@ mod tests {
     }
 
     #[test]
+    fn top_margin_moves_chrome_and_keeps_caption_hits_at_the_top() {
+        for dpi in [96, 120, 144, 192] {
+            let m = Metrics::new(dpi);
+            let top = m.px(Metrics::TOP_MARGIN);
+            let layout = compute_in_frame(1200, 800, dpi, 1, 0, false);
+            assert_eq!(layout.strip.top, top, "strip dpi={dpi}");
+            assert_eq!(layout.tab_row.top, top + m.px(Metrics::STRIP_HEIGHT), "tabs dpi={dpi}");
+            assert_eq!(layout.viewport.top, top + m.px(Metrics::STRIP_HEIGHT + Metrics::TAB_ROW_HEIGHT) + m.px(Metrics::OUTER_MARGIN), "viewport dpi={dpi}");
+            assert_eq!(layout.back_button.top, top + (m.px(Metrics::STRIP_HEIGHT) - m.px(Metrics::NAV_BUTTON_SIZE)) / 2, "nav dpi={dpi}");
+            assert_eq!(layout.omnibox.top, top + (m.px(Metrics::STRIP_HEIGHT) - m.px(Metrics::OMNIBOX_HEIGHT)) / 2, "omnibox dpi={dpi}");
+            assert_eq!(layout.caption_area.top, 0);
+            assert_eq!(layout.caption_area.bottom, top + m.px(Metrics::STRIP_HEIGHT));
+            let close = layout.caption_button(Hit::CaptionClose);
+            assert_eq!((close.top, close.bottom), (0, top + m.px(Metrics::STRIP_HEIGHT)));
+            assert!(layout.drag_region_rects().iter().any(|r| r.top == 0 && r.bottom == top));
+            assert_eq!(hit_test(&layout, 100, top / 2), Hit::CaptionArea);
+            let maximised = compute_in_frame(1200, 800, dpi, 1, 0, true);
+            assert_eq!(maximised.strip.top, top, "maximised strip dpi={dpi}");
+            assert_eq!(maximised.viewport.top, layout.viewport.top, "maximised viewport dpi={dpi}");
+            assert_eq!(chrome_height(dpi), layout.viewport.top);
+        }
+    }
+
+    #[test]
     fn drag_region_rects_stay_inside_chrome() {
         let l = layout(1024, 96, 5);
 
         for rect in l.drag_region_rects() {
             assert!(
-                rect.intersect(l.strip) == rect || rect.intersect(l.tab_row) == rect,
+                rect.intersect(l.strip) == rect || rect.intersect(l.tab_row) == rect
+                    || rect.intersect(Rect::new(0, 0, l.client.right, l.strip.top)) == rect,
                 "{rect:?} leaves the chrome"
             );
             assert!(!rect.is_empty());

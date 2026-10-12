@@ -109,6 +109,20 @@ function setReloadMode(button: HTMLButtonElement, loading: boolean): void {
 }
 
 export function applyState(view: View, state: StateMsg): void {
+  const root = document.getElementById('app');
+  if (root) {
+    if (state.pillx !== undefined && state.pillw !== undefined && state.menux !== undefined) {
+      root.classList.add('placed');
+      root.style.setProperty('--pill-x', `${state.pillx}px`);
+      root.style.setProperty('--pill-w', `${state.pillw}px`);
+      root.style.setProperty('--menu-x', `${state.menux}px`);
+    } else {
+      root.classList.remove('placed');
+      root.style.removeProperty('--pill-x');
+      root.style.removeProperty('--pill-w');
+      root.style.removeProperty('--menu-x');
+    }
+  }
   view.back.disabled = !state.back;
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);

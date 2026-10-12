@@ -68,6 +68,9 @@ function stateWithTheme(value) {
   return {
     t: 'state',
     scale: 1,
+    pillx: 0,
+    pillw: 624,
+    menux: 627,
     solid: false,
     dark: true,
     back: false,
@@ -153,6 +156,19 @@ test('a full toolbar state message is accepted for all chrome views', () => {
   const sample = stateWithTheme('#fff');
   assert.equal(parseInbound(sample)?.t, 'state');
   assert.equal(parseInbound(JSON.stringify(sample))?.scale, 1);
+  assert.deepEqual(
+    (({ pillx, pillw, menux }) => ({ pillx, pillw, menux }))(parseInbound(sample)),
+    { pillx: 0, pillw: 624, menux: 627 },
+  );
+  const oldState = { ...sample };
+  delete oldState.pillx;
+  delete oldState.pillw;
+  delete oldState.menux;
+  assert.equal(parseInbound(oldState)?.pillw, undefined, 'older state messages keep the flex-centred fallback');
+  assert.equal(parseInbound({ ...sample, pillx: -1 }), null);
+  assert.equal(parseInbound({ ...sample, menux: 1.5 }), null);
+  assert.equal(parseInbound({ ...sample, pillw: undefined }), null);
+  assert.equal(parseInbound({ ...sample, unexpected: true }), null);
   for (const file of ['main.ts', 'tabs.ts', 'rail.ts']) {
     const source = readFileSync(join(uiRoot, 'src', file), 'utf8');
     assert.match(source, /case 'state':[\s\S]*?applyTheme\(msg\.theme, msg\.solid, msg\.dark\)/, file);

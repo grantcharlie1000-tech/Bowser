@@ -799,6 +799,11 @@ impl Security {
 pub struct ViewState {
     /// Device pixel ratio hint. Non-finite or non-positive values fall back to 1.
     pub scale: f32,
+    /// Toolbar-local CSS px offset and width for native omnibox alignment.
+    pub pillx: i32,
+    pub pillw: i32,
+    /// Toolbar-local CSS px offset of the native main-menu button.
+    pub menux: i32,
     pub solid: bool,
     pub dark: bool,
     pub back: bool,
@@ -819,6 +824,7 @@ impl ViewState {
         let mut out = String::with_capacity(256);
         out.push_str("{\"t\":\"state\",\"scale\":");
         out.push_str(&format_scale(self.scale));
+        out.push_str(&format!(",\"pillx\":{},\"pillw\":{},\"menux\":{}", self.pillx.max(0), self.pillw.max(0), self.menux.max(0)));
         for (name, value) in [
             ("solid", self.solid),
             ("dark", self.dark),
@@ -1252,6 +1258,9 @@ mod tests {
     fn sample_state() -> ViewState {
         ViewState {
             scale: 1.0,
+            pillx: 0,
+            pillw: 0,
+            menux: 0,
             solid: false,
             dark: true,
             back: false,
@@ -1279,6 +1288,8 @@ mod tests {
         let png = png_with_size(16, 16, 24);
         let mut state = sample_state();
         state.scale = 1.25;
+        state.pillw = 624;
+        state.menux = 627;
         state.solid = true;
         state.theme = vec![("bg", "#123456".to_owned()), ("text", "#fff".to_owned())];
         let rail = [rail_item("home", "Home", ""), rail_item("app:5", "Mail & More", "#abc")];
@@ -2038,6 +2049,9 @@ mod tests {
     fn state_json_exact_output() {
         let state = ViewState {
             scale: 1.0,
+            pillx: 0,
+            pillw: 624,
+            menux: 627,
             solid: true,
             dark: false,
             back: true,
@@ -2053,7 +2067,7 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"progress":42,"security":"secure","label":"Secure","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"progress":42,"security":"secure","label":"Secure","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 

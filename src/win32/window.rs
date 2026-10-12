@@ -1614,6 +1614,8 @@ unsafe extern "system" fn window_proc(
                             App::sidebar_width(app),
                         );
                     });
+                    sync_html_host_bounds(hwnd);
+                    html_sync(hwnd);
                     sync_split_ratio(hwnd, App::split_view(app));
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
@@ -1689,6 +1691,8 @@ unsafe extern "system" fn window_proc(
                         );
                         s.refresh(app, true)
                     });
+                    sync_html_host_bounds(hwnd);
+                    html_sync(hwnd);
                     sync_split_ratio(hwnd, App::split_view(app));
                     refresh_edit_font(hwnd, app);
                     position_edit(hwnd);
@@ -5683,17 +5687,21 @@ fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let Some((palette, dpi)) = with_chrome(hwnd, |s| {
+    let Some((palette, dpi, layout)) = with_chrome(hwnd, |s| {
         if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready) { return None; }
-        Some((s.palette, s.dpi))
+        Some((s.palette, s.dpi, s.layout))
     })
     .flatten() else {
         return;
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
+    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement(&layout, dpi).unwrap_or_default();
     let state = ViewState {
         scale: dpi as f32 / 96.0,
+        pillx,
+        pillw,
+        menux,
         solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),
@@ -5930,6 +5938,9 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
     ViewState {
         scale: dpi as f32 / 96.0,
+        pillx: 0,
+        pillw: 0,
+        menux: 0,
         solid: true,
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: false,
@@ -6209,6 +6220,9 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
     let site = App::site_security(&app);
     let state = ViewState {
         scale: dpi as f32 / 96.0,
+        pillx: 0,
+        pillw: 0,
+        menux: 0,
         solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),

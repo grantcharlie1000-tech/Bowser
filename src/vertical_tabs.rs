@@ -47,9 +47,10 @@ impl SidebarLayout {
         let min_width = m.px(MIN_WIDTH).min(available_width);
         let max_width = m.px(MAX_WIDTH).min(available_width);
         let side_width = m.px(requested_width).clamp(min_width, max_width);
-        let sidebar = Rect::new(0, 0, side_width, height);
+        let top_margin = m.px(Metrics::TOP_MARGIN).min(height);
+        let sidebar = Rect::new(0, top_margin, side_width, height);
         let header_height = m.px(HEADER_HEIGHT).min(height);
-        let header = Rect::new(0, 0, side_width, header_height);
+        let header = Rect::new(0, top_margin, side_width, top_margin.saturating_add(header_height).min(height));
         let row_top = (content.top + header_height).min(height);
         let rows = Rect::new(0, row_top, side_width, content.bottom.max(row_top));
         let row_height = m.px(TAB_ROW_HEIGHT).max(1);

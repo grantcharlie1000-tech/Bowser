@@ -52,12 +52,11 @@ pub struct CaptionButtons {
 }
 
 impl CaptionButtons {
-    /// The caption buttons are the same rectangles the painter and `layout::hit_test` use: three
-    /// `CAPTION_BUTTON_WIDTH` columns the height of the strip, flush with the right edge.
+    /// Three `CAPTION_BUTTON_WIDTH` columns, flush right from y=0 through the top inset and toolbar.
     pub fn for_client_width(width: i32, dpi: u32) -> Self {
         let m = Metrics::new(dpi);
         let button_width = m.px(Metrics::CAPTION_BUTTON_WIDTH);
-        let button_height = m.px(Metrics::STRIP_HEIGHT);
+        let button_height = m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT);
         let right = width.max(0);
         let rect = |right: i32| CaptionRect {
             left: right.saturating_sub(button_width),
@@ -484,11 +483,11 @@ mod tests {
 
     #[test]
     fn caption_buttons_are_right_aligned_and_dpi_scaled() {
-        // Strip is 34 logical px: 34 at 96 dpi, 42.5 rounded up to 43 at 120, 68 at 192.
+        // Caption hit height includes 6 px headroom plus the 34 px toolbar strip.
         let one = CaptionButtons::for_client_width(1000, 96);
         assert_eq!(
             (one.min.left, one.close.right, one.close.bottom),
-            (862, 1000, 34)
+            (862, 1000, 40)
         );
         let fractional = CaptionButtons::for_client_width(1000, 120);
         assert_eq!(
@@ -497,23 +496,24 @@ mod tests {
                 fractional.close.right,
                 fractional.close.bottom
             ),
-            (826, 1000, 43)
+            (826, 1000, 51)
         );
         let two = CaptionButtons::for_client_width(2000, 192);
         assert_eq!(
             (two.min.left, two.close.right, two.close.bottom),
-            (1724, 2000, 68)
+            (1724, 2000, 80)
         );
     }
 
     #[test]
     fn caption_buttons_match_the_layout_caption_area() {
         for dpi in [96, 120, 144, 192] {
+            let m = Metrics::new(dpi);
             let l = crate::chrome::layout::compute(1000, 700, dpi, 1, false);
             let b = CaptionButtons::for_client_width(1000, dpi);
             assert_eq!(b.min.left, l.caption_area.left, "dpi {dpi}");
             assert_eq!(b.close.right, l.caption_area.right, "dpi {dpi}");
-            assert_eq!(b.close.bottom, l.strip.bottom, "dpi {dpi}");
+            assert_eq!(b.close.bottom, m.px(Metrics::TOP_MARGIN) + l.strip.height(), "dpi {dpi}");
         }
     }
 

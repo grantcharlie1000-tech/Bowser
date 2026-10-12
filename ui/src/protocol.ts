@@ -82,6 +82,9 @@ export type Command =
 export interface StateMsg {
   readonly t: 'state';
   readonly scale: number;
+  readonly pillx?: number;
+  readonly pillw?: number;
+  readonly menux?: number;
   readonly solid: boolean;
   readonly dark: boolean;
   readonly back: boolean;
@@ -393,8 +396,13 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'progress', 'security', 'label', 'theme'])) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
+      const placementKeys = ['pillx', 'pillw', 'menux'] as const;
+      const placementCount = placementKeys.filter((key) => key in raw).length;
+      if (placementCount !== 0 && placementCount !== placementKeys.length) return null;
+      if (placementCount !== 0 && placementKeys.some((key) => !isInt(raw[key], 0, Number.MAX_SAFE_INTEGER))) return null;
       if (!isBool(solid) || !isBool(dark) || !isBool(back) || !isBool(forward) || !isBool(loading)) return null;
       if (!isInt(progress, 0, 100)) return null;
       if (!isOneOf(security, SECURITY)) return null;
@@ -402,6 +410,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return {
         t: 'state',
         scale,
+        ...(placementCount === 3 ? { pillx: raw.pillx as number, pillw: raw.pillw as number, menux: raw.menux as number } : {}),
         solid,
         dark,
         back,
