@@ -1,5 +1,6 @@
 // Vertical sidebar renderer used by the existing Tabs view/controller.
 import { send, sendSide, type TabItem, type TabsMsg } from './protocol';
+import { setTip } from './tooltip';
 import { el, icon, place } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta } from './tabs-logic';
@@ -50,7 +51,7 @@ function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, strin
   const title = el('span', 'side-title');
   title.dir = 'auto';
   title.textContent = item.title || 'New tab';
-  root.title = item.title || 'New tab';
+  setTip(root, item.title || 'New tab');
   const iconBox = el('span', 'side-tab-icon');
   const image = el('img', 'side-fav');
   image.alt = '';
@@ -75,8 +76,8 @@ function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, strin
   const close = el('button', 'side-close');
   close.type = 'button';
   close.tabIndex = -1;
-  close.title = `Close ${item.title || 'tab'}`;
-  close.setAttribute('aria-label', close.title);
+  setTip(close, `Close ${item.title || 'tab'}`);
+  close.setAttribute('aria-label', `Close ${item.title || 'tab'}`);
   close.append(icon('close'));
   root.append(iconBox, title, marker, close);
   return { item, root, image, title, marker, close, shift: 0 };
@@ -118,7 +119,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
     const header = el('button', 'side-workspace');
     header.type = 'button';
-    header.title = `${workspace.name} — workspace menu`;
+    setTip(header, `${workspace.name} — workspace menu`);
     header.setAttribute('aria-label', `${workspace.name} workspace menu`);
     const workspaceIcon = el('span', 'side-workspace-icon');
     workspaceIcon.textContent = GLYPHS[workspace.icon] ?? '▣';
@@ -130,7 +131,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     const add = el('button', 'side-newtab');
     add.type = 'button';
     add.append(icon('plus'), document.createTextNode('New tab'));
-    add.title = 'New tab';
+    setTip(add, 'New tab');
 
     const rows: HTMLElement[] = [header, add];
     const live = new Set(msg.items.map((item) => item.id));
@@ -144,7 +145,7 @@ export function createSidebarRenderer(root: HTMLElement): {
         const ball = el('button', 'side-group-ball');
         ball.type = 'button';
         ball.dataset.key = String(entry.key);
-        ball.title = entry.name;
+        setTip(ball, entry.name);
         ball.setAttribute('aria-label', `${entry.name}, ${entry.count} tabs`);
         ball.setAttribute('aria-expanded', String(!entry.collapsed));
         const label = el('span', 'side-group-name');
@@ -164,14 +165,14 @@ export function createSidebarRenderer(root: HTMLElement): {
         } else {
           node.item = item;
           node.title.textContent = item.title || 'New tab';
-          node.root.title = item.title || 'New tab';
+          setTip(node.root, item.title || 'New tab');
           node.root.setAttribute('aria-selected', String(item.id === msg.active));
           node.root.classList.toggle('active', item.id === msg.active);
           node.root.classList.toggle('pinned', item.pinned);
           node.root.classList.toggle('muted', item.muted);
           node.root.tabIndex = item.id === msg.active ? 0 : -1;
-          node.close.title = `Close ${item.title || 'tab'}`;
-          node.close.setAttribute('aria-label', node.close.title);
+          setTip(node.close, `Close ${item.title || 'tab'}`);
+          node.close.setAttribute('aria-label', `Close ${item.title || 'tab'}`);
           const uri = item.fav ? favs.get(item.id) : undefined;
           node.image.hidden = !uri || item.loading;
           if (uri) node.image.src = uri;

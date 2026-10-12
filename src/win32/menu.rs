@@ -48,6 +48,7 @@ use windows::{
 };
 
 use crate::{
+    app::AppRef,
     theme::{self, Rgba},
     win32::{glass, smooth},
 };
@@ -548,6 +549,68 @@ struct RichBitmap {
     bitmap: HBITMAP,
     original: HGDIOBJ,
 }
+
+// --- async menu API (lane M) ---
+/// Where `show` puts the menu relative to `anchor` (screen coordinates): `AboveLeft` puts its
+/// top-right corner there (as `track` does), `BelowLeft` its top-left corner (as `track_below`).
+pub(crate) use super::html_popup::Placement;
+
+/// Shows `menu` without blocking and calls `callback` with the pick, or `None` when dismissed.
+///
+/// With the HTML chrome on and the window's popup host ready, the menu renders in the HTML popup
+/// and the callback runs later from the deferred chrome queue (never inside WebView2's message
+/// callback), after the pick's token and enabled id are checked. Otherwise the native menu runs
+/// right away and the callback runs before this returns. Either way the callback must re-check the
+/// ids it captured against the live model: tabs, workspaces and files may change meanwhile.
+///
+/// `kind` names the menu for the 300 ms reopen guard (a click that dismissed a menu does not reopen
+/// the same kind); include the target id when menus for different targets should not guard each
+/// other, such as `tab:12`. At most 32 bytes.
+pub(crate) fn show(
+    owner: HWND,
+    anchor: POINT,
+    placement: Placement,
+    menu: Menu,
+    kind: &str,
+    callback: impl FnOnce(&AppRef, Option<Chosen>) + 'static,
+) {
+    let Some(app) = super::window::popup_app(owner) else {
+        return;
+    };
+    // One menu at a time: a new one replaces any that is open, which reports a dismissal.
+    if super::html_popup::is_active(owner) {
+        super::html_popup::cancel(owner, &app);
+    }
+    let context = super::window::popup_context(owner);
+    let callback = match super::html_popup::show_menu(
+        owner,
+        anchor,
+        placement,
+        &menu,
+        kind,
+        context,
+        Box::new(callback),
+    ) {
+        Ok(()) => return,
+        Err(super::html_popup::ShowRefused::Guarded(callback)) => {
+            callback(&app, None);
+            return;
+        }
+        Err(super::html_popup::ShowRefused::Unavailable(callback)) => callback,
+    };
+    let chosen = match placement {
+        Placement::AboveLeft => track(owner, anchor, menu),
+        Placement::BelowLeft => track_below(owner, anchor, menu),
+    };
+    callback(&app, chosen);
+}
+
+/// The entry at `index` of the list a menu was built from, if the live list still has it. Menu ids
+/// that encode a list position use this so a pick never acts on whatever moved into that slot.
+pub(crate) fn still_listed<'a, T: PartialEq>(built: &'a [T], live: &[T], index: usize) -> Option<&'a T> {
+    built.get(index).filter(|item| live.contains(item))
+}
+// --- end async menu API ---
 
 /// Shows the menu with its top-right corner at `anchor` (screen coordinates) and returns the item
 /// the user activated, or `None` when it was dismissed. Blocks until then.
@@ -1744,6 +1807,17 @@ unsafe fn rounded_icon_line(dc: HDC, from: POINT, to: POINT, colour: Rgba, strok
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_list_positions_are_rejected() {
+        let built = [3u32, 5, 8];
+        assert_eq!(still_listed(&built, &[3, 5, 8], 1), Some(&5));
+        // The workspace or tab at that position went away while the menu was open.
+        assert_eq!(still_listed(&built, &[3, 8], 1), None);
+        // Something else moved into the slot: the built entry is still what the pick means.
+        assert_eq!(still_listed(&built, &[8, 3], 0), Some(&3));
+        assert_eq!(still_listed(&built, &[3, 5, 8], 3), None);
+    }
 
     #[test]
     fn icon_motion_reaches_target_and_stops() {

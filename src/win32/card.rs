@@ -168,6 +168,9 @@ pub(crate) fn is_hover_timer(timer: usize) -> bool {
 /// deactivation so a stale timer cannot reopen a card after the interaction ended.
 pub(crate) fn cancel(main: HWND) {
     cancel_card(main);
+    // --- hover layer ---
+    super::html_hover::cancel(main);
+    // --- end hover layer ---
     // Island menus share the strip's clicks, drags and window changes, so they are cancelled too.
     island_menu::cancel(main);
 }
@@ -175,6 +178,9 @@ pub(crate) fn cancel(main: HWND) {
 /// Cancels the hover card and its timer only. Tab-list changes use this, because an island menu
 /// follows its island through [`island_menu::sync`] instead of closing.
 pub(crate) fn cancel_card(main: HWND) {
+    // --- hover layer ---
+    super::html_hover::cancel_card(main);
+    // --- end hover layer ---
     let timer = STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.target = None;
@@ -237,6 +243,9 @@ pub(crate) fn pointer_left(main: HWND) {
 /// Keeps the card in step with the tab list: it follows its tab's position, refreshes its contents,
 /// and closes when the tab is gone.
 pub(crate) fn sync(main: HWND, app: &AppRef, anchor: impl Fn(TabId) -> Option<Rect>) {
+    // --- hover layer ---
+    super::html_hover::sync(main, app);
+    // --- end hover layer ---
     let Some(tab) = STATE.with(|state| state.borrow().open.as_ref().map(|open| open.tab)) else {
         return;
     };

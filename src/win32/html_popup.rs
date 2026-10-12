@@ -45,6 +45,7 @@ const MAX_ITEMS: usize = 128;
 const MAX_TOTAL_ITEMS: usize = 256;
 const MAX_LABEL: usize = 128;
 const MAX_SHORTCUT: usize = 48;
+const MAX_FOOTER: usize = 256;
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const FALLBACK_DPI: u32 = 96;
 
@@ -55,6 +56,19 @@ pub(crate) enum Placement {
 }
 
 pub(crate) type ResultCallback = Box<dyn FnOnce(&AppRef, Option<Chosen>)>;
+
+/// Why `show_menu` did not take a menu. The callback is handed back either way.
+pub(crate) enum ShowRefused {
+    /// No ready popup host, HTML chrome off, or a menu the HTML view cannot carry: the caller runs
+    /// the native menu instead.
+    Unavailable(ResultCallback),
+    /// The same kind of menu closed under 300 ms ago (the click that dismissed it is reopening it):
+    /// the caller reports a dismissal and shows nothing.
+    Guarded(ResultCallback),
+}
+
+/// Active tab and workspace when a menu opened. A change dismisses the menu.
+pub(crate) type MenuContext = (u32, u32);
 
 struct Popup {
     owner: HWND,
@@ -71,9 +85,12 @@ struct Popup {
     dpi: u32,
     work: RECT,
     bounds: RECT,
+    context: Option<MenuContext>,
 }
 
 thread_local! { static POPUPS: RefCell<HashMap<isize, Popup>> = RefCell::new(HashMap::new()); }
+// Windows whose popup page has said `ready`: before that a posted menu would be lost.
+thread_local! { static PAGE_READY: RefCell<HashSet<isize>> = RefCell::new(HashSet::new()); }
 thread_local! { static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) }; }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +141,16 @@ impl DismissState {
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }
+    /// Lifts the reopen guard after a pick: a command may chain straight into another menu of the
+    /// same kind (the site info panel reopens after each choice). Only dismissals are guarded.
+    pub(crate) fn forgive(&mut self) {
+        self.closed_at = None;
+    }
+}
+
+/// Whether a menu opened in `opened` should close now that the window shows `now`.
+pub(crate) fn context_changed(opened: Option<MenuContext>, now: MenuContext) -> bool {
+    opened.is_some_and(|opened| opened != now)
 }
 
 pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
@@ -237,6 +264,7 @@ fn adopt_ready(owner: HWND) {
                     dpi,
                     work,
                     bounds: RECT::default(),
+                    context: None,
                 },
             );
         });
@@ -249,61 +277,137 @@ fn adopt_ready(owner: HWND) {
     }
 }
 
+/// Posts `menu` to the popup page. On success the page measures itself and replies `size`; the
+/// popup then shows, and the callback later runs from `DeferredChromeCommand::MenuResult`. On
+/// refusal the callback comes back so the caller can run the native menu or report a dismissal.
+/// The caller closes any active menu first (`cancel`).
 pub(crate) fn show_menu(
     owner: HWND,
     anchor: POINT,
     placement: Placement,
-    menu: Menu,
+    menu: &Menu,
     kind: &str,
+    context: Option<MenuContext>,
     on_result: ResultCallback,
-) -> bool {
+) -> Result<(), ShowRefused> {
     if !chrome_host::html_ui_enabled() || kind.is_empty() || kind.len() > 32 {
-        return false;
+        return Err(ShowRefused::Unavailable(on_result));
     }
-    adopt_ready(owner);
+    // The host is adopted (and suspended while hidden) only once its page has said `ready`:
+    // adopting it earlier would suspend the page before it loads, and a menu posted then is lost.
+    // --- hover layer ---
+    super::html_hover::cancel(owner);
+    // --- end hover layer ---
     let key = owner.0 as isize;
+    if !PAGE_READY.with(|ready| ready.borrow().contains(&key)) {
+        return Err(ShowRefused::Unavailable(on_result));
+    }
+    let mut on_result = Some(on_result);
     let popup_data = POPUPS.with(|p| {
         let mut all = p.borrow_mut();
-        let Some(popup) = all.get_mut(&key) else {
-            return None;
-        };
+        let popup = all.get_mut(&key).ok_or(false)?;
         let now = Instant::now();
-        if !popup.dismiss.can_open(kind, now) {
-            return None;
+        if popup.dismiss.is_active() {
+            return Err(false);
         }
-        popup.token = popup.next_token;
+        if !popup.dismiss.can_open(kind, now) {
+            return Err(true);
+        }
+        let mut ids = HashSet::new();
+        let token = popup.next_token;
+        let json = menu_json(token, kind, menu, &mut ids).ok_or(false)?;
+        if !popup.dismiss.open(kind, now) {
+            return Err(true);
+        }
+        popup.token = token;
         popup.next_token = popup.next_token.wrapping_add(1).max(1);
-        popup.enabled_ids.clear();
+        popup.enabled_ids = ids;
         popup.anchor = anchor;
         popup.placement = placement;
+        popup.context = context;
         (popup.dpi, popup.work) = monitor_data(anchor);
-        let Some(json) = menu_json(popup.token, kind, &menu, &mut popup.enabled_ids) else {
-            return None;
-        };
-        if !popup.dismiss.open(kind, now) {
-            return None;
-        }
-        popup.callback = Some(on_result);
+        popup.callback = on_result.take();
         popup.prior_focus = unsafe { GetFocus() };
-        Some((popup.host.clone(), popup.token, json))
+        Ok((popup.host.clone(), json))
     });
-    let Some((host, token, json)) = popup_data else {
-        return false;
+    let (host, json) = match popup_data {
+        Ok(data) => data,
+        Err(guarded) => {
+            let callback = on_result.take().expect("callback kept on refusal");
+            return Err(if guarded {
+                ShowRefused::Guarded(callback)
+            } else {
+                ShowRefused::Unavailable(callback)
+            });
+        }
     };
-    if host.resume().is_err() {
+    let posted = host.resume().is_ok() && {
+        let _ = host.set_visible(true);
+        if let Some(state) = crate::win32::window::popup_state_json(owner) {
+            let _ = host.post_json(&state);
+        }
+        host.post_json(&json).is_ok()
+    };
+    if !posted {
+        let callback = take_callback(owner);
         close_now(owner);
-        return false;
+        forgive(owner);
+        return Err(ShowRefused::Unavailable(
+            callback.unwrap_or_else(|| Box::new(|_, _| {})),
+        ));
     }
-    let _ = host.set_visible(true);
-    if let Some(state) = crate::win32::window::popup_state_json(owner) {
-        let _ = host.post_json(&state);
+    Ok(())
+}
+
+fn take_callback(owner: HWND) -> Option<ResultCallback> {
+    POPUPS.with(|p| {
+        p.borrow_mut()
+            .get_mut(&(owner.0 as isize))
+            .and_then(|popup| popup.callback.take())
+    })
+}
+
+fn forgive(owner: HWND) {
+    POPUPS.with(|p| {
+        if let Some(popup) = p.borrow_mut().get_mut(&(owner.0 as isize)) {
+            popup.dismiss.forgive();
+        }
+    });
+}
+
+/// Whether an HTML menu is open (or waiting for its size) on this window.
+pub(crate) fn is_active(owner: HWND) -> bool {
+    POPUPS.with(|p| {
+        p.borrow()
+            .get(&(owner.0 as isize))
+            .is_some_and(|popup| popup.dismiss.is_active())
+    })
+}
+
+/// Closes the open menu now and runs its callback as a dismissal. For a new menu that replaces it;
+/// runs on the UI thread outside WebView2's callbacks, like every menu entry point.
+pub(crate) fn cancel(owner: HWND, app: &AppRef) {
+    let token = POPUPS.with(|p| {
+        p.borrow()
+            .get(&(owner.0 as isize))
+            .filter(|popup| popup.dismiss.is_active())
+            .map(|popup| popup.token)
+    });
+    if let Some(token) = token {
+        run_result(owner, token, None, app);
     }
-    if host.post_json(&json).is_err() {
-        close_now(owner);
-        return false;
+}
+
+/// Dismisses the open menu when the active tab or workspace has changed since it opened.
+pub(crate) fn note_context(owner: HWND, now: MenuContext) {
+    let stale = POPUPS.with(|p| {
+        p.borrow()
+            .get(&(owner.0 as isize))
+            .is_some_and(|popup| popup.dismiss.is_active() && context_changed(popup.context, now))
+    });
+    if stale {
+        close(owner);
     }
-    let _ = token;
-    true
 }
 
 pub(crate) fn close(owner: HWND) {
@@ -355,6 +459,7 @@ fn close_now(owner: HWND) {
 pub(crate) fn shutdown(owner: HWND) {
     close_now(owner);
     let key = owner.0 as isize;
+    PAGE_READY.with(|ready| ready.borrow_mut().remove(&key));
     if let Some(popup) = POPUPS.with(|p| p.borrow_mut().remove(&key)) {
         popup.host.close();
         unsafe {
@@ -372,9 +477,11 @@ pub(crate) fn shutdown(owner: HWND) {
 }
 
 fn popup_command(owner: HWND, command: Command) {
-    adopt_ready(owner);
     match command {
-        Command::Ready => {}
+        Command::Ready => {
+            adopt_ready(owner);
+            PAGE_READY.with(|ready| ready.borrow_mut().insert(owner.0 as isize));
+        }
         command @ (Command::PopupSize { .. }
         | Command::PopupPick { .. }
         | Command::PopupDismiss { .. }) => crate::win32::window::html_popup_command(owner, command),
@@ -448,6 +555,9 @@ pub(crate) fn run_result(owner: HWND, token: u32, id: Option<u32>, app: &AppRef)
         return;
     };
     close_now(owner);
+    if row.is_some() {
+        forgive(owner);
+    }
     callback(app, row);
 }
 
@@ -524,6 +634,21 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
         out.string("t", "menu");
         out.uint("tok", u64::from(tok));
         out.string("kind", kind);
+        if let Some(header) = &menu.header {
+            out.object("header", |out| {
+                out.string("name", cap16(&header.profile, MAX_LABEL));
+                out.string("caption", cap16(&header.caption, MAX_LABEL));
+                out.string("avatar", cap16(&header.avatar, 4));
+                let accent = header.accent;
+                out.string(
+                    "accent",
+                    &format!("#{:02x}{:02x}{:02x}", accent.r, accent.g, accent.b),
+                );
+            });
+        }
+        if !menu.footer.is_empty() {
+            out.string("footer", cap16(&menu.footer, MAX_FOOTER));
+        }
         out.array("entries", |rows| write_entries(rows, &menu.entries));
     }))
 }
@@ -544,17 +669,12 @@ fn validate_entries(
         }
         match entry {
             Entry::Separator => {}
-            Entry::SectionHeader(label) => {
-                if label.encode_utf16().count() > MAX_LABEL {
-                    return false;
-                }
-            }
+            Entry::SectionHeader(_) => {}
             Entry::Item(item) => {
                 let Ok(id) = u32::try_from(item.id) else {
                     return false;
                 };
                 if !seen.insert(id)
-                    || item.label.encode_utf16().count() > MAX_LABEL
                     || item
                         .shortcut
                         .is_some_and(|s| s.encode_utf16().count() > MAX_SHORTCUT)
@@ -576,14 +696,29 @@ fn validate_entries(
     }
     true
 }
+/// `text` cut to at most `max` UTF-16 units (the page's length unit) at a character boundary, so
+/// long tab titles and names still fit the payload caps instead of refusing the whole menu.
+fn cap16(text: &str, max: usize) -> &str {
+    let mut units = 0;
+    for (at, ch) in text.char_indices() {
+        units += ch.len_utf16();
+        if units > max {
+            return &text[..at];
+        }
+    }
+    text
+}
+
 fn write_entries(rows: &mut crate::chrome_host::json::Array<'_>, entries: &[Entry]) {
     for entry in entries {
         match entry {
             Entry::Separator => rows.object(|out| out.bool("separator", true)),
-            Entry::SectionHeader(label) => rows.object(|out| out.string("section", label)),
+            Entry::SectionHeader(label) => {
+                rows.object(|out| out.string("section", cap16(label, MAX_LABEL)))
+            }
             Entry::Item(item) => rows.object(|out| {
                 out.uint("id", item.id as u64);
-                out.string("label", &item.label);
+                out.string("label", cap16(&item.label, MAX_LABEL));
                 out.bool("enabled", item.enabled);
                 out.bool("checked", item.checked);
                 if let Some(shortcut) = item.shortcut {
@@ -632,8 +767,9 @@ fn popup_bounds(
     placement: Placement,
 ) -> RECT {
     let dpi = dpi.max(1);
-    let width = ((width_css * dpi as i32 + 48) / 96).max(1);
-    let height = ((height_css * dpi as i32 + 48) / 96).max(1);
+    // A menu taller or wider than the work area is capped to it; the page scrolls inside.
+    let width = ((width_css * dpi as i32 + 48) / 96).clamp(1, (work.right - work.left).max(1));
+    let height = ((height_css * dpi as i32 + 48) / 96).clamp(1, (work.bottom - work.top).max(1));
     let origin = match placement {
         Placement::AboveLeft => menu::place(anchor, width, height, work),
         Placement::BelowLeft => menu::place_below(anchor, width, height, work),
@@ -764,6 +900,93 @@ mod tests {
         assert!(!popup_pick_allowed(true, 8, 7, 1, &enabled));
         assert!(!popup_pick_allowed(true, 7, 7, 2, &enabled));
         assert!(!popup_token_matches(false, 7, 7));
+    }
+
+    #[test]
+    fn picks_from_a_closed_or_replaced_menu_are_rejected() {
+        let start = Instant::now();
+        let mut state = DismissState::default();
+        let enabled = HashSet::from([4]);
+        assert!(state.open("tab:1", start));
+        assert!(popup_pick_allowed(state.is_active(), 9, 9, 4, &enabled));
+        // A pick queued before the menu closed arrives after it: rejected.
+        state.close(start);
+        assert!(!popup_pick_allowed(state.is_active(), 9, 9, 4, &enabled));
+        // The next menu has a new token; the old menu's token is stale.
+        assert!(state.open("tab:2", start));
+        assert!(!popup_token_matches(state.is_active(), 10, 9));
+        // Submenu parents and disabled rows are never in the enabled set.
+        let mut ids = HashSet::new();
+        let menu = Menu {
+            header: None,
+            entries: vec![
+                Entry::Item(crate::win32::menu::Item::new(1, "Parent", Icon::None).submenu_with(
+                    vec![Entry::Item(crate::win32::menu::Item::new(2, "Child", Icon::None))],
+                )),
+                Entry::Item(crate::win32::menu::Item::new(3, "Off", Icon::None).disabled()),
+            ],
+            footer: String::new(),
+        };
+        assert!(menu_json(1, "x", &menu, &mut ids).is_some());
+        assert_eq!(ids, HashSet::from([2]));
+    }
+
+    #[test]
+    fn duplicate_ids_refuse_the_html_menu() {
+        let menu = Menu {
+            header: None,
+            entries: vec![Entry::Item(
+                crate::win32::menu::Item::new(5, "Session", Icon::None)
+                    .submenu_with(vec![Entry::Item(crate::win32::menu::Item::new(5, "Restore", Icon::None))]),
+            )],
+            footer: String::new(),
+        };
+        assert!(menu_json(1, "sessions", &menu, &mut HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn a_pick_lifts_the_reopen_guard_but_a_dismissal_keeps_it() {
+        let start = Instant::now();
+        let mut state = DismissState::default();
+        assert!(state.open("site-info", start));
+        state.close(start);
+        state.forgive();
+        assert!(state.can_open("site-info", start + Duration::from_millis(1)));
+        assert!(state.open("site-info", start));
+        state.close(start);
+        assert!(!state.can_open("site-info", start + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn tab_or_workspace_switch_dismisses() {
+        assert!(!context_changed(None, (1, 1)));
+        assert!(!context_changed(Some((1, 1)), (1, 1)));
+        assert!(context_changed(Some((1, 1)), (2, 1)));
+        assert!(context_changed(Some((1, 1)), (1, 2)));
+    }
+
+    #[test]
+    fn header_footer_and_long_labels_are_written_within_caps() {
+        let long = "é".repeat(200) + "😀";
+        let menu = Menu {
+            header: Some(crate::win32::menu::ProfileHeader {
+                profile: "Work".into(),
+                caption: "Current profile".into(),
+                avatar: "W".into(),
+                accent: crate::theme::Rgba { r: 0x33, g: 0x66, b: 0xff, a: 255 },
+            }),
+            entries: vec![
+                Entry::SectionHeader(long.clone()),
+                Entry::Item(crate::win32::menu::Item::new(1, long.clone(), Icon::None)),
+            ],
+            footer: "Bowser 1.0".into(),
+        };
+        let json = menu_json(2, "main", &menu, &mut HashSet::new()).expect("long labels are cut, not refused");
+        assert!(json.contains("\"header\":{\"name\":\"Work\",\"caption\":\"Current profile\",\"avatar\":\"W\",\"accent\":\"#3366ff\"}"));
+        assert!(json.contains("\"footer\":\"Bowser 1.0\""));
+        assert!(!json.contains('😀'));
+        assert_eq!(cap16(&long, MAX_LABEL).encode_utf16().count(), MAX_LABEL);
+        assert_eq!(cap16("a😀", 2), "a", "a surrogate pair is never split");
     }
 
     #[test]
