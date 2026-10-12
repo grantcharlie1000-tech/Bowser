@@ -18,6 +18,10 @@ use crate::{
         rail::{RailDropIndicator, RailEntry, RailIcon, RailKey, RailView, WorkspaceGlyph},
         tab_card::Marker,
     },
+    chrome_host::{
+        self, host::ChromeHost,
+        protocol::{CaptionAction, Command as ChromeCommand, Security, ViewState, focus_json},
+    },
     favicon::{self, FaviconCache},
     omnibox::{self, Completion, History},
     profile,
@@ -34,11 +38,12 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, ClientToScreen, CreateRectRgn, CreateRoundRectRgn, DEFAULT_QUALITY,
             DeleteObject, EndPaint, FillRect, GetMonitorInfoW, InvalidateRect,
-            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, PAINTSTRUCT, SetWindowRgn,
+            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, PAINTSTRUCT, ScreenToClient,
+            SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
         System::SystemInformation::GetTickCount,
@@ -48,26 +53,30 @@ use windows::{
             Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetCapture, GetDoubleClickTime, GetFocus, GetKeyState, GetLastInputInfo,
-                LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TME_NONCLIENT,
-                TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_MENU, VK_RETURN,
-                VK_SHIFT, VK_UP,
+                GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetFocus, GetKeyState,
+                GetLastInputInfo, LASTINPUTINFO, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE,
+                TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_LBUTTON,
+                VK_MENU, VK_RETURN, VK_SHIFT, VK_UP,
             },
             Shell::{DefSubclassProc, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL,
                 EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE, GWLP_USERDATA, GetCaretBlinkTime,
-                GetClientRect, GetForegroundWindow, GetMessageW, GetWindow, GetWindowLongPtrW,
-                GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-                HMENU, HTCAPTION, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HideCaret, IDC_SIZEWE,
-                IsIconic, IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow,
-                NCCALCSIZE_PARAMS, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU,
-                SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
-                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_SHOW, SWP_NOACTIVATE,
-                SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
-                SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-                SystemParametersInfoW, TranslateMessage, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
+                EnumChildWindows, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW,
+                GetParent, GetSystemMenu, GetWindow, GetWindowLongPtrW, GetWindowRect,
+                GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HTCAPTION,
+                HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, HideCaret, IDC_SIZEWE, IsIconic,
+                IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow, NCCALCSIZE_PARAMS,
+                PostMessageW, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE,
+                SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
+                SM_CXPADDEDBORDER, SM_CYFRAME, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOW,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                SendMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE,
+                WINEVENT_OUTOFCONTEXT,
                 WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
                 WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
@@ -91,6 +100,12 @@ const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
+/// One-shot timer that starts the HTML toolbar after the first paint.
+const WM_HTML_CHROME_START_TIMER: usize = 0xB05A;
+/// Posted when the HTML toolbar's WebView2 process fails. Handled on the UI thread.
+const WM_HTML_CHROME_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7A;
+/// Delay between the first paint and starting the HTML toolbar, so the first tab starts first.
+const HTML_CHROME_START_DELAY_MS: u32 = 1000;
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
 /// `wParam` of `WM_SETTINGCHANGE` when the system message font may have changed.
@@ -259,6 +274,15 @@ struct WindowChrome {
     split_dragging: bool,
     split_divider: i32,
     pending_split_bounds: Option<(RECT, RECT)>,
+    /// The HTML toolbar's WebView2 host, once created. Dropped (and closed) on failure.
+    html: Option<ChromeHost>,
+    /// Set once the HTML toolbar has been started, so it is never started twice.
+    html_requested: bool,
+    /// The chrome page has posted `ready`.
+    html_page_ready: bool,
+    /// True only when the host exists and the page is ready. The HTML region then replaces the
+    /// native back, forward, reload, omnibox and main menu controls.
+    html_toolbar_active: bool,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -329,6 +353,10 @@ impl WindowChrome {
             split_dragging: false,
             split_divider: width / 2,
             pending_split_bounds: None,
+            html: None,
+            html_requested: false,
+            html_page_ready: false,
+            html_toolbar_active: false,
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -523,7 +551,34 @@ impl WindowChrome {
             self.sidebar = None;
         }
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
+        self.sync_html_bounds();
         self.surface.resize(w, h, self.dpi)
+    }
+    /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
+    /// the toolbar is too narrow for its region.
+    fn html_region(&self) -> Option<Rect> {
+        if !self.html_toolbar_active {
+            return None;
+        }
+        chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
+    }
+    /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
+    /// the surface to leave the region to the page.
+    fn sync_html_bounds(&mut self) {
+        let region = self.html_region();
+        self.surface.set_html_toolbar(region.is_some());
+        let Some(host) = &self.html else {
+            return;
+        };
+        match (region, chrome_host::toolbar_bounds(&self.layout)) {
+            (Some(_), Some(bounds)) => {
+                let _ = host.set_bounds(bounds);
+                let _ = host.set_visible(true);
+            }
+            _ => {
+                let _ = host.set_visible(false);
+            }
+        }
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -2432,6 +2487,15 @@ unsafe extern "system" fn window_proc(
                 if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_HTML_CHROME_START_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_HTML_CHROME_START_TIMER);
+                start_html_chrome(hwnd);
+                LRESULT(0)
+            }
+            WM_HTML_CHROME_FAILED => {
+                html_failed(hwnd);
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 if let Some(app) = app {
@@ -2610,6 +2674,10 @@ unsafe extern "system" fn window_proc(
                 if with_chrome(hwnd, |s| s.rail_keyboard_focus).unwrap_or(false) {
                     return LRESULT(0);
                 }
+                // The native address input is hidden while the HTML toolbar is active.
+                if with_chrome(hwnd, |s| s.html_toolbar_active).unwrap_or(false) {
+                    return LRESULT(0);
+                }
                 if let Some(app) = app {
                     let _ = SetFocus(Some(app.borrow().edit));
                 }
@@ -2689,7 +2757,11 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
             }).collect::<Vec<_>>();
             let rail = RailView { entries: &entries, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
-            return layout::hit_test_with_rail(&s.layout, Some(&rail), x, y);
+            return layout::hit_test_native(&s.layout, Some(&rail), s.html_region(), x, y);
+        }
+        // The HTML toolbar's region belongs to its own WebView2 child, not to native hit tests.
+        if s.html_region().is_some_and(|region| region.contains(x, y)) {
+            return Hit::None;
         }
         if let Some(sidebar) = s.sidebar
             && let Some(sidebar_hit) = crate::chrome::vertical_paint::hit_test(
@@ -5103,6 +5175,259 @@ fn caption_command(hwnd: HWND, h: Hit) {
 fn toggle_max(hwnd: HWND) {
     caption_command(hwnd, Hit::CaptionMaximize)
 }
+/// Starts the HTML toolbar's WebView2 controller, once per window. The controller uses the
+/// chrome-only folder under the app data root. If it cannot start, the native toolbar stays.
+fn start_html_chrome(hwnd: HWND) {
+    let Some(bounds) = with_chrome(hwnd, |s| {
+        if s.html_requested {
+            return None;
+        }
+        s.html_requested = true;
+        Some(chrome_host::toolbar_bounds(&s.layout).unwrap_or_default())
+    })
+    .flatten() else {
+        return;
+    };
+    let Some(root) = profile::app_data_dir() else {
+        html_failed(hwnd);
+        return;
+    };
+    let raw = hwnd.0 as isize;
+    let on_command: Rc<dyn Fn(ChromeCommand)> =
+        Rc::new(move |command| html_command(HWND(raw as *mut _), command));
+    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
+        // Posted, not handled here: the failure can arrive inside the controller's own callback.
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut _)),
+            WM_HTML_CHROME_FAILED,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+    let created = ChromeHost::begin_create(
+        hwnd,
+        bounds,
+        &root.join("ChromeUI"),
+        on_command,
+        on_failed,
+        move |result| html_created(HWND(raw as *mut _), result),
+    );
+    if created.is_err() {
+        html_failed(hwnd);
+    }
+}
+
+/// The controller was created, or failed. A created host is stored, placed and raised, then the
+/// toolbar activates as soon as the page is ready.
+fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+    let Ok(host) = result else {
+        html_failed(hwnd);
+        return;
+    };
+    let stored = with_chrome(hwnd, move |s| {
+        s.html = Some(host);
+        s.sync_html_bounds();
+    });
+    if stored.is_some() {
+        raise_html_toolbar(hwnd);
+        html_refresh(hwnd);
+    }
+}
+
+/// Activates the HTML toolbar once its host exists and the page has said `ready`, then sends the
+/// page its state. The native controls it replaces stop painting and the native address input is
+/// hidden. Runs again on every `ready`, so a reloaded page gets state too.
+fn html_refresh(hwnd: HWND) {
+    let Some((host, edit, state)) = with_chrome(hwnd, |s| {
+        if s.html.is_some() && s.html_page_ready && !s.html_toolbar_active {
+            s.html_toolbar_active = true;
+            s.sync_html_bounds();
+        }
+        if !s.html_toolbar_active {
+            return None;
+        }
+        let host = s.html.clone()?;
+        // Placeholder state. Theme tokens and live tab state arrive in step I2.
+        let state = ViewState {
+            scale: s.layout.metrics.dpi() as f32 / 96.0,
+            solid: false,
+            dark: false,
+            back: false,
+            forward: false,
+            loading: false,
+            progress: 0,
+            security: Security::None,
+            label: String::new(),
+            theme: Vec::new(),
+        };
+        Some((host, s.edit, state.to_json()))
+    })
+    .flatten() else {
+        return;
+    };
+    let _ = host.post_json(&state);
+    unsafe {
+        if !edit.is_invalid() {
+            if GetFocus() == edit {
+                let _ = SetFocus(Some(hwnd));
+            }
+            let _ = ShowWindow(edit, SW_HIDE);
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Falls back to the native toolbar: the HTML region is released, the native address input comes
+/// back and the host is closed. Safe to call more than once.
+fn html_failed(hwnd: HWND) {
+    let Some((host, edit)) = with_chrome(hwnd, |s| {
+        s.html_toolbar_active = false;
+        s.html_page_ready = false;
+        s.sync_html_bounds();
+        (s.html.take(), s.edit)
+    }) else {
+        return;
+    };
+    // Closed outside the borrow: closing a controller can pump messages.
+    if let Some(host) = host {
+        host.close();
+    }
+    unsafe {
+        if !edit.is_invalid() {
+            let _ = ShowWindow(edit, SW_SHOW);
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Handles one validated message from the HTML toolbar. Runs on the UI thread, holding no borrow.
+fn html_command(hwnd: HWND, command: ChromeCommand) {
+    match command {
+        ChromeCommand::Ready => {
+            let _ = with_chrome(hwnd, |s| s.html_page_ready = true);
+            html_refresh(hwnd);
+        }
+        ChromeCommand::BeginDrag => begin_html_drag(hwnd),
+        ChromeCommand::Caption(CaptionAction::ToggleMaximize) => toggle_max(hwnd),
+        ChromeCommand::Caption(CaptionAction::SystemMenu) => html_system_menu(hwnd),
+        // step I2: navigation, omnibox editing, menus.
+        _ => {}
+    }
+}
+
+/// Starts a native window move for a press on an empty toolbar area. Only a press still held
+/// counts, so a stale message cannot start a drag.
+fn begin_html_drag(hwnd: HWND) {
+    unsafe {
+        if (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) == 0 {
+            return;
+        }
+        let mut point = POINT::default();
+        if GetCursorPos(&mut point).is_err() {
+            return;
+        }
+        let _ = ReleaseCapture();
+        let lparam = ((point.y as u16 as u32) << 16) | (point.x as u16 as u32);
+        let _ = SendMessageW(
+            hwnd,
+            WM_NCLBUTTONDOWN,
+            Some(WPARAM(HTCAPTION as usize)),
+            Some(LPARAM(lparam as isize)),
+        );
+    }
+}
+
+/// Shows the window's system menu at the cursor and sends the chosen command as `WM_SYSCOMMAND`.
+fn html_system_menu(hwnd: HWND) {
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        let mut point = POINT::default();
+        if menu.is_invalid() || GetCursorPos(&mut point).is_err() {
+            return;
+        }
+        let _ = SetForegroundWindow(hwnd);
+        let chosen = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            Some(0),
+            hwnd,
+            None,
+        );
+        if chosen.0 != 0 {
+            let _ = PostMessageW(
+                Some(hwnd),
+                WM_SYSCOMMAND,
+                WPARAM(chosen.0 as usize),
+                LPARAM(0),
+            );
+        }
+    }
+}
+
+/// Raises the HTML toolbar's WebView2 window to the top of the z-order. It is the child of `hwnd`
+/// whose client rectangle is the toolbar region. Tab views never overlap that region.
+fn raise_html_toolbar(hwnd: HWND) {
+    struct Search {
+        parent: HWND,
+        region: RECT,
+    }
+    unsafe extern "system" fn visit(child: HWND, lparam: LPARAM) -> BOOL {
+        let search = unsafe { &*(lparam.0 as *const Search) };
+        let direct = unsafe { GetParent(child) }.is_ok_and(|parent| parent == search.parent);
+        if !direct {
+            return BOOL(1);
+        }
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(child, &mut rect) }.is_err() {
+            return BOOL(1);
+        }
+        let mut origin = POINT {
+            x: rect.left,
+            y: rect.top,
+        };
+        unsafe {
+            let _ = ScreenToClient(search.parent, &mut origin);
+        }
+        let region = search.region;
+        let same = origin.x == region.left
+            && origin.y == region.top
+            && rect.right - rect.left == region.right - region.left
+            && rect.bottom - rect.top == region.bottom - region.top;
+        if !same {
+            return BOOL(1);
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                child,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        BOOL(0)
+    }
+    let Some(region) = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout)).flatten()
+    else {
+        return;
+    };
+    let mut search = Search {
+        parent: hwnd,
+        region,
+    };
+    unsafe {
+        let _ = EnumChildWindows(
+            Some(hwnd),
+            Some(visit),
+            LPARAM(&mut search as *mut Search as isize),
+        );
+    }
+}
+
 fn position_edit(hwnd: HWND) {
     let Some((edit, r)) = with_chrome(hwnd, |s| {
         let a = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppRef).as_ref() }?;
@@ -5330,6 +5655,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     s.first_paint_logged = true;
                     let _ = app.borrow().log.record("chrome_painted");
                     let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1800, None);
+                    if chrome_host::html_ui_enabled() {
+                        let _ = SetTimer(
+                            Some(hwnd),
+                            WM_HTML_CHROME_START_TIMER,
+                            HTML_CHROME_START_DELAY_MS,
+                            None,
+                        );
+                    }
                 }
                 if *PAINT_LOG_ENABLED.get_or_init(|| std::env::var_os("BOWSER_PAINT_LOG").is_some())
                 {
@@ -5410,6 +5743,16 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str) {
     }
 }
 fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    // While the HTML toolbar is active, its page owns the omnibox and the native input stays hidden.
+    if let Some(host) = with_chrome(hwnd, |s| {
+        if s.html_toolbar_active { s.html.clone() } else { None }
+    })
+    .flatten()
+    {
+        let _ = host.focus();
+        let _ = host.post_json(&focus_json(true));
+        return;
+    }
     let edit = app.borrow().edit;
     let id = App::active_tab_id(app);
     let value =

@@ -1010,6 +1010,18 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
 /// the rest of the rail is `Hit::RailBackground`, which takes priority over everything else in its
 /// area.
 pub fn hit_test_with_rail(layout: &Layout, rail: Option<&RailView<'_>>, x: i32, y: i32) -> Hit {
+    hit_test_native(layout, rail, None, x, y)
+}
+
+/// [`hit_test_with_rail`] where `html_toolbar` is a region drawn by the HTML chrome. Points in it
+/// are not native chrome, so they give `Hit::None` and no native control is ever hovered or shown.
+pub fn hit_test_native(
+    layout: &Layout,
+    rail: Option<&RailView<'_>>,
+    html_toolbar: Option<Rect>,
+    x: i32,
+    y: i32,
+) -> Hit {
     if !layout.client.contains(x, y) {
         return Hit::None;
     }
@@ -1018,6 +1030,9 @@ pub fn hit_test_with_rail(layout: &Layout, rail: Option<&RailView<'_>>, x: i32, 
             rail::geometry(layout.rail, view.entries, view.scroll, layout.metrics.dpi()).hit(x, y)
         });
         return key.map_or(Hit::RailBackground, Hit::Rail);
+    }
+    if html_toolbar.is_some_and(|region| region.contains(x, y)) {
+        return Hit::None;
     }
     // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
     // Below the toolbar that margin is outside the chrome and takes no hit.
@@ -1854,6 +1869,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn html_toolbar_region_gives_no_native_hits() {
+        let l = compute_in_frame(1024, 600, 96, 3, 0, false);
+        let region = Rect::new(
+            l.back_button.left,
+            l.strip.top,
+            l.main_menu_button.right,
+            l.strip.bottom,
+        );
+        let (x, y) = (
+            (l.omnibox.left + l.omnibox.right) / 2,
+            (l.omnibox.top + l.omnibox.bottom) / 2,
+        );
+        assert_eq!(hit_test(&l, x, y), Hit::Omnibox);
+        assert_eq!(
+            hit_test_native(&l, None, Some(region), x, y),
+            Hit::None,
+            "omnibox inside the HTML region"
+        );
+        assert_eq!(
+            hit_test_native(&l, None, Some(region), l.back_button.left + 2, l.back_button.top + 2),
+            Hit::None
+        );
+        // Outside the region the native hit is unchanged.
+        assert_eq!(
+            hit_test_native(&l, None, Some(region), l.new_tab_button.left + 2, l.new_tab_button.top + 2),
+            hit_test(&l, l.new_tab_button.left + 2, l.new_tab_button.top + 2)
+        );
+        assert_eq!(hit_test_native(&l, None, None, x, y), Hit::Omnibox);
     }
 
     #[test]
