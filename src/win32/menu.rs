@@ -187,6 +187,12 @@ pub(crate) struct Item {
     pub rich_row: Option<RichRow>,
     /// Profile avatar glyph and accent fill, drawn in the normal icon slot.
     pub badge: Option<(String, Rgba)>,
+    /// HTML popup only: name of a family icon (`ui/src/icons.ts`), e.g. `"puzzle"`. The native menu
+    /// keeps drawing `icon`; the HTML menu draws only this, never the legacy `icon` (its Grid,
+    /// Plus, Close and Check glyphs were reused for unrelated actions).
+    pub glyph: Option<&'static str>,
+    /// HTML popup only: the row's favicon as PNG bytes (gated by the popup before it is sent).
+    pub favicon_png: Option<std::rc::Rc<Vec<u8>>>,
 }
 
 /// Optional list presentation for a page or other row that has a title and favicon.
@@ -210,7 +216,21 @@ impl Item {
             description: None,
             rich_row: None,
             badge: None,
+            glyph: None,
+            favicon_png: None,
         }
+    }
+
+    /// Family icon the HTML popup draws for this row.
+    pub fn glyph(mut self, glyph: &'static str) -> Self {
+        self.glyph = Some(glyph);
+        self
+    }
+
+    /// Favicon PNG the HTML popup draws for this row.
+    pub fn favicon_png(mut self, png: Option<std::rc::Rc<Vec<u8>>>) -> Self {
+        self.favicon_png = png;
+        self
     }
 
     pub fn shortcut(mut self, shortcut: &'static str) -> Self {

@@ -151,6 +151,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
             snapshot.security.summary(),
             connection_icon(snapshot.security),
         )
+        .glyph(connection_glyph(snapshot.security))
         .disabled(),
     ));
     entries.push(Entry::Item(
@@ -177,7 +178,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
                     let item = Item::new(
                         PERMISSION + index * CHOICES.len() + choice,
                         CHOICE_LABELS[choice],
-                        if current { Icon::Check } else { Icon::None },
+                        Icon::None,
                     );
                     Entry::Item(item.checked(current))
                 })
@@ -188,6 +189,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
                     format!("{}: {state}", permission.label()),
                     permission_icon(permission),
                 )
+                .glyph(permission_glyph(permission))
                 .submenu_with(choices),
             ));
         }
@@ -204,14 +206,15 @@ fn panel(snapshot: &Snapshot) -> Menu {
         None => "Cookies: not applicable to this page".to_owned(),
     };
     entries.push(Entry::Item(
-        Item::new(INFO, cookie_label, Icon::Cookie).disabled(),
+        Item::new(INFO, cookie_label, Icon::Cookie).glyph("cookie").disabled(),
     ));
     if matches!(snapshot.cookies, Some(Ok(count)) if count > 0) {
         entries.push(Entry::Item(Item::new(
             CLEAR_COOKIES,
             "Clear cookies for this site",
             Icon::Close,
-        )));
+        )
+        .glyph("trash")));
     }
     let blocker_label = match snapshot.blocking {
         Some(true) => format!("Blocker: on ({} blocked requests here)", snapshot.blocked),
@@ -220,6 +223,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
     };
     entries.push(Entry::Item(
         Item::new(BLOCKER, blocker_label, Icon::Shield)
+            .glyph("shield")
             .checked(snapshot.blocking == Some(true))
             .disabled_if(snapshot.blocking.is_none()),
     ));
@@ -228,7 +232,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
         None => "Tracking prevention: unavailable".to_owned(),
     };
     entries.push(Entry::Item(
-        Item::new(INFO, tracking_label, Icon::Shield).disabled(),
+        Item::new(INFO, tracking_label, Icon::Shield).glyph("eye").disabled(),
     ));
 
     entries.push(Entry::Separator);
@@ -239,6 +243,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
             "Reset permissions for this site",
             Icon::Reset,
         )
+        .glyph("reset")
         .disabled_if(snapshot.origin.is_none() || !any_stored),
     ));
 
@@ -306,6 +311,26 @@ fn connection_icon(state: SiteSecurity) -> Icon {
         SiteSecurity::NotSecure => Icon::Unlock,
         SiteSecurity::CertificateProblem => Icon::Warning,
         SiteSecurity::Internal | SiteSecurity::Unknown | SiteSecurity::NoSite => Icon::Info,
+    }
+}
+
+/// Family icon (`ui/src/icons.ts`) the HTML popup draws for the connection row.
+fn connection_glyph(state: SiteSecurity) -> &'static str {
+    match state {
+        SiteSecurity::Secure => "lock",
+        SiteSecurity::NotSecure => "unlock",
+        SiteSecurity::CertificateProblem => "warning",
+        SiteSecurity::Internal | SiteSecurity::Unknown | SiteSecurity::NoSite => "info",
+    }
+}
+
+/// Family icon the HTML popup draws for a permission row.
+fn permission_glyph(permission: Permission) -> &'static str {
+    match permission {
+        Permission::Microphone => "mic",
+        Permission::Camera => "camera",
+        Permission::Geolocation => "location",
+        Permission::Notifications => "bell",
     }
 }
 

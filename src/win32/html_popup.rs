@@ -46,6 +46,9 @@ const MAX_TOTAL_ITEMS: usize = 256;
 const MAX_LABEL: usize = 128;
 const MAX_SHORTCUT: usize = 48;
 const MAX_FOOTER: usize = 256;
+/// Distinct favicons and their total data: URI size in one menu.
+const MAX_FAVICONS: usize = 48;
+const MAX_FAVICON_TOTAL: usize = 512 * 1024;
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const FALLBACK_DPI: u32 = 96;
 
@@ -582,7 +585,8 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
             popup.bounds = bounds;
         }
     });
-    let radius = ((12 * dpi + 48) / 96).max(1) as i32;
+    // Matches the page's 8px overlay radius (--bw-r-overlay).
+    let radius = ((8 * dpi + 48) / 96).max(1) as i32;
     unsafe {
         let region = CreateRoundRectRgn(
             0,
@@ -626,6 +630,7 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
     {
         return None;
     }
+    let mut favs = FavTable::default();
     Some(Json::object(|out| {
         out.int("v", 1);
         out.string("t", "menu");
@@ -646,8 +651,39 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
         if !menu.footer.is_empty() {
             out.string("footer", cap16(&menu.footer, MAX_FOOTER));
         }
-        out.array("entries", |rows| write_entries(rows, &menu.entries));
+        out.array("entries", |rows| write_entries(rows, &menu.entries, &mut favs));
+        if !favs.uris.is_empty() {
+            out.array("favs", |rows| {
+                for uri in &favs.uris {
+                    rows.string(uri);
+                }
+            });
+        }
     }))
+}
+
+/// Favicons of one menu, each distinct PNG once: rows refer to an entry by index (`fav`), so a
+/// menu of twenty tabs from one site sends one image. Bounded, and every image passes the same gate
+/// as the tab strip's favicons (a small PNG with sane dimensions), so a refused one is just omitted.
+#[derive(Default)]
+struct FavTable {
+    uris: Vec<String>,
+    bytes: usize,
+}
+
+impl FavTable {
+    fn index_of(&mut self, png: &[u8]) -> Option<usize> {
+        let uri = chrome_host::protocol::favicon_data_uri(png)?;
+        if let Some(found) = self.uris.iter().position(|known| *known == uri) {
+            return Some(found);
+        }
+        if self.uris.len() >= MAX_FAVICONS || self.bytes + uri.len() > MAX_FAVICON_TOTAL {
+            return None;
+        }
+        self.bytes += uri.len();
+        self.uris.push(uri);
+        Some(self.uris.len() - 1)
+    }
 }
 fn validate_entries(
     entries: &[Entry],
@@ -706,7 +742,11 @@ fn cap16(text: &str, max: usize) -> &str {
     text
 }
 
-fn write_entries(rows: &mut crate::chrome_host::json::Array<'_>, entries: &[Entry]) {
+fn write_entries(
+    rows: &mut crate::chrome_host::json::Array<'_>,
+    entries: &[Entry],
+    favs: &mut FavTable,
+) {
     for entry in entries {
         match entry {
             Entry::Separator => rows.object(|out| out.bool("separator", true)),
@@ -721,11 +761,27 @@ fn write_entries(rows: &mut crate::chrome_host::json::Array<'_>, entries: &[Entr
                 if let Some(shortcut) = item.shortcut {
                     out.string("shortcut", shortcut);
                 }
-                if let Some(icon) = icon_token(item.icon) {
+                if let Some(icon) = item.glyph.or_else(|| icon_token(item.icon)) {
                     out.string("icon", icon);
                 }
+                if let Some(index) = item
+                    .favicon_png
+                    .as_deref()
+                    .and_then(|png| favs.index_of(png))
+                {
+                    out.uint("fav", index as u64);
+                }
+                if let Some((avatar, accent)) = &item.badge {
+                    out.object("badge", |out| {
+                        out.string("avatar", cap16(avatar, 4));
+                        out.string(
+                            "accent",
+                            &format!("#{:02x}{:02x}{:02x}", accent.r, accent.g, accent.b),
+                        );
+                    });
+                }
                 if let Some(children) = &item.submenu_entries {
-                    out.array("submenu", |rows| write_entries(rows, children));
+                    out.array("submenu", |rows| write_entries(rows, children, favs));
                 }
             }),
         }
@@ -733,15 +789,15 @@ fn write_entries(rows: &mut crate::chrome_host::json::Array<'_>, entries: &[Entr
 }
 fn icon_token(icon: Icon) -> Option<&'static str> {
     Some(match icon {
-        Icon::None => return None,
+        // Grid and Check were reused for unrelated commands (D3); the HTML menu draws only an
+        // explicit `Item::glyph` for them, and a row with neither has no icon.
+        Icon::None | Icon::Grid | Icon::Check => return None,
         Icon::Plus => "plus",
         Icon::Person => "person",
-        Icon::Grid => "grid",
         Icon::Key => "key",
         Icon::Shield => "shield",
         Icon::Gear => "gear",
         Icon::Close => "close",
-        Icon::Check => "check",
         Icon::Lock => "lock",
         Icon::Unlock => "unlock",
         Icon::Warning => "warning",

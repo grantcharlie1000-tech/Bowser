@@ -2773,9 +2773,9 @@ unsafe extern "system" fn window_proc(
                         menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
                             header: None,
                             entries: vec![
-                                Entry::Item(Item::new(1, "Import", Icon::Grid)),
-                                Entry::Item(Item::new(2, "Not now", Icon::Close)),
-                                Entry::Item(Item::new(3, "Don't ask again", Icon::Close)),
+                                Entry::Item(Item::new(1, "Import", Icon::Grid).glyph("download")),
+                                Entry::Item(Item::new(2, "Not now", Icon::Close).glyph("clock")),
+                                Entry::Item(Item::new(3, "Don't ask again", Icon::Close).glyph("close")),
                             ],
                             footer: "Import bookmarks and supported search settings from another browser. You can also import later from the main menu.".into(),
                         }, "import-offer", move |_, selected| {
@@ -3520,6 +3520,34 @@ fn hide_rail_tooltip(hwnd: HWND) {
 }
 
 // --- popup host (lane M): async rail context menus ---
+/// Family icon names of the workspace glyphs, in the order of the "Change icon" choices.
+const WORKSPACE_GLYPH_NAMES: [&str; 12] = [
+    "workspace-briefcase", "workspace-home", "workspace-code", "workspace-book", "workspace-cart",
+    "workspace-game", "workspace-music", "workspace-heart", "workspace-star", "workspace-bolt",
+    "workspace-globe", "workspace-leaf",
+];
+/// Swatch colours of the "Change colour" choices (the rail's accent colours, same order).
+const WORKSPACE_SWATCHES: [u32; 8] = [0x4385D1, 0x8B66D9, 0x32A89B, 0xD49A32, 0xD66D91, 0xD55757, 0x56A36B, 0x778394];
+
+/// Family icon for a workspace's own icon, shown on its row in the workspaces menu.
+fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str {
+    use crate::workspaces::WorkspaceIcon as W;
+    match icon {
+        W::Briefcase => "workspace-briefcase",
+        W::Home => "workspace-home",
+        W::Code => "workspace-code",
+        W::Book => "workspace-book",
+        W::Cart => "workspace-cart",
+        W::Game => "workspace-game",
+        W::Music => "workspace-music",
+        W::Heart => "workspace-heart",
+        W::Star => "workspace-star",
+        W::Bolt => "workspace-bolt",
+        W::Globe => "workspace-globe",
+        W::Leaf => "workspace-leaf",
+    }
+}
+
 fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32) {
     let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
     match key {
@@ -3530,12 +3558,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             let Some((_, name, _, _, _, _)) = entries.iter().find(|(entry_id, ..)| *entry_id == id) else { return; };
             let name = name.clone();
             let menu_entries = vec![
-                Entry::Item(Item::new(1, "Rename…", Icon::Person)),
-                Entry::Item(Item::new(2, "Change icon…", Icon::Grid)),
-                Entry::Item(Item::new(3, "Change colour…", Icon::Grid)),
-                Entry::Item(Item::new(4, "Move up", Icon::Grid)),
-                Entry::Item(Item::new(5, "Move down", Icon::Grid)),
-                Entry::Item(Item::new(6, "Delete…", Icon::Close).disabled_if(set.workspace_count() == 1)),
+                Entry::Item(Item::new(1, "Rename…", Icon::Person).glyph("edit")),
+                Entry::Item(Item::new(2, "Change icon…", Icon::Grid).glyph("workspace")),
+                Entry::Item(Item::new(3, "Change colour…", Icon::Grid).glyph("droplet")),
+                Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up")),
+                Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down")),
+                Entry::Item(Item::new(6, "Delete…", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
             ];
             let kind = format!("rail-ws:{raw_id}");
             menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
@@ -3547,7 +3575,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     1 => if let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
-                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid))).collect();
+                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
                         menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
                             if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
@@ -3555,7 +3583,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     }
                     3 => {
                         let choices = ["Blue", "Violet", "Teal", "Amber", "Rose", "Red", "Green", "Slate"];
-                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid))).collect();
+                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid).profile_badge("", crate::theme::Rgba::hex(WORKSPACE_SWATCHES[i], 0xFF)))).collect();
                         let colours = [crate::workspaces::WorkspaceColour::Blue, crate::workspaces::WorkspaceColour::Violet, crate::workspaces::WorkspaceColour::Teal, crate::workspaces::WorkspaceColour::Amber, crate::workspaces::WorkspaceColour::Rose, crate::workspaces::WorkspaceColour::Red, crate::workspaces::WorkspaceColour::Green, crate::workspaces::WorkspaceColour::Slate];
                         menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
                             if let Some(colour) = chosen.and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
@@ -3569,7 +3597,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             });
         }
         RailKey::App(id) => {
-            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid)), Entry::Item(Item::new(2, "Edit…", Icon::Person)), Entry::Item(Item::new(3, "Remove…", Icon::Close))];
+            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
             let kind = format!("rail-app:{id}");
             menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
@@ -3608,7 +3636,14 @@ fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
             let favicon =
                 App::tab_favicon(app, id).and_then(|bytes| crate::favicon::decode(&bytes, 24));
             Entry::Item(
-                Item::new(id.0 as usize + 100, title.clone(), Icon::Grid).rich_row(title, favicon),
+                Item::new(id.0 as usize + 100, title.clone(), Icon::Grid)
+                    .glyph("workspace-globe")
+                    .favicon_png(
+                        App::tab_favicon(app, id)
+                            .filter(|bytes| bytes.len() <= chrome_host::protocol::MAX_FAVICON_BYTES)
+                            .map(std::rc::Rc::new),
+                    )
+                    .rich_row(title, favicon),
             )
         })
         .collect()
@@ -3627,11 +3662,12 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
     let split = App::split_view(app);
     let entries = if let Some(split) = split {
         vec![
-            Entry::Item(Item::new(SWAP, "Swap panes", Icon::Grid)),
-            Entry::Item(Item::new(CLOSE_LEFT, "Close left pane", Icon::Close)),
-            Entry::Item(Item::new(CLOSE_RIGHT, "Close right pane", Icon::Close)),
+            Entry::Item(Item::new(SWAP, "Swap panes", Icon::Grid).glyph("reload")),
+            Entry::Item(Item::new(CLOSE_LEFT, "Close left pane", Icon::Close).glyph("back")),
+            Entry::Item(Item::new(CLOSE_RIGHT, "Close right pane", Icon::Close).glyph("forward")),
             Entry::Item(
                 Item::new(REPLACE, "Replace pane with tab…", Icon::Grid)
+                    .glyph("split")
                     .submenu_with(split_tab_rows(app, Some(split.other_tab()))),
             ),
         ]
@@ -3641,10 +3677,12 @@ fn show_split_menu(hwnd: HWND, app: &AppRef) {
             OPEN_NEW,
             "Open split view with a new tab",
             Icon::Plus,
-        ))];
+        )
+        .glyph("plus"))];
         entries.push(Entry::Separator);
         entries.push(Entry::Item(
             Item::new(OPEN_WITH, "Open split view with…", Icon::Grid)
+                .glyph("split")
                 .submenu_with(split_tab_rows(app, Some(active))),
         ));
         entries
@@ -3783,13 +3821,14 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             .iter()
             .all(|candidate| App::tab_supports_muting(app, *candidate));
     let mut entries = vec![
-        Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus)),
+        Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus).glyph("plus")),
         Entry::Item(
             Item::new(
                 TAB_SPLIT_VIEW_HOOK,
                 "New split view with current tab",
                 Icon::Grid,
             )
+            .glyph("split")
             .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some()),
         ),
         Entry::Separator,
@@ -3797,24 +3836,33 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
-        let mode_icon = |active: bool| if active { Icon::Check } else { Icon::None };
+        let mode_icon = |_: bool| Icon::None;
         entries.push(Entry::Item(
-            Item::new(GROUP, "Add tab to group", Icon::Grid).submenu_with(vec![
-                Entry::Item(Item::new(
-                    GROUP_NEW,
-                    "Always group this site",
-                    mode_icon(mode == tab_groups::GroupMode::Always),
-                )),
-                Entry::Item(Item::new(
-                    GROUP_AUTO,
-                    "Group this site automatically",
-                    mode_icon(mode == tab_groups::GroupMode::Auto),
-                )),
-                Entry::Item(Item::new(
-                    GROUP_NEVER,
-                    "Never group this site",
-                    mode_icon(mode == tab_groups::GroupMode::Never),
-                )),
+            Item::new(GROUP, "Add tab to group", Icon::Grid).glyph("tab-group").submenu_with(vec![
+                Entry::Item(
+                    Item::new(
+                        GROUP_NEW,
+                        "Always group this site",
+                        mode_icon(mode == tab_groups::GroupMode::Always),
+                    )
+                    .checked(mode == tab_groups::GroupMode::Always),
+                ),
+                Entry::Item(
+                    Item::new(
+                        GROUP_AUTO,
+                        "Group this site automatically",
+                        mode_icon(mode == tab_groups::GroupMode::Auto),
+                    )
+                    .checked(mode == tab_groups::GroupMode::Auto),
+                ),
+                Entry::Item(
+                    Item::new(
+                        GROUP_NEVER,
+                        "Never group this site",
+                        mode_icon(mode == tab_groups::GroupMode::Never),
+                    )
+                    .checked(mode == tab_groups::GroupMode::Never),
+                ),
             ]),
         ));
         (has_group, collapsed) = with_chrome(hwnd, |state| {
@@ -3835,28 +3883,32 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 },
                 Icon::None,
             )
+            .glyph(if collapsed { "chevron-down" } else { "chevron-up" })
             .disabled_if(!has_group),
         ));
     }
     entries.push(Entry::Item(
         Item::new(UNGROUP, "Remove from group", Icon::None)
+            .glyph("caption-minimize")
             .disabled_if(!App::tab_is_grouped(app, id)),
     ));
     entries.push(Entry::Item(
         Item::new(UNDO_ORGANISE, "Undo tab organisation", Icon::None)
+            .glyph("reset")
             .disabled_if(!App::can_undo_tab_organisation(app)),
     ));
     entries.push(Entry::Separator);
     entries.extend([
-        Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).disabled_if(url.is_none())),
-        Entry::Item(Item::new(RELOAD, "Reload", Icon::None)),
-        Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).disabled_if(url.is_none())),
+        Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).glyph("link").disabled_if(url.is_none())),
+        Entry::Item(Item::new(RELOAD, "Reload", Icon::None).glyph("reload")),
+        Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).glyph("copy").disabled_if(url.is_none())),
         Entry::Item(
             Item::new(
                 PIN,
                 if pinned { "Unpin tab" } else { "Pin tab" },
                 Icon::None,
             )
+            .glyph("pin")
             .checked(pinned),
         ),
         Entry::Item(
@@ -3865,6 +3917,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 if muted { "Unmute tab" } else { "Mute tab" },
                 Icon::None,
             )
+            .glyph(if muted { "volume" } else { "mute" })
             .checked(muted)
             .disabled_if(!can_mute_tab),
         ),
@@ -3878,11 +3931,12 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 },
                 Icon::None,
             )
+            .glyph("workspace-globe")
             .disabled_if(!can_mute_site),
         ),
-        Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).disabled_if(!can_hibernate)),
+        Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).glyph("clock").disabled_if(!can_hibernate)),
         Entry::Item(
-            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None).disabled_if(url.is_none()),
+            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None).glyph("external").disabled_if(url.is_none()),
         ),
     ]);
     if pip_available {
@@ -3890,19 +3944,21 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             PICTURE_IN_PICTURE,
             "Picture in picture",
             Icon::None,
-        )));
+        )
+        .glyph("pip")));
     }
     entries.push(Entry::Separator);
     entries.extend([
-        Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close)),
+        Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).glyph("close")),
         Entry::Item(
-            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).disabled_if(ids.len() <= 1),
+            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).glyph("trash").disabled_if(ids.len() <= 1),
         ),
         Entry::Item(
-            Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).disabled_if(index == 0),
+            Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).glyph("back").disabled_if(index == 0),
         ),
         Entry::Item(
             Item::new(CLOSE_RIGHT, "Close tabs to the right", Icon::Close)
+                .glyph("forward")
                 .disabled_if(index + 1 == ids.len()),
         ),
     ]);
@@ -4129,6 +4185,7 @@ impl ProfileMenu {
                     Self::label(name).to_string(),
                     Icon::Person,
                 )
+                .glyph("person")
                 .profile_badge(metadata.avatar_glyph(name), metadata.accent_colour())
                 .checked(self.is_current(name)),
             ));
@@ -4138,14 +4195,16 @@ impl ProfileMenu {
             PROFILE_GUEST,
             "Guest window",
             Icon::Person,
-        )));
+        )
+        .glyph("external")));
         entries.push(Entry::Item(Item::new(
             PROFILE_NEW,
             "New profile",
             Icon::Plus,
-        )));
+        )
+        .glyph("plus")));
         entries.push(Entry::Item(
-            Item::new(20, "Choose avatar", Icon::Person).submenu_with(
+            Item::new(20, "Choose avatar", Icon::Person).glyph("person").submenu_with(
                 ["initial", "leaf", "star", "wave", "moon"]
                     .iter()
                     .enumerate()
@@ -4163,7 +4222,7 @@ impl ProfileMenu {
             ),
         ));
         entries.push(Entry::Item(
-            Item::new(21, "Choose accent colour", Icon::Grid).submenu_with(
+            Item::new(21, "Choose accent colour", Icon::Grid).glyph("droplet").submenu_with(
                 ["blue", "violet", "teal", "amber", "rose"]
                     .iter()
                     .enumerate()
@@ -4198,7 +4257,8 @@ impl ProfileMenu {
                     PROFILE_DELETE_BASE + index,
                     Self::label(&self.names[index]).to_string(),
                     Icon::Close,
-                )));
+                )
+                .glyph("trash")));
             }
         }
         let renamable: Vec<usize> = self
@@ -4217,7 +4277,8 @@ impl ProfileMenu {
                     PROFILE_RENAME_BASE + index,
                     Self::label(&self.names[index]).to_string(),
                     Icon::Person,
-                )));
+                )
+                .glyph("edit")));
             }
         }
         entries
@@ -4343,7 +4404,7 @@ fn show_profile_notice(hwnd: HWND, message: &str) {
             header: None,
             entries: vec![
                 Entry::SectionHeader(message.to_owned()),
-                Entry::Item(Item::new(1, "Close", Icon::Close)),
+                Entry::Item(Item::new(1, "Close", Icon::Close).glyph("close")),
             ],
             footer: "Profile action".to_owned(),
         },
@@ -4363,8 +4424,8 @@ fn confirm_profile_delete(hwnd: HWND, name: &str, on_confirm: impl FnOnce() + 's
             header: None,
             entries: vec![
                 Entry::SectionHeader(format!("Delete profile {name}?")),
-                Entry::Item(Item::new(2, "Delete profile", Icon::Close)),
-                Entry::Item(Item::new(3, "Keep profile", Icon::Person)),
+                Entry::Item(Item::new(2, "Delete profile", Icon::Close).glyph("trash")),
+                Entry::Item(Item::new(3, "Keep profile", Icon::Person).glyph("person")),
             ],
             footer: "Cookies, saved passwords, settings and session data will be removed"
                 .to_owned(),
@@ -4411,6 +4472,7 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
         .map(|(index, workspace)| {
             Entry::Item(
                 Item::new(WORKSPACE_SELECT_BASE + index, workspace.name(), Icon::Grid)
+                    .glyph(workspace_glyph_name(workspace.icon()))
                     .checked(workspace.id() == active),
             )
         })
@@ -4420,14 +4482,17 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
         WORKSPACE_CREATE,
         "New workspace…",
         Icon::Plus,
-    )));
+    )
+    .glyph("plus")));
     entries.push(Entry::Item(Item::new(
         WORKSPACE_RENAME,
         "Rename current workspace…",
         Icon::Person,
-    )));
+    )
+    .glyph("edit")));
     entries.push(Entry::Item(
         Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close)
+            .glyph("trash")
             .disabled_if(workspaces.workspace_count() == 1),
     ));
     entries
@@ -4504,8 +4569,8 @@ fn run_workspace_action(
                 header: None,
                 entries: vec![
                     Entry::SectionHeader(format!("Delete {} and close its tabs?", active.name())),
-                    Entry::Item(Item::new(1, "Delete workspace", Icon::Close)),
-                    Entry::Item(Item::new(2, "Keep workspace", Icon::Person)),
+                    Entry::Item(Item::new(1, "Delete workspace", Icon::Close).glyph("trash")),
+                    Entry::Item(Item::new(2, "Keep workspace", Icon::Person).glyph("workspace")),
                 ],
                 footer: "This cannot be undone".to_owned(),
             };
@@ -4546,36 +4611,40 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
-        Entry::Item(Item::new(NEW_TAB, "New tab", Icon::Plus).shortcut("Ctrl+T")),
+        Entry::Item(Item::new(NEW_TAB, "New tab", Icon::Plus).glyph("plus").shortcut("Ctrl+T")),
         Entry::Separator,
     ];
     if let Some(profiles) = &profiles {
         let name = ProfileMenu::label(profiles.current.listed_name()).to_string();
         entries.push(Entry::Item(
             Item::new(PROFILE, format!("Profile: {name}"), Icon::Person)
+                .glyph("person")
                 .submenu_with(profiles.entries()),
         ));
     }
     entries.push(Entry::Item(
-        Item::new(NOTES, "Notes & Tasks…", Icon::Info).shortcut("Ctrl+Shift+N"),
+        Item::new(NOTES, "Notes & Tasks…", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N"),
     ));
     entries.push(Entry::Item(
-        Item::new(PALETTE, "Command palette…", Icon::Grid).shortcut("Ctrl+Shift+K"),
+        Item::new(PALETTE, "Command palette…", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K"),
     ));
     entries.push(Entry::Item(
         Item::new(BOOKMARK, "Bookmark this page", Icon::Plus)
+            .glyph("bookmark")
             .shortcut("Ctrl+D")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
     ));
     entries.push(Entry::Item(
         Item::new(SESSIONS, "Saved sessions…", Icon::Check)
+            .glyph("folder")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
     ));
     entries.push(Entry::Item(
-        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).shortcut("Ctrl+Shift+E"),
+        Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E"),
     ));
     entries.push(Entry::Item(
         Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key)
+            .glyph("key")
             .shortcut("Ctrl+,")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
     ));
@@ -4583,18 +4652,21 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         IMPORT,
         "Import from another browser…",
         Icon::Grid,
-    )));
+    )
+    .glyph("download")));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
         Item::new(TAB_LAYOUT, "Vertical tabs", Icon::Grid)
+            .glyph("sidebar")
             .shortcut("Ctrl+Shift+V")
             .checked(App::tab_layout(app) == crate::settings::TabLayout::Vertical),
     ));
     entries.push(Entry::Item(
-        Item::new(WORKSPACES, "Workspaces", Icon::Grid).submenu_with(workspace_menu_entries(app)),
+        Item::new(WORKSPACES, "Workspaces", Icon::Grid).glyph("workspace").submenu_with(workspace_menu_entries(app)),
     ));
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
+        .glyph("shield")
         .shortcut("Ctrl+Shift+B")
         .described("Block ads & trackers on this site (Ctrl+Shift+B)");
     entries.push(Entry::Item(match App::blocker_active_for_site(app) {
@@ -4602,13 +4674,13 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         None => blocker.disabled(),
     }));
     entries.push(Entry::Separator);
-    entries.push(Entry::Item(Item::new(SETTINGS, "Settings…", Icon::Gear)));
+    entries.push(Entry::Item(Item::new(SETTINGS, "Settings…", Icon::Gear).glyph("gear")));
     entries.push(Entry::Item(
-        Item::new(PRIVACY, "Privacy dashboard", Icon::Shield).shortcut("Ctrl+Shift+Del"),
+        Item::new(PRIVACY, "Privacy dashboard", Icon::Shield).glyph("eye").shortcut("Ctrl+Shift+Del"),
     ));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
-        Item::new(EXIT, "Exit", Icon::Close).shortcut("Alt+F4"),
+        Item::new(EXIT, "Exit", Icon::Close).glyph("close").shortcut("Alt+F4"),
     ));
     let menu = Menu {
         header: Some(ProfileHeader {
@@ -4852,7 +4924,7 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
             Menu {
                 header: None,
                 entries: vec![Entry::Item(
-                    Item::new(0, if added { "Bookmark saved" } else { "Bookmark removed" }, if added { Icon::Check } else { Icon::Close }).disabled(),
+                    Item::new(0, if added { "Bookmark saved" } else { "Bookmark removed" }, if added { Icon::Check } else { Icon::Close }).glyph("bookmark").disabled(),
                 )],
                 footer: "Bookmarks".into(),
             },
@@ -4879,7 +4951,8 @@ fn show_sessions(hwnd: HWND, _app: &AppRef) {
         SAVE,
         "Save current tabs…",
         Icon::Plus,
-    ))];
+    )
+    .glyph("plus"))];
     if !sessions.is_empty() {
         entries.push(Entry::Separator);
     }
@@ -4890,13 +4963,16 @@ fn show_sessions(hwnd: HWND, _app: &AppRef) {
         let restore = RESTORE_BASE + index;
         let delete = DELETE_BASE + index;
         entries.push(Entry::Item(
-            Item::new(PARENT_BASE + index, session.name.clone(), Icon::Check).submenu_with(vec![
-                Entry::Item(Item::new(
-                    restore,
-                    format!("Restore {} tabs", session.urls.len()),
-                    Icon::Check,
-                )),
-                Entry::Item(Item::new(delete, "Delete session", Icon::Close)),
+            Item::new(PARENT_BASE + index, session.name.clone(), Icon::Check).glyph("folder").submenu_with(vec![
+                Entry::Item(
+                    Item::new(
+                        restore,
+                        format!("Restore {} tabs", session.urls.len()),
+                        Icon::Check,
+                    )
+                    .glyph("reset"),
+                ),
+                Entry::Item(Item::new(delete, "Delete session", Icon::Close).glyph("trash")),
             ]),
         ));
     }
@@ -4998,6 +5074,7 @@ fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
     let entries = vec![
         Entry::Item(
             Item::new(SC_RESTORE as usize, "Restore", Icon::None)
+                .glyph("caption-restore")
                 .disabled_if(!maximized && !minimized),
         ),
         Entry::Item(
@@ -5006,10 +5083,10 @@ fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
         Entry::Item(
             Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(maximized || minimized),
         ),
-        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).disabled_if(minimized)),
-        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).disabled_if(maximized)),
+        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).glyph("caption-minimize").disabled_if(minimized)),
+        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).glyph("caption-maximize").disabled_if(maximized)),
         Entry::Separator,
-        Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).shortcut("Alt+F4")),
+        Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).glyph("close").shortcut("Alt+F4")),
     ];
     // --- popup host (lane M) ---
     let menu = Menu {
@@ -5054,7 +5131,7 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 3);
     if records.is_empty() {
         entries.push(Entry::Item(
-            Item::new(0, "No extensions installed", Icon::None).disabled(),
+            Item::new(0, "No extensions installed", Icon::None).glyph("puzzle").disabled(),
         ));
     }
     for (index, record) in records.iter().enumerate() {
@@ -5072,22 +5149,20 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
             label.push_str(&format!(" (failed: {reason})"));
         }
         entries.push(Entry::Item(
-            Item::new(TOGGLE_BASE + index, label, Icon::Grid).checked(record.enabled),
+            Item::new(TOGGLE_BASE + index, label, Icon::Grid).glyph("puzzle").checked(record.enabled),
         ));
     }
     let remove_entries: Vec<Entry> = records
         .iter()
         .enumerate()
         .map(|(index, record)| {
-            Entry::Item(Item::new(
-                REMOVE_BASE + index,
-                record.name.clone(),
-                Icon::Close,
-            ))
+            Entry::Item(
+                Item::new(REMOVE_BASE + index, record.name.clone(), Icon::Close).glyph("puzzle"),
+            )
         })
         .collect();
     entries.push(Entry::Separator);
-    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close);
+    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
     entries.push(Entry::Item(if records.is_empty() {
         remove.disabled()
     } else {
@@ -5098,7 +5173,8 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
         INSTALL,
         "Install unpacked extension…",
         Icon::Plus,
-    )));
+    )
+    .glyph("folder")));
 
     // --- popup host (lane M) ---
     let point = screen_point(hwnd, main_menu_anchor(hwnd));
@@ -5278,6 +5354,17 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
                 } else {
                     Icon::None
                 },
+            )
+            .glyph("workspace-globe")
+            .favicon_png(
+                with_chrome(hwnd, |state| {
+                    state
+                        .html_favicons
+                        .get(&id)
+                        .and_then(|favicon| favicon.png.clone())
+                })
+                .flatten()
+                .map(std::rc::Rc::new),
             )
             .rich_row(label, favicon)
             .checked(id == active),
@@ -6073,17 +6160,17 @@ fn open_debug_html_menu(hwnd: HWND) {
     let mut anchor = POINT::default();
     if unsafe { GetCursorPos(&mut anchor) }.is_err() { return; }
     let submenu = vec![
-        Entry::Item(Item::new(3, "Nested option", Icon::Info)),
-        Entry::Item(Item::new(4, "Another option", Icon::Plus)),
+        Entry::Item(Item::new(3, "Nested option", Icon::Info).glyph("info")),
+        Entry::Item(Item::new(4, "Another option", Icon::Plus).glyph("plus")),
     ];
     let sample = Menu {
         header: None,
         entries: vec![
-            Entry::Item(Item::new(1, "Checked option", Icon::Check).checked(true)),
-            Entry::Item(Item::new(2, "Disabled option", Icon::Close).disabled()),
-            Entry::Item(Item::new(5, "More options", Icon::Plus).submenu_with(submenu)),
+            Entry::Item(Item::new(1, "Checked option", Icon::Check).glyph("bell").checked(true)),
+            Entry::Item(Item::new(2, "Disabled option", Icon::Close).glyph("lock").disabled()),
+            Entry::Item(Item::new(5, "More options", Icon::Plus).glyph("more-horizontal").submenu_with(submenu)),
             Entry::Separator,
-            Entry::Item(Item::new(6, "Close sample", Icon::Close)),
+            Entry::Item(Item::new(6, "Close sample", Icon::Close).glyph("close")),
         ],
         footer: String::new(),
     };
