@@ -13,10 +13,10 @@ use std::{
 
 use url::Url;
 use webview2_com::{
-    CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions,
-    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DownloadStartingEventHandler, FrameCreatedEventHandler, FrameNavigationStartingEventHandler,
-    IFixedEnvironmentOptions4,
+    AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration,
+    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, DownloadStartingEventHandler,
+    FrameCreatedEventHandler, FrameNavigationStartingEventHandler, IFixedEnvironmentOptions4,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, Microsoft::Web::WebView2::Win32::*,
@@ -25,7 +25,10 @@ use windows::{
     Win32::{
         Foundation::{E_FAIL, E_POINTER, HWND, RECT},
         System::Com::IStream,
-        UI::Shell::SHCreateMemStream,
+        UI::{
+            Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT},
+            Shell::SHCreateMemStream,
+        },
     },
     core::{Error, Interface, PCWSTR, PWSTR, Result},
 };
@@ -34,6 +37,100 @@ use super::{
     assets::{self, Asset, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
     protocol::{Command, parse_command},
 };
+use crate::shortcuts::{self, Command as Shortcut};
+
+const VK_BACK: u32 = 0x08;
+const VK_ESCAPE: u32 = 0x1B;
+const VK_END: u32 = 0x23;
+const VK_HOME: u32 = 0x24;
+const VK_LEFT: u32 = 0x25;
+const VK_RIGHT: u32 = 0x27;
+const VK_DELETE: u32 = 0x2E;
+const VK_A: u32 = 0x41;
+const VK_C: u32 = 0x43;
+const VK_V: u32 = 0x56;
+const VK_X: u32 = 0x58;
+const VK_Y: u32 = 0x59;
+const VK_Z: u32 = 0x5A;
+
+/// One key press the chrome page did not consume, read from an `AcceleratorKeyPressed` event.
+/// Modifiers are the physical state at the time of the event (`GetKeyState`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Accel {
+    pub vk: u32,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    /// KeyDown or SystemKeyDown. Key-up events are never claimed.
+    pub key_down: bool,
+    /// SystemKeyDown or SystemKeyUp (Alt is held, or F10).
+    pub is_system: bool,
+    /// `WasKeyDown`: this key press is an auto-repeat.
+    pub repeat: bool,
+}
+
+/// Called for each key the chrome page did not consume. Returns true when the key was claimed; the
+/// event is then marked handled and never reaches the page.
+pub type AccelHandler = Rc<dyn Fn(Accel) -> bool>;
+
+/// Maps a chrome key press to the browser command it runs, if any. Pure.
+///
+/// Uses the same chord table as the tab WebViews (`shortcuts::command_for`), so modifiers match
+/// exactly. Escape never claims a key: it must reach the page (it cancels omnibox edits there).
+/// While the HTML omnibox is being edited, editing chords are left to the field: Ctrl+A/C/V/X/Z,
+/// Ctrl+Y, Ctrl+Shift+Z, and Ctrl or Shift with Left/Right/Home/End/Backspace/Delete. Alt+Left and
+/// Alt+Right stay navigation. Repeats of toggle commands are not claimed.
+pub fn accel_command(accel: Accel, omnibox_editing: bool) -> Option<Shortcut> {
+    if !accel.key_down || accel.vk == VK_ESCAPE {
+        return None;
+    }
+    if omnibox_editing && is_editing_chord(accel) {
+        return None;
+    }
+    let command = shortcuts::command_for(accel.vk, accel.ctrl, accel.shift, accel.alt)?;
+    if accel.repeat && shortcuts::is_toggle(command) {
+        return None;
+    }
+    Some(command)
+}
+
+/// Key chords the text field uses for editing or selection, so the omnibox keeps them.
+fn is_editing_chord(accel: Accel) -> bool {
+    match accel.vk {
+        VK_LEFT | VK_RIGHT | VK_HOME | VK_END | VK_BACK | VK_DELETE => accel.ctrl || accel.shift,
+        VK_A | VK_C | VK_V | VK_X | VK_Z => accel.ctrl,
+        VK_Y => accel.ctrl && !accel.shift,
+        _ => false,
+    }
+}
+
+/// Reads the key and modifier state of an accelerator event. `None` when the event cannot be read.
+fn read_accel(args: &ICoreWebView2AcceleratorKeyPressedEventArgs) -> Option<Accel> {
+    let mut vk = 0u32;
+    let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
+    let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+    unsafe {
+        args.VirtualKey(&mut vk).ok()?;
+        args.KeyEventKind(&mut kind).ok()?;
+        args.PhysicalKeyStatus(&mut status).ok()?;
+    }
+    let held = |key: VIRTUAL_KEY| unsafe { GetKeyState(i32::from(key.0)) < 0 };
+    Some(Accel {
+        vk,
+        ctrl: held(VK_CONTROL),
+        shift: held(VK_SHIFT),
+        alt: held(VK_MENU),
+        key_down: matches!(
+            kind,
+            COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN | COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN
+        ),
+        is_system: matches!(
+            kind,
+            COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN | COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP
+        ),
+        repeat: status.WasKeyDown.as_bool(),
+    })
+}
 
 const TRANSPARENT: COREWEBVIEW2_COLOR = COREWEBVIEW2_COLOR {
     A: 0,
@@ -145,6 +242,7 @@ struct Setup {
     view: View,
     on_command: Rc<dyn Fn(Command)>,
     on_failed: Rc<dyn Fn()>,
+    on_accelerator: Option<AccelHandler>,
     ready: ReadySlot<ChromeHost>,
 }
 
@@ -171,7 +269,8 @@ pub struct ChromeHost {
 impl ChromeHost {
     /// Starts creating a controller for `view` in the shared `env`, as a child of `parent`. `on_ready`
     /// runs once, with the host or the reason creation failed. The controller stays hidden until the
-    /// page posts `ready`. Returns an error only when the request could not be started; then
+    /// page posts `ready`. `on_accelerator`, when given, sees each key the page did not consume (see
+    /// [`AccelHandler`]). Returns an error only when the request could not be started; then
     /// `on_ready` never runs.
     pub fn create(
         env: &ChromeEnv,
@@ -180,6 +279,7 @@ impl ChromeHost {
         view: View,
         on_command: Rc<dyn Fn(Command)>,
         on_failed: Rc<dyn Fn()>,
+        on_accelerator: Option<AccelHandler>,
         on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
     ) -> Result<()> {
         let setup = Setup {
@@ -189,6 +289,7 @@ impl ChromeHost {
             view,
             on_command,
             on_failed,
+            on_accelerator,
             ready: Rc::new(RefCell::new(Some(Box::new(on_ready)))),
         };
         create_controller(&env.inner, setup)
@@ -562,6 +663,30 @@ fn install_handlers(
             let _ = w.remove_WebMessageReceived(token);
         }));
 
+        // Keys the page does not consume reach the caller, which may claim them as browser
+        // shortcuts. Browser accelerator keys are disabled in settings, so nothing else runs here.
+        if let Some(on_accelerator) = setup.on_accelerator.clone() {
+            let controller = host.state.borrow().controller.clone();
+            controller.add_AcceleratorKeyPressed(
+                &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    if let Some(accel) = read_accel(&args)
+                        && on_accelerator(accel)
+                    {
+                        args.SetHandled(true)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+            let c = controller.clone();
+            removers.push(Box::new(move || {
+                let _ = c.remove_AcceleratorKeyPressed(token);
+            }));
+        }
+
         // Every request is answered here: embedded asset or 404. Nothing reaches the network.
         let env = environment.clone();
         webview.add_WebResourceRequested(
@@ -755,6 +880,147 @@ mod tests {
     fn encoded_traversal_is_not_an_asset() {
         let path = request_path("bowser-ui://app/..%2Fapp.js").expect("app host");
         assert!(assets::lookup(&path).is_none(), "{path:?}");
+    }
+
+    fn key(vk: u32, ctrl: bool, shift: bool, alt: bool) -> Accel {
+        Accel {
+            vk,
+            ctrl,
+            shift,
+            alt,
+            key_down: true,
+            is_system: alt,
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn accelerator_maps_chords_through_the_shared_table() {
+        assert_eq!(
+            accel_command(key(0x54, true, false, false), false),
+            Some(Shortcut::NewTab)
+        );
+        assert_eq!(
+            accel_command(key(0x74, false, false, false), false),
+            Some(Shortcut::Reload)
+        );
+        assert_eq!(
+            accel_command(key(0x52, true, false, false), false),
+            Some(Shortcut::Reload)
+        );
+        assert_eq!(
+            accel_command(key(0x74, true, false, false), false),
+            Some(Shortcut::HardReload)
+        );
+        assert_eq!(
+            accel_command(key(0x25, false, false, true), false),
+            Some(Shortcut::Back)
+        );
+        assert_eq!(
+            accel_command(key(0x44, true, false, false), false),
+            Some(Shortcut::AddBookmark)
+        );
+        assert_eq!(
+            accel_command(key(0x4B, true, true, false), false),
+            Some(Shortcut::ShowCommandPalette)
+        );
+        assert_eq!(
+            accel_command(key(0x09, true, false, false), false),
+            Some(Shortcut::NextTab)
+        );
+        assert_eq!(
+            accel_command(key(0x39, true, false, false), false),
+            Some(Shortcut::SelectLastTab)
+        );
+    }
+
+    #[test]
+    fn accelerator_modifiers_must_match_exactly() {
+        // Ctrl+Alt (AltGr) and extra Shift never run a command.
+        assert_eq!(accel_command(key(0x54, true, false, true), false), None);
+        assert_eq!(accel_command(key(0x54, true, true, false), false), None);
+        assert_eq!(accel_command(key(0x74, false, true, false), false), None);
+        // A bare letter is never a shortcut.
+        assert_eq!(accel_command(key(0x54, false, false, false), false), None);
+    }
+
+    #[test]
+    fn accelerator_ignores_key_up_and_escape() {
+        let mut up = key(0x54, true, false, false);
+        up.key_down = false;
+        assert_eq!(accel_command(up, false), None);
+        assert_eq!(accel_command(key(0x1B, false, false, false), false), None);
+        assert_eq!(accel_command(key(0x1B, false, false, false), true), None);
+    }
+
+    #[test]
+    fn accelerator_repeat_does_not_flip_toggles() {
+        let mut toggle = key(0x42, true, true, false); // Ctrl+Shift+B, blocker toggle.
+        assert_eq!(accel_command(toggle, false), Some(Shortcut::ToggleBlocker));
+        toggle.repeat = true;
+        assert_eq!(accel_command(toggle, false), None);
+        // Non-toggles still repeat, as in the tab WebViews.
+        let mut next = key(0x09, true, false, false);
+        next.repeat = true;
+        assert_eq!(accel_command(next, false), Some(Shortcut::NextTab));
+    }
+
+    #[test]
+    fn omnibox_editing_keeps_editing_chords() {
+        for accel in [
+            key(0x41, true, false, false), // Ctrl+A
+            key(0x43, true, false, false), // Ctrl+C
+            key(0x56, true, false, false), // Ctrl+V
+            key(0x58, true, false, false), // Ctrl+X
+            key(0x5A, true, false, false), // Ctrl+Z
+            key(0x59, true, false, false), // Ctrl+Y
+            key(0x5A, true, true, false),  // Ctrl+Shift+Z (the field's redo)
+            key(0x25, true, false, false), // Ctrl+Left
+            key(0x27, true, true, false),  // Ctrl+Shift+Right
+            key(0x24, false, true, false), // Shift+Home
+            key(0x23, true, true, false),  // Ctrl+Shift+End
+            key(0x08, true, false, false), // Ctrl+Backspace
+            key(0x2E, true, true, false),  // Ctrl+Shift+Delete
+            key(0x2E, false, true, false), // Shift+Delete
+            key(0x25, false, true, false), // Shift+Left
+        ] {
+            assert_eq!(accel_command(accel, true), None, "{accel:?}");
+        }
+    }
+
+    #[test]
+    fn omnibox_editing_still_runs_other_shortcuts() {
+        // Alt+Left/Right navigate, and the field ignores them.
+        assert_eq!(
+            accel_command(key(0x25, false, false, true), true),
+            Some(Shortcut::Back)
+        );
+        assert_eq!(
+            accel_command(key(0x27, false, false, true), true),
+            Some(Shortcut::Forward)
+        );
+        for (vk, ctrl, shift, alt, expected) in [
+            (0x54, true, false, false, Shortcut::NewTab),
+            (0x57, true, false, false, Shortcut::CloseTab),
+            (0x09, true, false, false, Shortcut::NextTab),
+            (0x09, true, true, false, Shortcut::PrevTab),
+            (0x31, true, false, false, Shortcut::SelectTab(0)),
+            (0x4C, true, false, false, Shortcut::FocusOmnibox),
+            (0x44, false, false, true, Shortcut::FocusOmnibox),
+            (0x75, false, false, false, Shortcut::FocusOmnibox),
+            (0x74, false, false, false, Shortcut::Reload),
+            (0x74, true, false, false, Shortcut::HardReload),
+            (0x44, true, false, false, Shortcut::AddBookmark),
+            (0x4C, true, true, false, Shortcut::FillPassword),
+            (0x4B, true, true, false, Shortcut::ShowCommandPalette),
+            (0x45, true, true, false, Shortcut::ShowExtensionsMenu),
+        ] {
+            assert_eq!(
+                accel_command(key(vk, ctrl, shift, alt), true),
+                Some(expected),
+                "vk {vk:#04X} ctrl={ctrl} shift={shift} alt={alt}"
+            );
+        }
     }
 
     #[test]

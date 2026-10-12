@@ -46,6 +46,18 @@ pub enum Command {
     ToggleTabLayout,
 }
 
+/// Commands that flip a setting. An auto-repeated key press must not flip it again.
+pub fn is_toggle(command: Command) -> bool {
+    matches!(
+        command,
+        Command::ToggleSplit
+            | Command::ToggleBlocker
+            | Command::ToggleNotes
+            | Command::TogglePictureInPicture
+            | Command::ToggleTabLayout
+    )
+}
+
 const VK_TAB: u32 = 0x09;
 const VK_ESCAPE: u32 = 0x1B;
 const VK_PRIOR: u32 = 0x21;

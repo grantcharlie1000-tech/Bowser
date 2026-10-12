@@ -19,7 +19,7 @@ use crate::{
         tab_card::Marker,
     },
     chrome_host::{
-        self, host::{ChromeEnv, ChromeHost, View},
+        self, host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View, accel_command},
         protocol::{
             CaptionAction, Command as ChromeCommand, GroupAction, NavAction, OpenTarget,
             TabAction, ViewState, completion_json, fav_json, focus_json, set_text_json, tabs_json,
@@ -1794,14 +1794,16 @@ unsafe extern "system" fn window_proc(
             WM_SHORTCUT_KEY => {
                 if let Some(app) = app {
                     let m = lparam.0 as u8;
-                    dispatch(
-                        hwnd,
-                        app,
-                        wparam.0 as u32,
-                        m & 1 != 0,
-                        m & 2 != 0,
-                        m & 4 != 0,
-                    );
+                    let key = wparam.0 as u32;
+                    let (ctrl, shift, alt) = (m & 1 != 0, m & 2 != 0, m & 4 != 0);
+                    let handled = dispatch(hwnd, app, key, ctrl, shift, alt);
+                    if handled
+                        && m & (SHORTCUT_FROM_CHROME as u8) != 0
+                        && shortcuts::command_for(key, ctrl, shift, alt)
+                            .is_some_and(changes_active_tab)
+                    {
+                        App::focus_page(app);
+                    }
                 }
                 LRESULT(0)
             }
@@ -5283,6 +5285,8 @@ fn start_html_chrome(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     let on_command: Rc<dyn Fn(ChromeCommand)> =
         Rc::new(move |command| html_command(HWND(raw as *mut _), command));
+    let on_accelerator: AccelHandler =
+        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Toolbar));
     let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
         // Posted, not handled here: the failure can arrive inside the controller's own callback.
         let _ = PostMessageW(
@@ -5302,6 +5306,7 @@ fn start_html_chrome(hwnd: HWND) {
                 View::Toolbar,
                 on_command,
                 on_failed,
+                Some(on_accelerator),
                 move |result| html_created(hwnd, result),
             );
             // The tab strip is a second host on the same environment. Its failure is its own.
@@ -5535,6 +5540,46 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
     html_sync(hwnd);
 }
 
+/// Bit in the `WM_SHORTCUT_KEY` LPARAM set when the chord came from an HTML chrome view. Such a
+/// tab-changing command then also moves focus to the page, not left in the chrome.
+const SHORTCUT_FROM_CHROME: isize = 8;
+
+/// Claims a key an HTML chrome view did not consume, when it is a browser shortcut. While the
+/// HTML omnibox is being edited, its editing chords stay with the field (see `accel_command`).
+/// The command runs later through `WM_SHORTCUT_KEY`, the same path the tab WebViews use.
+fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
+    let editing =
+        view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false);
+    if accel_command(accel, editing).is_none() {
+        return false;
+    }
+    let bits = (accel.ctrl as isize)
+        | ((accel.shift as isize) << 1)
+        | ((accel.alt as isize) << 2)
+        | SHORTCUT_FROM_CHROME;
+    unsafe {
+        let _ = PostMessageW(
+            Some(hwnd),
+            WM_SHORTCUT_KEY,
+            WPARAM(accel.vk as usize),
+            LPARAM(bits),
+        );
+    }
+    true
+}
+
+/// Commands that make another tab the active one.
+fn changes_active_tab(command: Command) -> bool {
+    matches!(
+        command,
+        Command::NextTab
+            | Command::PrevTab
+            | Command::SelectTab(_)
+            | Command::SelectLastTab
+            | Command::CloseTab
+    )
+}
+
 /// Starts the HTML tab strip's WebView2 controller on the chrome environment, once per window. It
 /// is independent of the toolbar: if it cannot start, the native tab row stays.
 fn start_html_tabs(hwnd: HWND) {
@@ -5552,6 +5597,8 @@ fn start_html_tabs(hwnd: HWND) {
     let raw = hwnd.0 as isize;
     let on_command: Rc<dyn Fn(ChromeCommand)> =
         Rc::new(move |command| html_tabs_command(HWND(raw as *mut _), command));
+    let on_accelerator: AccelHandler =
+        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Tabs));
     let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
         // Posted, not handled here: the failure can arrive inside the controller's own callback.
         let _ = PostMessageW(
@@ -5568,6 +5615,7 @@ fn start_html_tabs(hwnd: HWND) {
         View::Tabs,
         on_command,
         on_failed,
+        Some(on_accelerator),
         move |result| html_tabs_created(hwnd, result),
     );
     if created.is_err() {
