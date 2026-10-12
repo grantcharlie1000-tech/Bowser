@@ -5,7 +5,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     panic::{AssertUnwindSafe, PanicHookInfo},
-    path::PathBuf,
     process::ExitCode,
     rc::Rc,
 };
@@ -31,6 +30,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The single authoritative app-data root. Installed before anything touches persistent state;
+    // benchmark launches always have one (never the real %LOCALAPPDATA%\Bowser).
+    if let Some(dir) = &options.data_dir {
+        if let Err(error) = bowser::profile::set_data_root(dir.clone()) {
+            show_error(&format!("Cannot create the data directory: {error}"));
+            return ExitCode::FAILURE;
+        }
+    } else if options.benchmark_log.is_some() {
+        show_error("Benchmark mode has no data directory; refusing to use the real profile.");
+        return ExitCode::FAILURE;
+    }
+    let options_ephemeral = options.data_dir_ephemeral;
     let benchmark = options.benchmark_log.is_some();
     if bowser::updater::startup(benchmark) == bowser::updater::StartupAction::Relaunch
         && bowser::updater::relaunch()
@@ -60,6 +71,11 @@ fn main() -> ExitCode {
     unsafe {
         CoUninitialize();
     }
+    if options_ephemeral {
+        if let Some(dir) = bowser::profile::data_root_override() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
     if let Some(error) = log.failure() {
         show_error(&format!(
             "Bowser could not write its benchmark log: {error}"
@@ -86,10 +102,9 @@ fn install_panic_hook() {
 }
 
 fn append_crash_log(info: &PanicHookInfo<'_>) {
-    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+    let Some(directory) = bowser::profile::app_data_dir() else {
         return;
     };
-    let directory = PathBuf::from(local_app_data).join("Bowser");
     if fs::create_dir_all(&directory).is_err() {
         return;
     }

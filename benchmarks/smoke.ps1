@@ -625,7 +625,7 @@ function Invoke-PerformancePolicySmoke {
                 $psi.FileName = $bowserPath
                 $psi.WorkingDirectory = $repoRoot
                 $psi.UseShellExecute = $false
-                $psi.Arguments = '--benchmark-log "' + $eventLog + '" --benchmark-user-data-dir "' + $profile + '" --benchmark-tracking-prevention ' + $policy
+                $psi.Arguments = '--benchmark-log "' + $eventLog + '" --benchmark-user-data-dir "' + $profile + '" --data-dir "' + $profile + '-appdata" --benchmark-tracking-prevention ' + $policy
                 $hashAtLaunch = (Get-FileHash -LiteralPath $bowserPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($hashAtLaunch -ne $hashBefore) { throw 'Pinned Bowser executable changed before a policy launch.' }
                 $process = [Diagnostics.Process]::Start($psi)
@@ -913,7 +913,7 @@ try {
     $server = [BowserSmoke.LocalHttpServer]::new($requestLog, $protocolScheme, (Join-Path $PSScriptRoot 'fixtures'))
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $bowserPath; $psi.WorkingDirectory = $repoRoot; $psi.UseShellExecute = $false
-    $psi.Arguments = '--benchmark-log "' + $eventLog + '" --benchmark-user-data-dir "' + $smokeUserDataDir + '"'
+    $psi.Arguments = '--benchmark-log "' + $eventLog + '" --benchmark-user-data-dir "' + $smokeUserDataDir + '" --data-dir "' + $smokeUserDataDir + '-appdata"'
     if ($IncludeWebSearch) {
         # Test the missing-config default without reading or changing the user's override.
         $psi.EnvironmentVariables['LOCALAPPDATA'] = Join-Path $temp 'app-data'

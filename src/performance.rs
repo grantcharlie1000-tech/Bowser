@@ -13,6 +13,12 @@ pub struct LaunchOptions {
     pub benchmark_log: Option<PathBuf>,
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
+    /// `--data-dir <path>` / `BOWSER_DATA_DIR`: the app-data root that replaces
+    /// `%LOCALAPPDATA%\Bowser` for every persisted file. Benchmark launches always get one:
+    /// the explicit value, or a throwaway temp directory (`data_dir_ephemeral`).
+    pub data_dir: Option<PathBuf>,
+    /// True when `data_dir` was generated for a benchmark run and may be deleted on exit.
+    pub data_dir_ephemeral: bool,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
     /// `--profile <name>`: a named profile; `None` is the default profile.
@@ -64,6 +70,7 @@ impl LaunchOptions {
     ) -> Result<Self, String> {
         let mut options = Self::default();
         let mut raw_url = None;
+        let mut explicit_data_dir: Option<PathBuf> = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
             if flag == "--new-window" {
@@ -85,6 +92,7 @@ impl LaunchOptions {
                 "--benchmark-log"
                     | "--benchmark-user-data-dir"
                     | "--benchmark-url"
+                    | "--data-dir"
                     | "--benchmark-tracking-prevention"
                     | "--benchmark-memory-pressure"
                     | "--profile"
@@ -113,6 +121,11 @@ impl LaunchOptions {
                         .is_some()
                     {
                         return Err("Duplicate benchmark profile argument".into());
+                    }
+                }
+                "--data-dir" => {
+                    if explicit_data_dir.replace(PathBuf::from(value)).is_some() {
+                        return Err("Duplicate data directory argument".into());
                     }
                 }
                 "--benchmark-tracking-prevention" => {
@@ -215,6 +228,20 @@ impl LaunchOptions {
                 Url::from_file_path(path).map_err(|_| "Cannot encode fixture path".to_owned())?,
             );
         }
+        let env_data_dir = std::env::var_os("BOWSER_DATA_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let benchmark = options.benchmark_log.is_some() || options.benchmark_url.is_some();
+        let real_root = local_app_data.map(|local| local.join("Bowser"));
+        let (data_dir, ephemeral) = resolve_data_dir(
+            explicit_data_dir,
+            env_data_dir,
+            benchmark,
+            real_root.as_deref(),
+            &std::env::temp_dir(),
+        )?;
+        options.data_dir = data_dir;
+        options.data_dir_ephemeral = ephemeral;
         if let Some(profile) = &options.user_data_dir {
             if options.benchmark_tracking_prevention.is_some() {
                 let local_app_data = local_app_data.ok_or_else(|| {
@@ -235,6 +262,60 @@ impl LaunchOptions {
         }
         Ok(options)
     }
+}
+
+/// Decides the app-data root override. The explicit `--data-dir` wins over `BOWSER_DATA_DIR`.
+/// A benchmark launch never uses the real root: with no explicit directory it gets a fresh
+/// throwaway one under `temp_base`, and an explicit one that is (or is inside) the real root is
+/// refused. Returns the directory and whether it is ephemeral. `None` means a normal launch.
+pub fn resolve_data_dir(
+    explicit: Option<PathBuf>,
+    env: Option<PathBuf>,
+    benchmark: bool,
+    real_root: Option<&Path>,
+    temp_base: &Path,
+) -> Result<(Option<PathBuf>, bool), String> {
+    let chosen = explicit.or(env);
+    if let Some(dir) = chosen {
+        if !dir.is_absolute() {
+            return Err("The data directory must be an absolute path".into());
+        }
+        if benchmark {
+            if let Some(real) = real_root {
+                let requested = canonicalize_for_comparison(&dir)?;
+                let real = canonicalize_for_comparison(real)?;
+                let key = |p: &Path| {
+                    let mut k = p.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+                    while k.ends_with('\\') {
+                        k.pop();
+                    }
+                    k
+                };
+                let (requested, real) = (key(&requested), key(&real));
+                let inside = requested == real || requested.starts_with(&format!("{real}\\"));
+                if inside {
+                    return Err(
+                        "Benchmark runs cannot use Bowser's real app data directory".into()
+                    );
+                }
+            }
+        }
+        return Ok((Some(dir), false));
+    }
+    if benchmark {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        return Ok((
+            Some(temp_base.join(format!(
+                "bowser-benchmark-data-{}-{nonce}",
+                std::process::id()
+            ))),
+            true,
+        ));
+    }
+    Ok((None, false))
 }
 
 fn canonicalize_for_comparison(path: &Path) -> Result<PathBuf, String> {
@@ -1001,5 +1082,59 @@ mod tests {
             .map(|line| line.split(',').next().unwrap())
             .collect();
         assert_eq!(recorded, expected);
+    }
+
+    #[test]
+    fn benchmark_without_a_data_dir_gets_a_temp_dir_outside_the_real_root() {
+        let real = Path::new(r"C:\Users\u\AppData\Local\Bowser");
+        let temp = std::env::temp_dir();
+        let (dir, ephemeral) = resolve_data_dir(None, None, true, Some(real), &temp).unwrap();
+        let dir = dir.expect("benchmark always has a data dir");
+        assert!(ephemeral);
+        assert!(dir.starts_with(&temp));
+        assert!(!dir.starts_with(real));
+    }
+
+    #[test]
+    fn explicit_data_dir_wins_and_benchmarks_refuse_the_real_root() {
+        let real = Path::new(r"C:\Users\u\AppData\Local\Bowser");
+        let temp = std::env::temp_dir();
+        let explicit = PathBuf::from(r"D:\data");
+        let env = PathBuf::from(r"D:\env-data");
+        assert_eq!(
+            resolve_data_dir(Some(explicit.clone()), Some(env.clone()), true, Some(real), &temp)
+                .unwrap(),
+            (Some(explicit), false)
+        );
+        assert_eq!(
+            resolve_data_dir(None, Some(env.clone()), false, Some(real), &temp).unwrap(),
+            (Some(env), false)
+        );
+        assert_eq!(
+            resolve_data_dir(None, None, false, Some(real), &temp).unwrap(),
+            (None, false)
+        );
+        for bad in [
+            r"C:\Users\u\AppData\Local\Bowser",
+            r"c:\users\u\appdata\local\bowser\",
+            r"C:\Users\u\AppData\Local\Bowser\Profiles\x",
+            r"C:\Users\u\AppData\Local\Other\..\Bowser",
+        ] {
+            assert!(
+                resolve_data_dir(Some(PathBuf::from(bad)), None, true, Some(real), &temp).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(resolve_data_dir(Some(PathBuf::from("rel")), None, false, None, &temp).is_err());
+        assert!(
+            resolve_data_dir(
+                Some(PathBuf::from(r"C:\Users\u\AppData\Local\Bowser2")),
+                None,
+                true,
+                Some(real),
+                &temp
+            )
+            .is_ok()
+        );
     }
 }

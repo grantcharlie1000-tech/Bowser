@@ -191,7 +191,7 @@ function Sample([int] $RootPid, [string] $ProfileDir) {
     }
 }
 function Start-Bowser([string] $ProfileDir, [string] $LogPath) {
-    $launchArgs = @('--benchmark-log', "`"$LogPath`"", '--benchmark-user-data-dir', "`"$ProfileDir`"")
+    $launchArgs = @('--benchmark-log', "`"$LogPath`"", '--benchmark-user-data-dir', "`"$ProfileDir`"", '--data-dir', "`"$ProfileDir-appdata`"")
     if ($MemoryPressure) { $launchArgs += @('--benchmark-memory-pressure', 'on') }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = Start-Process -FilePath $exe -ArgumentList $launchArgs -PassThru

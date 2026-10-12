@@ -395,7 +395,7 @@ function Start-OneBrowser([string] $Browser, [string] $UserDataProfile, [string]
     $psi.WorkingDirectory = $repoRoot
     if ($Browser -eq 'Bowser') {
         $psi.FileName = $bowserPath
-        $launchArguments = @('--benchmark-log', ('"{0}"' -f $LogPath), '--benchmark-user-data-dir', ('"{0}"' -f $UserDataProfile))
+        $launchArguments = @('--benchmark-log', ('"{0}"' -f $LogPath), '--benchmark-user-data-dir', ('"{0}"' -f $UserDataProfile), '--data-dir', ('"{0}-appdata"' -f $UserDataProfile))
         if ($TrackingPrevention) { $launchArguments += @('--benchmark-tracking-prevention', $TrackingPrevention.ToLowerInvariant()) }
         if ($Workload -eq 'light' -or $Workload -eq 'demanding') {
             $fixture = if ($Workload -eq 'light') { $lightFixture } else { $demandingFixture }
