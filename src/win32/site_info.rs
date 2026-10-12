@@ -76,14 +76,28 @@ pub(crate) fn show(hwnd: HWND, app: &AppRef, button: Rect) {
     unsafe {
         let _ = ClientToScreen(hwnd, &mut anchor);
     }
-    loop {
-        let snapshot = gather(app);
-        let Some(chosen) = menu::track_below(hwnd, anchor, panel(&snapshot)) else {
+    open_at(hwnd, app, anchor);
+}
+
+// --- popup host (lane M) ---
+/// One showing of the panel. A choice runs, then the panel opens again with fresh state.
+fn open_at(hwnd: HWND, app: &AppRef, anchor: POINT) {
+    let snapshot = gather(app);
+    let menu = panel(&snapshot);
+    menu::show(hwnd, anchor, menu::Placement::BelowLeft, menu, "site-info", move |app, chosen| {
+        let Some(chosen) = chosen else {
             return;
         };
+        // The page may have changed while the panel was open: act only on the site it showed.
+        let showing = snapshot.tab.zip(snapshot.url.as_ref().map(Url::origin));
+        if App::active_site(app).map(|(tab, url)| (tab, url.origin())) != showing {
+            return;
+        }
         apply(app, &snapshot, chosen.id);
-    }
+        open_at(hwnd, app, anchor);
+    });
 }
+// --- end popup host ---
 
 fn gather(app: &AppRef) -> Snapshot {
     let site = App::active_site(app);

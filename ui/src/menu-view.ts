@@ -1,66 +1,157 @@
 import { icon, type IconName } from './dom';
-import { edgeMenu, stepMenu, type MenuEntry, validMenuPayload } from './menu-logic';
+import {
+  activate, back, createNav, currentPage, menuKey, validMenuPayload,
+  type MenuMessage, type MenuNav, type MenuOutcome,
+} from './menu-logic';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
 
-type MenuPayload = Extract<MenuEntry, { id: number }>;
-type MenuMessage = { t: 'menu'; tok: number; kind: string; entries: MenuEntry[] };
+// Markup contract (styling lives in CSS; keep these names stable):
+//   #app.html-menu[role=menu][data-kind][data-page]   the menu, one drill-in page at a time
+//   .html-menu-header > .html-menu-avatar, .html-menu-name, .html-menu-caption   main menu card
+//   .html-menu-back[role=menuitem]                     back row on a submenu page
+//   .html-menu-section                                 non-interactive heading
+//   .html-menu-separator[role=separator]
+//   .html-menu-row[role=menuitem|menuitemcheckbox][data-index][data-id][data-icon]
+//       aria-disabled, aria-checked, aria-haspopup; .selected marks the keyboard/hover row
+//       children: svg icon, .html-menu-label, .html-menu-shortcut, .html-menu-check, .html-menu-arrow
+//   .html-menu-footer                                  muted note under the list
+// `--menu-accent` on the header carries the profile accent colour.
 
 const ICONS: Readonly<Record<string, IconName>> = {
-  back: 'back', forward: 'forward', reload: 'reload', stop: 'stop', menu: 'menu', split: 'split',
   plus: 'plus', lock: 'lock', unlock: 'unlock', warning: 'warning', info: 'info', close: 'close',
   person: 'person', grid: 'grid', key: 'key', shield: 'shield', gear: 'gear', check: 'check',
   mic: 'mic', camera: 'camera', location: 'location', bell: 'bell', cookie: 'cookie', reset: 'reset',
 };
 
-export function renderMenu(root: HTMLElement, raw: unknown): boolean {
-  if (!validMenuPayload(raw)) return false;
-  const message = raw as MenuMessage;
-  root.className = 'html-menu';
-  let entries = message.entries;
-  const pages: { entries: MenuEntry[]; label: string; selected: number }[] = [];
-  let selected = edgeMenu(entries, false);
-  root.replaceChildren();
-  root.setAttribute('role', 'menu');
-  root.setAttribute('aria-label', message.kind || 'Menu');
+export interface MenuView {
+  /** Shows a `menu` message. False (and nothing changes) when it is not a valid menu payload. */
+  show(raw: unknown): boolean;
+}
+
+/** One menu view per popup page. Listeners attach once; each `menu` message replaces the menu. */
+export function createMenuView(root: HTMLElement, now: () => number = () => performance.now()): MenuView {
+  let message: MenuMessage | null = null;
+  let nav: MenuNav | null = null;
+  // Set once a pick or dismissal is sent, so a double click or key repeat sends nothing more.
+  let closed = true;
+
+  const rows = (): HTMLElement[] => Array.from(root.querySelectorAll<HTMLElement>('.html-menu-row'));
+
+  // Focus stays on the menu root; the selected row is exposed with aria-activedescendant, so no
+  // row takes a focus ring and every key reaches one listener.
+  const markSelected = (): void => {
+    if (!nav) return;
+    const selected = currentPage(nav).selected;
+    root.removeAttribute('aria-activedescendant');
+    for (const row of rows()) {
+      const on = Number(row.dataset.index) === selected;
+      row.classList.toggle('selected', on);
+      if (on) {
+        root.setAttribute('aria-activedescendant', row.id);
+        row.scrollIntoView({ block: 'nearest' });
+      }
+    }
+    if (document.activeElement !== root) root.focus({ preventScroll: true });
+  };
+
+  const finish = (outcome: MenuOutcome): void => {
+    if (!message || !nav || closed) return;
+    switch (outcome.kind) {
+      case 'select': markSelected(); break;
+      case 'page': draw(); break;
+      case 'pick': closed = true; sendPopupPick(message.tok, outcome.id); break;
+      case 'dismiss': closed = true; sendPopupDismiss(message.tok); break;
+      case 'none': break;
+    }
+  };
+
+  const measure = (): void => {
+    if (!message) return;
+    const tok = message.tok;
+    requestAnimationFrame(() => {
+      if (!message || message.tok !== tok) return;
+      // Measure the natural size; Rust caps it to the monitor work area and the page scrolls inside.
+      root.style.maxHeight = 'none';
+      const rect = root.getBoundingClientRect();
+      root.style.maxHeight = '100vh';
+      sendPopupSize(tok, Math.max(1, Math.ceil(rect.width)), Math.max(1, Math.ceil(rect.height)));
+    });
+  };
 
   const draw = (): void => {
-    root.replaceChildren();
-    if (pages.length > 0) {
-      const back = document.createElement('button');
-      back.type = 'button';
-      back.className = 'html-menu-back';
-      back.setAttribute('role', 'menuitem');
-      back.textContent = `‹  ${pages[pages.length - 1]?.label ?? 'Back'}`;
-      back.addEventListener('mouseup', (event) => { if (event.button === 0) goBack(); });
-      root.append(back);
+    if (!message || !nav) return;
+    const page = currentPage(nav);
+    const top = nav.pages.length === 1;
+    const nodes: HTMLElement[] = [];
+    root.dataset.page = String(nav.pages.length - 1);
+    root.setAttribute('aria-label', top ? (message.footer || message.kind) : page.label);
+
+    if (top && message.header) {
+      const header = document.createElement('div');
+      header.className = 'html-menu-header';
+      header.setAttribute('aria-hidden', 'true');
+      header.style.setProperty('--menu-accent', message.header.accent);
+      const avatar = document.createElement('span');
+      avatar.className = 'html-menu-avatar';
+      avatar.textContent = message.header.avatar;
+      const name = document.createElement('span');
+      name.className = 'html-menu-name';
+      name.textContent = message.header.name;
+      const caption = document.createElement('span');
+      caption.className = 'html-menu-caption';
+      caption.textContent = message.header.caption;
+      header.append(avatar, name, caption);
+      nodes.push(header);
     }
-    entries.forEach((entry, index) => {
+    if (!top) {
+      const backRow = document.createElement('button');
+      backRow.type = 'button';
+      backRow.tabIndex = -1;
+      backRow.className = 'html-menu-back';
+      backRow.setAttribute('role', 'menuitem');
+      backRow.setAttribute('aria-label', `Back from ${page.label}`);
+      backRow.textContent = `‹  ${page.label}`;
+      backRow.addEventListener('mouseup', (event) => {
+        if (event.button === 0 && nav && back(nav)) finish({ kind: 'page' });
+      });
+      nodes.push(backRow);
+    }
+    page.entries.forEach((entry, index) => {
       if ('section' in entry) {
         const heading = document.createElement('div');
         heading.className = 'html-menu-section';
+        heading.setAttribute('role', 'presentation');
         heading.textContent = entry.section;
-        root.append(heading);
+        nodes.push(heading);
         return;
       }
       if ('separator' in entry) {
         const separator = document.createElement('div');
         separator.className = 'html-menu-separator';
         separator.setAttribute('role', 'separator');
-        root.append(separator);
+        nodes.push(separator);
         return;
       }
       const row = document.createElement('button');
       row.type = 'button';
+      row.tabIndex = -1;
       row.className = 'html-menu-row';
-      row.setAttribute('role', 'menuitem');
+      row.setAttribute('role', entry.checked ? 'menuitemcheckbox' : 'menuitem');
+      if (entry.checked) row.setAttribute('aria-checked', 'true');
       row.disabled = !entry.enabled;
       row.setAttribute('aria-disabled', String(!entry.enabled));
-      if (entry.checked) row.setAttribute('aria-checked', 'true');
       if (entry.submenu) row.setAttribute('aria-haspopup', 'menu');
+      if (entry.shortcut) row.setAttribute('aria-keyshortcuts', entry.shortcut);
+      row.id = `html-menu-row-${index}`;
       row.dataset.index = String(index);
-      if (index === selected) row.classList.add('selected');
+      row.dataset.id = String(entry.id);
+      if (entry.icon) row.dataset.icon = entry.icon;
       const iconName = entry.icon ? ICONS[entry.icon] : undefined;
-      if (iconName) row.append(icon(iconName));
+      if (iconName) {
+        const glyph = icon(iconName);
+        glyph.setAttribute('aria-hidden', 'true');
+        row.append(glyph);
+      }
       const label = document.createElement('span');
       label.className = 'html-menu-label';
       label.textContent = entry.label;
@@ -68,6 +159,7 @@ export function renderMenu(root: HTMLElement, raw: unknown): boolean {
       if (entry.shortcut) {
         const shortcut = document.createElement('span');
         shortcut.className = 'html-menu-shortcut';
+        shortcut.setAttribute('aria-hidden', 'true');
         shortcut.textContent = entry.shortcut;
         row.append(shortcut);
       }
@@ -80,73 +172,60 @@ export function renderMenu(root: HTMLElement, raw: unknown): boolean {
       if (entry.submenu) {
         const arrow = document.createElement('span');
         arrow.className = 'html-menu-arrow';
+        arrow.setAttribute('aria-hidden', 'true');
         arrow.textContent = '›';
         row.append(arrow);
       }
-      row.addEventListener('mouseenter', () => {
-        if (!entry.enabled || selected === index) return;
-        selected = index;
-        root.querySelectorAll('.html-menu-row').forEach((node) => node.classList.remove('selected'));
-        row.classList.add('selected');
+      row.addEventListener('mousemove', () => {
+        if (!nav || !entry.enabled || currentPage(nav).selected === index) return;
+        currentPage(nav).selected = index;
+        markSelected();
       });
+      // Mouse up, not click: a press that started outside the menu (the right click that opened it)
+      // must not pick, and keyboard Space/Enter are handled on keydown.
       row.addEventListener('mouseup', (event) => {
-        if (event.button !== 0 || !entry.enabled) return;
-        selected = index;
-        if (entry.submenu) openSubmenu(entry);
-        else sendPopupPick(message.tok, entry.id);
+        if (event.button !== 0 || !nav) return;
+        finish(activate(nav, index));
       });
-      root.append(row);
+      nodes.push(row);
     });
-    requestAnimationFrame(() => {
-      const rect = root.getBoundingClientRect();
-      sendPopupSize(message.tok, Math.ceil(rect.width), Math.ceil(rect.height));
-    });
+    if (message.footer) {
+      const footer = document.createElement('div');
+      footer.className = 'html-menu-footer';
+      footer.setAttribute('aria-hidden', 'true');
+      footer.textContent = message.footer;
+      nodes.push(footer);
+    }
+    root.replaceChildren(...nodes);
+    markSelected();
+    measure();
   };
 
-  const openSubmenu = (entry: MenuPayload): void => {
-    if (!entry.submenu) return;
-    pages.push({ entries, label: entry.label, selected });
-    entries = entry.submenu;
-    selected = edgeMenu(entries, false);
-    draw();
-  };
-  const goBack = (): void => {
-    const page = pages.pop();
-    if (!page) { sendPopupDismiss(message.tok); return; }
-    entries = page.entries;
-    selected = page.selected;
-    draw();
-  };
+  root.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (!nav || closed) return;
+    const outcome = menuKey(nav, event.key, { ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey, shift: event.shiftKey }, now());
+    // Keep every key inside the menu: no page scrolling, no focus leaving, no button activation.
+    if (event.key.length === 1 || outcome.kind !== 'none' || ['Tab', 'Enter', ' ', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Escape'].includes(event.key)) {
+      event.preventDefault();
+    }
+    finish(outcome);
+  });
+  root.addEventListener('contextmenu', (event) => event.preventDefault());
+  // Clicks must not move focus off the root (a focused button would draw a focus ring).
+  root.addEventListener('mousedown', (event) => event.preventDefault());
 
-  root.onkeydown = (event: KeyboardEvent): void => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      sendPopupDismiss(message.tok);
-      return;
-    }
-    if (event.key === 'ArrowLeft' && pages.length) { event.preventDefault(); goBack(); return; }
-    if (event.key === 'ArrowRight' || event.key === 'Enter' || event.key === ' ') {
-      if (event.key === ' ') event.preventDefault();
-      const entry = entries[selected];
-      if (entry && !('separator' in entry) && !('section' in entry) && entry.enabled) {
-        if (entry.submenu) openSubmenu(entry);
-        else if (event.key !== 'ArrowRight') sendPopupPick(message.tok, entry.id);
-      }
-      return;
-    }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      selected = stepMenu(entries, selected, event.key === 'ArrowDown' ? 1 : -1);
+  return {
+    show(raw: unknown): boolean {
+      if (!validMenuPayload(raw)) return false;
+      message = raw;
+      nav = createNav(raw.entries);
+      closed = false;
+      root.className = 'html-menu';
+      root.tabIndex = -1;
+      root.setAttribute('role', 'menu');
+      root.dataset.kind = raw.kind;
       draw();
-      return;
-    }
-    if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      selected = edgeMenu(entries, event.key === 'End');
-      draw();
-    }
+      return true;
+    },
   };
-  draw();
-  root.focus();
-  return true;
 }

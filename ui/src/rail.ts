@@ -1,6 +1,7 @@
 // Left rail view (?view=rail): keyed reconciliation of the rail buttons, favicons, pointer reorder and keyboard.
 // Labels reach the DOM only through textContent and attributes; favicons are validated data: URIs set as img.src.
 import { onInbound, send, type RailItem, type RailMsg } from './protocol';
+import { setTip } from './tooltip';
 import {
   beforeKey,
   dropSlot,
@@ -97,7 +98,7 @@ function updateNode(n: RailNode, item: RailItem, uri: string): void {
     n.label = item.label;
     const name = item.label.trim() !== '' ? item.label : FALLBACK_LABEL;
     setAttr(btn, 'aria-label', name);
-    btn.title = name;
+    setTip(btn, name);
   }
   if (n.uri !== uri) {
     n.uri = uri;
