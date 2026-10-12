@@ -46,6 +46,23 @@ pub enum CaptionAction {
     SystemMenu,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabAction {
+    Select,
+    Close,
+    /// Rust shows the native tab context menu at the cursor.
+    Menu,
+    Pin,
+    Mute,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupAction {
+    /// Collapse or expand the group.
+    Toggle,
+    Menu,
+}
+
 /// A validated message from the chrome page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -59,6 +76,10 @@ pub enum Command {
     /// Left mousedown on an empty toolbar area: start a native window move.
     BeginDrag,
     Caption(CaptionAction),
+    Tab { action: TabAction, id: u32 },
+    /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
+    TabMove { id: u32, before: u32 },
+    Group { action: GroupAction, key: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -359,21 +380,26 @@ fn bool_field(fields: &[(String, Value)], name: &'static str) -> Result<bool, Pr
     }
 }
 
-/// `seq` must be a plain integer in `0..=u32::MAX`.
-fn seq_field(fields: &[(String, Value)]) -> Result<u32, ProtocolError> {
-    match field(fields, "seq") {
+/// A plain integer in `0..=u32::MAX`, read from field `name`.
+fn uint_field(fields: &[(String, Value)], name: &'static str) -> Result<u32, ProtocolError> {
+    match field(fields, name) {
         Some(Value::Number(raw)) => {
             if !raw.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
-                return Err(ProtocolError::WrongType("seq"));
+                return Err(ProtocolError::WrongType(name));
             }
             let value: i128 = raw
                 .parse()
-                .map_err(|_| ProtocolError::InvalidValue("seq"))?;
-            u32::try_from(value).map_err(|_| ProtocolError::InvalidValue("seq"))
+                .map_err(|_| ProtocolError::InvalidValue(name))?;
+            u32::try_from(value).map_err(|_| ProtocolError::InvalidValue(name))
         }
-        Some(_) => Err(ProtocolError::WrongType("seq")),
-        None => Err(ProtocolError::MissingField("seq")),
+        Some(_) => Err(ProtocolError::WrongType(name)),
+        None => Err(ProtocolError::MissingField(name)),
     }
+}
+
+/// `seq` must be a plain integer in `0..=u32::MAX`.
+fn seq_field(fields: &[(String, Value)]) -> Result<u32, ProtocolError> {
+    uint_field(fields, "seq")
 }
 
 fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
@@ -392,6 +418,9 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "focus" => &["on"],
         "drag" => &[],
         "caption" => &["a"],
+        "tab" => &["a", "id"],
+        "tabmove" => &["id", "before"],
+        "group" => &["a", "key"],
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -428,6 +457,29 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "newtab" => OpenTarget::NewTab,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
+        "tab" => Command::Tab {
+            action: match str_field(fields, "a")? {
+                "select" => TabAction::Select,
+                "close" => TabAction::Close,
+                "menu" => TabAction::Menu,
+                "pin" => TabAction::Pin,
+                "mute" => TabAction::Mute,
+                _ => return Err(ProtocolError::InvalidValue("a")),
+            },
+            id: uint_field(fields, "id")?,
+        },
+        "tabmove" => Command::TabMove {
+            id: uint_field(fields, "id")?,
+            before: uint_field(fields, "before")?,
+        },
+        "group" => Command::Group {
+            action: match str_field(fields, "a")? {
+                "toggle" => GroupAction::Toggle,
+                "menu" => GroupAction::Menu,
+                _ => return Err(ProtocolError::InvalidValue("a")),
+            },
+            key: uint_field(fields, "key")?,
+        },
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }
@@ -540,6 +592,118 @@ pub fn completion_json(seq: u32, suffix: &str) -> String {
         "{{\"t\":\"completion\",\"seq\":{seq},\"suffix\":{}}}",
         json_string(suffix)
     )
+}
+
+/// Longest tab title sent to the page, in characters.
+pub const MAX_TAB_TITLE_CHARS: usize = 200;
+/// Longest group name sent to the page, in characters.
+pub const MAX_GROUP_NAME_CHARS: usize = 64;
+/// Largest favicon PNG sent to the page, in bytes.
+pub const MAX_FAVICON_BYTES: usize = 16 * 1024;
+
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// One tab as the tab strip shows it. The group fields are sent only for a group leader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabItem {
+    pub id: u32,
+    pub title: String,
+    pub loading: bool,
+    pub pinned: bool,
+    pub muted: bool,
+    /// Marker id; `-1` for none.
+    pub marker: i32,
+    /// Group key; `0` for none.
+    pub group: u32,
+    /// True for the first tab of a group, the one that carries the group fields.
+    pub leader: bool,
+    pub group_name: String,
+    /// Colour id; `-1` for the accent colour.
+    pub group_colour: i32,
+    pub collapsed: bool,
+    pub group_size: u32,
+    /// A favicon is cached for this tab id.
+    pub has_favicon: bool,
+}
+
+/// `{"v":1,"t":"tabs","active":...,"items":[...]}`: the whole tab strip. Titles are capped at
+/// `MAX_TAB_TITLE_CHARS` and group names at `MAX_GROUP_NAME_CHARS`, both on character boundaries.
+pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
+    let mut out = format!("{{\"v\":1,\"t\":\"tabs\",\"active\":{active},\"items\":[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"id\":{},\"title\":{},\"loading\":{},\"pinned\":{},\"muted\":{},\"marker\":{},\"g\":{},\"gl\":{}",
+            item.id,
+            json_string(truncate_chars(&item.title, MAX_TAB_TITLE_CHARS)),
+            item.loading,
+            item.pinned,
+            item.muted,
+            item.marker,
+            item.group,
+            item.leader,
+        ));
+        if item.leader {
+            out.push_str(&format!(
+                ",\"gname\":{},\"gcol\":{},\"gcollapsed\":{},\"gsize\":{}",
+                json_string(truncate_chars(&item.group_name, MAX_GROUP_NAME_CHARS)),
+                item.group_colour,
+                item.collapsed,
+                item.group_size,
+            ));
+        }
+        out.push_str(&format!(",\"fav\":{}}}", item.has_favicon));
+    }
+    out.push_str("]}");
+    out
+}
+
+/// `{"v":1,"t":"fav","id":...,"uri":"data:image/png;base64,..."}` for a favicon. `None` unless
+/// `png` starts with the PNG signature and is at most `MAX_FAVICON_BYTES` long.
+pub fn fav_json(id: u32, png: &[u8]) -> Option<String> {
+    if png.len() > MAX_FAVICON_BYTES || !png.starts_with(&PNG_SIGNATURE) {
+        return None;
+    }
+    Some(format!(
+        "{{\"v\":1,\"t\":\"fav\",\"id\":{id},\"uri\":\"data:image/png;base64,{}\"}}",
+        base64_encode(png)
+    ))
+}
+
+/// The first `max` characters of `text`, cut on a character boundary.
+fn truncate_chars(text: &str, max: usize) -> &str {
+    match text.char_indices().nth(max) {
+        Some((index, _)) => &text[..index],
+        None => text,
+    }
+}
+
+/// Standard base64 (RFC 4648 section 4) with `=` padding.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(char::from(ALPHABET[((n >> 18) & 63) as usize]));
+        out.push(char::from(ALPHABET[((n >> 12) & 63) as usize]));
+        out.push(if chunk.len() > 1 {
+            char::from(ALPHABET[((n >> 6) & 63) as usize])
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            char::from(ALPHABET[(n & 63) as usize])
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Accepts only `#` followed by 3, 4, 6 or 8 hex digits, or a lowercase `rgb(`/`rgba(` call whose
@@ -1430,5 +1594,430 @@ mod tests {
                 '\\'
             )
         );
+    }
+
+    #[test]
+    fn parses_every_tab_action() {
+        for (wire, action) in [
+            ("select", TabAction::Select),
+            ("close", TabAction::Close),
+            ("menu", TabAction::Menu),
+            ("pin", TabAction::Pin),
+            ("mute", TabAction::Mute),
+        ] {
+            assert_eq!(
+                ok(&format!(r#"{{"v":1,"t":"tab","a":"{wire}","id":12}}"#)),
+                Command::Tab { action, id: 12 },
+                "{wire}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_tab_id_across_the_full_u32_range() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"tab","a":"close","id":0}"#),
+            Command::Tab {
+                action: TabAction::Close,
+                id: 0
+            }
+        );
+        assert_eq!(
+            ok(r#"{"id":4294967295,"a":"pin","t":"tab","v":1}"#),
+            Command::Tab {
+                action: TabAction::Pin,
+                id: u32::MAX
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_tab_actions() {
+        for raw in [
+            r#"{"v":1,"t":"tab","a":"toggle","id":1}"#,
+            r#"{"v":1,"t":"tab","a":"Select","id":1}"#,
+            r#"{"v":1,"t":"tab","a":"move","id":1}"#,
+            r#"{"v":1,"t":"tab","a":"","id":1}"#,
+            r#"{"v":1,"t":"tab","a":"select ","id":1}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::InvalidValue("a"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn tab_requires_string_action_and_id() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","id":1}"#),
+            ProtocolError::MissingField("a")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":"select"}"#),
+            ProtocolError::MissingField("id")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":1,"id":1}"#),
+            ProtocolError::WrongType("a")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":null,"id":1}"#),
+            ProtocolError::UnsupportedValue("null")
+        );
+    }
+
+    #[test]
+    fn tab_id_must_be_a_u32() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":"select","id":4294967296}"#),
+            ProtocolError::InvalidValue("id")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":"select","id":-1}"#),
+            ProtocolError::InvalidValue("id")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":"select","id":99999999999999999999999999}"#),
+            ProtocolError::InvalidValue("id")
+        );
+        for raw in [
+            r#"{"v":1,"t":"tab","a":"select","id":1.5}"#,
+            r#"{"v":1,"t":"tab","a":"select","id":1e3}"#,
+            r#"{"v":1,"t":"tab","a":"select","id":"1"}"#,
+            r#"{"v":1,"t":"tab","a":"select","id":true}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::WrongType("id"), "{raw}");
+        }
+        assert_eq!(
+            err(r#"{"v":1,"t":"tab","a":"select","id":{"n":1}}"#),
+            ProtocolError::UnsupportedValue("nested object")
+        );
+    }
+
+    #[test]
+    fn tab_rejects_keys_it_does_not_use() {
+        for (raw, key) in [
+            (r#"{"v":1,"t":"tab","a":"select","id":1,"on":true}"#, "on"),
+            (r#"{"v":1,"t":"tab","a":"select","id":1,"seq":1}"#, "seq"),
+            (r#"{"v":1,"t":"tab","a":"select","id":1,"text":""}"#, "text"),
+            (r#"{"v":1,"t":"tab","a":"select","id":1,"before":2}"#, "before"),
+            (r#"{"v":1,"t":"tab","a":"select","id":1,"key":2}"#, "key"),
+        ] {
+            assert_eq!(err(raw), ProtocolError::UnknownKey(key.to_string()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn parses_tab_move() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"tabmove","id":3,"before":9}"#),
+            Command::TabMove { id: 3, before: 9 }
+        );
+        // `before` of 0 means the end of the strip.
+        assert_eq!(
+            ok(r#"{"before":0,"id":3,"t":"tabmove","v":1}"#),
+            Command::TabMove { id: 3, before: 0 }
+        );
+    }
+
+    #[test]
+    fn tab_move_requires_both_ids_as_u32() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3}"#),
+            ProtocolError::MissingField("before")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","before":3}"#),
+            ProtocolError::MissingField("id")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3,"before":"9"}"#),
+            ProtocolError::WrongType("before")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":-3,"before":9}"#),
+            ProtocolError::InvalidValue("id")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3,"before":4294967296}"#),
+            ProtocolError::InvalidValue("before")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3,"before":null}"#),
+            ProtocolError::UnsupportedValue("null")
+        );
+    }
+
+    #[test]
+    fn tab_move_rejects_extra_keys() {
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3,"before":9,"a":"select"}"#),
+            ProtocolError::UnknownKey("a".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":3,"before":9,"key":1}"#),
+            ProtocolError::UnknownKey("key".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_every_group_action() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"group","a":"toggle","key":4}"#),
+            Command::Group {
+                action: GroupAction::Toggle,
+                key: 4
+            }
+        );
+        assert_eq!(
+            ok(r#"{"key":0,"a":"menu","t":"group","v":1}"#),
+            Command::Group {
+                action: GroupAction::Menu,
+                key: 0
+            }
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"group","a":"toggle","key":4294967295}"#),
+            Command::Group {
+                action: GroupAction::Toggle,
+                key: u32::MAX
+            }
+        );
+    }
+
+    #[test]
+    fn group_rejects_bad_action_key_and_extra_keys() {
+        for raw in [
+            r#"{"v":1,"t":"group","a":"select","key":4}"#,
+            r#"{"v":1,"t":"group","a":"Toggle","key":4}"#,
+            r#"{"v":1,"t":"group","a":"collapse","key":4}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::InvalidValue("a"), "{raw}");
+        }
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","a":"toggle"}"#),
+            ProtocolError::MissingField("key")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","a":"toggle","key":-4}"#),
+            ProtocolError::InvalidValue("key")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","a":"toggle","key":"4"}"#),
+            ProtocolError::WrongType("key")
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","a":"toggle","key":4,"id":1}"#),
+            ProtocolError::UnknownKey("id".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","key":4}"#),
+            ProtocolError::MissingField("a")
+        );
+    }
+
+    #[test]
+    fn new_messages_enforce_version_and_duplicate_rules() {
+        assert_eq!(
+            err(r#"{"v":2,"t":"tab","a":"select","id":1}"#),
+            ProtocolError::UnsupportedVersion
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabmove","id":1,"before":2,"before":3}"#),
+            ProtocolError::DuplicateKey("before".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"group","a":"toggle","a":"menu","key":1}"#),
+            ProtocolError::DuplicateKey("a".to_string())
+        );
+        assert_eq!(
+            err(r#"{"v":1,"t":"tabs"}"#),
+            ProtocolError::UnknownType("tabs".to_string())
+        );
+    }
+
+    fn plain_tab(id: u32, title: &str) -> TabItem {
+        TabItem {
+            id,
+            title: title.to_string(),
+            loading: false,
+            pinned: false,
+            muted: false,
+            marker: -1,
+            group: 0,
+            leader: false,
+            group_name: String::new(),
+            group_colour: -1,
+            collapsed: false,
+            group_size: 0,
+            has_favicon: false,
+        }
+    }
+
+    #[test]
+    fn tabs_json_for_an_empty_strip() {
+        assert_eq!(
+            tabs_json(0, &[]),
+            r#"{"v":1,"t":"tabs","active":0,"items":[]}"#
+        );
+    }
+
+    #[test]
+    fn tabs_json_for_one_tab() {
+        let tab = TabItem {
+            loading: true,
+            pinned: true,
+            muted: true,
+            marker: 2,
+            has_favicon: true,
+            ..plain_tab(7, "Home")
+        };
+        assert_eq!(
+            tabs_json(7, &[tab]),
+            concat!(
+                r#"{"v":1,"t":"tabs","active":7,"items":["#,
+                r#"{"id":7,"title":"Home","loading":true,"pinned":true,"muted":true,"marker":2,"g":0,"gl":false,"fav":true}"#,
+                "]}"
+            )
+        );
+    }
+
+    #[test]
+    fn tabs_json_for_a_group_sends_group_fields_on_the_leader_only() {
+        let leader = TabItem {
+            group: 5,
+            leader: true,
+            group_name: "Work".to_string(),
+            group_colour: 3,
+            collapsed: true,
+            group_size: 2,
+            ..plain_tab(10, "Mail")
+        };
+        // Members carry the same group key but no group fields, even when the values are set.
+        let member = TabItem {
+            group: 5,
+            group_name: "ignored".to_string(),
+            group_colour: 9,
+            collapsed: true,
+            group_size: 2,
+            ..plain_tab(11, "Calendar")
+        };
+        let loose = plain_tab(12, "Loose");
+        assert_eq!(
+            tabs_json(11, &[leader, member, loose]),
+            concat!(
+                r#"{"v":1,"t":"tabs","active":11,"items":["#,
+                r#"{"id":10,"title":"Mail","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":true,"gname":"Work","gcol":3,"gcollapsed":true,"gsize":2,"fav":false},"#,
+                r#"{"id":11,"title":"Calendar","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":false,"fav":false},"#,
+                r#"{"id":12,"title":"Loose","loading":false,"pinned":false,"muted":false,"marker":-1,"g":0,"gl":false,"fav":false}"#,
+                "]}"
+            )
+        );
+    }
+
+    #[test]
+    fn tabs_json_escapes_titles_and_group_names() {
+        let tab = TabItem {
+            leader: true,
+            group: 1,
+            group_name: "a\"</b>".to_string(),
+            ..plain_tab(1, "x<\"y\\\n\u{2028}")
+        };
+        let json = tabs_json(1, &[tab]);
+        assert!(json.contains("\"title\":\"x\\u003c\\\"y\\\\\\n\\u2028\""), "{json}");
+        assert!(json.contains("\"gname\":\"a\\\"\\u003c/b>\""), "{json}");
+        assert!(!json.contains("</b"), "{json}");
+        assert!(!json.contains('\n'), "{json}");
+    }
+
+    #[test]
+    fn tab_titles_are_capped_on_character_boundaries() {
+        let long = "a".repeat(300);
+        let json = tabs_json(0, &[plain_tab(1, &long)]);
+        assert!(json.contains(&format!(r#""title":"{}""#, "a".repeat(200))), "{json}");
+        assert!(!json.contains(&"a".repeat(201)));
+
+        let accents = "é".repeat(250);
+        let json = tabs_json(0, &[plain_tab(1, &accents)]);
+        assert!(json.contains(&format!(r#""title":"{}""#, "é".repeat(200))), "{json}");
+
+        let exact = "b".repeat(200);
+        let json = tabs_json(0, &[plain_tab(1, &exact)]);
+        assert!(json.contains(&format!(r#""title":"{exact}""#)), "{json}");
+    }
+
+    #[test]
+    fn group_names_are_capped_at_64_characters() {
+        let tab = TabItem {
+            leader: true,
+            group: 1,
+            group_name: "g".repeat(100),
+            ..plain_tab(1, "t")
+        };
+        let json = tabs_json(0, &[tab]);
+        assert!(json.contains(&format!(r#""gname":"{}""#, "g".repeat(64))), "{json}");
+        assert!(!json.contains(&"g".repeat(65)));
+    }
+
+    #[test]
+    fn tabs_json_is_a_single_flat_line_of_valid_structure() {
+        let items = [plain_tab(1, "one"), plain_tab(2, "two")];
+        let json = tabs_json(2, &items);
+        assert!(json.starts_with(r#"{"v":1,"t":"tabs","active":2,"items":["#));
+        assert!(json.ends_with("]}"));
+        assert_eq!(json.matches(r#""id":"#).count(), 2);
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        for (input, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(input.as_bytes()), encoded, "{input:?}");
+        }
+        assert_eq!(base64_encode(&[0xFB, 0xFF]), "+/8=");
+        assert_eq!(base64_encode(&[0xFB, 0xEF, 0xBE]), "++++");
+        assert_eq!(base64_encode(&PNG_SIGNATURE), "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn fav_json_wraps_a_valid_png() {
+        assert_eq!(
+            fav_json(5, &PNG_SIGNATURE).as_deref(),
+            Some(r#"{"v":1,"t":"fav","id":5,"uri":"data:image/png;base64,iVBORw0KGgo="}"#)
+        );
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(b"fo");
+        let json = fav_json(u32::MAX, &png).expect("png accepted");
+        assert_eq!(
+            json,
+            r#"{"v":1,"t":"fav","id":4294967295,"uri":"data:image/png;base64,iVBORw0KGgpmbw=="}"#
+        );
+    }
+
+    #[test]
+    fn fav_json_rejects_non_png_and_oversized_input() {
+        assert_eq!(fav_json(1, &[]), None);
+        assert_eq!(fav_json(1, &[0xFF, 0xD8, 0xFF]), None);
+        assert_eq!(fav_json(1, b"GIF89a"), None);
+        // One byte off the signature (0x0B instead of 0x0A at the end).
+        assert_eq!(
+            fav_json(1, &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0B]),
+            None
+        );
+        // Signature must be at the very start.
+        let mut shifted = vec![0u8];
+        shifted.extend_from_slice(&PNG_SIGNATURE);
+        assert_eq!(fav_json(1, &shifted), None);
+
+        let mut exact = PNG_SIGNATURE.to_vec();
+        exact.resize(MAX_FAVICON_BYTES, 0);
+        assert!(fav_json(1, &exact).is_some());
+        exact.push(0);
+        assert_eq!(fav_json(1, &exact), None);
     }
 }

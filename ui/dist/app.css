@@ -170,3 +170,289 @@ body.solid {
     transform: none;
   }
 }
+
+/* ---- Tab strip (?view=tabs). Motion is transform/opacity only, <= 160ms. ---- */
+
+/* Fixed island accents for groups and markers (not themed). */
+:root {
+  --island-0: #ee675c;
+  --island-1: #f29d38;
+  --island-2: #e2c14a;
+  --island-3: #6dc27d;
+  --island-4: #4fb8b0;
+  --island-5: #5b9cf0;
+  --island-6: #a77cf0;
+  --island-7: #ec7fb7;
+}
+
+#app.strip {
+  height: 100%;
+  gap: 3px;
+  padding: 0 4px;
+  align-items: center;
+}
+
+.strip .tab {
+  position: relative;
+  isolation: isolate;
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px 0 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--text);
+  cursor: default;
+  touch-action: none;
+  transition: transform 140ms ease-out;
+}
+
+.strip .tab[hidden] {
+  display: none;
+}
+
+.strip .tab::before,
+.strip .tab::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+
+.strip .tab::before {
+  background: var(--fill);
+  opacity: 0.45;
+}
+
+.strip .tab::after {
+  background: var(--hover);
+  opacity: 0;
+}
+
+.strip .tab:hover::after {
+  opacity: 1;
+}
+
+.strip .tab.active {
+  border-color: var(--border);
+}
+
+.strip .tab.active::before {
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.strip .tab.dragging {
+  z-index: 2;
+  transition: none;
+}
+
+.strip .tab:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
+}
+
+.strip .tab.pinned {
+  flex: 0 0 30px;
+  min-width: 0;
+  padding: 0;
+  justify-content: center;
+}
+
+.strip .tab.pinned .title,
+.strip .tab.pinned .close,
+.strip .tab.pinned .marker {
+  display: none;
+}
+
+.ico {
+  display: grid;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+}
+
+.ico > * {
+  display: none;
+  grid-area: 1 / 1;
+}
+
+.strip .tab[data-icon="fav"] .fav,
+.strip .tab[data-icon="glyph"] .glyph,
+.strip .tab[data-icon="spin"] .spin {
+  display: block;
+}
+
+.strip .fav {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.strip .glyph {
+  width: 14px;
+  height: 14px;
+  color: var(--text);
+}
+
+.strip .tab.muted .fav {
+  opacity: 0.55;
+}
+
+.spin {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--focus-border);
+  border-radius: 50%;
+  animation: tab-spin 900ms linear infinite;
+}
+
+@keyframes tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.strip .title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
+}
+
+.strip .close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  opacity: 0;
+  cursor: default;
+  transition: opacity 100ms ease-out;
+}
+
+.strip .close svg {
+  width: 10px;
+  height: 10px;
+}
+
+.strip .tab:hover .close,
+.strip .tab.active .close {
+  opacity: 0.85;
+}
+
+.strip .close:hover {
+  background: var(--hover);
+}
+
+.strip .marker {
+  display: none;
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mc, var(--focus-border));
+}
+
+.strip .marker.on {
+  display: block;
+}
+
+/* Narrow tabs drop the title, then the close button; the favicon stays. */
+@container (max-width: 119.9px) {
+  .strip .title {
+    display: none;
+  }
+}
+
+@container (max-width: 55.9px) {
+  .strip .close {
+    display: none;
+  }
+}
+
+.strip .group {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px 0 4px;
+  border-radius: 9px;
+}
+
+.strip .group::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--fill);
+  opacity: 0.3;
+  box-shadow: inset 0 0 0 1px var(--gc, var(--border));
+  pointer-events: none;
+}
+
+.strip .group.collapsed {
+  flex: 0 1 auto;
+}
+
+.strip .group.collapsed .tab {
+  flex: 0 1 160px;
+}
+
+.ball {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin: 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gc, var(--focus-border));
+  cursor: default;
+}
+
+.ball[aria-expanded="false"] {
+  opacity: 0.6;
+}
+
+.ball:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strip .tab,
+  .strip .tab::before,
+  .strip .tab::after,
+  .strip .close {
+    transition: none;
+  }
+
+  .spin {
+    animation: none;
+  }
+}

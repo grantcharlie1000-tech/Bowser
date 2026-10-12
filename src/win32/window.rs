@@ -19,7 +19,7 @@ use crate::{
         tab_card::Marker,
     },
     chrome_host::{
-        self, host::ChromeHost,
+        self, host::{ChromeEnv, ChromeHost, View},
         protocol::{
             CaptionAction, Command as ChromeCommand, NavAction, OpenTarget, ViewState,
             completion_json, focus_json, set_text_json,
@@ -5216,14 +5216,23 @@ fn start_html_chrome(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::begin_create(
-        hwnd,
-        bounds,
-        &root.join("ChromeUI"),
-        on_command,
-        on_failed,
-        move |result| html_created(HWND(raw as *mut _), result),
-    );
+    let created = ChromeEnv::begin_create(&root.join("ChromeUI"), move |env| {
+        let hwnd = HWND(raw as *mut _);
+        let result = env.and_then(|env| {
+            ChromeHost::create(
+                &env,
+                hwnd,
+                bounds,
+                View::Toolbar,
+                on_command,
+                on_failed,
+                move |result| html_created(hwnd, result),
+            )
+        });
+        if result.is_err() {
+            html_failed(hwnd);
+        }
+    });
     if created.is_err() {
         html_failed(hwnd);
     }
@@ -5439,6 +5448,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 focus_omni(hwnd, &app, true);
             }
         }
+        // Tab strip commands are handled by the tab row integration, not the toolbar.
+        ChromeCommand::Tab { .. } | ChromeCommand::TabMove { .. } | ChromeCommand::Group { .. } => {}
     }
     html_sync(hwnd);
 }

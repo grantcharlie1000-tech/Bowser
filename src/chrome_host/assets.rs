@@ -4,7 +4,10 @@
 //! runtime. The table is closed: any path not listed here is a 404 for the caller.
 
 pub const SCHEME: &str = "bowser-ui";
-pub const START_URL: &str = "bowser-ui://app/index.html";
+/// Start URL of the toolbar host. The page reads `view` from `location.search`.
+pub const START_URL: &str = "bowser-ui://app/index.html?view=toolbar";
+/// Start URL of the tab strip host. Same bundle as `START_URL`, different view.
+pub const TABS_START_URL: &str = "bowser-ui://app/index.html?view=tabs";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
@@ -138,6 +141,20 @@ mod tests {
     #[test]
     fn scheme_and_start_url_agree() {
         assert!(START_URL.starts_with(&format!("{SCHEME}://app/")));
+        assert!(TABS_START_URL.starts_with(&format!("{SCHEME}://app/")));
         assert!(lookup("/index.html").is_some());
+    }
+
+    #[test]
+    fn both_view_start_urls_serve_the_same_page() {
+        let page = lookup("/index.html").expect("page");
+        for url in [START_URL, TABS_START_URL] {
+            let path = url
+                .strip_prefix(&format!("{SCHEME}://app"))
+                .expect("app host");
+            assert_eq!(lookup(path), Some(page), "{url}");
+        }
+        assert_eq!(lookup("/index.html?view=tabs"), Some(page));
+        assert_eq!(lookup("/index.html?view=toolbar"), Some(page));
     }
 }

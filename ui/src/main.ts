@@ -1,16 +1,14 @@
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
 import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
+import { startTabs } from './tabs';
 
 /** True only when the event target is the drag surface itself, never a control inside it. */
 function onDragSurface(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.hasAttribute(DRAG_ATTR);
 }
 
-function start(): void {
-  const root = document.getElementById('app');
-  if (!root) return;
-
+function startToolbar(root: HTMLElement): void {
   const view = buildView(root);
   const input = view.input;
 
@@ -130,6 +128,14 @@ function start(): void {
 
   // Registered before ready so no state message can be missed.
   send({ v: 1, t: 'ready' });
+}
+
+function start(): void {
+  const root = document.getElementById('app');
+  if (!root) return;
+  // ?view=tabs selects the tab strip; anything else, including no query, is the toolbar.
+  if (new URLSearchParams(location.search).get('view') === 'tabs') startTabs(root);
+  else startToolbar(root);
 }
 
 start();

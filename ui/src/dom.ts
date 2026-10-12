@@ -8,9 +8,11 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: st
   return node;
 }
 
-export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'lock' | 'warning' | 'info';
+export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'lock' | 'warning' | 'info' | 'globe' | 'close';
 
 const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
+  globe: ['M8 1.75a6.25 6.25 0 1 0 0 12.5 6.25 6.25 0 1 0 0-12.5z', 'M1.75 8h12.5', 'M8 1.75c-2.2 2.2-2.2 10.3 0 12.5', 'M8 1.75c2.2 2.2 2.2 10.3 0 12.5'],
+  close: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],
   back: ['M10 3.5 5.5 8l4.5 4.5'],
   forward: ['M6 3.5 10.5 8 6 12.5'],
   reload: ['M12.8 8a4.8 4.8 0 1 1-1.4-3.4', 'M12.8 2.8v2.6h-2.6'],

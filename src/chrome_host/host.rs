@@ -31,7 +31,7 @@ use windows::{
 };
 
 use super::{
-    assets::{self, Asset, RESPONSE_HEADERS, START_URL, SCHEME},
+    assets::{self, Asset, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
     protocol::{Command, parse_command},
 };
 
@@ -42,47 +42,40 @@ const TRANSPARENT: COREWEBVIEW2_COLOR = COREWEBVIEW2_COLOR {
     B: 0,
 };
 
-type ReadyCallback = Box<dyn FnOnce(Result<ChromeHost>)>;
+type ReadySlot<T> = Rc<RefCell<Option<Box<dyn FnOnce(Result<T>)>>>>;
 
-/// Everything the creation callbacks need. Cheap to clone; all fields are shared or Copy.
+/// Which page a chrome host shows. Each host accepts only its own start URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Toolbar,
+    Tabs,
+}
+
+impl View {
+    pub fn start_url(self) -> &'static str {
+        match self {
+            Self::Toolbar => START_URL,
+            Self::Tabs => TABS_START_URL,
+        }
+    }
+}
+
+/// The WebView2 environment shared by every chrome host: one exclusive user-data folder and the
+/// `bowser-ui` scheme registration. Clones share one environment. Each live host keeps a clone, so
+/// the environment is released when the last clone drops. Closing a host never touches it.
 #[derive(Clone)]
-struct Setup {
-    parent: HWND,
-    bounds: RECT,
-    on_command: Rc<dyn Fn(Command)>,
-    on_failed: Rc<dyn Fn()>,
-    ready: Rc<RefCell<Option<ReadyCallback>>>,
+pub struct ChromeEnv {
+    inner: Rc<ICoreWebView2Environment>,
 }
 
-struct State {
-    controller: ICoreWebView2Controller,
-    webview: ICoreWebView2,
-    bounds: RECT,
-    /// What the caller last asked for. Defaults to visible; only shown once the page has said `ready`.
-    wanted_visible: bool,
-    /// Set when the page posts `ready`.
-    revealed: bool,
-    closed: bool,
-    removers: Vec<Box<dyn FnOnce()>>,
-}
-
-/// The HTML chrome WebView2 controller. Clones share one controller.
-#[derive(Clone)]
-pub struct ChromeHost {
-    state: Rc<RefCell<State>>,
-}
-
-impl ChromeHost {
-    /// Starts creating the chrome environment and controller. `on_ready` runs once, with the host
-    /// or the reason creation failed. The controller stays hidden until the page posts `ready`.
-    /// `user_data_dir` must be the chrome-only folder; it is verified against WebView2's report.
+impl ChromeEnv {
+    /// Starts creating the environment. `on_ready` runs once, with the environment or the reason
+    /// creation failed. `user_data_dir` must be the chrome-only folder; it is verified against
+    /// WebView2's report. Returns an error only when the request could not be started; then
+    /// `on_ready` never runs.
     pub fn begin_create(
-        parent: HWND,
-        bounds: RECT,
         user_data_dir: &Path,
-        on_command: Rc<dyn Fn(Command)>,
-        on_failed: Rc<dyn Fn()>,
-        on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
+        on_ready: impl FnOnce(Result<ChromeEnv>) + 'static,
     ) -> Result<()> {
         std::fs::create_dir_all(user_data_dir).map_err(|error| {
             fail(&format!("Could not create isolated chrome profile: {error}"))
@@ -117,26 +110,18 @@ impl ChromeHost {
         let options2: ICoreWebView2EnvironmentOptions2 = options4.cast()?;
         unsafe { options2.SetExclusiveUserDataFolderAccess(true)? };
 
-        let setup = Setup {
-            parent,
-            bounds,
-            on_command,
-            on_failed,
-            ready: Rc::new(RefCell::new(Some(Box::new(on_ready)))),
-        };
+        let ready: ReadySlot<ChromeEnv> = Rc::new(RefCell::new(Some(Box::new(on_ready))));
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
             move |status, environment| {
                 let result = match (status, environment) {
-                    (Ok(()), Some(environment)) => {
-                        verify_user_data_folder(&environment, &expected)
-                            .and_then(|()| create_controller(&environment, setup.clone()))
-                    }
+                    (Ok(()), Some(environment)) => verify_user_data_folder(&environment, &expected)
+                        .map(|()| ChromeEnv {
+                            inner: Rc::new(environment),
+                        }),
                     (Err(error), _) => Err(error),
                     _ => Err(Error::from(E_POINTER)),
                 };
-                if let Err(error) = result {
-                    finish(&setup.ready, Err(error));
-                }
+                finish(&ready, result);
                 Ok(())
             },
         ));
@@ -148,6 +133,65 @@ impl ChromeHost {
                 &handler,
             )
         }
+    }
+}
+
+/// Everything the creation callbacks need. Cheap to clone; all fields are shared or Copy.
+#[derive(Clone)]
+struct Setup {
+    env: ChromeEnv,
+    parent: HWND,
+    bounds: RECT,
+    view: View,
+    on_command: Rc<dyn Fn(Command)>,
+    on_failed: Rc<dyn Fn()>,
+    ready: ReadySlot<ChromeHost>,
+}
+
+struct State {
+    controller: ICoreWebView2Controller,
+    webview: ICoreWebView2,
+    /// Keeps the shared environment alive for as long as this host exists.
+    _env: ChromeEnv,
+    bounds: RECT,
+    /// What the caller last asked for. Defaults to visible; only shown once the page has said `ready`.
+    wanted_visible: bool,
+    /// Set when the page posts `ready`.
+    revealed: bool,
+    closed: bool,
+    removers: Vec<Box<dyn FnOnce()>>,
+}
+
+/// A WebView2 controller showing one chrome view. Clones share one controller.
+#[derive(Clone)]
+pub struct ChromeHost {
+    state: Rc<RefCell<State>>,
+}
+
+impl ChromeHost {
+    /// Starts creating a controller for `view` in the shared `env`, as a child of `parent`. `on_ready`
+    /// runs once, with the host or the reason creation failed. The controller stays hidden until the
+    /// page posts `ready`. Returns an error only when the request could not be started; then
+    /// `on_ready` never runs.
+    pub fn create(
+        env: &ChromeEnv,
+        parent: HWND,
+        bounds: RECT,
+        view: View,
+        on_command: Rc<dyn Fn(Command)>,
+        on_failed: Rc<dyn Fn()>,
+        on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
+    ) -> Result<()> {
+        let setup = Setup {
+            env: env.clone(),
+            parent,
+            bounds,
+            view,
+            on_command,
+            on_failed,
+            ready: Rc::new(RefCell::new(Some(Box::new(on_ready)))),
+        };
+        create_controller(&env.inner, setup)
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
@@ -226,7 +270,7 @@ fn wide(text: &str) -> Vec<u16> {
 }
 
 /// Runs the one-shot ready callback, if it has not run yet.
-fn finish(ready: &Rc<RefCell<Option<ReadyCallback>>>, result: Result<ChromeHost>) {
+fn finish<T>(ready: &ReadySlot<T>, result: Result<T>) {
     let callback = ready.borrow_mut().take();
     if let Some(callback) = callback {
         callback(result);
@@ -299,6 +343,7 @@ fn configure(
         state: Rc::new(RefCell::new(State {
             controller,
             webview,
+            _env: setup.env.clone(),
             bounds: setup.bounds,
             wanted_visible: true,
             revealed: false,
@@ -334,7 +379,7 @@ fn prepare(
     }
     configure_settings(&webview)?;
     install_handlers(host, environment, setup, &webview)?;
-    let start = wide(START_URL);
+    let start = wide(setup.view.start_url());
     unsafe { webview.Navigate(PCWSTR(start.as_ptr())) }
 }
 
@@ -372,15 +417,16 @@ fn install_handlers(
     let weak = Rc::downgrade(&host.state);
     let mut removers: Vec<Box<dyn FnOnce()>> = Vec::new();
     let mut token: i64 = 0;
+    let view = setup.view;
 
     unsafe {
-        // Top-level navigation: only the chrome start URL may load.
+        // Top-level navigation: only this host's start URL may load.
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     let mut uri = PWSTR::null();
                     let allowed = args.Uri(&mut uri).is_ok()
-                        && is_start_url(&CoTaskMemPWSTR::from(uri).to_string());
+                        && is_start_url(view, &CoTaskMemPWSTR::from(uri).to_string());
                     if !allowed {
                         args.SetCancel(true)?;
                     }
@@ -492,7 +538,7 @@ fn install_handlers(
                 if sender.Source(&mut source).is_err() {
                     return Ok(());
                 }
-                if !is_start_url(&CoTaskMemPWSTR::from(source).to_string()) {
+                if !is_start_url(view, &CoTaskMemPWSTR::from(source).to_string()) {
                     return Ok(());
                 }
                 let mut raw = PWSTR::null();
@@ -610,9 +656,9 @@ fn reveal(weak: &Weak<RefCell<State>>) {
     }
 }
 
-/// Exact match against the chrome start URL. Nothing else may load in the chrome webview.
-fn is_start_url(uri: &str) -> bool {
-    uri == START_URL
+/// Exact match against the start URL of `view`. Nothing else may load in that chrome webview.
+fn is_start_url(view: View, uri: &str) -> bool {
+    uri == view.start_url()
 }
 
 /// The path of a `bowser-ui://app/...` URI, or `None` for any other scheme or host.
@@ -630,22 +676,51 @@ mod tests {
 
     #[test]
     fn start_url_must_match_exactly() {
-        assert!(is_start_url(START_URL));
-        assert!(is_start_url("bowser-ui://app/index.html"));
+        assert!(is_start_url(View::Toolbar, START_URL));
+        assert!(is_start_url(View::Tabs, TABS_START_URL));
+        assert!(is_start_url(View::Toolbar, "bowser-ui://app/index.html?view=toolbar"));
+        assert!(is_start_url(View::Tabs, "bowser-ui://app/index.html?view=tabs"));
         for uri in [
             "",
-            " bowser-ui://app/index.html",
-            "bowser-ui://app/index.html?x=1",
-            "bowser-ui://app/index.html#top",
-            "bowser-ui://app/",
-            "bowser-ui://app/app.js",
-            "BOWSER-UI://app/index.html",
-            "bowser-ui://APP/index.html",
-            "bowser-ui://app/index.html/",
+            " bowser-ui://app/index.html?view=toolbar",
+            "bowser-ui://app/index.html",
+            "bowser-ui://app/index.html?view=toolbar&x=1",
+            "bowser-ui://app/index.html?view=toolbar#top",
+            "bowser-ui://app/index.html?view=toolbar/",
+            "bowser-ui://app/?view=toolbar",
+            "bowser-ui://app/app.js?view=toolbar",
+            "BOWSER-UI://app/index.html?view=toolbar",
+            "bowser-ui://APP/index.html?view=toolbar",
+            "bowser-ui://app/index.html?view=tabs",
             "https://example.com/",
         ] {
-            assert!(!is_start_url(uri), "{uri:?} should not be the start URL");
+            assert!(
+                !is_start_url(View::Toolbar, uri),
+                "{uri:?} should not be the toolbar start URL"
+            );
         }
+        for uri in [
+            "",
+            "bowser-ui://app/index.html",
+            "bowser-ui://app/index.html?view=tabs&x=1",
+            "bowser-ui://app/index.html?view=Tabs",
+            "bowser-ui://app/index.html?view=toolbar",
+            "bowser-ui://app/?view=tabs",
+            "https://example.com/",
+        ] {
+            assert!(
+                !is_start_url(View::Tabs, uri),
+                "{uri:?} should not be the tabs start URL"
+            );
+        }
+    }
+
+    #[test]
+    fn each_view_has_its_own_start_url() {
+        assert_eq!(View::Toolbar.start_url(), "bowser-ui://app/index.html?view=toolbar");
+        assert_eq!(View::Tabs.start_url(), "bowser-ui://app/index.html?view=tabs");
+        assert!(!is_start_url(View::Toolbar, View::Tabs.start_url()));
+        assert!(!is_start_url(View::Tabs, View::Toolbar.start_url()));
     }
 
     #[test]
