@@ -5,3 +5,5 @@
 /benchmarks/results/pilot-*/
 /benchmarks/results/*.events.csv
 .context/
+/target-*/
+/target-*.log
