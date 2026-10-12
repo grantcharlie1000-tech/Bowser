@@ -1,0 +1,52 @@
+/*
+ * Base layer (owner: foundation). Document reset, body type and the solid-window fallback.
+ * Deliberately NOT Tailwind preflight: preflight resets headings, lists, images and buttons in
+ * ways the existing surfaces depend on. Add element resets here only with a screenshot check.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: transparent;
+  color: var(--bw-text);
+  font: var(--bw-text-chrome) / 1 var(--bw-font);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Rust sets body.solid when the window has no glass (high contrast, transparency off, Windows 10
+   fallback); the page then paints the window colour itself. */
+body.solid {
+  background: var(--bw-window);
+}
+
+@keyframes bw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduced motion, globally: nothing moves or tweens colour; what remains is a <= 83ms opacity
+   fade. Tokens already zero --bw-dur-base/--bw-dur-slow; this catches every other transition.
+   Base-layer !important outranks all later layers. Keyframe animations opt in themselves
+   (.bw-enter swaps to a fade; spinners keep turning, slower, because they carry status). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-property: opacity !important;
+    transition-duration: var(--bw-dur-fast) !important;
+    scroll-behavior: auto !important;
+  }
+}

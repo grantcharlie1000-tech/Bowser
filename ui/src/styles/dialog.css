@@ -1,0 +1,10 @@
+/*
+ * Surface: DIALOGS (?view=dialog&p=notes|settings|privacy). Owner: dialogs agent.
+ * Built by ui/src/dialog.ts, which adds `panel-root` to #app and reuses the panel builders in
+ * ui/src/panels/ (so the panel rules in panels.css apply here too: .privacy-panel,
+ * .customize-panel.settings-panel, .notes-panel).
+ *
+ * Empty on purpose: dialog-only rules go here. For a new dialog, start from the shared
+ * .bw-dialog shell in components.css (8px overlay radius, --bw-sh-dialog, 24px padding,
+ * title / body / actions slots) instead of styling a panel class.
+ */

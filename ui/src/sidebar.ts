@@ -6,8 +6,8 @@ import { beforeId, dragScrollDelta } from './tabs-logic';
 import { buildSidebarEntries, dropIndexVertical, scrollIntoViewDelta, verticalSlotShift } from './sidebar-logic';
 
 const ISLAND = [
-  'var(--island-0)', 'var(--island-1)', 'var(--island-2)', 'var(--island-3)',
-  'var(--island-4)', 'var(--island-5)', 'var(--island-6)', 'var(--island-7)',
+  'var(--bw-group-0)', 'var(--bw-group-1)', 'var(--bw-group-2)', 'var(--bw-group-3)',
+  'var(--bw-group-4)', 'var(--bw-group-5)', 'var(--bw-group-6)', 'var(--bw-group-7)',
 ] as const;
 const GLYPHS: Readonly<Record<string, string>> = {
   'g:briefcase': '▣', 'g:home': '⌂', 'g:code': '‹›', 'g:book': '▤',

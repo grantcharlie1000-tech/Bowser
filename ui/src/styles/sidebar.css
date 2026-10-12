@@ -1,0 +1,150 @@
+/*
+ * Surface: VERTICAL SIDEBAR (?view=tabs after a `layout` message with mode "vertical").
+ * Owner: sidebar agent. Built by ui/src/sidebar.ts. Rows share the tab island shape
+ * (--bw-r-tab corners, --bw-island fills) so the two layouts read as one system.
+ */
+
+#app.sidebar {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+#app.sidebar::-webkit-scrollbar { display: none; }
+
+.sidebar button {
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--bw-text);
+  cursor: default;
+}
+
+.side-workspace,
+.side-newtab {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 9px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--bw-r-island);
+  background: transparent;
+  text-align: left;
+}
+
+.side-workspace:hover,
+.side-newtab:hover { background: var(--bw-hover); }
+.side-workspace:focus-visible,
+.side-newtab:focus-visible,
+.side-group-ball:focus-visible { outline: 2px solid var(--bw-focus); outline-offset: -2px; }
+
+.side-workspace-icon {
+  display: grid;
+  flex: none;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: var(--bw-r-row);
+  background: var(--bw-island);
+  color: var(--bw-focus);
+  font-size: 14px;
+}
+
+.side-workspace-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.side-newtab { color: var(--bw-text-2) !important; }
+.side-newtab svg { flex: none; width: 14px; height: 14px; }
+
+.side-group {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  min-width: 0;
+  min-height: 27px;
+  margin-top: 5px;
+  padding: 0 5px;
+  color: var(--bw-text-2);
+  --gc: var(--bw-focus);
+}
+
+.side-group-ball {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gc) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--gc) 24%, transparent);
+}
+
+.side-group-name { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+.side-group-count { font-size: 11px; font-variant-numeric: tabular-nums; }
+.side-group-chevron { width: 12px; text-align: center; }
+
+.side-tab {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 7px 20px;
+  align-items: center;
+  flex: none;
+  column-gap: 7px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 5px 0 8px;
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-island);
+  color: var(--bw-text);
+  touch-action: none;
+  transition:
+    transform var(--bw-dur-base) var(--bw-ease-out),
+    background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.side-tab::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--bw-island-idle);
+  content: "";
+}
+
+.side-tab:hover::before { background: var(--bw-hover); }
+.side-tab.active { border-color: var(--bw-border); }
+.side-tab.active::before { background: var(--bw-island); }
+.side-tab.dragging { z-index: 2; transition: none; }
+.side-tab:focus-visible { outline: 2px solid var(--bw-focus); outline-offset: -2px; }
+.side-tab.pinned::after { grid-column: 1 / -1; position: absolute; right: 5px; color: var(--bw-text-2); content: "\25C6"; font-size: 8px; } /* U+25C6 black diamond; was mojibake text before */
+.side-tab.muted .side-fav { opacity: .55; }
+
+.side-tab-icon { position: relative; display: grid; width: 18px; height: 18px; place-items: center; }
+.side-fav { width: 18px; height: 18px; object-fit: contain; }
+.side-glyph { display: grid; width: 18px; height: 18px; place-items: center; border-radius: 5px; background: var(--bw-glyph-fill); color: var(--bw-on-glyph); }
+.side-spin { box-sizing: border-box; width: 14px; height: 14px; border: 2px solid var(--bw-border); border-top-color: var(--bw-focus); border-radius: 50%; animation: bw-spin var(--bw-dur-spin) linear infinite; }
+.side-title { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+.side-marker { width: 5px; height: 5px; border-radius: 50%; background: var(--mc, var(--bw-focus)); opacity: 0; }
+.side-marker.on { opacity: 1; }
+.side-close { display: grid; width: 20px; height: 20px; padding: 0; place-items: center; border: 0; border-radius: 50%; background: transparent; opacity: 0; }
+.side-close svg { width: 12px; height: 12px; }
+.side-tab:hover .side-close,
+.side-tab:focus-within .side-close { opacity: .85; }
+.side-close:hover { background: var(--bw-hover) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .side-tab,
+  .side-spin { transition: none; animation-duration: 2400ms; }
+}

@@ -22,14 +22,14 @@ import {
 
 /** Fixed island accents, indexed by the host's colour ids (-1 means the theme accent). */
 const ISLAND: readonly string[] = [
-  'var(--island-0)',
-  'var(--island-1)',
-  'var(--island-2)',
-  'var(--island-3)',
-  'var(--island-4)',
-  'var(--island-5)',
-  'var(--island-6)',
-  'var(--island-7)',
+  'var(--bw-group-0)',
+  'var(--bw-group-1)',
+  'var(--bw-group-2)',
+  'var(--bw-group-3)',
+  'var(--bw-group-4)',
+  'var(--bw-group-5)',
+  'var(--bw-group-6)',
+  'var(--bw-group-7)',
 ];
 const ACCENT = 'var(--focus-border)';
 const DRAG_START_PX = 4;

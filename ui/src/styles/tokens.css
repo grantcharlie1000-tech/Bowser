@@ -1,0 +1,233 @@
+/*
+ * Design tokens (owner: foundation). See ui/STYLEGUIDE.md for the full table.
+ *
+ * Three tiers:
+ *   1. Host inputs: --bg, --fill, --border, --focus-border, --text, --placeholder, --completion,
+ *      --selection, --hover, --progress. Rust sends these in every `state` message (theme object,
+ *      see docs/html-chrome-protocol.md) and view.ts applyTheme() writes them as inline styles on
+ *      <html>, so they always win. The values below are only the pre-first-message fallback.
+ *      `data-scheme="light|dark"` on <html> and `body.solid` come from the same message.
+ *      Surface CSS must NOT read the host inputs directly: use the --bw-* tokens.
+ *   2. --bw-* tokens: every colour, radius, size, shadow, duration, easing and z-layer the surfaces
+ *      use. Colours derive from the host inputs (so light/dark and the accent follow Rust), or are
+ *      fixed per scheme where Rust has no equivalent (glass, overlay, hairline).
+ *   3. Tailwind @theme: maps Tailwind's namespaces onto the --bw-* tokens so utilities such as
+ *      `tw:bg-island tw:rounded-control tw:p-2 tw:duration-fast` resolve to the same values.
+ */
+
+@layer theme {
+  /* ---- 1. Host inputs: fallback values before the first state message (dark scheme). ---- */
+  :root {
+    --bg: #202124;
+    --fill: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.14);
+    --focus-border: #8ab4f8;
+    --text: #e8eaed;
+    --placeholder: #9aa0a6;
+    --completion: #8ab4f8;
+    --selection: rgba(138, 180, 248, 0.4);
+    --hover: rgba(255, 255, 255, 0.1);
+    --progress: #8ab4f8;
+  }
+
+  /* ---- 2. --bw-* tokens ---- */
+  :root {
+    /* Colour: themed by Rust (aliases of the host inputs). */
+    --bw-window: var(--bg); /* window material when solid; panel and popup backgrounds today */
+    --bw-fill: var(--fill); /* control fill: omnibox pill, nav group, panel inputs */
+    --bw-border: var(--border); /* control border / strong hairline */
+    --bw-accent: var(--focus-border); /* theme accent (Rust's omnibox focus colour) */
+    --bw-focus: var(--bw-accent); /* focus ring colour */
+    --bw-text: var(--text);
+    --bw-text-2: var(--placeholder); /* secondary text, captions, accelerators */
+    --bw-completion: var(--completion); /* inline omnibox completion */
+    --bw-selection: var(--selection); /* text selection */
+    --bw-hover: var(--hover); /* hover wash on transparent controls */
+    --bw-progress: var(--progress); /* page-load bar */
+
+    /* Colour: derived from the themed values, so they follow the theme too. */
+    --bw-pill-edge: color-mix(in srgb, var(--bw-text) 22%, transparent); /* omnibox pill border, rail rule */
+    --bw-island: color-mix(in srgb, var(--bw-text) 13%, transparent); /* active tab / row island */
+    --bw-island-idle: color-mix(in srgb, #000 22%, transparent); /* inactive tab / row island */
+    --bw-island-edge: color-mix(in srgb, var(--bw-border) 45%, transparent); /* inactive island outline */
+    --bw-island-hover: var(--bw-hover);
+    --bw-glyph-fill: color-mix(in srgb, var(--bw-accent) 35%, var(--bw-window)); /* placeholder favicon tile */
+    --bw-accent-soft: color-mix(in srgb, var(--bw-accent) 22%, transparent); /* selected-state wash */
+    --bw-on-glyph: #fff; /* glyph drawn on the placeholder favicon tile (--bw-glyph-fill) */
+
+    /* Colour: fixed per scheme (reference-spec.md "Proposed tokens"; Rust sends no equivalent).
+       Dark is the default; [data-scheme="light"] below overrides. */
+    --bw-surface-glass: rgba(32, 32, 32, 0.6);
+    --bw-overlay: rgba(44, 44, 44, 0.94); /* menus, popups, flyouts */
+    --bw-hairline: rgba(255, 255, 255, 0.1); /* separators and 1px contours */
+    --bw-focus-inner: #000; /* 1px contrast ring inside the 2px accent ring */
+    --bw-on-accent: #14181d; /* text on accent fills: Rust's dark accents are light colours */
+    --bw-scrim: rgba(0, 0, 0, 0.4); /* behind modal dialogs */
+
+    /* Colour: group / marker palette (not themed; index 0-7 is sent by Rust as a group colour id). */
+    --bw-group-0: #ee675c;
+    --bw-group-1: #f29d38;
+    --bw-group-2: #e2c14a;
+    --bw-group-3: #6dc27d;
+    --bw-group-4: #4fb8b0;
+    --bw-group-5: #5b9cf0;
+    --bw-group-6: #a77cf0;
+    --bw-group-7: #ec7fb7;
+
+    /* Typography (Fluent ramp; Segoe UI Variable has an automatic optical axis). */
+    --bw-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    --bw-font-panel: "Segoe UI", sans-serif; /* legacy: panels and the menu popup; migrate to --bw-font */
+    --bw-text-chrome: 12px; /* toolbar, tabs, rail, sidebar (line-height 1) */
+    --bw-text-caption: 12px; /* Caption 12/16 */
+    --bw-leading-caption: 16px;
+    --bw-text-body: 14px; /* Body 14/20 */
+    --bw-leading-body: 20px;
+    --bw-text-subtitle: 20px; /* Subtitle 20/28 */
+    --bw-leading-subtitle: 28px;
+    --bw-weight-strong: 600;
+
+    /* Radius (Fluent). */
+    --bw-r-control: 4px; /* buttons, inputs, tooltips, list-row highlight */
+    --bw-r-row: 6px; /* sidebar rows and panel list rows */
+    --bw-r-island: 8px; /* tab islands, cards */
+    --bw-r-overlay: 8px; /* menus, flyouts, dialogs */
+    --bw-r-pill: 999px; /* fully rounded */
+
+    /* Chrome geometry, tuned by hand (commit 2086c05). Change only with the owner's sign-off. */
+    --bw-toolbar-h: 34px; /* toolbar row */
+    --bw-pill-h: 26px; /* omnibox pill; tabs and the rail are sized to match */
+    --bw-pill-max-w: 624px;
+    --bw-r-tab: 9px; /* tab / rail / sidebar island radius, tuned to the 26px pill */
+    --bw-nav-h: 28px; /* back/forward group and toolbar icon buttons */
+    --bw-tab-h: var(--bw-pill-h);
+
+    /* Icons: 16px glyph in a 20px box, 24-unit grid, stroke in rendered px (non-scaling). */
+    --bw-icon: 16px;
+    --bw-icon-box: 20px;
+    --bw-icon-stroke: 1.5px;
+    --bw-icon-stroke-fine: 1px; /* glyphs drawn at 12px or smaller */
+
+    /* Spacing: 4px base. Use 2, 4, 6, 8, 12, 16, 24 (no 5 or 10). */
+    --bw-space: 4px;
+    --bw-space-0_5: 2px;
+    --bw-space-1: 4px;
+    --bw-space-1_5: 6px;
+    --bw-space-2: 8px;
+    --bw-space-3: 12px;
+    --bw-space-4: 16px;
+    --bw-space-6: 24px;
+
+    /* Elevation. */
+    --bw-sh-tip: 0 2px 4px rgba(0, 0, 0, 0.14);
+    --bw-sh-flyout: 0 8px 16px rgba(0, 0, 0, 0.14), 0 0 2px rgba(0, 0, 0, 0.12);
+    --bw-sh-dialog: 0 32px 64px rgba(0, 0, 0, 0.24);
+
+    /* Motion. fast = opacity/colour fades, base = position and scale, slow = sidebar width. */
+    --bw-dur-fast: 83ms;
+    --bw-dur-base: 167ms;
+    --bw-dur-slow: 250ms;
+    --bw-dur-spin: 900ms; /* loading spinner revolution */
+    --bw-ease-out: cubic-bezier(0, 0, 0, 1); /* direct entrance and exit */
+    --bw-ease-move: cubic-bezier(0.55, 0.55, 0, 1); /* point-to-point */
+    --bw-ease-fade: linear; /* opacity fades */
+
+    /* Z-layers between top-level surfaces (local stacking inside a surface may use 1-3). */
+    --bw-z-page: 0;
+    --bw-z-chrome: 10;
+    --bw-z-sidebar-flyout: 20;
+    --bw-z-menu: 30;
+    --bw-z-popup: 40;
+    --bw-z-tooltip: 50;
+    --bw-z-palette: 60;
+    --bw-z-dialog: 70;
+  }
+
+  :root[data-scheme="light"] {
+    --bw-surface-glass: rgba(255, 255, 255, 0.55);
+    --bw-overlay: rgba(252, 252, 252, 0.94);
+    --bw-hairline: rgba(0, 0, 0, 0.08);
+    --bw-focus-inner: #fff;
+    --bw-on-accent: #fff;
+    --bw-scrim: rgba(0, 0, 0, 0.3);
+  }
+
+  /* Reduced motion: movement durations collapse to 0; fades stay at <= 83ms. Together with the
+     global transition rule in base.css, nothing moves (see STYLEGUIDE.md "Motion"). */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --bw-dur-base: 0ms;
+      --bw-dur-slow: 0ms;
+    }
+  }
+
+  /* ---- 3. Tailwind theme (utilities are prefixed `tw:`; see styles/app.css). ----
+  `inline` makes utilities emit var(--bw-...) directly, so runtime theme changes flow through.
+  `--*: initial` drops Tailwind's default palette and scales: only Bowser tokens exist. */
+  @theme inline prefix(tw) {
+    --*: initial;
+
+    --spacing: var(--bw-space);
+
+    --color-window: var(--bw-window);
+    --color-fill: var(--bw-fill);
+    --color-border: var(--bw-border);
+    --color-accent: var(--bw-accent);
+    --color-accent-soft: var(--bw-accent-soft);
+    --color-on-accent: var(--bw-on-accent);
+    --color-on-glyph: var(--bw-on-glyph);
+    --color-focus: var(--bw-focus);
+    --color-text: var(--bw-text);
+    --color-text-2: var(--bw-text-2);
+    --color-hover: var(--bw-hover);
+    --color-selection: var(--bw-selection);
+    --color-island: var(--bw-island);
+    --color-island-idle: var(--bw-island-idle);
+    --color-island-edge: var(--bw-island-edge);
+    --color-glass: var(--bw-surface-glass);
+    --color-overlay: var(--bw-overlay);
+    --color-hairline: var(--bw-hairline);
+    --color-transparent: transparent;
+    --color-current: currentColor;
+    --color-group-0: var(--bw-group-0);
+    --color-group-1: var(--bw-group-1);
+    --color-group-2: var(--bw-group-2);
+    --color-group-3: var(--bw-group-3);
+    --color-group-4: var(--bw-group-4);
+    --color-group-5: var(--bw-group-5);
+    --color-group-6: var(--bw-group-6);
+    --color-group-7: var(--bw-group-7);
+
+    --font-sans: var(--bw-font);
+    --text-chrome: var(--bw-text-chrome);
+    --text-chrome--line-height: 1;
+    --text-caption: var(--bw-text-caption);
+    --text-caption--line-height: var(--bw-leading-caption);
+    --text-body: var(--bw-text-body);
+    --text-body--line-height: var(--bw-leading-body);
+    --text-subtitle: var(--bw-text-subtitle);
+    --text-subtitle--line-height: var(--bw-leading-subtitle);
+    --font-weight-normal: 400;
+    --font-weight-strong: var(--bw-weight-strong);
+
+    --radius-control: var(--bw-r-control);
+    --radius-row: var(--bw-r-row);
+    --radius-island: var(--bw-r-island);
+    --radius-overlay: var(--bw-r-overlay);
+    --radius-tab: var(--bw-r-tab);
+    --radius-pill: var(--bw-r-pill);
+
+    --shadow-tip: var(--bw-sh-tip);
+    --shadow-flyout: var(--bw-sh-flyout);
+    --shadow-dialog: var(--bw-sh-dialog);
+
+    --ease-out: var(--bw-ease-out);
+    --ease-move: var(--bw-ease-move);
+    --ease-fade: var(--bw-ease-fade);
+
+    --animate-spin: bw-spin var(--bw-dur-spin) linear infinite;
+  }
+}
+
+/* `tw:dark:*` follows the scheme Rust sends, not the OS media query. */
+@custom-variant dark (&:where([data-scheme="dark"], [data-scheme="dark"] *));
+@custom-variant light (&:where([data-scheme="light"], [data-scheme="light"] *));

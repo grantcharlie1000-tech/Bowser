@@ -1,0 +1,60 @@
+/*
+ * Surface: MENU POPUP (?view=popup). Owner: menu agent.
+ * Built by ui/src/menu-view.ts (renderMenu) inside ui/src/popup.ts. Class names below are the
+ * ones menu-view.ts emits today; restyle here or move rows onto the shared .bw-menu / .bw-menu-item
+ * components (components.css), which already follow reference-spec.md (8px overlay, 4px padding,
+ * 32px items, 4px item radius, 12px icon gap, 1px separator with 4px margin).
+ *
+ * Legacy: kept exactly as it rendered before the token migration (12px radius, 34px rows,
+ * 13px "Segoe UI"); colours are on tokens.
+ */
+
+#app.html-menu {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: max-content;
+  height: max-content;
+  min-height: 0;
+  max-height: 80vh;
+  min-width: 240px;
+  max-width: 420px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--bw-border);
+  border-radius: 12px;
+  background: var(--bw-window);
+  color: var(--bw-text);
+  font: 13px/1.2 var(--bw-font-panel);
+  outline: none;
+}
+
+.html-menu-row,
+.html-menu-back {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--bw-r-row);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.html-menu-row.selected,
+.html-menu-back:hover { background: var(--bw-hover); }
+.html-menu-row:disabled { color: var(--bw-text-2); }
+.html-menu-row svg { flex: none; width: 16px; height: 16px; }
+.html-menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.html-menu-shortcut { margin-left: auto; color: var(--bw-text-2); white-space: nowrap; }
+.html-menu-arrow { margin-left: 4px; font-size: 18px; }
+.html-menu-separator { height: 1px; margin: 4px 8px; background: var(--bw-border); }
+.html-menu-section { padding: 8px 10px 4px; color: var(--bw-text-2); font-size: 11px; font-weight: 600; }
+.html-menu-back { margin-bottom: 4px; color: var(--bw-text-2); }

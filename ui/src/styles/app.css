@@ -1,0 +1,34 @@
+/*
+ * Stylesheet entry point (owner: foundation). build.mjs compiles this with Tailwind CSS v4 into
+ * the single static dist/app.css; nothing runs at page time and no inline styles are needed, so
+ * the chrome CSP (style-src 'self') is unchanged. See ui/STYLEGUIDE.md.
+ *
+ * Cascade layers, lowest to highest priority:
+ *   theme       tokens.css         --bw-* custom properties (+ host-input fallbacks)
+ *   base        base.css           reset, body type, global reduced-motion rule
+ *   components  components.css     shared .bw-* components and motion classes
+ *   surfaces    toolbar.css ...    one file per surface, each owned by one agent
+ *   utilities   Tailwind           `tw:`-prefixed utilities generated from class names in src/
+ * Inline styles set from TS (theme inputs, --pill-x, --gc, ...) outrank every layer.
+ */
+@layer theme, base, components, surfaces, utilities;
+
+@import "./tokens.css";
+@import "./base.css" layer(base);
+
+/* Surfaces keep the source order of the pre-Tailwind app.css, so equal-specificity rules resolve
+   exactly as before. Append new surfaces at the end. */
+@import "./toolbar.css" layer(surfaces);
+@import "./panels.css" layer(surfaces);
+@import "./dialog.css" layer(surfaces);
+@import "./tabs.css" layer(surfaces);
+@import "./rail.css" layer(surfaces);
+@import "./menu.css" layer(surfaces);
+@import "./sidebar.css" layer(surfaces);
+
+/* Utilities only, no preflight (base.css is the reset). `source(none)` turns off automatic
+   detection: only the files listed below are scanned for `tw:` class names, so the build never
+   reads dist/ or node_modules and its output depends on src/ alone. */
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "../**/*.ts";
+@source "../index.html";

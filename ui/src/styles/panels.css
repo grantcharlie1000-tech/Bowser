@@ -1,0 +1,180 @@
+/*
+ * Surface: PANELS (?view=panel, the anchored panel host; the ?view=dialog windows reuse the same
+ * builders, see dialog.css). Owner: panels agent. Built by ui/src/panel.ts and ui/src/panels/*.ts:
+ * history, bookmarks, customize (also settings), privacy, notes.
+ *
+ * Legacy: these rules predate the token system. Colours and radii are on tokens; the 13px
+ * "Segoe UI" type (--bw-font-panel), 5px radii and odd paddings are kept exactly as they were.
+ * Owner: move them onto Body 14/20, the 4px spacing scale and the shared components
+ * (.bw-input, .bw-button, .bw-row, .bw-section-header in components.css).
+ */
+
+#app.panel-root {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+}
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+  box-sizing: border-box;
+  color: var(--bw-text);
+  background: var(--bw-window);
+  font: 13px/1.4 var(--bw-font-panel);
+}
+
+.privacy-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: auto;
+  padding: 24px max(24px, 8vw);
+  box-sizing: border-box;
+  color: var(--bw-text);
+  background: var(--bw-window);
+  font: 13px/1.5 var(--bw-font-panel);
+}
+
+.privacy-panel button {
+  min-height: 32px;
+  margin: 4px;
+  padding: 6px 10px;
+  color: var(--bw-text);
+  background: var(--bw-fill);
+  border: 1px solid var(--bw-border);
+  border-radius: var(--bw-r-row);
+  cursor: pointer;
+}
+
+.privacy-panel button:hover { background: var(--bw-hover); }
+
+.history-panel input[type="search"] {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 9px;
+  box-sizing: border-box;
+  color: var(--bw-text);
+  background: var(--bw-fill);
+  border: 1px solid var(--bw-border);
+  border-radius: var(--bw-r-row);
+}
+
+  .history-clear { display: flex; gap: 4px; margin-top: 6px; }
+  .history-clear button {
+    flex: 1;
+    min-width: 0;
+    min-height: 24px;
+    padding: 2px 4px;
+    color: var(--bw-text-2);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--bw-r-control);
+    font: inherit;
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .history-clear button:hover,
+  .history-clear button:focus-visible { color: var(--bw-text); background: var(--bw-hover); border-color: var(--bw-border); outline: none; }
+
+.history-list {
+  overflow: auto;
+  scrollbar-width: none;
+  flex: 1;
+  min-height: 0;
+  margin-top: 6px;
+}
+.history-list::-webkit-scrollbar { display: none; }
+
+.history-list h2 {
+  margin: 12px 0 5px;
+  color: var(--bw-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 4px 6px;
+  border-radius: var(--bw-r-row);
+  cursor: default;
+}
+
+.history-row[aria-selected="true"],
+.history-row:hover { background: var(--bw-hover); }
+.history-row:focus-visible { background: var(--bw-hover); outline: 1px solid var(--bw-border); outline-offset: -1px; }
+.history-favicon { width: 16px; height: 16px; flex: 0 0 16px; border-radius: var(--bw-r-control); background: var(--bw-border); }
+.history-text { display: flex; flex: 1; flex-direction: column; overflow: hidden; }
+.history-title, .history-details { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-details { color: var(--bw-text-2); font-size: 11px; }
+.history-row button { color: var(--bw-text); background: transparent; border: 0; cursor: pointer; }
+.history-empty { flex: none; margin: 8px 0 0; color: var(--bw-text-2); text-align: left; }
+
+.bookmarks-panel,
+.customize-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  height: 100vh;
+  padding: 12px;
+  box-sizing: border-box;
+  overflow: auto;
+  color: var(--bw-text);
+  background: var(--bw-window);
+  font: 13px/1.4 var(--bw-font-panel);
+}
+.bookmarks-panel button,
+.bookmarks-panel input,
+.bookmarks-panel select,
+.customize-panel button,
+.customize-panel input,
+.customize-panel select {
+  min-height: 30px;
+  padding: 4px 8px;
+  color: var(--bw-text);
+  background: var(--bw-fill);
+  border: 1px solid var(--bw-border);
+  border-radius: 5px;
+  font: inherit;
+}
+.bookmarks-panel button,
+.customize-panel button { cursor: pointer; }
+.bookmarks-panel button:hover,
+.customize-panel button:hover { background: var(--bw-hover); }
+.bookmarks-panel button:focus-visible,
+.bookmarks-panel input:focus-visible,
+.bookmarks-panel select:focus-visible,
+.customize-panel button:focus-visible,
+.customize-panel input:focus-visible,
+.customize-panel select:focus-visible { outline: 2px solid var(--bw-focus); outline-offset: 1px; }
+.bookmarks-toolbar,
+.bookmarks-location,
+.bookmarks-editor { display: flex; align-items: center; gap: 6px; }
+.bookmarks-panel > input[type="search"] { width: 100%; box-sizing: border-box; }
+.bookmarks-list { display: flex; flex-direction: column; gap: 4px; overflow: auto; min-height: 0; }
+.bookmarks-row { display: flex; align-items: center; gap: 5px; padding: 5px; border-radius: var(--bw-r-row); }
+.bookmarks-row:hover { background: var(--bw-hover); }
+.bookmarks-primary { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.bookmarks-name { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.bookmarks-path,
+.bookmarks-status { overflow: hidden; color: var(--bw-text-2); font-size: 11px; text-overflow: ellipsis; }
+.bookmarks-editor input { min-width: 0; flex: 1; }
+.customize-panel h1 { margin: 0; font-size: 16px; }
+.customize-panel h2 { margin: 5px 0; font-size: 13px; }
+.customize-panel h3 { margin: 0; font-size: 12px; }
+.customize-panel section { display: flex; flex-direction: column; gap: 5px; }
+.customize-panel article { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px; border-radius: var(--bw-r-row); background: var(--bw-fill); }
+.customize-panel article p { flex-basis: 100%; margin: 0; color: var(--bw-text-2); font-size: 11px; overflow-wrap: anywhere; }
+.customize-panel label { display: flex; align-items: center; gap: 7px; min-height: 28px; }
+.customize-panel input[type="checkbox"] { min-height: auto; accent-color: var(--bw-focus); }
+.customize-panel form { display: flex; flex-wrap: wrap; gap: 5px; }
+.customize-panel form input { min-width: 0; flex: 1; }
+.customize-panel [role="status"] { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }

@@ -1,0 +1,322 @@
+/*
+ * Surface: TAB STRIP (?view=tabs, horizontal layout). Owner: tabs agent.
+ * Built by ui/src/tabs.ts (the same page switches to the vertical sidebar, see sidebar.css).
+ * Geometry is hand-tuned to the 26px omnibox pill (commit 2086c05): islands are --bw-tab-h tall
+ * with --bw-r-tab corners. Motion is transform/opacity only.
+ */
+
+
+#app.strip {
+  position: relative;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-left, 0px), #000 calc(100% - var(--fade-right, 0px)), transparent 100%);
+  height: 100%;
+  gap: 3px;
+  padding: 0 4px;
+  align-items: center;
+}
+
+#app.strip::-webkit-scrollbar { display: none; }
+.strip .tab.pinned { position: sticky; z-index: 3; background: var(--bw-window); }
+
+/* Three columns: close button, centred label (favicon and title), marker. The close
+   column is always reserved so the label stays centred when the button appears. */
+.strip .tab {
+  position: relative;
+  isolation: isolate;
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 14px;
+  align-items: center;
+  column-gap: 4px;
+  flex: 1 1 0;
+  min-width: var(--bw-tab-h);
+  height: var(--bw-tab-h);
+  padding: 0 var(--bw-space-1_5);
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-tab);
+  color: var(--bw-text);
+  cursor: default;
+  touch-action: none;
+  transition: transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+.strip .tab[hidden] {
+  display: none;
+}
+
+.strip .tab::before,
+.strip .tab::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+/* Inactive tabs are a darker translucent fill; the active tab is a lighter one. */
+.strip .tab::before {
+  background: var(--bw-island-idle);
+}
+
+.strip .tab::after {
+  background: var(--bw-hover);
+  opacity: 0;
+}
+
+.strip .tab:hover::after {
+  opacity: 1;
+}
+
+.strip .tab.active {
+  border-color: var(--bw-border);
+}
+
+.strip .tab.active::before {
+  background: var(--bw-island);
+}
+
+.strip .tab.dragging {
+  z-index: 2;
+  transition: none;
+}
+
+.strip .tab:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+}
+
+.strip .tab.pinned {
+  flex: 0 0 30px;
+  min-width: 0;
+  padding: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.strip .tab.pinned .label {
+  grid-column: 1;
+}
+
+.strip .tab.pinned .title,
+.strip .tab.pinned .close,
+.strip .tab.pinned .marker {
+  display: none;
+}
+
+.ico {
+  display: grid;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+}
+
+.ico > * {
+  display: none;
+  grid-area: 1 / 1;
+}
+
+.strip .tab[data-icon="fav"] .fav,
+.strip .tab[data-icon="glyph"] .glyph,
+.strip .tab[data-icon="spin"] .spin {
+  display: block;
+}
+
+.strip .fav {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+/* Placeholder for tabs without a favicon: a 16px rounded tile with a small white plus. */
+.strip .glyph {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--bw-r-control);
+  background: var(--bw-glyph-fill);
+  color: var(--bw-on-glyph);
+}
+
+.strip .glyph svg {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
+}
+
+.strip .tab.muted .fav {
+  opacity: 0.55;
+}
+
+.spin {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bw-border);
+  border-top-color: var(--bw-focus);
+  border-radius: 50%;
+  animation: bw-spin var(--bw-dur-spin) linear infinite;
+}
+
+@keyframes bw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.strip .label {
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.strip .title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
+}
+
+.strip .close {
+  grid-column: 1;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--bw-text);
+  opacity: 0;
+  cursor: default;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.strip .close svg {
+  width: 10px;
+  height: 10px;
+}
+
+.strip .tab:hover .close,
+.strip .tab.active .close {
+  opacity: 0.85;
+}
+
+.strip .close:hover {
+  background: var(--bw-hover);
+}
+
+.strip .marker {
+  grid-column: 3;
+  justify-self: end;
+  display: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mc, var(--bw-focus));
+}
+
+.strip .marker.on {
+  display: block;
+}
+
+/* Narrow tabs drop the title, then the close button; the favicon stays. */
+@container (max-width: 119.9px) {
+  .strip .title {
+    display: none;
+  }
+}
+
+@container (max-width: 55.9px) {
+  .strip .close {
+    display: none;
+  }
+}
+
+.strip .group {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--bw-tab-h);
+  padding: 0 2px 0 4px;
+  border-radius: var(--bw-r-tab);
+}
+
+.strip .group::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--bw-fill);
+  opacity: 0.3;
+  box-shadow: inset 0 0 0 1px var(--gc, var(--bw-border));
+  pointer-events: none;
+}
+
+.strip .group.collapsed {
+  flex: 0 1 auto;
+}
+
+.strip .group.collapsed .tab {
+  flex: 0 1 160px;
+}
+
+.ball {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin: 0 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gc, var(--bw-focus));
+  cursor: default;
+}
+
+.ball[aria-expanded="false"] {
+  opacity: 0.6;
+}
+
+.ball:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .strip .tab,
+  .strip .tab::before,
+  .strip .tab::after,
+  .strip .close {
+    transition: none;
+  }
+
+  .spin {
+    animation: none;
+  }
+}
+
