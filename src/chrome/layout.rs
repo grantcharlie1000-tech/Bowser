@@ -1010,15 +1010,16 @@ pub fn hit_test(layout: &Layout, x: i32, y: i32) -> Hit {
 /// the rest of the rail is `Hit::RailBackground`, which takes priority over everything else in its
 /// area.
 pub fn hit_test_with_rail(layout: &Layout, rail: Option<&RailView<'_>>, x: i32, y: i32) -> Hit {
-    hit_test_native(layout, rail, None, x, y)
+    hit_test_native(layout, rail, &[], x, y)
 }
 
-/// [`hit_test_with_rail`] where `html_toolbar` is a region drawn by the HTML chrome. Points in it
-/// are not native chrome, so they give `Hit::None` and no native control is ever hovered or shown.
+/// [`hit_test_with_rail`] where `html_regions` are regions drawn by the HTML chrome (the toolbar
+/// and, when active, the tab row). Points in them are not native chrome, so they give `Hit::None`
+/// and no native control is ever hovered or shown.
 pub fn hit_test_native(
     layout: &Layout,
     rail: Option<&RailView<'_>>,
-    html_toolbar: Option<Rect>,
+    html_regions: &[Rect],
     x: i32,
     y: i32,
 ) -> Hit {
@@ -1031,7 +1032,7 @@ pub fn hit_test_native(
         });
         return key.map_or(Hit::RailBackground, Hit::Rail);
     }
-    if html_toolbar.is_some_and(|region| region.contains(x, y)) {
+    if html_regions.iter().any(|region| region.contains(x, y)) {
         return Hit::None;
     }
     // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
@@ -1886,20 +1887,37 @@ mod tests {
         );
         assert_eq!(hit_test(&l, x, y), Hit::Omnibox);
         assert_eq!(
-            hit_test_native(&l, None, Some(region), x, y),
+            hit_test_native(&l, None, &[region], x, y),
             Hit::None,
             "omnibox inside the HTML region"
         );
         assert_eq!(
-            hit_test_native(&l, None, Some(region), l.back_button.left + 2, l.back_button.top + 2),
+            hit_test_native(&l, None, &[region], l.back_button.left + 2, l.back_button.top + 2),
             Hit::None
         );
         // Outside the region the native hit is unchanged.
         assert_eq!(
-            hit_test_native(&l, None, Some(region), l.new_tab_button.left + 2, l.new_tab_button.top + 2),
+            hit_test_native(&l, None, &[region], l.new_tab_button.left + 2, l.new_tab_button.top + 2),
             hit_test(&l, l.new_tab_button.left + 2, l.new_tab_button.top + 2)
         );
-        assert_eq!(hit_test_native(&l, None, None, x, y), Hit::Omnibox);
+        assert_eq!(hit_test_native(&l, None, &[], x, y), Hit::Omnibox);
+    }
+
+    #[test]
+    fn html_tab_row_region_gives_no_tab_or_group_hits() {
+        let l = compute_in_frame(1024, 600, 96, 3, 0, false);
+        let row = l.tab_row;
+        let (x, y) = (row.left + 20, row.top + row.height() / 2);
+        assert!(
+            matches!(hit_test(&l, x, y), Hit::Tab(_) | Hit::TabClose(_) | Hit::CaptionArea),
+            "{:?}",
+            hit_test(&l, x, y)
+        );
+        assert_eq!(hit_test_native(&l, None, &[row], x, y), Hit::None);
+        // The strip above the row keeps its native hits, and so does the toolbar's "+".
+        let plus = (l.new_tab_button.left + 2, l.new_tab_button.top + 2);
+        assert_eq!(hit_test_native(&l, None, &[row], plus.0, plus.1), hit_test(&l, plus.0, plus.1));
+        assert_eq!(hit_test_native(&l, None, &[row], l.strip.left + 2, l.strip.top + 2), hit_test(&l, l.strip.left + 2, l.strip.top + 2));
     }
 
     #[test]

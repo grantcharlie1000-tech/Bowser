@@ -63,6 +63,10 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 
 The tab row is a second chrome host (same ChromeUI environment, own controller) showing the same bundle with a view selector. Start URLs (exact match required, one per host): `bowser-ui://app/index.html?view=toolbar` and `bowser-ui://app/index.html?view=tabs`. Asset lookup ignores the query; JS reads `location.search`. Bridge validation compares the sender's Source to the host's own start URL.
 
+The tab strip host is a second controller on the same environment, active only while the tab row is horizontal and its page has said `ready`. Its region is the full tab row; the native tab row is not painted there and gives no tab or group hits.
+
+Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before = 0` means the end of the strip). Group keys are a stable non-zero FNV-1a hash of the group's name (domain or opener).
+
 ### JS -> Rust additions (flat objects, ids are unsigned ints that must exist or are ignored)
 
 | `t` | fields | meaning |

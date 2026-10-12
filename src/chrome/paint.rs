@@ -156,6 +156,9 @@ pub struct ChromeSurface {
     /// The HTML chrome draws the toolbar row. Its back, forward, reload, omnibox and main menu are
     /// not painted here, and its region is left transparent so the page shows through.
     html_toolbar: bool,
+    /// The HTML chrome draws the tab row. Its tabs, islands and group balls are not painted here,
+    /// and its region is left transparent. The strip, captions, "+" and rail stay native.
+    html_tabs: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -219,6 +222,7 @@ impl ChromeSurface {
             rail_motion: RailMotion::new(false),
             rail_icons: IconCache::default(),
             html_toolbar: false,
+            html_tabs: false,
         }
     }
 
@@ -282,6 +286,11 @@ impl ChromeSurface {
     /// Hands the toolbar's back, forward, reload, omnibox and main menu to the HTML chrome.
     pub fn set_html_toolbar(&mut self, on: bool) {
         self.html_toolbar = on;
+    }
+
+    /// Hands the tab row to the HTML tab strip: its tabs and group balls are not painted natively.
+    pub fn set_html_tabs(&mut self, on: bool) {
+        self.html_tabs = on;
     }
 
     /// Paints a themed viewport-half target while a tab is being dragged into split view.
@@ -501,9 +510,23 @@ impl ChromeSurface {
                 }
             }
         }
+        if self.html_tabs {
+            // Same as the toolbar region: the HTML tab strip shows through, so it stays clear here.
+            if let Some(region) = crate::chrome_host::tab_row_bounds(view.layout) {
+                let region = Rect::from(region).intersect(dirty);
+                let stride = self.stride();
+                let pixels = self.dib.pixels_mut();
+                for y in region.top..region.bottom {
+                    let start = y as usize * stride + region.left as usize * 4;
+                    pixels[start..start + region.width() as usize * 4].fill(0);
+                }
+            }
+        }
         self.paint_left_rail(view, dirty);
-        self.paint_departures(view, dirty);
-        self.paint_tabs(view, dirty);
+        if !self.html_tabs {
+            self.paint_departures(view, dirty);
+            self.paint_tabs(view, dirty);
+        }
         self.paint_tab_menu(view, dirty);
         self.paint_new_tab(view, dirty);
         if !self.html_toolbar {

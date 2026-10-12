@@ -21,8 +21,8 @@ use crate::{
     chrome_host::{
         self, host::{ChromeEnv, ChromeHost, View},
         protocol::{
-            CaptionAction, Command as ChromeCommand, NavAction, OpenTarget, ViewState,
-            completion_json, focus_json, set_text_json,
+            CaptionAction, Command as ChromeCommand, GroupAction, NavAction, OpenTarget,
+            TabAction, ViewState, completion_json, fav_json, focus_json, set_text_json, tabs_json,
         },
     },
     favicon::{self, FaviconCache},
@@ -35,7 +35,7 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -107,6 +107,8 @@ const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
 const WM_HTML_CHROME_START_TIMER: usize = 0xB05A;
 /// Posted when the HTML toolbar's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_CHROME_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7A;
+/// Posted when the HTML tab strip's WebView2 process fails. Handled on the UI thread.
+const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7B;
 /// Delay between the first paint and starting the HTML toolbar, so the first tab starts first.
 const HTML_CHROME_START_DELAY_MS: u32 = 1000;
 /// Frame interval while chrome transitions run; about 60 frames a second.
@@ -292,6 +294,36 @@ struct WindowChrome {
     html_last_state: Option<String>,
     /// The tab and omnibox text last sent with `setText`, so the text is not re-sent each sync.
     html_text_sent: Option<(TabId, String)>,
+    /// The chrome environment, once created. The tab strip host is created on the same one.
+    html_env: Option<ChromeEnv>,
+    /// The HTML tab strip's WebView2 host, once created. Dropped (and closed) on failure.
+    html_tabs: Option<ChromeHost>,
+    /// Set once the HTML tab strip has been started, so it is never started twice.
+    html_tabs_requested: bool,
+    /// The tab strip page has posted `ready`.
+    html_tabs_page_ready: bool,
+    /// The last `tabs` JSON posted to the tab strip, so an unchanged strip is not sent again.
+    html_tabs_last: Option<String>,
+    /// Group wire key to the tab a group command acts on, from the last strip sent.
+    html_tabs_groups: HashMap<u32, HtmlGroup>,
+    /// Each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes.
+    html_favicons: HashMap<TabId, HtmlFavicon>,
+    /// The favicon key last sent to the tab strip for each tab.
+    html_favicons_sent: HashMap<TabId, FaviconKey>,
+}
+
+/// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HtmlGroup {
+    tab: TabId,
+    collapsible: bool,
+    collapsed: bool,
+}
+
+/// A favicon kept for the HTML tab strip. `png` is `None` when the favicon is too large or not PNG.
+struct HtmlFavicon {
+    key: FaviconKey,
+    png: Option<Vec<u8>>,
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
@@ -369,6 +401,14 @@ impl WindowChrome {
             html_omnibox_focused: false,
             html_last_state: None,
             html_text_sent: None,
+            html_env: None,
+            html_tabs: None,
+            html_tabs_requested: false,
+            html_tabs_page_ready: false,
+            html_tabs_last: None,
+            html_tabs_groups: HashMap::new(),
+            html_favicons: HashMap::new(),
+            html_favicons_sent: HashMap::new(),
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -564,6 +604,7 @@ impl WindowChrome {
         }
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.sync_html_bounds();
+        self.sync_html_tabs_bounds();
         self.surface.resize(w, h, self.dpi)
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
@@ -573,6 +614,36 @@ impl WindowChrome {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
+    }
+    /// The tab row the HTML tab strip covers, in client pixels. `None` until its page is ready and
+    /// while the tabs are vertical (the sidebar), so native paint keeps the row.
+    fn html_tab_region(&self) -> Option<Rect> {
+        if self.html_tabs.is_none() || !self.html_tabs_page_ready {
+            return None;
+        }
+        chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
+    }
+    /// Every HTML region in client pixels: the toolbar's and, when active, the tab row's.
+    fn html_regions(&self) -> Vec<Rect> {
+        self.html_region().into_iter().chain(self.html_tab_region()).collect()
+    }
+    /// Moves the HTML tab strip over the tab row and hides it when there is none. Also tells the
+    /// surface to leave the row to the page.
+    fn sync_html_tabs_bounds(&mut self) {
+        let region = self.html_tab_region();
+        self.surface.set_html_tabs(region.is_some());
+        let Some(host) = &self.html_tabs else {
+            return;
+        };
+        match chrome_host::tab_row_bounds(&self.layout) {
+            Some(bounds) if region.is_some() => {
+                let _ = host.set_bounds(bounds);
+                let _ = host.set_visible(true);
+            }
+            _ => {
+                let _ = host.set_visible(false);
+            }
+        }
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -2508,6 +2579,10 @@ unsafe extern "system" fn window_proc(
                 html_failed(hwnd);
                 LRESULT(0)
             }
+            WM_HTML_TABS_FAILED => {
+                html_tabs_failed(hwnd);
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 if let Some(app) = app {
@@ -2769,10 +2844,11 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
             }).collect::<Vec<_>>();
             let rail = RailView { entries: &entries, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
-            return layout::hit_test_native(&s.layout, Some(&rail), s.html_region(), x, y);
+            return layout::hit_test_native(&s.layout, Some(&rail), &s.html_regions(), x, y);
         }
-        // The HTML toolbar's region belongs to its own WebView2 child, not to native hit tests.
-        if s.html_region().is_some_and(|region| region.contains(x, y)) {
+        // The HTML toolbar's and tab row's regions belong to their own WebView2 children, not to
+        // native hit tests.
+        if s.html_regions().iter().any(|region| region.contains(x, y)) {
             return Hit::None;
         }
         if let Some(sidebar) = s.sidebar
@@ -5219,7 +5295,7 @@ fn start_html_chrome(hwnd: HWND) {
     let created = ChromeEnv::begin_create(&root.join("ChromeUI"), move |env| {
         let hwnd = HWND(raw as *mut _);
         let result = env.and_then(|env| {
-            ChromeHost::create(
+            let created = ChromeHost::create(
                 &env,
                 hwnd,
                 bounds,
@@ -5227,7 +5303,11 @@ fn start_html_chrome(hwnd: HWND) {
                 on_command,
                 on_failed,
                 move |result| html_created(hwnd, result),
-            )
+            );
+            // The tab strip is a second host on the same environment. Its failure is its own.
+            let _ = with_chrome(hwnd, |s| s.html_env = Some(env.clone()));
+            start_html_tabs(hwnd);
+            created
         });
         if result.is_err() {
             html_failed(hwnd);
@@ -5250,7 +5330,10 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_bounds();
     });
     if stored.is_some() {
-        raise_html_toolbar(hwnd);
+        if let Some(region) = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout)).flatten()
+        {
+            raise_html_child(hwnd, region);
+        }
         html_refresh(hwnd);
     }
 }
@@ -5383,9 +5466,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             html_refresh(hwnd);
             return;
         }
-        ChromeCommand::BeginDrag => begin_html_drag(hwnd),
-        ChromeCommand::Caption(CaptionAction::ToggleMaximize) => toggle_max(hwnd),
-        ChromeCommand::Caption(CaptionAction::SystemMenu) => html_system_menu(hwnd),
+        ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => html_window_command(hwnd, command),
         ChromeCommand::Nav(action) => {
             let Some(app) = app_of(hwnd) else { return };
             match action {
@@ -5452,6 +5533,363 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Tab { .. } | ChromeCommand::TabMove { .. } | ChromeCommand::Group { .. } => {}
     }
     html_sync(hwnd);
+}
+
+/// Starts the HTML tab strip's WebView2 controller on the chrome environment, once per window. It
+/// is independent of the toolbar: if it cannot start, the native tab row stays.
+fn start_html_tabs(hwnd: HWND) {
+    let Some((env, bounds)) = with_chrome(hwnd, |s| {
+        if s.html_tabs_requested {
+            return None;
+        }
+        let env = s.html_env.clone()?;
+        s.html_tabs_requested = true;
+        Some((env, chrome_host::tab_row_bounds(&s.layout).unwrap_or_default()))
+    })
+    .flatten() else {
+        return;
+    };
+    let raw = hwnd.0 as isize;
+    let on_command: Rc<dyn Fn(ChromeCommand)> =
+        Rc::new(move |command| html_tabs_command(HWND(raw as *mut _), command));
+    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
+        // Posted, not handled here: the failure can arrive inside the controller's own callback.
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut _)),
+            WM_HTML_TABS_FAILED,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+    let created = ChromeHost::create(
+        &env,
+        hwnd,
+        bounds,
+        View::Tabs,
+        on_command,
+        on_failed,
+        move |result| html_tabs_created(hwnd, result),
+    );
+    if created.is_err() {
+        html_tabs_failed(hwnd);
+    }
+}
+
+/// The tab strip controller was created, or failed. A created host is stored, placed and raised;
+/// the strip activates once its page says `ready`.
+fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+    let Ok(host) = result else {
+        html_tabs_failed(hwnd);
+        return;
+    };
+    let stored = with_chrome(hwnd, move |s| {
+        s.html_tabs = Some(host);
+        s.sync_html_tabs_bounds();
+    });
+    if stored.is_some() {
+        if let Some(region) =
+            with_chrome(hwnd, |s| chrome_host::tab_row_bounds(&s.layout)).flatten()
+        {
+            raise_html_child(hwnd, region);
+        }
+        html_tabs_refresh(hwnd);
+    }
+}
+
+/// Activates the tab strip once its page is ready. A freshly loaded page knows nothing yet, so the
+/// whole strip and every favicon are resent. Runs again on every `ready`.
+fn html_tabs_refresh(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.html_tabs_last = None;
+        s.html_favicons_sent.clear();
+        s.sync_html_tabs_bounds();
+    });
+    html_tabs_sync(hwnd);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// The tab strip failed: its row goes back to native paint and its host is closed. The toolbar is
+/// unaffected. Safe to call more than once.
+fn html_tabs_failed(hwnd: HWND) {
+    let Some(host) = with_chrome(hwnd, |s| {
+        s.html_tabs_page_ready = false;
+        s.html_tabs_last = None;
+        s.html_tabs_groups.clear();
+        s.html_favicons_sent.clear();
+        let host = s.html_tabs.take();
+        s.sync_html_tabs_bounds();
+        host
+    }) else {
+        return;
+    };
+    // Closed outside the borrow: closing a controller can pump messages.
+    if let Some(host) = host {
+        host.close();
+    }
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Handles one validated message from the HTML tab strip. Runs on the UI thread, holding no borrow.
+fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
+    match command {
+        ChromeCommand::Ready => {
+            let _ = with_chrome(hwnd, |s| s.html_tabs_page_ready = true);
+            html_tabs_refresh(hwnd);
+            return;
+        }
+        ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
+            html_window_command(hwnd, command);
+            return;
+        }
+        ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
+        ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
+        ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
+        // The strip sends nothing else. Any other message is ignored.
+        _ => return,
+    }
+    html_tabs_sync(hwnd);
+}
+
+/// Window drag and caption actions, shared by both HTML chrome hosts.
+fn html_window_command(hwnd: HWND, command: ChromeCommand) {
+    match command {
+        ChromeCommand::BeginDrag => begin_html_drag(hwnd),
+        ChromeCommand::Caption(CaptionAction::ToggleMaximize) => toggle_max(hwnd),
+        ChromeCommand::Caption(CaptionAction::SystemMenu) => html_system_menu(hwnd),
+        _ => {}
+    }
+}
+
+/// The client point under the cursor. Native menus take client points.
+fn cursor_client_point(hwnd: HWND) -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    unsafe {
+        GetCursorPos(&mut point).ok()?;
+        let _ = ScreenToClient(hwnd, &mut point);
+    }
+    Some((point.x, point.y))
+}
+
+/// Shows the native tab context menu at a client point, as a right-click on the tab does.
+fn show_html_tab_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32) {
+    let menu_app = app.clone();
+    App::picture_in_picture_eligible(
+        app,
+        id,
+        Box::new(move |available| show_tab_context_menu(hwnd, &menu_app, id, x, y, available)),
+    );
+}
+
+/// A tab action from the strip, through the same App calls the native tab controls use. Ids that
+/// are not open tabs are ignored.
+fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
+    let Some(app) = app_of(hwnd) else { return };
+    let Some(id) = chrome_host::tab_from_wire(raw, &App::tab_ids(&app)) else {
+        return;
+    };
+    match action {
+        TabAction::Select => {
+            let _ = App::select_tab(&app, id);
+        }
+        TabAction::Close => {
+            let _ = App::close_tab(&app, id);
+        }
+        TabAction::Pin => {
+            let pinned = App::tab_pinned(&app, id);
+            let _ = App::set_tab_pinned(&app, id, !pinned);
+        }
+        TabAction::Mute => {
+            let muted = App::tab_muted(&app, id);
+            App::set_tab_muted(&app, id, !muted);
+        }
+        TabAction::Menu => {
+            if let Some((x, y)) = cursor_client_point(hwnd) {
+                card::cancel(hwnd);
+                show_html_tab_menu(hwnd, &app, id, x, y);
+            }
+        }
+    }
+}
+
+/// A drag-reorder drop from the strip: the same `App::drop_tab` a native drop calls, with the index
+/// worked out in the same post-removal terms.
+fn html_tab_move(hwnd: HWND, raw: u32, before: u32) {
+    let Some(app) = app_of(hwnd) else { return };
+    let ids = App::tab_ids(&app);
+    let Some(moved) = chrome_host::tab_from_wire(raw, &ids) else {
+        return;
+    };
+    let Some(index) = chrome_host::drop_index(&ids, moved, before) else {
+        return;
+    };
+    // App::drop_tab applies the group join and leave rules, as for a native drop.
+    let _ = App::drop_tab(&app, moved, index);
+}
+
+/// A group command from the strip. Like the native ball: a domain group toggles its collapse and
+/// opens its island menu; an opener group has nothing to collapse, so its ball selects the tab and
+/// its menu is the tab menu.
+fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
+    let Some(app) = app_of(hwnd) else { return };
+    let Some(group) =
+        with_chrome(hwnd, |s| s.html_tabs_groups.get(&key).copied()).flatten()
+    else {
+        return;
+    };
+    match action {
+        GroupAction::Toggle if group.collapsible => {
+            let _ = App::set_tab_group_collapsed(&app, group.tab, !group.collapsed);
+        }
+        GroupAction::Toggle => {
+            let _ = App::select_tab(&app, group.tab);
+        }
+        GroupAction::Menu => {
+            let Some((x, y)) = cursor_client_point(hwnd) else {
+                return;
+            };
+            card::cancel(hwnd);
+            if group.collapsible {
+                island_menu::open_now(hwnd, &app, group.tab, Rect::new(x, y, x + 1, y + 1));
+            } else {
+                show_html_tab_menu(hwnd, &app, group.tab, x, y);
+            }
+        }
+    }
+}
+
+/// Keeps each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes. The App
+/// is read only for tabs whose favicon key changed, and entries of closed tabs are dropped. Returns
+/// the tabs that have a sendable favicon.
+fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId> {
+    for &id in ids {
+        let key = App::tab_favicon_key(app, id);
+        let cached =
+            with_chrome(hwnd, |s| s.html_favicons.get(&id).map(|favicon| favicon.key)).flatten();
+        if key == cached {
+            continue;
+        }
+        let entry = key.map(|key| HtmlFavicon {
+            key,
+            png: App::tab_favicon(app, id).filter(|png| chrome_host::favicon_sendable(png)),
+        });
+        let _ = with_chrome(hwnd, |s| match entry {
+            Some(entry) => {
+                s.html_favicons.insert(id, entry);
+            }
+            None => {
+                s.html_favicons.remove(&id);
+            }
+        });
+    }
+    let live: HashSet<TabId> = ids.iter().copied().collect();
+    with_chrome(hwnd, |s| {
+        s.html_favicons.retain(|id, _| live.contains(id));
+        s.html_favicons_sent.retain(|id, _| live.contains(id));
+        s.html_favicons
+            .iter()
+            .filter(|(_, favicon)| favicon.png.is_some())
+            .map(|(id, _)| *id)
+            .collect::<HashSet<TabId>>()
+    })
+    .unwrap_or_default()
+}
+
+/// Posts the tab strip's tabs and any favicon that is new for its tab. Does nothing while the strip
+/// is not active (not ready, or the tabs are vertical), and posts nothing that is unchanged. Holds no
+/// chrome borrow while calling App, which may re-enter this window.
+fn html_tabs_sync(hwnd: HWND) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    // Titles, loading and markers come from the snapshot the native strip paints.
+    let Some((host, snapshot)) = with_chrome(hwnd, |s| {
+        s.html_tab_region()?;
+        Some((
+            s.html_tabs.clone()?,
+            s.tabs
+                .iter()
+                .map(|tab| (tab.id, tab.title.clone(), tab.loading, tab.marker))
+                .collect::<Vec<_>>(),
+        ))
+    })
+    .flatten() else {
+        return;
+    };
+    let ids: Vec<TabId> = snapshot.iter().map(|(id, ..)| *id).collect();
+    let active = App::active_tab_id(&app);
+    let inputs = App::tab_group_inputs(&app);
+    let preferences = App::tab_group_preferences(&app);
+    let keys = tab_groups::group_keys(&inputs, &preferences);
+    let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
+        inputs.iter().map(|input| input.id).zip(keys).collect();
+    let with_png = html_tabs_favicons(hwnd, &app, &ids);
+    let rows: Vec<chrome_host::TabRow> = snapshot
+        .into_iter()
+        .map(|(id, title, loading, marker)| chrome_host::TabRow {
+            id,
+            title,
+            loading,
+            pinned: App::tab_pinned(&app, id),
+            muted: App::tab_muted(&app, id),
+            marker,
+            group: group_of
+                .get(&id)
+                .cloned()
+                .flatten()
+                .map(|key| chrome_host::row_group(&key, &preferences)),
+            has_favicon: with_png.contains(&id),
+        })
+        .collect();
+    let items = chrome_host::tab_items(&rows);
+    let json = tabs_json(
+        chrome_host::tab_to_wire(active).unwrap_or(0),
+        &items,
+    );
+    let groups: HashMap<u32, HtmlGroup> = rows
+        .iter()
+        .filter(|row| !row.pinned)
+        .filter_map(|row| {
+            let group = row.group.as_ref()?;
+            Some((
+                chrome_host::group_wire_key(&group.key),
+                HtmlGroup {
+                    tab: row.id,
+                    collapsible: group.collapsible,
+                    collapsed: group.collapsed,
+                },
+            ))
+        })
+        .collect();
+    let (send_json, sends) = with_chrome(hwnd, |s| {
+        s.html_tabs_groups = groups;
+        let send_json = chrome_host::state_changed(&mut s.html_tabs_last, &json);
+        let mut sends = Vec::new();
+        for (id, favicon) in &s.html_favicons {
+            let Some(png) = &favicon.png else {
+                continue;
+            };
+            if s.html_favicons_sent.get(id) != Some(&favicon.key) {
+                s.html_favicons_sent.insert(*id, favicon.key);
+                sends.push((*id, png.clone()));
+            }
+        }
+        (send_json, sends)
+    })
+    .unwrap_or_default();
+    if send_json {
+        let _ = host.post_json(&json);
+    }
+    for (id, png) in sends {
+        if let Some(favicon_json) =
+            chrome_host::tab_to_wire(id).and_then(|wire| fav_json(wire, &png))
+        {
+            let _ = host.post_json(&favicon_json);
+        }
+    }
 }
 
 /// Inline completion for the HTML omnibox. Mirrors the native EN_CHANGE path: the text is kept for
@@ -5529,9 +5967,9 @@ fn html_system_menu(hwnd: HWND) {
     }
 }
 
-/// Raises the HTML toolbar's WebView2 window to the top of the z-order. It is the child of `hwnd`
-/// whose client rectangle is the toolbar region. Tab views never overlap that region.
-fn raise_html_toolbar(hwnd: HWND) {
+/// Raises the WebView2 window of an HTML chrome host to the top of the z-order. It is the child of
+/// `hwnd` whose client rectangle is `region`. The toolbar and tab row regions never overlap.
+fn raise_html_child(hwnd: HWND, region: RECT) {
     struct Search {
         parent: HWND,
         region: RECT,
@@ -5574,10 +6012,6 @@ fn raise_html_toolbar(hwnd: HWND) {
         }
         BOOL(0)
     }
-    let Some(region) = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout)).flatten()
-    else {
-        return;
-    };
     let mut search = Search {
         parent: hwnd,
         region,
@@ -5620,6 +6054,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     static PAINT_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // The HTML toolbar has no paint of its own here; this is where its state is refreshed.
     html_sync(hwnd);
+    html_tabs_sync(hwnd);
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
