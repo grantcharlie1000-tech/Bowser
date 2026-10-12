@@ -92,15 +92,33 @@ pub fn should_handoff_edit(native_focused: bool, native_text: &str, committed_te
     native_focused || native_text != committed_text
 }
 
-/// Whether the HTML toolbar is enabled. Read once from `BOWSER_UI`; unset means the GDI chrome.
+/// Whether the HTML chrome is enabled. Read once from `BOWSER_UI`: `html` enables it and `native`
+/// (or `gdi`) disables it. When the variable is unset or has another value, builds made with the
+/// `html-chrome-default` feature (the installer's release build) use the HTML chrome and plain
+/// builds keep the GDI chrome. The HTML chrome falls back to GDI at runtime if its views fail.
 pub fn html_ui_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| parse_ui_mode(std::env::var("BOWSER_UI").ok().as_deref()))
+    *ENABLED.get_or_init(|| {
+        ui_mode(
+            std::env::var("BOWSER_UI").ok().as_deref(),
+            cfg!(feature = "html-chrome-default"),
+        )
+    })
 }
 
-/// Only the value `html`, in any letter case, selects the HTML chrome.
+/// Resolves the chrome mode: an explicit `html` or `native`/`gdi` (any letter case) wins, anything
+/// else uses `default_html`.
+pub fn ui_mode(value: Option<&str>, default_html: bool) -> bool {
+    match value {
+        Some(v) if v.eq_ignore_ascii_case("html") => true,
+        Some(v) if v.eq_ignore_ascii_case("native") || v.eq_ignore_ascii_case("gdi") => false,
+        _ => default_html,
+    }
+}
+
+/// Only the value `html`, in any letter case, selects the HTML chrome (no compile-time default).
 pub fn parse_ui_mode(value: Option<&str>) -> bool {
-    value.is_some_and(|value| value.eq_ignore_ascii_case("html"))
+    ui_mode(value, false)
 }
 
 /// Client-relative physical pixels of the HTML toolbar: from the back button's left edge to the
@@ -430,6 +448,23 @@ mod tests {
         for value in [None, Some(""), Some("gdi"), Some("html "), Some(" html"), Some("htm"), Some("1")] {
             assert!(!parse_ui_mode(value), "{value:?}");
         }
+    }
+
+    #[test]
+    fn explicit_value_beats_the_build_default_and_unknown_values_use_it() {
+        // A build that defaults to the HTML chrome (the installer's release build).
+        assert!(ui_mode(None, true));
+        assert!(ui_mode(Some(""), true));
+        assert!(ui_mode(Some("html "), true));
+        assert!(ui_mode(Some("1"), true));
+        assert!(ui_mode(Some("HTML"), true));
+        assert!(!ui_mode(Some("native"), true));
+        assert!(!ui_mode(Some("NATIVE"), true));
+        assert!(!ui_mode(Some("gdi"), true));
+        // A plain build keeps the GDI chrome unless asked.
+        assert!(!ui_mode(None, false));
+        assert!(!ui_mode(Some("native"), false));
+        assert!(ui_mode(Some("html"), false));
     }
 
     #[test]

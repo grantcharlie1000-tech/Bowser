@@ -1,6 +1,6 @@
 # HTML chrome: architecture and bridge contract (v1)
 
-Status: toolbar, tab strip and rail are implemented. Panel, popup and dialog views have foundation stubs; their content and native hosts follow in later backlog tasks. The GDI chrome remains the default; the HTML chrome is opt-in with `BOWSER_UI=html` and falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
+Status: toolbar, tab strip and rail are implemented. Panel, popup and dialog views have foundation stubs; their content and native hosts follow in later backlog tasks. Plain `cargo build` keeps the GDI chrome as the default and the HTML chrome is opt-in with `BOWSER_UI=html`; builds made with `--features html-chrome-default` (what `Update-Bowser.ps1` builds, so the installed exe and its shortcuts open the HTML chrome) default to HTML, and `BOWSER_UI=native` selects the GDI chrome in any build. The HTML chrome falls back to GDI at runtime if its WebView2 process fails. The chrome shares the tab WebView2 environment (one set of browser processes) in a private chrome profile.
 
 ## Architecture (reviewed by Opus)
 
