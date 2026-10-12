@@ -2374,17 +2374,24 @@ unsafe fn configure_controller(
                 ));
             }
 
-            let script_webview = webview.clone();
-            AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-                Box::new(move |handler| {
-                    let script = CoTaskMemPWSTR::from(LOGIN_DETECTION_SCRIPT);
-                    script_webview
-                        .AddScriptToExecuteOnDocumentCreated(*script.as_ref().as_pcwstr(), &handler)
-                        .map_err(webview2_com::Error::WindowsError)
-                }),
-                Box::new(|error_code, _id| error_code),
-            )
-            .map_err(|_| Error::from(windows::Win32::Foundation::E_FAIL))?;
+            // Never wait for this completion: configure_controller runs inside the controller's
+            // creation callback, and WebView2 does not deliver a completion to a nested message
+            // pump started from its own callback. Waiting here hung every non-guest tab before its
+            // first navigation. WebView2 applies the script in call order, so it is in place for
+            // the Navigate that follows. A synchronous failure still fails configuration.
+            let script = CoTaskMemPWSTR::from(LOGIN_DETECTION_SCRIPT);
+            let script_log = events.policy_event.clone();
+            webview.AddScriptToExecuteOnDocumentCreated(
+                *script.as_ref().as_pcwstr(),
+                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                    move |status, _id| {
+                        if status.is_err() {
+                            event(script_log.as_ref(), "login_script_failed");
+                        }
+                        Ok(())
+                    },
+                )),
+            )?;
 
             let last_form_seen = Rc::new(Cell::new(None::<Instant>));
             let last_login_submitted = Rc::new(Cell::new(None::<Instant>));
@@ -3253,6 +3260,17 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_never_blocks_on_a_webview2_completion() {
+        // Tab controllers are configured inside WebView2's controller-created callback, where a
+        // nested pump never receives the awaited completion: the login script wait hung every
+        // non-guest tab before its first page. Completions must be handled asynchronously.
+        let source = include_str!("webview2.rs");
+        for blocking in [concat!("wait_for_async", "_operation"), concat!("wait_with", "_pump")] {
+            assert!(!source.contains(blocking), "src/engine/webview2.rs uses {blocking}");
+        }
+    }
 
     #[test]
     fn controller_security_policy_disables_unused_webview_capabilities() {
