@@ -27,6 +27,16 @@ function Get-BowserSourceHash {
     $files += Get-ChildItem -LiteralPath $srcPath -File -Recurse |
         Where-Object { $_.Extension -in @('.rs', '.txt') }
 
+    foreach ($uiPath in @('ui\src', 'ui\dist', 'ui\dist.manifest')) {
+        $path = Join-Path $Root $uiPath
+        if (Test-Path -LiteralPath $path -PathType Container) {
+            $files += Get-ChildItem -LiteralPath $path -File -Recurse
+        }
+        elseif (Test-Path -LiteralPath $path -PathType Leaf) {
+            $files += Get-Item -LiteralPath $path
+        }
+    }
+
     foreach ($optionalPath in @('rust-toolchain', 'rust-toolchain.toml', '.cargo\config', '.cargo\config.toml')) {
         $path = Join-Path $Root $optionalPath
         if (Test-Path -LiteralPath $path -PathType Leaf) {
