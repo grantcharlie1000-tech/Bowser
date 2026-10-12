@@ -10,6 +10,9 @@ export interface View {
   readonly site: HTMLButtonElement;
   readonly split: HTMLButtonElement;
   readonly input: HTMLInputElement;
+  /** Unfocused URL rendering with the host emphasised; visual only, aria-hidden. */
+  readonly display: HTMLElement;
+  readonly pill: HTMLElement;
   readonly progress: HTMLElement;
   readonly menu: HTMLButtonElement;
 }
@@ -19,7 +22,7 @@ export const DRAG_ATTR = 'data-drag';
 
 const SECURITY_ICON: Readonly<Record<Security, IconName>> = {
   secure: 'lock',
-  notsecure: 'info',
+  notsecure: 'warning',
   certproblem: 'warning',
   internal: 'info',
   unknown: 'info',
@@ -48,21 +51,50 @@ const THEME_VAR: Readonly<Record<ThemeToken, string>> = {
   progress: '--progress',
 };
 
-function iconButton(label: string, name: IconName, className = 'btn'): HTMLButtonElement {
-  const button = el('button', className);
+/** Accessible name plus the HTML tooltip text (the tooltip layer reads data-tip; no title=). */
+function label(button: HTMLElement, name: string, tip: string = name): void {
+  button.setAttribute('aria-label', name);
+  setTip(button, tip);
+}
+
+/** Toolbar icon button: shared .bw-icon-btn with the one toolbar icon weight (toolbar.css). */
+function iconButton(text: string, name: IconName, className: string, tip?: string): HTMLButtonElement {
+  const button = el('button', `bw-icon-btn ${className}`);
   button.type = 'button';
-  button.setAttribute('aria-label', label);
-  setTip(button, label);
+  label(button, text, tip);
   button.append(icon(name));
   return button;
 }
 
+/** A URL split for display. */
+export interface UrlParts {
+  /** "http://" for plain http, empty for https (the lock says it). */
+  readonly scheme: string;
+  readonly host: string;
+  /** Path, query and fragment; empty for a bare origin. */
+  readonly rest: string;
+}
+
+/** Null when `text` is not a plain http(s) URL (search text, other schemes, credentials, partial input). */
+export function splitUrl(text: string): UrlParts | null {
+  if (text.length > MAX_TEXT || /\s/.test(text)) return null;
+  const m = /^(https?):\/\/([^/?#@]+)(.*)$/i.exec(text);
+  if (!m) return null;
+  const scheme = (m[1] ?? '').toLowerCase();
+  const rest = m[3] ?? '';
+  return {
+    scheme: scheme === 'https' ? '' : `${scheme}://`,
+    host: m[2] ?? '',
+    rest: rest === '/' ? '' : rest,
+  };
+}
+
 export function buildView(root: HTMLElement): View {
-  const back = iconButton('Back', 'back');
-  const forward = iconButton('Forward', 'forward');
-  const reload = iconButton('Reload', 'reload');
-  const site = iconButton('Site information', 'info', 'btn site');
-  const split = iconButton('Split view', 'split', 'btn split');
+  const back = iconButton('Back', 'back', 'tb-nav is-lg is-round', 'Back (Alt+Left)');
+  const forward = iconButton('Forward', 'forward', 'tb-nav is-lg is-round', 'Forward (Alt+Right)');
+  const reload = iconButton('Reload', 'reload', 'tb-nav is-lg is-round', 'Reload (Ctrl+R)');
+  const site = iconButton('Site information', 'info', 'tb-site bw-focus-inset is-round');
+  const split = iconButton('Split view', 'split', 'tb-split bw-focus-inset is-round');
 
   const input = el('input', 'omni');
   input.type = 'text';
@@ -70,15 +102,23 @@ export function buildView(root: HTMLElement): View {
   input.autocomplete = 'off';
   input.dir = 'auto';
   input.maxLength = MAX_TEXT;
+  input.placeholder = 'Search or enter address';
   input.setAttribute('aria-label', 'Address and search bar');
+
+  // Shown instead of the input text while the omnibox is unfocused (see main.ts showDisplay).
+  const display = el('div', 'omni-display');
+  display.setAttribute('aria-hidden', 'true');
 
   const progress = el('div', 'progress');
   progress.setAttribute('aria-hidden', 'true');
 
-  const pill = el('div', 'pill');
-  pill.append(site, input, split, progress);
+  const field = el('div', 'omni-field');
+  field.append(input, display);
 
-  const menu = iconButton('Menu', 'menu');
+  const pill = el('div', 'pill');
+  pill.append(site, field, split, progress);
+
+  const menu = iconButton('Menu', 'menu', 'tb-nav is-lg is-round');
 
   // Back and forward share one rounded container; reload is a plain icon beside it.
   const navGroup = el('div', 'nav-group');
@@ -96,16 +136,43 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, input, progress, menu };
+  return { back, forward, reload, site, split, input, display, pill, progress, menu };
+}
+
+/**
+ * Renders `text` into the unfocused display and reports whether it is a URL worth emphasising.
+ * Called on setText and blur only, never per keystroke.
+ */
+export function renderDisplay(view: View, text: string): boolean {
+  const parts = splitUrl(text);
+  if (!parts) {
+    view.display.replaceChildren();
+    return false;
+  }
+  const host = el('span', 'u-host');
+  host.textContent = parts.host;
+  const nodes: Node[] = [];
+  if (parts.scheme !== '') {
+    const scheme = el('span', 'u-rest');
+    scheme.textContent = parts.scheme;
+    nodes.push(scheme);
+  }
+  nodes.push(host);
+  if (parts.rest !== '') {
+    const rest = el('span', 'u-rest');
+    rest.textContent = parts.rest;
+    nodes.push(rest);
+  }
+  view.display.replaceChildren(...nodes);
+  return true;
 }
 
 function setReloadMode(button: HTMLButtonElement, loading: boolean): void {
   const mode: IconName = loading ? 'stop' : 'reload';
   if (button.dataset.mode === mode) return;
   button.dataset.mode = mode;
-  const label = loading ? 'Stop' : 'Reload';
-  button.setAttribute('aria-label', label);
-  setTip(button, label);
+  if (loading) label(button, 'Stop');
+  else label(button, 'Reload', 'Reload (Ctrl+R)');
   button.replaceChildren(icon(mode));
 }
 
@@ -128,17 +195,20 @@ export function applyState(view: View, state: StateMsg): void {
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);
 
-  view.progress.style.transform = `scaleX(${state.progress / 100})`;
-  view.progress.style.opacity = state.loading && state.progress < 100 ? '1' : '0';
+  // Transform only (scaleX): the bar never changes layout. Opacity hides it at rest and at 100%.
+  const loadingNow = state.loading && state.progress < 100;
+  view.progress.style.transform = `scaleX(${Math.max(0, Math.min(1, state.progress / 100))})`;
+  view.progress.style.opacity = loadingNow ? '1' : '0';
+  view.pill.classList.toggle('is-loading', loadingNow);
 
   const site = view.site;
   if (site.dataset.security !== state.security) {
     site.dataset.security = state.security;
     site.replaceChildren(icon(SECURITY_ICON[state.security]));
   }
+  view.pill.dataset.security = state.security;
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
-  site.setAttribute('aria-label', text);
-  setTip(site, text);
+  label(site, text);
 }
 
 export function applyTheme(theme: Theme, solid: boolean, dark: boolean): void {

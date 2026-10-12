@@ -1,6 +1,6 @@
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
-import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
+import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
 import { startPanel } from './panel';
@@ -105,10 +105,28 @@ function startToolbar(root: HTMLElement): void {
     }
   });
 
+  // Unfocused, a URL shows host-emphasised (view.display); focused, the real input text shows.
+  // Updated on setText and blur only, never while typing.
+  const showDisplay = (): void => {
+    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value));
+  };
+
+  // A click that focuses the omnibox selects the whole address, as in every browser.
+  let selectOnUp = false;
+  input.addEventListener('pointerdown', () => {
+    selectOnUp = document.activeElement !== input;
+  });
+  input.addEventListener('pointerup', () => {
+    if (selectOnUp && input.selectionStart === input.selectionEnd) input.select();
+    selectOnUp = false;
+  });
+
   input.addEventListener('focus', () => {
+    view.pill.classList.remove('is-display');
     send({ v: 1, t: 'focus', on: true });
   });
   input.addEventListener('blur', () => {
+    showDisplay();
     send({ v: 1, t: 'focus', on: false });
   });
 
@@ -138,6 +156,7 @@ function startToolbar(root: HTMLElement): void {
         lastInputType = '';
         input.value = msg.text;
         if (msg.select) input.select();
+        showDisplay();
         break;
       case 'focusOmnibox':
         input.focus();
