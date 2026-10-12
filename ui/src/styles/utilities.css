@@ -1,0 +1,37 @@
+/*
+ * Custom Tailwind utilities (owner: foundation). Imported without a layer: Tailwind requires
+ * @utility at the top level and places the generated classes in its `utilities` layer itself.
+ * With the `tw` prefix they are used as `tw:duration-fast`, `tw:focus-ring`, `tw:enter`, ...
+ */
+
+@utility duration-fast {
+  transition-duration: var(--bw-dur-fast);
+}
+
+@utility duration-base {
+  transition-duration: var(--bw-dur-base);
+}
+
+@utility duration-slow {
+  transition-duration: var(--bw-dur-slow);
+}
+
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--bw-focus);
+    outline-offset: 1px;
+    box-shadow: 0 0 0 1px var(--bw-focus-inner);
+  }
+}
+
+@utility enter {
+  animation: bw-enter var(--bw-dur-base) var(--bw-ease-out) both;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: bw-fade-in var(--bw-dur-fast) var(--bw-ease-fade) both;
+  }
+}
+
+@utility exit {
+  animation: bw-fade-out var(--bw-dur-fast) var(--bw-ease-fade) both;
+}

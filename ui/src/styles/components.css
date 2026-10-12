@@ -1,0 +1,639 @@
+/*
+ * Shared components (owner: foundation). Imported into `@layer components`, so any surface file
+ * (layer `surfaces`) or `tw:` utility (layer `utilities`) overrides these without !important.
+ *
+ * Every class is prefixed `bw-` so it can never collide with the legacy surface classes.
+ * Markup contracts (roles, states) are listed in ui/STYLEGUIDE.md. State is expressed with ARIA
+ * attributes where one exists (aria-checked, aria-pressed, aria-selected, aria-disabled,
+ * aria-expanded) and with `.is-*` classes otherwise.
+ *
+ * Motion rules: animate transform and opacity only; never width/height/top/left/margin/padding.
+ * Never set pointer-events:none on an interactive element to cover a transition.
+ */
+
+/* ---- Focus ring: 2px accent outside a 1px contrast ring (reference-spec "Focus ring"). ---- */
+:is(
+    .bw-focus-ring,
+    .bw-icon-btn,
+    .bw-button,
+    .bw-toggle,
+    .bw-segmented > button,
+    .bw-menu-item,
+    .bw-row
+  ):focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px var(--bw-focus-inner);
+}
+
+/* Inside clipping containers (scrollers, pills, islands) the ring is drawn inward instead. */
+.bw-focus-inset:focus-visible,
+:is(.bw-menu-item, .bw-row).bw-focus-inset:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+/* ---- Icons (ui/src/icons.ts). 24-unit grid, stroke in rendered px at any glyph size. ---- */
+.bw-icon {
+  display: block;
+  flex: none;
+  width: var(--bw-icon-size, var(--bw-icon));
+  height: var(--bw-icon-size, var(--bw-icon));
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--bw-icon-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+  overflow: visible;
+}
+
+/* Strokes keep --bw-icon-stroke CSS px whatever the glyph size or viewBox scale. Filled dots
+   (stroke: none) scale with the glyph. */
+.bw-icon > * {
+  vector-effect: non-scaling-stroke;
+}
+
+.bw-icon.is-fine {
+  --bw-icon-stroke: var(--bw-icon-stroke-fine);
+}
+
+/* ---- Icon button: 20px box, 16px glyph. `.is-lg` is the 28px toolbar size. ---- */
+.bw-icon-btn {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: var(--bw-icon-box);
+  height: var(--bw-icon-box);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: var(--bw-text);
+  cursor: default;
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.bw-icon-btn.is-lg {
+  width: var(--bw-nav-h);
+  height: var(--bw-nav-h);
+}
+
+.bw-icon-btn.is-round {
+  border-radius: 50%;
+}
+
+.bw-icon-btn > svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  pointer-events: none;
+}
+
+.bw-icon-btn:hover:not(:disabled, [aria-disabled="true"]) {
+  background-color: var(--bw-hover);
+}
+
+.bw-icon-btn:active:not(:disabled, [aria-disabled="true"]) {
+  background-color: var(--bw-island);
+  transform: scale(0.94);
+}
+
+.bw-icon-btn:is([aria-pressed="true"], [aria-expanded="true"], .is-on) {
+  background-color: var(--bw-island);
+}
+
+.bw-icon-btn:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.35;
+}
+
+/* ---- Pill: the omnibox shape, for any capsule container. ---- */
+.bw-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--bw-pill-h);
+  border: 1px solid var(--bw-pill-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-fill);
+  overflow: hidden;
+}
+
+.bw-pill:focus-within {
+  border-color: var(--bw-focus);
+}
+
+/* ---- Island: tab / sidebar-row surface. Idle tint, hover wash, raised when active. ---- */
+.bw-island {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  height: var(--bw-tab-h);
+  padding: 0 var(--bw-space-1_5);
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-tab);
+  background-color: var(--bw-island-idle);
+  color: var(--bw-text);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-island:hover {
+  background-image: linear-gradient(var(--bw-hover), var(--bw-hover));
+}
+
+.bw-island:is(.is-active, [aria-selected="true"], [aria-current="page"]) {
+  border-color: var(--bw-border);
+  background-color: var(--bw-island);
+}
+
+/* ---- Overlay surfaces: menu, flyout, popup. ---- */
+.bw-overlay,
+.bw-menu {
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  color: var(--bw-text);
+}
+
+.bw-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 420px;
+  padding: var(--bw-space-1);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+}
+
+/* Square the corners that touch the invoker (Fluent AutoSuggest rule). */
+.bw-overlay.is-attached-top {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* Menu item: 32px, 4px radius, 12px icon-text gap. Parts: .bw-menu-icon (svg), .bw-menu-label,
+   .bw-menu-accel (right-aligned Caption at 60%), .bw-menu-check, .bw-menu-chevron. */
+.bw-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: default;
+}
+
+.bw-menu-item:is(:hover, .is-selected):not(:disabled, [aria-disabled="true"]) {
+  background: var(--bw-hover);
+}
+
+.bw-menu-item:is(:disabled, [aria-disabled="true"]) {
+  color: color-mix(in srgb, var(--bw-text-2) 70%, transparent);
+}
+
+.bw-menu-item > svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.bw-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-menu-accel {
+  margin-inline-start: auto;
+  padding-inline-start: var(--bw-space-4);
+  color: color-mix(in srgb, var(--bw-text) 60%, transparent);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  white-space: nowrap;
+}
+
+.bw-menu-check,
+.bw-menu-chevron {
+  margin-inline-start: auto;
+  color: var(--bw-text-2);
+}
+
+/* ---- Separators. ---- */
+.bw-separator {
+  flex: none;
+  height: 1px;
+  margin: var(--bw-space-1) 0;
+  border: 0;
+  background: var(--bw-hairline);
+}
+
+.bw-separator.is-vertical {
+  width: 1px;
+  height: auto;
+  align-self: stretch;
+  margin: 0 var(--bw-space-1);
+}
+
+/* ---- Section header: sentence case, never uppercase eyebrows. ---- */
+.bw-section-header {
+  margin: 0;
+  padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+/* ---- List row: 32px dense row. `.is-tall` 56px (downloads), `.is-setting` 48px (settings). ---- */
+.bw-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 var(--bw-space-2);
+  border-radius: var(--bw-r-row);
+  color: var(--bw-text);
+  cursor: default;
+}
+
+.bw-row:hover {
+  background: var(--bw-hover);
+}
+
+.bw-row:is([aria-selected="true"], .is-selected) {
+  background: var(--bw-island);
+}
+
+.bw-row.is-tall {
+  min-height: 56px;
+}
+
+.bw-row.is-setting {
+  min-height: 48px;
+  border-radius: 0;
+  border-bottom: 1px solid var(--bw-hairline);
+}
+
+.bw-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bw-row-title,
+.bw-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-row-meta {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* ---- Text input. ---- */
+.bw-input {
+  min-width: 0;
+  height: 32px;
+  margin: 0;
+  padding: 0 var(--bw-space-2);
+  border: 1px solid var(--bw-border);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+  user-select: text;
+}
+
+.bw-input::placeholder {
+  color: var(--bw-text-2);
+}
+
+.bw-input::selection {
+  background: var(--bw-selection);
+}
+
+.bw-input:focus-visible {
+  border-color: var(--bw-focus);
+  box-shadow: inset 0 0 0 1px var(--bw-focus);
+}
+
+.bw-input:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.5;
+}
+
+/* ---- Buttons: 28px, 4px radius. Default is secondary; `.is-primary` is accent-filled,
+   `.is-subtle` is transparent until hovered. ---- */
+.bw-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-2);
+  height: 28px;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border: 1px solid var(--bw-border);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  white-space: nowrap;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-button:hover:not(:disabled, [aria-disabled="true"]) {
+  background-image: linear-gradient(var(--bw-hover), var(--bw-hover));
+}
+
+.bw-button:active:not(:disabled, [aria-disabled="true"]) {
+  background-color: var(--bw-island);
+}
+
+.bw-button.is-primary {
+  border-color: transparent;
+  background-color: var(--bw-accent);
+  color: var(--bw-on-accent);
+}
+
+.bw-button.is-primary:active:not(:disabled, [aria-disabled="true"]) {
+  background-color: color-mix(in srgb, var(--bw-accent) 85%, var(--bw-on-accent));
+}
+
+.bw-button.is-subtle {
+  border-color: transparent;
+  background-color: transparent;
+}
+
+.bw-button:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.45;
+}
+
+/* ---- Toggle switch: <button class="bw-toggle" role="switch" aria-checked="true|false">. ---- */
+.bw-toggle {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bw-text-2);
+  border-radius: var(--bw-r-pill);
+  background: transparent;
+  cursor: default;
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    border-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-toggle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bw-text-2);
+  transition:
+    transform var(--bw-dur-base) var(--bw-ease-move),
+    background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-toggle:hover::after {
+  transform: scale(1.17);
+}
+
+.bw-toggle[aria-checked="true"] {
+  border-color: transparent;
+  background: var(--bw-accent);
+}
+
+.bw-toggle[aria-checked="true"]::after {
+  background: var(--bw-on-accent);
+  transform: translateX(20px);
+}
+
+.bw-toggle[aria-checked="true"]:hover::after {
+  transform: translateX(20px) scale(1.17);
+}
+
+.bw-toggle:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.45;
+}
+
+/* ---- Segmented control: <div class="bw-segmented" role="radiogroup"> of buttons with
+   aria-checked (role="radio") or aria-pressed. ---- */
+.bw-segmented {
+  display: inline-flex;
+  gap: var(--bw-space-0_5);
+  padding: var(--bw-space-0_5);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+}
+
+.bw-segmented > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-1_5);
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  padding: 0 var(--bw-space-2);
+  border: 1px solid transparent;
+  border-radius: calc(var(--bw-r-control) - 1px);
+  background: transparent;
+  color: var(--bw-text-2);
+  font: var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-segmented > button:hover {
+  background: var(--bw-hover);
+  color: var(--bw-text);
+}
+
+.bw-segmented > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]) {
+  border-color: var(--bw-island-edge);
+  background: var(--bw-island);
+  color: var(--bw-text);
+}
+
+/* ---- Dialog shell: .bw-dialog > .bw-dialog-title, .bw-dialog-body, .bw-dialog-actions. ---- */
+.bw-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  min-width: 320px;
+  max-width: 560px;
+  padding: var(--bw-space-6);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-dialog);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+.bw-dialog-title {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+}
+
+.bw-dialog-body {
+  margin: 0;
+  color: var(--bw-text-2);
+}
+
+.bw-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bw-space-2);
+  margin-top: var(--bw-space-3);
+}
+
+/* ---- Tooltip: Caption 12/16, 4px radius, 6x8 padding, elevation 16. ---- */
+.bw-tooltip {
+  position: fixed;
+  z-index: var(--bw-z-tooltip);
+  max-width: 320px;
+  padding: var(--bw-space-1_5) var(--bw-space-2);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-tip);
+  color: var(--bw-text);
+  font: var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
+  pointer-events: none; /* never interactive; it must not steal hover from its anchor */
+}
+
+/* ---- Scrollbars: thin overlay-style thumb, no track. `.bw-scroll-hidden` scrolls without one. ---- */
+.bw-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--bw-text) 28%, transparent) transparent;
+}
+
+.bw-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.bw-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.bw-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--bw-text) 28%, transparent) padding-box;
+}
+
+.bw-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--bw-text) 45%, transparent);
+}
+
+.bw-scroll-hidden {
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.bw-scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---- Spinner (status, not decoration: it keeps turning under reduced motion, slower). ---- */
+.bw-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bw-border);
+  border-top-color: var(--bw-accent);
+  border-radius: 50%;
+  animation: bw-spin var(--bw-dur-spin) linear infinite;
+}
+
+/* ---- Motion. Enter: fade + 4px drop/rise + .98 scale over 167ms out-ease. Exit: 83ms fade.
+   Add the class when the element is inserted; for exit, add .bw-exit and remove the element on
+   `animationend` (input still reaches it while it fades). ---- */
+@keyframes bw-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--bw-enter-y, 4px)) scale(var(--bw-enter-scale, 0.98));
+  }
+}
+
+@keyframes bw-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes bw-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+.bw-enter {
+  animation: bw-enter var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+/* Drops from an anchor above it (menus, suggestions, flyouts under the toolbar). */
+.bw-enter.is-down {
+  --bw-enter-y: -4px;
+}
+
+/* Rises 8px (command palette, dialogs). */
+.bw-enter.is-rise {
+  --bw-enter-y: 8px;
+}
+
+/* Scale only (popovers centred on their anchor). */
+.bw-enter.is-scale {
+  --bw-enter-y: 0px;
+}
+
+.bw-exit {
+  animation: bw-fade-out var(--bw-dur-fast) var(--bw-ease-fade) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-enter {
+    animation: bw-fade-in var(--bw-dur-fast) var(--bw-ease-fade) both;
+  }
+
+  .bw-icon-btn:active:not(:disabled, [aria-disabled="true"]) {
+    transform: none;
+  }
+
+  .bw-spinner {
+    animation-duration: calc(var(--bw-dur-spin) * 2.67);
+  }
+}

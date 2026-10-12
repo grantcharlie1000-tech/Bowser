@@ -15,6 +15,7 @@
 
 @import "./tokens.css";
 @import "./base.css" layer(base);
+@import "./components.css" layer(components);
 
 /* Surfaces keep the source order of the pre-Tailwind app.css, so equal-specificity rules resolve
    exactly as before. Append new surfaces at the end. */
@@ -30,5 +31,6 @@
    detection: only the files listed below are scanned for `tw:` class names, so the build never
    reads dist/ or node_modules and its output depends on src/ alone. */
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./utilities.css";
 @source "../**/*.ts";
 @source "../index.html";
