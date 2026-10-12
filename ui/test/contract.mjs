@@ -2,15 +2,22 @@
 // src/chrome_host/protocol.rs (tabs_json_*, fav_json_*). If Rust output changes, update both sides.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
+// protocol.ts imports the rail grammar from rail-logic.ts, so it is bundled rather than transpiled alone.
 const here = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(here, '..', 'src', 'protocol.ts'), 'utf8');
-const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
-const { parseInbound } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const bundled = esbuild.buildSync({
+  entryPoints: [join(here, '..', 'src', 'protocol.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  write: false,
+  logLevel: 'silent',
+});
+const bundledUrl = `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`;
+const { parseInbound } = await import(bundledUrl);
 
 test('empty tabs message from Rust parses', () => {
   const m = parseInbound('{"v":1,"t":"tabs","active":0,"items":[]}');
@@ -43,4 +50,106 @@ test('favicon message from Rust parses', () => {
 
 test('wrong version is rejected', () => {
   assert.equal(parseInbound('{"v":2,"t":"tabs","active":0,"items":[]}'), null);
+});
+
+// Milestone 3 (left rail) shapes, exactly as docs/html-chrome-protocol.md documents them.
+const RAIL_SAMPLE =
+  '{"v":1,"t":"rail","items":[' +
+  '{"k":"home","icon":"home","label":"Home","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"customize","icon":"customize","label":"Customize","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"addws","icon":"plus","label":"New workspace","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"ws:3","icon":"g:briefcase","label":"Work","active":true,"dot":false,"accent":"#e5484d","fav":false},' +
+  '{"k":"app:12","icon":"letter","label":"Mail","active":false,"dot":true,"accent":"","fav":false},' +
+  '{"k":"app:13","icon":"apptile","label":"Apps","active":false,"dot":false,"accent":"","fav":true},' +
+  '{"k":"addapp","icon":"plus","label":"Add app","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"bookmarks","icon":"heart","label":"Bookmarks","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"history","icon":"clock","label":"History","active":false,"dot":false,"accent":"","fav":false},' +
+  '{"k":"menu","icon":"dots","label":"Menu","active":false,"dot":false,"accent":"","fav":false}]}';
+const RAILFAV_SAMPLE = '{"v":1,"t":"railfav","k":"app:13","uri":"data:image/png;base64,iVBORw0KGgo="}';
+
+/** One rail item JSON with the given overrides, for negative cases. */
+function railItem(overrides = {}) {
+  return JSON.stringify({ k: 'ws:1', icon: 'g:star', label: 'Star', active: false, dot: false, accent: '', fav: false, ...overrides });
+}
+function railMsg(items, extra = {}) {
+  return JSON.stringify({ v: 1, t: 'rail', items: items.map((s) => JSON.parse(s)), ...extra });
+}
+
+test('the documented rail message parses into typed items', () => {
+  const m = parseInbound(RAIL_SAMPLE);
+  assert.equal(m?.t, 'rail');
+  assert.equal(m.items.length, 10);
+  assert.equal(m.items[3].k, 'ws:3');
+  assert.equal(m.items[3].icon, 'g:briefcase');
+  assert.equal(m.items[3].accent, '#e5484d');
+  assert.equal(m.items[4].label, 'Mail');
+});
+
+test('the documented railfav message parses', () => {
+  assert.deepEqual(parseInbound(RAILFAV_SAMPLE), { t: 'railfav', k: 'app:13', uri: 'data:image/png;base64,iVBORw0KGgo=' });
+});
+
+test('an empty rail parses', () => {
+  assert.deepEqual(parseInbound('{"v":1,"t":"rail","items":[]}'), { t: 'rail', items: [] });
+});
+
+test('rail messages reject a wrong version, extra or missing keys and non-array items', () => {
+  assert.equal(parseInbound(RAIL_SAMPLE.replace('"v":1', '"v":2')), null);
+  assert.equal(parseInbound('{"v":1,"t":"rail","items":[],"extra":1}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"rail"}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"rail","items":{}}'), null);
+  assert.equal(parseInbound(railMsg([railItem()], { extra: 1 })), null);
+  assert.equal(parseInbound('{"v":1,"t":"railfav","k":"app:1","uri":"data:image/png;base64,AA==","x":1}'), null);
+  assert.equal(parseInbound('{"v":2,"t":"railfav","k":"app:1","uri":"data:image/png;base64,AA=="}'), null);
+});
+
+test('rail items must have exactly the documented keys', () => {
+  const missing = JSON.stringify({ k: 'home', icon: 'home', label: 'Home', active: false, dot: false, accent: '' });
+  assert.equal(parseInbound(`{"v":1,"t":"rail","items":[${missing}]}`), null);
+  assert.equal(parseInbound(railMsg([railItem({ extra: true })])), null);
+});
+
+test('rail keys follow the grammar and stay unique within a message', () => {
+  for (const k of ['home', 'customize', 'addws', 'addapp', 'bookmarks', 'history', 'menu', 'ws:0', 'ws:' + '9'.repeat(20), 'app:1234567890']) {
+    assert.ok(parseInbound(railMsg([railItem({ k })])), k);
+  }
+  for (const k of ['', 'Home', 'ws:', 'ws:' + '9'.repeat(21), 'app:' + '9'.repeat(11), 'app:x', 'ws:1 ', 'toolbar', 'addws ', 'ws:-1']) {
+    assert.equal(parseInbound(railMsg([railItem({ k })])), null, JSON.stringify(k));
+  }
+  assert.equal(parseInbound(railMsg([railItem({ k: 'ws:1' }), railItem({ k: 'ws:1' })])), null);
+});
+
+test('rail icons come from the allowed list only', () => {
+  for (const icon of ['home', 'customize', 'plus', 'heart', 'clock', 'dots', 'apptile', 'letter', 'g:briefcase', 'g:leaf']) {
+    assert.ok(parseInbound(railMsg([railItem({ icon })])), icon);
+  }
+  for (const icon of ['', 'Home', 'g:', 'g:unknown', 'g:g:home', 'url(x)', 'star']) {
+    assert.equal(parseInbound(railMsg([railItem({ icon })])), null, JSON.stringify(icon));
+  }
+});
+
+test('rail labels are capped at 64 characters', () => {
+  assert.ok(parseInbound(railMsg([railItem({ label: 'x'.repeat(64) })])));
+  assert.equal(parseInbound(railMsg([railItem({ label: 'x'.repeat(65) })])), null);
+});
+
+test('rail accents accept only safe colours or the empty string', () => {
+  for (const accent of ['', '#fff', '#e5484d', 'rgb(1, 2, 3)', 'rgba(0,0,0,0.5)']) {
+    assert.equal(parseInbound(railMsg([railItem({ accent })])).items[0].accent, accent, accent);
+  }
+  for (const accent of ['red', 'url(x)', '#ggg', 'rgb(1,2,3);', 'expression(1)', `rgb(${'1,'.repeat(40)}1)`]) {
+    assert.equal(parseInbound(railMsg([railItem({ accent })])), null, accent);
+  }
+});
+
+test('a rail holds up to 128 items and no more', () => {
+  const full = Array.from({ length: 128 }, (_, i) => railItem({ k: `app:${i + 1}`, icon: 'letter' }));
+  assert.equal(parseInbound(railMsg(full)).items.length, 128);
+  assert.equal(parseInbound(railMsg([...full, railItem({ k: 'app:999' })])), null);
+});
+
+test('railfav enforces the key grammar and the favicon rules', () => {
+  assert.equal(parseInbound('{"v":1,"t":"railfav","k":"toolbar","uri":"data:image/png;base64,AA=="}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"railfav","k":"app:1","uri":"https://example.com/a.png"}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"railfav","k":"app:1","uri":"data:image/png;base64,A A"}'), null);
 });

@@ -1,9 +1,12 @@
-// Typed bridge for the toolbar and tab strip pages. Mirrors docs/html-chrome-protocol.md (v1).
-// Page-controlled text reaches the DOM only through textContent (see view.ts and tabs.ts).
+// Typed bridge for the toolbar, tab strip and left rail pages. Mirrors docs/html-chrome-protocol.md (v1).
+// Page-controlled text reaches the DOM only through textContent or attributes (see view.ts, tabs.ts, rail.ts).
+import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail-logic';
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_TEXT = 2048;
 const MAX_LABEL = 512;
+/** Rail button label (also its tooltip and letter-tile source). */
+const MAX_RAIL_LABEL = 64;
 const MAX_COLOR = 64;
 const MAX_WIRE = 16 * 1024;
 const MAX_INBOUND = 256 * 1024;
@@ -22,6 +25,7 @@ export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
+export type RailAction = 'click' | 'menu';
 
 export const THEME_TOKENS = [
   'bg',
@@ -51,7 +55,9 @@ export type Command =
   | { v: 1; t: 'caption'; a: CaptionAction }
   | { v: 1; t: 'tab'; a: TabAction; id: number }
   | { v: 1; t: 'tabmove'; id: number; before: number }
-  | { v: 1; t: 'group'; a: GroupAction; key: number };
+  | { v: 1; t: 'group'; a: GroupAction; key: number }
+  | { v: 1; t: 'rail'; a: RailAction; k: string }
+  | { v: 1; t: 'railmove'; k: string; before: string };
 
 // Rust -> JS messages (validated by parseInbound).
 export interface StateMsg {
@@ -112,7 +118,36 @@ export interface FavMsg {
   readonly id: number;
   readonly uri: string;
 }
-export type Inbound = StateMsg | SetTextMsg | FocusOmniboxMsg | CompletionMsg | TabsMsg | FavMsg;
+export interface RailItem {
+  /** Rail key (see RAIL_KEY_RE in rail-logic.ts). */
+  readonly k: string;
+  readonly icon: RailIconName;
+  readonly label: string;
+  readonly active: boolean;
+  readonly dot: boolean;
+  /** Safe CSS colour, or '' for the theme accent. */
+  readonly accent: string;
+  /** A favicon is cached for this key (see the `railfav` message). */
+  readonly fav: boolean;
+}
+export interface RailMsg {
+  readonly t: 'rail';
+  readonly items: readonly RailItem[];
+}
+export interface RailFavMsg {
+  readonly t: 'railfav';
+  readonly k: string;
+  readonly uri: string;
+}
+export type Inbound =
+  | StateMsg
+  | SetTextMsg
+  | FocusOmniboxMsg
+  | CompletionMsg
+  | TabsMsg
+  | FavMsg
+  | RailMsg
+  | RailFavMsg;
 
 interface WebViewLike {
   postMessage(message: string): void;
@@ -156,6 +191,10 @@ function isOneOf<T extends string>(v: unknown, list: readonly T[]): v is T {
 
 function hasOnlyKeys(v: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(v).every((k) => keys.includes(k));
+}
+
+function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((k) => k in v);
 }
 
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
@@ -212,6 +251,24 @@ function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
   return { ...base, gname, gcol, gcollapsed, gsize };
 }
 
+const RAIL_ITEM_KEYS = ['k', 'icon', 'label', 'active', 'dot', 'accent', 'fav'];
+
+/** A PNG data: URI with base64 payload, at most MAX_FAV_URI characters. */
+function isFavUri(v: unknown): v is string {
+  if (!isStr(v, MAX_FAV_URI) || !v.startsWith(FAV_PREFIX)) return false;
+  return BASE64_RE.test(v.slice(FAV_PREFIX.length));
+}
+
+/** Strict validation of one `rail` item: every key present, none extra, key unique within the message. */
+function parseRailItem(v: unknown, seen: ReadonlySet<string>): RailItem | null {
+  if (!isRecord(v) || !hasOnlyKeys(v, RAIL_ITEM_KEYS) || !hasAllKeys(v, RAIL_ITEM_KEYS)) return null;
+  const { k, icon, label, active, dot, accent, fav } = v;
+  if (typeof k !== 'string' || !isRailKey(k) || seen.has(k)) return null;
+  if (!isRailIcon(icon) || !isStr(label, MAX_RAIL_LABEL) || !isBool(active) || !isBool(dot) || !isBool(fav)) return null;
+  if (!isStr(accent, MAX_COLOR) || (accent !== '' && !isSafeColour(accent))) return null;
+  return { k, icon, label, active, dot, accent, fav };
+}
+
 /** Strictly validates a host message. Accepts an object or its JSON text; returns null for anything unexpected. */
 export function parseInbound(data: unknown): Inbound | null {
   let raw: unknown = data;
@@ -249,8 +306,8 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     case 'setText': {
       const { text, select } = raw;
-      if (!isStr(text, MAX_TEXT) || !isBool(select)) return null;
-      return { t: 'setText', text, select };
+      if (typeof text !== 'string' || !isBool(select)) return null;
+      return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select };
     }
     case 'focusOmnibox': {
       const { select } = raw;
@@ -279,11 +336,38 @@ export function parseInbound(data: unknown): Inbound | null {
     case 'fav': {
       if (!hasOnlyKeys(raw, ['v', 't', 'id', 'uri']) || raw.v !== 1) return null;
       const { id, uri } = raw;
-      if (!isInt(id, 0, MAX_ID) || !isStr(uri, MAX_FAV_URI) || !uri.startsWith(FAV_PREFIX)) return null;
-      if (!BASE64_RE.test(uri.slice(FAV_PREFIX.length))) return null;
+      if (!isInt(id, 0, MAX_ID) || !isFavUri(uri)) return null;
       return { t: 'fav', id, uri };
+    }
+    case 'rail': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'items']) || raw.v !== 1) return null;
+      const { items } = raw;
+      if (!Array.isArray(items) || items.length > MAX_RAIL_ITEMS) return null;
+      const seen = new Set<string>();
+      const out: RailItem[] = [];
+      for (const v of items) {
+        const item = parseRailItem(v, seen);
+        if (!item) return null;
+        seen.add(item.k);
+        out.push(item);
+      }
+      return { t: 'rail', items: out };
+    }
+    case 'railfav': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'k', 'uri']) || raw.v !== 1) return null;
+      const { k, uri } = raw;
+      if (typeof k !== 'string' || !isRailKey(k) || !isFavUri(uri)) return null;
+      return { t: 'railfav', k, uri };
     }
     default:
       return null;
   }
+}
+
+function truncateCodePoint(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let end = max;
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return text.slice(0, end);
 }

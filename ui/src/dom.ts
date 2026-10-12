@@ -8,7 +8,24 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: st
   return node;
 }
 
-export type IconName = 'back' | 'forward' | 'reload' | 'stop' | 'menu' | 'split' | 'plus' | 'lock' | 'warning' | 'info' | 'close';
+/** Makes `parent` contain exactly `nodes`, in order, moving only what is out of place. */
+export function place(parent: HTMLElement, nodes: readonly HTMLElement[]): void {
+  let ref: ChildNode | null = parent.firstChild;
+  for (const node of nodes) {
+    if (node === ref) {
+      ref = ref.nextSibling;
+      continue;
+    }
+    parent.insertBefore(node, ref);
+  }
+  while (ref) {
+    const next: ChildNode | null = ref.nextSibling;
+    ref.remove();
+    ref = next;
+  }
+}
+
+export type IconName ='back' | 'forward' | 'reload' | 'stop' | 'menu' | 'split' | 'plus' | 'lock' | 'warning' | 'info' | 'close';
 
 const ICON_PATHS: Readonly<Record<IconName, readonly string[]>> = {
   close: ['M4.5 4.5l7 7', 'M11.5 4.5l-7 7'],

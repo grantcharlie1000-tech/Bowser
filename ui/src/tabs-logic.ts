@@ -1,7 +1,22 @@
 // Pure tab-strip logic: no DOM and no runtime imports, so test/tabs-reconcile.mjs can load it directly.
 import type { TabItem } from './protocol';
 
-export const FAV_CACHE_MAX = 256;
+export const FAV_CACHE_MAX = 512;
+export const DRAG_EDGE_PX = 24;
+
+export function hiddenForTab(grouped: boolean, collapsed: boolean, active: boolean): boolean {
+  return grouped && collapsed && !active;
+}
+
+export function scrollDeltaForWheel(deltaX: number, deltaY: number, shiftKey: boolean): number {
+  return shiftKey && deltaX === 0 ? deltaY : deltaX;
+}
+
+export function dragScrollDelta(x: number, left: number, right: number, edge = DRAG_EDGE_PX): number {
+  if (x - left < edge) return -Math.max(1, edge - (x - left));
+  if (right - x < edge) return Math.max(1, edge - (right - x));
+  return 0;
+}
 
 export interface Slot {
   readonly item: TabItem;
@@ -56,7 +71,7 @@ export function buildEntries(items: readonly TabItem[], active: number): Entry[]
     const list = membersByKey.get(item.g) ?? [item];
     const leader = list.find((m) => m.gl) ?? list[0] ?? item;
     const collapsed = leader.gcollapsed === true;
-    const members = list.map((m): Slot => ({ item: m, hidden: collapsed && m.id !== active }));
+    const members = list.map((m): Slot => ({ item: m, hidden: hiddenForTab(true, collapsed, m.id === active) }));
     entries.push({
       kind: 'group',
       key: item.g,
@@ -104,7 +119,9 @@ export function beforeId(others: readonly number[], dest: number): number {
 }
 
 /** Stores a favicon and keeps the map bounded (oldest insertion dropped first). */
-export function rememberFav(favs: Map<number, string>, id: number, uri: string, max = FAV_CACHE_MAX): void {
+export function rememberFav(favs: Map<number, string>, id: number, uri: string, live: ReadonlySet<number>, max = FAV_CACHE_MAX): void {
+  pruneFavs(favs, live);
+  if (!live.has(id)) return;
   favs.delete(id);
   favs.set(id, uri);
   while (favs.size > max) {

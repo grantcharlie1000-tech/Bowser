@@ -1,15 +1,18 @@
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
 import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
-import { el, icon } from './dom';
+import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import {
   beforeId,
   buildEntries,
   dropIndex,
+  dragScrollDelta,
+  hiddenForTab,
   pruneFavs,
   rememberFav,
   slotShift,
+  scrollDeltaForWheel,
   type Entry,
   type GroupEntry,
 } from './tabs-logic';
@@ -52,7 +55,7 @@ interface Drag {
   readonly node: TabNode;
   /** Visible tabs in strip order when the drag started. */
   readonly order: readonly TabNode[];
-  readonly centers: readonly number[];
+  centers: readonly number[];
   readonly from: number;
   active: boolean;
   dest: number;
@@ -72,7 +75,7 @@ function createTab(id: number): TabNode {
   const close = el('button', 'close');
   close.type = 'button';
   close.tabIndex = -1;
-  close.setAttribute('aria-hidden', 'true');
+  close.setAttribute('aria-label', 'Close tab: Tab');
   close.append(icon('close'));
 
   const img = el('img', 'fav');
@@ -106,6 +109,8 @@ function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): v
     n.root.title = label;
   }
   n.root.setAttribute('aria-selected', String(selected));
+  const close = n.root.querySelector<HTMLButtonElement>('.close');
+  if (close) close.setAttribute('aria-label', `Close tab: ${label}`);
   n.root.classList.toggle('active', selected);
   n.root.classList.toggle('pinned', item.pinned);
   n.root.classList.toggle('muted', item.muted);
@@ -158,23 +163,6 @@ function syncGroup(g: GroupNode, e: GroupEntry): void {
     g.shell.style.flex = flex;
   }
   g.shell.classList.toggle('collapsed', e.collapsed);
-}
-
-/** Makes `parent` contain exactly `nodes`, in order, moving only what is out of place. */
-function place(parent: HTMLElement, nodes: readonly HTMLElement[]): void {
-  let ref: ChildNode | null = parent.firstChild;
-  for (const node of nodes) {
-    if (node === ref) {
-      ref = ref.nextSibling;
-      continue;
-    }
-    parent.insertBefore(node, ref);
-  }
-  while (ref) {
-    const next: ChildNode | null = ref.nextSibling;
-    ref.remove();
-    ref = next;
-  }
 }
 
 function setShift(n: TabNode, px: number): void {
@@ -272,7 +260,9 @@ export function startTabs(strip: HTMLElement): void {
     const top: HTMLElement[] = [];
     for (const e of entries) {
       if (e.kind === 'tab') {
-        top.push(syncTab(e.slot.item).root);
+        const n = syncTab(e.slot.item);
+        n.root.hidden = false;
+        top.push(n.root);
         continue;
       }
       let g = groups.get(e.key);
@@ -284,14 +274,25 @@ export function startTabs(strip: HTMLElement): void {
       const nodes: HTMLElement[] = [g.ball];
       for (const slot of e.members) {
         const n = syncTab(slot.item);
-        if (n.root.hidden !== slot.hidden) n.root.hidden = slot.hidden;
+        n.root.hidden = hiddenForTab(true, e.collapsed, slot.item.id === activeId);
         nodes.push(n.root);
       }
       place(g.shell, nodes);
       top.push(g.shell);
     }
     place(strip, top);
+    let pinnedLeft = 0;
+    for (const node of tabNodes.values()) {
+      if (!node.root.classList.contains('pinned')) continue;
+      node.root.style.left = `${pinnedLeft}px`;
+      pinnedLeft += node.root.getBoundingClientRect().width + 3;
+    }
     applyRoving();
+    tabNodes.get(activeId)?.root.scrollIntoView({
+      block: 'nearest', inline: 'nearest',
+      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+    });
+    updateEdges();
   };
 
   // ----- drag reorder -----
@@ -300,17 +301,17 @@ export function startTabs(strip: HTMLElement): void {
     if (ev.key !== 'Escape') return;
     ev.preventDefault();
     ev.stopPropagation();
-    finishDrag(false);
+    endDrag(false);
   };
 
-  const finishDrag = (commit: boolean): void => {
+  const endDrag = (commit: boolean): void => {
     const d = drag;
     if (!d) return;
     drag = null;
     window.removeEventListener('keydown', onDragKey, true);
+    try { if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
     if (!d.active) return;
     ignoreClick = true;
-    if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId);
     d.node.root.classList.remove('dragging');
     d.node.root.style.transform = '';
     d.node.shift = 0;
@@ -320,6 +321,13 @@ export function startTabs(strip: HTMLElement): void {
       send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeId(others, d.dest) });
     }
     schedule();
+  };
+
+  const updateEdges = (): void => {
+    const left = strip.scrollLeft > 1;
+    const right = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1;
+    strip.style.setProperty('--fade-left', left ? '12px' : '0px');
+    strip.style.setProperty('--fade-right', right ? '12px' : '0px');
   };
 
   const onPointerDown = (ev: PointerEvent): void => {
@@ -341,6 +349,7 @@ export function startTabs(strip: HTMLElement): void {
       return r.left + r.width / 2;
     });
     drag = { pointerId: ev.pointerId, startX: ev.clientX, node, order, centers, from, active: false, dest: from };
+    try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
 
   const onPointerMove = (ev: PointerEvent): void => {
@@ -350,11 +359,16 @@ export function startTabs(strip: HTMLElement): void {
     if (!d.active) {
       if (Math.abs(dx) < DRAG_START_PX) return;
       d.active = true;
-      d.node.root.setPointerCapture(d.pointerId);
       d.node.root.classList.add('dragging');
       window.addEventListener('keydown', onDragKey, true);
     }
     d.node.root.style.transform = `translateX(${dx}px)`;
+    const edgeDelta = dragScrollDelta(ev.clientX, strip.getBoundingClientRect().left, strip.getBoundingClientRect().right);
+    if (edgeDelta !== 0) {
+      strip.scrollLeft += edgeDelta;
+      updateEdges();
+      d.centers = d.order.map((n) => { const r = n.root.getBoundingClientRect(); return r.left + r.width / 2; });
+    }
     d.dest = dropIndex(d.centers, d.from, (d.centers[d.from] ?? 0) + dx);
     d.order.forEach((n, i) => {
       if (i !== d.from) setShift(n, slotShift(d.centers, i, d.from, d.dest));
@@ -363,7 +377,7 @@ export function startTabs(strip: HTMLElement): void {
 
   const onPointerEnd = (ev: PointerEvent, commit: boolean): void => {
     const d = drag;
-    if (d && ev.pointerId === d.pointerId) finishDrag(commit);
+    if (d && ev.pointerId === d.pointerId) endDrag(commit);
   };
 
   // ----- events -----
@@ -372,6 +386,15 @@ export function startTabs(strip: HTMLElement): void {
   strip.addEventListener('pointermove', onPointerMove);
   strip.addEventListener('pointerup', (ev) => onPointerEnd(ev, true));
   strip.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
+  strip.addEventListener('lostpointercapture', (ev) => onPointerEnd(ev, false));
+  window.addEventListener('pointerup', (ev) => onPointerEnd(ev, true));
+  window.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
+  window.addEventListener('blur', () => endDrag(false));
+  strip.addEventListener('scroll', updateEdges, { passive: true });
+  strip.addEventListener('wheel', (ev) => {
+    const delta = scrollDeltaForWheel(ev.deltaX, ev.deltaY, ev.shiftKey);
+    if (delta !== 0) { ev.preventDefault(); strip.scrollLeft += delta; }
+  }, { passive: false });
 
   strip.addEventListener('click', (ev) => {
     const t = ev.target;
@@ -472,6 +495,7 @@ export function startTabs(strip: HTMLElement): void {
     if (!target) return;
     applyRoving(target);
     target.root.focus();
+    target.root.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
 
   onInbound((msg) => {
@@ -486,7 +510,7 @@ export function startTabs(strip: HTMLElement): void {
         schedule();
         break;
       case 'fav':
-        rememberFav(favs, msg.id, msg.uri);
+        rememberFav(favs, msg.id, msg.uri, new Set(latest?.items.map((item) => item.id) ?? []));
         dirty = true;
         schedule();
         break;

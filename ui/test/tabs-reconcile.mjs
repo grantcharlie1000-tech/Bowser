@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'tabs-logic.ts'), 'utf8');
 const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
 const logic = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const { beforeId, buildEntries, dropIndex, pruneFavs, rememberFav, shiftTarget, slotShift } = logic;
+const { beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
 
 const tab = (id, extra = {}) => ({
   id,
@@ -31,6 +31,17 @@ test('dropIndex counts the other tabs left of the dragged centre', () => {
   assert.equal(dropIndex(centers, 0, 35), 1);
   assert.equal(dropIndex(centers, 0, 100), 3);
   assert.equal(dropIndex(centers, 3, 20), 1);
+});
+
+test('overflow helpers cover wheel, edge drag and group visibility decisions', () => {
+  assert.equal(scrollDeltaForWheel(0, 12, true), 12);
+  assert.equal(scrollDeltaForWheel(4, 12, false), 4);
+  assert.equal(dragScrollDelta(5, 0, 200), -19);
+  assert.equal(dragScrollDelta(195, 0, 200), 19);
+  assert.equal(dragScrollDelta(100, 0, 200), 0);
+  assert.equal(hiddenForTab(true, true, false), true);
+  assert.equal(hiddenForTab(true, true, true), false);
+  assert.equal(hiddenForTab(false, true, false), false);
 });
 
 test('shiftTarget moves only the tabs between origin and destination', () => {
@@ -88,10 +99,11 @@ test('a collapsed group shows only the active member', () => {
 
 test('rememberFav keeps the map bounded and refreshes re-set ids', () => {
   const favs = new Map();
-  rememberFav(favs, 1, 'a', 2);
-  rememberFav(favs, 2, 'b', 2);
-  rememberFav(favs, 1, 'a2', 2);
-  rememberFav(favs, 3, 'c', 2);
+  const live = new Set([1, 2, 3]);
+  rememberFav(favs, 1, 'a', live, 2);
+  rememberFav(favs, 2, 'b', live, 2);
+  rememberFav(favs, 1, 'a2', live, 2);
+  rememberFav(favs, 3, 'c', live, 2);
   assert.deepEqual([...favs.keys()], [1, 3]);
   assert.equal(favs.get(1), 'a2');
 });
@@ -103,4 +115,11 @@ test('pruneFavs drops ids that are no longer tabs', () => {
   ]);
   pruneFavs(favs, new Set([2]));
   assert.deepEqual([...favs.keys()], [2]);
+});
+
+test('favicon capacity matches all protocol tabs and prunes missing ids before eviction', () => {
+  assert.equal(logic.FAV_CACHE_MAX, 512);
+  const favs = new Map([[1, 'a'], [2, 'b']]);
+  rememberFav(favs, 3, 'c', new Set([2, 3]), 2);
+  assert.deepEqual([...favs.keys()], [2, 3]);
 });

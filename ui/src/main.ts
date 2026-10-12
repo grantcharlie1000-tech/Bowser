@@ -2,6 +2,7 @@
 import { MAX_TEXT, onInbound, send, type CaptionAction, type CompletionMsg, type NavAction, type OpenTarget } from './protocol';
 import { applyState, applyTheme, buildView, DRAG_ATTR } from './view';
 import { startTabs } from './tabs';
+import { startRail } from './rail';
 
 /** True only when the event target is the drag surface itself, never a control inside it. */
 function onDragSurface(target: EventTarget | null): boolean {
@@ -19,11 +20,12 @@ function startToolbar(root: HTMLElement): void {
   let pending = false;
   let frame = 0;
   let loading = false;
+  let composing = false;
 
   // At most one edit per animation frame, each with a fresh seq.
   const flush = (): void => {
     frame = 0;
-    if (!pending) return;
+    if (!pending || composing) return;
     pending = false;
     const text = input.value;
     if (text.length > MAX_TEXT) return;
@@ -67,7 +69,15 @@ function startToolbar(root: HTMLElement): void {
   view.menu.addEventListener('click', () => open('menu'));
 
   input.addEventListener('input', (ev) => {
+    if (composing || (ev instanceof InputEvent && ev.isComposing)) return;
     lastInputType = ev instanceof InputEvent ? ev.inputType : '';
+    pending = true;
+    if (frame === 0) frame = requestAnimationFrame(flush);
+  });
+
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => {
+    composing = false;
     pending = true;
     if (frame === 0) frame = requestAnimationFrame(flush);
   });
@@ -92,7 +102,7 @@ function startToolbar(root: HTMLElement): void {
 
   // Inline completion is applied only while it still describes exactly what the user has typed.
   const acceptCompletion = (msg: CompletionMsg): void => {
-    if (msg.suffix === '' || msg.seq !== latestSeq || pending) return;
+    if (composing || msg.suffix === '' || msg.seq !== latestSeq || pending) return;
     if (document.activeElement !== input || input.value !== latestText) return;
     if (lastInputType.startsWith('deleteContent')) return;
     const end = input.value.length;
@@ -155,8 +165,10 @@ function start(): void {
     document.title = 'csp-not-enforced';
     return;
   }
-  // ?view=tabs selects the tab strip; anything else, including no query, is the toolbar.
-  if (new URLSearchParams(location.search).get('view') === 'tabs') startTabs(root);
+  // ?view=tabs selects the tab strip and ?view=rail the left rail; anything else, including no query, is the toolbar.
+  const view = new URLSearchParams(location.search).get('view');
+  if (view === 'tabs') startTabs(root);
+  else if (view === 'rail') startRail(root);
   else startToolbar(root);
 }
 

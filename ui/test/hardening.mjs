@@ -10,9 +10,17 @@ import { RULES, findViolations } from '../lint-rules.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
-const source = readFileSync(join(uiRoot, 'src', 'protocol.ts'), 'utf8');
-const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
-const { parseInbound, MAX_TABS } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+// protocol.ts imports the rail grammar from rail-logic.ts, so it is bundled rather than transpiled alone.
+const bundled = esbuild.buildSync({
+  entryPoints: [join(uiRoot, 'src', 'protocol.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  write: false,
+  logLevel: 'silent',
+});
+const bundledUrl = `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`;
+const { parseInbound, MAX_TABS } = await import(bundledUrl);
 
 const names = (text) => findViolations(text).map((v) => v.rule);
 
@@ -131,4 +139,22 @@ test('a tabs message holds up to MAX_TABS items and no more', () => {
   assert.equal(parseInbound({ v: 1, t: 'tabs', active: 1, items: full })?.items.length, MAX_TABS);
   const over = [...full, tab(MAX_TABS + 1)];
   assert.equal(parseInbound({ v: 1, t: 'tabs', active: 1, items: over }), null);
+});
+
+test('setText truncates at 2048 UTF-16 units without splitting a surrogate pair', () => {
+  const text = 'a'.repeat(2047) + '😀tail';
+  const parsed = parseInbound({ t: 'setText', text, select: true });
+  assert.equal(parsed.text.length, 2047);
+  assert.equal(parsed.text, 'a'.repeat(2047));
+  assert.equal(parseInbound({ t: 'setText', text: '😀'.repeat(1200), select: false }).text.length, 2048);
+});
+
+test('a full toolbar state message is accepted for all chrome views', () => {
+  const sample = stateWithTheme('#fff');
+  assert.equal(parseInbound(sample)?.t, 'state');
+  assert.equal(parseInbound(JSON.stringify(sample))?.scale, 1);
+  for (const file of ['main.ts', 'tabs.ts', 'rail.ts']) {
+    const source = readFileSync(join(uiRoot, 'src', file), 'utf8');
+    assert.match(source, /case 'state':[\s\S]*?applyTheme\(msg\.theme, msg\.solid, msg\.dark\)/, file);
+  }
 });

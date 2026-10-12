@@ -219,11 +219,20 @@ body.solid {
 }
 
 #app.strip {
+  position: relative;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-left, 0px), #000 calc(100% - var(--fade-right, 0px)), transparent 100%);
   height: 100%;
   gap: 3px;
   padding: 0 4px;
   align-items: center;
 }
+
+#app.strip::-webkit-scrollbar { display: none; }
+.strip .tab.pinned { position: sticky; z-index: 3; background: var(--bg); }
 
 /* Three columns: close button, centred label (favicon and title), marker. The close
    column is always reserved so the label stays centred when the button appears. */
@@ -518,5 +527,202 @@ body.solid {
 
   .spin {
     animation: none;
+  }
+}
+
+/* ---- Left rail (?view=rail). Motion is background/transform/opacity only, <= 120ms. ---- */
+
+#app.rail {
+  position: relative;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 40px;
+  height: 100%;
+  padding: 8px 0;
+  background: var(--fill);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.rail-top,
+.rail-bottom {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The only scroll container: workspaces and apps. The scrollbar is hidden but scrolling works. */
+.rail-scroll {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.rail-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.rail-spacer {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.rail-rule {
+  flex: none;
+  width: 22px;
+  height: 1px;
+  background: var(--pill-border);
+}
+
+.rb {
+  --ac: var(--focus-border);
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+  transition: background-color 100ms ease, transform 100ms ease, opacity 100ms ease;
+}
+
+.rb.ws {
+  color: var(--ac);
+}
+
+.rb:hover {
+  background: var(--hover);
+}
+
+.rb:active {
+  transform: scale(0.94);
+}
+
+.rb.on {
+  background: var(--tab-on);
+}
+
+.rb.ws.on {
+  background: color-mix(in srgb, var(--ac) 22%, transparent);
+}
+
+.rb.dragging {
+  z-index: 2;
+  transition: none;
+}
+
+.rb:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-border);
+}
+
+.rb-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+
+.rb-face svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.rb-fav {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+.rb-tile {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ac) 55%, var(--bg));
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Active workspace: a 3px accent bar on the pill's left edge (the scroll container's left edge). */
+.rb-bar {
+  display: none;
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  width: 3px;
+  height: 18px;
+  margin-top: -9px;
+  border-radius: 0 2px 2px 0;
+  background: var(--ac);
+  pointer-events: none;
+}
+
+.rb.ws.on .rb-bar {
+  display: block;
+}
+
+.rb-dot {
+  display: none;
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ac);
+  pointer-events: none;
+}
+
+.rb.dot-on .rb-dot {
+  display: block;
+}
+
+/* Drag insertion line: 2px accent, moved with transform by rail.ts. */
+.rail-slot {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--focus-border);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rb {
+    transition: none;
+  }
+
+  .rb:active {
+    transform: none;
   }
 }
