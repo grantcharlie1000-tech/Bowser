@@ -23,6 +23,8 @@ pub const MESSAGE_RATE_PER_SEC: u32 = 120;
 pub const MESSAGE_BURST: u32 = 60;
 /// Least time between two menu, caption or drag commands from one host.
 pub const POPUP_COMMAND_INTERVAL: Duration = Duration::from_millis(250);
+/// Largest choice an `act` message may carry (a segmented control has at most this many + 1 options).
+pub const MAX_ACT_CHOICE: u8 = 7;
 /// Theme keys Rust may send to the page. Anything else is dropped.
 pub const THEME_TOKENS: [&str; 10] = [
     "bg",
@@ -86,7 +88,7 @@ pub enum RailAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -217,6 +219,10 @@ pub enum Command {
     PopupSize { tok: u32, w: u16, h: u16 },
     PopupPick { tok: u32, id: u32 },
     PopupDismiss { tok: u32 },
+    /// An in-place action on an open popup page (a site info toggle): row `id` of the page with
+    /// token `tok` set to choice `n`. The popup stays open; Rust validates `id` and `n` against the
+    /// page it sent and answers with a refreshed page.
+    PopupAct { tok: u32, id: u32, n: u8 },
     // --- hover layer ---
     /// A `data-tip` element was hovered long enough: show `text` under `rect`, a rectangle in CSS
     /// pixels of the sending view's viewport.
@@ -743,11 +749,12 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h"],
         "pick" => &["tok", "id"],
         "dismiss" => &["tok"],
+        "act" => &["tok", "id", "n"],
         // --- hover layer ---
         "tip" => &["text", "r"],
         "tipoff" => &[],
@@ -840,13 +847,14 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
                 "panel" => PanelType::Panel, "hist" => PanelType::History,
                 "bm" => PanelType::Bookmarks, "cust" => PanelType::Customize,
                 "notes" => PanelType::Notes, "set" => PanelType::Settings,
+                "ren" => PanelType::Rename,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -869,6 +877,11 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         }
         "pick" => Command::PopupPick { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")? },
         "dismiss" => Command::PopupDismiss { tok: uint_field(fields, "tok")? },
+        "act" => {
+            let n = uint_field(fields, "n")?;
+            if n > u32::from(MAX_ACT_CHOICE) { return Err(ProtocolError::InvalidValue("n")); }
+            Command::PopupAct { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")?, n: n as u8 }
+        }
         // --- hover layer ---
         "tip" => {
             let text = str_field(fields, "text")?;
@@ -970,6 +983,9 @@ pub struct ViewState {
     pub progress: u8,
     pub security: Security,
     pub label: String,
+    /// A camera, microphone, location or notification request was denied on the current page
+    /// (Bowser never prompts). The toolbar shows a passive indicator in the pill.
+    pub permblocked: bool,
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1000,6 +1016,8 @@ impl ViewState {
         out.push_str(&json_string(self.security.as_str()));
         out.push_str(",\"label\":");
         out.push_str(&json_string(&self.label));
+        out.push_str(",\"permblocked\":");
+        out.push_str(if self.permblocked { "true" } else { "false" });
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1584,6 +1602,7 @@ mod tests {
             progress: 0,
             security: Security::Secure,
             label: "Secure".to_string(),
+            permblocked: false,
             theme: Vec::new(),
         }
     }
@@ -1677,8 +1696,12 @@ mod tests {
             r#"{"v":1,"t":"size","tok":4294967295,"w":1,"h":4000}"#,
             r#"{"v":1,"t":"pick","tok":0,"id":4294967295}"#,
             r#"{"v":1,"t":"dismiss","tok":0}"#,
+            r#"{"v":1,"t":"act","tok":4294967295,"id":4294967295,"n":7}"#,
+            r#"{"v":1,"t":"ren","a":"save","text":"Work"}"#,
         ];
         for raw in cases { assert!(parse_command(raw).is_ok(), "{raw}"); }
+        assert_eq!(ok(r#"{"v":1,"t":"act","tok":3,"id":2,"n":1}"#), Command::PopupAct { tok: 3, id: 2, n: 1 });
+        assert!(matches!(ok(r#"{"v":1,"t":"ren","a":"cancel"}"#), Command::Panel { kind: PanelType::Rename, .. }));
         for raw in [
             r#"{"v":1,"t":"hist","a":"open","extra":1}"#,
             r#"{"v":1,"t":"hist","a":"open","a":"close"}"#,
@@ -1696,7 +1719,19 @@ mod tests {
             r#"{"v":1,"t":"hist","a":"open","on":"true"}"#,
             r#"{"v":1,"t":"size","tok":0,"w":0,"h":4}"#,
             r#"{"v":1,"t":"pick","tok":4294967296,"id":1}"#,
+            // `act`: every field required, `n` a small choice, nothing extra.
+            r#"{"v":1,"t":"act","tok":1,"id":1}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":1,"n":8}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":1,"n":-1}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":1,"n":1.5}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":1,"n":"1"}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":4294967296,"n":1}"#,
+            r#"{"v":1,"t":"act","tok":1,"id":1,"n":1,"on":true}"#,
+            r#"{"v":1,"t":"ren","a":"save","text":false}"#,
+            r#"{"v":1,"t":"ren","a":"Save"}"#,
         ] { assert!(parse_command(raw).is_err(), "{raw}"); }
+        let long_name = format!(r#"{{"v":1,"t":"ren","a":"save","text":"{}"}}"#, "x".repeat(2049));
+        assert!(parse_command(&long_name).is_err());
         let long = format!(r#"{{"v":1,"t":"notes","a":"save","text":"{}"}}"#, "x".repeat(2049));
         assert!(parse_command(&long).is_err());
         let long_url = format!(r#"{{"v":1,"t":"bm","a":"open","url":"{}"}}"#, "é".repeat(2049));
@@ -2382,6 +2417,7 @@ mod tests {
             progress: 42,
             security: Security::Secure,
             label: "Secure".to_string(),
+            permblocked: true,
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -2389,14 +2425,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"progress":42,"security":"secure","label":"Secure","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"progress":42,"security":"secure","label":"Secure","permblocked":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 

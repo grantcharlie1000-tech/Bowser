@@ -10,11 +10,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Settings, Privacy }
+pub(crate) enum Kind { Notes, Settings, Privacy, Rename }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Settings => View::DialogSettings, Self::Privacy => View::DialogPrivacy } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Settings => "settings", Self::Privacy => "privacy" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Settings => "Settings", Self::Privacy => "Privacy dashboard" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Settings => View::DialogSettings, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Settings => "settings", Self::Privacy => "privacy", Self::Rename => "rename" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Settings => "Settings", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -28,7 +28,13 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
     let weak: Weak<RefCell<Runtime>> = Rc::downgrade(&runtime);
     let commands: Rc<dyn Fn(Command)> = Rc::new(move |command| if let Some(state) = weak.upgrade() { handle(&state, command); });
     let failed_weak = Rc::downgrade(&runtime);
-    let failed: Rc<dyn Fn()> = Rc::new(move || if let Some(state) = failed_weak.upgrade() { close_runtime(&state); });
+    let failed: Rc<dyn Fn()> = Rc::new(move || if let Some(state) = failed_weak.upgrade() {
+        // --- popup surfaces (lane PP) ---
+        let rename = state.try_borrow().ok().filter(|s| s.kind == Kind::Rename).map(|s| s.parent);
+        // --- end popup surfaces ---
+        close_runtime(&state);
+        if let Some(parent) = rename { super::profile_rename::html_failed(parent); }
+    });
     let accel_owner = owner;
     let accel: AccelHandler = Rc::new(move |key: Accel| super::window::html_panel_accelerator(accel_owner, key));
     let ready_weak = Rc::downgrade(&runtime);
@@ -41,8 +47,18 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
                 let _ = host.set_visible(true);
             } else { host.close(); }
         } else { host.close(); },
-        Err(_) => if let Some(state) = ready_weak.upgrade() { close_runtime(&state); },
-    }) { close_runtime(&runtime); show_error_message(&format!("{} could not be opened in HTML: {error}", kind.title())); }
+        Err(_) => if let Some(state) = ready_weak.upgrade() {
+            let rename = state.try_borrow().ok().filter(|s| s.kind == Kind::Rename).map(|s| s.parent);
+            close_runtime(&state);
+            if let Some(parent) = rename { super::profile_rename::html_failed(parent); }
+        },
+    }) {
+        close_runtime(&runtime);
+        // --- popup surfaces (lane PP) ---
+        if kind == Kind::Rename { super::profile_rename::html_failed(parent); return; }
+        // --- end popup surfaces ---
+        show_error_message(&format!("{} could not be opened in HTML: {error}", kind.title()));
+    }
 }
 
 pub(crate) fn open_privacy(owner: HWND, app: &AppRef, env: ChromeEnv) {
@@ -76,7 +92,23 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         Command::Ready => {
             if let Ok(mut state) = runtime.try_borrow_mut() { state.ready = true; }
             send_current(runtime);
+            // --- popup surfaces (lane PP) ---
+            let (kind, parent, host) = { let state = runtime.borrow(); (state.kind, state.parent, state.host.clone()) };
+            if kind == Kind::Rename {
+                if super::profile_rename::html_ready(parent) {
+                    if let Some(host) = host { let _ = host.focus(); }
+                } else {
+                    close_runtime(runtime);
+                }
+            }
+            // --- end popup surfaces ---
         }
+        // --- popup surfaces (lane PP) ---
+        Command::Panel { kind: PanelType::Panel, f } if empty_fields(&f, false) && f.a == "dismiss" && runtime.borrow().kind == Kind::Rename => {
+            super::profile_rename::html_cancel(runtime.borrow().parent);
+        }
+        Command::Panel { kind: PanelType::Rename, f } if runtime.borrow().kind == Kind::Rename => handle_rename(runtime, f),
+        // --- end popup surfaces ---
         Command::Panel { kind: PanelType::Panel, f } if empty_fields(&f, false) && f.a == "dismiss" => {
             let (parent, kind) = { let state = runtime.borrow(); (state.parent, state.kind) };
             if kind == Kind::Privacy {
@@ -96,7 +128,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Settings => settings_snapshot(), Kind::Privacy => privacy_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Settings => settings_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
 }
 
@@ -146,6 +178,36 @@ fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let _ = super::privacy_panel::apply(owner, &app, &snapshot, id);
     send_current(runtime);
 }
+
+// --- popup surfaces (lane PP) ---
+fn rename_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let parent = runtime.try_borrow().ok()?.parent;
+    let request = super::profile_rename::html_request(parent)?;
+    protocol::snap_json("rename", |out| {
+        out.string("title", &request.title);
+        out.string("save", &request.save);
+        out.string("value", crate::chrome_host::json::capped(&request.value, 2048));
+        out.string("hint", &request.hint);
+        out.string("error", &request.error);
+        out.uint("max", request.max as u64);
+    })
+}
+
+/// `{t:"ren",a:"save",text}` or `{t:"ren",a:"cancel"}`. Rust validates again; an invalid name is
+/// answered with the error in a fresh snapshot.
+fn handle_rename(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let parent = runtime.borrow().parent;
+    match f.a.as_str() {
+        "save" if empty_fields(&f, true) && f.text.is_some() => {
+            if super::profile_rename::html_submit(parent, f.text.as_deref().unwrap_or("")).is_err() {
+                send_current(runtime);
+            }
+        }
+        "cancel" if empty_fields(&f, false) => super::profile_rename::html_cancel(parent),
+        _ => {}
+    }
+}
+// --- end popup surfaces ---
 
 fn notes_snapshot() -> Option<String> {
     let profile = profile::active().ok()?;

@@ -26,8 +26,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -77,6 +77,9 @@ export type Command =
   | { v: 1; t: 'size'; tok: number; w: number; h: number }
   | { v: 1; t: 'pick'; tok: number; id: number }
   | { v: 1; t: 'dismiss'; tok: number }
+  // --- popup surfaces (lane PP) ---
+  | { v: 1; t: 'act'; tok: number; id: number; n: number }
+  // --- end popup surfaces ---
   // --- hover layer ---
   | { v: 1; t: 'tip'; text: string; r: string }
   | { v: 1; t: 'tipoff' }
@@ -160,6 +163,8 @@ export interface StateMsg {
   readonly progress: number;
   readonly security: Security;
   readonly label: string;
+  /** A permission request on the current page was denied (passive toolbar indicator). */
+  readonly permblocked?: boolean;
   readonly theme: Theme;
 }
 export interface SetTextMsg {
@@ -304,7 +309,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 }
 
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename'];
 const PANEL_ACTION_RE = /^[a-z]{1,24}$/;
 const MAX_SNAPSHOT_DEPTH = 8;
 const MAX_SNAPSHOT_KEYS = 4096;
@@ -342,6 +347,14 @@ export function sendPopupPick(tok: number, id: number): boolean {
 export function sendPopupDismiss(tok: number): boolean {
   return isInt(tok, 0, MAX_ID) && send({ v: 1, t: 'dismiss', tok });
 }
+// --- popup surfaces (lane PP) ---
+/** Largest `n` an `act` may carry (Rust: MAX_ACT_CHOICE). */
+export const MAX_ACT_CHOICE = 7;
+/** In-place action on an open popup page (site info control); the popup stays open. */
+export function sendPopupAct(tok: number, id: number, n: number): boolean {
+  return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && isInt(n, 0, MAX_ACT_CHOICE) && send({ v: 1, t: 'act', tok, id, n });
+}
+// --- end popup surfaces ---
 
 // --- hover layer ---
 /** Code-point-safe cap, matching Rust's character count. */
@@ -585,7 +598,8 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'progress', 'security', 'label', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'progress', 'security', 'label', 'permblocked', 'theme'])) return null;
+      if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -608,6 +622,7 @@ export function parseInbound(data: unknown): Inbound | null {
         progress,
         security,
         label,
+        ...(isBool(raw.permblocked) ? { permblocked: raw.permblocked } : {}),
         theme: parseTheme(raw.theme),
       };
     }

@@ -2680,6 +2680,7 @@ unsafe fn configure_controller(
 
         let policy_event = events.policy_event.clone();
         let permission_store = permissions.clone();
+        let permission_denied = events.permission_denied.clone();
         webview.add_PermissionRequested(
             &PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -2693,7 +2694,8 @@ unsafe fn configure_controller(
                     };
                     // Only a stored Allow for this exact origin grants. Everything else, including
                     // kinds Bowser has no store for, is denied, as before the store existed.
-                    let allowed = match (permission_for_kind(kind), permission_store.as_ref()) {
+                    let known = permission_for_kind(kind);
+                    let allowed = match (known, permission_store.as_ref()) {
                         (Some(permission), Some(store)) => store.borrow().allows(&uri, permission),
                         _ => false,
                     };
@@ -2714,6 +2716,13 @@ unsafe fn configure_controller(
                         } else {
                             "permission_denied"
                         });
+                    }
+                    // Passive indicator only: the decision above is final and nothing prompts.
+                    if !allowed
+                        && known.is_some()
+                        && let Some(callback) = permission_denied.as_ref()
+                    {
+                        callback(tab_id);
                     }
                 }
                 Ok(())

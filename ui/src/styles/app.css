@@ -26,6 +26,8 @@
 @import "./rail.css" layer(surfaces);
 @import "./menu.css" layer(surfaces);
 @import "./sidebar.css" layer(surfaces);
+@import "./palette.css" layer(surfaces);
+@import "./siteinfo.css" layer(surfaces);
 @import "./hover.css" layer(surfaces);
 
 /* Utilities only, no preflight (base.css is the reset). `source(none)` turns off automatic

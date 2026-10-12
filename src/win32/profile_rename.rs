@@ -1,6 +1,15 @@
-//! Small themed profile-name editor using the same native EDIT control behavior as island rename.
+//! Name prompt (rename profile/workspace, new workspace, save session). Synchronous for callers.
+//!
+//! With the HTML chrome the prompt is a dialog page (`?view=dialog&p=rename`) hosted in this
+//! window by `html_dialog` (input, inline validation message, Save/Cancel). The window stays hidden
+//! until the page is ready. NATIVE FALLBACK: when the HTML chrome is off, or the page is not ready
+//! within `HTML_READY_TIMEOUT_MS`, the window shows its own GDI-painted EDIT control instead.
 
-use std::{cell::Cell, ffi::c_void};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ffi::c_void,
+};
 
 use windows::{
     Win32::{
@@ -36,6 +45,55 @@ use crate::{
 const CLASS: PCWSTR = w!("BowserProfileRename");
 const EDIT_SUBCLASS: usize = 0x7A21;
 const WM_FINISH: u32 = WM_APP + 0x51;
+// --- popup surfaces (lane PP) ---
+/// `WM_FINISH` wParam: the HTML page already stored the validated result.
+const FINISH_STORED: usize = 2;
+/// Timer that gives up on the HTML page and shows the native controls.
+const HTML_READY_TIMER: usize = 0x7A22;
+const HTML_READY_TIMEOUT_MS: u32 = 2500;
+/// Logical size of the HTML dialog (title, input, message line, buttons).
+const HTML_WIDTH: i32 = 400;
+const HTML_HEIGHT: i32 = 200;
+
+/// What the HTML page shows, keyed by the dialog window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Request {
+    pub title: String,
+    pub save: String,
+    pub value: String,
+    pub hint: String,
+    pub error: String,
+    pub max: usize,
+}
+
+/// Checks a submitted name; the error text is shown under the input.
+pub(crate) type Validator = Box<dyn Fn(&str) -> Result<(), String>>;
+
+struct HtmlPrompt {
+    request: Request,
+    validate: Validator,
+    result: Option<String>,
+    shown: bool,
+}
+
+thread_local! { static HTML_PROMPTS: RefCell<HashMap<isize, HtmlPrompt>> = RefCell::new(HashMap::new()); }
+
+/// The default check: what every caller stores (workspace and session names). Profile renames add
+/// the profile-name rules (`prompt_validated`).
+pub(crate) fn validate_plain(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Enter a name.".to_owned());
+    }
+    if name.len() > 256 {
+        return Err("Use at most 256 characters.".to_owned());
+    }
+    if name.chars().any(char::is_control) {
+        return Err("Names cannot contain control characters.".to_owned());
+    }
+    Ok(())
+}
+// --- end popup surfaces ---
 const SAVE: RECT = RECT {
     left: 284,
     top: 100,
@@ -61,7 +119,22 @@ struct Dialog {
 thread_local! { static REGISTERED: Cell<bool> = const { Cell::new(false) }; }
 
 pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) -> Option<String> {
+    prompt_validated(owner, current, title, save_label, "", Box::new(validate_plain))
+}
+
+/// `prompt` with a caller check (shown inline in the HTML dialog) and a hint line under the input.
+pub(crate) fn prompt_validated(
+    owner: HWND,
+    current: &str,
+    title: &str,
+    save_label: &str,
+    hint: &str,
+    validate: Validator,
+) -> Option<String> {
     register_class()?;
+    // --- popup surfaces (lane PP) ---
+    let html = crate::chrome_host::html_ui_enabled() && super::window::html_environment(owner).is_some();
+    // --- end popup surfaces ---
     let mut state = Box::new(Dialog {
         edit: HWND::default(),
         result: None,
@@ -78,8 +151,11 @@ pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) 
     unsafe {
         let _ = GetWindowRect(owner, &mut owner_rect);
     }
-    let width = scale(420, owner);
-    let height = scale(160, owner);
+    let (width, height) = if html {
+        (scale(HTML_WIDTH, owner), scale(HTML_HEIGHT, owner))
+    } else {
+        (scale(420, owner), scale(160, owner))
+    };
     let x = (owner_rect.left + owner_rect.right - width) / 2;
     let y = (owner_rect.top + owner_rect.bottom - height) / 2;
     let instance = unsafe { HINSTANCE(GetModuleHandleW(None).ok()?.0) };
@@ -88,7 +164,11 @@ pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) 
             WS_EX_TOOLWINDOW,
             CLASS,
             PCWSTR(wide(title).as_ptr()),
-            WS_POPUP | WS_VISIBLE,
+            if html {
+                WS_POPUP | windows::Win32::UI::WindowsAndMessaging::WS_CLIPCHILDREN
+            } else {
+                WS_POPUP | WS_VISIBLE
+            },
             x,
             y,
             width,
@@ -107,9 +187,40 @@ pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) 
     };
     unsafe {
         let _ = SetWindowTextW(state.edit, PCWSTR(wide(current).as_ptr()));
-        let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(Some(state.edit));
     }
+    // --- popup surfaces (lane PP) ---
+    if html {
+        HTML_PROMPTS.with(|prompts| {
+            prompts.borrow_mut().insert(
+                hwnd.0 as isize,
+                HtmlPrompt {
+                    request: Request {
+                        title: title.to_owned(),
+                        save: save_label.to_owned(),
+                        value: current.to_owned(),
+                        hint: hint.to_owned(),
+                        error: String::new(),
+                        max: 256,
+                    },
+                    validate,
+                    result: None,
+                    shown: false,
+                },
+            );
+        });
+        unsafe {
+            let radius = scale(8, hwnd) * 2;
+            let region = windows::Win32::Graphics::Gdi::CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius);
+            if !region.is_invalid() {
+                let _ = windows::Win32::Graphics::Gdi::SetWindowRgn(hwnd, Some(region), false);
+            }
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), HTML_READY_TIMER, HTML_READY_TIMEOUT_MS, None);
+        }
+        super::window::attach_html_dialog(owner, hwnd, super::html_dialog::Kind::Rename);
+    } else {
+        show_native(hwnd, state.edit);
+    }
+    // --- end popup surfaces ---
     while !state.done {
         let mut msg = MSG::default();
         let got = unsafe { GetMessageW(&mut msg, None, 0, 0).0 };
@@ -131,6 +242,108 @@ pub(crate) fn prompt(owner: HWND, current: &str, title: &str, save_label: &str) 
     }
     state.result.take()
 }
+
+fn show_native(hwnd: HWND, edit: HWND) {
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(Some(edit));
+    }
+}
+
+// --- popup surfaces (lane PP) ---
+/// What the HTML page should show for the dialog `parent`.
+pub(crate) fn html_request(parent: HWND) -> Option<Request> {
+    HTML_PROMPTS.with(|prompts| prompts.borrow().get(&(parent.0 as isize)).map(|p| p.request.clone()))
+}
+
+/// The page is ready: show the dialog with the page in place of the native controls. False when
+/// the native fallback is already showing (the page is then closed by the caller).
+pub(crate) fn html_ready(parent: HWND) -> bool {
+    let first = HTML_PROMPTS.with(|prompts| {
+        prompts.borrow_mut().get_mut(&(parent.0 as isize)).is_some_and(|p| !std::mem::replace(&mut p.shown, true))
+    });
+    if !first {
+        return HTML_PROMPTS.with(|prompts| prompts.borrow().contains_key(&(parent.0 as isize)));
+    }
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(parent), HTML_READY_TIMER);
+        if let Some(state) = dialog(parent) {
+            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(state.edit, windows::Win32::UI::WindowsAndMessaging::SW_HIDE);
+        }
+        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(parent, windows::Win32::UI::WindowsAndMessaging::SW_SHOW);
+        let _ = SetForegroundWindow(parent);
+    }
+    true
+}
+
+/// Save from the page. Valid names close the dialog with that name; otherwise the error is stored
+/// for the page to show and returned.
+pub(crate) fn html_submit(parent: HWND, text: &str) -> Result<(), String> {
+    let key = parent.0 as isize;
+    let outcome = HTML_PROMPTS.with(|prompts| {
+        let mut prompts = prompts.borrow_mut();
+        let prompt = prompts.get_mut(&key).ok_or_else(|| "The dialog is closed.".to_owned())?;
+        let name = text.trim();
+        prompt.request.value = text.to_owned();
+        match check(name, prompt.request.max, &prompt.validate) {
+            Ok(()) => {
+                prompt.result = Some(name.to_owned());
+                prompt.request.error.clear();
+                Ok(())
+            }
+            Err(error) => {
+                prompt.request.error.clone_from(&error);
+                Err(error)
+            }
+        }
+    });
+    if outcome.is_ok() {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(parent), WM_FINISH, WPARAM(FINISH_STORED), LPARAM(0));
+        }
+    }
+    outcome
+}
+
+fn check(name: &str, max: usize, validate: &Validator) -> Result<(), String> {
+    if name.chars().count() > max {
+        return Err(format!("Use at most {max} characters."));
+    }
+    validate_plain(name)?;
+    validate(name)
+}
+
+/// Cancel or Escape from the page.
+pub(crate) fn html_cancel(parent: HWND) {
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(parent), WM_FINISH, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// The page failed (or never became ready): show the native controls if the dialog is still open.
+pub(crate) fn html_failed(parent: HWND) {
+    let pending = HTML_PROMPTS.with(|prompts| {
+        prompts.borrow_mut().get_mut(&(parent.0 as isize)).map(|p| !std::mem::replace(&mut p.shown, true))
+    });
+    if pending == Some(true) {
+        super::html_dialog::close(parent);
+        if let Some(state) = dialog(parent) {
+            show_native(parent, state.edit);
+        }
+    } else if pending == Some(false) {
+        // The page was showing and died: fall back to the native controls in place.
+        super::html_dialog::close(parent);
+        if let Some(state) = dialog(parent) {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(state.edit, windows::Win32::UI::WindowsAndMessaging::SW_SHOW);
+                let _ = windows::Win32::Graphics::Gdi::SetWindowRgn(parent, None, true);
+            }
+            show_native(parent, state.edit);
+        }
+    }
+}
+// --- end popup surfaces ---
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
@@ -248,12 +461,34 @@ unsafe extern "system" fn proc(
             }
             WM_FINISH => {
                 if let Some(state) = dialog(hwnd) {
-                    finish(state, wparam.0 != 0);
+                    if wparam.0 == FINISH_STORED {
+                        // --- popup surfaces (lane PP) ---
+                        state.result = HTML_PROMPTS.with(|prompts| {
+                            prompts.borrow_mut().get_mut(&(hwnd.0 as isize)).and_then(|p| p.result.take())
+                        });
+                        state.done = true;
+                        // --- end popup surfaces ---
+                    } else {
+                        finish(state, wparam.0 != 0);
+                    }
                 }
                 let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
+            windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == HTML_READY_TIMER => {
+                let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), HTML_READY_TIMER);
+                html_failed(hwnd);
+                LRESULT(0)
+            }
+            windows::Win32::UI::WindowsAndMessaging::WM_SIZE => {
+                super::html_dialog::resize(hwnd);
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
             WM_NCDESTROY => {
+                // --- popup surfaces (lane PP) ---
+                super::html_dialog::close(hwnd);
+                HTML_PROMPTS.with(|prompts| prompts.borrow_mut().remove(&(hwnd.0 as isize)));
+                // --- end popup surfaces ---
                 if let Some(state) = dialog(hwnd) {
                     state.done = true;
                 }
@@ -412,5 +647,25 @@ fn scaled_rect(bounds: RECT, hwnd: HWND) -> RECT {
         top: scale(bounds.top, hwnd),
         right: scale(bounds.right, hwnd),
         bottom: scale(bounds.bottom, hwnd),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_trimmed_capped_and_checked_by_the_caller_rules() {
+        let plain: Validator = Box::new(validate_plain);
+        assert!(check("Work", 256, &plain).is_ok());
+        assert_eq!(check("", 256, &plain), Err("Enter a name.".to_owned()));
+        assert!(check("a\u{7}b", 256, &plain).is_err());
+        assert!(check(&"x".repeat(257), 256, &plain).is_err());
+        let profile: Validator = Box::new(|name| crate::profile::validate_name(name).map_err(|e| e.to_string()));
+        assert!(check("Work_2", 256, &profile).is_ok());
+        assert_eq!(
+            check("My work", 256, &profile),
+            Err("Profile names use 1 to 32 letters, digits, '-' or '_'.".to_owned())
+        );
     }
 }

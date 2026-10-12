@@ -589,6 +589,8 @@ struct AppTab {
     last_crash_reload: Option<Instant>,
     /// Requests the blocker stopped since this document started loading.
     blocked: u32,
+    /// A permission request from the current page was denied (toolbar indicator).
+    permission_blocked: bool,
     /// Outcome of the last top-level navigation, for the connection state in Site information.
     load: LoadState,
 }
@@ -615,6 +617,7 @@ impl AppTab {
             sleep_blocked_until: None,
             last_crash_reload: None,
             blocked: 0,
+            permission_blocked: false,
             load: LoadState::Loaded,
         }
     }
@@ -2531,6 +2534,17 @@ impl App {
         Some((active, url))
     }
 
+    /// Whether a permission request from the active tab's current page was denied.
+    pub fn active_permission_blocked(app: &AppRef) -> bool {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .is_some_and(|tab| tab.permission_blocked)
+    }
+
     /// Requests the blocker stopped on the active tab's current page.
     pub fn active_blocked_count(app: &AppRef) -> u32 {
         let state = app.borrow();
@@ -3618,6 +3632,7 @@ impl App {
                             tab.page_usable = false;
                             tab.loading = true;
                             tab.load = LoadState::Loading;
+                            tab.permission_blocked = false;
                         }
                         let found = Self::apply_tab_progress(
                             &app,
@@ -3756,6 +3771,23 @@ impl App {
             failed: Some(Rc::new(|error| {
                 win32::show_error_message(&format!("WebView2 error: {error}"))
             })),
+            permission_denied: {
+                let denied_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id| {
+                    if let Some(app) = denied_app.upgrade() {
+                        let changed = app.try_borrow_mut().is_ok_and(|mut state| {
+                            state
+                                .tabs
+                                .iter_mut()
+                                .find(|tab| tab.id == tab_id)
+                                .is_some_and(|tab| !std::mem::replace(&mut tab.permission_blocked, true))
+                        });
+                        if changed {
+                            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        }
+                    }
+                }))
+            },
             login_message: login_messages_enabled.then(|| {
                 let callback: Rc<dyn Fn(TabId, crate::passwords::LoginMessage)> =
                     Rc::new(move |tab_id, message| {

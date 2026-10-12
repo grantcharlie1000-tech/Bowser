@@ -2,9 +2,10 @@ import { onInbound, send, sendPanel, type PanelToken } from './protocol';
 import { applyTheme } from './view';
 import { installTooltips } from './tooltip';
 import { panels } from './panels';
+import { startRenameDialog } from './rename';
 
 const isPanelToken = (value: string | null): value is PanelToken =>
-  value === 'notes' || value === 'settings' || value === 'privacy';
+  value === 'notes' || value === 'settings' || value === 'privacy' || value === 'rename';
 
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');
@@ -17,7 +18,9 @@ export function startDialog(root: HTMLElement): void {
   });
   const token = new URLSearchParams(location.search).get('p');
   if (!isPanelToken(token)) return;
-  const receive = panels[token]?.(root);
+  // --- popup surfaces (lane PP) --- the name prompt is its own small dialog, not a panel.
+  const receive = token === 'rename' ? startRenameDialog(root) : panels[token]?.(root);
+  // --- end popup surfaces ---
   onInbound(message => {
     if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark);
     else if (message.t === 'snap' && message.p === token) receive?.(message);

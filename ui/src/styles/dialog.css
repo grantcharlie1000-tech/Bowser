@@ -8,3 +8,43 @@
  * .bw-dialog shell in components.css (8px overlay radius, --bw-sh-dialog, 24px padding,
  * title / body / actions slots) instead of styling a panel class.
  */
+
+/* --- popup surfaces (lane PP): name prompt (?view=dialog&p=rename, ui/src/rename.ts) ---
+   The .bw-dialog shell fills the small native window, which Rust rounds to the 8px overlay
+   radius; the window itself carries no shadow, so the shell drops its own. */
+#app.panel-root.rename-root {
+  height: 100vh;
+}
+
+.rename-dialog {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100vh;
+  background: var(--bw-window);
+  box-shadow: none;
+  user-select: none;
+}
+
+.rename-input {
+  width: 100%;
+  user-select: text;
+}
+
+.rename-message {
+  min-height: var(--bw-leading-caption);
+  margin: calc(-1 * var(--bw-space-1)) 0 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.rename-message.is-error {
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+}
+
+.rename-dialog .bw-dialog-actions {
+  margin-top: auto;
+}
+/* --- end popup surfaces --- */
