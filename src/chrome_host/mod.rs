@@ -2,6 +2,8 @@
 //! See docs/html-chrome-protocol.md.
 
 pub mod assets;
+#[cfg(test)]
+mod fingerprint;
 pub mod host;
 pub mod protocol;
 
@@ -11,12 +13,13 @@ use std::sync::OnceLock;
 use windows::Win32::Foundation::RECT;
 
 use crate::chrome::layout::Layout;
+use crate::chrome::rail::{RailEntry, RailIcon, RailKey, WorkspaceGlyph};
 use crate::chrome::tab_card::Marker;
 use crate::site_security::SiteSecurity;
 use crate::tab_groups::{GroupPreferences, TabGroupKey};
 use crate::tabs::TabId;
 use crate::theme::{Palette, Rgba};
-use protocol::{Security, TabItem};
+use protocol::{RailItem, RailKeyWire, Security, TabItem};
 
 /// Wire value for a site classification. The mapping is part of the bridge contract.
 pub fn security_of(site: SiteSecurity) -> Security {
@@ -62,14 +65,9 @@ pub fn theme_tokens(palette: &Palette) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Records `json` as the last state sent. Returns true only when it differs from the last one, so
-/// an unchanged state is never posted again.
-pub fn state_changed(last: &mut Option<String>, json: &str) -> bool {
-    if last.as_deref() == Some(json) {
-        return false;
-    }
-    *last = Some(json.to_string());
-    true
+/// A cache may be advanced only after the matching WebView2 post succeeds.
+pub fn state_differs(last: &Option<String>, json: &str) -> bool {
+    last.as_deref() != Some(json)
 }
 
 /// Whether the omnibox text should be sent with `setText` on this sync. `prev_tab` is the tab the
@@ -81,6 +79,11 @@ pub fn should_set_text(prev_tab: Option<TabId>, tab: TabId, focused: bool, text_
         return true;
     }
     !focused && text_changed
+}
+
+/// A pending native edit must cross to the HTML omnibox as the toolbar takes over.
+pub fn should_handoff_edit(native_focused: bool, native_text: &str, committed_text: &str) -> bool {
+    native_focused || native_text != committed_text
 }
 
 /// Whether the HTML toolbar is enabled. Read once from `BOWSER_UI`; unset means the GDI chrome.
@@ -272,9 +275,118 @@ pub fn tab_items(rows: &[TabRow]) -> Vec<TabItem> {
         .collect()
 }
 
+/// Client-relative physical pixels of the HTML left rail: the full-height pill (`layout.rail`).
+/// `None` when the layout has no rail.
+pub fn rail_bounds(layout: &Layout) -> Option<RECT> {
+    let rail = layout.rail;
+    if rail.is_empty() {
+        return None;
+    }
+    Some(RECT {
+        left: rail.left,
+        top: rail.top,
+        right: rail.right,
+        bottom: rail.bottom,
+    })
+}
+
+/// Wire form of a rail key. Total: every rail key has one spelling.
+pub fn rail_key_to_wire(key: RailKey) -> RailKeyWire {
+    match key {
+        RailKey::Home => RailKeyWire::Home,
+        RailKey::Customize => RailKeyWire::Customize,
+        RailKey::Workspace(id) => RailKeyWire::Workspace(id),
+        RailKey::AddWorkspace => RailKeyWire::AddWorkspace,
+        RailKey::App(id) => RailKeyWire::App(id),
+        RailKey::AddApp => RailKeyWire::AddApp,
+        RailKey::Bookmarks => RailKeyWire::Bookmarks,
+        RailKey::History => RailKeyWire::History,
+        RailKey::Menu => RailKeyWire::Menu,
+    }
+}
+
+/// The rail key a wire key names, but only when the current rail model has it. `None` for a key
+/// the model does not hold, so an unknown or stale key is ignored, never guessed.
+pub fn rail_key_from_wire(wire: RailKeyWire, known: &[RailKey]) -> Option<RailKey> {
+    known
+        .iter()
+        .copied()
+        .find(|key| rail_key_to_wire(*key) == wire)
+}
+
+/// The wire icon name for a rail icon. Workspace glyphs are `g:` followed by the glyph name.
+pub fn rail_icon_wire(icon: RailIcon) -> String {
+    let name = match icon {
+        RailIcon::Home => "home",
+        RailIcon::Customize => "customize",
+        RailIcon::Plus => "plus",
+        RailIcon::Heart => "heart",
+        RailIcon::Clock => "clock",
+        RailIcon::Dots => "dots",
+        RailIcon::AppTile => "apptile",
+        RailIcon::Letter => "letter",
+        RailIcon::Glyph(glyph) => {
+            let glyph = match glyph {
+                WorkspaceGlyph::Briefcase => "briefcase",
+                WorkspaceGlyph::Home => "home",
+                WorkspaceGlyph::Code => "code",
+                WorkspaceGlyph::Book => "book",
+                WorkspaceGlyph::Cart => "cart",
+                WorkspaceGlyph::Game => "game",
+                WorkspaceGlyph::Music => "music",
+                WorkspaceGlyph::Heart => "heart",
+                WorkspaceGlyph::Star => "star",
+                WorkspaceGlyph::Bolt => "bolt",
+                WorkspaceGlyph::Globe => "globe",
+                WorkspaceGlyph::Leaf => "leaf",
+            };
+            return format!("g:{glyph}");
+        }
+    };
+    name.to_owned()
+}
+
+/// The rail as the HTML view shows it, built from the same entries the native paint draws, in their
+/// order. `open` is the button whose panel is open; it shows as active like the current workspace.
+/// `png_of` gives an entry's favicon PNG, when it has one. An app whose favicon may not be sent
+/// falls back to the letter tile, since the page has nothing to draw for it.
+pub fn rail_items<'a>(
+    entries: &[RailEntry<'_>],
+    open: Option<RailKey>,
+    png_of: impl Fn(RailKey) -> Option<&'a [u8]>,
+) -> Vec<RailItem> {
+    entries
+        .iter()
+        .map(|entry| {
+            let has_favicon = png_of(entry.key).is_some_and(favicon_sendable);
+            let icon = if entry.icon == RailIcon::AppTile && !has_favicon {
+                RailIcon::Letter
+            } else {
+                entry.icon
+            };
+            RailItem {
+                key: rail_key_to_wire(entry.key).to_wire(),
+                icon: rail_icon_wire(icon),
+                label: entry.label.clone(),
+                active: entry.active || open == Some(entry.key),
+                dot: entry.dot,
+                accent: entry.accent.map(css_colour).unwrap_or_default(),
+                has_favicon,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_edit_handoff_requires_focus_or_uncommitted_text() {
+        assert!(!should_handoff_edit(false, "https://a.test", "https://a.test"));
+        assert!(should_handoff_edit(true, "https://a.test", "https://a.test"));
+        assert!(should_handoff_edit(false, "https://typed.test", "https://a.test"));
+    }
     use crate::chrome::layout::{Rect, compute_in_frame};
 
     #[test]
@@ -352,12 +464,13 @@ mod tests {
     }
 
     #[test]
-    fn state_diff_skips_unchanged_json() {
+    fn state_diff_does_not_advance_the_cache() {
         let mut last = None;
-        assert!(state_changed(&mut last, "{\"a\":1}"));
-        assert!(!state_changed(&mut last, "{\"a\":1}"));
-        assert!(state_changed(&mut last, "{\"a\":2}"));
-        assert!(state_changed(&mut last, "{\"a\":1}"));
+        assert!(state_differs(&last, "{\"a\":1}"));
+        assert_eq!(last, None);
+        last = Some("{\"a\":1}".to_owned());
+        assert!(!state_differs(&last, "{\"a\":1}"));
+        assert!(state_differs(&last, "{\"a\":2}"));
         assert_eq!(last.as_deref(), Some("{\"a\":1}"));
     }
 
@@ -530,5 +643,163 @@ mod tests {
         assert!(!items[3].leader);
         let json = protocol::tabs_json(1, &items);
         assert!(json.contains("\"gl\":true") && json.contains("\"gsize\":2"), "{json}");
+    }
+
+    fn entry(key: RailKey, icon: RailIcon, label: &str) -> RailEntry<'static> {
+        RailEntry {
+            key,
+            icon,
+            label: label.to_owned(),
+            active: false,
+            dot: false,
+            accent: None,
+            favicon: None,
+        }
+    }
+
+    #[test]
+    fn rail_bounds_is_the_full_rail_pill() {
+        let layout = compute_in_frame(1200, 700, 96, 3, 0, false);
+        let bounds = rail_bounds(&layout).expect("wide window has a rail");
+        assert_eq!(bounds.left, layout.rail.left);
+        assert_eq!(bounds.top, layout.rail.top);
+        assert_eq!(bounds.right, layout.rail.right);
+        assert_eq!(bounds.bottom, layout.rail.bottom);
+        assert!(bounds.bottom > bounds.top && bounds.right > bounds.left);
+        let mut empty = layout.clone();
+        empty.rail = Rect::default();
+        assert!(rail_bounds(&empty).is_none());
+    }
+
+    #[test]
+    fn rail_keys_convert_both_ways_and_are_checked_against_the_model() {
+        let model = [
+            RailKey::Home,
+            RailKey::Workspace(7),
+            RailKey::App(3),
+            RailKey::Menu,
+        ];
+        for key in model {
+            let wire = rail_key_to_wire(key);
+            assert_eq!(rail_key_from_wire(wire, &model), Some(key), "{key:?}");
+            assert_eq!(rail_key_from_wire(wire, &model[..0]), None, "{key:?} needs the model");
+        }
+        assert_eq!(rail_key_to_wire(RailKey::Workspace(7)).to_wire(), "ws:7");
+        assert_eq!(rail_key_to_wire(RailKey::AddApp).to_wire(), "addapp");
+        // Keys the model does not hold are rejected, including near misses.
+        for raw in ["ws:8", "app:2", "ws:70", "bookmarks"] {
+            let wire = RailKeyWire::parse(raw).expect("grammar");
+            assert_eq!(rail_key_from_wire(wire, &model), None, "{raw}");
+        }
+        // Every key kind has a distinct spelling.
+        let every = [
+            RailKey::Home,
+            RailKey::Customize,
+            RailKey::Workspace(1),
+            RailKey::AddWorkspace,
+            RailKey::App(1),
+            RailKey::AddApp,
+            RailKey::Bookmarks,
+            RailKey::History,
+            RailKey::Menu,
+        ];
+        let spellings: HashSet<String> = every.iter().map(|k| rail_key_to_wire(*k).to_wire()).collect();
+        assert_eq!(spellings.len(), every.len());
+    }
+
+    #[test]
+    fn rail_icons_map_to_the_wire_names() {
+        let cases = [
+            (RailIcon::Home, "home"),
+            (RailIcon::Customize, "customize"),
+            (RailIcon::Plus, "plus"),
+            (RailIcon::Heart, "heart"),
+            (RailIcon::Clock, "clock"),
+            (RailIcon::Dots, "dots"),
+            (RailIcon::AppTile, "apptile"),
+            (RailIcon::Letter, "letter"),
+            (RailIcon::Glyph(WorkspaceGlyph::Briefcase), "g:briefcase"),
+            (RailIcon::Glyph(WorkspaceGlyph::Home), "g:home"),
+            (RailIcon::Glyph(WorkspaceGlyph::Code), "g:code"),
+            (RailIcon::Glyph(WorkspaceGlyph::Book), "g:book"),
+            (RailIcon::Glyph(WorkspaceGlyph::Cart), "g:cart"),
+            (RailIcon::Glyph(WorkspaceGlyph::Game), "g:game"),
+            (RailIcon::Glyph(WorkspaceGlyph::Music), "g:music"),
+            (RailIcon::Glyph(WorkspaceGlyph::Heart), "g:heart"),
+            (RailIcon::Glyph(WorkspaceGlyph::Star), "g:star"),
+            (RailIcon::Glyph(WorkspaceGlyph::Bolt), "g:bolt"),
+            (RailIcon::Glyph(WorkspaceGlyph::Globe), "g:globe"),
+            (RailIcon::Glyph(WorkspaceGlyph::Leaf), "g:leaf"),
+        ];
+        for (icon, wire) in cases {
+            assert_eq!(rail_icon_wire(icon), wire, "{icon:?}");
+        }
+        // Every glyph the rail can hold has a name in the contract's list.
+        for glyph in WorkspaceGlyph::ALL {
+            assert!(rail_icon_wire(RailIcon::Glyph(glyph)).starts_with("g:"));
+        }
+    }
+
+    #[test]
+    fn rail_items_follow_the_native_entries_in_order() {
+        let mut workspace = entry(RailKey::Workspace(7), RailIcon::Glyph(WorkspaceGlyph::Code), "Work");
+        workspace.active = true;
+        workspace.accent = Some(Rgba::hex(0x4385D1, 0xFF));
+        let mut dotted = entry(RailKey::History, RailIcon::Clock, "History");
+        dotted.dot = true;
+        let entries = vec![
+            entry(RailKey::Home, RailIcon::Home, "Home"),
+            workspace,
+            entry(RailKey::App(3), RailIcon::Letter, "Mail"),
+            dotted,
+        ];
+        let items = rail_items(&entries, None, |_| None);
+        let keys: Vec<&str> = items.iter().map(|item| item.key.as_str()).collect();
+        assert_eq!(keys, ["home", "ws:7", "app:3", "history"]);
+        assert_eq!(items[1].icon, "g:code");
+        assert_eq!(items[1].label, "Work");
+        assert!(items[1].active && !items[0].active);
+        assert_eq!(items[1].accent, "#4385d1");
+        assert_eq!(items[0].accent, "", "no accent means the theme accent");
+        assert!(items[3].dot && !items[1].dot);
+        assert!(items.iter().all(|item| !item.has_favicon));
+    }
+
+    #[test]
+    fn an_open_panel_shows_its_button_as_active() {
+        let entries = vec![
+            entry(RailKey::Bookmarks, RailIcon::Heart, "Bookmarks"),
+            entry(RailKey::Workspace(1), RailIcon::Glyph(WorkspaceGlyph::Star), "A"),
+        ];
+        let items = rail_items(&entries, Some(RailKey::Bookmarks), |_| None);
+        assert!(items[0].active, "open panel");
+        assert!(!items[1].active);
+        let none = rail_items(&entries, None, |_| None);
+        assert!(!none[0].active && !none[1].active);
+    }
+
+    #[test]
+    fn an_app_without_a_sendable_favicon_falls_back_to_the_letter_tile() {
+        let app = entry(RailKey::App(4), RailIcon::AppTile, "Mail");
+        let png = {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            bytes.extend_from_slice(&[0, 0, 0, 13]);
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&[0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0]);
+            bytes
+        };
+        let entries = vec![app.clone(), entry(RailKey::Home, RailIcon::Home, "Home")];
+        // Sendable PNG: the app keeps its tile and reports a favicon.
+        let with = rail_items(&entries, None, |key| (key == RailKey::App(4)).then_some(png.as_slice()));
+        assert_eq!(with[0].icon, "apptile");
+        assert!(with[0].has_favicon);
+        // Bytes that are not a PNG: no favicon, so the letter tile.
+        let gif: &[u8] = b"GIF89a";
+        let without = rail_items(&entries, None, |key| (key == RailKey::App(4)).then_some(gif));
+        assert_eq!(without[0].icon, "letter");
+        assert!(!without[0].has_favicon);
+        // A letter tile stays a letter tile, and an entry with no bytes has no favicon.
+        assert_eq!(without[1].icon, "home");
+        assert!(!without[1].has_favicon);
     }
 }

@@ -34,7 +34,7 @@ use windows::{
 };
 
 use super::{
-    assets::{self, Asset, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
+    assets::{self, Asset, RAIL_START_URL, RESPONSE_HEADERS, SCHEME, START_URL, TABS_START_URL},
     protocol::{
         Command, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
         TokenBucket, is_popup_command, parse_command,
@@ -149,6 +149,7 @@ type ReadySlot<T> = Rc<RefCell<Option<Box<dyn FnOnce(Result<T>)>>>>;
 pub enum View {
     Toolbar,
     Tabs,
+    Rail,
 }
 
 impl View {
@@ -156,6 +157,7 @@ impl View {
         match self {
             Self::Toolbar => START_URL,
             Self::Tabs => TABS_START_URL,
+            Self::Rail => RAIL_START_URL,
         }
     }
 }
@@ -236,13 +238,38 @@ struct State {
     webview: ICoreWebView2,
     /// Keeps the shared environment alive for as long as this host exists.
     _env: ChromeEnv,
-    bounds: RECT,
+    applied_bounds: RECT,
     /// What the caller last asked for. Defaults to visible; only shown once the page has said `ready`.
     wanted_visible: bool,
+    applied_visible: Option<bool>,
     /// Set when the page posts `ready`.
     revealed: bool,
     closed: bool,
     removers: Vec<Box<dyn FnOnce()>>,
+    failures: FailureCounter,
+    on_failed: Rc<dyn Fn()>,
+}
+
+#[derive(Default)]
+struct FailureCounter {
+    consecutive: u8,
+    tripped: bool,
+}
+
+impl FailureCounter {
+    /// Returns true exactly once, on the third consecutive failure.
+    fn record(&mut self, success: bool) -> bool {
+        if success {
+            self.consecutive = 0;
+            return false;
+        }
+        self.consecutive = self.consecutive.saturating_add(1);
+        if self.consecutive >= 3 && !self.tripped {
+            self.tripped = true;
+            return true;
+        }
+        false
+    }
 }
 
 /// A WebView2 controller showing one chrome view. Clones share one controller.
@@ -281,50 +308,72 @@ impl ChromeHost {
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
-        let mut state = self.state.borrow_mut();
-        if state.closed {
-            return Ok(());
-        }
-        state.bounds = bounds;
-        unsafe { state.controller.SetBounds(bounds) }
+        let controller = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            if same_rect(state.applied_bounds, bounds) { return Ok(()); }
+            state.controller.clone()
+        };
+        self.observe(unsafe { controller.SetBounds(bounds) })?;
+        self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.applied_bounds = bounds;
+        Ok(())
     }
 
-    /// Sends one JSON message to the page. Dropped silently once the host is closed.
+    /// Sends one JSON message to the page and reports failure to the caller.
     pub fn post_json(&self, json: &str) -> Result<()> {
-        let state = self.state.borrow();
-        if state.closed {
-            return Ok(());
-        }
+        let webview = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            state.webview.clone()
+        };
         let message = wide(json);
-        unsafe { state.webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) }
+        self.observe(unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) })
     }
 
     /// Moves keyboard focus into the chrome page (programmatic move).
     pub fn focus(&self) -> Result<()> {
-        let state = self.state.borrow();
-        if state.closed {
-            return Ok(());
-        }
-        unsafe {
-            state
-                .controller
-                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
-        }
+        let controller = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            state.controller.clone()
+        };
+        self.observe(unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) })
     }
 
     /// Records the caller's visibility. The controller is only shown once the page is ready.
     pub fn set_visible(&self, visible: bool) -> Result<()> {
-        let mut state = self.state.borrow_mut();
-        state.wanted_visible = visible;
-        if state.closed || !state.revealed {
-            return Ok(());
-        }
-        unsafe { state.controller.SetIsVisible(visible) }
+        let controller = {
+            let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            state.wanted_visible = visible;
+            if !state.revealed { return Ok(()); }
+            if state.applied_visible == Some(visible) { return Ok(()); }
+            state.controller.clone()
+        };
+        self.observe(unsafe { controller.SetIsVisible(visible) })?;
+        self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.applied_visible = Some(visible);
+        Ok(())
     }
 
     pub fn close(&self) {
-        let mut state = self.state.borrow_mut();
-        close_state(&mut state);
+        let (controller, removers) = {
+            let Ok(mut state) = self.state.try_borrow_mut() else { return; };
+            if state.closed { return; }
+            state.closed = true;
+            (state.controller.clone(), std::mem::take(&mut state.removers))
+        };
+        for remove in removers { remove(); }
+        let _ = unsafe { controller.Close() };
+    }
+
+    fn observe(&self, result: Result<()>) -> Result<()> {
+        let failed = {
+            let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            if state.failures.record(result.is_ok()) { Some(state.on_failed.clone()) } else { None }
+        };
+        if let Some(on_failed) = failed { on_failed(); }
+        result
     }
 }
 
@@ -336,19 +385,12 @@ impl Drop for ChromeHost {
     }
 }
 
-fn close_state(state: &mut State) {
-    if state.closed {
-        return;
-    }
-    state.closed = true;
-    for remove in state.removers.drain(..) {
-        remove();
-    }
-    let _ = unsafe { state.controller.Close() };
-}
-
 fn fail(message: &str) -> Error {
     Error::new(E_FAIL, message)
+}
+
+fn same_rect(a: RECT, b: RECT) -> bool {
+    a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -443,11 +485,14 @@ fn configure(
             controller,
             webview,
             _env: setup.env.clone(),
-            bounds: setup.bounds,
+            applied_bounds: setup.bounds,
             wanted_visible: true,
+            applied_visible: Some(false),
             revealed: false,
             closed: false,
             removers: Vec::new(),
+            failures: FailureCounter::default(),
+            on_failed: setup.on_failed.clone(),
         })),
     };
     prepare(&host, environment, setup, background_at_creation)?;
@@ -759,7 +804,7 @@ fn install_handlers(
         )?;
     }
 
-    host.state.borrow_mut().removers.append(&mut removers);
+    host.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.removers.append(&mut removers);
     Ok(())
 }
 
@@ -813,11 +858,13 @@ fn reveal(weak: &Weak<RefCell<State>>) {
     let Some(shared) = weak.upgrade() else {
         return;
     };
-    let mut state = shared.borrow_mut();
-    state.revealed = true;
-    if !state.closed && state.wanted_visible {
-        let _ = unsafe { state.controller.SetIsVisible(true) };
-    }
+    let wanted = {
+        let Ok(mut state) = shared.try_borrow_mut() else { return; };
+        if state.closed { return; }
+        state.revealed = true;
+        state.wanted_visible
+    };
+    let _ = (ChromeHost { state: shared }).set_visible(wanted);
 }
 
 /// Exact match against the start URL of `view`. Nothing else may load in that chrome webview.
@@ -843,6 +890,18 @@ fn request_path(uri: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_consecutive_com_failures_trip_and_success_resets() {
+        let mut failures = FailureCounter::default();
+        assert!(!failures.record(false));
+        assert!(!failures.record(false));
+        assert!(!failures.record(true));
+        assert!(!failures.record(false));
+        assert!(!failures.record(false));
+        assert!(failures.record(false));
+        assert!(!failures.record(false));
+    }
 
     #[test]
     fn start_url_must_match_exactly() {
@@ -950,8 +1009,39 @@ mod tests {
     fn each_view_has_its_own_start_url() {
         assert_eq!(View::Toolbar.start_url(), "bowser-ui://app/index.html?view=toolbar");
         assert_eq!(View::Tabs.start_url(), "bowser-ui://app/index.html?view=tabs");
-        assert!(!is_start_url(View::Toolbar, View::Tabs.start_url()));
-        assert!(!is_start_url(View::Tabs, View::Toolbar.start_url()));
+        assert_eq!(View::Rail.start_url(), "bowser-ui://app/index.html?view=rail");
+        let views = [View::Toolbar, View::Tabs, View::Rail];
+        for view in views {
+            assert!(is_start_url(view, view.start_url()), "{view:?}");
+            for other in views.iter().filter(|other| **other != view) {
+                assert!(!is_start_url(view, other.start_url()), "{view:?} accepted {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rail_start_url_matches_exactly_and_nothing_else() {
+        assert!(is_start_url(View::Rail, RAIL_START_URL));
+        for uri in [
+            "bowser-ui://app/index.html?view=rail&x=1",
+            "bowser-ui://app/index.html?view=Rail",
+            "bowser-ui://app/index.html?view=rail ",
+            "bowser-ui://app/index.html?view=rails",
+            "bowser-ui://app/index.html?view=",
+            "bowser-ui://app/index.html",
+            "bowser-ui://app/?view=rail",
+            "https://app/index.html?view=rail",
+        ] {
+            assert!(!is_start_url(View::Rail, uri), "{uri:?}");
+        }
+    }
+
+    #[test]
+    fn rail_messages_need_the_rail_page_as_both_sources() {
+        assert!(is_trusted_message(View::Rail, RAIL_START_URL, RAIL_START_URL));
+        assert!(!is_trusted_message(View::Rail, RAIL_START_URL, TABS_START_URL));
+        assert!(!is_trusted_message(View::Rail, TABS_START_URL, RAIL_START_URL));
+        assert!(!is_trusted_message(View::Toolbar, RAIL_START_URL, RAIL_START_URL));
     }
 
     #[test]

@@ -157,8 +157,11 @@ pub struct ChromeSurface {
     /// not painted here, and its region is left transparent so the page shows through.
     html_toolbar: bool,
     /// The HTML chrome draws the tab row. Its tabs, islands and group balls are not painted here,
-    /// and its region is left transparent. The strip, captions, "+" and rail stay native.
+    /// and its region is left transparent. The strip, captions and "+" stay native.
     html_tabs: bool,
+    /// The HTML chrome draws the left rail. Its pill, buttons, tooltips and fades are not painted
+    /// here, and its region is left transparent. Native panels still open beside it.
+    html_rail: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,6 +226,7 @@ impl ChromeSurface {
             rail_icons: IconCache::default(),
             html_toolbar: false,
             html_tabs: false,
+            html_rail: false,
         }
     }
 
@@ -291,6 +295,11 @@ impl ChromeSurface {
     /// Hands the tab row to the HTML tab strip: its tabs and group balls are not painted natively.
     pub fn set_html_tabs(&mut self, on: bool) {
         self.html_tabs = on;
+    }
+
+    /// Hands the left rail to the HTML rail: its pill and buttons are not painted natively.
+    pub fn set_html_rail(&mut self, on: bool) {
+        self.html_rail = on;
     }
 
     /// Paints a themed viewport-half target while a tab is being dragged into split view.
@@ -498,31 +507,19 @@ impl ChromeSurface {
                 dirty,
             );
         }
+        // Each HTML region is cleared here: the overlay sits above the HTML chrome's child window, so
+        // the page shows through. The native paint of that region is then skipped.
         if self.html_toolbar {
-            // The overlay sits above the HTML chrome's child window, so its region must stay clear.
-            if let Some(region) = crate::chrome_host::toolbar_bounds(view.layout) {
-                let region = Rect::from(region).intersect(dirty);
-                let stride = self.stride();
-                let pixels = self.dib.pixels_mut();
-                for y in region.top..region.bottom {
-                    let start = y as usize * stride + region.left as usize * 4;
-                    pixels[start..start + region.width() as usize * 4].fill(0);
-                }
-            }
+            self.clear_html_region(crate::chrome_host::toolbar_bounds(view.layout).map(Rect::from), dirty);
         }
         if self.html_tabs {
-            // Same as the toolbar region: the HTML tab strip shows through, so it stays clear here.
-            if let Some(region) = crate::chrome_host::tab_row_bounds(view.layout) {
-                let region = Rect::from(region).intersect(dirty);
-                let stride = self.stride();
-                let pixels = self.dib.pixels_mut();
-                for y in region.top..region.bottom {
-                    let start = y as usize * stride + region.left as usize * 4;
-                    pixels[start..start + region.width() as usize * 4].fill(0);
-                }
-            }
+            self.clear_html_region(crate::chrome_host::tab_row_bounds(view.layout).map(Rect::from), dirty);
         }
-        self.paint_left_rail(view, dirty);
+        if self.html_rail {
+            self.clear_html_region(crate::chrome_host::rail_bounds(view.layout).map(Rect::from), dirty);
+        } else {
+            self.paint_left_rail(view, dirty);
+        }
         if !self.html_tabs {
             self.paint_departures(view, dirty);
             self.paint_tabs(view, dirty);
@@ -790,6 +787,21 @@ impl ChromeSurface {
 
     /// The left rail: the pill, then, when the app supplies a rail view, its buttons and section
     /// hairlines on top. Without a view the pill is painted alone.
+    /// Zeroes the pixels of an HTML region where it meets `dirty`, so the overlay is transparent
+    /// there and the HTML chrome shows through. `None` (no region) does nothing.
+    fn clear_html_region(&mut self, region: Option<Rect>, dirty: Rect) {
+        let Some(region) = region else {
+            return;
+        };
+        let region = region.intersect(dirty);
+        let stride = self.stride();
+        let pixels = self.dib.pixels_mut();
+        for y in region.top..region.bottom {
+            let start = y as usize * stride + region.left as usize * 4;
+            pixels[start..start + region.width() as usize * 4].fill(0);
+        }
+    }
+
     fn paint_left_rail(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let pill = view.layout.rail;
         let radius = pill.width() / 2;

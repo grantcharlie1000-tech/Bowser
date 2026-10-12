@@ -22,7 +22,8 @@ use crate::{
         self, host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View, accel_command},
         protocol::{
             CaptionAction, Command as ChromeCommand, GroupAction, NavAction, OpenTarget,
-            TabAction, ViewState, completion_json, fav_json, focus_json, set_text_json, tabs_json,
+            RailAction, RailKeyWire, TabAction, ViewState, completion_json, fav_json, focus_json,
+            rail_json, railfav_json, set_text_json, tabs_json,
         },
     },
     favicon::{self, FaviconCache},
@@ -113,6 +114,8 @@ const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 /// Posted once per queued menu, popup or window command from an HTML chrome view. Each post runs
 /// the oldest queued command on the UI thread, outside WebView2's message callback.
 const WM_HTML_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7E;
+/// Posted when the HTML left rail's WebView2 process fails. Handled on the UI thread.
+const WM_HTML_RAIL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7F;
 /// Most deferred chrome commands waiting at once. A command that finds the queue full is dropped.
 const HTML_DEFERRED_LIMIT: usize = 8;
 
@@ -129,6 +132,10 @@ enum DeferredChromeCommand {
     BeginDrag,
     ToggleMaximize,
     SystemMenu,
+    /// A left click on a rail button: what a native click does. May open a modal prompt.
+    RailClick { key: RailKey },
+    /// A right click on a rail button: the native rail context menu at the client point.
+    RailMenu { key: RailKey, x: i32, y: i32 },
 }
 /// Frame interval while chrome transitions run; about 60 frames a second.
 const ANIMATION_FRAME_MS: u32 = 16;
@@ -151,6 +158,9 @@ struct RailEntryData {
     active: bool,
     accent: Option<crate::theme::Rgba>,
     favicon: Option<Rc<favicon::FaviconBitmap>>,
+    /// The favicon's source bytes, as the HTML rail sends them (it sends only PNGs that pass the
+    /// protocol gate).
+    png: Option<Rc<Vec<u8>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -311,6 +321,10 @@ struct WindowChrome {
     html_omnibox_focused: bool,
     /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
     html_last_state: Option<String>,
+    html_tabs_last_state: Option<String>,
+    html_rail_last_state: Option<String>,
+    /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
+    html_state_generation: [u64; 3],
     /// The tab and omnibox text last sent with `setText`, so the text is not re-sent each sync.
     html_text_sent: Option<(TabId, String)>,
     /// The active tab the last sync saw. A change of tab sends the new tab's text even while the
@@ -338,6 +352,16 @@ struct WindowChrome {
     /// Menu, popup and window commands from the HTML chrome views, oldest first, run one per
     /// `WM_HTML_DEFERRED` (see `DeferredChromeCommand`). Bounded by `HTML_DEFERRED_LIMIT`.
     html_deferred: VecDeque<DeferredChromeCommand>,
+    /// The HTML left rail's WebView2 host, once created. Dropped (and closed) on failure.
+    html_rail: Option<ChromeHost>,
+    /// Set once the HTML rail has been started, so it is never started twice.
+    html_rail_requested: bool,
+    /// The rail page has posted `ready`.
+    html_rail_page_ready: bool,
+    /// The last `rail` JSON posted to the HTML rail, so an unchanged rail is not sent again.
+    html_rail_last: Option<String>,
+    /// The favicon PNG last sent to the HTML rail for each button, so it is sent once per change.
+    html_rail_favs_sent: HashMap<RailKey, Rc<Vec<u8>>>,
 }
 
 /// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
@@ -428,6 +452,9 @@ impl WindowChrome {
             html_toolbar_active: false,
             html_omnibox_focused: false,
             html_last_state: None,
+            html_tabs_last_state: None,
+            html_rail_last_state: None,
+            html_state_generation: [0; 3],
             html_text_sent: None,
             html_synced_tab: None,
             html_env: None,
@@ -440,6 +467,11 @@ impl WindowChrome {
             html_favicons: HashMap::new(),
             html_favicons_sent: HashMap::new(),
             html_deferred: VecDeque::new(),
+            html_rail: None,
+            html_rail_requested: false,
+            html_rail_page_ready: false,
+            html_rail_last: None,
+            html_rail_favs_sent: HashMap::new(),
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -636,6 +668,7 @@ impl WindowChrome {
         self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
+        self.sync_html_rail_bounds();
         self.surface.resize(w, h, self.dpi)
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
@@ -654,45 +687,39 @@ impl WindowChrome {
         }
         chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
     }
-    /// Every HTML region in client pixels: the toolbar's and, when active, the tab row's.
+    /// The left rail the HTML rail covers, in client pixels. `None` until its page is ready, so the
+    /// native rail keeps painting and hit-testing until then.
+    fn html_rail_region(&self) -> Option<Rect> {
+        if self.html_rail.is_none() || !self.html_rail_page_ready {
+            return None;
+        }
+        chrome_host::rail_bounds(&self.layout).map(Rect::from)
+    }
+    /// Every HTML region in client pixels: the toolbar's, the tab row's and the rail's, when active.
     fn html_regions(&self) -> Vec<Rect> {
-        self.html_region().into_iter().chain(self.html_tab_region()).collect()
+        self.html_region()
+            .into_iter()
+            .chain(self.html_tab_region())
+            .chain(self.html_rail_region())
+            .collect()
+    }
+    /// Moves the HTML rail over the left rail and hides it when there is none. Also tells the
+    /// surface to leave the rail to the page.
+    fn sync_html_rail_bounds(&mut self) {
+        let region = self.html_rail_region();
+        self.surface.set_html_rail(region.is_some());
     }
     /// Moves the HTML tab strip over the tab row and hides it when there is none. Also tells the
     /// surface to leave the row to the page.
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        let Some(host) = &self.html_tabs else {
-            return;
-        };
-        match chrome_host::tab_row_bounds(&self.layout) {
-            Some(bounds) if region.is_some() => {
-                let _ = host.set_bounds(bounds);
-                let _ = host.set_visible(true);
-            }
-            _ => {
-                let _ = host.set_visible(false);
-            }
-        }
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        let Some(host) = &self.html else {
-            return;
-        };
-        match (region, chrome_host::toolbar_bounds(&self.layout)) {
-            (Some(_), Some(bounds)) => {
-                let _ = host.set_bounds(bounds);
-                let _ = host.set_visible(true);
-            }
-            _ => {
-                let _ = host.set_visible(false);
-            }
-        }
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -860,8 +887,8 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
     });
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = vec![
-        RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None },
-        RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None },
+        RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None },
+        RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None },
     ];
     if shown(SidebarKind::Workspaces) {
         for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
@@ -889,20 +916,22 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
                 WorkspaceColour::Green => 0x56A36B,
                 WorkspaceColour::Slate => 0x778394,
             }, 0xFF));
-            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None });
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
     }
     if shown(SidebarKind::Apps) {
         for app_entry in &config.apps {
-            let favicon = profile.as_ref().and_then(|_| {
+            let bytes: Option<Vec<u8>> = profile.as_ref().and_then(|_| {
                 let host = url::Url::parse(&app_entry.url).ok()?.host_str()?.to_owned();
-                let bytes = favicon::load_favicon_bytes(&host).ok()??;
-                favicon::decode(&bytes, Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32).map(Rc::new)
+                favicon::load_favicon_bytes(&host).ok()?
             });
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon: if favicon.is_some() { RailIcon::AppTile } else { RailIcon::Letter }, label: app_entry.name.clone(), active: false, accent: None, favicon });
+            let favicon = bytes.as_deref().and_then(|bytes| {
+                favicon::decode(bytes, Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32).map(Rc::new)
+            });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon: if favicon.is_some() { RailIcon::AppTile } else { RailIcon::Letter }, label: app_entry.name.clone(), active: false, accent: None, favicon, png: bytes.map(Rc::new) });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -910,9 +939,9 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None });
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
     state.rail_entries = entries;
     state.rail_scroll = state.rail_scroll.max(0);
 }
@@ -923,6 +952,22 @@ fn main_window_style() -> WINDOW_STYLE {
 
 fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<T> {
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
+}
+
+/// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
+fn sync_html_host_bounds(hwnd: HWND) {
+    let Some(hosts) = with_chrome(hwnd, |s| [
+        (s.html.clone(), chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some())),
+        (s.html_tabs.clone(), chrome_host::tab_row_bounds(&s.layout).filter(|_| s.html_tab_region().is_some())),
+        (s.html_rail.clone(), chrome_host::rail_bounds(&s.layout).filter(|_| s.html_rail_region().is_some())),
+    ]) else { return; };
+    for (host, bounds) in hosts {
+        let Some(host) = host else { continue; };
+        if let Some(bounds) = bounds {
+            if host.set_bounds(bounds).is_err() { continue; }
+        }
+        let _ = host.set_visible(bounds.is_some());
+    }
 }
 /// Moves the owned chrome popup with the client origin without repainting its pixels.
 fn sync_overlay_position(hwnd: HWND) {
@@ -2625,6 +2670,12 @@ unsafe extern "system" fn window_proc(
             WM_HTML_TABS_FAILED => {
                 if chrome_host::html_ui_enabled() {
                     html_tabs_failed(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_HTML_RAIL_FAILED => {
+                if chrome_host::html_ui_enabled() {
+                    html_rail_failed(hwnd);
                 }
                 LRESULT(0)
             }
@@ -5357,11 +5408,13 @@ fn html_env_settled(hwnd: HWND) {
             // failure is its own.
             start_html_toolbar(hwnd, &env);
             start_html_tabs(hwnd);
+            start_html_rail(hwnd);
         }
         ChromeEnvironment::Unavailable => {
             let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
             html_failed(hwnd);
             html_tabs_failed(hwnd);
+            html_rail_failed(hwnd);
         }
     }
 }
@@ -5372,19 +5425,24 @@ fn close_html_chrome(hwnd: HWND) {
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
+        s.html_rail_requested = true;
         s.html_env_waiting = false;
         s.html_toolbar_active = false;
         s.html_page_ready = false;
         s.html_tabs_page_ready = false;
+        s.html_rail_page_ready = false;
         s.html_env = None;
-        (s.html.take(), s.html_tabs.take())
+        (s.html.take(), s.html_tabs.take(), s.html_rail.take())
     });
     // Closed outside the borrow: closing a controller can pump messages.
-    if let Some((toolbar, tabs)) = hosts {
+    if let Some((toolbar, tabs, rail)) = hosts {
         if let Some(host) = toolbar {
             host.close();
         }
         if let Some(host) = tabs {
+            host.close();
+        }
+        if let Some(host) = rail {
             host.close();
         }
     }
@@ -5445,6 +5503,7 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_bounds();
     });
     if stored.is_some() {
+        sync_html_host_bounds(hwnd);
         if let Some(region) = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout)).flatten()
         {
             raise_html_child(hwnd, region);
@@ -5457,7 +5516,8 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
 /// page its state. The native controls it replaces stop painting and the native address input is
 /// hidden. Runs again on every `ready`, so a reloaded page gets state too.
 fn html_refresh(hwnd: HWND) {
-    let Some(edit) = with_chrome(hwnd, |s| {
+    let Some((edit, host, activating, generation)) = with_chrome(hwnd, |s| {
+        let activating = s.html.is_some() && s.html_page_ready && !s.html_toolbar_active;
         if s.html.is_some() && s.html_page_ready && !s.html_toolbar_active {
             s.html_toolbar_active = true;
             s.sync_html_bounds();
@@ -5467,14 +5527,41 @@ fn html_refresh(hwnd: HWND) {
         }
         // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
         s.html_last_state = None;
+        s.html_state_generation[0] = s.html_state_generation[0].wrapping_add(1);
         s.html_text_sent = None;
         s.html_synced_tab = None;
-        Some(s.edit)
+        Some((s.edit, s.html.clone()?, activating, s.html_state_generation[0]))
     })
     .flatten() else {
         return;
     };
+    let native_text = (!edit.is_invalid() && activating).then(|| read_edit(edit));
+    let native_focused = unsafe { !edit.is_invalid() && GetFocus() == edit };
+    let handoff = native_text.and_then(|text| {
+        let app = app_of(hwnd)?;
+        let id = App::active_tab_id(&app);
+        let committed = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())?;
+        chrome_host::should_handoff_edit(native_focused, &text, &committed)
+            .then_some((id, text))
+    });
+    sync_html_host_bounds(hwnd);
     html_sync(hwnd);
+    if let Some((id, text)) = handoff {
+        if host.post_json(&set_text_json(&text, false)).is_ok() {
+            let current = with_chrome(hwnd, |s| {
+                if s.html_state_generation[0] != generation { return false; }
+                s.html_text_sent = Some((id, text.clone()));
+                s.html_synced_tab = Some(id);
+                s.html_omnibox_focused = true;
+                s.edit_text = text;
+                true
+            }).unwrap_or(false);
+            if current {
+                let _ = host.focus();
+                let _ = host.post_json(&focus_json(false));
+            }
+        }
+    }
     unsafe {
         if !edit.is_invalid() {
             if GetFocus() == edit {
@@ -5502,11 +5589,9 @@ fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let Some((host, palette, dpi)) = with_chrome(hwnd, |s| {
-        if !s.html_toolbar_active {
-            return None;
-        }
-        Some((s.html.clone()?, s.palette, s.dpi))
+    let Some((palette, dpi)) = with_chrome(hwnd, |s| {
+        if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready) { return None; }
+        Some((s.palette, s.dpi))
     })
     .flatten() else {
         return;
@@ -5526,15 +5611,18 @@ fn html_sync(hwnd: HWND) {
         theme: chrome_host::theme_tokens(palette),
     };
     let json = state.to_json();
+    html_broadcast_state(hwnd, &json);
+    let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
+        return;
+    };
     let display =
         with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
-    let (send_state, send_text, select) = with_chrome(hwnd, |s| {
-        let send_state = chrome_host::state_changed(&mut s.html_last_state, &json);
+    let (send_text, select, generation) = with_chrome(hwnd, |s| {
         let already_sent = s
             .html_text_sent
             .as_ref()
             .is_some_and(|(tab, text)| *tab == id && *text == display);
-        let prev_tab = s.html_synced_tab.replace(id);
+        let prev_tab = s.html_synced_tab;
         let send_text = chrome_host::should_set_text(
             prev_tab,
             id,
@@ -5543,19 +5631,43 @@ fn html_sync(hwnd: HWND) {
         );
         // A blank tab that takes focus (Ctrl+T) selects its empty text so typing replaces it.
         let select = send_text && s.html_omnibox_focused && display.is_empty();
-        if send_text {
-            s.html_text_sent = Some((id, display.clone()));
-            s.edit_text.clone_from(&display);
-            s.completion = None;
-        }
-        (send_state, send_text, select)
+        (send_text, select, s.html_state_generation[0])
     })
     .unwrap_or_default();
-    if send_state {
-        let _ = host.post_json(&json);
-    }
     if send_text {
-        let _ = host.post_json(&set_text_json(&display, select));
+        if host.post_json(&set_text_json(&display, select)).is_ok() {
+            let _ = with_chrome(hwnd, |s| {
+                if s.html_state_generation[0] != generation { return; }
+                s.html_synced_tab = Some(id);
+                s.html_text_sent = Some((id, display.clone()));
+                s.edit_text.clone_from(&display);
+                s.completion = None;
+            });
+        }
+    }
+}
+
+/// Each ready page receives the same state; each host has its own successful-send cache.
+fn html_broadcast_state(hwnd: HWND, json: &str) {
+    let Some(candidates) = with_chrome(hwnd, |s| [
+        (s.html_page_ready && chrome_host::state_differs(&s.html_last_state, json)).then(|| s.html.clone()).flatten(),
+        (s.html_tabs_page_ready && chrome_host::state_differs(&s.html_tabs_last_state, json)).then(|| s.html_tabs.clone()).flatten(),
+        (s.html_rail_page_ready && chrome_host::state_differs(&s.html_rail_last_state, json)).then(|| s.html_rail.clone()).flatten(),
+    ]) else { return; };
+    let generations = with_chrome(hwnd, |s| s.html_state_generation).unwrap_or_default();
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        let Some(host) = candidate else { continue; };
+        if host.post_json(json).is_ok() {
+            let _ = with_chrome(hwnd, |s| {
+                if s.html_state_generation[index] == generations[index] {
+                    match index {
+                        0 => s.html_last_state = Some(json.to_owned()),
+                        1 => s.html_tabs_last_state = Some(json.to_owned()),
+                        _ => s.html_rail_last_state = Some(json.to_owned()),
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -5618,14 +5730,19 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 .unwrap_or_default();
             // Restore the address the tab shows, then hand the keyboard back to the page.
             let host = with_chrome(hwnd, |s| {
-                s.html_text_sent = Some((id, display.clone()));
+                s.html_text_sent = None;
                 s.edit_text.clone_from(&display);
                 s.completion = None;
-                s.html.clone()
-            })
-            .flatten();
-            if let Some(host) = host {
-                let _ = host.post_json(&set_text_json(&display, false));
+                (s.html.clone(), s.html_state_generation[0])
+            });
+            if let Some((Some(host), generation)) = host {
+                if host.post_json(&set_text_json(&display, false)).is_ok() {
+                    let _ = with_chrome(hwnd, |s| {
+                        if s.html_state_generation[0] == generation {
+                            s.html_text_sent = Some((id, display.clone()));
+                        }
+                    });
+                }
             }
             App::focus_page(&app);
         }
@@ -5656,8 +5773,12 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             // Same as the native omnibox split button: open the split menu.
             defer_html_command(hwnd, DeferredChromeCommand::SplitMenu);
         }
-        // Tab strip commands are handled by the tab row integration, not the toolbar.
-        ChromeCommand::Tab { .. } | ChromeCommand::TabMove { .. } | ChromeCommand::Group { .. } => {}
+        // Tab strip and rail commands are handled by their own views, not the toolbar.
+        ChromeCommand::Tab { .. }
+        | ChromeCommand::TabMove { .. }
+        | ChromeCommand::Group { .. }
+        | ChromeCommand::Rail { .. }
+        | ChromeCommand::RailMove { .. } => {}
     }
     html_sync(hwnd);
 }
@@ -5762,6 +5883,7 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_tabs_bounds();
     });
     if stored.is_some() {
+        sync_html_host_bounds(hwnd);
         if let Some(region) =
             with_chrome(hwnd, |s| chrome_host::tab_row_bounds(&s.layout)).flatten()
         {
@@ -5776,9 +5898,12 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
 fn html_tabs_refresh(hwnd: HWND) {
     let _ = with_chrome(hwnd, |s| {
         s.html_tabs_last = None;
+        s.html_tabs_last_state = None;
+        s.html_state_generation[1] = s.html_state_generation[1].wrapping_add(1);
         s.html_favicons_sent.clear();
         s.sync_html_tabs_bounds();
     });
+    sync_html_host_bounds(hwnd);
     html_tabs_sync(hwnd);
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -5814,6 +5939,7 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Ready => {
             let _ = with_chrome(hwnd, |s| s.html_tabs_page_ready = true);
             html_tabs_refresh(hwnd);
+            html_sync(hwnd);
             return;
         }
         ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
@@ -5835,6 +5961,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
     let region = with_chrome(hwnd, |s| match view {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
+        View::Rail => s.html_rail_region(),
     })
     .flatten();
     let Some(region) = region else {
@@ -5907,9 +6034,21 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::BeginDrag => begin_html_drag(hwnd),
         DeferredChromeCommand::ToggleMaximize => toggle_max(hwnd),
         DeferredChromeCommand::SystemMenu => html_system_menu(hwnd),
+        // The button may have gone while the command waited.
+        DeferredChromeCommand::RailClick { key } => {
+            if rail_model_keys(hwnd).contains(&key) {
+                activate_rail(hwnd, &app, key);
+            }
+        }
+        DeferredChromeCommand::RailMenu { key, x, y } => {
+            if rail_model_keys(hwnd).contains(&key) {
+                show_rail_context_menu(hwnd, &app, key, x, y);
+            }
+        }
     }
     html_sync(hwnd);
     html_tabs_sync(hwnd);
+    html_rail_sync(hwnd);
 }
 
 /// The client point under the cursor. Native menus take client points.
@@ -6112,30 +6251,290 @@ fn html_tabs_sync(hwnd: HWND) {
             ))
         })
         .collect();
-    let (send_json, sends) = with_chrome(hwnd, |s| {
+    let (send_json, sends, generation) = with_chrome(hwnd, |s| {
         s.html_tabs_groups = groups;
-        let send_json = chrome_host::state_changed(&mut s.html_tabs_last, &json);
+        let send_json = s.html_tabs_last.as_deref() != Some(json.as_str());
         let mut sends = Vec::new();
         for (id, favicon) in &s.html_favicons {
             let Some(png) = &favicon.png else {
                 continue;
             };
             if s.html_favicons_sent.get(id) != Some(&favicon.key) {
-                s.html_favicons_sent.insert(*id, favicon.key);
-                sends.push((*id, png.clone()));
+                sends.push((*id, favicon.key, png.clone()));
             }
         }
-        (send_json, sends)
+        (send_json, sends, s.html_state_generation[1])
     })
     .unwrap_or_default();
-    if send_json {
-        let _ = host.post_json(&json);
+    if send_json && host.post_json(&json).is_ok() {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[1] == generation { s.html_tabs_last = Some(json); }
+        });
     }
-    for (id, png) in sends {
+    for (id, key, png) in sends {
         if let Some(favicon_json) =
             chrome_host::tab_to_wire(id).and_then(|wire| fav_json(wire, &png))
         {
-            let _ = host.post_json(&favicon_json);
+            if host.post_json(&favicon_json).is_ok() {
+                let _ = with_chrome(hwnd, |s| {
+                    if s.html_state_generation[1] == generation { s.html_favicons_sent.insert(id, key); }
+                });
+            }
+        }
+    }
+}
+
+/// Which rail button's native panel is open, if any. Shared by the native paint and the HTML rail.
+fn open_rail_panel(hwnd: HWND) -> Option<RailKey> {
+    match side_panel::active_id(hwnd) {
+        Some(side_panel::PanelId::Bookmarks) => Some(RailKey::Bookmarks),
+        Some(side_panel::PanelId::History) => Some(RailKey::History),
+        Some(side_panel::PanelId::Customize | side_panel::PanelId::Menu) => Some(RailKey::Customize),
+        Some(side_panel::PanelId::WebApp(id)) => Some(RailKey::App(id)),
+        None => None,
+    }
+}
+
+/// The rail's keys in display order, as the native model holds them. Empty when the window is gone.
+fn rail_model_keys(hwnd: HWND) -> Vec<RailKey> {
+    with_chrome(hwnd, |s| s.rail_entries.iter().map(|entry| entry.key).collect()).unwrap_or_default()
+}
+
+/// Starts the HTML left rail's WebView2 controller on the shared environment (private chrome
+/// profile), once per window. It is independent of the toolbar and the tab strip: if it cannot
+/// start, the native rail stays.
+fn start_html_rail(hwnd: HWND) {
+    let Some((env, bounds)) = with_chrome(hwnd, |s| {
+        if s.html_rail_requested {
+            return None;
+        }
+        let env = s.html_env.clone()?;
+        s.html_rail_requested = true;
+        Some((env, chrome_host::rail_bounds(&s.layout).unwrap_or_default()))
+    })
+    .flatten() else {
+        return;
+    };
+    let raw = hwnd.0 as isize;
+    let on_command: Rc<dyn Fn(ChromeCommand)> =
+        Rc::new(move |command| html_rail_command(HWND(raw as *mut _), command));
+    let on_accelerator: AccelHandler =
+        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Rail));
+    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
+        // Posted, not handled here: the failure can arrive inside the controller's own callback.
+        let _ = PostMessageW(
+            Some(HWND(raw as *mut _)),
+            WM_HTML_RAIL_FAILED,
+            WPARAM(0),
+            LPARAM(0),
+        );
+    });
+    let created = ChromeHost::create(
+        &env,
+        hwnd,
+        bounds,
+        View::Rail,
+        on_command,
+        on_failed,
+        Some(on_accelerator),
+        move |result| html_rail_created(hwnd, result),
+    );
+    if created.is_err() {
+        html_rail_failed(hwnd);
+    }
+}
+
+/// The rail controller was created, or failed. A created host is stored, placed and raised; the
+/// rail activates once its page says `ready`.
+fn html_rail_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+    let Ok(host) = result else {
+        html_rail_failed(hwnd);
+        return;
+    };
+    if window_closing(hwnd) {
+        host.close();
+        return;
+    }
+    let stored = with_chrome(hwnd, move |s| {
+        s.html_rail = Some(host);
+        s.sync_html_rail_bounds();
+    });
+    if stored.is_some() {
+        sync_html_host_bounds(hwnd);
+        if let Some(region) = with_chrome(hwnd, |s| chrome_host::rail_bounds(&s.layout)).flatten() {
+            raise_html_child(hwnd, region);
+        }
+        html_rail_sync(hwnd);
+    }
+}
+
+/// Activates the HTML rail once its page is ready. A freshly loaded page knows nothing yet, so the
+/// whole rail and every favicon are resent. Runs again on every `ready`. The native rail stops
+/// painting and hit-testing its area from here on.
+fn html_rail_refresh(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.html_rail_last = None;
+        s.html_rail_last_state = None;
+        s.html_state_generation[2] = s.html_state_generation[2].wrapping_add(1);
+        s.html_rail_favs_sent.clear();
+        // A hover or keyboard focus on the native rail belongs to the native buttons, now hidden.
+        if matches!(s.hover, Hit::Rail(_)) {
+            s.hover = Hit::None;
+        }
+        s.rail_keyboard_focus = false;
+        s.sync_html_rail_bounds();
+    });
+    sync_html_host_bounds(hwnd);
+    hide_rail_tooltip(hwnd);
+    html_rail_sync(hwnd);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// The HTML rail failed: its area goes back to native paint and hit tests and its host is closed.
+/// The toolbar and tab strip are unaffected. Safe to call more than once.
+fn html_rail_failed(hwnd: HWND) {
+    let Some(host) = with_chrome(hwnd, |s| {
+        s.html_rail_page_ready = false;
+        s.html_rail_last = None;
+        s.html_rail_favs_sent.clear();
+        let host = s.html_rail.take();
+        s.sync_html_rail_bounds();
+        host
+    }) else {
+        return;
+    };
+    // Closed outside the borrow: closing a controller can pump messages.
+    if let Some(host) = host {
+        host.close();
+    }
+    hide_rail_tooltip(hwnd);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Handles one validated message from the HTML rail. Runs on the UI thread, holding no borrow.
+fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
+    match command {
+        ChromeCommand::Ready => {
+            let _ = with_chrome(hwnd, |s| s.html_rail_page_ready = true);
+            html_rail_refresh(hwnd);
+            html_sync(hwnd);
+            return;
+        }
+        ChromeCommand::Rail { action, key } => html_rail_action(hwnd, action, key),
+        ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
+        // The rail sends nothing else. Any other message is ignored.
+        _ => return,
+    }
+    html_rail_sync(hwnd);
+}
+
+/// A click or right click on a rail button. The key must be in the native model, or the message is
+/// ignored. Both run from the deferred queue, outside WebView2's callback, because either may open
+/// a modal prompt or menu: a click does what a native click does, a right click shows the native
+/// rail context menu at the cursor.
+fn html_rail_action(hwnd: HWND, action: RailAction, wire: RailKeyWire) {
+    let Some(key) = chrome_host::rail_key_from_wire(wire, &rail_model_keys(hwnd)) else {
+        return;
+    };
+    match action {
+        RailAction::Click => defer_html_command(hwnd, DeferredChromeCommand::RailClick { key }),
+        RailAction::Menu => {
+            if let Some((x, y)) = cursor_client_point(hwnd) {
+                defer_html_command(hwnd, DeferredChromeCommand::RailMenu { key, x, y });
+            }
+        }
+    }
+}
+
+/// A drag-reorder drop of a workspace or app in the rail. Both keys must be in the native model and
+/// `before` must be in the same section, or the drop is ignored. The index is the one the native
+/// drop computes (`rail::reorder_index`), and the commit is the native one (`commit_rail_drop`).
+fn html_rail_move(hwnd: HWND, wire: RailKeyWire, before: Option<RailKeyWire>) {
+    let Some(app) = app_of(hwnd) else {
+        return;
+    };
+    let keys = rail_model_keys(hwnd);
+    let Some(moved) = chrome_host::rail_key_from_wire(wire, &keys) else {
+        return;
+    };
+    let before = match before {
+        None => None,
+        Some(wire) => match chrome_host::rail_key_from_wire(wire, &keys) {
+            Some(key) => Some(key),
+            None => return,
+        },
+    };
+    let Some(index) = crate::chrome::rail::reorder_index(&keys, moved, before) else {
+        return;
+    };
+    commit_rail_drop(hwnd, &app, moved, index);
+}
+
+/// Posts the rail's buttons when they changed, and each favicon PNG that is new for its button.
+/// Does nothing until the page is ready. Holds no chrome borrow while calling App, which may
+/// re-enter this window, and the App is not called at all here: the model is already built.
+fn html_rail_sync(hwnd: HWND) {
+    let open = open_rail_panel(hwnd);
+    let Some((host, json, favicons, generation)) = with_chrome(hwnd, |s| {
+        s.html_rail_region()?;
+        let host = s.html_rail.clone()?;
+        let items = {
+            let entries = rail_entries(s);
+            chrome_host::rail_items(&entries, open, |key| {
+                s.rail_entries
+                    .iter()
+                    .find(|entry| entry.key == key)
+                    .and_then(|entry| entry.png.as_deref())
+                    .map(Vec::as_slice)
+            })
+        };
+        let json = rail_json(&items);
+        // Favicons go out once per change: a button whose PNG is the one already sent is skipped.
+        let mut favicons = Vec::new();
+        for entry in &s.rail_entries {
+            let Some(png) = &entry.png else {
+                continue;
+            };
+            let sent = s.html_rail_favs_sent.get(&entry.key).is_some_and(|prev| {
+                Rc::ptr_eq(prev, png) || prev.as_slice() == png.as_slice()
+            });
+            if sent {
+                continue;
+            }
+            let wire = chrome_host::rail_key_to_wire(entry.key).to_wire();
+            if let Some(message) = railfav_json(&wire, png) {
+                favicons.push((entry.key, png.clone(), message));
+            }
+        }
+        let live: HashSet<RailKey> = s
+            .rail_entries
+            .iter()
+            .filter(|entry| entry.png.is_some())
+            .map(|entry| entry.key)
+            .collect();
+        s.html_rail_favs_sent.retain(|key, _| live.contains(key));
+        let send_json = s.html_rail_last.as_deref() != Some(json.as_str());
+        Some((host, send_json.then_some(json), favicons, s.html_state_generation[2]))
+    })
+    .flatten() else {
+        return;
+    };
+    if let Some(json) = json {
+        if host.post_json(&json).is_ok() {
+            let _ = with_chrome(hwnd, |s| {
+                if s.html_state_generation[2] == generation { s.html_rail_last = Some(json); }
+            });
+        }
+    }
+    for (key, png, message) in favicons {
+        if host.post_json(&message).is_ok() {
+            let _ = with_chrome(hwnd, |s| {
+                if s.html_state_generation[2] == generation { s.html_rail_favs_sent.insert(key, png); }
+            });
         }
     }
 }
@@ -6306,9 +6705,11 @@ fn position_edit(hwnd: HWND) {
 }
 fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     static PAINT_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // The HTML toolbar has no paint of its own here; this is where its state is refreshed.
+    // The HTML chrome views have no paint of their own here; this is where their state is refreshed.
+    sync_html_host_bounds(hwnd);
     html_sync(hwnd);
     html_tabs_sync(hwnd);
+    html_rail_sync(hwnd);
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
@@ -6400,13 +6801,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 }).collect::<Vec<_>>();
                 let mut rail_fades = Vec::new();
                 s.motion.rail_fades(now, &mut rail_fades);
-                let open_panel = match side_panel::active_id(hwnd) {
-                    Some(side_panel::PanelId::Bookmarks) => Some(RailKey::Bookmarks),
-                    Some(side_panel::PanelId::History) => Some(RailKey::History),
-                    Some(side_panel::PanelId::Customize | side_panel::PanelId::Menu) => Some(RailKey::Customize),
-                    Some(side_panel::PanelId::WebApp(id)) => Some(RailKey::App(id)),
-                    None => None,
-                };
+                let open_panel = open_rail_panel(hwnd);
                 let rail = RailView { entries: &rail_entries, fades: &rail_fades, open_panel, scroll: s.rail_scroll, drop_indicator: s.rail_drag.and_then(|drag| drag.target.map(|(_, indicator)| indicator)), focused: s.rail_keyboard_focus.then_some(s.rail_focus).flatten(), tooltip: s.rail_tooltip_visible.then_some(s.rail_tooltip_key).flatten() };
                 if progress_target.is_none() {
                     s.progress.clear();

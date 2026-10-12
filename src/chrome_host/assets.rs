@@ -8,6 +8,8 @@ pub const SCHEME: &str = "bowser-ui";
 pub const START_URL: &str = "bowser-ui://app/index.html?view=toolbar";
 /// Start URL of the tab strip host. Same bundle as `START_URL`, different view.
 pub const TABS_START_URL: &str = "bowser-ui://app/index.html?view=tabs";
+/// Start URL of the left rail host. Same bundle as `START_URL`, different view.
+pub const RAIL_START_URL: &str = "bowser-ui://app/index.html?view=rail";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
@@ -58,6 +60,15 @@ pub fn lookup(path: &str) -> Option<Asset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_dist_matches_manifest() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = std::fs::read_to_string(root.join("ui/dist.manifest")).expect("manifest");
+        let expected = super::super::fingerprint::manifest_value(&manifest, "dist").expect("dist entry");
+        let actual = super::super::fingerprint::tree_fingerprint(&root.join("ui/dist")).expect("dist fingerprint");
+        assert_eq!(actual, expected, "run npm run build in ui after changing built assets");
+    }
 
     #[test]
     fn root_and_index_serve_the_page() {
@@ -142,13 +153,14 @@ mod tests {
     fn scheme_and_start_url_agree() {
         assert!(START_URL.starts_with(&format!("{SCHEME}://app/")));
         assert!(TABS_START_URL.starts_with(&format!("{SCHEME}://app/")));
+        assert!(RAIL_START_URL.starts_with(&format!("{SCHEME}://app/")));
         assert!(lookup("/index.html").is_some());
     }
 
     #[test]
-    fn both_view_start_urls_serve_the_same_page() {
+    fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");
@@ -156,5 +168,13 @@ mod tests {
         }
         assert_eq!(lookup("/index.html?view=tabs"), Some(page));
         assert_eq!(lookup("/index.html?view=toolbar"), Some(page));
+        assert_eq!(lookup("/index.html?view=rail"), Some(page));
+    }
+
+    #[test]
+    fn rail_start_url_is_the_rail_view_only() {
+        assert_eq!(RAIL_START_URL, "bowser-ui://app/index.html?view=rail");
+        assert_ne!(RAIL_START_URL, START_URL);
+        assert_ne!(RAIL_START_URL, TABS_START_URL);
     }
 }

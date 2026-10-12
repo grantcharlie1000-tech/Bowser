@@ -567,6 +567,36 @@ pub fn drop_indicator(
     Some((target, RailDropIndicator { y: line_y }))
 }
 
+/// The final-list index a workspace or app drop lands on, in the same terms as [`drop_indicator`]:
+/// `keys` is the rail in its display order, `source` is the dragged button, and `before` is the
+/// button it is dropped in front of (`None` for the end of the section). The index counts the
+/// section's movable items without `source`, so it is the index the native drop commits.
+///
+/// `None` when `source` is not a workspace or app in `keys`, when `before` is not a movable item of
+/// the same section (or is `source`), or when the drop would leave `source` where it is.
+pub fn reorder_index(keys: &[RailKey], source: RailKey, before: Option<RailKey>) -> Option<usize> {
+    let movable = |key: RailKey| {
+        matches!(key, RailKey::Workspace(_) | RailKey::App(_) | RailKey::Bookmarks | RailKey::History)
+    };
+    if !matches!(source, RailKey::Workspace(_) | RailKey::App(_)) {
+        return None;
+    }
+    let wanted = section(source);
+    let items: Vec<RailKey> = keys
+        .iter()
+        .copied()
+        .filter(|key| movable(*key) && section(*key) == wanted)
+        .collect();
+    let from = items.iter().position(|key| *key == source)?;
+    let remaining: Vec<RailKey> = items.into_iter().filter(|key| *key != source).collect();
+    let target = match before {
+        None => remaining.len(),
+        Some(key) if key == source => return None,
+        Some(key) => remaining.iter().position(|candidate| *candidate == key)?,
+    };
+    (target != from).then_some(target)
+}
+
 /// Places the rail's buttons inside `pill`, which is the rect from `layout::left_rail`.
 ///
 /// `scroll` is clamped to the workspaces-and-apps overflow, so a caller can pass any offset. The
@@ -1333,5 +1363,59 @@ mod tests {
         let outer = Rect::new(10, 20, 40, 60);
         assert_eq!(centred(outer, 10), Rect::new(20, 35, 30, 45));
         assert_eq!(centred(outer, 0).width(), 0);
+    }
+
+    #[test]
+    fn reorder_index_counts_the_section_without_the_source() {
+        let keys = [
+            RailKey::Home,
+            RailKey::Customize,
+            RailKey::Workspace(1),
+            RailKey::Workspace(2),
+            RailKey::Workspace(3),
+            RailKey::AddWorkspace,
+            RailKey::App(10),
+            RailKey::App(11),
+            RailKey::AddApp,
+            RailKey::Bookmarks,
+            RailKey::History,
+            RailKey::Menu,
+        ];
+        // Ws 1 before ws 3: remaining is [2, 3], so it lands at 0.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::Workspace(3))), Some(1));
+        // Ws 3 before ws 1: remaining is [1, 2], so it lands at 0.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(3), Some(RailKey::Workspace(1))), Some(0));
+        // End of the section.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), None), Some(2));
+        // Apps are their own section.
+        assert_eq!(reorder_index(&keys, RailKey::App(11), Some(RailKey::App(10))), Some(0));
+        assert_eq!(reorder_index(&keys, RailKey::App(10), None), Some(1));
+    }
+
+    #[test]
+    fn reorder_index_refuses_no_ops_and_cross_section_targets() {
+        let keys = [
+            RailKey::Workspace(1),
+            RailKey::Workspace(2),
+            RailKey::AddWorkspace,
+            RailKey::App(10),
+            RailKey::AddApp,
+            RailKey::Bookmarks,
+        ];
+        // Already in front of its neighbour, or already last.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::Workspace(2))), None);
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(2), None), None);
+        // Dropped onto itself.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::Workspace(1))), None);
+        // Targets in another section, the add buttons, and fixed buttons are not drop targets.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::App(10))), None);
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::AddWorkspace)), None);
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::Bookmarks)), None);
+        // Unknown source, and sources that never move through this path.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(9), None), None);
+        assert_eq!(reorder_index(&keys, RailKey::Bookmarks, None), None);
+        assert_eq!(reorder_index(&keys, RailKey::Home, None), None);
+        // An unknown target.
+        assert_eq!(reorder_index(&keys, RailKey::Workspace(1), Some(RailKey::Workspace(7))), None);
     }
 }

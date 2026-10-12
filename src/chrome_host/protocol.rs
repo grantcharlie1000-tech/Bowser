@@ -77,6 +77,91 @@ pub enum GroupAction {
     Menu,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RailAction {
+    /// Left click: what a native click on the button does.
+    Click,
+    /// Right click: Rust shows the native rail context menu at the cursor.
+    Menu,
+}
+
+/// A rail button key as it travels on the wire. Grammar: `home`, `customize`, `addws`, `addapp`,
+/// `bookmarks`, `history`, `menu`, `ws:<digits>` (at most 20 digits, a u64) and `app:<digits>` (at
+/// most 10 digits, a u32). Digits are canonical decimal: no sign, and no leading zero unless the
+/// number is `0`, so each key has exactly one spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RailKeyWire {
+    Home,
+    Customize,
+    AddWorkspace,
+    AddApp,
+    Bookmarks,
+    History,
+    Menu,
+    Workspace(u64),
+    App(u32),
+}
+
+/// Longest rail key on the wire, in bytes.
+pub const MAX_RAIL_KEY_CHARS: usize = 24;
+/// Most rail items in one `rail` message. Items past this are not sent.
+pub const MAX_RAIL_ITEMS: usize = 128;
+/// Longest rail item label, in characters.
+pub const MAX_RAIL_LABEL_CHARS: usize = 64;
+
+impl RailKeyWire {
+    /// Parses a key of the grammar above. `None` for anything else.
+    pub fn parse(raw: &str) -> Option<Self> {
+        if raw.len() > MAX_RAIL_KEY_CHARS {
+            return None;
+        }
+        Some(match raw {
+            "home" => Self::Home,
+            "customize" => Self::Customize,
+            "addws" => Self::AddWorkspace,
+            "addapp" => Self::AddApp,
+            "bookmarks" => Self::Bookmarks,
+            "history" => Self::History,
+            "menu" => Self::Menu,
+            _ => {
+                if let Some(digits) = raw.strip_prefix("ws:") {
+                    Self::Workspace(canonical_decimal(digits, 20)?)
+                } else if let Some(digits) = raw.strip_prefix("app:") {
+                    Self::App(u32::try_from(canonical_decimal(digits, 10)?).ok()?)
+                } else {
+                    return None;
+                }
+            }
+        })
+    }
+
+    /// The wire spelling of the key. `parse(to_wire())` returns the same key.
+    pub fn to_wire(self) -> String {
+        match self {
+            Self::Home => "home".to_owned(),
+            Self::Customize => "customize".to_owned(),
+            Self::AddWorkspace => "addws".to_owned(),
+            Self::AddApp => "addapp".to_owned(),
+            Self::Bookmarks => "bookmarks".to_owned(),
+            Self::History => "history".to_owned(),
+            Self::Menu => "menu".to_owned(),
+            Self::Workspace(id) => format!("ws:{id}"),
+            Self::App(id) => format!("app:{id}"),
+        }
+    }
+}
+
+/// Digits only, at most `max_len` of them, canonical (no leading zero unless the value is `0`).
+fn canonical_decimal(digits: &str, max_len: usize) -> Option<u64> {
+    if digits.is_empty() || digits.len() > max_len || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if digits.len() > 1 && digits.starts_with('0') {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// A validated message from the chrome page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -94,6 +179,11 @@ pub enum Command {
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
     Group { action: GroupAction, key: u32 },
+    /// A click or right click on a rail button.
+    Rail { action: RailAction, key: RailKeyWire },
+    /// Drag-reorder drop of a workspace or app: before `before`, or at the end of its section when
+    /// `None`. `key` is always a `ws:` or `app:` key.
+    RailMove { key: RailKeyWire, before: Option<RailKeyWire> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -423,6 +513,14 @@ fn seq_field(fields: &[(String, Value)]) -> Result<u32, ProtocolError> {
     uint_field(fields, "seq")
 }
 
+/// A rail key string in field `name`, which must match the key grammar.
+fn rail_key_field(
+    fields: &[(String, Value)],
+    name: &'static str,
+) -> Result<RailKeyWire, ProtocolError> {
+    RailKeyWire::parse(str_field(fields, name)?).ok_or(ProtocolError::InvalidValue(name))
+}
+
 fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     match field(fields, "v") {
         Some(Value::Number(raw)) if raw == "1" => {}
@@ -442,6 +540,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "tab" => &["a", "id"],
         "tabmove" => &["id", "before"],
         "group" => &["a", "key"],
+        "rail" => &["a", "k"],
+        "railmove" => &["k", "before"],
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -502,6 +602,25 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             },
             key: uint_field(fields, "key")?,
         },
+        "rail" => Command::Rail {
+            action: match str_field(fields, "a")? {
+                "click" => RailAction::Click,
+                "menu" => RailAction::Menu,
+                _ => return Err(ProtocolError::InvalidValue("a")),
+            },
+            key: rail_key_field(fields, "k")?,
+        },
+        "railmove" => {
+            let key = rail_key_field(fields, "k")?;
+            if !matches!(key, RailKeyWire::Workspace(_) | RailKeyWire::App(_)) {
+                return Err(ProtocolError::InvalidValue("k"));
+            }
+            let before = match str_field(fields, "before")? {
+                "" => None,
+                raw => Some(RailKeyWire::parse(raw).ok_or(ProtocolError::InvalidValue("before"))?),
+            };
+            Command::RailMove { key, before }
+        }
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }
@@ -599,7 +718,7 @@ impl ViewState {
 pub fn set_text_json(text: &str, select: bool) -> String {
     format!(
         "{{\"t\":\"setText\",\"text\":{},\"select\":{select}}}",
-        json_string(text)
+        json_string(truncate_utf16(text, MAX_TEXT_CHARS))
     )
 }
 
@@ -703,11 +822,73 @@ fn capped_items(active: u32, items: &[TabItem]) -> Vec<&TabItem> {
 /// `png` starts with the PNG signature, is at most `MAX_FAVICON_BYTES` long and its IHDR header
 /// gives a width and height from 1 to `MAX_FAVICON_DIMENSION`.
 pub fn fav_json(id: u32, png: &[u8]) -> Option<String> {
-    if png.len() > MAX_FAVICON_BYTES || !png.starts_with(&PNG_SIGNATURE) || !png_size_ok(png) {
+    if !png_is_sendable(png) {
         return None;
     }
     Some(format!(
         "{{\"v\":1,\"t\":\"fav\",\"id\":{id},\"uri\":\"data:image/png;base64,{}\"}}",
+        base64_encode(png)
+    ))
+}
+
+/// The favicon gate shared by `fav` and `railfav`: a PNG of at most `MAX_FAVICON_BYTES` whose IHDR
+/// size is in range.
+fn png_is_sendable(png: &[u8]) -> bool {
+    png.len() <= MAX_FAVICON_BYTES && png.starts_with(&PNG_SIGNATURE) && png_size_ok(png)
+}
+
+/// One left rail button as the rail view shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailItem {
+    /// Wire key (see [`RailKeyWire`]).
+    pub key: String,
+    /// Icon name: `home`, `customize`, `plus`, `heart`, `clock`, `dots`, `apptile`, `letter`, or
+    /// `g:` followed by a workspace glyph name.
+    pub icon: String,
+    pub label: String,
+    /// The current workspace, or the open panel of its kind.
+    pub active: bool,
+    pub dot: bool,
+    /// CSS colour from the safe set, or `""` for the theme accent.
+    pub accent: String,
+    /// A favicon is cached for this key (`railfav` follows).
+    pub has_favicon: bool,
+}
+
+/// `{"v":1,"t":"rail","items":[...]}`: the whole rail, in order. At most `MAX_RAIL_ITEMS` items are
+/// sent. Labels are capped at `MAX_RAIL_LABEL_CHARS` characters; an accent that is not a safe CSS
+/// colour is sent as `""`.
+pub fn rail_json(items: &[RailItem]) -> String {
+    let mut out = String::from("{\"v\":1,\"t\":\"rail\",\"items\":[");
+    for (index, item) in items.iter().take(MAX_RAIL_ITEMS).enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let accent = if is_safe_css_colour(&item.accent) { item.accent.as_str() } else { "" };
+        out.push_str(&format!(
+            "{{\"k\":{},\"icon\":{},\"label\":{},\"active\":{},\"dot\":{},\"accent\":{},\"fav\":{}}}",
+            json_string(&item.key),
+            json_string(&item.icon),
+            json_string(truncate_chars(&item.label, MAX_RAIL_LABEL_CHARS)),
+            item.active,
+            item.dot,
+            json_string(accent),
+            item.has_favicon,
+        ));
+    }
+    out.push_str("]}");
+    out
+}
+
+/// `{"v":1,"t":"railfav","k":...,"uri":"data:image/png;base64,..."}` for a rail button's favicon.
+/// `None` under the same gate as `fav_json`.
+pub fn railfav_json(key: &str, png: &[u8]) -> Option<String> {
+    if !png_is_sendable(png) {
+        return None;
+    }
+    Some(format!(
+        "{{\"v\":1,\"t\":\"railfav\",\"k\":{},\"uri\":\"data:image/png;base64,{}\"}}",
+        json_string(key),
         base64_encode(png)
     ))
 }
@@ -734,6 +915,7 @@ pub fn is_popup_command(command: &Command) -> bool {
             | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split)
             | Command::Tab { action: TabAction::Menu, .. }
             | Command::Group { action: GroupAction::Menu, .. }
+            | Command::Rail { action: RailAction::Menu, .. }
     )
 }
 
@@ -808,6 +990,18 @@ fn truncate_chars(text: &str, max: usize) -> &str {
         Some((index, _)) => &text[..index],
         None => text,
     }
+}
+
+/// Truncates to UTF-16 code units, matching JavaScript string length.
+fn truncate_utf16(text: &str, max: usize) -> &str {
+    let mut units = 0;
+    for (index, ch) in text.char_indices() {
+        if units + ch.len_utf16() > max {
+            return &text[..index];
+        }
+        units += ch.len_utf16();
+    }
+    text
 }
 
 /// Standard base64 (RFC 4648 section 4) with `=` padding.
@@ -919,6 +1113,44 @@ mod tests {
             security: Security::Secure,
             label: "Secure".to_string(),
             theme: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rust_messages_match_committed_fixture() {
+        let mut leader = plain_tab(7, "Group <one>");
+        leader.group = 42;
+        leader.leader = true;
+        leader.group_name = "Work & Play".to_owned();
+        leader.group_colour = 2;
+        leader.group_size = 2;
+        leader.has_favicon = true;
+        let mut member = plain_tab(8, "Second 😀");
+        member.group = 42;
+        member.collapsed = true;
+        let png = png_with_size(16, 16, 24);
+        let mut state = sample_state();
+        state.scale = 1.25;
+        state.solid = true;
+        state.theme = vec![("bg", "#123456".to_owned()), ("text", "#fff".to_owned())];
+        let rail = [rail_item("home", "Home", ""), rail_item("app:5", "Mail & More", "#abc")];
+        let content = format!(
+            "{{\"tabs\":{},\"fav\":{},\"rail\":{},\"railfav\":{},\"state\":{},\"setText\":{},\"completion\":{}}}\n",
+            tabs_json(7, &[leader, member]),
+            fav_json(7, &png).expect("fixture PNG"),
+            rail_json(&rail),
+            railfav_json("app:5", &png).expect("fixture PNG"),
+            state.to_json(),
+            set_text_json("https://example.test/😀", false),
+            completion_json(9, ".test/"),
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("ui/test/fixtures/rust-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::create_dir_all(path.parent().expect("fixtures directory")).expect("create fixtures directory");
+            std::fs::write(&path, content).expect("write Rust messages fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed Rust messages fixture"), content);
         }
     }
 
@@ -1760,6 +1992,15 @@ mod tests {
     }
 
     #[test]
+    fn set_text_caps_utf16_without_splitting_a_code_point() {
+        let exact = format!("{}😀", "a".repeat(2046));
+        assert_eq!(set_text_json(&exact, false), format!("{{\"t\":\"setText\",\"text\":\"{exact}\",\"select\":false}}"));
+        let split = format!("{}😀tail", "a".repeat(2047));
+        assert_eq!(set_text_json(&split, true), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":true}}", "a".repeat(2047)));
+        assert_eq!(set_text_json(&"😀".repeat(1025), false), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":false}}", "😀".repeat(1024)));
+    }
+
+    #[test]
     fn parses_every_tab_action() {
         for (wire, action) in [
             ("select", TabAction::Select),
@@ -2310,8 +2551,269 @@ mod tests {
             Command::Tab { action: TabAction::Close, id: 2 },
             Command::Group { action: GroupAction::Toggle, key: 2 },
             Command::TabMove { id: 2, before: 0 },
+            Command::Rail { action: RailAction::Click, key: RailKeyWire::Home },
+            Command::RailMove { key: RailKeyWire::Workspace(2), before: None },
         ] {
             assert!(!is_popup_command(&command), "{command:?}");
         }
+        assert!(is_popup_command(&Command::Rail {
+            action: RailAction::Menu,
+            key: RailKeyWire::App(3),
+        }));
+    }
+
+    fn rail_item(key: &str, label: &str, accent: &str) -> RailItem {
+        RailItem {
+            key: key.to_owned(),
+            icon: "letter".to_owned(),
+            label: label.to_owned(),
+            active: true,
+            dot: false,
+            accent: accent.to_owned(),
+            has_favicon: false,
+        }
+    }
+
+    #[test]
+    fn rail_key_grammar_round_trips() {
+        let keys = [
+            RailKeyWire::Home,
+            RailKeyWire::Customize,
+            RailKeyWire::AddWorkspace,
+            RailKeyWire::AddApp,
+            RailKeyWire::Bookmarks,
+            RailKeyWire::History,
+            RailKeyWire::Menu,
+            RailKeyWire::Workspace(0),
+            RailKeyWire::Workspace(42),
+            RailKeyWire::Workspace(u64::MAX),
+            RailKeyWire::App(0),
+            RailKeyWire::App(u32::MAX),
+        ];
+        for key in keys {
+            let wire = key.to_wire();
+            assert!(wire.len() <= MAX_RAIL_KEY_CHARS, "{wire}");
+            assert_eq!(RailKeyWire::parse(&wire), Some(key), "{wire}");
+        }
+        assert_eq!(RailKeyWire::Workspace(7).to_wire(), "ws:7");
+        assert_eq!(RailKeyWire::App(12).to_wire(), "app:12");
+    }
+
+    #[test]
+    fn rail_key_grammar_is_strict() {
+        for raw in [
+            "", "Home", "home ", " home", "addWs", "ws", "ws:", "app:", "ws:-1", "app:-1", "ws:+1",
+            "ws:1.5", "ws:1e3", "ws: 1", "ws:a", "app:x", "ws:0x1", "ws:01", "app:007",
+            "app:4294967296", "app:99999999999", "ws:100000000000000000000",
+            "ws:18446744073709551616", "app:1:2", "ws:1 ", "bookmark", "menu:1", "home:1",
+            "ws:\u{0661}", "xx:1",
+        ] {
+            assert_eq!(RailKeyWire::parse(raw), None, "{raw:?}");
+        }
+        // Digit limits: 20 for workspaces, 10 for apps, both inclusive.
+        assert!(RailKeyWire::parse("ws:18446744073709551615").is_some());
+        assert!(RailKeyWire::parse("app:4294967295").is_some());
+        assert!(RailKeyWire::parse(&format!("ws:{}", "9".repeat(20))).is_none());
+        assert!(RailKeyWire::parse(&format!("ws:{}", "9".repeat(21))).is_none());
+        assert!(RailKeyWire::parse(&format!("ws:{}", "9".repeat(18))).is_some());
+        assert!(RailKeyWire::parse(&format!("app:{}", "9".repeat(11))).is_none());
+    }
+
+    #[test]
+    fn parses_rail_click_and_menu() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"rail","a":"click","k":"ws:3"}"#),
+            Command::Rail { action: RailAction::Click, key: RailKeyWire::Workspace(3) }
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"rail","a":"menu","k":"app:9"}"#),
+            Command::Rail { action: RailAction::Menu, key: RailKeyWire::App(9) }
+        );
+        for key in ["home", "customize", "addws", "addapp", "bookmarks", "history", "menu"] {
+            let raw = format!(r#"{{"v":1,"t":"rail","a":"click","k":"{key}"}}"#);
+            assert!(matches!(ok(&raw), Command::Rail { .. }), "{key}");
+        }
+    }
+
+    #[test]
+    fn rail_rejects_bad_actions_keys_and_fields() {
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"drag","k":"home"}"#),
+            ProtocolError::InvalidValue("a")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"click","k":"ws:01"}"#),
+            ProtocolError::InvalidValue("k")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"click","k":"unknown"}"#),
+            ProtocolError::InvalidValue("k")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"click"}"#),
+            ProtocolError::MissingField("k")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"click","k":5}"#),
+            ProtocolError::WrongType("k")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","k":"home"}"#),
+            ProtocolError::MissingField("a")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"rail","a":"click","k":"home","x":1}"#),
+            ProtocolError::UnknownKey(_)
+        ));
+        assert!(matches!(
+            err(r#"{"v":2,"t":"rail","a":"click","k":"home"}"#),
+            ProtocolError::UnsupportedVersion
+        ));
+    }
+
+    #[test]
+    fn parses_rail_move_with_and_without_a_target() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"railmove","k":"ws:2","before":"ws:5"}"#),
+            Command::RailMove {
+                key: RailKeyWire::Workspace(2),
+                before: Some(RailKeyWire::Workspace(5)),
+            }
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"railmove","k":"app:1","before":""}"#),
+            Command::RailMove { key: RailKeyWire::App(1), before: None }
+        );
+        // The target may be any key of the grammar; Rust checks it against the model later.
+        assert_eq!(
+            ok(r#"{"v":1,"t":"railmove","k":"app:1","before":"addapp"}"#),
+            Command::RailMove { key: RailKeyWire::App(1), before: Some(RailKeyWire::AddApp) }
+        );
+    }
+
+    #[test]
+    fn rail_move_moves_only_workspaces_and_apps() {
+        for key in ["home", "customize", "addws", "addapp", "bookmarks", "history", "menu"] {
+            let raw = format!(r#"{{"v":1,"t":"railmove","k":"{key}","before":""}}"#);
+            assert!(
+                matches!(err(&raw), ProtocolError::InvalidValue("k")),
+                "{key}"
+            );
+        }
+        assert!(matches!(
+            err(r#"{"v":1,"t":"railmove","k":"ws:1","before":"nope"}"#),
+            ProtocolError::InvalidValue("before")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"railmove","k":"ws:1"}"#),
+            ProtocolError::MissingField("before")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"railmove","k":"ws:1","before":null}"#),
+            ProtocolError::UnsupportedValue("null")
+        ));
+        assert!(matches!(
+            err(r#"{"v":1,"t":"railmove","k":"ws:1","before":"","a":"click"}"#),
+            ProtocolError::UnknownKey(_)
+        ));
+    }
+
+    #[test]
+    fn rail_json_is_one_flat_versioned_object() {
+        let items = vec![
+            RailItem {
+                key: "home".to_owned(),
+                icon: "home".to_owned(),
+                label: "Home".to_owned(),
+                active: false,
+                dot: true,
+                accent: String::new(),
+                has_favicon: false,
+            },
+            RailItem {
+                key: "ws:4".to_owned(),
+                icon: "g:code".to_owned(),
+                label: "Work \"A\"".to_owned(),
+                active: true,
+                dot: false,
+                accent: "#4385d1".to_owned(),
+                has_favicon: false,
+            },
+        ];
+        assert_eq!(
+            rail_json(&items),
+            concat!(
+                r#"{"v":1,"t":"rail","items":["#,
+                r#"{"k":"home","icon":"home","label":"Home","active":false,"dot":true,"accent":"","fav":false},"#,
+                r##"{"k":"ws:4","icon":"g:code","label":"Work \"A\"","active":true,"dot":false,"accent":"#4385d1","fav":false}"##,
+                "]}"
+            )
+        );
+        assert_eq!(rail_json(&[]), r#"{"v":1,"t":"rail","items":[]}"#);
+    }
+
+    #[test]
+    fn rail_json_caps_labels_and_item_count() {
+        let long = "x".repeat(MAX_RAIL_LABEL_CHARS + 30);
+        let json = rail_json(&[rail_item("ws:1", &long, "")]);
+        assert!(json.contains(&format!("\"label\":\"{}\"", "x".repeat(MAX_RAIL_LABEL_CHARS))));
+        assert!(!json.contains(&"x".repeat(MAX_RAIL_LABEL_CHARS + 1)));
+
+        // Multi-byte labels are cut on character boundaries.
+        let accents = "é".repeat(MAX_RAIL_LABEL_CHARS + 1);
+        let json = rail_json(&[rail_item("ws:1", &accents, "")]);
+        assert!(json.contains(&format!("\"label\":\"{}\"", "é".repeat(MAX_RAIL_LABEL_CHARS))));
+
+        let many: Vec<RailItem> = (0..MAX_RAIL_ITEMS + 10)
+            .map(|index| rail_item(&format!("ws:{index}"), "w", ""))
+            .collect();
+        let json = rail_json(&many);
+        assert_eq!(json.matches("\"k\":").count(), MAX_RAIL_ITEMS);
+        assert!(json.contains("\"k\":\"ws:127\"") && !json.contains("\"k\":\"ws:128\""));
+    }
+
+    #[test]
+    fn rail_json_drops_unsafe_accents_to_the_theme_accent() {
+        for accent in [
+            "url(http://x/)",
+            "red;}",
+            "expression(alert(1))",
+            "#12345",
+            "rgb(0,0,0) ",
+            "\"",
+        ] {
+            let json = rail_json(&[rail_item("ws:1", "w", accent)]);
+            assert!(json.contains("\"accent\":\"\""), "{accent:?} -> {json}");
+        }
+        let json = rail_json(&[rail_item("ws:1", "w", "rgba(1,2,3,0.5)")]);
+        assert!(json.contains("\"accent\":\"rgba(1,2,3,0.5)\""), "{json}");
+    }
+
+    #[test]
+    fn rail_json_escapes_labels_that_try_to_break_out() {
+        let json = rail_json(&[rail_item("ws:1", "</script>\"}],\"x\":1", "")]);
+        // `<` is written as a \u escape and the quotes are escaped, so the label stays one string.
+        assert!(!json.contains("</script>"), "{json}");
+        let escaped_lt = format!("\\u{:04x}/script>", u32::from('<'));
+        assert!(json.contains(&format!("{escaped_lt}\\\"}}],\\\"x\\\":1")), "{json}");
+        assert_eq!(json.matches("\"k\":").count(), 1);
+    }
+
+    #[test]
+    fn railfav_json_uses_the_fav_gate() {
+        let png = png_with_size(16, 16, 64);
+        let json = railfav_json("app:5", &png).expect("png accepted");
+        assert!(json.starts_with(r#"{"v":1,"t":"railfav","k":"app:5","uri":"data:image/png;base64,"#));
+        assert!(json.ends_with("\"}"));
+        assert_eq!(
+            railfav_json("app:5", &png_with_size(16, 16, MAX_FAVICON_BYTES + 1)),
+            None,
+            "oversized"
+        );
+        assert_eq!(railfav_json("app:5", &png_with_size(300, 16, 64)), None, "wide");
+        assert_eq!(railfav_json("app:5", b"GIF89a"), None, "not png");
+        assert_eq!(railfav_json("app:5", &[]), None);
+        // Same bytes as `fav`, so the two messages agree on what may be sent.
+        assert!(fav_json(1, &png).is_some() && railfav_json("app:1", &png).is_some());
     }
 }

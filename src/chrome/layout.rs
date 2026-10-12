@@ -1026,14 +1026,15 @@ pub fn hit_test_native(
     if !layout.client.contains(x, y) {
         return Hit::None;
     }
+    // An HTML region wins over every native rule, the rail included: its pixels belong to a page.
+    if html_regions.iter().any(|region| region.contains(x, y)) {
+        return Hit::None;
+    }
     if layout.rail.contains(x, y) {
         let key = rail.and_then(|view| {
             rail::geometry(layout.rail, view.entries, view.scroll, layout.metrics.dpi()).hit(x, y)
         });
         return key.map_or(Hit::RailBackground, Hit::Rail);
-    }
-    if html_regions.iter().any(|region| region.contains(x, y)) {
-        return Hit::None;
     }
     // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
     // Below the toolbar that margin is outside the chrome and takes no hit.
@@ -1870,6 +1871,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn html_rail_region_gives_no_rail_hits() {
+        use crate::chrome::rail::{RailEntry, RailIcon, RailView};
+        let l = compute_in_frame(1024, 600, 96, 3, 0, false);
+        let entries: Vec<RailEntry<'_>> = [RailKey::Home, RailKey::Workspace(9), RailKey::Menu]
+            .into_iter()
+            .map(|key| RailEntry {
+                key,
+                icon: RailIcon::Plus,
+                label: String::new(),
+                active: false,
+                dot: false,
+                accent: None,
+                favicon: None,
+            })
+            .collect();
+        let view = RailView {
+            entries: &entries,
+            fades: &[],
+            open_panel: None,
+            scroll: 0,
+            drop_indicator: None,
+            focused: None,
+            tooltip: None,
+        };
+        let geometry = rail::geometry(l.rail, &entries, 0, l.metrics.dpi());
+        let button = geometry.items[0].visible();
+        let (x, y) = ((button.left + button.right) / 2, (button.top + button.bottom) / 2);
+        assert_eq!(hit_test_with_rail(&l, Some(&view), x, y), Hit::Rail(RailKey::Home));
+        // While the HTML rail is active its whole region is the page's: no Rail or RailBackground.
+        assert_eq!(hit_test_native(&l, Some(&view), &[l.rail], x, y), Hit::None);
+        assert_eq!(hit_test_native(&l, Some(&view), &[l.rail], l.rail.left + 1, l.rail.top + 1), Hit::None);
+        // Outside the rail the native hit is unchanged.
+        assert_ne!(hit_test_native(&l, Some(&view), &[l.rail], l.rail.right + 4, y), Hit::None);
     }
 
     #[test]
