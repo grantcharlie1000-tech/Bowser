@@ -129,7 +129,15 @@ try {
         }
     }
 
-    $null = Start-Process -FilePath $versionedExePath -WorkingDirectory $repoRoot -PassThru
+    $previousUiMode = [Environment]::GetEnvironmentVariable('BOWSER_UI', 'Process')
+    [Environment]::SetEnvironmentVariable('BOWSER_UI', 'html', 'Process')
+    try {
+        $launchedProcess = Start-Process -FilePath $versionedExePath -WorkingDirectory $repoRoot -PassThru
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('BOWSER_UI', $previousUiMode, 'Process')
+    }
+    Write-Host "Launched Bowser with HTML chrome (PID $($launchedProcess.Id)): $versionedExePath" -ForegroundColor Green
 
     # Old executables remain in use while Windows has them open. A later launch removes
     # versions whose processes have exited; the current version is always retained.
