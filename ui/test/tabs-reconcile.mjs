@@ -123,3 +123,21 @@ test('favicon capacity matches all protocol tabs and prunes missing ids before e
   rememberFav(favs, 3, 'c', new Set([2, 3]), 2);
   assert.deepEqual([...favs.keys()], [2, 3]);
 });
+
+test('layoutSignature changes with order, grouping and collapse but not with titles', () => {
+  const items = [tab(1), tab(2, { g: 5, gl: true, gname: 'A', gcol: 1, gcollapsed: false, gsize: 2 }), tab(3, { g: 5 })];
+  const sig = (list, active = 1) => logic.layoutSignature(buildEntries(list, active));
+  assert.equal(sig(items), sig(items.map((t) => ({ ...t, title: 'renamed' }))));
+  assert.notEqual(sig(items), sig([items[1], items[0], items[2]]));
+  assert.notEqual(sig(items), sig(items.map((t) => (t.gl ? { ...t, gcollapsed: true } : t))));
+  assert.notEqual(sig(items), sig([items[0], items[1]]));
+});
+
+test('stepMoveBefore gives the host the id to the right of the new slot', () => {
+  const ids = [10, 11, 12, 13];
+  assert.equal(logic.stepMoveBefore(ids, 1, -1), 10);
+  assert.equal(logic.stepMoveBefore(ids, 1, 1), 13);
+  assert.equal(logic.stepMoveBefore(ids, 2, 1), 0);
+  assert.equal(logic.stepMoveBefore(ids, 0, -1), null);
+  assert.equal(logic.stepMoveBefore(ids, 3, 1), null);
+});
