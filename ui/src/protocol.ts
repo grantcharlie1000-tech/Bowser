@@ -255,7 +255,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'completion', seq, suffix };
     }
     case 'tabs': {
-      if (!hasOnlyKeys(raw, ['t', 'active', 'items'])) return null;
+      if (!hasOnlyKeys(raw, ['v', 't', 'active', 'items']) || raw.v !== 1) return null;
       const { active, items } = raw;
       if (!isInt(active, 0, MAX_ID) || !Array.isArray(items) || items.length > MAX_TABS) return null;
       const seen = new Set<number>();
@@ -269,7 +269,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'tabs', active, items: out };
     }
     case 'fav': {
-      if (!hasOnlyKeys(raw, ['t', 'id', 'uri'])) return null;
+      if (!hasOnlyKeys(raw, ['v', 't', 'id', 'uri']) || raw.v !== 1) return null;
       const { id, uri } = raw;
       if (!isInt(id, 0, MAX_ID) || !isStr(uri, MAX_FAV_URI) || !uri.startsWith(FAV_PREFIX)) return null;
       if (!BASE64_RE.test(uri.slice(FAV_PREFIX.length))) return null;
