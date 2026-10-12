@@ -1,11 +1,14 @@
 // Left rail view (?view=rail): keyed reconciliation of the rail buttons, favicons, pointer reorder and keyboard.
 // Labels reach the DOM only through textContent and attributes; favicons are validated data: URIs set as img.src.
 import { onInbound, send, type RailItem, type RailMsg } from './protocol';
+import { setTip } from './tooltip';
 import {
+  ADD_BUTTONS,
   beforeKey,
   dropSlot,
   initialOf,
   isDraggable,
+  keyboardMoveBefore,
   pruneRailFavs,
   rememberRailFav,
   sectionOf,
@@ -13,6 +16,7 @@ import {
   type Section,
 } from './rail-logic';
 import { railIcon } from './rail-icons';
+import { icon } from './icons';
 import { el, place } from './dom';
 import { applyTheme } from './view';
 
@@ -69,20 +73,23 @@ function createNode(key: string): RailNode {
   root.type = 'button';
   root.dataset.k = key;
   if (key.startsWith('ws:')) root.classList.add('ws');
-  const bar = el('span', 'rb-bar');
-  bar.setAttribute('aria-hidden', 'true');
+  if (key in ADD_BUTTONS) root.classList.add('add');
   const face = el('span', 'rb-face');
   const dot = el('span', 'rb-dot');
   dot.setAttribute('aria-hidden', 'true');
   const img = el('img', 'rb-fav');
   img.alt = '';
   img.draggable = false;
-  root.append(bar, face, dot);
+  const swatch = el('span', 'rb-swatch');
+  swatch.setAttribute('aria-hidden', 'true');
+  root.append(face, swatch, dot);
   return { key, root, face, img, faceSig: '', uri: '', accent: '', label: null };
 }
 
 function faceFor(n: RailNode, item: RailItem, uri: string): HTMLElement | SVGSVGElement {
   if (uri !== '') return n.img;
+  const add = ADD_BUTTONS[n.key];
+  if (add) return icon(add.icon);
   if (item.icon === 'letter') {
     const tile = el('span', 'rb-tile');
     tile.textContent = initialOf(item.label);
@@ -95,16 +102,17 @@ function updateNode(n: RailNode, item: RailItem, uri: string): void {
   const btn = n.root;
   if (n.label !== item.label) {
     n.label = item.label;
-    const name = item.label.trim() !== '' ? item.label : FALLBACK_LABEL;
+    const own = ADD_BUTTONS[n.key]?.label;
+    const name = own ?? (item.label.trim() !== '' ? item.label : FALLBACK_LABEL);
     setAttr(btn, 'aria-label', name);
-    btn.title = name;
+    setTip(btn, name);
   }
   if (n.uri !== uri) {
     n.uri = uri;
     if (uri !== '') n.img.src = uri;
     else n.img.removeAttribute('src');
   }
-  const sig = uri !== '' ? 'fav' : item.icon === 'letter' ? `letter:${initialOf(item.label)}` : `icon:${item.icon}`;
+  const sig = ADD_BUTTONS[n.key] ? `add:${n.key}` : uri !== '' ? 'fav' : item.icon === 'letter' ? `letter:${initialOf(item.label)}` : `icon:${item.icon}`;
   if (n.faceSig !== sig) {
     n.faceSig = sig;
     n.face.replaceChildren(faceFor(n, item, uri));
@@ -113,6 +121,7 @@ function updateNode(n: RailNode, item: RailItem, uri: string): void {
     n.accent = item.accent;
     if (item.accent !== '') btn.style.setProperty('--ac', item.accent);
     else btn.style.removeProperty('--ac');
+    btn.classList.toggle('has-ac', item.accent !== '');
   }
   btn.classList.toggle('on', item.active);
   btn.classList.toggle('dot-on', item.dot);
@@ -134,6 +143,8 @@ export function startRail(root: HTMLElement): void {
   const ruleTop = rule();
   const ruleInner = rule();
   const ruleBottom = rule();
+  const indicator = el('span', 'rail-indicator');
+  indicator.setAttribute('aria-hidden', 'true');
   const slot = el('div', 'rail-slot');
   slot.hidden = true;
   slot.setAttribute('aria-hidden', 'true');
@@ -165,6 +176,28 @@ export function startRail(root: HTMLElement): void {
     }
   };
 
+  // The 2px accent bar slides (transform only) to the active workspace; it does not animate on first placement.
+  const syncIndicator = (): void => {
+    const on = scroll.querySelector<HTMLElement>('.rb.ws.on');
+    if (!on) {
+      indicator.classList.remove('is-shown');
+      return;
+    }
+    indicator.style.setProperty('--ind-y', `${on.offsetTop + (on.offsetHeight - indicator.offsetHeight) / 2}px`);
+    if (!indicator.classList.contains('is-shown')) {
+      indicator.classList.add('is-shown');
+      requestAnimationFrame(() => indicator.classList.add('is-ready'));
+    }
+  };
+
+  // Edge fades tell the user the scroller (hidden scrollbar) has more above or below.
+  const syncEdges = (): void => {
+    scroll.classList.toggle('can-up', scroll.scrollTop > 1);
+    scroll.classList.toggle('can-down', scroll.scrollTop + scroll.clientHeight < scroll.scrollHeight - 1);
+  };
+  scroll.addEventListener('scroll', syncEdges, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncEdges).observe(scroll);
+
   const nodesOf = (items: readonly RailItem[]): HTMLElement[] => {
     const out: HTMLElement[] = [];
     for (const item of items) {
@@ -195,9 +228,11 @@ export function startRail(root: HTMLElement): void {
 
     const sections = splitSections(msg.items);
     place(top, nodesOf(sections.top));
-    place(scroll, [...nodesOf(sections.workspaces), ruleInner, ...nodesOf(sections.apps)]);
+    place(scroll, [indicator, ...nodesOf(sections.workspaces), ruleInner, ...nodesOf(sections.apps)]);
     place(bottom, nodesOf(sections.bottom));
     applyRoving();
+    syncIndicator();
+    syncEdges();
   };
 
   // One render per animation frame, however many host messages arrived. Deferred while a drag is live.
@@ -347,6 +382,17 @@ export function startRail(root: HTMLElement): void {
     const list = buttons();
     const at = list.indexOf(btn);
     if (at < 0) return;
+    if (ev.altKey && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+      // Alt+Up / Alt+Down reorders a workspace or app within its section, the keyboard twin of the drag.
+      ev.preventDefault();
+      const key = btn.dataset.k ?? '';
+      if (!isDraggable(key)) return;
+      const section = sectionOf(key);
+      const keys = list.map((b) => b.dataset.k ?? '').filter((k) => isDraggable(k) && sectionOf(k) === section);
+      const before = keyboardMoveBefore(keys, key, ev.key === 'ArrowUp' ? -1 : 1);
+      if (before !== null) send({ v: 1, t: 'railmove', k: key, before });
+      return;
+    }
     let next: number;
     switch (ev.key) {
       case 'ArrowUp':

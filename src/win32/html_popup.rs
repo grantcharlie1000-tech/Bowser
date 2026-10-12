@@ -449,6 +449,9 @@ fn open(
     }
     // The host is adopted (and suspended while hidden) only once its page has said `ready`:
     // adopting it earlier would suspend the page before it loads, and a menu posted then is lost.
+    // --- hover layer ---
+    super::html_hover::cancel(owner);
+    // --- end hover layer ---
     let key = owner.0 as isize;
     if !PAGE_READY.with(|ready| ready.borrow().contains(&key)) {
         super::window::perf_event(owner, "html_popup_fallback");

@@ -1,10 +1,11 @@
 /*
  * Surface: TAB STRIP (?view=tabs, horizontal layout). Owner: tabs agent.
  * Built by ui/src/tabs.ts (the same page switches to the vertical sidebar, see sidebar.css).
- * Geometry is hand-tuned to the 26px omnibox pill (commit 2086c05): islands are --bw-tab-h tall
- * with --bw-r-tab corners. Motion is transform/opacity only.
+ * Geometry is hand-tuned to the 26px omnibox pill: islands are --bw-tab-h tall with --bw-r-tab
+ * corners and sit 4px apart. A tab is 240px wide at most, 88px at least (the strip scrolls
+ * beyond that); pinned tabs are 32px icon tiles. Motion is transform/opacity only: new tabs
+ * scale in, closed tabs fade as a ghost, moved tabs slide (FLIP) and the dragged tab lifts.
  */
-
 
 #app.strip {
   position: relative;
@@ -14,39 +15,34 @@
   scrollbar-width: none;
   mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-left, 0px), #000 calc(100% - var(--fade-right, 0px)), transparent 100%);
   height: 100%;
-  gap: 3px;
-  padding: 0 4px;
+  gap: var(--bw-space-1);
+  padding: 0 var(--bw-space-1);
   align-items: center;
 }
 
 #app.strip::-webkit-scrollbar { display: none; }
-.strip .tab.pinned { position: sticky; z-index: 3; background: var(--bw-window); }
 
-/* Three columns: close button, centred label (favicon and title), marker. The close
-   column is always reserved so the label stays centred when the button appears. */
+/* ---- Tab island: [icon] [title, fades out at the end] [marker] [mute] [close] ---- */
 .strip .tab {
   position: relative;
   isolation: isolate;
   container-type: inline-size;
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 14px;
+  display: flex;
   align-items: center;
-  column-gap: 4px;
-  flex: 1 1 0;
-  min-width: var(--bw-tab-h);
+  gap: var(--bw-space-1);
+  flex: 0 1 240px;
+  min-width: 88px;
   height: var(--bw-tab-h);
-  padding: 0 var(--bw-space-1_5);
+  padding: 0 var(--bw-space-0_5) 0 7px; /* 1px border + 7px = the 8px favicon inset */
   border: 1px solid var(--bw-island-edge);
   border-radius: var(--bw-r-tab);
-  color: var(--bw-text);
+  color: var(--bw-text-2);
   cursor: default;
   touch-action: none;
-  transition: transform var(--bw-dur-base) var(--bw-ease-out);
+  transition: transform var(--bw-dur-base) var(--bw-ease-out), box-shadow var(--bw-dur-base) var(--bw-ease-out);
 }
 
-.strip .tab[hidden] {
-  display: none;
-}
+.strip .tab[hidden] { display: none; }
 
 .strip .tab::before,
 .strip .tab::after {
@@ -62,63 +58,59 @@
 }
 
 /* Inactive tabs are a darker translucent fill; the active tab is a lighter one. */
-.strip .tab::before {
-  background: var(--bw-island-idle);
-}
+.strip .tab::before { background: var(--bw-island-idle); }
 
 .strip .tab::after {
   background: var(--bw-hover);
   opacity: 0;
 }
 
-.strip .tab:hover::after {
-  opacity: 1;
-}
+.strip .tab:hover { color: var(--bw-text); }
+.strip .tab:hover::after { opacity: 1; }
+.strip .tab:active::after { opacity: 1; background: var(--bw-island); }
 
 .strip .tab.active {
   border-color: var(--bw-border);
+  color: var(--bw-text);
 }
 
-.strip .tab.active::before {
-  background: var(--bw-island);
-}
+.strip .tab.active::before { background: var(--bw-island); }
+.strip .tab.active::after { opacity: 0; }
+.strip .tab.active:hover::after { opacity: 1; }
 
+/* Applied for one frame while a position animation is set up (and by FLIP re-measuring). */
+.strip.settle .tab { transition: none; }
+
+/* Drag: the held tab lifts (scale 1.02 set from TS, with a shadow); neighbours slide by transform. */
 .strip .tab.dragging {
-  z-index: 2;
-  transition: none;
+  z-index: 5;
+  box-shadow: var(--bw-sh-flyout);
+  transition: box-shadow var(--bw-dur-base) var(--bw-ease-out);
 }
 
-.strip .tab:focus-visible {
-  outline: 2px solid var(--bw-focus);
-  outline-offset: -2px;
-}
-
-.strip .tab.pinned {
-  flex: 0 0 30px;
+/* A closed tab fades where it stood while its neighbours slide into the gap. */
+.strip .tab.ghost,
+.strip .tab.pinned.ghost {
+  position: absolute;
+  z-index: 1;
+  flex: none;
   min-width: 0;
-  padding: 0;
-  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  pointer-events: none;
 }
 
-.strip .tab.pinned .label {
-  grid-column: 1;
-}
+.strip .tab.bw-enter { --bw-enter-y: 0px; --bw-enter-scale: 0.96; }
 
-.strip .tab.pinned .title,
-.strip .tab.pinned .close,
-.strip .tab.pinned .marker {
-  display: none;
-}
-
-.ico {
+/* ---- Icon slot: favicon, placeholder globe, or the loading ring ---- */
+.strip .ico {
   display: grid;
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
   place-items: center;
 }
 
-.ico > * {
+.strip .ico > * {
   display: none;
   grid-area: 1 / 1;
 }
@@ -130,193 +122,159 @@
 }
 
 .strip .fav {
-  width: 16px;
-  height: 16px;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  border-radius: 2px;
   object-fit: contain;
 }
 
-/* Placeholder for tabs without a favicon: a 16px rounded tile with a small white plus. */
-.strip .glyph {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  border-radius: var(--bw-r-control);
-  background: var(--bw-glyph-fill);
-  color: var(--bw-on-glyph);
-}
+/* No favicon yet: the family's globe glyph, quiet, not a tile. */
+.strip .glyph { color: var(--bw-text-2); }
+.strip .tab.active .glyph { color: var(--bw-text); }
+.strip .glyph svg { --bw-icon-stroke: 1.25px; }
 
-.strip .glyph svg {
-  position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 10px;
-  height: 10px;
-}
-
-.strip .tab.muted .fav {
-  opacity: 0.55;
-}
-
-.spin {
-  box-sizing: border-box;
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--bw-border);
+.strip .spin {
+  width: 14px;
+  height: 14px;
   border-top-color: var(--bw-focus);
-  border-radius: 50%;
-  animation: bw-spin var(--bw-dur-spin) linear infinite;
 }
 
-@keyframes bw-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+.strip .tab.muted .fav { opacity: 0.6; }
 
-.strip .label {
-  grid-column: 2;
-  justify-self: center;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-
+/* ---- Title: left-aligned, fades out instead of an ellipsis ---- */
 .strip .title {
-  flex: 0 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
+  text-align: start;
   unicode-bidi: isolate;
-}
-
-.strip .close {
-  grid-column: 1;
-  justify-self: start;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--bw-text);
-  opacity: 0;
-  cursor: default;
-  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
-}
-
-.strip .close svg {
-  --bw-icon-stroke: var(--bw-icon-stroke-fine);
-  width: 10px;
-  height: 10px;
-}
-
-.strip .tab:hover .close,
-.strip .tab.active .close {
-  opacity: 0.85;
-}
-
-.strip .close:hover {
-  background: var(--bw-hover);
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
 }
 
 .strip .marker {
-  grid-column: 3;
-  justify-self: end;
+  flex: none;
   display: none;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--mc, var(--bw-focus));
 }
 
-.strip .marker.on {
-  display: block;
+.strip .marker.on { display: block; }
+
+/* ---- Buttons: the shared 20px box with a 16px glyph ---- */
+.strip .audio[hidden] { display: none; }
+.strip .audio { color: var(--bw-text); }
+
+.strip .close {
+  opacity: 0;
+  color: var(--bw-text);
 }
 
-/* Narrow tabs drop the title, then the close button; the favicon stays. */
-@container (max-width: 119.9px) {
-  .strip .title {
-    display: none;
-  }
+.strip .tab:hover .close,
+.strip .tab.active .close,
+.strip .tab:focus-within .close,
+.strip .close:focus-visible {
+  opacity: 0.9;
 }
 
-@container (max-width: 55.9px) {
-  .strip .close {
-    display: none;
-  }
+.strip .close:hover { opacity: 1; }
+
+/* Narrow tabs: inactive ones drop the close and mute buttons so the title keeps room; the
+   active tab always keeps its close button. */
+@container (max-width: 111.9px) {
+  .strip .tab:not(.active) .close,
+  .strip .tab:not(.active) .audio { display: none; }
 }
 
+/* ---- Pinned: a 32px icon tile at the start of the strip ---- */
+.strip .tab.pinned {
+  flex: 0 0 32px;
+  min-width: 0;
+  padding: 0;
+  justify-content: center;
+}
+
+.strip .tab.pinned .title,
+.strip .tab.pinned .close,
+.strip .tab.pinned .audio,
+.strip .tab.pinned .marker { display: none; }
+
+/* ---- Groups: a tinted island around the member tabs with a coloured header chip ---- */
 .strip .group {
   position: relative;
   isolation: isolate;
   display: flex;
   align-items: center;
-  gap: 3px;
-  flex: 1 1 0;
-  min-width: 0;
+  gap: var(--bw-space-1);
+  flex: 0 1 auto;
+  min-width: min-content;
   height: var(--bw-tab-h);
-  padding: 0 2px 0 4px;
-  border-radius: var(--bw-r-tab);
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-0_5);
 }
 
 .strip .group::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: -1px 0;
   z-index: -1;
-  border-radius: inherit;
-  background: var(--bw-fill);
-  opacity: 0.3;
-  box-shadow: inset 0 0 0 1px var(--gc, var(--bw-border));
+  border-radius: calc(var(--bw-r-tab) + 2px);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gc, var(--bw-focus)) 60%, transparent);
   pointer-events: none;
 }
 
-.strip .group.collapsed {
-  flex: 0 1 auto;
-}
+.strip .group.collapsed .tab { flex: 0 1 160px; }
 
-.strip .group.collapsed .tab {
-  flex: 0 1 160px;
-}
-
-.ball {
+/* Group header: coloured dot and the group name. Collapsed groups fill the chip with the colour. */
+.strip .ball {
+  display: flex;
   flex: none;
-  width: 9px;
-  height: 9px;
-  margin: 0 2px;
-  padding: 0;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  max-width: 120px;
+  margin: 0;
+  padding: 0 6px;
   border: 0;
+  border-radius: calc(var(--bw-r-tab) - 2px);
+  background: transparent;
+  color: var(--bw-text);
+  font: inherit;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.strip .ball:hover { background: var(--bw-hover); }
+
+.strip .ball .dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--gc, var(--bw-focus));
-  cursor: default;
 }
 
-.ball[aria-expanded="false"] {
-  opacity: 0.6;
+.strip .ball .gname {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.ball:focus-visible {
-  outline: 2px solid var(--bw-focus);
-  outline-offset: 2px;
+.strip .ball .gname:empty { display: none; }
+.strip .ball:has(.gname:empty) { padding: 0 5px; }
+
+.strip .ball[aria-expanded="false"] {
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 32%, transparent);
+}
+
+.strip .ball[aria-expanded="false"]:hover {
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 46%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .strip .tab,
-  .strip .tab::before,
-  .strip .tab::after,
-  .strip .close {
-    transition: none;
-  }
-
-  .spin {
-    animation: none;
-  }
+  .strip .tab.dragging { box-shadow: var(--bw-sh-tip); }
 }
-

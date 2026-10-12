@@ -118,6 +118,33 @@ export function beforeId(others: readonly number[], dest: number): number {
   return others[dest] ?? 0;
 }
 
+/**
+ * Stable string for the arrangement of the strip: visible tab ids in order plus group boundaries
+ * and collapse state. Two renders with the same signature need no position animation.
+ */
+export function layoutSignature(entries: readonly Entry[]): string {
+  const parts: string[] = [];
+  for (const e of entries) {
+    if (e.kind === 'tab') {
+      parts.push(String(e.slot.item.id));
+      continue;
+    }
+    parts.push(`g${e.key}${e.collapsed ? 'c' : 'o'}[${e.members.filter((s) => !s.hidden).map((s) => s.item.id).join(',')}]`);
+  }
+  return parts.join(' ');
+}
+
+/**
+ * `before` id for moving the tab at `at` one slot left (-1) or right (+1) among `ids` (visible
+ * order), or null when it is already at that end.
+ */
+export function stepMoveBefore(ids: readonly number[], at: number, dir: -1 | 1): number | null {
+  const dest = at + dir;
+  if (at < 0 || at >= ids.length || dest < 0 || dest >= ids.length) return null;
+  const others = ids.filter((_, i) => i !== at);
+  return beforeId(others, dest);
+}
+
 /** Stores a favicon and keeps the map bounded (oldest insertion dropped first). */
 export function rememberFav(favs: Map<number, string>, id: number, uri: string, live: ReadonlySet<number>, max = FAV_CACHE_MAX): void {
   pruneFavs(favs, live);

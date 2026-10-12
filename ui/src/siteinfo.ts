@@ -124,7 +124,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
         const option = button('', CHOICE_LABEL[choice], `perm-${perm.k}-${choice}`);
         option.setAttribute('role', 'radio');
         option.setAttribute('aria-checked', String(perm.state === choice));
-        if (choice === 'default') option.title = 'Default: blocked (Bowser never asks)';
+        if (choice === 'default') option.setAttribute('aria-description', 'Blocked: Bowser never asks');
         option.addEventListener('click', () => {
           if (busy() || perm.state === choice) return;
           for (const other of Array.from(group.querySelectorAll('button'))) other.setAttribute('aria-checked', String(other === option));

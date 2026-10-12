@@ -78,8 +78,75 @@ export type Command =
   | { v: 1; t: 'pick'; tok: number; id: number }
   | { v: 1; t: 'dismiss'; tok: number }
   // --- popup surfaces (lane PP) ---
-  | { v: 1; t: 'act'; tok: number; id: number; n: number };
+  | { v: 1; t: 'act'; tok: number; id: number; n: number }
   // --- end popup surfaces ---
+  // --- hover layer ---
+  | { v: 1; t: 'tip'; text: string; r: string }
+  | { v: 1; t: 'tipoff' }
+  | { v: 1; t: 'hover'; k: HoverTargetKind; id: number; r: string }
+  | { v: 1; t: 'hover'; k: 'none' }
+  | ({ v: 1; t: 'hact'; tok: number } & HoverActFields);
+  // --- end hover layer ---
+
+// --- hover layer ---
+/** Longest tooltip text Rust accepts, in code points. */
+export const MAX_TIP = 256;
+/** Largest coordinate or size in a hover rectangle, in CSS pixels. */
+export const MAX_HOVER_COORD = 16384;
+/** Most member rows, swatches and markers Rust sends in one hover message. */
+export const MAX_HOVER_ROWS = 12;
+export const MAX_HOVER_SWATCHES = 32;
+export const HOVER_MARKERS = 5;
+/** Longest island name, in code points (`MAX_GROUP_NAME_CHARS`). */
+export const MAX_ISLAND_NAME = 64;
+const MAX_HOVER_HOST = 253;
+const MAX_HOVER_ROW_INDEX = 63;
+const MAX_HOVER_SWATCH_INDEX = 31;
+export type HoverTargetKind = 'tab' | 'ball';
+export type HoverActFields =
+  | { a: 'marker'; n: number }
+  | { a: 'row'; n: number }
+  | { a: 'swatch'; n: number }
+  | { a: 'name'; text: string }
+  | { a: 'next' | 'close' | 'focus' | 'dismiss' };
+export interface HoverRowMsg {
+  readonly title: string;
+  readonly active: boolean;
+  readonly linked: boolean;
+  /** PNG data: URI, or '' for the placeholder dot. */
+  readonly fav: string;
+}
+export interface HoverTooltipMsg { readonly t: 'hover'; readonly tok: number; readonly kind: 'tooltip'; readonly text: string }
+export interface HoverCardMsg {
+  readonly t: 'hover';
+  readonly tok: number;
+  readonly kind: 'card';
+  readonly title: string;
+  readonly host: string;
+  /** Marker id 0-4, or -1 for none. */
+  readonly marker: number;
+  /** Marker swatch colours ('' = theme accent). */
+  readonly markers: readonly string[];
+  readonly sleeping: boolean;
+  readonly fav: string;
+  readonly rows: readonly HoverRowMsg[];
+  readonly more: number;
+}
+export interface HoverIslandMsg {
+  readonly t: 'hover';
+  readonly tok: number;
+  readonly kind: 'island';
+  readonly name: string;
+  readonly hint: string;
+  readonly slot: number;
+  readonly swatches: readonly string[];
+  readonly rows: readonly HoverRowMsg[];
+  readonly more: number;
+  readonly close: string;
+}
+export type HoverMsg = HoverTooltipMsg | HoverCardMsg | HoverIslandMsg;
+export interface HoverHideMsg { readonly t: 'hoverhide' }
+// --- end hover layer ---
 
 // Rust -> JS messages (validated by parseInbound).
 export interface StateMsg {
@@ -187,6 +254,10 @@ export type Inbound =
   // --- vertical sidebar (lane S) ---
   | WorkspaceMsg
   // --- end vertical sidebar ---
+  // --- hover layer ---
+  | HoverMsg
+  | HoverHideMsg
+  // --- end hover layer ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -284,6 +355,118 @@ export function sendPopupAct(tok: number, id: number, n: number): boolean {
   return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && isInt(n, 0, MAX_ACT_CHOICE) && send({ v: 1, t: 'act', tok, id, n });
 }
 // --- end popup surfaces ---
+
+// --- hover layer ---
+/** Code-point-safe cap, matching Rust's character count. */
+function capCodePoints(text: string, max: number): string {
+  const points = Array.from(text);
+  return points.length <= max ? text : points.slice(0, max).join('');
+}
+
+/** `"x,y,w,h"` for a client rectangle: edges clamped to 0..MAX_HOVER_COORD, rounded outwards. */
+export function rectWire(rect: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number }): string | null {
+  const values = [rect.left, rect.top, rect.right, rect.bottom];
+  if (!values.every(Number.isFinite)) return null;
+  const clamp = (v: number): number => Math.min(MAX_HOVER_COORD, Math.max(0, v));
+  const x = clamp(Math.floor(rect.left));
+  const y = clamp(Math.floor(rect.top));
+  const w = clamp(Math.ceil(rect.right) - x);
+  const h = clamp(Math.ceil(rect.bottom) - y);
+  return `${x},${y},${w},${h}`;
+}
+
+const RECT_RE = /^(0|[1-9][0-9]{0,4}),(0|[1-9][0-9]{0,4}),(0|[1-9][0-9]{0,4}),(0|[1-9][0-9]{0,4})$/;
+/** The grammar Rust's `HoverRect::parse` accepts. */
+export function isRectWire(value: string): boolean {
+  const match = RECT_RE.exec(value);
+  return match !== null && match.slice(1).every(part => Number(part) <= MAX_HOVER_COORD);
+}
+
+export function sendTip(text: string, rect: Parameters<typeof rectWire>[0]): boolean {
+  const capped = capCodePoints(text, MAX_TIP);
+  const r = rectWire(rect);
+  return capped.trim() !== '' && r !== null && send({ v: 1, t: 'tip', text: capped, r });
+}
+export function sendTipOff(): boolean {
+  return send({ v: 1, t: 'tipoff' });
+}
+export function sendHover(k: HoverTargetKind | 'none', id = 0, rect?: Parameters<typeof rectWire>[0]): boolean {
+  if (k === 'none') return send({ v: 1, t: 'hover', k });
+  const r = rect ? rectWire(rect) : null;
+  return (k === 'tab' || k === 'ball') && isInt(id, 0, MAX_ID) && r !== null && send({ v: 1, t: 'hover', k, id, r });
+}
+export function sendHoverAct(tok: number, fields: HoverActFields): boolean {
+  if (!isInt(tok, 0, MAX_ID)) return false;
+  switch (fields.a) {
+    case 'marker': if (!isInt(fields.n, 0, HOVER_MARKERS - 1)) return false; break;
+    case 'row': if (!isInt(fields.n, 0, MAX_HOVER_ROW_INDEX)) return false; break;
+    case 'swatch': if (!isInt(fields.n, 0, MAX_HOVER_SWATCH_INDEX)) return false; break;
+    case 'name': if (typeof fields.text !== 'string' || Array.from(fields.text).length > MAX_ISLAND_NAME) return false; break;
+    case 'next': case 'close': case 'focus': case 'dismiss': break;
+    default: return false;
+  }
+  return send({ v: 1, t: 'hact', tok, ...fields });
+}
+
+const HOVER_ROW_KEYS = ['title', 'active', 'linked', 'fav'];
+function parseHoverRows(v: unknown): HoverRowMsg[] | null {
+  if (!Array.isArray(v) || v.length > MAX_HOVER_ROWS) return null;
+  const rows: HoverRowMsg[] = [];
+  for (const row of v) {
+    if (!isRecord(row) || !hasOnlyKeys(row, HOVER_ROW_KEYS) || !hasAllKeys(row, HOVER_ROW_KEYS)) return null;
+    const { title, active, linked, fav } = row;
+    if (!isStr(title, MAX_TITLE) || !isBool(active) || !isBool(linked) || (fav !== '' && !isFavUri(fav))) return null;
+    rows.push({ title, active, linked, fav: fav as string });
+  }
+  return rows;
+}
+function parseColours(v: unknown, max: number): string[] | null {
+  if (!Array.isArray(v) || v.length > max) return null;
+  const out: string[] = [];
+  for (const colour of v) {
+    if (!isStr(colour, MAX_COLOR) || (colour !== '' && !isSafeColour(colour))) return null;
+    out.push(colour);
+  }
+  return out;
+}
+const TOOLTIP_KEYS = ['v', 't', 'tok', 'kind', 'text'];
+const CARD_KEYS = ['v', 't', 'tok', 'kind', 'title', 'host', 'marker', 'markers', 'sleeping', 'fav', 'rows', 'more'];
+const ISLAND_KEYS = ['v', 't', 'tok', 'kind', 'name', 'hint', 'slot', 'swatches', 'rows', 'more', 'close'];
+
+/** Strict validation of a Rust `hover` message (tooltip, card or island content). */
+export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
+  if (raw.v !== 1 || !isInt(raw.tok, 1, MAX_ID)) return null;
+  const tok = raw.tok;
+  switch (raw.kind) {
+    case 'tooltip': {
+      if (!hasOnlyKeys(raw, TOOLTIP_KEYS) || !hasAllKeys(raw, TOOLTIP_KEYS) || !isStr(raw.text, MAX_TIP * 2) || Array.from(raw.text).length > MAX_TIP) return null;
+      return { t: 'hover', tok, kind: 'tooltip', text: raw.text };
+    }
+    case 'card': {
+      if (!hasOnlyKeys(raw, CARD_KEYS) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      const { title, host, marker, sleeping, fav, more } = raw;
+      const markers = parseColours(raw.markers, HOVER_MARKERS);
+      const rows = parseHoverRows(raw.rows);
+      if (!isStr(title, MAX_TITLE) || !isStr(host, MAX_HOVER_HOST) || !isInt(marker, -1, HOVER_MARKERS - 1)) return null;
+      if (!isBool(sleeping) || (fav !== '' && !isFavUri(fav)) || !isInt(more, 0, MAX_ID) || !markers || !rows) return null;
+      return { t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more };
+    }
+    case 'island': {
+      if (!hasOnlyKeys(raw, ISLAND_KEYS) || !hasAllKeys(raw, ISLAND_KEYS)) return null;
+      const { name, hint, slot, more, close } = raw;
+      const swatches = parseColours(raw.swatches, MAX_HOVER_SWATCHES);
+      const rows = parseHoverRows(raw.rows);
+      if (!isStr(name, MAX_ISLAND_NAME * 2) || Array.from(name).length > MAX_ISLAND_NAME) return null;
+      if (!isStr(hint, MAX_ISLAND_NAME * 2) || Array.from(hint).length > MAX_ISLAND_NAME) return null;
+      if (!isStr(close, MAX_ISLAND_NAME * 2) || !isInt(more, 0, MAX_ID) || !swatches || !rows) return null;
+      if (!isInt(slot, 0, Math.max(0, swatches.length - 1))) return null;
+      return { t: 'hover', tok, kind: 'island', name, hint, slot, swatches, rows, more, close };
+    }
+    default:
+      return null;
+  }
+}
+// --- end hover layer ---
 
 function validSnapshot(value: unknown, depth: number, budget: { keys: number }): value is SnapshotValue {
   if (depth > MAX_SNAPSHOT_DEPTH) return false;
@@ -402,6 +585,12 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'workspace', name: raw.name, icon: raw.icon };
     }
     // --- end vertical sidebar ---
+    // --- hover layer ---
+    case 'hover':
+      return parseHoverMsg(raw);
+    case 'hoverhide':
+      return hasOnlyKeys(raw, ['v', 't']) && raw.v === 1 ? { t: 'hoverhide' } : null;
+    // --- end hover layer ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
       const budget = { keys: 0 };

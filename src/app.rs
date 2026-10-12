@@ -2727,6 +2727,15 @@ impl App {
             .and_then(|tab| tab.favicon.clone())
     }
 
+    /// Whether the tab's page is asleep to save memory: discarded or suspended. Shown on the hover card.
+    pub fn tab_sleeping(app: &AppRef, id: TabId) -> bool {
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| tab.discarded || tab.suspended)
+    }
+
     pub fn tab_favicon_key(app: &AppRef, id: TabId) -> Option<crate::tabs::FaviconKey> {
         app.borrow()
             .tabs

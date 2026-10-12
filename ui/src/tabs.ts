@@ -3,6 +3,7 @@
 import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
+import { setTip } from './tooltip';
 // --- vertical sidebar (lane S) ---
 import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
@@ -12,9 +13,11 @@ import {
   dropIndex,
   dragScrollDelta,
   hiddenForTab,
+  layoutSignature,
   pruneFavs,
   rememberFav,
   slotShift,
+  stepMoveBefore,
   scrollDeltaForWheel,
   type Entry,
   type GroupEntry,
@@ -31,8 +34,10 @@ const ISLAND: readonly string[] = [
   'var(--bw-group-6)',
   'var(--bw-group-7)',
 ];
-const ACCENT = 'var(--focus-border)';
+const ACCENT = 'var(--bw-accent)';
 const DRAG_START_PX = 4;
+/** Above this many tabs, position animations are skipped (each one costs a measured layout). */
+const FLIP_MAX_TABS = 80;
 
 interface TabNode {
   readonly id: number;
@@ -40,6 +45,8 @@ interface TabNode {
   readonly img: HTMLImageElement;
   readonly title: HTMLSpanElement;
   readonly marker: HTMLSpanElement;
+  readonly audio: HTMLButtonElement;
+  readonly close: HTMLButtonElement;
   uri: string;
   shift: number;
 }
@@ -47,9 +54,9 @@ interface TabNode {
 interface GroupNode {
   readonly shell: HTMLDivElement;
   readonly ball: HTMLButtonElement;
+  readonly name: HTMLSpanElement;
   label: string;
   color: string;
-  flex: string;
 }
 
 interface Drag {
@@ -62,6 +69,8 @@ interface Drag {
   readonly from: number;
   active: boolean;
   dest: number;
+  /** Pointer travel since the drag started (px). */
+  dx: number;
 }
 
 function colourOf(gcol: number | undefined): string {
@@ -70,38 +79,42 @@ function colourOf(gcol: number | undefined): string {
 }
 
 function createTab(id: number): TabNode {
-  const root = el('div', 'tab');
+  const root = el('div', 'tab bw-focus-inset');
   root.setAttribute('role', 'tab');
   root.dataset.id = String(id);
   root.dataset.icon = 'glyph';
 
-  const close = el('button', 'close');
-  close.type = 'button';
-  close.tabIndex = -1;
-  close.setAttribute('aria-label', 'Close tab: Tab');
-  close.append(icon('close'));
-
   const img = el('img', 'fav');
   img.alt = '';
   img.draggable = false;
-  // Placeholder for tabs without a favicon: a small rounded tile with a plus.
+  // Placeholder for tabs without a favicon: the family's globe glyph, no tile.
   const glyph = el('span', 'glyph');
   glyph.setAttribute('aria-hidden', 'true');
-  glyph.append(icon('plus'));
-  const spin = el('span', 'spin');
+  glyph.append(icon('workspace-globe'));
+  const spin = el('span', 'spin bw-spinner');
   const ico = el('span', 'ico');
   ico.append(img, glyph, spin);
 
   const title = el('span', 'title');
   title.dir = 'auto';
-  // Favicon and title are one centred group, so the group stays centred in the tab.
-  const label = el('span', 'label');
-  label.append(ico, title);
   const marker = el('span', 'marker');
   marker.setAttribute('aria-hidden', 'true');
 
-  root.append(close, label, marker);
-  return { id, root, img, title, marker, uri: '', shift: 0 };
+  const audio = el('button', 'audio bw-icon-btn');
+  audio.type = 'button';
+  audio.tabIndex = -1;
+  audio.hidden = true;
+  audio.setAttribute('aria-label', 'Unmute tab');
+  audio.append(icon('mute'));
+
+  const close = el('button', 'close bw-icon-btn');
+  close.type = 'button';
+  close.tabIndex = -1;
+  close.setAttribute('aria-label', 'Close tab: Tab');
+  close.append(icon('close'));
+
+  root.append(ico, title, marker, audio, close);
+  return { id, root, img, title, marker, audio, close, uri: '', shift: 0 };
 }
 
 function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): void {
@@ -109,11 +122,14 @@ function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): v
   const label = item.title !== '' ? item.title : 'Tab';
   if (n.root.getAttribute('aria-label') !== label) {
     n.root.setAttribute('aria-label', label);
-    n.root.title = label;
+    setTip(n.root, label);
   }
   n.root.setAttribute('aria-selected', String(selected));
-  const close = n.root.querySelector<HTMLButtonElement>('.close');
-  if (close) close.setAttribute('aria-label', `Close tab: ${label}`);
+  n.close.setAttribute('aria-label', `Close tab: ${label}`);
+  setTip(n.close, 'Close tab');
+  setTip(n.audio, 'Unmute tab');
+  if (n.audio.hidden !== !item.muted) n.audio.hidden = !item.muted;
+  n.audio.setAttribute('aria-label', `Unmute tab: ${label}`);
   n.root.classList.toggle('active', selected);
   n.root.classList.toggle('pinned', item.pinned);
   n.root.classList.toggle('muted', item.muted);
@@ -138,10 +154,15 @@ function createGroup(key: number): GroupNode {
   const shell = el('div', 'group');
   shell.setAttribute('role', 'none');
   shell.dataset.key = String(key);
-  const ball = el('button', 'ball');
+  const ball = el('button', 'ball bw-focus-inset');
   ball.type = 'button';
   ball.dataset.key = String(key);
-  return { shell, ball, label: '', color: '', flex: '' };
+  const dot = el('span', 'dot');
+  dot.setAttribute('aria-hidden', 'true');
+  const name = el('span', 'gname');
+  name.dir = 'auto';
+  ball.append(dot, name);
+  return { shell, ball, name, label: '', color: '' };
 }
 
 function syncGroup(g: GroupNode, e: GroupEntry): void {
@@ -149,8 +170,9 @@ function syncGroup(g: GroupNode, e: GroupEntry): void {
   const label = name !== undefined && name !== '' ? name : 'Tab group';
   if (g.label !== label) {
     g.label = label;
-    g.ball.title = label;
+    setTip(g.ball, label);
     g.ball.setAttribute('aria-label', label);
+    g.name.textContent = name !== undefined && name !== '' ? name : '';
   }
   const expanded = String(!e.collapsed);
   if (g.ball.getAttribute('aria-expanded') !== expanded) g.ball.setAttribute('aria-expanded', expanded);
@@ -159,11 +181,6 @@ function syncGroup(g: GroupNode, e: GroupEntry): void {
   if (g.color !== color) {
     g.color = color;
     g.shell.style.setProperty('--gc', color);
-  }
-  const flex = e.collapsed ? '0 1 auto' : `${Math.max(1, e.visible)} 1 0px`;
-  if (g.flex !== flex) {
-    g.flex = flex;
-    g.shell.style.flex = flex;
   }
   g.shell.classList.toggle('collapsed', e.collapsed);
 }
@@ -198,6 +215,15 @@ export function startTabs(strip: HTMLElement): void {
   let frame = 0;
   let drag: Drag | null = null;
   let ignoreClick = false;
+  /** True after the first horizontal render: later new tabs animate in, the first batch does not. */
+  let rendered = false;
+  let signature = '';
+  /** Tab id to refocus after the next render (keyboard reorder moves the focused node). */
+  let refocus = 0;
+  /** A committed drag leaves its transforms in place until the host's reorder arrives. */
+  let settling = false;
+  let settleTimer = 0;
+  const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const schedule = (): void => {
     if (frame === 0) frame = requestAnimationFrame(flush);
@@ -217,6 +243,15 @@ export function startTabs(strip: HTMLElement): void {
     if (!node) {
       node = createTab(item.id);
       tabNodes.set(item.id, node);
+      if (rendered) {
+        // A new tab grows in (opacity + .96 scale, 167ms); the class is dropped afterwards so it
+        // never fights the position animation or the drag transform.
+        const root = node.root;
+        root.classList.add('bw-enter', 'is-scale');
+        root.addEventListener('animationend', (ev) => {
+          if (ev.target === root) root.classList.remove('bw-enter', 'is-scale');
+        });
+      }
     }
     return node;
   };
@@ -263,9 +298,48 @@ export function startTabs(strip: HTMLElement): void {
     const keys = new Set<number>();
     for (const e of entries) if (e.kind === 'group') keys.add(e.key);
 
+    // FLIP "first": where every visible tab is now (drag transforms included), measured only when
+    // the arrangement is about to change.
+    const nextSignature = layoutSignature(entries);
+    const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && (nextSignature !== signature || settling);
+    const before = new Map<TabNode, number>();
+    const ghosts: HTMLElement[] = [];
+    if (animate) {
+      for (const n of tabNodes.values()) {
+        if (n.root.isConnected && !n.root.hidden) before.set(n, n.root.getBoundingClientRect().left);
+      }
+      strip.classList.add('settle');
+      for (const n of tabNodes.values()) setShift(n, 0);
+    } else if (settling) {
+      strip.classList.add('settle');
+      for (const n of tabNodes.values()) setShift(n, 0);
+      void strip.offsetWidth;
+      strip.classList.remove('settle');
+    }
+    clearTimeout(settleTimer);
+    settling = false;
+
     for (const [id, n] of tabNodes) {
       if (!live.has(id)) {
-        n.root.remove();
+        if (animate && before.has(n)) {
+          // The closed tab fades where it was while its neighbours slide into the gap.
+          const r = n.root.getBoundingClientRect();
+          const stripBox = strip.getBoundingClientRect();
+          n.root.removeAttribute('role');
+          n.root.setAttribute('aria-hidden', 'true');
+          n.root.classList.add('ghost', 'bw-exit');
+          n.root.style.left = `${r.left - stripBox.left + strip.scrollLeft}px`;
+          n.root.style.top = `${r.top - stripBox.top}px`;
+          n.root.style.width = `${r.width}px`;
+          const drop = (): void => n.root.remove();
+          n.root.addEventListener('animationend', (ev) => {
+            if (ev.target === n.root) drop();
+          });
+          setTimeout(drop, 400);
+          ghosts.push(n.root);
+        } else {
+          n.root.remove();
+        }
         tabNodes.delete(id);
       }
     }
@@ -301,13 +375,29 @@ export function startTabs(strip: HTMLElement): void {
       top.push(g.shell);
     }
     place(strip, top);
-    let pinnedLeft = 0;
-    for (const node of tabNodes.values()) {
-      if (!node.root.classList.contains('pinned')) continue;
-      node.root.style.left = `${pinnedLeft}px`;
-      pinnedLeft += node.root.getBoundingClientRect().width + 3;
+    strip.append(...ghosts);
+
+    if (animate) {
+      // FLIP "last, invert, play": jump each moved tab back to where it was, then release.
+      let moved = false;
+      for (const [n, left] of before) {
+        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost')) continue;
+        const dx = left - n.root.getBoundingClientRect().left;
+        if (Math.abs(dx) < 0.5) continue;
+        n.root.style.transform = `translateX(${dx}px)`;
+        moved = true;
+      }
+      if (moved) void strip.offsetWidth;
+      strip.classList.remove('settle');
+      for (const n of before.keys()) if (n.root.style.transform !== '') n.root.style.transform = '';
     }
+    signature = nextSignature;
+    rendered = true;
     applyRoving();
+    if (refocus !== 0) {
+      tabNodes.get(refocus)?.root.focus({ preventScroll: true });
+      refocus = 0;
+    }
     tabNodes.get(activeId)?.root.scrollIntoView({
       block: 'nearest', inline: 'nearest',
       behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
@@ -333,13 +423,27 @@ export function startTabs(strip: HTMLElement): void {
     if (!d.active) return;
     ignoreClick = true;
     d.node.root.classList.remove('dragging');
+    if (commit && d.dest !== d.from) {
+      // Leave every tab visually where it landed; the host's reorder then arrives and render()
+      // slides from these positions to the real ones, so nothing snaps back and forth.
+      const others = d.order.filter((n) => n !== d.node).map((n) => n.id);
+      send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeId(others, d.dest) });
+      settling = true;
+      d.node.root.style.transform = `translateX(${d.dx}px)`;
+      clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        // The host never reordered (refused move): ease everything back.
+        if (!settling) return;
+        settling = false;
+        d.node.root.style.transform = '';
+        for (const n of d.order) setShift(n, 0);
+      }, 400);
+      schedule();
+      return;
+    }
     d.node.root.style.transform = '';
     d.node.shift = 0;
     for (const n of d.order) setShift(n, 0);
-    if (commit && d.dest !== d.from) {
-      const others = d.order.filter((n) => n !== d.node).map((n) => n.id);
-      send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeId(others, d.dest) });
-    }
     schedule();
   };
 
@@ -353,7 +457,7 @@ export function startTabs(strip: HTMLElement): void {
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
     if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
-    if (ev.target.closest('.close, .ball')) return;
+    if (ev.target.closest('.close, .audio, .ball')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
       if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) send({ v: 1, t: 'drag' });
@@ -368,7 +472,7 @@ export function startTabs(strip: HTMLElement): void {
       const r = n.root.getBoundingClientRect();
       return r.left + r.width / 2;
     });
-    drag = { pointerId: ev.pointerId, startX: ev.clientX, node, order, centers, from, active: false, dest: from };
+    drag = { pointerId: ev.pointerId, startX: ev.clientX, node, order, centers, from, active: false, dest: from, dx: 0 };
     try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
 
@@ -382,7 +486,8 @@ export function startTabs(strip: HTMLElement): void {
       d.node.root.classList.add('dragging');
       window.addEventListener('keydown', onDragKey, true);
     }
-    d.node.root.style.transform = `translateX(${dx}px)`;
+    d.dx = dx;
+    d.node.root.style.transform = `translateX(${dx}px) scale(1.02)`;
     const edgeDelta = dragScrollDelta(ev.clientX, strip.getBoundingClientRect().left, strip.getBoundingClientRect().right);
     if (edgeDelta !== 0) {
       strip.scrollLeft += edgeDelta;
@@ -431,7 +536,7 @@ export function startTabs(strip: HTMLElement): void {
       return;
     }
     const id = Number(tab.dataset.id);
-    const a: TabAction = t.closest('.close') ? 'close' : 'select';
+    const a: TabAction = t.closest('.close') ? 'close' : t.closest('.audio') ? 'mute' : 'select';
     send({ v: 1, t: 'tab', a, id });
   });
 
@@ -480,11 +585,23 @@ export function startTabs(strip: HTMLElement): void {
     if (!(t instanceof Element)) return;
     const tab = t.closest<HTMLElement>('.tab');
     if (!tab) return;
+    // Enter/Space on the close or mute button activates that button (click), not the tab.
+    if ((ev.key === 'Enter' || ev.key === ' ') && t.closest('.close, .audio')) return;
     const id = Number(tab.dataset.id);
     const list = visibleTabs();
     const at = list.findIndex((n) => n.id === id);
     if (at < 0) return;
     let next: number;
+    if (ev.ctrlKey && ev.shiftKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+      // Keyboard reorder: one slot per press; focus follows the moved tab once the host reorders.
+      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' ? -1 : 1);
+      ev.preventDefault();
+      if (before !== null) {
+        refocus = id;
+        send({ v: 1, t: 'tabmove', id, before });
+      }
+      return;
+    }
     switch (ev.key) {
       case 'ArrowLeft':
         next = Math.max(0, at - 1);

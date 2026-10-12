@@ -68,4 +68,22 @@ export function verticalSlotShift(centres: readonly number[], index: number, fro
   return (centres[verticalShiftTarget(index, from, destination)] ?? centres[index] ?? 0) - (centres[index] ?? 0);
 }
 
+/** Workspace glyph id from Rust ("g:code") to an icons.ts name; unknown ids get the generic workspace stack. */
+export function workspaceIconName(glyph: string): string {
+  return /^g:(briefcase|home|code|book|cart|game|music|heart|star|bolt|globe|leaf)$/.test(glyph)
+    ? `workspace-${glyph.slice(2)}`
+    : 'workspace';
+}
+
+/** Next row index for a vertical roving-focus key (clamped, no wrap, like a native tree). */
+export function rovingTarget(key: string, at: number, count: number): number {
+  switch (key) {
+    case 'ArrowUp': return Math.max(0, at - 1);
+    case 'ArrowDown': return Math.min(count - 1, at + 1);
+    case 'Home': return 0;
+    case 'End': return count - 1;
+    default: return at;
+  }
+}
+
 export type { Entry };
