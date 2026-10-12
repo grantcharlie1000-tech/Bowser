@@ -7280,6 +7280,10 @@ pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
     }
 }
 
+/// Narrowest suggestion dropdown, in CSS pixels. Above it the dropdown is exactly as wide as the pill,
+/// so its squared top corners meet the pill's ends; only a very narrow window makes it overhang.
+const MIN_SUGGEST_WIDTH: u32 = 320;
+
 /// Computes the dropdown rows for edit `seq` and shows them under the pill. Runs once per edit, after
 /// the inline completion, so the default row follows it. Nothing here touches the disk except one
 /// `stat` of the bookmark file.
@@ -7310,12 +7314,12 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
         let mut origin = windows::Win32::Foundation::POINT { x: omnibox.left, y: omnibox.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
         let css = chrome_host::css_px_from_physical(omnibox.width(), s.dpi).max(0) as u32;
-        (RECT { left: origin.x, top: origin.y, right: origin.x + omnibox.width(), bottom: origin.y + omnibox.height() }, css.max(480))
+        (RECT { left: origin.x, top: origin.y, right: origin.x + omnibox.width(), bottom: origin.y + omnibox.height() }, css.max(MIN_SUGGEST_WIDTH))
     }) else {
         return;
     };
     let computed = started.elapsed();
-    super::html_hover::suggest_show(hwnd, seq, anchor, width, rows);
+    super::html_hover::suggest_show(hwnd, seq, anchor, width, text, rows);
     if std::env::var_os("BOWSER_SUGGEST_TRACE").is_some() {
         eprintln!("suggest seq={seq} compute={computed:?} total={:?}", started.elapsed());
     }

@@ -191,16 +191,16 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (71): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
+- Glyphs (76): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
   caption-restore, check, chevron-down/left/right/up, clock, close, command, cookie, copy,
-  customize, download, edit, external, eye, folder, forward, gear, grid, heart, home, info, key,
-  location, lock, menu, mic, more-horizontal, more-vertical, mute, notes, person, pin, pip, plus,
-  print, puzzle, reload, reset, search, shield, sidebar, split, tab-group, trash, unlock, volume,
-  warning, workspace, workspace-{bolt, book, briefcase, cart, code, game, globe, heart, home,
-  leaf, music, star}, zoom-in, zoom-out.
-- Aliases (20): arrow-left/right, caption-close, dots, extensions, find, history, more, new-tab,
-  palette, pencil, picture-in-picture, profile, refresh, settings, sidebar-toggle, split-view,
-  star, stop, tab-close.
+  customize, download, droplet, edit, external, eye, folder, forward, gear, grid, grip, heart,
+  home, info, key, link, location, lock, menu, mic, more-horizontal, more-vertical, mute, notes,
+  person, pin, pip, plus, print, puzzle, reload, reset, search, shield, sidebar, split, tab-group,
+  tab-switch, trash, unlock, volume, warning, workspace, workspace-add, workspace-{bolt, book,
+  briefcase, cart, code, game, globe, heart, home, leaf, music, star}, zoom-in, zoom-out.
+- Aliases (21): arrow-left/right, caption-close, dots, extensions, find, globe, history, more,
+  new-tab, palette, pencil, picture-in-picture, profile, refresh, settings, sidebar-toggle,
+  split-view, star, stop, tab-close.
 
 ### Adding an icon
 

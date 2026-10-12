@@ -120,8 +120,9 @@ enum Content {
     Card { tab: TabId, rows: Vec<TabId>, model: HoverCard },
     Island { tab: TabId, rows: Vec<TabId>, model: HoverIsland },
     // --- omnibox suggest ---
-    /// `seq` is the omnibox edit the rows answer; `width` is the dropdown width in CSS pixels.
-    Suggest { seq: u32, width: u32, sel: usize, rows: Vec<Row> },
+    /// `seq` is the omnibox edit the rows answer; `width` is the dropdown width in CSS pixels;
+    /// `query` is the typed text, which the page uses to emphasise matches.
+    Suggest { seq: u32, width: u32, sel: usize, query: String, rows: Vec<Row> },
     // --- end omnibox suggest ---
 }
 
@@ -642,10 +643,10 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
             Content::Tooltip { text, .. } => protocol::tooltip_json(tok, text),
             Content::Card { model, .. } => protocol::card_json(tok, model),
             // --- omnibox suggest ---
-            Content::Suggest { seq, width, sel, rows } => {
+            Content::Suggest { seq, width, sel, query, rows } => {
                 layer.suggest_seq = *seq;
                 let items: Vec<_> = rows.iter().map(|row| row.item.clone()).collect();
-                protocol::suggest_json(tok, *seq, *width, *sel, &items)
+                protocol::suggest_json(tok, *seq, *width, *sel, query, &items)
             }
             // --- end omnibox suggest ---
             Content::Island { tab, model, .. } => {
@@ -1057,7 +1058,7 @@ fn refresh(owner: HWND, app: &AppRef, kind: Kind, tab: TabId, anchor: RECT) {
 
 /// Tells the toolbar page the dropdown for edit `seq` is gone.
 fn tell_toolbar_closed(owner: HWND, seq: u32) {
-    super::window::html_toolbar_post(owner, &protocol::suggest_json(0, seq, 0, 0, &[]));
+    super::window::html_toolbar_post(owner, &protocol::suggest_json(0, seq, 0, 0, "", &[]));
 }
 
 fn suggest_shown(owner: HWND) -> bool {
@@ -1065,8 +1066,9 @@ fn suggest_shown(owner: HWND) -> bool {
 }
 
 /// Shows `rows` for omnibox edit `seq` under `anchor` (the pill, in screen pixels), `width` CSS pixels
-/// wide, with the first row selected. No rows hides the dropdown. False when the layer is not ready.
-pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, rows: Vec<Row>) -> bool {
+/// wide, with the first row selected; `query` is the typed text the rows answer. No rows hides the
+/// dropdown. False when the layer is not ready.
+pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, query: &str, rows: Vec<Row>) -> bool {
     if rows.is_empty() {
         suggest_hide(owner);
         return false;
@@ -1075,8 +1077,8 @@ pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, rows
         .iter()
         .map(|row| protocol::SuggestItem { png: None, ..row.item.clone() })
         .collect();
-    let toolbar = protocol::suggest_json(0, seq, 0, 0, &plain);
-    if !present(owner, Content::Suggest { seq, width, sel: 0, rows }, anchor) {
+    let toolbar = protocol::suggest_json(0, seq, 0, 0, "", &plain);
+    if !present(owner, Content::Suggest { seq, width, sel: 0, query: query.to_owned(), rows }, anchor) {
         return false;
     }
     super::window::html_toolbar_post(owner, &toolbar);

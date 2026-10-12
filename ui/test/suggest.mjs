@@ -24,7 +24,8 @@ const bundle = (entry) => {
 const posted = [];
 globalThis.window = { chrome: { webview: { postMessage: (m) => posted.push(JSON.parse(m)), addEventListener() {} } } };
 const { parseInbound, sendSuggestPick, sendSuggestPreview, sendSuggestEnd } = await bundle('protocol.ts');
-const { moveSuggestSelection, suggestPreviewText, suggestGlyph } = await bundle('suggest-logic.ts');
+const { moveSuggestSelection, suggestPreviewText, suggestGlyph, suggestAction, suggestNeedle, suggestMatch, suggestEmphasis } = await bundle('suggest-logic.ts');
+const { ICON_NAMES } = await bundle('icons.gen.ts');
 const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'suggest-messages.json'), 'utf8'));
 const take = () => posted.splice(0, posted.length);
 
@@ -35,6 +36,8 @@ test('Rust suggest fixture parses as list, toolbar copy, selection and close', (
   assert.equal(list.seq, 12);
   assert.equal(list.w, 560);
   assert.equal(list.sel, 1);
+  assert.equal(list.q, 'Exa', 'the hover copy carries the typed text');
+  assert.equal(parseInbound(fixture.toolbar).q, '');
   assert.deepEqual(list.items.map((i) => i.k), ['url', 'tab', 'bm', 'hist', 'search']);
   assert.equal(list.items[1].title, 'Guide <b>', 'markup in a title stays text');
   assert.equal(list.items[4].url, '');
@@ -61,6 +64,9 @@ test('malformed suggest messages are rejected', () => {
     { ...fixture.suggest, items: [{ ...row, text: 'x'.repeat(257) }] },
     { ...fixture.suggest, items: [{ ...row, fav: 'https://example.com/x.png' }] },
     { ...fixture.suggest, items: [{ ...row, fav: 'data:image/gif;base64,AAAA' }] },
+    { ...fixture.suggest, q: 1 },
+    { ...fixture.suggest, q: 'q'.repeat(513) },
+    (({ q, ...rest }) => rest)(fixture.suggest),
     { ...fixture.sel, sel: 8 },
     { ...fixture.sel, extra: true },
   ]) {
@@ -103,7 +109,35 @@ test('arrow keys wrap and the default row shows what was typed', () => {
   assert.equal(moveSuggestSelection(0, 0, 'ArrowDown'), 0);
   assert.equal(suggestPreviewText('exa', 0, 'example.com/'), 'exa');
   assert.equal(suggestPreviewText('exa', 2, 'example.org/'), 'example.org/');
-  assert.equal(suggestGlyph('tab'), 'new-tab');
-  assert.equal(suggestGlyph('search'), 'search');
+});
+
+test('rows use family glyphs that say what picking them does', () => {
+  const glyphs = { search: 'search', url: 'globe', hist: 'history', bm: 'bookmark', tab: 'tab-switch' };
+  for (const [kind, name] of Object.entries(glyphs)) {
+    assert.equal(suggestGlyph(kind), name);
+    assert.ok(ICON_NAMES.includes(name), `${name} is in the icon family`);
+  }
+  assert.equal(suggestAction('tab'), 'Switch to tab');
+  for (const kind of ['search', 'url', 'hist', 'bm']) assert.equal(suggestAction(kind), '');
+});
+
+test('the typed text is found in rows the way Rust matches it', () => {
+  assert.equal(suggestNeedle('  wiki '), 'wiki');
+  assert.equal(suggestNeedle('HTTPS://www.Example.com/a'), 'Example.com/a');
+  assert.equal(suggestNeedle('http://www.'), '');
+  assert.equal(suggestNeedle('www.rust'), 'rust');
+  assert.equal(suggestNeedle('wwwx'), 'wwwx');
+  assert.deepEqual(suggestMatch('en.wikipedia.org/wiki/Web', 'WIKI'), [3, 7]);
+  assert.deepEqual(suggestMatch('Rust Programming', 'rust'), [0, 4]);
+  assert.equal(suggestMatch('kiwi', 'wiki'), null);
+  assert.equal(suggestMatch('abc', ''), null);
+  assert.equal(suggestMatch('ab', 'abc'), null);
+  // Only ASCII folds, so offsets stay valid for text whose case maps change length.
+  assert.deepEqual(suggestMatch('İstanbul wiki', 'wiki'), [9, 13]);
+  assert.equal(suggestMatch('É', 'é'), null);
+  // A row that is nothing but the typed text (the search row) has nothing to single out.
+  assert.equal(suggestEmphasis('wiki', 'WIKI'), null);
+  assert.deepEqual(suggestEmphasis('wikihow.com/', 'wiki'), [0, 4]);
+  assert.equal(suggestEmphasis('example.org/', 'wiki'), null);
 });
 // --- end omnibox suggest ---

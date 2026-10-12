@@ -54,6 +54,7 @@ const ALIASES = {
   pencil: 'edit',
   'arrow-left': 'back',
   'arrow-right': 'forward',
+  globe: 'workspace-globe',
 };
 
 const ROOT_ATTRS = {

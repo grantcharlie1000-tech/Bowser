@@ -27,16 +27,14 @@ body.bw-hover-body {
 
 .bw-tooltip,
 .bw-card,
-.bw-island-menu,
-.bw-suggest {
+.bw-island-menu {
   animation: bw-hover-in var(--bw-dur-fast) var(--bw-ease-out) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .bw-tooltip,
   .bw-card,
-  .bw-island-menu,
-  .bw-suggest {
+  .bw-island-menu {
     animation: none;
   }
 }
@@ -336,78 +334,131 @@ body.bw-hover-body {
 }
 
 /* ----- omnibox suggestions ----- */
-/* Sits directly under the pill: Rust squares the top corners, so the top edge has no border. */
+/*
+ * The dropdown continues the omnibox pill: same left edge and width, no gap, squared top corners
+ * (Rust squares the window region's top half; Fluent AutoSuggest rule). Rows follow the palette's
+ * list vocabulary at menu density: 32px, 4px radius, 16px lead, 12px gap, Body title with a
+ * Caption address, --bw-hover under the pointer and --bw-island for the keyboard selection.
+ * Solid, not glass: the overlay tint is painted over the opaque window colour, as in menu.css.
+ * Outlined with --bw-pill-edge so it reads as the pill's continuation in light and dark.
+ * Motion: only the first appearance runs .bw-enter.is-down (hover.ts); keyboard selection and
+ * per-keystroke row updates are instant.
+ */
 
 .bw-suggest {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  padding: 4px 6px 6px;
-  border: 1px solid var(--bw-hairline);
+  padding: var(--bw-space-1);
+  /* The pill's own edge, not the 8-10% hairline: the popup is clipped to its region, so it has no
+     shadow, and over a white page a hairline all but disappears. */
+  border: 1px solid var(--bw-pill-edge);
   border-top: 0;
-  border-radius: var(--bw-r-overlay);
-  background: var(--bw-overlay);
+  border-radius: 0 0 var(--bw-r-overlay) var(--bw-r-overlay);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window);
   color: var(--bw-text);
-  box-shadow: none;
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  transform-origin: top center;
 }
 
 .bw-suggest-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 32px;
+  gap: var(--bw-space-3);
   min-width: 0;
-  padding: 0 8px;
+  min-height: 32px;
+  padding: 0 var(--bw-space-2);
   border-radius: var(--bw-r-control);
   cursor: default;
 }
 
-.bw-suggest-row:hover { background: var(--bw-hover); }
-.bw-suggest-row.is-selected { background: color-mix(in srgb, var(--bw-accent) 16%, transparent); }
-
-.bw-suggest-fav {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  border-radius: 3px;
-  object-fit: contain;
+.bw-suggest-row:hover {
+  background: var(--bw-hover);
 }
 
-.bw-suggest-fav.is-glyph,
-.bw-suggest-fav.is-empty {
+.bw-suggest-row[aria-selected="true"] {
+  background: var(--bw-island);
+}
+
+.bw-suggest-lead {
   display: grid;
+  flex: none;
   place-items: center;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
   color: var(--bw-text-2);
 }
 
-.bw-suggest-fav svg { width: 16px; height: 16px; }
-
-.bw-suggest-title {
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  unicode-bidi: isolate;
+.bw-suggest-row[aria-selected="true"] .bw-suggest-lead {
+  color: var(--bw-text);
 }
 
+.bw-suggest-lead svg,
+.bw-suggest-fav {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.bw-suggest-fav {
+  border-radius: 2px;
+  object-fit: contain;
+}
+
+/* Title then address on one baseline; both ellipsise, and a long title leaves the address room. */
+.bw-suggest-text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--bw-space-2);
+  min-width: 0;
+}
+
+.bw-suggest-title,
 .bw-suggest-url {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--bw-text-2);
   unicode-bidi: isolate;
 }
 
-.bw-suggest-badge {
+.bw-suggest-title:not(:last-child) {
+  max-width: 70%;
+}
+
+.bw-suggest-url {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* The typed text inside a row: weight, not colour, so it reads the same on every row state. */
+.bw-suggest-match {
+  background: none;
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+}
+
+/* What picking the row does when it is not "go to this page" (open tab: switch to it). */
+.bw-suggest-action {
   flex: none;
   margin-inline-start: auto;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--bw-hover);
+  padding-inline-start: var(--bw-space-3);
   color: var(--bw-text-2);
-  font-size: 11px;
-  line-height: 16px;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  white-space: nowrap;
+}
+
+.bw-suggest-row[aria-selected="true"] .bw-suggest-action {
+  color: var(--bw-text);
+}
+
+@media (forced-colors: active) {
+  .bw-suggest-row[aria-selected="true"] {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
 }
 /* --- end hover layer --- */

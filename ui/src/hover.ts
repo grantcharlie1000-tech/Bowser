@@ -18,7 +18,7 @@ import {
   type HoverRowMsg,
   type SuggestMsg,
 } from './protocol';
-import { suggestGlyph } from './suggest-logic'; // --- omnibox suggest ---
+import { suggestAction, suggestEmphasis, suggestGlyph, suggestNeedle } from './suggest-logic'; // --- omnibox suggest ---
 import { applyTheme } from './view';
 
 type Act = (fields: HoverActFields) => void;
@@ -122,37 +122,50 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
 }
 
 // --- omnibox suggest ---
-const SUGGEST_BADGE: Readonly<Partial<Record<SuggestMsg['items'][number]['k'], string>>> = { tab: 'Switch to tab' };
+/** `text` as a span of `className`, with the match of `needle` (if any) wrapped in <mark>. Text only. */
+function matchedText(className: string, text: string, needle: string): HTMLElement {
+  const span = el('span', className);
+  span.dir = 'auto';
+  const hit = suggestEmphasis(text, needle);
+  if (!hit) {
+    span.textContent = text;
+    return span;
+  }
+  const mark = el('mark', 'bw-suggest-match');
+  mark.textContent = text.slice(hit[0], hit[1]);
+  span.append(document.createTextNode(text.slice(0, hit[0])), mark, document.createTextNode(text.slice(hit[1])));
+  return span;
+}
 
-/** The omnibox dropdown: one row per suggestion. Rows never take focus; the toolbar keeps the keyboard. */
+/**
+ * The omnibox dropdown: one row per suggestion. Rows never take focus; the toolbar keeps the
+ * keyboard. Markup: .bw-suggest[role=listbox] > .bw-suggest-row[role=option][aria-selected]
+ * [data-kind] > .bw-suggest-lead (favicon or glyph), .bw-suggest-text > .bw-suggest-title +
+ * .bw-suggest-url (each may hold one mark.bw-suggest-match), .bw-suggest-action.
+ */
 function renderSuggest(msg: SuggestMsg): HTMLElement {
   const list = el('div', 'bw-suggest');
   list.setAttribute('role', 'listbox');
   list.setAttribute('aria-label', 'Suggestions');
   list.style.width = `${msg.w}px`;
+  const needle = suggestNeedle(msg.q);
   msg.items.forEach((item, index) => {
     const row = el('div', 'bw-suggest-row');
     row.setAttribute('role', 'option');
     row.dataset.kind = item.k;
-    row.classList.toggle('is-selected', index === msg.sel);
     row.setAttribute('aria-selected', String(index === msg.sel));
-    const lead = item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : el('span', 'bw-suggest-fav is-glyph');
-    if (item.fav === '') lead.append(icon(suggestGlyph(item.k)));
+    const lead = el('span', 'bw-suggest-lead');
     lead.setAttribute('aria-hidden', 'true');
-    const title = el('span', 'bw-suggest-title');
-    title.dir = 'auto';
-    title.textContent = item.title !== '' ? item.title : item.text;
-    row.append(lead, title);
-    if (item.url !== '' && item.url !== item.title) {
-      const url = el('span', 'bw-suggest-url');
-      url.dir = 'auto';
-      url.textContent = item.url;
-      row.append(url);
-    }
-    const badge = SUGGEST_BADGE[item.k];
-    if (badge) {
-      const tag = el('span', 'bw-suggest-badge');
-      tag.textContent = badge;
+    lead.append(item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : icon(suggestGlyph(item.k)));
+    const title = item.title !== '' ? item.title : item.text;
+    const text = el('span', 'bw-suggest-text');
+    text.append(matchedText('bw-suggest-title', title, needle));
+    if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
+    row.append(lead, text);
+    const action = suggestAction(item.k);
+    if (action !== '') {
+      const tag = el('span', 'bw-suggest-action');
+      tag.textContent = action;
       row.append(tag);
     }
     // A press must not move the keyboard away from the omnibox.
@@ -293,14 +306,18 @@ export function startHover(root: HTMLElement): void {
   // --- omnibox suggest ---
   const renderSuggestMsg = (msg: SuggestMsg): void => {
     if (msg.tok === 0 || msg.items.length === 0) return;
+    // Only the list's first appearance moves; later edits swap rows in place, so typing never animates.
+    const opening = suggestSeq === -1;
     tok = msg.tok;
     suggestSeq = msg.seq;
     island = null;
     const content = renderSuggest(msg);
     document.body.dataset.hoverKind = 'suggest';
     root.replaceChildren(content);
+    // Measured before the entrance class: a transform would shrink the box mid-animation.
     const box = content.getBoundingClientRect();
     sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));
+    if (opening) content.classList.add('bw-enter', 'is-down');
   };
   // --- end omnibox suggest ---
 
@@ -316,10 +333,7 @@ export function startHover(root: HTMLElement): void {
       case 'suggestSel': {
         if (msg.seq !== suggestSeq) break;
         const rows = root.querySelectorAll('.bw-suggest-row');
-        rows.forEach((row, index) => {
-          row.classList.toggle('is-selected', index === msg.sel);
-          row.setAttribute('aria-selected', String(index === msg.sel));
-        });
+        rows.forEach((row, index) => { row.setAttribute('aria-selected', String(index === msg.sel)); });
         break;
       }
       // --- end omnibox suggest ---

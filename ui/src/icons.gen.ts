@@ -59,6 +59,7 @@ const SHAPES = {
   "sidebar": [["rect",{"height":"15","rx":"2","width":"18","x":"3","y":"4.5"}],["path",{"d":"M9 4.5v15"}]],
   "split": [["rect",{"height":"14","rx":"2","width":"7.25","x":"3.5","y":"5"}],["rect",{"height":"14","rx":"2","width":"7.25","x":"13.25","y":"5"}]],
   "tab-group": [["rect",{"height":"11","rx":"2","width":"18","x":"3","y":"9"}],["path",{"d":"M5 9V6.5a2 2 0 0 1 2-2h2.5a2 2 0 0 1 2 2V9M13 9V6.5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2V9"}]],
+  "tab-switch": [["rect",{"height":"15","rx":"2","width":"18","x":"3","y":"4.5"}],["path",{"d":"M3 9h18M8.5 14.25h6.5M12.75 12 15 14.25l-2.25 2.25"}]],
   "trash": [["path",{"d":"M4 6.5h16M9.5 6.5v-2h5v2M6 6.5l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5l1-12.5M10 10.5v6M14 10.5v6"}]],
   "unlock": [["rect",{"height":"11","rx":"2","width":"16","x":"4","y":"10"}],["path",{"d":"M7 10V7.5a5 5 0 0 1 7.5-4.33"}]],
   "volume": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"}]],
@@ -89,6 +90,7 @@ const ALIASES = {
   "dots": "more-vertical",
   "extensions": "puzzle",
   "find": "search",
+  "globe": "workspace-globe",
   "history": "clock",
   "more": "more-horizontal",
   "new-tab": "plus",
@@ -110,4 +112,4 @@ export type IconName = DrawnIconName | keyof typeof ALIASES;
 
 export const ICON_SHAPES: Readonly<Record<DrawnIconName, readonly IconShape[]>> = SHAPES;
 export const ICON_ALIASES: Readonly<Record<keyof typeof ALIASES, DrawnIconName>> = ALIASES;
-export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","command","cookie","copy","customize","dots","download","droplet","edit","extensions","external","eye","find","folder","forward","gear","grid","grip","heart","history","home","info","key","link","location","lock","menu","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","profile","puzzle","refresh","reload","reset","search","settings","shield","sidebar","sidebar-toggle","split","split-view","star","stop","tab-close","tab-group","trash","unlock","volume","warning","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];
+export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","command","cookie","copy","customize","dots","download","droplet","edit","extensions","external","eye","find","folder","forward","gear","globe","grid","grip","heart","history","home","info","key","link","location","lock","menu","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","profile","puzzle","refresh","reload","reset","search","settings","shield","sidebar","sidebar-toggle","split","split-view","star","stop","tab-close","tab-group","tab-switch","trash","unlock","volume","warning","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];

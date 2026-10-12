@@ -210,6 +210,8 @@ export interface SuggestMsg {
   /** Dropdown width in CSS pixels (0 in the toolbar's copy). */
   readonly w: number;
   readonly sel: number;
+  /** The typed text the rows answer ('' in the toolbar's copy); matches in rows are emphasised. */
+  readonly q: string;
   readonly items: readonly SuggestItem[];
 }
 /** The keyboard selection moved (hover layer only). */
@@ -469,9 +471,11 @@ function parseSuggestItem(v: unknown): SuggestItem | null {
 
 /** Strict validation of a `suggest` message. */
 function parseSuggestMsg(raw: Record<string, unknown>): SuggestMsg | null {
-  if (!hasOnlyKeys(raw, ['v', 't', 'tok', 'seq', 'w', 'sel', 'items']) || raw.v !== 1) return null;
-  const { tok, seq, w, sel, items } = raw;
+  if (!hasOnlyKeys(raw, ['v', 't', 'tok', 'seq', 'w', 'sel', 'q', 'items']) || raw.v !== 1) return null;
+  const { tok, seq, w, sel, q, items } = raw;
   if (!isInt(tok, 0, MAX_ID) || !isInt(seq, 0, MAX_SEQ) || !isInt(w, 0, MAX_SUGGEST_WIDTH)) return null;
+  // Rust caps the query in chars; one char can be two UTF-16 units.
+  if (!isStr(q, MAX_SUGGEST_TEXT * 2)) return null;
   if (!Array.isArray(items) || items.length > MAX_SUGGEST_ITEMS || !isInt(sel, 0, MAX_SUGGEST_ITEMS - 1)) return null;
   const out: SuggestItem[] = [];
   for (const v of items) {
@@ -480,7 +484,7 @@ function parseSuggestMsg(raw: Record<string, unknown>): SuggestMsg | null {
     out.push(item);
   }
   if (out.length > 0 && sel >= out.length) return null;
-  return { t: 'suggest', tok, seq, w, sel, items: out };
+  return { t: 'suggest', tok, seq, w, sel, q, items: out };
 }
 
 export function sendSuggestPick(seq: number, i: number): boolean {
