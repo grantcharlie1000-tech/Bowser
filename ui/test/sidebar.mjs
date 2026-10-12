@@ -45,3 +45,19 @@ test('scroll-into-view delta is zero for visible rows and minimal for clipped ro
   assert.equal(logic.scrollIntoViewDelta(20, 100, 10, 20), -10);
   assert.equal(logic.scrollIntoViewDelta(20, 100, 110, 20), 10);
 });
+
+test('workspace glyph ids map to the workspace-* icon family, unknown ids to the generic stack', () => {
+  assert.equal(logic.workspaceIconName('g:code'), 'workspace-code');
+  assert.equal(logic.workspaceIconName('g:leaf'), 'workspace-leaf');
+  assert.equal(logic.workspaceIconName('g:nope'), 'workspace');
+  assert.equal(logic.workspaceIconName('javascript:1'), 'workspace');
+});
+
+test('roving focus clamps at both ends and ignores other keys', () => {
+  assert.equal(logic.rovingTarget('ArrowUp', 0, 5), 0);
+  assert.equal(logic.rovingTarget('ArrowDown', 4, 5), 4);
+  assert.equal(logic.rovingTarget('ArrowDown', 1, 5), 2);
+  assert.equal(logic.rovingTarget('Home', 3, 5), 0);
+  assert.equal(logic.rovingTarget('End', 1, 5), 4);
+  assert.equal(logic.rovingTarget('x', 2, 5), 2);
+});

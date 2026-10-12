@@ -117,6 +117,8 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Command palette | Ctrl+Shift+K |
 | Notes & Tasks | Ctrl+Shift+N |
 | Add bookmark | Ctrl+D |
+| History panel | Ctrl+H |
+| Privacy dashboard | Ctrl+Shift+Delete |
 | Extensions | Ctrl+Shift+E |
 
 Drag a tab to the left or right half of the page to open it beside the selected tab. Drag the divider to resize panes; double-click it to restore equal widths. Split focus, pane selection, and divider ratio are included in crash recovery, which restores only the active page and the two visible split pages.

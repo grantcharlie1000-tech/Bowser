@@ -12,7 +12,7 @@ export function dismissPanel(): void {
 export function iconButton(name: IconName, label: string, onClick: (event: MouseEvent) => void, extra = ''): HTMLButtonElement {
   const button = el('button', `bw-icon-btn ${extra}`.trim());
   button.type = 'button';
-  button.title = label;
+  button.setAttribute('data-tip', label);
   button.setAttribute('aria-label', label);
   button.append(icon(name));
   button.addEventListener('click', onClick);

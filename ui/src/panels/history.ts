@@ -80,7 +80,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       const name = row.title || row.host;
       const title = el('span', 'pn-row-title');
       title.textContent = name;
-      title.title = row.title && row.host ? `${row.title}\n${row.host}` : name;
+      title.setAttribute('data-tip', row.title && row.host ? `${row.title}\n${row.host}` : name);
       const trail = el('span', 'pn-trail');
       const meta = el('span', 'pn-meta');
       const where = el('span', 'pn-meta-host');

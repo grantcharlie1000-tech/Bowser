@@ -275,6 +275,13 @@ pub(crate) fn close() {
 
 /// Opens the existing island menu immediately for a right-click on its ball.
 pub(crate) fn open_now(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
+    // --- hover layer ---
+    // In HTML mode the island menu is drawn by the HTML hover layer once it is ready.
+    if super::html_hover::open_island(main, app, tab, anchor) {
+        cancel(main);
+        return;
+    }
+    // --- end hover layer ---
     unsafe {
         let _ = KillTimer(Some(main), OPEN_TIMER);
     }

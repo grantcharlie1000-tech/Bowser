@@ -180,7 +180,7 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
     addText.textContent = addLabel;
     add.replaceChildren(icon('plus'), addText);
     add.setAttribute('aria-label', addLabel);
-    add.title = addLabel;
+    add.setAttribute('data-tip', addLabel);
     status.textContent = issue;
     status.hidden = issue === '';
     if (!data) {

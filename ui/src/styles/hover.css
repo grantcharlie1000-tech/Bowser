@@ -1,0 +1,335 @@
+/*
+ * Surface: hover (?view=hover). Owner: hover layer.
+ * The no-activate hover popup (?view=hover): .bw-tooltip, .bw-card and .bw-island-menu.
+ * Reads --bw-* tokens only. The popup is opaque and clipped to a rounded region by Rust, so nothing here paints outside the measured box.
+ */
+
+#app.bw-hover-root {
+  position: fixed;
+  inset: 0 auto auto 0;
+  display: block;
+  width: max-content;
+  height: max-content;
+  padding: 0;
+}
+
+body.bw-hover-body {
+  background: var(--bw-overlay);
+  color: var(--bw-text);
+  font: 12px/1.35 var(--bw-font);
+}
+
+/* Shared entrance: 83 ms fade, decelerating. The popup hides instantly, so there is no exit fade. */
+@keyframes bw-hover-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.bw-tooltip,
+.bw-card,
+.bw-island-menu {
+  animation: bw-hover-in var(--bw-dur-fast) var(--bw-ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-tooltip,
+  .bw-card,
+  .bw-island-menu {
+    animation: none;
+  }
+}
+
+/* ----- tooltip ----- */
+
+.bw-tooltip {
+  position: static; /* the component is fixed-position; here the popup window is the positioning */
+  width: max-content;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+  box-shadow: none; /* the popup is clipped to its box; a shadow would be cut off */
+}
+
+/* ----- shared overlay surface ----- */
+
+.bw-card,
+.bw-island-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: var(--bw-overlay);
+  color: var(--bw-text);
+}
+
+.bw-card { width: 260px; }
+.bw-island-menu { width: 280px; gap: 8px; }
+
+.bw-card button,
+.bw-island-menu button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: default;
+}
+
+.bw-card button:focus-visible,
+.bw-island-menu button:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 1px;
+}
+
+/* ----- tab hover card ----- */
+
+.bw-card-markers {
+  display: flex;
+  gap: 6px;
+}
+
+.bw-card-marker,
+.bw-card-marker-next {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.bw-card-marker {
+  background: var(--hover-marker, var(--bw-accent)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent);
+}
+
+.bw-card-marker.is-selected {
+  box-shadow: 0 0 0 2px var(--bw-overlay), 0 0 0 4px var(--bw-text);
+}
+
+.bw-card-marker-next {
+  display: grid;
+  place-items: center;
+  border-radius: var(--bw-r-control);
+  box-shadow: inset 0 0 0 1px var(--bw-hairline);
+  color: var(--bw-text-2);
+}
+
+.bw-card-marker-next:hover,
+.bw-card-row:hover,
+.bw-island-row:hover,
+.bw-island-close:hover {
+  background: var(--bw-hover) !important;
+}
+
+.bw-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bw-card-fav {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.bw-card-fav.is-empty,
+.bw-card-row-fav.is-empty,
+.bw-island-row-fav.is-empty {
+  display: grid;
+  place-items: center;
+}
+
+.bw-card-fav.is-empty::after,
+.bw-card-row-fav.is-empty::after,
+.bw-island-row-fav.is-empty::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bw-text-2);
+}
+
+.bw-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bw-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-weight: 600;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+.bw-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--bw-text-2);
+}
+
+.bw-card-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.bw-card-badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bw-hover);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* ----- member rows (card and island) ----- */
+
+.bw-card-rows,
+.bw-island-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.bw-card-row,
+.bw-island-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 6px !important;
+  border-radius: var(--bw-r-control);
+  color: var(--bw-text-2) !important;
+  text-align: start;
+}
+
+.bw-card-row { height: 28px; }
+.bw-island-row { height: 26px; }
+
+.bw-card-row.is-active,
+.bw-island-row.is-active {
+  color: var(--bw-text) !important;
+  font-weight: 600;
+}
+
+.bw-card-row-fav,
+.bw-island-row-fav {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  object-fit: contain;
+}
+
+.bw-card-row-title,
+.bw-island-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.bw-card-row.is-linked .bw-card-row-title {
+  text-decoration: underline 2px var(--bw-accent);
+  text-underline-offset: 3px;
+}
+
+.bw-card-more,
+.bw-island-more {
+  padding: 0 6px;
+  color: var(--bw-text-2);
+  line-height: 18px;
+}
+
+/* ----- island menu ----- */
+
+.bw-island-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+  box-shadow: inset 0 0 0 1px var(--bw-hairline);
+}
+
+.bw-island-field:focus-within {
+  box-shadow: inset 0 0 0 2px var(--bw-focus);
+}
+
+.bw-island-name {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  user-select: text;
+}
+
+.bw-island-name::placeholder {
+  color: var(--bw-text-2);
+}
+
+.bw-island-clear {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  flex: none;
+  border-radius: 50%;
+  color: var(--bw-text-2) !important;
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.bw-island-clear:hover { transform: scale(1.06); }
+.bw-island-clear:active { transform: scale(0.96); color: var(--bw-accent) !important; }
+.bw-island-field.is-empty .bw-island-clear { visibility: hidden; }
+
+.bw-island-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bw-island-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--hover-swatch, var(--bw-accent)) !important;
+}
+
+.bw-island-swatch.is-selected {
+  box-shadow: 0 0 0 2px var(--bw-overlay), 0 0 0 4px var(--bw-text);
+}
+
+.bw-island-close {
+  height: 30px;
+  width: 100%;
+  border-radius: var(--bw-r-control);
+  background: var(--bw-hover) !important;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-island-clear { transition: none; }
+}
+/* --- end hover layer --- */

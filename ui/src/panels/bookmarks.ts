@@ -185,7 +185,7 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     const lead = isFolder ? (() => { const holder = el('span', 'pn-lead'); holder.append(icon('folder')); return holder; })() : faviconTile(item.title || item.url || '');
     const title = el('span', 'pn-row-title');
     title.textContent = name;
-    title.title = isFolder ? name : `${name}\n${item.url ?? ''}`;
+    title.setAttribute('data-tip', isFolder ? name : `${name}\n${item.url ?? ''}`);
     const trail = el('span', 'pn-trail');
     const meta = el('span', 'pn-meta');
     meta.textContent = flat ? folderPath(item) : isFolder ? String(children(item.id).length) : hostOf(item.url ?? '');

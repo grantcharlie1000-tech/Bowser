@@ -1,0 +1,1306 @@
+//! No-activate HTML hover layer owned by one browser window: tooltips, the tab hover card and the
+//! island menu, drawn by one `View::Hover` chrome host in one owned `WS_POPUP`.
+//!
+//! The popup is `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW` and answers `WM_MOUSEACTIVATE` with
+//! `MA_NOACTIVATE`, so hovering or clicking it never takes focus from the omnibox or the page.
+//! Tooltips also set `WS_EX_TRANSPARENT` and are hidden as soon as the pointer reaches them; the
+//! card and the island menu take clicks. Only the island menu's name field ever activates the
+//! popup, and only when the page asks for the keyboard (`hact` `focus`) after a click on it.
+//!
+//! Flow: Rust posts `{t:"hover",tok,kind,...}`; the page renders, measures and replies
+//! `{t:"size",tok,w,h}`; Rust places the popup (clamped to the anchor monitor's work area, scaled by
+//! that monitor's DPI) and shows it with `SWP_NOACTIVATE`. The host is suspended a little after the
+//! layer hides. The layer is created lazily (after the HTML toolbar activates) and only in HTML mode;
+//! native mode keeps `card.rs`, `island_menu.rs` and the native tooltips.
+//!
+//! Everything runs on the UI thread. No `LAYERS` borrow is held across a Win32 or WebView2 call.
+
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+};
+
+use windows::{
+    Win32::{
+        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{
+            BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+            GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+            PAINTSTRUCT, SetWindowRgn,
+        },
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
+            WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWLP_USERDATA,
+                GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, HWND_TOP, IDC_ARROW,
+                KillTimer, LoadCursorW, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+                SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+                WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER, WNDCLASSW,
+                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+            },
+        },
+    },
+    core::{PCWSTR, w},
+};
+
+use super::{glass, hover_square};
+use crate::{
+    app::{App, AppRef},
+    chrome::{
+        island_menu::{self as island_model, SWATCH_COUNT},
+        layout::Rect,
+        tab_card::{self, MARKERS},
+    },
+    chrome_host::{
+        self,
+        host::{ChromeEnv, ChromeHost, View},
+        protocol::{
+            self, Command, HoverAction, HoverCard, HoverIsland, HoverRect, HoverRow, Security,
+            ViewState,
+        },
+    },
+    tabs::TabId,
+    theme::{self, ISLAND_COLOURS, MARKER_COLOURS},
+};
+
+const CLASS_NAME: PCWSTR = w!("BowserHtmlHover");
+/// Posted to the layer window when its host fails; the layer shuts down.
+const WM_HOVER_FAILED: u32 = WM_APP + 0x51;
+/// Posted to the layer window once per queued action, so actions run outside WebView2's callback.
+const WM_HOVER_RUN: u32 = WM_APP + 0x52;
+/// Posted when the layer was activated without asking (WebView2 focuses its window on click): the
+/// owner gets activation back.
+const WM_HOVER_RETURN: u32 = WM_APP + 0x53;
+/// Card or island delay, armed on the layer window.
+const OPEN_TIMER: usize = 1;
+/// Leave check while something is shown.
+const WATCH_TIMER: usize = 2;
+/// Suspends the host a while after the layer hides, so quick re-shows skip the resume.
+const SUSPEND_TIMER: usize = 3;
+const WATCH_MS: u32 = 100;
+const SUSPEND_AFTER_MS: u32 = 2000;
+/// Most queued actions; more are dropped.
+const ACTION_LIMIT: usize = 8;
+/// `WM_MOUSEACTIVATE` result that keeps the layer from activating on click.
+const MA_NOACTIVATE: isize = 3;
+const FALLBACK_DPI: u32 = 96;
+/// Logical gap between a tooltip and its anchor.
+const TIP_GAP: i32 = 6;
+/// Logical radius of the tooltip and of the card and island menu (design tokens: 4 and 8).
+const TIP_RADIUS: i32 = 4;
+const OVERLAY_RADIUS: i32 = 8;
+
+/// What the layer shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Tooltip,
+    Card,
+    Island,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Content {
+    /// `beside`: placed to the right of the anchor (the rail) rather than under it.
+    Tooltip { text: String, beside: bool },
+    Card { tab: TabId, rows: Vec<TabId>, model: HoverCard },
+    Island { tab: TabId, rows: Vec<TabId>, model: HoverIsland },
+}
+
+impl Content {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Tooltip { .. } => Kind::Tooltip,
+            Self::Card { .. } => Kind::Card,
+            Self::Island { .. } => Kind::Island,
+        }
+    }
+}
+
+/// A card or island waiting for its hover delay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pending {
+    kind: Kind,
+    tab: TabId,
+    anchor: RECT,
+}
+
+/// The island the name field belongs to. Kept after the menu closes, so a commit sent from the
+/// field's blur still lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IslandSession {
+    tab: TabId,
+    first_tok: u32,
+    committed: Option<String>,
+}
+
+type HostSlot = Rc<RefCell<Option<windows::core::Result<ChromeHost>>>>;
+
+struct Layer {
+    owner: HWND,
+    window: HWND,
+    /// Creation result, filled by the host's ready callback.
+    slot: HostSlot,
+    /// The host, once the page said `ready`.
+    host: Option<ChromeHost>,
+    next_tok: u32,
+    tok: u32,
+    content: Option<Content>,
+    /// The trigger, in screen pixels.
+    anchor: RECT,
+    /// Where the layer is shown, in screen pixels. Empty while hidden.
+    bounds: RECT,
+    visible: bool,
+    /// The theme last posted, so it is not re-sent for every tooltip.
+    state_sent: Option<String>,
+    target: Option<Pending>,
+    island: Option<IslandSession>,
+    actions: VecDeque<(u32, HoverAction)>,
+    /// The island's name field asked for the keyboard, so activation is allowed until the layer hides.
+    keyboard: bool,
+}
+
+thread_local! {
+    static LAYERS: RefCell<HashMap<isize, Layer>> = RefCell::new(HashMap::new());
+    static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) };
+}
+
+fn key(owner: HWND) -> isize {
+    owner.0 as isize
+}
+
+fn with_layer<T>(owner: HWND, f: impl FnOnce(&mut Layer) -> T) -> Option<T> {
+    LAYERS.with(|layers| layers.try_borrow_mut().ok()?.get_mut(&key(owner)).map(f))
+}
+
+fn owner_of_window(window: HWND) -> Option<HWND> {
+    LAYERS.with(|layers| {
+        layers.try_borrow().ok()?.values().find(|layer| layer.window == window).map(|layer| layer.owner)
+    })
+}
+
+fn app_of(owner: HWND) -> Option<AppRef> {
+    unsafe { (GetWindowLongPtrW(owner, GWLP_USERDATA) as *const AppRef).as_ref().cloned() }
+}
+
+// ----- lifetime -----
+
+/// Creates the hidden layer and its host for `owner`, once. HTML mode only.
+pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
+    if !chrome_host::html_ui_enabled()
+        || owner.is_invalid()
+        || LAYERS.with(|layers| layers.borrow().contains_key(&key(owner)))
+        || register_class().is_err()
+    {
+        return;
+    }
+    let instance = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+    let Ok(window) = (unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+            CLASS_NAME,
+            w!(""),
+            WS_POPUP,
+            0,
+            0,
+            480,
+            640,
+            Some(owner),
+            None,
+            Some(instance.into()),
+            None,
+        )
+    }) else {
+        return;
+    };
+    let slot: HostSlot = Rc::new(RefCell::new(None));
+    let ready_slot = slot.clone();
+    let raw = owner.0 as isize;
+    let on_command = Rc::new(move |command| layer_command(HWND(raw as *mut _), command));
+    let failed_window = window.0 as isize;
+    let on_failed = Rc::new(move || {
+        crate::win32::post(HWND(failed_window as *mut _), WM_HOVER_FAILED, WPARAM(0), LPARAM(0));
+    });
+    let created = ChromeHost::create(
+        &env,
+        window,
+        RECT { left: 0, top: 0, right: 480, bottom: 640 },
+        View::Hover,
+        on_command,
+        on_failed,
+        None,
+        move |result| *ready_slot.borrow_mut() = Some(result),
+    );
+    if created.is_err() {
+        unsafe {
+            let _ = DestroyWindow(window);
+        }
+        return;
+    }
+    LAYERS.with(|layers| {
+        layers.borrow_mut().insert(
+            key(owner),
+            Layer {
+                owner,
+                window,
+                slot,
+                host: None,
+                next_tok: 1,
+                tok: 0,
+                content: None,
+                anchor: RECT::default(),
+                bounds: RECT::default(),
+                visible: false,
+                state_sent: None,
+                target: None,
+                island: None,
+                actions: VecDeque::new(),
+                keyboard: false,
+            },
+        );
+    });
+}
+
+/// Closes the host and destroys the layer window.
+pub(crate) fn shutdown(owner: HWND) {
+    let Some(layer) = LAYERS.with(|layers| layers.try_borrow_mut().ok()?.remove(&key(owner))) else {
+        return;
+    };
+    if let Some(host) = layer.host.as_ref() {
+        host.close();
+    } else if let Some(Ok(host)) = layer.slot.borrow_mut().take() {
+        host.close();
+    }
+    unsafe {
+        if GetForegroundWindow() == layer.window {
+            let _ = SetForegroundWindow(layer.owner);
+        }
+        let _ = DestroyWindow(layer.window);
+    }
+}
+
+fn ready_host(owner: HWND) -> Option<ChromeHost> {
+    with_layer(owner, |layer| layer.host.clone()).flatten()
+}
+
+fn layer_command(owner: HWND, command: Command) {
+    match command {
+        Command::Ready => {
+            let adopted = with_layer(owner, |layer| {
+                let host = match layer.slot.borrow_mut().take() {
+                    Some(Ok(host)) => host,
+                    _ => return None,
+                };
+                layer.host = Some(host.clone());
+                Some(host)
+            })
+            .flatten();
+            if let Some(host) = adopted {
+                let _ = host.set_visible(false);
+                let _ = host.try_suspend();
+            }
+        }
+        Command::PopupSize { tok, w, h } => place(owner, tok, w, h),
+        Command::HoverAct { tok, action } => queue_action(owner, tok, action),
+        _ => {}
+    }
+}
+
+// ----- entry points from window.rs, card.rs and island_menu.rs -----
+
+/// Converts a rectangle in CSS pixels of a view whose controller covers `view` (screen pixels) at
+/// `scale` device pixels per CSS pixel. Pure.
+pub(crate) fn anchor_to_screen(view: RECT, scale: f32, rect: HoverRect) -> RECT {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let px = |v: u32| (v as f32 * scale).round() as i32;
+    let left = view.left + px(rect.x);
+    let top = view.top + px(rect.y);
+    RECT { left, top, right: left + px(rect.w).max(1), bottom: top + px(rect.h).max(1) }
+}
+
+/// A view asked for a tooltip over `anchor` (screen pixels), under it or, with `beside`, to its right.
+/// Ignored while a card or island is up.
+pub(crate) fn tip(owner: HWND, anchor: RECT, text: &str, beside: bool) {
+    let busy = with_layer(owner, |layer| {
+        matches!(layer.content, Some(Content::Card { .. } | Content::Island { .. }))
+    });
+    if busy != Some(false) || text.trim().is_empty() {
+        return;
+    }
+    present(owner, Content::Tooltip { text: text.to_owned(), beside }, anchor);
+}
+
+/// The view hid its tooltip.
+pub(crate) fn tip_off(owner: HWND) {
+    let showing = with_layer(owner, |layer| matches!(layer.content, Some(Content::Tooltip { .. })));
+    if showing == Some(true) {
+        hide(owner);
+    }
+}
+
+/// The strip pointer is over a tab (`Kind::Card`) or an island ball (`Kind::Island`), with its
+/// trigger rectangle in screen pixels, or over neither (`None`). Arms the hover delay for a new
+/// target; an open card for another tab closes, an open island stays until the pointer leaves it.
+pub(crate) fn hover(owner: HWND, target: Option<(Kind, TabId, RECT)>) {
+    let Some(window) = with_layer(owner, |layer| layer.window) else {
+        return;
+    };
+    let target = target.map(|(kind, tab, anchor)| Pending { kind, tab, anchor });
+    let (changed, close_card) = with_layer(owner, |layer| {
+        let same = |a: Option<Pending>, b: Option<Pending>| {
+            a.map(|p| (p.kind, p.tab)) == b.map(|p| (p.kind, p.tab))
+        };
+        if same(layer.target, target) {
+            if let (Some(current), Some(new)) = (layer.target.as_mut(), target) {
+                current.anchor = new.anchor;
+            }
+            return (false, false);
+        }
+        layer.target = target;
+        let shown = match &layer.content {
+            Some(Content::Card { tab, .. }) => Some((Kind::Card, *tab)),
+            Some(Content::Island { tab, .. }) => Some((Kind::Island, *tab)),
+            _ => None,
+        };
+        let close_card = matches!(shown, Some((Kind::Card, _)))
+            && target.is_some_and(|t| Some((t.kind, t.tab)) != shown);
+        (true, close_card)
+    })
+    .unwrap_or((false, false));
+    if !changed {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(Some(window), OPEN_TIMER);
+    }
+    if close_card {
+        hide(owner);
+    }
+    let Some(target) = target else {
+        return;
+    };
+    // Back on the trigger of what is already shown: keep it.
+    let shown = with_layer(owner, |layer| match &layer.content {
+        Some(Content::Card { tab, .. }) => target.kind == Kind::Card && *tab == target.tab,
+        Some(Content::Island { tab, .. }) => target.kind == Kind::Island && *tab == target.tab,
+        _ => false,
+    });
+    if shown == Some(true) {
+        return;
+    }
+    if target.kind == Kind::Card
+        && app_of(owner).is_some_and(|app| App::active_tab_id(&app) == target.tab)
+    {
+        return;
+    }
+    let delay = match target.kind {
+        Kind::Island => super::island_menu::HOVER_DELAY_MS,
+        _ => super::card::HOVER_DELAY_MS,
+    };
+    unsafe {
+        let _ = SetTimer(Some(window), OPEN_TIMER, delay, None);
+    }
+}
+
+/// Opens the island menu for `tab` at once (a right click on its ball). `anchor` is in the owner's
+/// client coordinates. Returns false when the layer is not ready, so the caller shows the native menu.
+pub(crate) fn open_island(owner: HWND, app: &AppRef, tab: TabId, anchor: Rect) -> bool {
+    if !chrome_host::html_ui_enabled() || ready_host(owner).is_none() {
+        return false;
+    }
+    let mut origin = POINT::default();
+    unsafe {
+        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(owner, &mut origin);
+    }
+    let screen = RECT {
+        left: origin.x + anchor.left,
+        top: origin.y + anchor.top,
+        right: origin.x + anchor.right,
+        bottom: origin.y + anchor.bottom,
+    };
+    show_island(owner, app, tab, screen)
+}
+
+/// Hides everything and forgets the hover target, unless the island's name field has the keyboard.
+/// Called from `card::cancel` (clicks, drags, moves, resizes, closing).
+pub(crate) fn cancel(owner: HWND) {
+    let Some(window) = with_layer(owner, |layer| {
+        layer.target = None;
+        layer.window
+    }) else {
+        return;
+    };
+    unsafe {
+        let _ = KillTimer(Some(window), OPEN_TIMER);
+        if GetForegroundWindow() == window {
+            return;
+        }
+    }
+    hide(owner);
+}
+
+/// Closes the card and its pending delay. Tab-list changes and tab switches use this.
+pub(crate) fn cancel_card(owner: HWND) {
+    let (window, card) = match with_layer(owner, |layer| {
+        let pending_card = layer.target.is_some_and(|t| t.kind == Kind::Card);
+        if pending_card {
+            layer.target = None;
+        }
+        (layer.window, pending_card, matches!(layer.content, Some(Content::Card { .. })))
+    }) {
+        Some((window, pending, card)) => {
+            if pending {
+                unsafe {
+                    let _ = KillTimer(Some(window), OPEN_TIMER);
+                }
+            }
+            (window, card)
+        }
+        None => return,
+    };
+    let _ = window;
+    if card {
+        hide(owner);
+    }
+}
+
+/// Keeps the card and island in step with the tab list: refreshes them, or closes them when their
+/// tab is gone (or, for the card, became active).
+pub(crate) fn sync(owner: HWND, app: &AppRef) {
+    let Some((content, anchor)) =
+        with_layer(owner, |layer| (layer.content.clone(), layer.anchor))
+    else {
+        return;
+    };
+    match content {
+        Some(Content::Card { tab, model, .. }) => match card_content(app, tab) {
+            Some(fresh) if App::active_tab_id(app) != tab => {
+                if !matches!(&fresh, Content::Card { model: m, .. } if *m == model) {
+                    present(owner, fresh, anchor);
+                }
+            }
+            _ => hide(owner),
+        },
+        Some(Content::Island { tab, model, .. }) => match island_content(app, tab) {
+            Some(fresh) => {
+                if !matches!(&fresh, Content::Island { model: m, .. } if *m == model) {
+                    present(owner, fresh, anchor);
+                }
+            }
+            None => hide(owner),
+        },
+        _ => {}
+    }
+}
+
+// ----- content -----
+
+fn png_of(app: &AppRef, tab: TabId) -> Option<Vec<u8>> {
+    App::tab_favicon(app, tab).filter(|png| chrome_host::favicon_sendable(png))
+}
+
+fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
+    let (model, rows) = App::tab_card_model(app, tab)?;
+    let card = HoverCard {
+        title: model.title.clone(),
+        host: model.domain.clone().unwrap_or_default(),
+        marker: model.marker.map(|marker| marker.id()),
+        markers: MARKER_COLOURS.iter().map(|c| chrome_host::css_colour(*c)).collect(),
+        sleeping: App::tab_sleeping(app, tab),
+        png: png_of(app, tab),
+        rows: model
+            .rows
+            .iter()
+            .zip(&rows)
+            .take(tab_card::MAX_ROWS)
+            .map(|(row, id)| HoverRow {
+                title: row.title.clone(),
+                active: row.active,
+                linked: row.linked,
+                png: png_of(app, *id),
+            })
+            .collect(),
+        more: model.rows.len().saturating_sub(tab_card::MAX_ROWS),
+    };
+    let rows = rows.into_iter().take(tab_card::MAX_ROWS).collect();
+    Some(Content::Card { tab, rows, model: card })
+}
+
+fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
+    let (model, rows) = App::island_menu(app, tab)?;
+    let accent = theme::palette(glass::appearance(), true).tab_group_accent;
+    let island = HoverIsland {
+        name: model.name.clone().unwrap_or_default(),
+        hint: model.suggested_name.clone().unwrap_or_else(|| island_model::PLACEHOLDER.to_owned()),
+        slot: island_model::swatch_slot(model.colour),
+        swatches: std::iter::once(accent)
+            .chain(ISLAND_COLOURS)
+            .map(chrome_host::css_colour)
+            .collect(),
+        rows: model
+            .rows
+            .iter()
+            .zip(&rows)
+            .take(island_model::MAX_ROWS)
+            .map(|(row, id)| HoverRow {
+                title: row.title.clone(),
+                active: row.active,
+                linked: false,
+                png: png_of(app, *id),
+            })
+            .collect(),
+        more: model.rows.len().saturating_sub(island_model::MAX_ROWS),
+        close: model.close_label(),
+    };
+    let rows = rows.into_iter().take(island_model::MAX_ROWS).collect();
+    Some(Content::Island { tab, rows, model: island })
+}
+
+fn show_island(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) -> bool {
+    let Some(content) = island_content(app, tab) else {
+        return false;
+    };
+    // The native island menu and card never stay up beside the HTML one.
+    super::card::close();
+    present(owner, content, anchor)
+}
+
+fn show_card(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) {
+    if App::active_tab_id(app) == tab {
+        return;
+    }
+    if let Some(content) = card_content(app, tab) {
+        present(owner, content, anchor);
+    }
+}
+
+fn theme_json() -> String {
+    let palette = theme::palette(glass::appearance(), true);
+    ViewState {
+        scale: 1.0,
+        pillx: 0,
+        pillw: 0,
+        menux: 0,
+        solid: true,
+        dark: glass::appearance() == theme::Appearance::Dark,
+        back: false,
+        forward: false,
+        loading: false,
+        progress: 0,
+        security: Security::None,
+        label: String::new(),
+        theme: chrome_host::theme_tokens(palette),
+    }
+    .to_json()
+}
+
+/// Posts `content` with a fresh token. The layer is placed and shown when the page replies `size`.
+fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
+    let Some(host) = ready_host(owner) else {
+        return false;
+    };
+    let state = theme_json();
+    let Some((window, tok, json, post_state)) = with_layer(owner, |layer| {
+        let tok = layer.next_tok;
+        layer.next_tok = layer.next_tok.wrapping_add(1).max(1);
+        layer.tok = tok;
+        layer.anchor = anchor;
+        let json = match &content {
+            Content::Tooltip { text, .. } => protocol::tooltip_json(tok, text),
+            Content::Card { model, .. } => protocol::card_json(tok, model),
+            Content::Island { tab, model, .. } => {
+                let same_island = layer.island.as_ref().is_some_and(|s| s.tab == *tab);
+                if !same_island || !matches!(layer.content, Some(Content::Island { .. })) {
+                    layer.island = Some(IslandSession {
+                        tab: *tab,
+                        first_tok: tok,
+                        committed: (!model.name.is_empty()).then(|| model.name.clone()),
+                    });
+                } else if let Some(session) = layer.island.as_mut() {
+                    session.committed = (!model.name.is_empty()).then(|| model.name.clone());
+                }
+                protocol::island_json(tok, model)
+            }
+        };
+        layer.content = Some(content);
+        let post_state = layer.state_sent.as_deref() != Some(state.as_str());
+        if post_state {
+            layer.state_sent = Some(state.clone());
+        }
+        (layer.window, tok, json, post_state)
+    }) else {
+        return false;
+    };
+    let _ = tok;
+    unsafe {
+        let _ = KillTimer(Some(window), SUSPEND_TIMER);
+    }
+    if host.resume().is_err() {
+        hide(owner);
+        return false;
+    }
+    let _ = host.set_visible(true);
+    if post_state {
+        let _ = host.post_json(&state);
+    }
+    if host.post_json(&json).is_err() {
+        hide(owner);
+        return false;
+    }
+    true
+}
+
+/// The page measured content `tok` at `w`x`h` CSS pixels: place and show the layer.
+fn place(owner: HWND, tok: u32, w: u16, h: u16) {
+    let Some((window, host, kind, anchor, beside)) = with_layer(owner, |layer| {
+        if layer.tok != tok {
+            return None;
+        }
+        let content = layer.content.as_ref()?;
+        let beside = matches!(content, Content::Tooltip { beside: true, .. });
+        Some((layer.window, layer.host.clone()?, content.kind(), layer.anchor, beside))
+    })
+    .flatten() else {
+        return;
+    };
+    let (dpi, work) = monitor_data(POINT {
+        x: (anchor.left + anchor.right) / 2,
+        y: (anchor.top + anchor.bottom) / 2,
+    });
+    let width = scale_px(i32::from(w), dpi);
+    let height = scale_px(i32::from(h), dpi);
+    let bounds = match kind {
+        Kind::Tooltip if beside => tooltip_beside_bounds(anchor, width, height, scale_px(TIP_GAP, dpi), work),
+        Kind::Tooltip => tooltip_bounds(anchor, width, height, scale_px(TIP_GAP, dpi), work),
+        Kind::Card | Kind::Island => overlay_bounds(
+            anchor,
+            width,
+            height,
+            scale_px(tab_card::ANCHOR_GAP, dpi),
+            scale_px(tab_card::EDGE_MARGIN, dpi),
+            work,
+        ),
+    };
+    let radius = scale_px(if kind == Kind::Tooltip { TIP_RADIUS } else { OVERLAY_RADIUS }, dpi);
+    let (bw, bh) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+    unsafe {
+        // Tooltips are click-through; the card and island menu take clicks. Neither ever activates.
+        let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        let wanted = if kind == Kind::Tooltip {
+            style | WS_EX_TRANSPARENT.0 as isize
+        } else {
+            style & !(WS_EX_TRANSPARENT.0 as isize)
+        };
+        if wanted != style {
+            let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
+        }
+        let region = CreateRoundRectRgn(0, 0, bw + 1, bh + 1, radius * 2, radius * 2);
+        if !region.is_invalid() && SetWindowRgn(window, Some(region), false) == 0 {
+            let _ = DeleteObject(HGDIOBJ(region.0));
+        }
+        let _ = host.set_bounds(RECT { left: 0, top: 0, right: bw, bottom: bh });
+        let _ = SetWindowPos(
+            window,
+            Some(HWND_TOP),
+            bounds.left,
+            bounds.top,
+            bw,
+            bh,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+        let _ = SetTimer(Some(window), WATCH_TIMER, WATCH_MS, None);
+    }
+    let _ = with_layer(owner, |layer| {
+        layer.bounds = bounds;
+        layer.visible = true;
+    });
+}
+
+/// Hides the layer, gives the keyboard back if it had it, and schedules suspension.
+fn hide(owner: HWND) {
+    let Some((window, host, was_shown)) = with_layer(owner, |layer| {
+        let was_shown = layer.content.take().is_some() || layer.visible;
+        layer.visible = false;
+        layer.bounds = RECT::default();
+        layer.tok = 0;
+        layer.keyboard = false;
+        (layer.window, layer.host.clone(), was_shown)
+    }) else {
+        return;
+    };
+    if !was_shown {
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(Some(window), WATCH_TIMER);
+        let focused = GetForegroundWindow() == window;
+        let _ = ShowWindow(window, SW_HIDE);
+        if focused {
+            let _ = SetForegroundWindow(owner);
+        }
+        let _ = SetTimer(Some(window), SUSPEND_TIMER, SUSPEND_AFTER_MS, None);
+    }
+    if let Some(host) = host {
+        let _ = host.post_json(&protocol::hover_hide_json());
+        let _ = host.set_visible(false);
+    }
+}
+
+// ----- timers -----
+
+fn open_timer(owner: HWND) {
+    let Some(target) = with_layer(owner, |layer| layer.target).flatten() else {
+        return;
+    };
+    let Some(app) = app_of(owner) else {
+        return;
+    };
+    // The pointer must still be on the trigger.
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err()
+        || !hover_square::contains(grow(target.anchor, 2), cursor)
+    {
+        return;
+    }
+    // As natively, an open island menu keeps the card away.
+    let island_open = with_layer(owner, |layer| matches!(layer.content, Some(Content::Island { .. })));
+    match target.kind {
+        Kind::Card if island_open == Some(true) => {}
+        Kind::Card => show_card(owner, &app, target.tab, target.anchor),
+        Kind::Island => {
+            let _ = show_island(owner, &app, target.tab, target.anchor);
+        }
+        Kind::Tooltip => {}
+    }
+}
+
+fn watch_timer(owner: HWND) {
+    let Some((window, kind, anchor, bounds, visible)) = with_layer(owner, |layer| {
+        Some((layer.window, layer.content.as_ref()?.kind(), layer.anchor, layer.bounds, layer.visible))
+    })
+    .flatten() else {
+        if let Some(window) = with_layer(owner, |layer| layer.window) {
+            unsafe {
+                let _ = KillTimer(Some(window), WATCH_TIMER);
+            }
+        }
+        return;
+    };
+    if !visible {
+        return;
+    }
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return;
+    }
+    let foreground = unsafe { GetForegroundWindow() };
+    let focused = foreground == window;
+    let away = foreground != owner && !focused;
+    let dpi = unsafe { GetDpiForWindow(owner) }.max(FALLBACK_DPI);
+    if leave_decision(kind, anchor, bounds, cursor, focused, away, scale_px(hover_square::TOLERANCE, dpi))
+        == hover_square::Leave::Close
+    {
+        hide(owner);
+    }
+}
+
+/// Whether the layer closes on this leave check. Pure.
+fn leave_decision(
+    kind: Kind,
+    anchor: RECT,
+    bounds: RECT,
+    cursor: POINT,
+    focused: bool,
+    away: bool,
+    tolerance: i32,
+) -> hover_square::Leave {
+    if away {
+        return hover_square::Leave::Close;
+    }
+    match kind {
+        // A tooltip follows its trigger, and gets out of the way when the pointer reaches it.
+        Kind::Tooltip => {
+            if hover_square::contains(grow(anchor, tolerance), cursor)
+                && !hover_square::contains(bounds, cursor)
+            {
+                hover_square::Leave::Keep
+            } else {
+                hover_square::Leave::Close
+            }
+        }
+        Kind::Card | Kind::Island => hover_square::on_leave(
+            hover_square::contains(bounds, cursor),
+            hover_square::contains(hover_square::square(anchor, bounds, tolerance), cursor),
+            focused,
+        ),
+    }
+}
+
+// ----- actions -----
+
+fn queue_action(owner: HWND, tok: u32, action: HoverAction) {
+    let window = with_layer(owner, |layer| {
+        if layer.actions.len() >= ACTION_LIMIT {
+            return None;
+        }
+        layer.actions.push_back((tok, action));
+        Some(layer.window)
+    })
+    .flatten();
+    if let Some(window) = window {
+        crate::win32::post(window, WM_HOVER_RUN, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Whether `tok` names the content now shown.
+fn current(layer: &Layer, tok: u32) -> bool {
+    tok != 0 && layer.tok == tok && layer.content.is_some()
+}
+
+/// Whether `tok` was issued for the island menu now shown. A name commit refreshes the menu under a
+/// new token, so the `dismiss` an Enter sends right after it still carries the previous one.
+fn same_island_session(layer: &Layer, tok: u32) -> bool {
+    match (&layer.content, &layer.island) {
+        (Some(Content::Island { tab, .. }), Some(session)) => {
+            session.tab == *tab && tok != 0 && tok >= session.first_tok && tok <= layer.tok
+        }
+        _ => false,
+    }
+}
+
+fn run_action(owner: HWND) {
+    let Some(Some((tok, action))) = with_layer(owner, |layer| layer.actions.pop_front()) else {
+        return;
+    };
+    let Some(app) = app_of(owner) else {
+        return;
+    };
+    // Name commits may arrive from the field's blur after the menu closed: they are checked against
+    // the island session, not the shown content.
+    if let HoverAction::Name(text) = &action {
+        let session = with_layer(owner, |layer| {
+            layer.island.clone().filter(|s| tok >= s.first_tok && tok != 0 && tok <= layer.next_tok)
+        })
+        .flatten();
+        if let Some(session) = session
+            && App::tab_ids(&app).contains(&session.tab)
+            && crate::tab_groups::clean_name(text) != session.committed
+        {
+            let _ = App::set_tab_group_name(&app, session.tab, text);
+            let _ = with_layer(owner, |layer| {
+                if let Some(s) = layer.island.as_mut() {
+                    s.committed = crate::tab_groups::clean_name(text);
+                }
+            });
+        }
+        return;
+    }
+    let Some((content, window)) = with_layer(owner, |layer| {
+        (current(layer, tok) || same_island_session(layer, tok))
+            .then(|| (layer.content.clone(), layer.window))
+    })
+    .flatten()
+    else {
+        return;
+    };
+    let anchor = with_layer(owner, |layer| layer.anchor).unwrap_or_default();
+    match (content, action) {
+        (Some(Content::Card { tab, .. }), HoverAction::Marker(index)) => {
+            if let Some(&marker) = MARKERS.get(usize::from(index)) {
+                let current = App::tab_marker(&app, tab);
+                App::set_tab_marker(&app, tab, tab_card::toggle_marker(current, marker));
+                refresh(owner, &app, Kind::Card, tab, anchor);
+            }
+        }
+        (Some(Content::Card { tab, .. }), HoverAction::NextMarker) => {
+            let current = App::tab_marker(&app, tab);
+            App::set_tab_marker(&app, tab, tab_card::next_marker(current));
+            refresh(owner, &app, Kind::Card, tab, anchor);
+        }
+        (
+            Some(Content::Card { rows, .. } | Content::Island { rows, .. }),
+            HoverAction::Row(index),
+        ) => {
+            if let Some(&row) = rows.get(usize::from(index))
+                && App::tab_ids(&app).contains(&row)
+            {
+                hide(owner);
+                let _ = App::select_tab(&app, row);
+            }
+        }
+        (Some(Content::Island { tab, .. }), HoverAction::Swatch(slot)) => {
+            if usize::from(slot) < SWATCH_COUNT {
+                let _ = App::set_tab_group_colour(&app, tab, island_model::swatch_colour(slot.into()));
+                refresh(owner, &app, Kind::Island, tab, anchor);
+            }
+        }
+        (Some(Content::Island { tab, .. }), HoverAction::CloseIsland) => {
+            hide(owner);
+            let _ = App::close_tab_island(&app, tab);
+        }
+        (Some(Content::Island { .. }), HoverAction::Focus) => {
+            let _ = with_layer(owner, |layer| layer.keyboard = true);
+            if let Some(host) = ready_host(owner) {
+                unsafe {
+                    let _ = SetForegroundWindow(window);
+                }
+                let _ = host.focus();
+            }
+        }
+        (Some(Content::Island { .. }), HoverAction::Dismiss) => hide(owner),
+        _ => {}
+    }
+}
+
+fn refresh(owner: HWND, app: &AppRef, kind: Kind, tab: TabId, anchor: RECT) {
+    let content = match kind {
+        Kind::Card => card_content(app, tab),
+        Kind::Island => island_content(app, tab),
+        Kind::Tooltip => None,
+    };
+    match content {
+        Some(content) => {
+            let _ = present(owner, content, anchor);
+        }
+        None => hide(owner),
+    }
+}
+
+// ----- geometry -----
+
+fn scale_px(logical: i32, dpi: u32) -> i32 {
+    (logical * dpi.max(1) as i32 + 48) / 96
+}
+
+fn grow(rect: RECT, by: i32) -> RECT {
+    RECT { left: rect.left - by, top: rect.top - by, right: rect.right + by, bottom: rect.bottom + by }
+}
+
+/// Keeps a span of `size` starting at `start` inside `min..max`, preferring the low edge when the
+/// span is larger than the range.
+fn clamp_span(start: i32, size: i32, min: i32, max: i32) -> i32 {
+    start.min(max - size).max(min)
+}
+
+/// A tooltip of `width`x`height` device pixels, centred under `anchor` with `gap`; above it when
+/// there is no room below. Clamped to `work`. Pure.
+fn tooltip_bounds(anchor: RECT, width: i32, height: i32, gap: i32, work: RECT) -> RECT {
+    let centre = (anchor.left + anchor.right) / 2;
+    let left = clamp_span(centre - width / 2, width, work.left, work.right);
+    let below = anchor.bottom + gap;
+    let top = if below + height <= work.bottom || anchor.top - gap - height < work.top {
+        below
+    } else {
+        anchor.top - gap - height
+    };
+    let top = clamp_span(top, height, work.top, work.bottom);
+    RECT { left, top, right: left + width, bottom: top + height }
+}
+
+/// A tooltip vertically centred to the right of `anchor` with `gap`; to its left when there is no
+/// room on the right. Clamped to `work`. Pure.
+fn tooltip_beside_bounds(anchor: RECT, width: i32, height: i32, gap: i32, work: RECT) -> RECT {
+    let right = anchor.right + gap;
+    let left = if right + width <= work.right || anchor.left - gap - width < work.left {
+        right
+    } else {
+        anchor.left - gap - width
+    };
+    let left = clamp_span(left, width, work.left, work.right);
+    let top = clamp_span((anchor.top + anchor.bottom) / 2 - height / 2, height, work.top, work.bottom);
+    RECT { left, top, right: left + width, bottom: top + height }
+}
+
+/// A card or island menu of `width`x`height`, left-aligned under `anchor` with `gap`, kept `margin`
+/// inside `work`; above the anchor when there is no room below. Pure.
+fn overlay_bounds(anchor: RECT, width: i32, height: i32, gap: i32, margin: i32, work: RECT) -> RECT {
+    let left = clamp_span(anchor.left, width, work.left + margin, work.right - margin);
+    let below = anchor.bottom + gap;
+    let top = if below + height <= work.bottom - margin || anchor.top - gap - height < work.top + margin {
+        below
+    } else {
+        anchor.top - gap - height
+    };
+    let top = clamp_span(top, height, work.top, work.bottom);
+    RECT { left, top, right: left + width, bottom: top + height }
+}
+
+fn monitor_data(point: POINT) -> (u32, RECT) {
+    unsafe {
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let work = if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            info.rcWork
+        } else {
+            RECT { left: 0, top: 0, right: 1920, bottom: 1080 }
+        };
+        let (mut x, mut y) = (FALLBACK_DPI, FALLBACK_DPI);
+        let dpi = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y)
+            .ok()
+            .map_or(FALLBACK_DPI, |_| x);
+        (dpi, work)
+    }
+}
+
+// ----- window -----
+
+fn register_class() -> windows::core::Result<()> {
+    CLASS_REGISTERED.with(|registered| {
+        if *registered.borrow() {
+            return Ok(());
+        }
+        let instance = unsafe { GetModuleHandleW(None)? };
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(window_proc),
+            hInstance: instance.into(),
+            hCursor: unsafe { LoadCursorW(None, IDC_ARROW).unwrap_or_default() },
+            lpszClassName: CLASS_NAME,
+            ..Default::default()
+        };
+        if unsafe { RegisterClassW(&class) } == 0 {
+            return Err(windows::core::Error::from_thread());
+        }
+        *registered.borrow_mut() = true;
+        Ok(())
+    })
+}
+
+/// Fills the client with the opaque window colour, so nothing shows before the page paints.
+unsafe fn paint_background(hwnd: HWND) {
+    unsafe {
+        let mut ps = PAINTSTRUCT::default();
+        let dc = BeginPaint(hwnd, &mut ps);
+        let colour = theme::palette(glass::appearance(), true).window;
+        let brush = CreateSolidBrush(COLORREF(
+            u32::from(colour.r) | (u32::from(colour.g) << 8) | (u32::from(colour.b) << 16),
+        ));
+        FillRect(dc, &ps.rcPaint, brush);
+        let _ = DeleteObject(brush.into());
+        let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE),
+        WM_ACTIVATE => {
+            // WebView2 focuses its window when clicked, which activates the layer despite
+            // WS_EX_NOACTIVATE. Unless the name field asked for the keyboard, hand it back.
+            if (wparam.0 & 0xFFFF) as u32 != WA_INACTIVE
+                && let Some(owner) = owner_of_window(hwnd)
+                && with_layer(owner, |layer| !layer.keyboard) == Some(true)
+            {
+                crate::win32::post(hwnd, WM_HOVER_RETURN, WPARAM(0), LPARAM(0));
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        WM_HOVER_RETURN => {
+            if let Some(owner) = owner_of_window(hwnd)
+                && with_layer(owner, |layer| !layer.keyboard) == Some(true)
+                && unsafe { GetForegroundWindow() } == hwnd
+            {
+                unsafe {
+                    let _ = SetForegroundWindow(owner);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            unsafe { paint_background(hwnd) };
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            let Some(owner) = owner_of_window(hwnd) else {
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), wparam.0);
+                }
+                return LRESULT(0);
+            };
+            match wparam.0 {
+                OPEN_TIMER => {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), OPEN_TIMER);
+                    }
+                    open_timer(owner);
+                }
+                WATCH_TIMER => watch_timer(owner),
+                SUSPEND_TIMER => {
+                    unsafe {
+                        let _ = KillTimer(Some(hwnd), SUSPEND_TIMER);
+                    }
+                    let idle = with_layer(owner, |layer| !layer.visible && layer.content.is_none());
+                    if idle == Some(true)
+                        && let Some(host) = ready_host(owner)
+                    {
+                        let _ = host.try_suspend();
+                    }
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_HOVER_RUN => {
+            if let Some(owner) = owner_of_window(hwnd) {
+                run_action(owner);
+            }
+            LRESULT(0)
+        }
+        WM_HOVER_FAILED => {
+            if let Some(owner) = owner_of_window(hwnd) {
+                shutdown(owner);
+            }
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT { left, top, right, bottom }
+    }
+
+    fn tuple(r: RECT) -> (i32, i32, i32, i32) {
+        (r.left, r.top, r.right, r.bottom)
+    }
+
+    const WORK: RECT = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+
+    #[test]
+    fn view_rectangles_scale_and_offset_into_screen_pixels() {
+        let view = rect(100, 40, 900, 74);
+        let r = HoverRect { x: 10, y: 2, w: 28, h: 28 };
+        assert_eq!(tuple(anchor_to_screen(view, 1.0, r)), (110, 42, 138, 70));
+        assert_eq!(tuple(anchor_to_screen(view, 1.5, r)), (115, 43, 157, 85));
+        // A degenerate scale falls back to 1, and an empty rect still has a pixel.
+        assert_eq!(tuple(anchor_to_screen(view, f32::NAN, HoverRect::default())), (100, 40, 101, 41));
+    }
+
+    #[test]
+    fn tooltip_centres_below_and_flips_above_at_the_bottom_edge() {
+        let below = tooltip_bounds(rect(400, 100, 440, 130), 80, 24, 6, WORK);
+        assert_eq!(tuple(below), (380, 136, 460, 160));
+        let above = tooltip_bounds(rect(400, 670, 440, 700), 80, 24, 6, WORK);
+        assert_eq!(tuple(above), (380, 640, 460, 664));
+    }
+
+    #[test]
+    fn tooltip_stays_inside_the_work_area_at_both_side_edges() {
+        let left = tooltip_bounds(rect(0, 100, 20, 120), 200, 24, 6, WORK);
+        assert_eq!(left.left, 0);
+        let right = tooltip_bounds(rect(980, 100, 1000, 120), 200, 24, 6, WORK);
+        assert_eq!(right.right, 1000);
+        // Wider than the work area: pinned to its left edge.
+        assert_eq!(tooltip_bounds(rect(500, 100, 520, 120), 1200, 24, 6, WORK).left, 0);
+    }
+
+    #[test]
+    fn beside_tooltips_sit_right_of_the_rail_and_flip_at_the_edge() {
+        let rail = tooltip_beside_bounds(rect(4, 40, 36, 72), 80, 24, 6, WORK);
+        assert_eq!(tuple(rail), (42, 44, 122, 68));
+        let edge = tooltip_beside_bounds(rect(960, 40, 992, 72), 80, 24, 6, WORK);
+        assert_eq!(edge.right, 954);
+        let top = tooltip_beside_bounds(rect(4, 0, 36, 4), 80, 24, 6, WORK);
+        assert_eq!(top.top, 0);
+    }
+
+    #[test]
+    fn overlay_left_aligns_below_and_keeps_its_margin() {
+        let card = overlay_bounds(rect(100, 40, 300, 74), 260, 180, 4, 8, WORK);
+        assert_eq!(tuple(card), (100, 78, 360, 258));
+        let edge = overlay_bounds(rect(900, 40, 1000, 74), 260, 180, 4, 8, WORK);
+        assert_eq!(edge.right, 992);
+        let low = overlay_bounds(rect(100, 600, 300, 634), 260, 180, 4, 8, WORK);
+        assert_eq!(low.bottom, 596, "flips above the trigger when there is no room below");
+        // On a monitor whose work area starts away from zero.
+        let offset = RECT { left: -1920, top: 0, right: 0, bottom: 1040 };
+        let card = overlay_bounds(rect(-50, 40, -10, 74), 260, 180, 4, 8, offset);
+        assert_eq!(card.right, -8);
+    }
+
+    #[test]
+    fn scale_px_rounds_logical_pixels_per_dpi() {
+        assert_eq!(scale_px(6, 96), 6);
+        assert_eq!(scale_px(6, 144), 9);
+        assert_eq!(scale_px(4, 120), 5);
+        assert_eq!(scale_px(260, 192), 520);
+    }
+
+    #[test]
+    fn tooltip_closes_off_its_trigger_and_on_itself() {
+        let anchor = rect(100, 100, 130, 130);
+        let bounds = rect(80, 136, 150, 160);
+        let at = |x, y| POINT { x, y };
+        let decide = |p| leave_decision(Kind::Tooltip, anchor, bounds, p, false, false, 4);
+        assert_eq!(decide(at(110, 110)), hover_square::Leave::Keep);
+        assert_eq!(decide(at(132, 110)), hover_square::Leave::Keep, "inside the tolerance");
+        assert_eq!(decide(at(200, 110)), hover_square::Leave::Close);
+        assert_eq!(decide(at(110, 140)), hover_square::Leave::Close, "pointer reached the tooltip");
+        assert_eq!(
+            leave_decision(Kind::Tooltip, anchor, bounds, at(110, 110), false, true, 4),
+            hover_square::Leave::Close,
+            "another application came to the front"
+        );
+    }
+
+    #[test]
+    fn card_and_island_follow_the_hover_square() {
+        let anchor = rect(100, 40, 300, 74);
+        let bounds = rect(100, 78, 360, 258);
+        let at = |x, y| POINT { x, y };
+        for kind in [Kind::Card, Kind::Island] {
+            let decide = |p, focused| leave_decision(kind, anchor, bounds, p, focused, false, 4);
+            assert_eq!(decide(at(150, 100), false), hover_square::Leave::Keep);
+            assert_eq!(decide(at(150, 76), false), hover_square::Leave::Watch, "in the gap");
+            assert_eq!(decide(at(600, 400), false), hover_square::Leave::Close);
+            assert_eq!(decide(at(600, 400), true), hover_square::Leave::Keep, "the name field has the keyboard");
+        }
+    }
+
+    #[test]
+    fn stale_tokens_never_match_the_shown_content() {
+        let layer = |tok: u32, shown: bool| Layer {
+            owner: HWND::default(),
+            window: HWND::default(),
+            slot: Rc::new(RefCell::new(None)),
+            host: None,
+            next_tok: tok.wrapping_add(1),
+            tok,
+            content: shown.then(|| Content::Tooltip { text: "x".into(), beside: false }),
+            anchor: RECT::default(),
+            bounds: RECT::default(),
+            visible: shown,
+            state_sent: None,
+            target: None,
+            island: None,
+            actions: VecDeque::new(),
+            keyboard: false,
+        };
+        assert!(current(&layer(5, true), 5));
+        assert!(!current(&layer(5, true), 4));
+        assert!(!current(&layer(5, false), 5));
+        assert!(!current(&layer(0, true), 0));
+
+        // Within one island session an older token still counts; another island's does not.
+        let mut island = layer(7, true);
+        island.content = Some(Content::Island { tab: TabId(3), rows: Vec::new(), model: HoverIsland::default() });
+        island.island = Some(IslandSession { tab: TabId(3), first_tok: 5, committed: None });
+        assert!(same_island_session(&island, 5));
+        assert!(same_island_session(&island, 7));
+        assert!(!same_island_session(&island, 4));
+        assert!(!same_island_session(&island, 8));
+        island.island = Some(IslandSession { tab: TabId(4), first_tok: 5, committed: None });
+        assert!(!same_island_session(&island, 6));
+        assert!(!same_island_session(&layer(7, true), 7), "a tooltip has no island session");
+    }
+}

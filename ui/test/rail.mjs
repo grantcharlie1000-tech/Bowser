@@ -125,3 +125,24 @@ test('pruneRailFavs drops favicons whose keys left the rail', () => {
   pruneRailFavs(favs, new Set(['app:2']));
   assert.deepEqual([...favs.entries()], [['app:2', 'b']]);
 });
+
+test('the two add buttons have distinct glyphs and names, both real family icons', () => {
+  const { ADD_BUTTONS } = logic;
+  assert.notEqual(ADD_BUTTONS.addws.icon, ADD_BUTTONS.addapp.icon);
+  assert.notEqual(ADD_BUTTONS.addws.label, ADD_BUTTONS.addapp.label);
+  assert.match(ADD_BUTTONS.addws.label, /workspace/i);
+  assert.match(ADD_BUTTONS.addapp.label, /app/i);
+  const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');
+  for (const b of Object.values(ADD_BUTTONS)) assert.ok(gen.includes(`'${b.icon}'`) || gen.includes(`"${b.icon}"`), b.icon);
+});
+
+test('keyboardMoveBefore gives the key to drop before, and null at the edges', () => {
+  const { keyboardMoveBefore } = logic;
+  const keys = ['ws:1', 'ws:2', 'ws:3'];
+  assert.equal(keyboardMoveBefore(keys, 'ws:2', -1), 'ws:1');
+  assert.equal(keyboardMoveBefore(keys, 'ws:1', 1), 'ws:3');
+  assert.equal(keyboardMoveBefore(keys, 'ws:2', 1), '', 'moving past the last drops at the end');
+  assert.equal(keyboardMoveBefore(keys, 'ws:1', -1), null);
+  assert.equal(keyboardMoveBefore(keys, 'ws:3', 1), null);
+  assert.equal(keyboardMoveBefore(keys, 'ws:9', 1), null);
+});

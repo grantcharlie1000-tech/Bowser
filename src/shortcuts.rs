@@ -44,6 +44,8 @@ pub enum Command {
     ToggleNotes,
     AddBookmark,
     ToggleTabLayout,
+    /// Ctrl+H opens the History side panel.
+    ShowHistory,
 }
 
 /// Commands that flip a setting. An auto-repeated key press must not flip it again.
@@ -70,6 +72,7 @@ const VK_9: u32 = 0x39;
 const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
+const VK_H: u32 = 0x48;
 const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
 const VK_N: u32 = 0x4E;
@@ -131,6 +134,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         (VK_V, true, true, false) => Some(Command::ToggleTabLayout),
+        (VK_H, true, false, false) => Some(Command::ShowHistory),
         _ => None,
     }
 }
@@ -180,6 +184,7 @@ mod tests {
             (VK_RIGHT, true, true, false, Command::FocusSplitRight),
             (VK_W, true, true, false, Command::CloseSplitPane),
             (VK_V, true, true, false, Command::ToggleTabLayout),
+            (VK_H, true, false, false, Command::ShowHistory),
         ];
         for index in 0..8 {
             table.push((
@@ -255,6 +260,8 @@ mod tests {
             (VK_1, false, false, true),
             (VK_N, true, true, true),
             (0x58, true, true, false), // Ctrl+Shift+X is not bound.
+            (0x4A, true, false, false), // Ctrl+J: downloads are cancelled by policy, no manager.
+            (0x79, false, true, false), // Shift+F10 is the page's native context menu.
         ] {
             assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");
         }

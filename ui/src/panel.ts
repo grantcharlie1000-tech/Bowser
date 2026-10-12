@@ -1,11 +1,13 @@
 // --- panel host (lane P) ---
 import { onInbound, send, sendPanel, type Inbound, type PanelToken } from './protocol';
 import { applyTheme } from './view';
+import { installTooltips } from './tooltip';
 import { panels } from './panels';
 import { shouldDismissPanelEscape } from './panels/history-logic';
 
 export function startPanel(root: HTMLElement): void {
   root.classList.add('panel-root');
+  installTooltips(root);
   root.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && shouldDismissPanelEscape(event.defaultPrevented)) {
       event.preventDefault();
