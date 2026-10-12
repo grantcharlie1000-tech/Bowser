@@ -116,3 +116,27 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 `tabs` and `fav` are Rust->JS only, so nested arrays are fine. The toolbar view ignores them and the tabs view ignores `state` except `theme`/`solid`/`dark`/`scale`.
 
 The Limits section above applies to these messages too: at most 512 items, titles and group names capped, favicons validated.
+
+## Milestone 3: left rail view (third controller)
+
+Third chrome host, `View::Rail`, start URL `bowser-ui://app/index.html?view=rail`, bounds = `layout.rail` (full-height pill at the left edge, rounded 20px, same translucent look as native). Active only when the page sent `ready`; while active native rail painting and hit-testing are skipped. The rail's panels (customize, bookmarks, history, web apps) stay native for now and open to the right of the rail exactly as before.
+
+Rail keys are strings: `home`, `customize`, `ws:<id>` (workspace id, decimal), `addws`, `app:<id>` (decimal), `addapp`, `bookmarks`, `history`, `menu`. Sections top to bottom: top (`home`, `customize`), workspaces (`ws:*`, `addws`), apps (`app:*`, `addapp`), bottom (`bookmarks`, `history`, `menu`). Workspaces and apps scroll (vertical, no visible scrollbar) when they overflow; top and bottom stay fixed. Section separators are hairlines.
+
+### JS -> Rust
+
+| `t` | fields | meaning |
+|---|---|---|
+| `rail` | `a`: `click`/`menu`, `k` (key string <= 24 chars matching the key grammar) | left click / right click (Rust shows the native context menu at the cursor) on a rail button |
+| `railmove` | `k` (a `ws:*` or `app:*` key), `before` (key of the item it is dropped before, `""` = end of that section) | drag-reorder within a section (Rust uses the same workspace_move / app reorder logic as native) |
+
+Rust validates the key against the current rail model; unknown keys are ignored.
+
+### Rust -> JS
+
+| `t` | fields |
+|---|---|
+| `rail` | `items`: array of `{k, icon, label, active, dot, accent, fav}`; `icon` is one of `home`, `customize`, `plus`, `heart`, `clock`, `dots`, `apptile`, `letter`, or `g:` + one of `briefcase`, `home`, `code`, `book`, `cart`, `game`, `music`, `heart`, `star`, `bolt`, `globe`, `leaf`; `label` string (also the tooltip and the letter-tile source; capped 64 chars); `active` bool (current workspace or open panel); `dot` bool; `accent` CSS colour string from Rust's safe-colour set or `""` for the theme accent; `fav` bool (a favicon is cached for `k`) |
+| `railfav` | `k`, `uri` (`data:image/png;base64,...`, same validation as `fav`) |
+
+`state` still supplies theme/solid/dark/scale. Tooltips use the element `title` attribute (WebView2 shows it as a native tooltip that may overflow the 40px-wide view).
