@@ -4909,7 +4909,14 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
         if html_popup::is_active(hwnd) {
             html_popup::cancel(hwnd, app);
         }
-        let items = command_palette::html_items(&tabs, &bookmarks, &history, &commands);
+        let items = command_palette::html_items_with_favicons(
+            &tabs,
+            &bookmarks,
+            &history,
+            &commands,
+            |id| App::tab_favicon(app, TabId(id)),
+            |host| crate::favicon::load_favicon_bytes(host).ok().flatten(),
+        );
         let page = command_palette::html_page(&items);
         let mut window = RECT::default();
         unsafe {

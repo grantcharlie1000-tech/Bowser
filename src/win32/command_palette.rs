@@ -637,6 +637,8 @@ pub(crate) struct HtmlItem {
     pub detail: String,
     pub accel: Option<&'static str>,
     pub action: String,
+    /// Optional `data:image/png;base64,...` favicon for tab, bookmark and history rows.
+    pub fav: Option<String>,
 }
 
 fn cap_utf16(text: &str, max: usize) -> String {
@@ -659,12 +661,27 @@ pub(crate) fn html_items(
     history: &[(u64, String, String)],
     commands: &CommandRegistry,
 ) -> Vec<HtmlItem> {
+    html_items_with_favicons(tabs, bookmarks, history, commands, |_| None, |_| None)
+}
+
+/// `html_items` plus favicons: `tab_png` gives an open tab's own favicon by tab id, `host_png` a
+/// cached favicon by host (used for bookmarks and history, and for tabs without their own). Only
+/// PNGs passing the shared favicon gate are sent, and their bytes count against the item budget.
+pub(crate) fn html_items_with_favicons(
+    tabs: &[(u32, String, String)],
+    bookmarks: &[(String, String, String)],
+    history: &[(u64, String, String)],
+    commands: &CommandRegistry,
+    tab_png: impl Fn(u32) -> Option<Vec<u8>>,
+    host_png: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Vec<HtmlItem> {
     let row = |section, label: &str, detail: &str, accel, action: String| HtmlItem {
         section,
         label: cap_utf16(label, HTML_MAX_LABEL),
         detail: cap_utf16(detail, HTML_MAX_DETAIL),
         accel,
         action,
+        fav: None,
     };
     let mut fixed = Vec::new();
     for (id, title, url) in tabs.iter().take(HTML_MAX_TABS) {
@@ -698,6 +715,7 @@ pub(crate) fn html_items(
             .map(|item| {
                 crate::chrome_host::protocol::json_string(&item.label).len()
                     + crate::chrome_host::protocol::json_string(&item.detail).len()
+                    + item.fav.as_ref().map_or(0, |fav| fav.len() + 8)
                     + 64
             })
             .sum()
@@ -712,6 +730,33 @@ pub(crate) fn html_items(
     }
     fixed.extend(marks);
     fixed.extend(recent);
+    // Favicons are added last, in row order, into whatever budget the text left over; a row that
+    // does not fit simply has none.
+    let mut remaining = HTML_ITEMS_BUDGET.saturating_sub(cost(&fixed));
+    let mut by_host: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
+    for item in &mut fixed {
+        if !matches!(item.section, "tab" | "bookmark" | "history") {
+            continue;
+        }
+        let own = item.action.strip_prefix("tab:").and_then(|id| id.parse::<u32>().ok()).and_then(&tab_png);
+        let mut uri = own.as_deref().and_then(crate::chrome_host::protocol::favicon_data_uri);
+        if uri.is_none() {
+            let address = item.action.strip_prefix("url:").unwrap_or(&item.detail);
+            let host = url::Url::parse(address)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned));
+            if let Some(host) = host {
+                uri = by_host
+                    .entry(host.clone())
+                    .or_insert_with(|| host_png(&host).as_deref().and_then(crate::chrome_host::protocol::favicon_data_uri))
+                    .clone();
+            }
+        }
+        if let Some(uri) = uri.filter(|uri| uri.len() + 8 <= remaining) {
+            remaining -= uri.len() + 8;
+            item.fav = Some(uri);
+        }
+    }
     fixed
 }
 
@@ -734,6 +779,9 @@ pub(crate) fn html_page(items: &[HtmlItem]) -> super::html_popup::Page {
                     row.string("detail", &item.detail);
                     if let Some(accel) = item.accel {
                         row.string("acc", accel);
+                    }
+                    if let Some(fav) = &item.fav {
+                        row.string("fav", fav);
                     }
                 });
             }
@@ -792,6 +840,48 @@ mod tests {
         let json = super::super::html_popup::Page::debug_json(html_page(&items), 1);
         assert!(json.len() <= super::super::html_popup::MAX_PAGE_BYTES, "{}", json.len());
         assert!(items.iter().any(|i| i.section == "bookmark"));
+    }
+
+    fn fake_png(len: usize) -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0, 16, 0, 0, 0, 16];
+        bytes.resize(len, 0);
+        bytes
+    }
+
+    #[test]
+    fn html_palette_attaches_favicons_to_tab_bookmark_and_history_rows_only() {
+        let icon = fake_png(40);
+        let items = html_items_with_favicons(
+            &[(4, "Mine".into(), "https://own.example/".into()), (5, "Cached".into(), "https://cached.example/x".into())],
+            &[("Plan".into(), "https://plan.example/".into(), "Work".into())],
+            &[(1, "https://news.example/".into(), "News".into())],
+            &productivity::browser_commands(),
+            |id| (id == 4).then(|| icon.clone()),
+            |host| (host != "news.example").then(|| icon.clone()),
+        );
+        let uri = crate::chrome_host::protocol::favicon_data_uri(&icon).unwrap();
+        for item in &items {
+            match item.section {
+                "command" => assert_eq!(item.fav, None),
+                "history" => assert_eq!(item.fav, None, "no cached icon for that host"),
+                _ => assert_eq!(item.fav.as_deref(), Some(uri.as_str()), "{}", item.label),
+            }
+        }
+        let json = super::super::html_popup::Page::debug_json(html_page(&items), 1);
+        assert!(json.contains(&format!("\"fav\":\"{uri}\"")));
+        assert!(!html_items(&[], &[], &[], &productivity::browser_commands()).iter().any(|i| i.fav.is_some()));
+    }
+
+    #[test]
+    fn html_palette_favicon_bytes_stay_inside_the_budget() {
+        let long = "é".repeat(400);
+        let bookmarks: Vec<_> = (0..500).map(|i| (long.clone(), format!("https://b{i}.example/{long}"), String::new())).collect();
+        let tabs: Vec<_> = (0..100).map(|i| (i, "T".to_owned(), format!("https://t{i}.example/"))).collect();
+        let big = fake_png(crate::chrome_host::protocol::MAX_FAVICON_BYTES);
+        let items = html_items_with_favicons(&tabs, &bookmarks, &[], &productivity::browser_commands(), |_| Some(big.clone()), |_| Some(big.clone()));
+        assert!(items.iter().any(|i| i.fav.is_some()));
+        let json = super::super::html_popup::Page::debug_json(html_page(&items), 1);
+        assert!(json.len() <= super::super::html_popup::MAX_PAGE_BYTES, "{}", json.len());
     }
 
     fn parse_accel(text: &str) -> (u32, bool, bool, bool) {
