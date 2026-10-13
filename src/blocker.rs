@@ -137,11 +137,14 @@ fn parse_line(line: &str) -> Option<Rule> {
         let tail = &rest[end..];
         return match tail {
             "" | "^" | "|" | "^|" => Some(Rule::Host(host.to_owned())),
-            // `||host/path|`: that one URL and nothing longer. No wildcard, separator, query or
-            // escape, so the same text is also a literal DevTools URL pattern.
+            // `||host/path|`: that one URL and nothing longer. Only plain path characters, so the
+            // same text is also a literal DevTools URL pattern (`:`, `(`, `{`, `+`, `*` and `?`
+            // all mean something in one).
             _ if tail.starts_with('/')
                 && tail.ends_with('|')
-                && !tail[..tail.len() - 1].contains(['*', '^', '?', '\\', '|']) =>
+                && tail[..tail.len() - 1].bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'~' | b'%')
+                }) =>
             {
                 Some(Rule::Exact {
                     host: host.to_owned(),
@@ -440,9 +443,11 @@ pub fn blocked_url_patterns<'a>(
     patterns
 }
 
-/// DevTools patterns for `||host/path|` rules: that one URL on the host and on its subdomains,
-/// with no trailing wildcard, so `https://host/path?x` and `https://host/path/more` still load.
-/// Same first-party and `blocking` rules as [`blocked_url_patterns`].
+/// DevTools patterns for `||host/path|` rules: that one URL on the host and on its subdomains.
+/// The trailing `?#` pins the (empty) query and fragment, which a URL pattern otherwise leaves
+/// open, so `https://host/path?x` and `https://host/path/more` still load. Paths are lowercase,
+/// as in the list; the in-process 403 fallback is the case-insensitive backstop. Same
+/// first-party and `blocking` rules as [`blocked_url_patterns`].
 pub fn exact_url_patterns<'a>(
     urls: impl IntoIterator<Item = (&'a str, &'a str)>,
     page_host: &str,
@@ -453,7 +458,7 @@ pub fn exact_url_patterns<'a>(
     }
     urls.into_iter()
         .filter(|(host, _)| !same_site(host, page_host))
-        .flat_map(|(host, path)| [format!("*://{host}{path}"), format!("*://*.{host}{path}")])
+        .flat_map(|(host, path)| [format!("*://{host}{path}?#"), format!("*://*.{host}{path}?#")])
         .collect()
 }
 
@@ -522,9 +527,12 @@ impl Blocker {
                 }
                 Rule::Exact { host, path } => {
                     if self.path_count < MAX_PATH_RULES {
-                        self.exact.entry(host.into()).or_default().push(path.into());
-                        self.path_count += 1;
-                        added += 1;
+                        let paths = self.exact.entry(host.into()).or_default();
+                        if !paths.iter().any(|known| **known == *path) {
+                            paths.push(path.into());
+                            self.path_count += 1;
+                            added += 1;
+                        }
                     }
                 }
                 Rule::Substring {
@@ -1251,14 +1259,10 @@ mod tests {
             "tagmanager.google.com",
             "analytics.adobe.io",
             "metrics.adobe.com",
-            "quantcast.com",
             "cloudflareinsights.com",
             "us.i.posthog.com",
             "rudderlabs.com",
             "snowplowanalytics.com",
-            "fingerprintjs.com",
-            "fpjs.io",
-            "siftscience.com",
             "permutive.com",
             "uidapi.com",
             "api2.branch.io",
@@ -1314,15 +1318,9 @@ mod tests {
             "tvinteractive.tv",
             "tvpixel.com",
             "firebase-settings.crashlytics.com",
-            "cookielaw.org",
             "geolocation.onetrust.com",
-            "cookiebot.com",
-            "consent.trustarc.com",
-            "sdk.privacy-center.org",
-            "privacy-mgmt.com",
             "cmp.usercentrics.eu",
             "sourcepoint.mgr.consensu.org",
-            "cmp.osano.com",
             "impactradius-event.com",
             "partnerstack.com",
             "refersion.com",
@@ -1332,7 +1330,6 @@ mod tests {
             "track.hubspot.com",
             "click.mailchimp.com",
             "braze.com",
-            "a.klaviyo.com",
             "customer.io",
             "jwpltx.com",
             "connatix.com",
@@ -1669,9 +1666,14 @@ mod tests {
         off.enabled = false;
         assert_eq!(off.block_hit("https://redirector.example.net/", "news.example"), BlockHit::None);
         assert_eq!(off.block_hit_private("https://redirector.example.net/", "news.example"), BlockHit::Rule);
-        // Wildcards, separators and queries keep the old prefix meaning and are not exact rules.
-        let prefix = state("||redirector.example.net/a*b|\n||redirector.example.net/a^|\n||redirector.example.net/a?b|\n", &[]);
-        assert_eq!(prefix.matcher.exact_urls().count(), 0);
+        // Anything that is pattern syntax in DevTools keeps the old prefix meaning: not an exact rule.
+        for line in ["a*b", "a^", "a?b", "a:b", "a+b.js", "a(b)", "a{b}", "a#b", "a\\b", "a b"] {
+            let prefix = state(&format!("||redirector.example.net/{line}|\n"), &[]);
+            assert_eq!(prefix.matcher.exact_urls().count(), 0, "{line}");
+        }
+        // A repeated rule is one rule.
+        let twice = state("||redirector.example.net/x.js|\n||redirector.example.net/x.js|\n", &[]);
+        assert_eq!(twice.matcher.exact_urls().count(), 1);
     }
 
     #[test]
@@ -1680,12 +1682,13 @@ mod tests {
         let patterns = s.blocked_url_patterns("news.example");
         for pattern in [
             "*://doubleclick.net/*",
-            "*://redirector.example.net/robots.txt",
-            "*://*.redirector.example.net/robots.txt",
+            "*://redirector.example.net/robots.txt?#",
+            "*://*.redirector.example.net/robots.txt?#",
         ] {
             assert!(patterns.contains(&pattern.to_owned()), "{pattern}");
         }
-        assert!(!patterns.iter().any(|p| p.contains("redirector") && p.ends_with('*')));
+        // The empty query and fragment are pinned, so a longer URL is not matched.
+        assert!(patterns.iter().filter(|p| p.contains("redirector")).all(|p| p.ends_with("?#")));
         assert!(s.blocked_url_patterns("example.net").iter().all(|p| !p.contains("redirector")));
         assert!(!s.blocked_url_patterns_private("news.example").is_empty());
         let mut off = state("||redirector.example.net/robots.txt|\n", &[]);
@@ -1706,7 +1709,7 @@ mod tests {
         let patterns = s.blocked_url_patterns("superadblocktest.com");
         for host in ["s.youtube.com", "redirector.googlevideo.com"] {
             for path in ["/", "/favicon.ico", "/robots.txt"] {
-                assert!(patterns.contains(&format!("*://{host}{path}")), "{host}{path}");
+                assert!(patterns.contains(&format!("*://{host}{path}?#")), "{host}{path}");
             }
         }
         // Playback and watch-history traffic on those same hosts is untouched, on YouTube and off it.
@@ -1728,7 +1731,7 @@ mod tests {
         let page = "superadblocktest.com";
         let probes = [
             "app.posthog.com", "eu.posthog.com", "ngfts.lge.com", "g.jwpsrv.com",
-            "widgets.pinterest.com", "static.klaviyo.com", "connect.facebook.net",
+            "widgets.pinterest.com", "connect.facebook.net", "static.klaviyo.com", "a.klaviyo.com", "cmp.quantcast.com", "consent.cookiebot.com", "cdn.cookielaw.org", "consent.trustarc.com", "sdk.privacy-center.org", "sourcepoint.privacy-mgmt.com", "cmp.osano.com", "fingerprintjs.com", "api.fpjs.io", "cdn.siftscience.com",
             "graph.facebook.com", "graph.instagram.com", "i.instagram.com", "dai.google.com",
             "widget.intercom.io", "js.driftt.com", "clientstream.launchdarkly.com",
             "privacyportal.onetrust.com", "app.usercentrics.eu",
@@ -1741,14 +1744,22 @@ mod tests {
                 assert_ne!(s.block_hit_private(&url, page), BlockHit::None, "{url}");
                 // Failed in the renderer, so a no-cors probe is rejected rather than answered.
                 assert!(
-                    patterns.contains(&format!("*://{host}{path}"))
-                        || patterns.contains(&format!("*://{host}/*")),
+                    host_suffixes(host).any(|suffix| {
+                        [
+                            format!("*://{suffix}{path}?#"),
+                            format!("*://*.{suffix}{path}?#"),
+                            format!("*://{suffix}/*"),
+                            format!("*://*.{suffix}/*"),
+                        ]
+                        .iter()
+                        .any(|pattern| patterns.contains(pattern))
+                    }),
                     "{url}"
                 );
             }
         }
         assert_eq!(s.block_hit("https://vk.com/rtrg", page), BlockHit::Rule);
-        assert!(patterns.contains(&"*://vk.com/rtrg".to_owned()));
+        assert!(patterns.contains(&"*://vk.com/rtrg?#".to_owned()));
         assert_eq!(s.block_hit("https://vk.com/rtrg?p=x", page), BlockHit::Rule);
         assert_eq!(s.block_hit("https://vk.com/id1", page), BlockHit::None);
         for url in [
@@ -1761,6 +1772,14 @@ mod tests {
             "https://clientstream.launchdarkly.com/all?auth=x",
             "https://privacyportal.onetrust.com/request/v1/consentreceipts",
             "https://app.usercentrics.eu/browser-ui/latest/loader.js",
+            "https://consent.cookiebot.com/uc.js",
+            "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js",
+            "https://static.klaviyo.com/onsite/js/klaviyo.js",
+            "https://a.klaviyo.com/client/subscriptions",
+            "https://cmp.quantcast.com/choice/abc/example.com/choice.js",
+            "https://sourcepoint.privacy-mgmt.com/index.html",
+            "https://cdn.siftscience.com/s.js",
+            "https://api.fpjs.io/v3/",
         ] {
             assert_eq!(s.block_hit(url, page), BlockHit::None, "{url}");
         }
