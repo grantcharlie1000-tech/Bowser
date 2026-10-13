@@ -1083,7 +1083,7 @@ fn top_center_bounds(window: RECT, width_css: i32, height_css: i32, dpi: u32, wo
 }
 // --- end popup surfaces ---
 
-fn monitor_data(anchor: POINT) -> (u32, RECT) {
+pub(crate) fn monitor_data(anchor: POINT) -> (u32, RECT) {
     unsafe {
         let monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {

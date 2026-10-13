@@ -147,6 +147,8 @@ enum DeferredChromeCommand {
     RailClick { key: RailKey },
     /// A right click on a rail button: the native rail context menu at the client point.
     RailMenu { key: RailKey, x: i32, y: i32 },
+    /// The pointer rested on a flyout button while a flyout is open: switch to it.
+    RailHover { key: RailKey },
     // --- vertical sidebar (lane S) ---
     SidebarWorkspaceMenu,
     // --- end vertical sidebar ---
@@ -387,6 +389,11 @@ struct WindowChrome {
     html_rail_last: Option<String>,
     /// The favicon PNG last sent to the HTML rail for each button, so it is sent once per change.
     html_rail_favs_sent: HashMap<RailKey, Rc<Vec<u8>>>,
+    // --- rail flyouts ---
+    /// The last rectangle the HTML rail reported for each flyout button (rail CSS px): where its
+    /// flyout is anchored when it opens from a shortcut rather than a click.
+    html_rail_anchors: HashMap<RailKey, chrome_host::protocol::HoverRect>,
+    // --- end rail flyouts ---
 }
 
 /// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
@@ -501,6 +508,7 @@ impl WindowChrome {
             html_rail_page_ready: false,
             html_rail_last: None,
             html_rail_favs_sent: HashMap::new(),
+            html_rail_anchors: HashMap::new(),
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -904,6 +912,15 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
         SidebarConfig::load(p.root()).unwrap_or_default()
     });
     let owner = app.borrow().hwnd;
+    // --- rail flyouts ---
+    match html_panel::active_id(owner) {
+        Some(side_panel::PanelId::Bookmarks)
+            if crate::sidebar::should_close_hidden_panel(Some(SidebarKind::Bookmarks), &config) => html_panel::dismiss(owner),
+        Some(side_panel::PanelId::History)
+            if crate::sidebar::should_close_hidden_panel(Some(SidebarKind::History), &config) => html_panel::dismiss(owner),
+        _ => {}
+    }
+    // --- end rail flyouts ---
     match side_panel::active_id(owner) {
         Some(id @ side_panel::PanelId::Bookmarks)
             if crate::sidebar::should_close_hidden_panel(Some(SidebarKind::Bookmarks), &config) =>
@@ -1610,6 +1627,7 @@ unsafe extern "system" fn window_proc(
                 // --- popup host (lane M) ---
                 html_popup::close(hwnd);
                 // --- end popup host ---
+                html_panel::dismiss(hwnd); // --- rail flyouts ---
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -1617,6 +1635,7 @@ unsafe extern "system" fn window_proc(
                 // --- popup host (lane M) ---
                 html_popup::close(hwnd);
                 // --- end popup host ---
+                html_panel::dismiss(hwnd); // --- rail flyouts ---
                 if let Some(app) = app {
                     let min = wparam.0 as u32 == SIZE_MINIMIZED;
                     let mut r = RECT::default();
@@ -1879,7 +1898,10 @@ unsafe extern "system" fn window_proc(
                     let active = App::active_tab_id(app);
                     // --- popup host (lane M) ---
                     // A tab or workspace switch dismisses an open HTML menu.
-                    if let Some(context) = popup_context(hwnd) { html_popup::note_context(hwnd, context); }
+                    if let Some(context) = popup_context(hwnd) {
+                        html_popup::note_context(hwnd, context);
+                        html_panel::note_context(hwnd, context); // --- rail flyouts ---
+                    }
                     // --- end popup host ---
                     if previously_active != Some(active) {
                         card::cancel_card(hwnd);
@@ -1941,6 +1963,7 @@ unsafe extern "system" fn window_proc(
                     hide_rail_tooltip(hwnd);
                     let _ = with_chrome(hwnd, |s| rebuild_rail_entries(s, app));
                     let _ = InvalidateRect(Some(hwnd), None, false);
+                    html_rail_sync(hwnd); // --- rail flyouts --- (the open flyout marks its button)
                 }
                 LRESULT(0)
             }
@@ -3455,8 +3478,98 @@ fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
+// --- rail flyouts ---
+/// The flyout a rail button opens, if it opens one (History, Bookmarks, Customize, and the rail's
+/// more and add-web-app buttons, which open Customize).
+fn flyout_panel(key: RailKey) -> Option<side_panel::PanelId> {
+    match key {
+        RailKey::History => Some(side_panel::PanelId::History),
+        RailKey::Bookmarks => Some(side_panel::PanelId::Bookmarks),
+        RailKey::Customize | RailKey::Menu | RailKey::AddApp => Some(side_panel::PanelId::Customize),
+        _ => None,
+    }
+}
+
+/// The rail button a flyout is anchored to when nothing more specific is known.
+fn flyout_button(id: side_panel::PanelId) -> RailKey {
+    match id {
+        side_panel::PanelId::History => RailKey::History,
+        side_panel::PanelId::Bookmarks => RailKey::Bookmarks,
+        _ => RailKey::Customize,
+    }
+}
+
+/// Screen anchor for the flyout of rail button `key`: the rail's right edge and the button. The
+/// HTML rail's last reported rectangle for the button wins; otherwise the native rail geometry.
+fn flyout_anchor(hwnd: HWND, key: RailKey) -> Option<html_panel::Anchor> {
+    let (html_rail, reported, layout_rail, native, dpi) = with_chrome(hwnd, |s| {
+        let entries = rail_entries(s);
+        let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+        let native = geometry.items.iter().find(|item| item.key == key).map(|item| to_win_rect(item.rect));
+        (s.html_rail.clone().filter(|_| s.html_rail_page_ready), s.html_rail_anchors.get(&key).copied(), to_win_rect(s.layout.rail), native, s.dpi)
+    })?;
+    let to_screen = |rect: RECT| -> RECT {
+        let mut origin = POINT::default();
+        unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
+        RECT { left: rect.left + origin.x, top: rect.top + origin.y, right: rect.right + origin.x, bottom: rect.bottom + origin.y }
+    };
+    let rail = html_rail.and_then(|host| host.screen_bounds()).unwrap_or_else(|| to_screen(layout_rail));
+    let button = match (reported, native) {
+        (Some(rect), _) => super::html_hover::anchor_to_screen(rail, dpi as f32 / 96.0, rect),
+        (None, Some(rect)) => to_screen(rect),
+        (None, None) => RECT { left: rail.left, top: rail.top, right: rail.right, bottom: rail.top + (rail.right - rail.left) },
+    };
+    Some(html_panel::Anchor { rail_right: rail.right, button })
+}
+
+/// Whether the cursor is over the rail (the HTML rail host, else the native rail rectangle).
+pub(super) fn cursor_on_rail(hwnd: HWND) -> bool {
+    let mut point = POINT::default();
+    if unsafe { GetCursorPos(&mut point) }.is_err() {
+        return false;
+    }
+    let Some((html_rail, layout_rail)) = with_chrome(hwnd, |s| (s.html_rail.clone().filter(|_| s.html_rail_page_ready), to_win_rect(s.layout.rail))) else {
+        return false;
+    };
+    let rail = html_rail.and_then(|host| host.screen_bounds()).unwrap_or_else(|| {
+        let mut origin = POINT::default();
+        unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
+        RECT { left: layout_rail.left + origin.x, top: layout_rail.top + origin.y, right: layout_rail.right + origin.x, bottom: layout_rail.bottom + origin.y }
+    });
+    point.x >= rail.left && point.x < rail.right && point.y >= rail.top && point.y < rail.bottom
+}
+
+/// HTML chrome: History, Bookmarks and Customize open as flyouts beside their rail button. Returns
+/// true when the flyout path handled the request (including "the HTML chrome is still starting",
+/// when nothing opens rather than the docked panel); false sends the caller to the docked native
+/// panel (native chrome, or the panel controller failed).
+fn toggle_flyout(hwnd: HWND, id: side_panel::PanelId, button: RailKey) -> bool {
+    if !matches!(id, side_panel::PanelId::History | side_panel::PanelId::Bookmarks | side_panel::PanelId::Customize)
+        || !chrome_host::html_ui_enabled()
+    {
+        return false;
+    }
+    if !html_panel::available(hwnd) {
+        return with_chrome(hwnd, |s| s.html_env_waiting).unwrap_or(false);
+    }
+    let (Some(anchor), Some(context)) = (flyout_anchor(hwnd, button), popup_context(hwnd)) else {
+        perf_event(hwnd, "html_flyout_unanchored");
+        return true;
+    };
+    html_panel::toggle(hwnd, id, anchor, context)
+}
+// --- end rail flyouts ---
+
 /// Rail handlers call this with the semantic panel ID; the host stays alive when switching IDs.
 pub fn rail_activate(hwnd: HWND, app: &AppRef, key: side_panel::PanelId) -> bool {
+    rail_activate_at(hwnd, app, key, None)
+}
+
+/// `rail_activate` anchored to rail button `button` (the one clicked) when it opens a flyout.
+fn rail_activate_at(hwnd: HWND, app: &AppRef, key: side_panel::PanelId, button: Option<RailKey>) -> bool {
+    if toggle_flyout(hwnd, key, button.unwrap_or_else(|| flyout_button(key))) {
+        return true;
+    }
     let opened = side_panel::toggle(hwnd, key);
     if opened { apply_sidebar_bounds(hwnd, app); }
     if !side_panel::is_open(hwnd) {
@@ -3466,9 +3579,15 @@ pub fn rail_activate(hwnd: HWND, app: &AppRef, key: side_panel::PanelId) -> bool
 }
 
 fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
+    // --- rail flyouts ---
+    // Any other rail button (home, a workspace, a web app) closes an open flyout first.
+    if flyout_panel(key).is_none() {
+        html_panel::close_for_rail(hwnd);
+    }
+    // --- end rail flyouts ---
     match key {
         RailKey::Home => { App::new_tab(app); focus_omni(hwnd, app, true); }
-        RailKey::Customize | RailKey::Menu | RailKey::AddApp => { rail_activate(hwnd, app, side_panel::PanelId::Customize); }
+        RailKey::Customize | RailKey::Menu | RailKey::AddApp => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
         RailKey::Workspace(id) => { let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id as u32)); }
         RailKey::AddWorkspace => {
             let count = App::workspace_entries(app).len();
@@ -3489,9 +3608,10 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
             }
             rail_activate(hwnd, app, side_panel::PanelId::WebApp(id));
         }
-        RailKey::Bookmarks => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); }
-        RailKey::History => { rail_activate(hwnd, app, side_panel::PanelId::History); }
+        RailKey::Bookmarks => { rail_activate_at(hwnd, app, side_panel::PanelId::Bookmarks, Some(key)); }
+        RailKey::History => { rail_activate_at(hwnd, app, side_panel::PanelId::History, Some(key)); }
     }
+
     let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
     unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
 }
@@ -3518,6 +3638,14 @@ fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, 
 
 fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32) {
     super::panel_customize::focus_app(id);
+    // --- rail flyouts ---
+    if html_panel::active_id(hwnd) == Some(side_panel::PanelId::Customize) {
+        return;
+    }
+    if toggle_flyout(hwnd, side_panel::PanelId::Customize, RailKey::Customize) {
+        return;
+    }
+    // --- end rail flyouts ---
     if side_panel::open(hwnd, side_panel::PanelId::Customize) {
         apply_sidebar_bounds(hwnd, app);
     } else if let Some(message) = side_panel::last_status() {
@@ -5756,9 +5884,6 @@ fn html_env_settled(hwnd: HWND) {
                 s.html_env_waiting = false;
                 s.html_env = Some(env.clone());
             });
-            // --- panel host (lane P) ---
-            html_panel::register(&app, hwnd, env.clone());
-            // --- end panel host ---
             // The two controllers are requested together and are created concurrently. Each one's
             // failure is its own.
             start_html_toolbar(hwnd, &env);
@@ -5770,6 +5895,8 @@ fn html_env_settled(hwnd: HWND) {
             // (slow, on a loaded machine) start 2 s after it. It stays suspended while hidden.
             html_popup::prewarm(hwnd, env.clone());
             // --- end popup surfaces ---
+            // --- rail flyouts --- (hidden and suspended until a rail flyout opens)
+            html_panel::register(&app, hwnd, env.clone());
         }
         ChromeEnvironment::Unavailable => {
             let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
@@ -5805,17 +5932,11 @@ pub(super) fn request_popup_prewarm(hwnd: HWND) {
 // --- end popup surfaces ---
 // --- end popup host ---
 // --- panel host (lane P) ---
+/// The flyout's panel controller failed: the flyout closes for good in this window and the rail
+/// opens the docked native panels instead (their factories stay registered from window creation).
 fn html_panel_failed(hwnd: HWND) {
-    let active = side_panel::active_id(hwnd);
     html_panel::fail(hwnd);
-    if let Some(app) = app_of(hwnd) {
-        super::panel_history::register(&app);
-        super::panel_bookmarks::register(&app);
-        super::panel_customize::register(&app);
-    }
-    if let Some(id @ (side_panel::PanelId::History | side_panel::PanelId::Bookmarks | side_panel::PanelId::Customize)) = active {
-        side_panel::close_content(hwnd, id);
-    }
+    let _ = unsafe { PostMessageW(Some(hwnd), crate::win32::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0)) };
 }
 // --- end panel host ---
 fn close_html_chrome(hwnd: HWND) {
@@ -6321,7 +6442,9 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         pillx: 0,
         pillw: 0,
         menux: 0,
-        solid: true,
+        // The flyout window is transparent around its surface (shadow room); the page paints the
+        // opaque surface itself, so the body must not fill the window.
+        solid: false,
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: false,
         forward: false,
@@ -6765,6 +6888,15 @@ fn run_deferred_html_command(hwnd: HWND) {
                 show_rail_context_menu(hwnd, &app, key, x, y);
             }
         }
+        DeferredChromeCommand::RailHover { key } => {
+            if rail_model_keys(hwnd).contains(&key) {
+                if let Some(id) = flyout_panel(key) {
+                    if let (Some(anchor), Some(context)) = (flyout_anchor(hwnd, key), popup_context(hwnd)) {
+                        html_panel::hover(hwnd, id, anchor, context);
+                    }
+                }
+            }
+        }
         // --- vertical sidebar (lane S) ---
         DeferredChromeCommand::SidebarWorkspaceMenu => show_workspaces_menu(hwnd, &app),
         // --- end vertical sidebar ---
@@ -7038,6 +7170,11 @@ fn html_tabs_sync(hwnd: HWND) {
 
 /// Which rail button's native panel is open, if any. Shared by the native paint and the HTML rail.
 fn open_rail_panel(hwnd: HWND) -> Option<RailKey> {
+    // --- rail flyouts ---
+    if let Some(id) = html_panel::active_id(hwnd) {
+        return Some(flyout_button(id));
+    }
+    // --- end rail flyouts ---
     match side_panel::active_id(hwnd) {
         Some(side_panel::PanelId::Bookmarks) => Some(RailKey::Bookmarks),
         Some(side_panel::PanelId::History) => Some(RailKey::History),
@@ -7176,7 +7313,7 @@ fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
             html_sync(hwnd);
             return;
         }
-        ChromeCommand::Rail { action, key } => html_rail_action(hwnd, action, key),
+        ChromeCommand::Rail { action, key, rect } => html_rail_action(hwnd, action, key, rect),
         ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
         // --- hover layer ---
         ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
@@ -7194,12 +7331,22 @@ fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
 /// ignored. Both run from the deferred queue, outside WebView2's callback, because either may open
 /// a modal prompt or menu: a click does what a native click does, a right click shows the native
 /// rail context menu at the cursor.
-fn html_rail_action(hwnd: HWND, action: RailAction, wire: RailKeyWire) {
+fn html_rail_action(hwnd: HWND, action: RailAction, wire: RailKeyWire, rect: Option<chrome_host::protocol::HoverRect>) {
     let Some(key) = chrome_host::rail_key_from_wire(wire, &rail_model_keys(hwnd)) else {
         return;
     };
+    // --- rail flyouts ---
+    if let Some(rect) = rect.filter(|_| flyout_panel(key).is_some()) {
+        let _ = with_chrome(hwnd, |s| s.html_rail_anchors.insert(key, rect));
+    }
+    // --- end rail flyouts ---
     match action {
         RailAction::Click => defer_html_command(hwnd, DeferredChromeCommand::RailClick { key }),
+        RailAction::Hover => {
+            if flyout_panel(key).is_some() && html_panel::active_id(hwnd).is_some() {
+                defer_html_command(hwnd, DeferredChromeCommand::RailHover { key });
+            }
+        }
         RailAction::Menu => {
             if let Some((x, y)) = cursor_client_point(hwnd) {
                 defer_html_command(hwnd, DeferredChromeCommand::RailMenu { key, x, y });
@@ -8080,8 +8227,14 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),
         Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         Command::ShowHistory => {
-            side_panel::open(hwnd, side_panel::PanelId::History);
-            apply_sidebar_bounds(hwnd, app);
+            // --- rail flyouts ---
+            if html_panel::active_id(hwnd) != Some(side_panel::PanelId::History)
+                && !toggle_flyout(hwnd, side_panel::PanelId::History, RailKey::History)
+            // --- end rail flyouts ---
+            {
+                side_panel::open(hwnd, side_panel::PanelId::History);
+                apply_sidebar_bounds(hwnd, app);
+            }
         }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
