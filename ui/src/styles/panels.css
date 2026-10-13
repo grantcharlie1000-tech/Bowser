@@ -1,8 +1,8 @@
 /*
  * Surface: PANELS (?view=panel, the anchored panel host; the ?view=dialog windows reuse the same
  * builders, see dialog.css). Owner: panels agent. Built by ui/src/panel.ts and ui/src/panels/*.ts:
- * history, bookmarks, notes, settings, privacy (one panel system, below) and customize (rail
- * owner, legacy block at the end of this file).
+ * history, bookmarks, notes, settings, privacy (one panel system, below). The customize panel is
+ * styled in rail.css under `.panel-customize`.
  *
  * One panel system, prefix by role:
  *   .pn-*  side panel parts: header, search bar, 32px list rows, sticky section headers, empty state
@@ -716,45 +716,3 @@
     width: 100%;
   }
 }
-
-/* ---- Customize panel (rail owner; legacy rules, unchanged) ---- */
-.customize-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  height: 100vh;
-  padding: 12px;
-  box-sizing: border-box;
-  overflow: auto;
-  color: var(--bw-text);
-  background: var(--bw-window);
-  font: 13px/1.4 var(--bw-font-panel);
-}
-.customize-panel button,
-.customize-panel input,
-.customize-panel select {
-  min-height: 30px;
-  padding: 4px 8px;
-  color: var(--bw-text);
-  background: var(--bw-fill);
-  border: 1px solid var(--bw-border);
-  border-radius: 5px;
-  font: inherit;
-}
-.customize-panel button { cursor: pointer; }
-.customize-panel button:hover { background: var(--bw-hover); }
-.customize-panel button:focus-visible,
-.customize-panel input:focus-visible,
-.customize-panel select:focus-visible { outline: 2px solid var(--bw-focus); outline-offset: 1px; }
-.customize-panel h1 { margin: 0; font-size: 16px; }
-.customize-panel h2 { margin: 5px 0; font-size: 13px; }
-.customize-panel h3 { margin: 0; font-size: 12px; }
-.customize-panel section { display: flex; flex-direction: column; gap: 5px; }
-.customize-panel article { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px; border-radius: var(--bw-r-row); background: var(--bw-fill); }
-.customize-panel article p { flex-basis: 100%; margin: 0; color: var(--bw-text-2); font-size: 11px; overflow-wrap: anywhere; }
-.customize-panel label { display: flex; align-items: center; gap: 7px; min-height: 28px; }
-.customize-panel input[type="checkbox"] { min-height: auto; accent-color: var(--bw-focus); }
-.customize-panel form { display: flex; flex-wrap: wrap; gap: 5px; }
-.customize-panel form input { min-width: 0; flex: 1; }
-.customize-panel [role="status"] { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }

@@ -120,6 +120,12 @@
 /* Raised island for the active row. */
 .side-tab.is-active { box-shadow: var(--bw-sh-tip); }
 
+/* Keyboard focus: the shared inset ring (2px accent from .bw-focus-inset plus this 1px contrast
+   ring inside it). It must be restated here because the active row's elevation shadow above
+   would otherwise replace the component's inner ring. */
+.side-tab:focus-visible { box-shadow: inset 0 0 0 3px var(--bw-focus-inner); }
+.side-tab.is-active:focus-visible { box-shadow: inset 0 0 0 3px var(--bw-focus-inner), var(--bw-sh-tip); }
+
 /* Grouped rows are indented under their header; a colour rail joins them. */
 .side-tab.in-group { margin-left: var(--bw-space-3); }
 .side-tab.in-group::before {

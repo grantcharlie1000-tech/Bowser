@@ -64,3 +64,20 @@ test('hand-tuned chrome geometry is unchanged', () => {
     assert.match(tokens, new RegExp(`${name}: ${value};`), name);
   }
 });
+
+test('toggles: on-state is accent with an on-accent knob; every interactive control has a focus ring', () => {
+  const source = readFileSync(join(stylesDir, 'components.css'), 'utf8');
+  const on = /\.bw-toggle\[aria-checked="true"\]\s*\{([^}]*)\}/.exec(source);
+  assert.ok(on && /background:\s*var\(--bw-accent\)/.test(on[1]), 'toggle on-state track uses --bw-accent');
+  const knob = /\.bw-toggle\[aria-checked="true"\]::after\s*\{([^}]*)\}/.exec(source);
+  assert.ok(knob && /background:\s*var\(--bw-on-accent\)/.test(knob[1]), 'toggle on-state knob uses --bw-on-accent');
+  assert.match(source, /:where\([^)]*\[role="switch"\][^)]*\):focus-visible/s, 'zero-specificity focus-visible fallback for interactive roles');
+  assert.match(source, /\.bw-select-button,[\s\S]*?\):focus-visible/, 'select button is in the shared focus ring list');
+});
+
+test('panel styles carry no legacy 13px Segoe UI block', () => {
+  for (const file of ['panels.css', 'dialog.css', 'rail.css', 'components.css']) {
+    const text = readFileSync(join(stylesDir, file), 'utf8');
+    assert.doesNotMatch(text, /--bw-font-panel|\.customize-panel|font:\s*13px/, file);
+  }
+});

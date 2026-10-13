@@ -18,8 +18,29 @@
     .bw-button,
     .bw-toggle,
     .bw-segmented > button,
+    .bw-select-button,
     .bw-menu-item,
     .bw-row
+  ):focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px var(--bw-focus-inner);
+}
+
+/* Fallback for every other interactive element (zero specificity: any rule above or in a surface
+   that sets its own ring wins). Text fields draw their own ring (.bw-input, the pill). */
+:where(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    [role="switch"],
+    [role="radio"],
+    [role="checkbox"],
+    [role="tab"],
+    [role="treeitem"],
+    [role="option"],
+    [role="menuitem"]
   ):focus-visible {
   outline: 2px solid var(--bw-focus);
   outline-offset: 1px;
@@ -198,7 +219,7 @@
   cursor: default;
 }
 
-.bw-menu-item:is(:hover, .is-selected):not(:disabled, [aria-disabled="true"]) {
+.bw-menu-item:is(:hover, .is-selected, .is-active):not(:disabled, [aria-disabled="true"]) {
   background: var(--bw-hover);
 }
 
@@ -232,6 +253,106 @@
 .bw-menu-chevron {
   margin-inline-start: auto;
   color: var(--bw-text-2);
+}
+
+/* ---- Select: <div class="bw-select"> > button.bw-select-button (role=combobox) plus a
+   .bw-menu.bw-listbox of role=option .bw-menu-item rows (ui/src/panels/select.ts). The list is
+   fixed-positioned by script so scrollers never clip it. ---- */
+.bw-select {
+  position: relative;
+  min-width: 0;
+}
+
+.bw-select-button {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  padding: 0 var(--bw-space-3) 0 var(--bw-space-2);
+  border: 1px solid var(--bw-ctl-edge);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bw-select-button:hover {
+  background-image: linear-gradient(var(--bw-hover), var(--bw-hover));
+}
+
+.bw-select-button[aria-expanded="true"] {
+  border-color: var(--bw-focus);
+}
+
+.bw-select-button > svg {
+  flex: none;
+  color: var(--bw-text-2);
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.bw-select-button[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+
+.bw-select-value {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--bw-space-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-select-value.is-placeholder {
+  color: var(--bw-text-2);
+}
+
+.bw-select-lead {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.bw-listbox {
+  position: fixed;
+  z-index: var(--bw-z-menu);
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Opaque: it floats over page text, so the translucent overlay tint sits on the solid window. */
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+}
+
+.bw-listbox.is-above {
+  --bw-enter-y: 4px;
+}
+
+.bw-listbox .bw-menu-item {
+  flex: none;
+}
+
+.bw-listbox .bw-menu-check {
+  display: grid;
+  place-items: center;
+  color: var(--bw-text);
+}
+
+/* The highlighted option while the button holds focus: the shared inset ring. */
+.bw-select-button:focus-visible[aria-expanded="true"] ~ .bw-listbox .bw-menu-item.is-active {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
 }
 
 /* ---- Separators. ---- */
@@ -311,13 +432,19 @@
   line-height: var(--bw-leading-caption);
 }
 
+/* ---- Control edge: fields, secondary buttons and select buttons share one outline that reads
+   >= 3:1 against the window in both schemes (WCAG 1.4.11). ---- */
+:is(.bw-input, .bw-button, .bw-select-button) {
+  --bw-ctl-edge: color-mix(in srgb, var(--bw-text-2) 66%, transparent);
+}
+
 /* ---- Text input. ---- */
 .bw-input {
   min-width: 0;
   height: 32px;
   margin: 0;
   padding: 0 var(--bw-space-2);
-  border: 1px solid var(--bw-border);
+  border: 1px solid var(--bw-ctl-edge);
   border-radius: var(--bw-r-control);
   background: var(--bw-fill);
   color: var(--bw-text);
@@ -336,7 +463,20 @@
 
 .bw-input:focus-visible {
   border-color: var(--bw-focus);
-  box-shadow: inset 0 0 0 1px var(--bw-focus);
+  box-shadow:
+    inset 0 0 0 1px var(--bw-focus),
+    inset 0 0 0 2px var(--bw-focus-inner);
+}
+
+/* Number fields: the arrow keys step them; the native spin buttons are not part of the system. */
+.bw-input[type="number"] {
+  appearance: textfield;
+}
+
+.bw-input[type="number"]::-webkit-inner-spin-button,
+.bw-input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
 }
 
 .bw-input:is(:disabled, [aria-disabled="true"]) {
@@ -353,7 +493,7 @@
   height: 28px;
   margin: 0;
   padding: 0 var(--bw-space-3);
-  border: 1px solid var(--bw-border);
+  border: 1px solid var(--bw-ctl-edge);
   border-radius: var(--bw-r-control);
   background: var(--bw-fill);
   color: var(--bw-text);

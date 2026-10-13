@@ -5,6 +5,7 @@ import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
 import { icon, type IconName } from '../icons';
 import { dropSlot } from '../rail-logic';
 import { setTip } from '../tooltip';
+import { selectField, type SelectField } from './select';
 import {
   customizeCommand, customizeDeleteDescription, moveBefore, parseCustomizeSnapshot, sentenceCase, stepDest,
   RAIL_DESCRIPTIONS, RAIL_KEYS, WORKSPACE_COLOURS, WORKSPACE_HEX, WORKSPACE_ICONS,
@@ -14,6 +15,12 @@ import {
 type DeleteTarget = { kind: 'app' | 'workspace'; id: number; label: string } | null;
 const labels: Record<typeof RAIL_KEYS[number], string> = { workspaces: 'Workspaces', apps: 'Web apps', bookmarks: 'Bookmarks', history: 'History' };
 const DRAG_START_PX = 4;
+const PRESETS = [
+  ['Spotify', 'https://open.spotify.com/'],
+  ['ChatGPT', 'https://chatgpt.com/'],
+  ['WhatsApp', 'https://web.whatsapp.com/'],
+  ['Notion', 'https://www.notion.so/'],
+] as const;
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -52,35 +59,27 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   const appRows = h('div', 'cust-list');
   appRows.setAttribute('role', 'list');
   const appForm = h('form', 'cust-form is-stack');
-  const preset = h('select', 'bw-input');
-  preset.setAttribute('aria-label', 'Choose a web app preset');
-  const presetPrompt = h('option', undefined, 'Choose a preset');
-  presetPrompt.value = '';
-  preset.append(presetPrompt);
-  for (const [name, url] of ([
-    ['Spotify', 'https://open.spotify.com/'],
-    ['ChatGPT', 'https://chatgpt.com/'],
-    ['WhatsApp', 'https://web.whatsapp.com/'],
-    ['Notion', 'https://www.notion.so/'],
-  ] as const)) {
-    const option = h('option', undefined, name);
-    option.value = url;
-    preset.append(option);
-  }
   const appName = input('Web app name', 'Name');
   const appUrl = input('Web app address', 'https://example.com/');
   appUrl.type = 'url';
-  preset.addEventListener('change', () => {
-    const option = preset.selectedOptions[0];
-    if (option && option.value) { appName.value = option.textContent ?? ''; appUrl.value = option.value; }
+  const preset = selectField({
+    options: PRESETS.map(([name, url]) => ({ value: url, label: name })),
+    value: null,
+    label: 'Choose a web app preset',
+    placeholder: 'Choose a preset',
+    momentary: true,
+    onChange: url => {
+      const chosen = PRESETS.find(([, address]) => address === url);
+      if (chosen) { appName.value = chosen[0]; appUrl.value = chosen[1]; }
+    },
   });
   const appFields = h('div', 'cust-form-fields');
   appFields.append(appName, appUrl);
-  appForm.append(preset, appFields, submitButton('Add web app'));
+  appForm.append(preset.root, appFields, submitButton('Add web app'));
   appForm.addEventListener('submit', event => {
     event.preventDefault();
     const fields = customizeCommand('app-add', { text: appName.value.trim(), url: appUrl.value.trim() });
-    if (fields) { sendPanel('cust', fields); appName.value = ''; appUrl.value = ''; preset.value = ''; } else (appName.value.trim() === '' ? appName : appUrl).focus();
+    if (fields) { sendPanel('cust', fields); appName.value = ''; appUrl.value = ''; preset.set(null); } else (appName.value.trim() === '' ? appName : appUrl).focus();
   });
   apps.root.append(appRows, appForm);
 
@@ -171,22 +170,33 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     confirm.append(message, actions);
     yes.focus();
   }
-  function select<T extends string>(options: readonly T[], value: T | null, label: string, changed: (value: T | null) => void, none = 'None'): HTMLSelectElement {
-    const control = h('select', 'bw-input');
-    control.setAttribute('aria-label', label);
-    if (none !== '') {
-      const empty = h('option', undefined, none);
-      empty.value = '';
-      control.append(empty);
-    }
-    for (const option of options) {
-      const item = h('option', undefined, sentenceCase(option));
-      item.value = option;
-      control.append(item);
-    }
-    control.value = value ?? '';
-    control.addEventListener('change', () => changed(control.value === '' ? null : control.value as T));
-    return control;
+  function iconField(workspace: CustomizeWorkspace): SelectField<typeof WORKSPACE_ICONS[number]> {
+    return selectField({
+      options: WORKSPACE_ICONS.map(name => ({ value: name, label: sentenceCase(name), lead: () => icon(`workspace-${name}` as IconName) })),
+      value: workspace.icon,
+      label: `Icon for ${workspace.name}`,
+      placeholder: 'Icon',
+      minListWidth: 160,
+      onChange: value => sendAction('workspace-icon', { id: workspace.id, text: value }),
+    });
+  }
+  function colourField(workspace: CustomizeWorkspace): SelectField<typeof WORKSPACE_COLOURS[number] | ''> {
+    return selectField<typeof WORKSPACE_COLOURS[number] | ''>({
+      options: [
+        { value: '', label: 'No colour', lead: () => swatch(null) },
+        ...WORKSPACE_COLOURS.map(name => ({ value: name, label: sentenceCase(name), lead: () => swatch(name) })),
+      ],
+      value: workspace.colour ?? '',
+      label: `Colour for ${workspace.name}`,
+      placeholder: 'Colour',
+      minListWidth: 160,
+      onChange: value => sendAction('workspace-colour', { id: workspace.id, n: value === '' ? -1 : WORKSPACE_COLOURS.indexOf(value) }),
+    });
+  }
+  function swatch(colour: typeof WORKSPACE_COLOURS[number] | null): HTMLElement {
+    const dot = h('span', colour ? 'cust-swatch' : 'cust-swatch is-none');
+    if (colour) dot.style.setProperty('--ws-c', WORKSPACE_HEX[colour]);
+    return dot;
   }
 
   /** Pointer drag on a row's handle, and Up / Down arrows on the focused handle. */
@@ -318,13 +328,15 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
       const editor = h('form', 'cust-editor');
       const rename = input(`Rename workspace ${workspace.name}`, 'Workspace name');
       rename.value = workspace.name;
-      const iconSelect = select(WORKSPACE_ICONS, workspace.icon, `Icon for ${workspace.name}`, value => { if (value) sendAction('workspace-icon', { id: workspace.id, text: value }); }, '');
-      const colour = select(WORKSPACE_COLOURS, workspace.colour, `Colour for ${workspace.name}`, value => sendAction('workspace-colour', { id: workspace.id, n: value === null ? -1 : WORKSPACE_COLOURS.indexOf(value) }));
+      const iconSelect = iconField(workspace);
+      const colour = colourField(workspace);
       editor.addEventListener('submit', event => {
         event.preventDefault();
         if (rename.value.trim() !== '') sendAction('workspace-rename', { id: workspace.id, text: rename.value.trim() });
       });
-      editor.append(rename, iconSelect, colour, submitButton('Save name'));
+      const pair = h('div', 'cust-pair');
+      pair.append(iconSelect.root, colour.root);
+      editor.append(rename, pair, submitButton('Save name'));
       item.append(editor);
     }
     return item;

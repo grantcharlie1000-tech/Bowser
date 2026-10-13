@@ -434,18 +434,35 @@
   align-self: flex-start;
 }
 
-.panel-customize :is(.cust-editor, .cust-form) > .bw-input:not(select) {
+.panel-customize :is(.cust-editor, .cust-form) > .bw-input {
   flex: 1 1 140px;
 }
 
-.panel-customize select.bw-input {
-  padding-inline-end: var(--bw-space-1);
-}
-
-.panel-customize .cust-form.is-stack > select.bw-input,
+.panel-customize .cust-form.is-stack > .bw-select,
 .panel-customize .cust-form-fields > .bw-input {
   flex: none;
   width: 100%;
+}
+
+/* Icon and colour pickers share one row in the workspace editor. */
+.panel-customize .cust-pair {
+  display: grid;
+  flex: 1 1 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bw-space-2);
+}
+
+/* Colour swatch inside a select option or button (same dot as the rail). */
+.panel-customize .cust-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ws-c);
+}
+
+.panel-customize .cust-swatch.is-none {
+  border: 1px solid var(--bw-text-2);
+  background: transparent;
 }
 
 /* Delete confirmation: pinned to the bottom edge, one hairline above it, no card. */
