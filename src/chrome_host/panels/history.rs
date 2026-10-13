@@ -7,8 +7,25 @@ use crate::{
     },
 };
 
-/// Builds a history snapshot from the same grouped model used by the native panel.
+/// Most hosts whose cached favicon rides along in one snapshot.
+const MAX_FAV_HOSTS: usize = 64;
+/// Most favicon data-URI bytes in one snapshot, so it stays well under what the page accepts.
+const MAX_FAV_TOTAL_BYTES: usize = 256 * 1024;
+
+/// Builds a history snapshot from the same grouped model used by the native panel. Cached site
+/// favicons are read from the profile's favicon cache.
 pub(crate) fn snapshot(entries: &[HistoryEntry], query: &str, now: u64, offset_secs: i64) -> String {
+    snapshot_with(entries, query, now, offset_secs, |host| crate::favicon::load_favicon_bytes(host).ok().flatten())
+}
+
+/// `snapshot` with an injectable favicon lookup (host to cached bytes).
+pub(crate) fn snapshot_with(
+    entries: &[HistoryEntry],
+    query: &str,
+    now: u64,
+    offset_secs: i64,
+    favicon_of: impl Fn(&str) -> Option<Vec<u8>>,
+) -> String {
     let mut model = Model::default();
     model.set_query(query);
     model.rebuild(entries, now, offset_secs);
@@ -32,6 +49,26 @@ pub(crate) fn snapshot(entries: &[HistoryEntry], query: &str, now: u64, offset_s
             }
         });
         out.string("query", query);
+        // `favs`: host -> PNG data URI for the unique hosts of the rows that have a sendable cached
+        // favicon, capped in count and total size. A host without one is simply absent.
+        let mut hosts: Vec<&str> = Vec::new();
+        for row in &model.rows {
+            let Row::Entry(index) = row else { continue };
+            let Some(line) = model.lines.get(*index) else { continue };
+            let host = json::capped(&line.host, 64);
+            if !host.is_empty() && !hosts.contains(&host) { hosts.push(host); }
+        }
+        out.object("favs", |favs| {
+            let (mut count, mut total) = (0, 0);
+            for host in hosts {
+                if count == MAX_FAV_HOSTS { break; }
+                let Some(uri) = favicon_of(host).as_deref().and_then(protocol::favicon_data_uri) else { continue };
+                if total + uri.len() > MAX_FAV_TOTAL_BYTES { continue; }
+                total += uri.len();
+                count += 1;
+                favs.string(host, &uri);
+            }
+        });
     }).unwrap_or_else(|| Json::object(|_| {}))
 }
 
@@ -87,7 +124,42 @@ mod tests {
     #[test]
     fn snapshot_uses_the_native_day_groups_and_one_based_entry_ids() {
         let entries = vec![(0, "https://example.com/path".to_owned(), "Page".to_owned())];
-        assert_eq!(snapshot(&entries, "", 0, 0), r#"{"v":1,"t":"snap","p":"history","d":{"rows":[{"label":"Today","count":1},{"id":2439783619,"title":"Page","host":"example.com","clock":"00:00"}],"query":""}}"#);
+        assert_eq!(snapshot_with(&entries, "", 0, 0, |_| None), r#"{"v":1,"t":"snap","p":"history","d":{"rows":[{"label":"Today","count":1},{"id":2439783619,"title":"Page","host":"example.com","clock":"00:00"}],"query":"","favs":{}}}"#);
+    }
+
+    fn png(len: usize) -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0, 16, 0, 0, 0, 16];
+        bytes.resize(len, 0);
+        bytes
+    }
+
+    #[test]
+    fn snapshot_adds_a_favs_map_for_unique_hosts_with_sendable_cached_pngs() {
+        let entries = vec![
+            (2, "https://example.com/a".to_owned(), "A".to_owned()),
+            (1, "https://example.com/b".to_owned(), "B".to_owned()),
+            (0, "https://nofav.test/".to_owned(), "C".to_owned()),
+            (0, "https://ico.test/".to_owned(), "D".to_owned()),
+        ];
+        let icon = png(40);
+        let json = snapshot_with(&entries, "", 3, 0, |host| match host {
+            "example.com" => Some(icon.clone()),
+            "ico.test" => Some(vec![0, 0, 1, 0]),
+            _ => None,
+        });
+        let uri = protocol::favicon_data_uri(&icon).unwrap();
+        assert!(json.ends_with(&format!(r#""favs":{{"example.com":"{uri}"}}}}}}"#)), "{json}");
+        assert_eq!(json.matches(r#""example.com":"#).count(), 1);
+    }
+
+    #[test]
+    fn favs_are_capped_by_host_count_and_total_bytes() {
+        let entries: Vec<HistoryEntry> = (0..100).map(|i| (10, format!("https://h{i}.test/"), "T".to_owned())).collect();
+        let few = snapshot_with(&entries, "", 10, 0, |_| Some(png(40)));
+        assert_eq!(few.matches("data:image/png").count(), MAX_FAV_HOSTS);
+        let big = snapshot_with(&entries, "", 10, 0, |_| Some(png(protocol::MAX_FAVICON_BYTES)));
+        let count = big.matches("data:image/png").count();
+        assert!(count > 0 && count <= MAX_FAV_TOTAL_BYTES / (protocol::MAX_FAVICON_BYTES * 4 / 3));
     }
 
     #[test]
