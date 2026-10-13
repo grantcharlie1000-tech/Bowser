@@ -52,7 +52,7 @@ test('surface and component files read --bw-* tokens, not the raw host inputs', 
 });
 
 test('every surface file names its owner in a header comment', () => {
-  for (const file of ['toolbar', 'tabs', 'rail', 'sidebar', 'panels', 'menu', 'dialog', 'palette', 'siteinfo']) {
+  for (const file of ['toolbar', 'tabs', 'rail', 'sidebar', 'panels', 'menu', 'dialog', 'palette', 'siteinfo', 'split']) {
     const text = readFileSync(join(stylesDir, `${file}.css`), 'utf8');
     assert.match(text.slice(0, 600), /Surface: [A-Z ]+.*Owner:/s, file);
   }

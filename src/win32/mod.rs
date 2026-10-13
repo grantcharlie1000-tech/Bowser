@@ -38,6 +38,9 @@ mod settings_panel;
 pub mod side_panel;
 mod site_info;
 mod smooth;
+// --- split view ---
+mod split_ui;
+// --- end split view ---
 mod window;
 
 pub(crate) use window::{
@@ -120,6 +123,12 @@ pub(crate) const WM_HTML_CHROME_ENV: u32 = windows::Win32::UI::WindowsAndMessagi
 /// HTML history view failed; native content factories are restored on the UI thread.
 pub(crate) const WM_HTML_PANEL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x82;
 // --- end panel host ---
+// --- split view ---
+/// The split view's HTML host queued a command (`split_ui::run_queued` runs it).
+pub(crate) const WM_SPLIT_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5B1;
+/// A page asked to open a link in split view (the URL waits in `split_ui`'s queue).
+pub(crate) const WM_SPLIT_LINK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5B2;
+// --- end split view ---
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
@@ -138,6 +147,13 @@ pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
 pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
+
+// --- split view ---
+/// Opens `url` beside the shown tab once the window procedure runs (link context menu).
+pub(crate) fn queue_split_link(owner: HWND, url: url::Url) {
+    split_ui::queue_link(owner, url);
+}
+// --- end split view ---
 
 pub(crate) fn post(
     hwnd: HWND,

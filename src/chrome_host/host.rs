@@ -44,6 +44,9 @@ use super::{
         TokenBucket, is_popup_command, parse_command,
     },
 };
+// --- split view ---
+use super::{assets::SPLIT_START_URL, protocol::SplitCommand};
+// --- end split view ---
 use crate::shortcuts::{self, Command as Shortcut};
 
 const VK_BACK: u32 = 0x08;
@@ -167,6 +170,10 @@ pub enum View {
     DialogRename,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
+    // --- split view ---
+    /// The split view's empty side ("choose a tab") and the tab drop-zone preview.
+    Split,
+    // --- end split view ---
 }
 
 impl View {
@@ -183,6 +190,7 @@ impl View {
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
             Self::DialogRename => RENAME_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
+            Self::Split => SPLIT_START_URL,
         }
     }
 }
@@ -993,7 +1001,10 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
         View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_)),
+        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+            // --- split view ---
+            || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),
+            // --- end split view ---
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. }),
@@ -1003,6 +1014,9 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
+        // --- split view ---
+        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus)),
+        // --- end split view ---
     }
 }
 

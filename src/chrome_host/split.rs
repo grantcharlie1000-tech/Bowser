@@ -1,0 +1,257 @@
+//! Split view messages (Rust to JS) and the pure checks behind the split view's commands.
+//! See docs/design/split-view.md and the "Split view" section of docs/html-chrome-protocol.md.
+//!
+//! - `pair` goes to the tab strip and the toolbar: which two tabs form the window's pair, which side
+//!   is focused and whether the pair is shown.
+//! - `splitpick` fills the empty side (`View::Split`): the open tabs it can take and recently closed
+//!   pages; `splitdrop` turns the same view into the drop-zone card while a tab is dragged;
+//!   `splithide` clears it.
+
+use super::json::{capped, Json};
+use super::protocol::{favicon_data_uri, MAX_TAB_TITLE_CHARS};
+use crate::split_view::Pane;
+
+/// Most open tabs listed on the empty side.
+pub const MAX_PICK_TABS: usize = 100;
+/// Most recently closed pages listed on the empty side (the `reopen` index range).
+pub const MAX_PICK_CLOSED: usize = super::protocol::MAX_SPLIT_CLOSED as usize;
+/// Longest host shown under a row, in characters.
+pub const MAX_HOST_CHARS: usize = 253;
+/// Total base64 favicon text one `splitpick` message may carry; rows past it get no favicon.
+pub const PICK_FAVICON_BUDGET: usize = 192 * 1024;
+
+fn side(pane: Pane) -> &'static str {
+    match pane {
+        Pane::Left => "l",
+        Pane::Right => "r",
+    }
+}
+
+/// `{"v":1,"t":"pair","l":..,"r":..,"f":"l"|"r","shown":..}` with wire ids (`TabId + 1`), or
+/// `l` and `r` both `0` when the window has no pair.
+pub fn pair_json(pair: Option<(u32, u32, Pane, bool)>) -> String {
+    let (l, r, focused, shown) = pair.unwrap_or((0, 0, Pane::Left, false));
+    Json::object(|o| {
+        o.int("v", 1);
+        o.string("t", "pair");
+        o.uint("l", u64::from(l));
+        o.uint("r", u64::from(r));
+        o.string("f", side(focused));
+        o.bool("shown", shown);
+    })
+}
+
+/// An open tab the empty side offers.
+pub struct PickTab<'a> {
+    /// Wire id (`TabId + 1`).
+    pub id: u32,
+    pub title: &'a str,
+    pub host: &'a str,
+    pub png: Option<&'a [u8]>,
+    pub private: bool,
+}
+
+/// A recently closed page the empty side offers (its index is the `reopen` `n`).
+pub struct PickClosed<'a> {
+    pub title: &'a str,
+    pub host: &'a str,
+}
+
+/// `{"v":1,"t":"splitpick","side":..,"tabs":[{id,title,host,fav,private}],"closed":[{n,title,host}]}`.
+/// Lists are capped, text is capped on character boundaries and favicons pass the PNG gate and the
+/// message budget (a row without one gets `""`).
+pub fn pick_json(pane: Pane, tabs: &[PickTab<'_>], closed: &[PickClosed<'_>]) -> String {
+    let mut budget = PICK_FAVICON_BUDGET;
+    Json::object(|o| {
+        o.int("v", 1);
+        o.string("t", "splitpick");
+        o.string("side", side(pane));
+        o.array("tabs", |a| {
+            for tab in tabs.iter().take(MAX_PICK_TABS) {
+                let fav = tab
+                    .png
+                    .and_then(favicon_data_uri)
+                    .filter(|uri| uri.len() <= budget)
+                    .unwrap_or_default();
+                budget -= fav.len();
+                a.object(|o| {
+                    o.uint("id", u64::from(tab.id));
+                    o.string("title", capped(tab.title, MAX_TAB_TITLE_CHARS));
+                    o.string("host", capped(tab.host, MAX_HOST_CHARS));
+                    o.string("fav", &fav);
+                    o.bool("private", tab.private);
+                });
+            }
+        });
+        o.array("closed", |a| {
+            for (n, page) in closed.iter().take(MAX_PICK_CLOSED).enumerate() {
+                a.object(|o| {
+                    o.uint("n", n as u64);
+                    o.string("title", capped(page.title, MAX_TAB_TITLE_CHARS));
+                    o.string("host", capped(page.host, MAX_HOST_CHARS));
+                });
+            }
+        });
+    })
+}
+
+/// `{"v":1,"t":"splitdrop","side":..,"title":..}`: the drop-zone card for a dragged tab.
+pub fn drop_json(pane: Pane, title: &str) -> String {
+    Json::object(|o| {
+        o.int("v", 1);
+        o.string("t", "splitdrop");
+        o.string("side", side(pane));
+        o.string("title", capped(title, MAX_TAB_TITLE_CHARS));
+    })
+}
+
+/// `{"v":1,"t":"splithide"}`: the view is about to be hidden; it drops its content.
+pub fn hide_json() -> String {
+    r#"{"v":1,"t":"splithide"}"#.to_owned()
+}
+
+/// The host shown under a row: the URL's host without a leading `www.`, or `""`.
+pub fn display_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.strip_prefix("www.").unwrap_or(host).to_owned()))
+        .unwrap_or_default()
+}
+
+/// Converts a point in CSS pixels of a view whose top-left corner is at `origin` (screen pixels)
+/// to screen pixels at `scale` (device pixels per CSS pixel).
+pub fn css_to_screen(origin: (i32, i32), scale: f32, x: u32, y: u32) -> (i32, i32) {
+    let to_px = |value: u32| (value as f32 * scale).round() as i32;
+    (origin.0.saturating_add(to_px(x)), origin.1.saturating_add(to_px(y)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chrome_host::protocol::{parse_command, Command, SplitCommand};
+
+    fn png(size: usize) -> Vec<u8> {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend_from_slice(&[0, 0, 0, 13]);
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&16u32.to_be_bytes());
+        png.extend_from_slice(&16u32.to_be_bytes());
+        png.resize(size, 0);
+        png
+    }
+
+    #[test]
+    fn pair_message_names_both_halves_and_the_focused_side() {
+        assert_eq!(
+            pair_json(Some((3, 8, Pane::Right, true))),
+            r#"{"v":1,"t":"pair","l":3,"r":8,"f":"r","shown":true}"#
+        );
+        assert_eq!(pair_json(None), r#"{"v":1,"t":"pair","l":0,"r":0,"f":"l","shown":false}"#);
+    }
+
+    #[test]
+    fn pick_message_caps_lists_text_and_favicons() {
+        let long = "x".repeat(MAX_TAB_TITLE_CHARS + 20);
+        let icon = png(64);
+        let tabs: Vec<PickTab<'_>> = (0..MAX_PICK_TABS as u32 + 5)
+            .map(|id| PickTab { id: id + 1, title: &long, host: "example.com", png: Some(&icon), private: false })
+            .collect();
+        let closed: Vec<PickClosed<'_>> = (0..12).map(|_| PickClosed { title: "Old", host: "old.test" }).collect();
+        let json = pick_json(Pane::Left, &tabs, &closed);
+        assert_eq!(json.matches("\"id\":").count(), MAX_PICK_TABS);
+        assert_eq!(json.matches("\"n\":").count(), MAX_PICK_CLOSED);
+        assert!(!json.contains(&"x".repeat(MAX_TAB_TITLE_CHARS + 1)));
+        assert!(json.contains("data:image/png;base64,"));
+        let bad = [0u8; 40];
+        let one = [PickTab { id: 1, title: "<b>", host: "h", png: Some(&bad), private: true }];
+        let json = pick_json(Pane::Right, &one, &[]);
+        assert_eq!(
+            json,
+            r#"{"v":1,"t":"splitpick","side":"r","tabs":[{"id":1,"title":"\u003cb>","host":"h","fav":"","private":true}],"closed":[]}"#
+        );
+    }
+
+    #[test]
+    fn favicons_stop_at_the_message_budget() {
+        let icon = png(crate::chrome_host::protocol::MAX_FAVICON_BYTES);
+        let tabs: Vec<PickTab<'_>> = (0..40)
+            .map(|id| PickTab { id: id + 1, title: "t", host: "h", png: Some(&icon), private: false })
+            .collect();
+        let json = pick_json(Pane::Left, &tabs, &[]);
+        let favs = json.matches("data:image/png;base64,").count();
+        assert!(favs > 0 && favs < 40, "{favs} favicons");
+        assert!(json.len() < PICK_FAVICON_BUDGET + 40 * 200);
+    }
+
+    #[test]
+    fn hosts_and_coordinates() {
+        assert_eq!(display_host("https://www.example.com/a?b"), "example.com");
+        assert_eq!(display_host("https://docs.rs/x"), "docs.rs");
+        assert_eq!(display_host("not a url"), "");
+        assert_eq!(css_to_screen((100, 50), 1.5, 10, 20), (115, 80));
+        assert_eq!(css_to_screen((i32::MAX - 1, 0), 2.0, 16_384, 0), (i32::MAX, 0));
+    }
+
+    #[test]
+    fn split_commands_take_exactly_their_fields() {
+        let ok = |raw: &str| match parse_command(raw) {
+            Ok(Command::Split(command)) => command,
+            other => panic!("{raw}: {other:?}"),
+        };
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"pick","id":4}"#), SplitCommand::Pick { id: 4 });
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"reopen","n":7}"#), SplitCommand::Reopen { n: 7 });
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"go","text":"example.com"}"#), SplitCommand::Go("example.com".into()));
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"close"}"#), SplitCommand::Close);
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"focus"}"#), SplitCommand::Focus);
+        assert_eq!(
+            ok(r#"{"v":1,"t":"split","a":"over","id":2,"x":0,"y":16384}"#),
+            SplitCommand::DragOver { id: 2, x: 0, y: 16384 }
+        );
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"drop","id":2}"#), SplitCommand::Drop { id: 2 });
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"end","id":2}"#), SplitCommand::DragEnd { id: 2 });
+        for raw in [
+            r#"{"v":1,"t":"split","a":"pick"}"#,
+            r#"{"v":1,"t":"split","a":"pick","id":-1}"#,
+            r#"{"v":1,"t":"split","a":"pick","id":"4"}"#,
+            r#"{"v":1,"t":"split","a":"pick","id":4,"n":1}"#,
+            r#"{"v":1,"t":"split","a":"reopen","n":8}"#,
+            r#"{"v":1,"t":"split","a":"go","text":"   "}"#,
+            r#"{"v":1,"t":"split","a":"close","id":1}"#,
+            r#"{"v":1,"t":"split","a":"over","id":2,"x":16385,"y":0}"#,
+            r#"{"v":1,"t":"split","a":"over","id":2,"x":1}"#,
+            r#"{"v":1,"t":"split","a":"Pick","id":4}"#,
+            r#"{"v":1,"t":"split","a":"swap"}"#,
+            r#"{"v":1,"t":"split","a":"pick","id":4,"extra":1}"#,
+            r#"{"v":1,"t":"split","a":"over","id":2,"x":1,"y":2,"n":3}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+        let long = format!(r#"{{"v":1,"t":"split","a":"go","text":"{}"}}"#, "x".repeat(2049));
+        assert!(parse_command(&long).is_err());
+    }
+
+    #[test]
+    fn split_messages_match_committed_fixture() {
+        let icon = png(40);
+        let tabs = [
+            PickTab { id: 3, title: "Docs <home>", host: "docs.example", png: Some(&icon), private: false },
+            PickTab { id: 9, title: "", host: "", png: None, private: true },
+        ];
+        let closed = [PickClosed { title: "Old page 😀", host: "old.example" }];
+        let content = format!(
+            "{{\"pair\":{},\"pairNone\":{},\"pick\":{},\"drop\":{},\"hide\":{}}}\n",
+            pair_json(Some((3, 8, Pane::Right, true))),
+            pair_json(None),
+            pick_json(Pane::Right, &tabs, &closed),
+            drop_json(Pane::Left, "Example"),
+            hide_json(),
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/split-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::create_dir_all(path.parent().expect("fixtures directory")).expect("create fixtures directory");
+            std::fs::write(&path, content).expect("write split messages fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed split messages fixture"), content);
+        }
+    }
+}

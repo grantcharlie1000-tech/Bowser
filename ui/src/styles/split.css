@@ -1,0 +1,239 @@
+/*
+ * Surface: SPLIT (?view=split, the split view's empty side and drop-zone card; plus the joined split
+ * pair in the tab strip and vertical sidebar). Owner: split view lane.
+ * Built by ui/src/split.ts (empty side "choose a tab" picker and drop card) and
+ * ui/src/split-chrome.ts (data-split / data-pair marks on .tab and .side-tab, toolbar glyph).
+ * Spec: docs/design/split-view.md. Motion is transform/opacity only (.bw-enter.is-scale); nothing
+ * waits for an animation, and reduced motion falls back to the base layer's short fade.
+ */
+
+/* ---- Host: an opaque themed pane (the overlay rounds its corners and draws its edge) ---- */
+#app.split-view {
+  display: block;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0;
+  background: var(--bw-window);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+/* ---- Empty side: one centred column (heading, search, lists) ---- */
+.sv-column {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  width: min(520px, calc(100% - 2 * var(--bw-space-4)));
+  max-height: calc(100vh - max(24px, 12vh) - var(--bw-space-4));
+  margin: max(24px, 12vh) auto 0;
+}
+
+.sv-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  min-height: 28px;
+}
+
+.sv-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sv-close { flex: none; }
+
+.sv-search {
+  position: relative;
+  display: block;
+  flex: none;
+}
+
+.sv-search-icon {
+  position: absolute;
+  top: 50%;
+  left: var(--bw-space-3);
+  translate: 0 -50%;
+  color: var(--bw-text-2);
+  pointer-events: none;
+}
+
+.sv-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding-left: calc(var(--bw-space-3) + 16px + var(--bw-space-2));
+}
+
+/* The list is one card: island fill, hairline edge, its own scroller. */
+.sv-list {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--bw-space-1);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-island);
+  scrollbar-width: thin;
+}
+
+.sv-list:empty { display: none; }
+
+.sv-section {
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1);
+}
+
+.sv-section:first-child { padding-top: var(--bw-space-1); }
+
+.sv-row {
+  flex: none;
+  gap: var(--bw-space-3);
+  padding: 0 var(--bw-space-2);
+  border-radius: var(--bw-r-row);
+  cursor: default;
+}
+
+.sv-row[aria-selected="true"] { background: var(--bw-selection); }
+
+.sv-face {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--bw-text-2);
+}
+
+.sv-fav {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.sv-row .bw-row-title,
+.sv-row .bw-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+.sv-empty,
+.sv-hint {
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sv-empty[hidden] { display: none; }
+
+/* ---- Drop-zone card: where a dragged tab will open ---- */
+.sv-drop {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100vh;
+  padding: var(--bw-space-3);
+}
+
+.sv-drop-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-2);
+  width: 100%;
+  height: 100%;
+  padding: var(--bw-space-6);
+  border: 2px dashed color-mix(in srgb, var(--bw-accent) 70%, transparent);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-accent-soft);
+  text-align: center;
+}
+
+.sv-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+  color: var(--bw-on-accent);
+}
+
+.sv-drop-label {
+  font-weight: var(--bw-weight-strong);
+}
+
+.sv-drop-title {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+/* ---- The split pair in the horizontal strip: one joined capsule ---- */
+/* The halves touch (the strip's 4px gap is taken back) and share a 1px seam; inner corners are 3px.
+   Shown pair: both halves raised, the focused half (.active) the lightest. Widths: shown halves
+   1.25 each (the widest unit), parked halves 0.7 each (narrower together than the active tab). */
+.strip .tab[data-split="l"] {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+  border-right-width: 0;
+}
+
+.strip .tab[data-split="r"] {
+  margin-left: calc(-1 * var(--bw-space-1));
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+  border-left-color: var(--bw-hairline);
+}
+
+.strip .tab[data-pair="shown"] { flex-grow: 1.25; }
+.strip .tab[data-pair="parked"] { flex-grow: 0.7; }
+
+.strip .tab[data-pair="shown"] {
+  border-color: var(--bw-border);
+  color: var(--bw-text);
+}
+
+.strip .tab[data-split="r"][data-pair="shown"] { border-left-color: var(--bw-hairline); }
+.strip .tab[data-pair="shown"]:not(.active)::before { background: color-mix(in srgb, var(--bw-island) 55%, transparent); }
+:root[data-scheme="light"] .strip .tab[data-pair="shown"]:not(.active)::before { background: color-mix(in srgb, #fff 40%, transparent); }
+
+/* ---- The split pair in the vertical sidebar: two rows joined into one capsule ---- */
+.side-tab[data-split="l"] {
+  border-bottom-right-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+
+.side-tab[data-split="r"] {
+  margin-top: calc(-1 * var(--bw-space-1) - 1px);
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+  border-top-color: var(--bw-hairline);
+}
+
+.side-tab[data-pair="shown"]:not(.is-active) {
+  border-color: var(--bw-border);
+  background-color: color-mix(in srgb, var(--bw-island) 55%, transparent);
+}
+
+.side-tab[data-split="r"][data-pair="shown"] { border-top-color: var(--bw-hairline); }

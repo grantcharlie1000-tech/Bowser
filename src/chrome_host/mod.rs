@@ -9,6 +9,9 @@ mod guard;
 pub mod host;
 pub mod json;
 pub mod protocol;
+// --- split view ---
+pub mod split;
+// --- end split view ---
 // --- panel host (lane P) ---
 pub mod panels;
 // --- end panel host ---

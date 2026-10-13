@@ -246,7 +246,81 @@ pub enum Command {
     /// The toolbar closed the list (Escape); the typed text stays.
     SuggestEnd,
     // --- end omnibox suggest ---
+    // --- split view ---
+    /// The split view's empty side (`View::Split`) or a tab dragged out of the strip (`View::Tabs`).
+    Split(SplitCommand),
+    // --- end split view ---
 }
+
+// --- split view ---
+/// Most rows the empty side lists under "Recently closed"; `reopen` names one by index.
+pub const MAX_SPLIT_CLOSED: u32 = 8;
+/// Largest drag coordinate accepted from the tab strip, in CSS pixels of that view.
+pub const MAX_SPLIT_COORD: u32 = 16_384;
+
+/// One validated split-view command. Tab ids are wire ids (`TabId + 1`); Rust checks every id
+/// against the live model before acting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SplitCommand {
+    /// The empty side takes open tab `id`.
+    Pick { id: u32 },
+    /// The empty side opens recently closed row `n` again.
+    Reopen { n: u8 },
+    /// The empty side navigates to typed text (Rust normalises it as the omnibox does).
+    Go(String),
+    /// Close the empty side (its tab), which ends the split.
+    Close,
+    /// The empty side was clicked: it becomes the focused side.
+    Focus,
+    /// Tab `id` is being dragged at `x`,`y` (CSS pixels of the tab view; below the strip means over
+    /// the page).
+    DragOver { id: u32, x: u32, y: u32 },
+    /// Tab `id` was released while the page showed a split drop target.
+    Drop { id: u32 },
+    /// The drag of tab `id` ended without a split drop.
+    DragEnd { id: u32 },
+}
+
+/// The `a` of a `split` message, with exactly the fields that action takes.
+fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolError> {
+    let a = str_field(fields, "a")?;
+    let wanted: &[&str] = match a {
+        "pick" | "drop" | "end" => &["id"],
+        "reopen" => &["n"],
+        "go" => &["text"],
+        "close" | "focus" => &[],
+        "over" => &["id", "x", "y"],
+        _ => return Err(ProtocolError::InvalidValue("a")),
+    };
+    for name in ["id", "n", "text", "x", "y"] {
+        if field(fields, name).is_some() != wanted.contains(&name) {
+            return Err(ProtocolError::UnknownKey(name.to_owned()));
+        }
+    }
+    let coord = |name: &'static str| -> Result<u32, ProtocolError> {
+        let value = uint_field(fields, name)?;
+        if value > MAX_SPLIT_COORD { Err(ProtocolError::InvalidValue(name)) } else { Ok(value) }
+    };
+    Ok(match a {
+        "pick" => SplitCommand::Pick { id: uint_field(fields, "id")? },
+        "drop" => SplitCommand::Drop { id: uint_field(fields, "id")? },
+        "end" => SplitCommand::DragEnd { id: uint_field(fields, "id")? },
+        "reopen" => {
+            let n = uint_field(fields, "n")?;
+            if n >= MAX_SPLIT_CLOSED { return Err(ProtocolError::InvalidValue("n")); }
+            SplitCommand::Reopen { n: n as u8 }
+        }
+        "go" => {
+            let text = text_field(fields)?;
+            if text.trim().is_empty() { return Err(ProtocolError::InvalidValue("text")); }
+            SplitCommand::Go(text)
+        }
+        "close" => SplitCommand::Close,
+        "focus" => SplitCommand::Focus,
+        _ => SplitCommand::DragOver { id: uint_field(fields, "id")?, x: coord("x")?, y: coord("y")? },
+    })
+}
+// --- end split view ---
 
 // --- hover layer ---
 /// Largest coordinate or size accepted in a hover rectangle, in CSS pixels.
@@ -775,6 +849,9 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // --- end hover layer ---
         "suggestPick" | "suggestPreview" => &["seq", "i"],
         "suggestEnd" => &[],
+        // --- split view ---
+        "split" => &["a", "id", "n", "text", "x", "y"],
+        // --- end split view ---
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -924,6 +1001,9 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             if kind == "suggestPick" { Command::SuggestPick { seq, i: i as u8 } } else { Command::SuggestPreview { seq, i: i as u8 } }
         }
         "suggestEnd" => Command::SuggestEnd,
+        // --- split view ---
+        "split" => Command::Split(split_command(fields)?),
+        // --- end split view ---
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
 }

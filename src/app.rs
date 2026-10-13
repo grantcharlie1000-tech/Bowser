@@ -554,6 +554,16 @@ pub struct App {
     tab_model: crate::tabs::TabList,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
+    // --- split view ---
+    /// The window's split pair while another tab is shown alone (Chrome keeps the pair as one tab).
+    /// Selecting either member shows the pair again. At most one of this and `split_view` is set.
+    split_parked: Option<SplitView>,
+    /// Recently closed tabs for the split view's empty side (newest first, http(s) only, never a
+    /// private tab). In memory only.
+    recently_closed: std::collections::VecDeque<ClosedTab>,
+    /// A split side's controller became ready; the window re-applies the panes.
+    split_refresh: bool,
+    // --- end split view ---
     split_bounds: Option<(
         windows::Win32::Foundation::RECT,
         windows::Win32::Foundation::RECT,
@@ -598,6 +608,18 @@ pub struct App {
     /// only.
     reader_prefs: crate::reader::Prefs,
 }
+
+// --- split view ---
+/// The two pane rectangles of a shown split, in the window's client coordinates.
+pub type SplitBounds = (windows::Win32::Foundation::RECT, windows::Win32::Foundation::RECT);
+
+/// A closed tab offered again by the split view's empty side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosedTab {
+    pub url: String,
+    pub title: String,
+}
+// --- end split view ---
 
 struct AppTab {
     id: TabId,
@@ -1257,10 +1279,10 @@ impl App {
             state.tab_model.select(id);
             let _ = state.workspaces.add_tab(id);
             let _ = state.workspaces.select_tab(id);
-            if let Some(mut split) = state.split_view {
-                let _ = split.replace_focused(id);
-                state.split_view = Some(split);
-            }
+            // --- split view ---
+            // A new tab is shown alone, as in Chrome; the pair stays together (parked) in the strip.
+            state.park_split();
+            // --- end split view ---
             let mut fresh = AppTab::empty(id);
             fresh.private = private;
             state.tabs.push(fresh);
@@ -1311,6 +1333,7 @@ impl App {
     }
 
     pub fn close_tab(app: &AppRef, id: TabId) -> bool {
+        let mut dissolved_split = false;
         let (changed, hwnd, active, was_active, last_tab) = {
             let mut state = app.borrow_mut();
             let Some(index) = state.tabs.iter().position(|tab| tab.id == id) else {
@@ -1319,11 +1342,28 @@ impl App {
             state.tab_markers.remove(&id);
             state.memberships.remove(&id);
             state.in_flight_domains.finish(id);
+            // --- split view ---
+            state.remember_closed_tab(index);
+            if state.split_parked.is_some_and(|split| split.contains(id)) {
+                state.split_parked = None;
+            }
             if let Some(remaining) = state.split_view.and_then(|split| split.remove(id)) {
                 state.split_view = None;
                 state.split_bounds = None;
                 state.tab_model.select(remaining);
+                let _ = state.workspaces.select_tab(remaining);
+                if let Some((progress, usable)) = state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == remaining)
+                    .map(|tab| (tab.progress, tab.page_usable))
+                {
+                    state.navigation_progress = progress;
+                    state.page_loaded = usable;
+                }
+                dissolved_split = true;
             }
+            // --- end split view ---
             if state.tabs.len() == 1 {
                 let outcome = state.tab_model.close(id);
                 let _ = state.workspaces.replace_tab(id, outcome.new_active);
@@ -1407,6 +1447,12 @@ impl App {
         if last_tab {
             app.borrow_mut().page_loaded = false;
         }
+        // --- split view ---
+        // The surviving side was sized as half a split: give it the whole viewport again.
+        if dissolved_split {
+            Self::apply_visible_panes(app);
+        }
+        // --- end split view ---
         if changed {
             Self::post_tab_changed(hwnd, active);
         }
@@ -1419,9 +1465,26 @@ impl App {
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
         let _ = Self::expand_group_for_tab(app, id);
-        if app.borrow().split_view.is_some() {
+        // --- split view ---
+        let (shown, parked, known) = {
+            let state = app.borrow();
+            (state.split_view, state.split_parked, state.tab_model.get(id).is_some())
+        };
+        if !known {
+            return false;
+        }
+        if shown.is_some_and(|split| split.contains(id)) {
             return Self::select_split_tab(app, id);
         }
+        if parked.is_some_and(|split| split.contains(id)) {
+            return Self::show_parked_split(app, id);
+        }
+        // Another tab while the pair is shown: that tab is shown alone and the pair is parked.
+        let was_split_shown = shown.is_some();
+        if was_split_shown {
+            app.borrow_mut().park_split();
+        }
+        // --- end split view ---
         let (hwnd, previous, old_has_controller, new_has_controller) = {
             let mut state = app.borrow_mut();
             let previous = state.tab_model.active();
@@ -1481,6 +1544,12 @@ impl App {
             let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
             Ok(())
         });
+        // --- split view ---
+        // `select_tab` keeps every visible controller; hide the parked pair's other side too.
+        if was_split_shown {
+            Self::apply_visible_panes(app);
+        }
+        // --- end split view ---
         Self::restore_discarded_tab(app, id);
         Self::reader_probe_if_needed(app, id);
         Self::post_tab_changed(hwnd, id);
@@ -1489,6 +1558,30 @@ impl App {
         Self::schedule_tab_idle_timer(app);
         true
     }
+
+    // --- split view ---
+    /// Shows the parked pair again with `id`'s side focused (selecting either half in the strip).
+    fn show_parked_split(app: &AppRef, id: TabId) -> bool {
+        let split = {
+            let mut state = app.borrow_mut();
+            let Some(mut split) = state.split_parked.take() else {
+                return false;
+            };
+            let Some(pane) = split.pane_for(id) else {
+                state.split_parked = Some(split);
+                return false;
+            };
+            split.focus(pane);
+            if let Some(workspace_id) = state.workspaces.workspace_for(id) {
+                let _ = state.workspaces.switch_to(workspace_id);
+            }
+            let _ = state.workspaces.select_tab(id);
+            split
+        };
+        let bounds = app.borrow().split_bounds;
+        Self::show_split(app, split, bounds)
+    }
+    // --- end split view ---
 
     fn select_split_tab(app: &AppRef, id: TabId) -> bool {
         let (active, hwnd) = {
@@ -2239,37 +2332,142 @@ impl App {
         app.borrow().tab_model.len()
     }
 
-    pub fn split_view(app: &AppRef) -> Option<SplitView> {
-        app.borrow().split_view
-    }
-
+    // --- split view ---
+    /// Puts the shown tabs on screen: both sides of a shown pair at their pane bounds, or the active
+    /// tab alone at the viewport. A side whose tab has no page yet (the empty side) gets no
+    /// controller: the window shows the "choose a tab" surface there instead.
     fn apply_visible_panes(app: &AppRef) {
-        let (split, bounds, active, viewport) = {
+        let (split, bounds, active, viewport, has_page) = {
             let state = app.borrow();
+            let has_page = |id: TabId| {
+                state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .is_some_and(|tab| tab.controller_created || tab.url.is_some())
+            };
+            let split = state.split_view;
+            let pages = split.map(|split| (has_page(split.left), has_page(split.right)));
             (
-                state.split_view,
+                split.zip(pages),
                 state.split_bounds,
                 state.tab_model.active(),
                 state.last_valid_viewport_bounds,
+                has_page(state.tab_model.active()),
             )
         };
         let _ = Self::with_engine(app, |engine| {
-            if let (Some(split), Some((left, right))) = (split, bounds) {
-                engine.set_visible_tabs(
-                    &[(split.left, left), (split.right, right)],
-                    split.focused_tab(),
-                )
+            if let (Some((split, (left_page, right_page))), Some((left, right))) = (split, bounds) {
+                let mut panes = Vec::with_capacity(2);
+                if left_page {
+                    panes.push((split.left, left));
+                }
+                if right_page {
+                    panes.push((split.right, right));
+                }
+                engine.set_visible_tabs(&panes, split.focused_tab())
             } else if let Some(viewport) = viewport {
                 // `select_tab` preserves all currently visible tabs. After leaving split view
                 // that would leave the other pane controller visible over the single page.
-                engine.set_visible_tabs(&[(active, viewport)], active)
+                let panes = if has_page { vec![(active, viewport)] } else { Vec::new() };
+                engine.set_visible_tabs(&panes, active)
             } else {
                 engine.select_tab(active)
             }
         });
     }
 
-    /// Opens a non-persisted split and keeps both existing tab controllers alive and visible.
+    /// Parks the shown pair (another tab is about to be shown alone). Its tabs count as hidden.
+    fn park_split(&mut self) {
+        let Some(split) = self.split_view.take() else {
+            return;
+        };
+        self.split_parked = Some(split);
+        let now = Instant::now();
+        for tab in &mut self.tabs {
+            if split.contains(tab.id) {
+                tab.hidden_since.get_or_insert(now);
+                tab.suspended = false;
+            }
+        }
+    }
+
+    /// Remembers a closing tab for the empty side's "Recently closed" list.
+    fn remember_closed_tab(&mut self, index: usize) {
+        const KEEP: usize = 8;
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        if tab.private {
+            return;
+        }
+        let Some(url) = tab.url.as_ref().filter(|url| matches!(url.scheme(), "http" | "https")) else {
+            return;
+        };
+        let entry = ClosedTab {
+            url: url.as_str().to_owned(),
+            title: tab.title.clone(),
+        };
+        self.recently_closed.retain(|closed| closed.url != entry.url);
+        self.recently_closed.push_front(entry);
+        self.recently_closed.truncate(KEEP);
+    }
+
+    /// The window's pair and whether it is shown (`false`: parked while another tab is shown).
+    pub fn split_pair(app: &AppRef) -> Option<(SplitView, bool)> {
+        let state = app.borrow();
+        state
+            .split_view
+            .map(|split| (split, true))
+            .or_else(|| state.split_parked.map(|split| (split, false)))
+    }
+
+    /// A tab with no page: no address and no controller (a new tab). The split view's empty side.
+    pub fn tab_is_blank(app: &AppRef, id: TabId) -> bool {
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| !tab.controller_created && tab.url.is_none())
+    }
+
+    /// Re-applies the shown split's panes once after a side's controller became ready.
+    pub fn refresh_split_panes(app: &AppRef) {
+        let refresh = std::mem::take(&mut app.borrow_mut().split_refresh);
+        if refresh && app.borrow().split_view.is_some() {
+            Self::apply_visible_panes(app);
+        }
+    }
+
+    /// Recently closed tabs, newest first.
+    pub fn recently_closed(app: &AppRef) -> Vec<ClosedTab> {
+        app.borrow().recently_closed.iter().cloned().collect()
+    }
+
+    /// Moves `id` directly after `anchor` in the current workspace, so a pair sits together.
+    fn place_after(app: &AppRef, id: TabId, anchor: TabId) {
+        let target = {
+            let state = app.borrow();
+            let order = state.workspaces.active().tabs();
+            let (Some(from), Some(at)) = (
+                order.iter().position(|tab| *tab == id),
+                order.iter().position(|tab| *tab == anchor),
+            ) else {
+                return;
+            };
+            if from == at + 1 {
+                return;
+            }
+            if from < at { at } else { at + 1 }
+        };
+        let _ = Self::move_tab(app, id, target);
+    }
+
+    pub fn split_view(app: &AppRef) -> Option<SplitView> {
+        app.borrow().split_view
+    }
+
+    /// Opens a split and keeps both existing tab controllers alive and visible.
     pub fn open_split_view(
         app: &AppRef,
         left: TabId,
@@ -2294,24 +2492,38 @@ impl App {
             windows::Win32::Foundation::RECT,
         ),
     ) -> bool {
+        let Some(mut split) = SplitView::new(left, right, focused) else {
+            return false;
+        };
+        split.set_ratio(ratio);
+        Self::show_split(app, split, Some(bounds))
+    }
+
+    /// Shows `split` (replacing any other pair of this window) with its focused side active.
+    fn show_split(
+        app: &AppRef,
+        split: SplitView,
+        bounds: Option<(
+            windows::Win32::Foundation::RECT,
+            windows::Win32::Foundation::RECT,
+        )>,
+    ) -> bool {
         let (focused_tab, hwnd) = {
             let mut state = app.borrow_mut();
-            if left == right
-                || state.tab_model.get(left).is_none()
-                || state.tab_model.get(right).is_none()
+            if state.tab_model.get(split.left).is_none() || state.tab_model.get(split.right).is_none()
             {
                 return false;
             }
-            let Some(mut split) = SplitView::new(left, right, focused) else {
-                return false;
-            };
-            split.set_ratio(ratio);
             state.split_view = Some(split);
-            state.split_bounds = Some(bounds);
+            state.split_parked = None;
+            if bounds.is_some() {
+                state.split_bounds = bounds;
+            }
             let focused_tab = split.focused_tab();
             state.tab_model.select(focused_tab);
+            let _ = state.workspaces.select_tab(focused_tab);
             for tab in &mut state.tabs {
-                if tab.id == left || tab.id == right {
+                if split.contains(tab.id) {
                     tab.hidden_since = None;
                     tab.suspended = false;
                 } else {
@@ -2330,13 +2542,162 @@ impl App {
             (focused_tab, state.hwnd)
         };
         Self::apply_visible_panes(app);
-        Self::restore_discarded_tab(app, left);
-        Self::restore_discarded_tab(app, right);
+        Self::restore_discarded_tab(app, split.left);
+        Self::restore_discarded_tab(app, split.right);
         Self::post_tab_changed(hwnd, focused_tab);
+        Self::save_workspaces(app);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         true
     }
+
+    /// Opens a pair of `left` and `right` placed next to each other in the strip. `bounds` are the
+    /// pane rectangles, or `None` when the window is too narrow for two panes (then only the focused
+    /// side shows until it is wide enough).
+    pub fn open_split_pair(
+        app: &AppRef,
+        left: TabId,
+        right: TabId,
+        focused: Pane,
+        bounds: Option<SplitBounds>,
+    ) -> bool {
+        let Some(split) = SplitView::new(left, right, focused) else {
+            return false;
+        };
+        if app.borrow().tab_model.get(left).is_none() || app.borrow().tab_model.get(right).is_none() {
+            return false;
+        }
+        // Pinned tabs live in their own section; only the display joins a mixed pair.
+        if Self::tab_pinned(app, left) == Self::tab_pinned(app, right) {
+            Self::place_after(app, right, left);
+        }
+        Self::show_split(app, split, bounds)
+    }
+
+    /// Splits `tab` with a new empty side on `side` (focused) that offers the other tabs.
+    pub fn open_split_with_empty(
+        app: &AppRef,
+        tab: TabId,
+        side: Pane,
+        bounds: Option<SplitBounds>,
+    ) -> Option<TabId> {
+        if app.borrow().tab_model.get(tab).is_none() {
+            return None;
+        }
+        let empty = Self::new_tab(app);
+        let (left, right) = match side {
+            Pane::Left => (empty, tab),
+            Pane::Right => (tab, empty),
+        };
+        Self::open_split_pair(app, left, right, side, bounds).then_some(empty)
+    }
+
+    /// Opens `url` in a new tab beside `tab` ("Open link in split view").
+    pub fn open_url_in_split(app: &AppRef, tab: TabId, url: &url::Url, bounds: Option<SplitBounds>) -> bool {
+        let Some(side) = Self::open_split_with_empty(app, tab, Pane::Right, bounds) else {
+            return false;
+        };
+        Self::navigate_tab(app, side, url);
+        Self::apply_visible_panes(app);
+        true
+    }
+
+    /// The shown pair's `pane` now shows `tab` (a tab dragged onto that side). The tab it showed
+    /// stays open as a normal tab; dragging the other half there swaps the sides.
+    pub fn set_split_pane(app: &AppRef, pane: Pane, tab: TabId) -> bool {
+        let Some(mut split) = app.borrow().split_view else {
+            return false;
+        };
+        if app.borrow().tab_model.get(tab).is_none() || split.tab(pane) == tab {
+            return false;
+        }
+        if split.tab(pane.other()) == tab {
+            return Self::swap_split_panes(app);
+        }
+        match pane {
+            Pane::Left => split.left = tab,
+            Pane::Right => split.right = tab,
+        }
+        split.focus(pane);
+        let bounds = app.borrow().split_bounds;
+        Self::show_split(app, split, bounds)
+    }
+
+    /// The shown pair's pane rectangles, when the window is wide enough for two panes.
+    pub fn split_bounds(app: &AppRef) -> Option<SplitBounds> {
+        let state = app.borrow();
+        state.split_view.and(state.split_bounds)
+    }
+
+    /// The shown pair's empty side takes `picked`; the empty tab closes. `picked` must be an open
+    /// tab outside the pair.
+    pub fn fill_split_empty(app: &AppRef, empty: TabId, picked: TabId) -> bool {
+        let split = {
+            let state = app.borrow();
+            let Some(mut split) = state.split_view else {
+                return false;
+            };
+            let empty_is_blank = state
+                .tabs
+                .iter()
+                .find(|tab| tab.id == empty)
+                .is_some_and(|tab| !tab.controller_created && tab.url.is_none());
+            if state.tab_model.get(picked).is_none()
+                || !empty_is_blank
+                || !split.fill_empty(empty, picked)
+            {
+                return false;
+            }
+            split
+        };
+        let survivor = split.other_tab();
+        Self::place_pair_together(app, split, survivor, picked);
+        {
+            // The empty tab is no longer in the pair, so closing it below keeps the split.
+            let mut state = app.borrow_mut();
+            state.split_view = Some(split);
+            state.tab_model.select(picked);
+        }
+        let bounds = app.borrow().split_bounds;
+        let shown = Self::show_split(app, split, bounds);
+        let _ = Self::close_tab(app, empty);
+        shown
+    }
+
+    fn place_pair_together(app: &AppRef, split: SplitView, survivor: TabId, picked: TabId) {
+        if Self::tab_pinned(app, survivor) != Self::tab_pinned(app, picked) {
+            return;
+        }
+        if split.left == survivor {
+            Self::place_after(app, picked, survivor);
+        } else {
+            Self::place_after(app, survivor, picked);
+        }
+    }
+
+    /// "Separate views": both tabs stay open as normal tabs and the focused one stays shown.
+    pub fn separate_split(app: &AppRef) -> bool {
+        let (shown, hwnd) = {
+            let mut state = app.borrow_mut();
+            let Some(split) = state.split_view.take().or_else(|| state.split_parked.take()) else {
+                return false;
+            };
+            state.split_bounds = None;
+            let shown = state.tab_model.active();
+            if let Some(other) = split.remove(shown)
+                && let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == other)
+            {
+                tab.hidden_since.get_or_insert_with(Instant::now);
+            }
+            (shown, state.hwnd)
+        };
+        Self::apply_visible_panes(app);
+        Self::post_tab_changed(hwnd, shown);
+        Self::sync_window_title(app);
+        Self::schedule_tab_idle_timer(app);
+        true
+    }
+    // --- end split view ---
 
     pub fn update_split_bounds(
         app: &AppRef,
@@ -2359,16 +2720,13 @@ impl App {
     }
 
     pub fn set_split_ratio(app: &AppRef, ratio: u8) -> bool {
-        let changed = {
-            let mut state = app.borrow_mut();
-            let Some(split) = state.split_view.as_mut() else {
-                return false;
-            };
-            let old = split.ratio;
-            split.set_ratio(ratio);
-            old != split.ratio
+        let mut state = app.borrow_mut();
+        let Some(split) = state.split_view.as_mut() else {
+            return false;
         };
-        changed
+        let old = split.ratio;
+        split.set_ratio(ratio);
+        old != split.ratio
     }
 
     pub fn split_state_changed(app: &AppRef) {
@@ -2382,15 +2740,17 @@ impl App {
     }
 
     pub fn focus_split_pane(app: &AppRef, pane: Pane) -> bool {
-        let (active, hwnd) = {
+        let (active, hwnd, changed) = {
             let mut state = app.borrow_mut();
             let Some(mut split) = state.split_view else {
                 return false;
             };
+            let changed = split.focused != pane;
             split.focus(pane);
             let active = split.focused_tab();
             state.split_view = Some(split);
             state.tab_model.select(active);
+            let _ = state.workspaces.select_tab(active);
             if let Some((progress, page_usable)) = state
                 .tabs
                 .iter()
@@ -2400,11 +2760,13 @@ impl App {
                 state.navigation_progress = progress;
                 state.page_loaded = page_usable;
             }
-            (active, state.hwnd)
+            (active, state.hwnd, changed)
         };
-        Self::apply_visible_panes(app);
-        Self::post_tab_changed(hwnd, active);
-        Self::sync_window_title(app);
+        if changed {
+            Self::apply_visible_panes(app);
+            Self::post_tab_changed(hwnd, active);
+            Self::sync_window_title(app);
+        }
         true
     }
 
@@ -2418,16 +2780,12 @@ impl App {
             return false;
         };
         split.swap();
+        // The strip shows the pair in model order, so the halves trade places there too.
+        if Self::tab_pinned(app, split.left) == Self::tab_pinned(app, split.right) {
+            Self::place_after(app, split.right, split.left);
+        }
         let bounds = app.borrow().split_bounds;
-        let Some(bounds) = bounds else { return false };
-        Self::open_split_view_with_ratio(
-            app,
-            split.left,
-            split.right,
-            split.focused,
-            split.ratio,
-            bounds,
-        )
+        Self::show_split(app, split, bounds)
     }
 
     pub fn replace_focused_split_pane(app: &AppRef, tab: TabId) -> bool {
@@ -2437,26 +2795,14 @@ impl App {
         if !split.replace_focused(tab) {
             return false;
         }
-        let Some(bounds) = app.borrow().split_bounds else {
-            return false;
-        };
-        Self::open_split_view_with_ratio(
-            app,
-            split.left,
-            split.right,
-            split.focused,
-            split.ratio,
-            bounds,
-        )
+        let bounds = app.borrow().split_bounds;
+        Self::show_split(app, split, bounds)
     }
 
     pub fn close_split_pane(app: &AppRef, pane: Pane) -> bool {
         let split = { app.borrow().split_view };
         let Some(split) = split else { return false };
-        let closing = match pane {
-            Pane::Left => split.left,
-            Pane::Right => split.right,
-        };
+        let (closing, _survivor) = split.close(pane);
         Self::close_tab(app, closing)
     }
 
@@ -3524,6 +3870,9 @@ impl App {
             tabs: vec![AppTab::empty(initial_tab)],
             tab_model,
             split_view: None,
+            split_parked: None,
+            recently_closed: std::collections::VecDeque::new(),
+            split_refresh: false,
             split_bounds: None,
             group_preferences: group_preferences_path
                 .as_deref()
@@ -4172,6 +4521,14 @@ impl App {
                         if should_mute {
                             Self::set_tab_muted(&app, tab_id, true);
                         }
+                        // --- split view ---
+                        // A side's page now exists: put it at its pane (outside this callback).
+                        let split_side = app.borrow().split_view.is_some_and(|split| split.contains(tab_id));
+                        if split_side {
+                            app.borrow_mut().split_refresh = true;
+                            Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, true, false);
+                        }
+                        // --- end split view ---
                     }
                 }))
             },
@@ -4329,6 +4686,18 @@ impl App {
                     }
                 }))
             },
+            // --- split view ---
+            open_in_split: {
+                let split_app = Rc::downgrade(app);
+                Some(Rc::new(move |source_tab, url| {
+                    if let Some(app) = split_app.upgrade()
+                        && app.borrow().tabs.iter().any(|tab| tab.id == source_tab)
+                    {
+                        win32::queue_split_link(app.borrow().hwnd, url);
+                    }
+                }))
+            },
+            // --- end split view ---
             render_process_failed: {
                 let crash_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -7339,6 +7708,9 @@ mod tests {
             tabs: vec![AppTab::empty(TabId(0))],
             tab_model: crate::tabs::TabList::new(),
             split_view: None,
+            split_parked: None,
+            recently_closed: std::collections::VecDeque::new(),
+            split_refresh: false,
             split_bounds: None,
             group_preferences: crate::tab_groups::GroupPreferences::default(),
             group_preferences_path: None,

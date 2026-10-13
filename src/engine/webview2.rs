@@ -23,6 +23,9 @@ use webview2_com::{
     SourceChangedEventHandler, TrySuspendCompletedHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
+// --- split view ---
+use webview2_com::{ContextMenuRequestedEventHandler, CustomItemSelectedEventHandler};
+// --- end split view ---
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, RECT, WPARAM},
@@ -470,6 +473,11 @@ struct EngineCore {
     active_tab: Option<TabId>,
     /// Tabs whose controllers currently occupy one of the visible page panes.
     visible_tabs: HashSet<TabId>,
+    // --- split view ---
+    /// Pane bounds of the split sides set by `set_visible_tabs`; a side whose controller is still
+    /// being created is created there (not at the single-page `bounds`).
+    pane_bounds: std::collections::HashMap<TabId, RECT>,
+    // --- end split view ---
     target: MemoryUsageTarget,
     tabs: HashMap<TabId, WebView2Tab>,
     known_tabs: HashSet<TabId>,
@@ -693,7 +701,7 @@ impl WebView2Engine {
                             && (!state.prewarming.contains(&tab_id)
                                 || state.active_tab == Some(tab_id)
                                 || state.pending.contains_key(&tab_id)),
-                        state.bounds,
+                        state.pane_bounds.get(&tab_id).copied().unwrap_or(state.bounds), // --- split view ---
                         state.visible_tabs.contains(&tab_id),
                     )
                 };
@@ -1462,6 +1470,7 @@ impl WebView2Engine {
                         private_tabs: HashSet::new(),
                         active_tab: None,
                         visible_tabs: HashSet::new(),
+                        pane_bounds: std::collections::HashMap::new(),
                         target: MemoryUsageTarget::Normal,
                         tabs: HashMap::new(),
                         known_tabs: HashSet::new(),
@@ -1946,6 +1955,7 @@ impl EngineAdapter for WebView2Engine {
     fn resize(&mut self, bounds: RECT) -> Result<()> {
         let mut state = self.core.borrow_mut();
         state.bounds = bounds;
+        state.pane_bounds.clear(); // --- split view ---
         if let Some(active) = state.active_tab
             && let Some(tab) = state.tabs.get_mut(&active)
         {
@@ -2015,6 +2025,9 @@ impl EngineAdapter for WebView2Engine {
         state.known_tabs.insert(tab_id);
         let previous = state.active_tab;
         let was_visible = state.visible_tabs.contains(&tab_id);
+        if !was_visible {
+            state.pane_bounds.clear(); // --- split view ---
+        }
         if previous != Some(tab_id) && !was_visible {
             if let Some(previous) = previous {
                 if state.known_tabs.contains(&previous) {
@@ -2064,6 +2077,9 @@ impl EngineAdapter for WebView2Engine {
             }
             state.visible_tabs = next;
             state.active_tab = Some(active);
+            // --- split view ---
+            state.pane_bounds = panes.iter().copied().collect();
+            // --- end split view ---
             let target = state.target;
             for (tab_id, bounds) in panes {
                 state.known_tabs.insert(*tab_id);
@@ -2989,6 +3005,66 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+
+        // --- split view ---
+        // "Open link in split view" after "Open link in new window" on an http(s) link. The pick
+        // only reports the link; the window opens it later, outside this callback.
+        if let (Some(open_in_split), Ok(webview11), Ok(environment9)) = (
+            events.open_in_split.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut has_link = BOOL::default();
+                    target.HasLinkUri(&mut has_link)?;
+                    if !has_link.as_bool() {
+                        return Ok(());
+                    }
+                    let mut uri = PWSTR::null();
+                    target.LinkUri(&mut uri)?;
+                    let Some(link) = Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
+                        .ok()
+                        .filter(|url| matches!(url.scheme(), "http" | "https"))
+                    else {
+                        return Ok(());
+                    };
+                    let item = environment9.CreateContextMenuItem(
+                        w!("Open link in split view"),
+                        None::<&IStream>,
+                        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                    )?;
+                    let picked = open_in_split.clone();
+                    let mut item_token = 0i64;
+                    item.add_CustomItemSelected(
+                        &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                            picked(tab_id, link.clone());
+                            Ok(())
+                        })),
+                        &mut item_token,
+                    )?;
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let mut at = 0u32;
+                    for index in 0..count {
+                        let mut name = PWSTR::null();
+                        if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok() {
+                            let name = CoTaskMemPWSTR::from(name).to_string();
+                            if name == "openLinkInNewTab" || name == "openLinkInNewWindow" {
+                                at = index + 1;
+                            }
+                        }
+                    }
+                    items.InsertValueAtIndex(at, &item)?;
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end split view ---
 
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();

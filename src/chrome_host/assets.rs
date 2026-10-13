@@ -19,6 +19,8 @@ pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dial
 pub const RENAME_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=rename";
 /// Start URL of the no-activate hover layer (tooltips, tab hover card, island menu).
 pub const HOVER_START_URL: &str = "bowser-ui://app/index.html?view=hover";
+/// The split view's empty side and drop-zone preview (`View::Split`).
+pub const SPLIT_START_URL: &str = "bowser-ui://app/index.html?view=split";
 
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
