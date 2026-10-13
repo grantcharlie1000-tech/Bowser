@@ -95,6 +95,13 @@ test('state carries the optional permblocked flag, strictly typed', () => {
   assert.equal(parseInbound({ ...base, permblocked: 'yes' }), null);
 });
 
+test('state carries the optional reader button state, strictly typed', () => {
+  const base = { t: 'state', scale: 1, solid: false, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'secure', label: '', theme: {} };
+  for (const pill of ['none', 'available', 'on']) assert.equal(parseInbound({ ...base, reader: pill }).reader, pill);
+  assert.equal(parseInbound(base).reader, undefined, 'older hosts omit it');
+  for (const bad of ['', 'On', 'yes', true, 1, null, 'available ']) assert.equal(parseInbound({ ...base, reader: bad }), null, String(bad));
+});
+
 test('rename snapshot is strict and local validation mirrors the shared Rust rules', () => {
   const d = { title: 'Rename profile', save: 'Save', value: 'Work', hint: '1 to 32 letters', error: '', max: 256 };
   assert.deepEqual(parseRenameSnapshot(d), d);

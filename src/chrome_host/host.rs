@@ -1378,6 +1378,19 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_alt_r_toggles_reader_view_and_does_not_repeat() {
+        let mut chord = key(0x52, true, false, true);
+        assert_eq!(accel_command(chord, false), Some(Shortcut::ToggleReader));
+        // Reader view stays available from the omnibox: it is not an editing chord.
+        assert_eq!(accel_command(chord, true), Some(Shortcut::ToggleReader));
+        chord.repeat = true;
+        assert_eq!(accel_command(chord, false), None, "a held chord must not flip it again");
+        // Neighbours stay as they were.
+        assert_eq!(accel_command(key(0x52, true, false, false), false), Some(Shortcut::Reload));
+        assert_eq!(accel_command(key(0x52, false, false, true), false), None);
+    }
+
+    #[test]
     fn accelerator_ignores_key_up_and_escape() {
         let mut up = key(0x54, true, false, false);
         up.key_down = false;

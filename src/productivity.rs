@@ -105,6 +105,8 @@ pub fn browser_commands() -> CommandRegistry {
         ("Back", "Go back", "back"),
         ("Forward", "Go forward", "forward"),
         ("Extensions", "Manage installed extensions", "extensions"),
+        ("Reader view", "Read this page without the clutter", "reader"),
+        ("Hide distractions", "Hide overlays, cookie banners and sticky bars", "calm"),
     ] {
         commands.register(label, detail, action);
     }

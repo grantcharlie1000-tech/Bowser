@@ -1,7 +1,8 @@
 //! Keyboard chord to browser command mapping (see docs/superpowers/specs/2026-10-09-bowser-glass-ui-design.md).
 //!
 //! Pure: the caller supplies the virtual-key code and modifier state. Modifiers must match exactly,
-//! so Ctrl+Alt chords (AltGr on some layouts) never trigger a command. Escape maps to `Stop`
+//! so Ctrl+Alt chords (AltGr on some layouts) never trigger a command, except Ctrl+Alt+R for reader
+//! view (which means AltGr+R does on layouts that report it as Ctrl+Alt). Escape maps to `Stop`
 //! whether or not a page is loading; the caller decides when it applies.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,9 @@ pub enum Command {
     ToggleTabLayout,
     /// Ctrl+H opens the History side panel.
     ShowHistory,
+    /// Ctrl+Alt+R turns reader view on or off for the active page. The one binding that uses
+    /// Ctrl and Alt together (see `ctrl_alt_r_is_the_only_ctrl_alt_chord`).
+    ToggleReader,
 }
 
 /// Commands that flip a setting. An auto-repeated key press must not flip it again.
@@ -57,6 +61,7 @@ pub fn is_toggle(command: Command) -> bool {
             | Command::ToggleNotes
             | Command::TogglePictureInPicture
             | Command::ToggleTabLayout
+            | Command::ToggleReader
     )
 }
 
@@ -135,6 +140,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         (VK_V, true, true, false) => Some(Command::ToggleTabLayout),
         (VK_H, true, false, false) => Some(Command::ShowHistory),
+        (VK_R, true, false, true) => Some(Command::ToggleReader),
         _ => None,
     }
 }
@@ -185,6 +191,7 @@ mod tests {
             (VK_W, true, true, false, Command::CloseSplitPane),
             (VK_V, true, true, false, Command::ToggleTabLayout),
             (VK_H, true, false, false, Command::ShowHistory),
+            (VK_R, true, false, true, Command::ToggleReader),
         ];
         for index in 0..8 {
             table.push((
@@ -259,6 +266,8 @@ mod tests {
             (VK_9, false, false, false),
             (VK_1, false, false, true),
             (VK_N, true, true, true),
+            (VK_R, false, false, true), // Alt+R alone
+            (VK_R, true, true, true),   // Ctrl+Shift+Alt+R
             (0x58, true, true, false), // Ctrl+Shift+X is not bound.
             (0x4A, true, false, false), // Ctrl+J: downloads are cancelled by policy, no manager.
             (0x79, false, true, false), // Shift+F10 is the page's native context menu.
@@ -281,6 +290,25 @@ mod tests {
             command_for(VK_9, true, false, false),
             Some(Command::SelectLastTab)
         );
+    }
+
+    #[test]
+    fn ctrl_alt_r_is_the_only_ctrl_alt_chord() {
+        assert_eq!(command_for(VK_R, true, false, true), Some(Command::ToggleReader));
+        assert!(is_toggle(Command::ToggleReader), "auto-repeat must not flip reader view again");
+        for key in 0..=0xFF_u32 {
+            for shift in [false, true] {
+                let bound = command_for(key, true, shift, true);
+                assert_eq!(
+                    bound.is_some(),
+                    key == VK_R && !shift,
+                    "key {key:#04X} shift={shift}"
+                );
+            }
+        }
+        // Ctrl+R still reloads and Ctrl+Shift+R still hard-reloads.
+        assert_eq!(command_for(VK_R, true, false, false), Some(Command::Reload));
+        assert_eq!(command_for(VK_R, true, true, false), Some(Command::HardReload));
     }
 
     #[test]

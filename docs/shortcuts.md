@@ -8,7 +8,7 @@ three focus contexts:
   (via `chrome_host::accel_command`) posts `WM_SHORTCUT_KEY`.
 - **Main window / native address EDIT**: `edit_subclass` and the main window call `dispatch_current`.
 
-All three end in `dispatch` in `src/win32/window.rs`. While the HTML omnibox is being edited, only true
+All three end in `dispatch` in `src/win32/window.rs`. Modifiers match exactly, so Ctrl+Alt chords never run a command except Ctrl+Alt+R (`ctrl_alt_r_is_the_only_ctrl_alt_chord` in `src/shortcuts.rs`). While the HTML omnibox is being edited, only true
 editing chords stay with the field: Ctrl+A/C/X/Z, Ctrl+V (not Ctrl+Shift+V), Ctrl+Y, Ctrl+Shift+Z, and
 Ctrl/Shift with Left/Right/Home/End/Backspace/Delete (except Ctrl+Shift+Delete).
 
@@ -43,5 +43,7 @@ character when Shift is held.
 | Ctrl+Shift+Y | Picture in picture | Bound |
 | Ctrl+Shift+Delete | Privacy dashboard | Bound; fixed: no longer left to the omnibox as a delete chord |
 | Ctrl+H | History side panel | Bound (new) |
+| Ctrl+Alt+R | Reader view on / off | Bound. The only Ctrl+Alt chord; on layouts where AltGr reports as Ctrl+Alt, AltGr+R also toggles it. A held chord does not repeat |
+| Esc | Leave reader view | Only while reader view is on (the content WebView reports Escape to the app and still passes it to the page); otherwise unchanged |
 | Ctrl+J | Downloads | Unbound on purpose: downloads are cancelled by policy, there is no download manager |
 | Shift+F10 / Menu key | Page context menu | Not a browser chord; handled natively by the focused page |

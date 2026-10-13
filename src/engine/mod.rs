@@ -62,6 +62,18 @@ pub trait EngineAdapter {
             windows::Win32::Foundation::E_NOTIMPL,
         ))
     }
+    /// Runs one reader-view script (see `crate::reader`) in a tab and hands back its raw result: the
+    /// JSON text `ExecuteScript` produced. Only an http(s) page is ever scripted, checked against
+    /// the live address at the moment of the call; anything else, a missing page, a failed call
+    /// or an oversized answer reports `None`. `done` may run before this returns.
+    fn run_reader_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
     /// Checks for a visible, currently playing video without installing page scripts or polling.
     fn picture_in_picture_eligible(
         &mut self,
@@ -274,6 +286,9 @@ pub struct EngineEvents {
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
+    /// Escape went down in this tab's page (unmodified). The key still reaches the page; reader
+    /// view uses it to leave itself.
+    pub escape_pressed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A camera, microphone, location or notification request from this tab's page was denied
     /// (no stored Allow). Bowser never prompts; the toolbar shows a passive indicator.
     pub permission_denied: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,

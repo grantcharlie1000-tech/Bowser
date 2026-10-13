@@ -4683,6 +4683,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SESSIONS: usize = 5013;
     const TAB_LAYOUT: usize = 5014;
     const WORKSPACES: usize = 5015;
+    const READER: usize = 5016;
+    const CALM: usize = 5017;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -4713,6 +4715,22 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(SESSIONS, "Saved sessions…", Icon::Check)
             .glyph("folder")
             .disabled_if(crate::profile::active().is_ok_and(|profile| profile.is_guest())),
+    ));
+    let reading_tab = App::active_tab_id(app);
+    let reading = App::reader_active(app, reading_tab);
+    let readable = App::reader_available(app, reading_tab);
+    entries.push(Entry::Item(
+        Item::new(READER, "Reader view", Icon::Info)
+            .glyph("reader")
+            .shortcut("Ctrl+Alt+R")
+            .checked(reading == crate::reader::Active::Reader)
+            .disabled_if(!readable),
+    ));
+    entries.push(Entry::Item(
+        Item::new(CALM, "Hide distractions", Icon::Info)
+            .glyph("eye")
+            .checked(reading == crate::reader::Active::Calm)
+            .disabled_if(!readable),
     ));
     entries.push(Entry::Item(
         Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E"),
@@ -4810,6 +4828,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 }
             }
             WORKSPACES => show_workspaces_menu(hwnd, app),
+            READER => run_reader(hwnd, app, crate::reader::Mode::Reader),
+            CALM => run_reader(hwnd, app, crate::reader::Mode::Calm),
             EXTENSIONS => show_extensions_menu(hwnd, app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -4986,8 +5006,54 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
         "back" => navigate_back_for_focused_pane(app),
         "forward" => navigate_forward_for_focused_pane(app),
         "extensions" => show_extensions_menu(hwnd, app),
+        "reader" => run_reader(hwnd, app, crate::reader::Mode::Reader),
+        "calm" => run_reader(hwnd, app, crate::reader::Mode::Calm),
         _ => {}
     }
+}
+
+/// Reader view or distraction hiding for the active page. Shared by Ctrl+Alt+R, the toolbar button,
+/// the main menu and the command palette. It runs on request only; when there is nothing to do the
+/// user is told with the same passive toast the bookmark command uses.
+fn run_reader(hwnd: HWND, app: &AppRef, mode: crate::reader::Mode) {
+    use crate::app::ReaderResult;
+    let tab = App::active_tab_id(app);
+    let app_handle = app.clone();
+    App::reader_toggle(
+        app,
+        tab,
+        mode,
+        Box::new(move |result| {
+            let message = match result {
+                ReaderResult::NothingToRead => Some("No article text found on this page"),
+                ReaderResult::Unavailable if !App::reader_available(&app_handle, tab) => {
+                    Some("Reader view works on web pages")
+                }
+                ReaderResult::Failed => Some("This page could not be changed"),
+                _ => None,
+            };
+            if let Some(message) = message {
+                menu::show(
+                    hwnd,
+                    screen_point(hwnd, main_menu_anchor(hwnd)),
+                    menu::Placement::AboveLeft,
+                    Menu {
+                        header: None,
+                        entries: vec![Entry::Item(Item::new(0, message, Icon::Info).glyph("reader").disabled())],
+                        footer: "Reader view".into(),
+                    },
+                    "reader-toast",
+                    |_, _| {},
+                );
+            }
+            // Escape leaves reader view only when the page has the keyboard, so give it back.
+            if matches!(result, ReaderResult::Applied(crate::reader::Active::Reader)) {
+                App::focus_page(&app_handle);
+            }
+            let _ = with_chrome(hwnd, |s| s.refresh(&app_handle, false));
+            html_sync(hwnd);
+        }),
+    );
 }
 
 fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
@@ -6042,6 +6108,7 @@ fn html_sync(hwnd: HWND) {
         security: chrome_host::security_of(site),
         label: site.summary().to_string(),
         permblocked: App::active_permission_blocked(&app),
+        reader: App::active_reader_pill(&app),
         theme: chrome_host::theme_tokens(palette),
     };
     let json = state.to_json();
@@ -6235,6 +6302,13 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             // Same as the native omnibox split button: open the split menu.
             defer_html_command(hwnd, DeferredChromeCommand::SplitMenu);
         }
+        ChromeCommand::Open(OpenTarget::Reader) => {
+            // The toolbar button: the same toggle as Ctrl+Alt+R. It opens no menu, so it runs here.
+            if let Some(app) = app_of(hwnd) {
+                run_reader(hwnd, &app, crate::reader::Mode::Reader);
+                App::focus_page(&app);
+            }
+        }
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
@@ -6326,6 +6400,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         security: crate::chrome_host::protocol::Security::None,
         label: String::new(),
         permblocked: false,
+        reader: crate::reader::Pill::Hidden,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -6708,6 +6783,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         security: chrome_host::security_of(site),
         label: site.summary().to_owned(),
         permblocked: App::active_permission_blocked(&app),
+        reader: crate::reader::Pill::Hidden,
         theme: chrome_host::theme_tokens(palette),
     };
     Some(state.to_json())
@@ -8072,6 +8148,7 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             side_panel::open(hwnd, side_panel::PanelId::History);
             apply_sidebar_bounds(hwnd, app);
         }
+        Command::ToggleReader => run_reader(hwnd, app, crate::reader::Mode::Reader),
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
