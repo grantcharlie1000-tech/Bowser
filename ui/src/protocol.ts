@@ -371,7 +371,8 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
 const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename'];
-const PANEL_ACTION_RE = /^[a-z]{1,24}$/;
+/** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
+const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
 const MAX_SNAPSHOT_KEYS = 4096;
 const MAX_SNAPSHOT_OBJECT_KEYS = 128;

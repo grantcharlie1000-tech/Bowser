@@ -63,6 +63,13 @@ test('typed foundation senders enforce wire ranges and field cap', () => {
     { v: 1, t: 'pick', tok: 1, id: 2 },
     { v: 1, t: 'dismiss', tok: 1 },
   ]);
+  // V9: Customize actions are hyphenated (`workspace-create`); the sender used to reject them silently.
+  wires.length = 0;
+  assert.equal(sendPanel('cust', { a: 'workspace-create', text: 'Work' }), true);
+  assert.deepEqual(wires, [{ v: 1, t: 'cust', a: 'workspace-create', text: 'Work' }]);
+  assert.equal(sendPanel('cust', { a: '-workspace' }), false);
+  assert.equal(sendPanel('cust', { a: 'workspace--create' }), false);
+  assert.equal(sendPanel('cust', { a: 'a-very-long-action-name-over-cap' }), false);
   delete globalThis.window;
 });
 

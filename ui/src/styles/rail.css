@@ -289,6 +289,20 @@
   font-weight: var(--bw-weight-strong);
 }
 
+/* Helper text wraps inside the text column (it is an instruction, not a label: never "sid..."); the
+   control stays aligned to the first line, and every row keeps the same 8px of vertical padding. */
+.panel-customize .cust-row {
+  align-items: flex-start;
+  padding-block: var(--bw-space-2);
+}
+
+.panel-customize .cust-row .bw-row-meta {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .panel-customize .cust-hint,
 .panel-customize .cust-empty {
   padding-bottom: var(--bw-space-2);

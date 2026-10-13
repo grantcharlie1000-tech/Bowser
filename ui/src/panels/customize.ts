@@ -37,7 +37,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   let uid = 0;
   const nextId = (prefix: string): string => `${prefix}-${++uid}`;
 
-  const host = h('section', 'panel-customize');
+  const host = h('section', 'panel-customize bw-scroll');
   host.setAttribute('aria-label', 'Customize sidebar');
   const title = h('h1', 'cust-title', 'Customize');
 
@@ -51,7 +51,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   createWorkspace.addEventListener('submit', event => {
     event.preventDefault();
     const fields = customizeCommand('workspace-create', { text: workspaceName.value.trim() });
-    if (fields) { sendPanel('cust', fields); workspaceName.value = ''; } else workspaceName.focus();
+    if (fields && sendPanel('cust', fields)) workspaceName.value = ''; else workspaceName.focus();
   });
   workspaces.root.append(workspaceRows, createWorkspace);
 
