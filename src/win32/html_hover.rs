@@ -30,12 +30,12 @@ use windows::{
             GetMonitorInfoW, HGDIOBJ, HRGN, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
             PAINTSTRUCT, RGN_OR, SetWindowRgn,
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWLP_USERDATA,
-                GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, HWND_TOP, IDC_ARROW,
+                GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, HWND_TOP, IDC_ARROW, IsWindowVisible,
                 KillTimer, LoadCursorW, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
                 SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
                 WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_PAINT, WM_TIMER, WNDCLASSW,
@@ -421,13 +421,75 @@ pub(crate) fn anchor_to_screen(view: RECT, scale: f32, rect: HoverRect) -> RECT 
 /// A view asked for a tooltip over `anchor` (screen pixels), under it or, with `beside`, to its right.
 /// Ignored while a card or island is up.
 pub(crate) fn tip(owner: HWND, anchor: RECT, text: &str, beside: bool) {
-    let busy = with_layer(owner, |layer| {
-        matches!(layer.content, Some(Content::Card { .. } | Content::Island { .. } | Content::Suggest { .. }))
-    });
+    heal_foreground(owner);
+    let busy = with_layer(owner, |layer| blocks_tooltip(layer.content.as_ref().map(Content::kind)));
     if busy != Some(false) || text.trim().is_empty() {
         return;
     }
     present(owner, Content::Tooltip { text: text.to_owned(), beside }, anchor);
+}
+
+/// Whether showing `kind` keeps tooltips away: a card, island or dropdown owns the layer. A stale
+/// record of one is what made tooltips refuse to appear (V6), so every popup close clears it. Pure.
+fn blocks_tooltip(kind: Option<Kind>) -> bool {
+    matches!(kind, Some(Kind::Card | Kind::Island | Kind::Suggest))
+}
+
+/// A popup (the main menu or any menu) closed. Forgets what the layer was showing or waiting to show,
+/// so a card, island or dropdown that the popup displaced cannot block tooltips afterwards, and
+/// takes the foreground back from a popup that closed without handing it over (clicking the menu
+/// button again closes the menu by deactivation, unlike Esc, which restores it).
+pub(crate) fn popup_closed(owner: HWND) {
+    let stale = with_layer(owner, |layer| {
+        layer.target = None;
+        blocks_tooltip(layer.content.as_ref().map(Content::kind)) && !layer.keyboard
+    });
+    if stale == Some(true) {
+        hide(owner);
+    }
+    heal_foreground(owner);
+}
+
+/// Where the foreground window is relative to the hover layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Foreground {
+    /// The browser window or the hover layer itself.
+    Here,
+    /// A visible window of this application (a dialog, a popup that is open).
+    Own,
+    /// A window of this application that is hidden: a popup that closed without handing the
+    /// foreground back.
+    StaleOwn,
+    /// Another application.
+    Other,
+}
+
+/// Whether the pointer leaving the trigger should close the layer because the user went away:
+/// only another application counts. A hidden popup of our own holding the foreground is not
+/// "away", it is a bug that `heal_foreground` repairs. Pure.
+fn user_is_away(foreground: Foreground) -> bool {
+    foreground == Foreground::Other
+}
+
+fn classify_foreground(owner: HWND, layer_window: HWND) -> Foreground {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground == owner || foreground == layer_window {
+            return Foreground::Here;
+        }
+        if foreground.0.is_null() || GetWindowThreadProcessId(foreground, None) != GetCurrentThreadId() {
+            return Foreground::Other;
+        }
+        if IsWindowVisible(foreground).as_bool() { Foreground::Own } else { Foreground::StaleOwn }
+    }
+}
+
+/// Gives the foreground back to the browser window when a hidden popup of ours still holds it.
+fn heal_foreground(owner: HWND) {
+    let Some(window) = with_layer(owner, |layer| layer.window) else { return };
+    if classify_foreground(owner, window) == Foreground::StaleOwn {
+        unsafe { let _ = SetForegroundWindow(owner); }
+    }
 }
 
 /// The view hid its tooltip.
@@ -999,7 +1061,7 @@ fn watch_timer(owner: HWND) {
     }
     let foreground = unsafe { GetForegroundWindow() };
     let focused = foreground == window;
-    let away = foreground != owner && !focused;
+    let away = user_is_away(classify_foreground(owner, window));
     let dpi = unsafe { GetDpiForWindow(owner) }.max(FALLBACK_DPI);
     if leave_decision(kind, anchor, bounds, cursor, focused, away, scale_px(hover_square::TOLERANCE, dpi))
         == hover_square::Leave::Close
@@ -1633,6 +1695,23 @@ mod tests {
     }
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+
+    #[test]
+    fn only_a_card_island_or_dropdown_blocks_tooltips() {
+        assert!(!blocks_tooltip(None));
+        assert!(!blocks_tooltip(Some(Kind::Tooltip)));
+        assert!(blocks_tooltip(Some(Kind::Card)));
+        assert!(blocks_tooltip(Some(Kind::Island)));
+        assert!(blocks_tooltip(Some(Kind::Suggest)));
+    }
+
+    #[test]
+    fn a_hidden_popup_of_ours_holding_the_foreground_is_not_the_user_going_away() {
+        assert!(!user_is_away(Foreground::Here));
+        assert!(!user_is_away(Foreground::Own));
+        assert!(!user_is_away(Foreground::StaleOwn));
+        assert!(user_is_away(Foreground::Other));
+    }
 
     #[test]
     fn view_rectangles_scale_and_offset_into_screen_pixels() {

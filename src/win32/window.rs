@@ -6779,7 +6779,12 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::SidebarWorkspaceMenu => show_workspaces_menu(hwnd, &app),
         // --- end vertical sidebar ---
         // --- popup host (lane M) ---
-        DeferredChromeCommand::MenuResult { tok, id } => html_popup::run_result(hwnd, tok, id, &app),
+        DeferredChromeCommand::MenuResult { tok, id } => {
+            html_popup::run_result(hwnd, tok, id, &app);
+            // Every close path ends here (pick, Esc, outside click, toggle by the menu button):
+            // clear the hover layer so tooltips and cards keep working afterwards (V6).
+            super::html_hover::popup_closed(hwnd);
+        }
         DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
         // --- end popup host ---
     }
