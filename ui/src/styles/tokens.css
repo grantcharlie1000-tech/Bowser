@@ -58,7 +58,9 @@
     --bw-on-glyph: #fff; /* glyph drawn on the placeholder favicon tile (--bw-glyph-fill) */
     /* The window colour without the glass alpha. Rust's glass and solid palettes share the RGB, so
        a surface built on it paints the same in the (glass) toolbar and the (solid) popups. */
-    --bw-window-opaque: rgb(from var(--bw-window) r g b);
+    /* `/ 1` matters: relative colour syntax keeps the origin's alpha when none is written, so without it
+       this was the glass colour at 80% and every surface "on the opaque window colour" let the page through. */
+    --bw-window-opaque: rgb(from var(--bw-window) r g b / 1);
 
     /* Colour: fixed per scheme (reference-spec.md "Proposed tokens"; Rust sends no equivalent).
        Dark is the default; [data-scheme="light"] below overrides. */
