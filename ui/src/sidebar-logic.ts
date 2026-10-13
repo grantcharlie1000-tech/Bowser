@@ -1,6 +1,6 @@
 // Pure vertical-sidebar ordering and geometry, shared by the Tabs view renderer.
 import type { TabItem } from './protocol';
-import { buildEntries, type Entry } from './tabs-logic';
+import { buildEntries, groupColourIndex, type Entry } from './tabs-logic';
 
 export type SidebarEntry =
   | { readonly kind: 'tab'; readonly item: TabItem }
@@ -27,7 +27,7 @@ export function buildSidebarEntries(items: readonly TabItem[], active: number): 
       kind: 'group',
       key: entry.key,
       name: name !== undefined && name !== '' ? name : 'Tab group',
-      colour: entry.leader.gcol ?? -1,
+      colour: groupColourIndex(entry.leader.gcol, entry.key, name),
       collapsed: entry.collapsed,
       count: entry.leader.gsize ?? entry.members.length,
       members: entry.members.filter((member) => !member.hidden).map((member) => member.item),

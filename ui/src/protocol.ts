@@ -70,7 +70,7 @@ export type Command =
   | { v: 1; t: 'tabmove'; id: number; before: number }
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   // --- vertical sidebar (lane S) ---
-  | { v: 1; t: 'side'; a: 'workspace' | 'newtab' }
+  | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
   // --- end vertical sidebar ---
   | { v: 1; t: 'rail'; a: RailAction; k: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
@@ -394,8 +394,8 @@ export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
 }
 
 // --- vertical sidebar (lane S) ---
-export function sendSide(a: 'workspace' | 'newtab'): boolean {
-  return (a === 'workspace' || a === 'newtab') && send({ v: 1, t: 'side', a });
+export function sendSide(a: 'workspace' | 'newtab' | 'collapse'): boolean {
+  return (a === 'workspace' || a === 'newtab' || a === 'collapse') && send({ v: 1, t: 'side', a });
 }
 // --- end vertical sidebar ---
 

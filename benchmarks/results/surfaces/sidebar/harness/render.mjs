@@ -31,6 +31,7 @@ for (const scheme of ['dark', 'light']) {
   cases.push({ name: `${scheme}-w240-collapsed`, q: 'n=8&pinned=1&groups=2&collapsed=1', w: 240, h: 420, scheme });
   cases.push({ name: `${scheme}-w240-nofav`, q: 'n=8&fav=0&ws=g:globe', w: 240, h: 360, scheme });
 }
+for (const scheme of ['dark', 'light']) cases.push({ name: `${scheme}-w48-collapsed-rail`, q: 'n=8&pinned=3&groups=2', w: 48, h: 420, scheme });
 for (const scheme of ['dark', 'light']) cases.push({ name: `${scheme}-w240-focus`, q: 'n=8&pinned=1&groups=1&focus=3', w: 240, h: 360, scheme });
 for (const scheme of ['dark', 'light']) {
   for (const dpr of [1.5, 2]) cases.push({ name: `${scheme}-w240-8tabs-groups-pinned@${dpr}x`, q: 'n=8&pinned=2&groups=1', w: 240, h: 420, scheme, dpr });

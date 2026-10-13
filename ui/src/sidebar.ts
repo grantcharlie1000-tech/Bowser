@@ -64,6 +64,7 @@ function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: Rea
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
+  node.root.setAttribute('aria-label', label);
   setTip(node.root, label);
   node.root.setAttribute('aria-selected', String(active));
   node.root.setAttribute('aria-level', item.g > 0 ? '2' : '1');
@@ -156,9 +157,30 @@ export function createSidebarRenderer(root: HTMLElement): {
   const addLabel = el('span', 'side-newtab-label');
   addLabel.textContent = 'New tab';
   add.append(icon('plus', { size: 16 }), addLabel);
+  // Collapse toggle: the host switches the sidebar between its persisted width and 48px (icons only).
+  const collapse = el('button', 'side-collapse bw-focus-inset');
+  collapse.type = 'button';
+  collapse.append(icon('sidebar', { size: 16 }));
+  const head = el('div', 'side-head');
+  head.append(header, collapse);
   const top = el('div', 'side-top');
   top.setAttribute(DRAG_ATTR, '');
-  top.append(header, add);
+  top.append(head, add);
+  const pinGrid = el('div', 'side-pinned');
+  pinGrid.setAttribute('role', 'none');
+  const COLLAPSED_MAX_PX = 72;
+  const syncCollapsed = (): void => {
+    const narrow = root.clientWidth > 0 && root.clientWidth <= COLLAPSED_MAX_PX;
+    if (root.classList.contains('is-collapsed') !== narrow) root.classList.toggle('is-collapsed', narrow);
+    const text = narrow ? 'Expand sidebar' : 'Collapse sidebar';
+    if (collapse.getAttribute('aria-label') !== text) {
+      collapse.setAttribute('aria-label', text);
+      collapse.setAttribute('aria-expanded', String(!narrow));
+      setTip(collapse, text);
+    }
+  };
+  new ResizeObserver(syncCollapsed).observe(root);
+  syncCollapsed();
 
   const list = el('div', 'side-list');
   list.setAttribute('role', 'tree');
@@ -194,7 +216,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   }).observe(root, { attributes: true, attributeFilter: ['class'] });
 
   const rowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving), .side-group'));
-  const tabRowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)'));
+  const tabRowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving):not(.pinned)'));
 
   const updateFades = (): void => {
     list.classList.toggle('can-up', list.scrollTop > 1);
@@ -238,9 +260,9 @@ export function createSidebarRenderer(root: HTMLElement): {
     const keys = new Set<number>();
     const groupColour = new Map<number, string>();
     for (const entry of entries) if (entry.kind === 'group') groupColour.set(entry.key, colour(entry.colour));
-    let lastPinned = -1;
-    entries.forEach((entry, index) => { if (entry.kind === 'tab' && entry.item.pinned) lastPinned = index; });
-    entries.forEach((entry, index) => {
+    // Pinned tabs are a grid of 32px tiles above the list rows, not rows of their own.
+    const pinned: HTMLElement[] = [];
+    entries.forEach((entry) => {
       if (entry.kind === 'group') {
         keys.add(entry.key);
         let node = groups.get(entry.key);
@@ -268,10 +290,15 @@ export function createSidebarRenderer(root: HTMLElement): {
         const gc = item.g > 0 && !item.pinned ? groupColour.get(item.g) : undefined;
         if (gc) node.root.style.setProperty('--gc', gc);
         else node.root.style.removeProperty('--gc');
-        rows.push(node.root);
-        if (index === lastPinned && index < entries.length - 1) rows.push(separator);
+        if (item.pinned) pinned.push(node.root);
+        else rows.push(node.root);
       }
     });
+    if (pinned.length > 0) {
+      place(pinGrid, pinned);
+      rows.unshift(pinGrid);
+      if (rows.length > 1) rows.splice(1, 0, separator);
+    }
     for (const key of groups.keys()) if (!keys.has(key)) groups.delete(key);
     if (rows.length === 0) rows.push(empty);
 
@@ -296,15 +323,16 @@ export function createSidebarRenderer(root: HTMLElement): {
         window.setTimeout(() => { if (node.classList.contains('leaving')) node.remove(); }, LEAVE_MS);
       }
     }
-    const entering = rows.filter((row) => row.parentNode !== list && row !== separator && row !== empty && !row.classList.contains('leaving'));
+    const entering = rows.filter((row) => row.parentNode !== list && row !== separator && row !== empty && row !== pinGrid && !row.classList.contains('leaving'));
     for (const row of rows) if (!row.classList.contains('leaving')) row.classList.remove('leaving');
     // Roving tabindex: keep it where the user is, else on the active tab.
     const focused = list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null;
-    const activeRow = tabs.get(msg.active)?.root;
-    const target = focused ?? activeRow ?? rows.find((row) => row.classList.contains('side-tab') || row.classList.contains('side-group'));
-    for (const row of rows) if (row.tabIndex !== (row === target ? 0 : -1) && (row.classList.contains('side-tab') || row.classList.contains('side-group'))) row.tabIndex = row === target ? 0 : -1;
     place(list, rows);
     place(root, [top, list]);
+    const activeRow = tabs.get(msg.active)?.root;
+    const all = rowsOf();
+    const target = focused ?? activeRow ?? all[0];
+    for (const row of all) if (row.tabIndex !== (row === target ? 0 : -1)) row.tabIndex = row === target ? 0 : -1;
     if (rendered && entering.length > 0 && entering.length <= MAX_ENTER) {
       for (const row of entering) row.classList.add('bw-enter');
     }
@@ -350,6 +378,10 @@ export function createSidebarRenderer(root: HTMLElement): {
       sendSide('newtab');
       return;
     }
+    if (event.target.closest('.side-collapse')) {
+      sendSide('collapse');
+      return;
+    }
     const group = event.target.closest<HTMLElement>('.side-group');
     if (group) {
       toggleGroup(group);
@@ -379,7 +411,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     ignoreClick = false;
     if (event.button !== 0 || !(event.target instanceof Element) || event.target.closest('.side-close, .side-group, .side-workspace, .side-newtab')) return;
     const row = event.target.closest<HTMLElement>('.side-tab');
-    if (!row) return;
+    if (!row || row.classList.contains('pinned')) return; // pinned tiles are a grid: no vertical drag
     const node = tabs.get(Number(row.dataset.id));
     const order = tabRowsOf().map((element) => tabs.get(Number(element.dataset.id))).filter((value): value is SidebarTabNode => value !== undefined);
     if (!node) return;

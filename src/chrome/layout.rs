@@ -991,6 +991,8 @@ pub fn compute_vertical_in_frame(
     layout.rail = left_rail(client_h, dpi);
     layout.tab_row = Rect::default();
     layout.tab_zone = Rect::default();
+    // The overflow picker belongs to the horizontal tab row; with no row it would be placed above the window.
+    layout.tab_menu_button = Rect::default();
     layout.viewport = sidebar.viewport;
     (layout, sidebar)
 }

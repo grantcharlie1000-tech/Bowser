@@ -26,6 +26,35 @@
   padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1);
 }
 
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-width: 0;
+}
+
+.side-head .side-workspace { flex: 1 1 auto; }
+
+.side-collapse {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: var(--bw-tab-h);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--bw-r-tab);
+  background: transparent;
+  color: var(--bw-text-dim);
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.side-collapse:hover { background: var(--bw-hover); color: var(--bw-text); }
+.side-collapse:active { background: var(--bw-island); }
+.side-collapse > svg { width: 16px; height: 16px; pointer-events: none; }
+
 .side-workspace,
 .side-newtab {
   box-sizing: border-box;
@@ -65,8 +94,8 @@
 
 .side-workspace-icon svg { width: 16px; height: 16px; }
 .side-workspace-name { flex: 1; min-width: 0; overflow: hidden; font-weight: var(--bw-weight-strong); text-overflow: ellipsis; white-space: nowrap; }
-.side-workspace-chevron { flex: none; color: var(--bw-text-2); }
-.side-newtab { color: var(--bw-text-2); }
+.side-workspace-chevron { flex: none; color: var(--bw-text-dim); }
+.side-newtab { color: var(--bw-text-dim); }
 .side-newtab:hover { color: var(--bw-text); }
 .side-newtab > svg { flex: none; width: 16px; height: 16px; }
 .side-newtab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -117,14 +146,43 @@
    column; a faint text-tinted wash keeps the active island clearly raised. */
 [data-scheme="light"] .side-tab:not(.is-active) { background-color: color-mix(in srgb, var(--bw-text) 6%, transparent); }
 
+/* Inactive rows are dim; the raised island (below) is the one thing that stands out. */
+.side-tab:not(.is-active) { color: var(--bw-text-dim); }
+.side-tab:not(.is-active):hover { color: var(--bw-text); }
+
 /* Raised island for the active row. */
-.side-tab.is-active { box-shadow: var(--bw-sh-tip); }
+.side-tab.is-active { box-shadow: var(--bw-sh-tip); color: var(--bw-text); }
 
 /* Keyboard focus: the shared inset ring (2px accent from .bw-focus-inset plus this 1px contrast
    ring inside it). It must be restated here because the active row's elevation shadow above
    would otherwise replace the component's inner ring. */
 .side-tab:focus-visible { box-shadow: inset 0 0 0 3px var(--bw-focus-inner); }
 .side-tab.is-active:focus-visible { box-shadow: inset 0 0 0 3px var(--bw-focus-inner), var(--bw-sh-tip); }
+
+/* ---- Pinned: a 3-up grid of 32px tiles (favicon only; the title is the tooltip) ---- */
+.side-pinned {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(3, 32px);
+  grid-auto-rows: 32px;
+  gap: var(--bw-space-1);
+  justify-content: start;
+}
+
+.side-tab.pinned {
+  display: grid;
+  grid-template-columns: 16px;
+  place-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--bw-r-row);
+}
+
+#app.sidebar .side-pinned .side-tab .side-title,
+#app.sidebar .side-pinned .side-tab .side-flags,
+#app.sidebar .side-pinned .side-tab .side-pin,
+#app.sidebar .side-pinned .side-tab .side-close { display: none; }
 
 /* Grouped rows are indented under their header; a colour rail joins them. */
 .side-tab.in-group { margin-left: var(--bw-space-3); }
@@ -136,7 +194,7 @@
   width: 2px;
   border-radius: 1px;
   background: var(--gc, var(--bw-hairline));
-  opacity: 0.55;
+  opacity: 0.9;
   content: "";
   pointer-events: none;
 }
@@ -195,8 +253,9 @@
 .side-tab .side-close:hover,
 .side-tab .side-close:focus-visible { background: var(--bw-hover); opacity: 1; }
 
-/* ---- Group header ---- */
+/* ---- Group header: 6px colour dot, regular-weight name, 2px colour underline; no pill chrome ---- */
 .side-group {
+  position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -207,16 +266,27 @@
   margin-top: var(--bw-space-1);
   padding: 0 var(--bw-space-2);
   border-radius: var(--bw-r-tab);
-  color: var(--bw-text-2);
+  color: var(--bw-text-dim);
   font-size: var(--bw-text-chrome);
   line-height: 1;
   cursor: default;
   --gc: var(--bw-accent);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
+.side-group::after {
+  position: absolute;
+  right: var(--bw-space-2);
+  bottom: 0;
+  left: var(--bw-space-2);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--gc);
+  content: "";
+  pointer-events: none;
+}
 .side-group:hover { background: var(--bw-hover); color: var(--bw-text); }
-.side-group-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gc); box-shadow: 0 0 0 3px color-mix(in srgb, var(--gc) 24%, transparent); }
-.side-group-name { flex: 1; min-width: 0; overflow: hidden; font-weight: var(--bw-weight-strong); text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+.side-group-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--gc); }
+.side-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
 .side-group-count { flex: none; font-variant-numeric: tabular-nums; }
 .side-group-chevron { flex: none; transition: transform var(--bw-dur-base) var(--bw-ease-move); }
 .side-group[aria-expanded="false"] .side-group-chevron { transform: rotate(-90deg); }
@@ -242,6 +312,54 @@
 /* Rows animate in with a 4px drop only (no scale). */
 .side-tab.bw-enter,
 .side-group.bw-enter { --bw-enter-scale: 1; }
+
+/* ---- Collapsed (48px, icons only): the host narrows the view; width alone switches the layout ---- */
+#app.sidebar.is-collapsed .side-top { align-items: center; padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1); }
+#app.sidebar.is-collapsed .side-head { flex-direction: column; gap: var(--bw-space-1); width: 32px; }
+#app.sidebar.is-collapsed .side-head .side-workspace,
+#app.sidebar.is-collapsed .side-collapse,
+#app.sidebar.is-collapsed .side-newtab {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--bw-r-row);
+}
+#app.sidebar.is-collapsed .side-collapse { order: -1; }
+#app.sidebar.is-collapsed .side-workspace-name,
+#app.sidebar.is-collapsed .side-workspace-chevron,
+#app.sidebar.is-collapsed .side-newtab-label { display: none; }
+#app.sidebar.is-collapsed .side-list { align-items: center; padding-inline: var(--bw-space-2); }
+#app.sidebar.is-collapsed .side-pinned { grid-template-columns: 32px; }
+#app.sidebar.is-collapsed .side-sep { width: 20px; margin-inline: 0; }
+#app.sidebar.is-collapsed .side-tab:not(.pinned) {
+  display: grid;
+  grid-template-columns: 16px;
+  place-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: 0;
+  padding: 0;
+  border-radius: var(--bw-r-row);
+}
+#app.sidebar.is-collapsed .side-tab:not(.pinned) .side-title,
+#app.sidebar.is-collapsed .side-tab:not(.pinned) .side-flags,
+#app.sidebar.is-collapsed .side-tab:not(.pinned) .side-pin,
+#app.sidebar.is-collapsed .side-tab:not(.pinned) .side-close { display: none; }
+#app.sidebar.is-collapsed .side-tab.in-group::before { left: -5px; }
+#app.sidebar.is-collapsed .side-group {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-top: var(--bw-space-1);
+  padding: 0;
+  border-radius: var(--bw-r-row);
+}
+#app.sidebar.is-collapsed .side-group::after { right: 6px; left: 6px; }
+#app.sidebar.is-collapsed .side-group-name,
+#app.sidebar.is-collapsed .side-group-count,
+#app.sidebar.is-collapsed .side-group-chevron { display: none; }
+#app.sidebar.is-collapsed .side-empty-label { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .side-tab,
