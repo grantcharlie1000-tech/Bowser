@@ -1,6 +1,6 @@
 import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
-import { CHOICES, CHOICE_LABEL, KINDS, KIND_LABEL, deniedText, filterSites, hasStored, parsePrivacySnapshot, privacyCommand, setPermissionCommand, storedCount, type Choice, type Kind, type PrivacySnapshot, type SiteRow } from './privacy-logic';
+import { CHOICES, CHOICE_LABEL, KINDS, KIND_LABEL, PRIVATE_TABS_NOTE, PRIVATE_TABS_TITLE, deniedText, filterSites, hasStored, parsePrivacySnapshot, privacyCommand, setPermissionCommand, storedCount, type Choice, type Kind, type PrivacySnapshot, type SiteRow } from './privacy-logic';
 import { emptyState, enter, pageSection, panelHeader, searchField, segmented, settingRow, textButton } from './kit';
 
 type Fields = { id?: number; n?: number; text?: string };
@@ -198,6 +198,12 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
       settingRow('Efficiency mode', null, snapshot.efficiencyActive ? 'Active' : 'Not active'),
     );
     sections.push(protection.root);
+
+    // Static, plain-language note on what a private tab keeps (nothing on disk) and what it blocks.
+    const privateTabs = pageSection(PRIVATE_TABS_TITLE);
+    privateTabs.root.classList.add('pg-private');
+    for (const [label, text] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, text));
+    sections.push(privateTabs.root);
 
     const clear = pageSection('Clear browsing data');
     CLEAR_KINDS.forEach((kind, kindIndex) => {

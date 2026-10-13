@@ -307,6 +307,31 @@ impl WorkspaceSet {
         self.session_order = ordered.to_vec();
     }
 
+    /// A copy for saving with the `excluded` tabs (private tabs) left out of every workspace's
+    /// membership, so the file never mentions them. The file format needs every workspace to have
+    /// a member, so a workspace that would be left empty keeps its tabs: only anonymous numbers
+    /// remain, never an address or title.
+    pub fn without_tabs(&self, excluded: &HashSet<TabId>) -> Self {
+        let mut copy = self.clone();
+        for workspace in &mut copy.workspaces {
+            let kept: Vec<TabId> = workspace
+                .tabs
+                .iter()
+                .copied()
+                .filter(|tab| !excluded.contains(tab))
+                .collect();
+            if kept.is_empty() {
+                continue;
+            }
+            if !kept.contains(&workspace.active_tab) {
+                workspace.active_tab = kept[0];
+            }
+            workspace.tabs = kept;
+        }
+        copy.session_order.retain(|tab| !excluded.contains(tab));
+        copy
+    }
+
     /// Remaps persisted process-local tab IDs to IDs allocated while restoring the session.
     pub fn remap_session_order(&mut self, restored: &[TabId]) {
         if self.session_order.is_empty() {
@@ -739,6 +764,27 @@ mod tests {
         assert_eq!(transition.shown, vec![TabId(3)]);
         assert_eq!(transition.selected, TabId(3));
         assert_eq!(workspaces.active().tabs(), &[TabId(3)]);
+    }
+
+    #[test]
+    fn saving_without_private_tabs_leaves_their_ids_out_unless_a_workspace_would_be_empty() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        workspaces.add_tab(TabId(2)).unwrap();
+        workspaces.add_tab(TabId(3)).unwrap();
+        workspaces.select_tab(TabId(2)).unwrap();
+        workspaces.create("Only private", TabId(4)).unwrap();
+        workspaces.set_session_order(&[TabId(1), TabId(3)]);
+        let excluded = HashSet::from([TabId(2), TabId(4)]);
+        let saved = workspaces.without_tabs(&excluded);
+        assert_eq!(saved.get(WorkspaceId(0)).unwrap().tabs(), &[TabId(1), TabId(3)]);
+        assert_eq!(saved.get(WorkspaceId(0)).unwrap().active_tab(), TabId(1));
+        // The only tab of a workspace stays, so the file remains valid.
+        assert_eq!(saved.get(WorkspaceId(1)).unwrap().tabs(), &[TabId(4)]);
+        let text = saved.serialize();
+        assert!(!text.contains("1,2,3"), "{text}");
+        assert!(WorkspaceSet::parse(&text).is_ok(), "{text}");
+        // The original is untouched.
+        assert_eq!(workspaces.get(WorkspaceId(0)).unwrap().tabs().len(), 3);
     }
 
     #[test]

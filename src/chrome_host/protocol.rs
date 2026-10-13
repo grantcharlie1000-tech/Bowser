@@ -1013,6 +1013,8 @@ pub struct ViewState {
     /// The page zoom of the active tab in percent. Clamped to 25..=500 when serialised; the toolbar
     /// shows a reset chip while it is not 100.
     pub zoom: u16,
+    /// The active tab is a private tab (the pill shows the private indicator).
+    pub private: bool,
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1049,6 +1051,8 @@ impl ViewState {
         out.push_str(if self.permblocked { "true" } else { "false" });
         out.push_str(",\"zoom\":");
         out.push_str(&self.zoom.clamp(crate::site_prefs::ZOOM_MIN, crate::site_prefs::ZOOM_MAX).to_string());
+        out.push_str(",\"private\":");
+        out.push_str(if self.private { "true" } else { "false" });
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1109,6 +1113,8 @@ pub struct TabItem {
     pub loading: bool,
     pub pinned: bool,
     pub muted: bool,
+    /// A private (InPrivate) tab: the strip shows the private indicator.
+    pub private: bool,
     /// Marker id; `-1` for none.
     pub marker: i32,
     /// Group key; `0` for none.
@@ -1135,12 +1141,13 @@ pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"id\":{},\"title\":{},\"loading\":{},\"pinned\":{},\"muted\":{},\"marker\":{},\"g\":{},\"gl\":{}",
+            "{{\"id\":{},\"title\":{},\"loading\":{},\"pinned\":{},\"muted\":{},\"private\":{},\"marker\":{},\"g\":{},\"gl\":{}",
             item.id,
             json_string(truncate_chars(&item.title, MAX_TAB_TITLE_CHARS)),
             item.loading,
             item.pinned,
             item.muted,
+            item.private,
             item.marker,
             item.group,
             item.leader,
@@ -1713,6 +1720,7 @@ mod tests {
             label: "Secure".to_string(),
             permblocked: false,
             zoom: 100,
+            private: false,
             theme: Vec::new(),
         }
     }
@@ -1729,8 +1737,11 @@ mod tests {
         let mut member = plain_tab(8, "Second 😀");
         member.group = 42;
         member.collapsed = true;
+        let mut hidden = plain_tab(9, "Private browsing");
+        hidden.private = true;
         let png = png_with_size(16, 16, 24);
         let mut state = sample_state();
+        state.private = true;
         state.scale = 1.25;
         state.pillw = 624;
         state.menux = 627;
@@ -1740,7 +1751,7 @@ mod tests {
         let snap = snap_json("history", |d| { d.array("items", |_| {}); d.int("count", 0); }).unwrap();
         let content = format!(
             "{{\"tabs\":{},\"fav\":{},\"rail\":{},\"railfav\":{},\"state\":{},\"setText\":{},\"completion\":{},\"panelshow\":{},\"layout\":{},\"snap\":{}}}\n",
-            tabs_json(7, &[leader, member]),
+            tabs_json(7, &[leader, member, hidden]),
             fav_json(7, &png).expect("fixture PNG"),
             rail_json(&rail),
             railfav_json("app:5", &png).expect("fixture PNG"),
@@ -2537,6 +2548,7 @@ mod tests {
             label: "Secure".to_string(),
             permblocked: true,
             zoom: 125,
+            private: true,
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -2544,14 +2556,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"private":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"private":false,"theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
@@ -2970,6 +2982,7 @@ mod tests {
             loading: false,
             pinned: false,
             muted: false,
+            private: false,
             marker: -1,
             group: 0,
             leader: false,
@@ -2995,6 +3008,7 @@ mod tests {
             loading: true,
             pinned: true,
             muted: true,
+            private: true,
             marker: 2,
             has_favicon: true,
             ..plain_tab(7, "Home")
@@ -3003,7 +3017,7 @@ mod tests {
             tabs_json(7, &[tab]),
             concat!(
                 r#"{"v":1,"t":"tabs","active":7,"items":["#,
-                r#"{"id":7,"title":"Home","loading":true,"pinned":true,"muted":true,"marker":2,"g":0,"gl":false,"fav":true}"#,
+                r#"{"id":7,"title":"Home","loading":true,"pinned":true,"muted":true,"private":true,"marker":2,"g":0,"gl":false,"fav":true}"#,
                 "]}"
             )
         );
@@ -3034,9 +3048,9 @@ mod tests {
             tabs_json(11, &[leader, member, loose]),
             concat!(
                 r#"{"v":1,"t":"tabs","active":11,"items":["#,
-                r#"{"id":10,"title":"Mail","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":true,"gname":"Work","gcol":3,"gcollapsed":true,"gsize":2,"fav":false},"#,
-                r#"{"id":11,"title":"Calendar","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":false,"fav":false},"#,
-                r#"{"id":12,"title":"Loose","loading":false,"pinned":false,"muted":false,"marker":-1,"g":0,"gl":false,"fav":false}"#,
+                r#"{"id":10,"title":"Mail","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":5,"gl":true,"gname":"Work","gcol":3,"gcollapsed":true,"gsize":2,"fav":false},"#,
+                r#"{"id":11,"title":"Calendar","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":5,"gl":false,"fav":false},"#,
+                r#"{"id":12,"title":"Loose","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":0,"gl":false,"fav":false}"#,
                 "]}"
             )
         );

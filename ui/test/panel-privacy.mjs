@@ -137,3 +137,17 @@ test('denied request lines read as plain sentences with a coarse age', () => {
   assert.equal(logic.deniedText({ origin: 'https://a.test', kind: 'popups', ago: 5, n: 3 }), 'Popup blocked (3 times) · just now');
   assert.equal(logic.deniedText({ origin: 'https://a.test', kind: 'location', ago: 7200, n: 1 }), 'Location blocked · 2 h ago');
 });
+
+test('the Private tabs note says, in plain words, what private tabs keep and block', () => {
+  assert.equal(logic.PRIVATE_TABS_TITLE, 'Private tabs');
+  const text = logic.PRIVATE_TABS_NOTE.map(([label, body]) => `${label}. ${body}`).join(' ');
+  for (const phrase of [
+    'Ctrl+Shift+P', 'New private tab', 'no history, cookies, site data, permission choices or blocker statistics on disk',
+    'memory only', 'last private tab closes', 'not restored after a restart or crash', 'never grouped',
+    'Strict tracking prevention and the blocker are always on', 'Per-site blocker exceptions are ignored',
+    'Every permission request and download in a private tab is blocked',
+  ]) assert.ok(text.includes(phrase), phrase);
+  // Sentence case, no uppercase eyebrows.
+  for (const [label] of logic.PRIVATE_TABS_NOTE) assert.notEqual(label, label.toUpperCase());
+  assert.notEqual(logic.PRIVATE_TABS_TITLE, logic.PRIVATE_TABS_TITLE.toUpperCase());
+});

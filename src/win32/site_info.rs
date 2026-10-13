@@ -75,6 +75,8 @@ struct Snapshot {
     blocking: Option<bool>,
     /// The profile's tracking-prevention level as WebView2 reports it.
     tracking: Option<&'static str>,
+    /// The tab is private: no permission is ever allowed or stored, and nothing is saved.
+    private: bool,
 }
 
 /// Shows the panel below the connection icon. Choices run and the panel reopens, so it always shows
@@ -143,13 +145,15 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
     let zoom = snapshot.zoom;
     let any_stored = decisions.iter().any(Option::is_some);
     let can_clear = matches!(cookies, Some(Ok(count)) if count > 0);
+    let private = snapshot.private;
     let mut page = super::html_popup::Page::new("siteinfo", move |out| {
         out.string("host", &host);
         out.string("origin", &origin);
         out.string("security", security);
         out.string("summary", summary);
         out.array("perms", |rows| {
-            if !has_origin {
+            // A private tab has no permission rows: every request is blocked and nothing is saved.
+            if !has_origin || private {
                 return;
             }
             for permission in ROW_ORDER {
@@ -180,10 +184,14 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
         });
         out.string("tracking", tracking);
         out.uint("zoom", u64::from(zoom));
-        out.bool("reset", has_origin && any_stored);
+        out.bool("reset", has_origin && any_stored && !private);
         out.bool("blockedHere", blocked_here);
+        if private {
+            // Optional key, sent only for a private tab.
+            out.bool("private", true);
+        }
     });
-    if snapshot.origin.is_some() {
+    if snapshot.origin.is_some() && !snapshot.private {
         for index in 0..Permission::ALL.len() {
             page.act(PERMISSION_ROW + index as u32, (CHOICES.len() - 1) as u8);
         }
@@ -197,7 +205,8 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
     if can_clear {
         page.act(ACT_CLEAR_COOKIES, 0);
     }
-    if snapshot.blocking.is_some() {
+    if snapshot.blocking.is_some() && !snapshot.private {
+        // Always on in a private tab: there is nothing to toggle.
         page.act(ACT_BLOCKER, 1);
     }
     page
@@ -275,6 +284,7 @@ fn gather_light(shown: &Snapshot) -> Snapshot {
         blocking: shown.blocking,
         tracking: shown.tracking,
         zoom: shown.zoom,
+        private: shown.private,
     }
 }
 // --- end popup surfaces ---
@@ -312,8 +322,10 @@ fn gather(app: &AppRef) -> Snapshot {
     let origin = url
         .as_ref()
         .and_then(|url| permissions::origin_of(url.as_str()));
+    let private = tab.is_some_and(|tab| App::tab_private(app, tab));
     let decisions = match (&origin, App::permissions_handle(app)) {
-        (Some(origin), Some(store)) => store.borrow().site_decisions(origin),
+        // A private tab has no stored decisions, whatever the profile holds for the site.
+        (Some(origin), Some(store)) if !private => store.borrow().site_decisions(origin),
         _ => [None; PERMISSION_COUNT],
     };
     let cookies = match (tab, url.as_ref()) {
@@ -337,6 +349,7 @@ fn gather(app: &AppRef) -> Snapshot {
         blocking: App::blocker_active_for_site(app),
         tracking,
         zoom: App::active_zoom_percent(app),
+        private,
     }
 }
 
@@ -366,7 +379,19 @@ fn panel(snapshot: &Snapshot) -> Menu {
     ));
 
     entries.push(Entry::SectionHeader("Permissions for this site".to_owned()));
-    if snapshot.origin.is_some() {
+    if snapshot.private {
+        for permission in Permission::ALL {
+            entries.push(Entry::Item(
+                Item::new(
+                    INFO,
+                    format!("{}: Blocked in private tabs", permission.label()),
+                    permission_icon(permission),
+                )
+                .glyph(permission_glyph(permission))
+                .disabled(),
+            ));
+        }
+    } else if snapshot.origin.is_some() {
         for (index, (permission, stored)) in Permission::ALL
             .into_iter()
             .zip(snapshot.decisions)
@@ -461,7 +486,7 @@ fn panel(snapshot: &Snapshot) -> Menu {
             Icon::Reset,
         )
         .glyph("reset")
-        .disabled_if(snapshot.origin.is_none() || !any_stored),
+        .disabled_if(snapshot.origin.is_none() || !any_stored || snapshot.private),
     ));
 
     Menu {
@@ -472,7 +497,11 @@ fn panel(snapshot: &Snapshot) -> Menu {
             accent: crate::theme::Rgba::hex(0x2B5FA8, 255),
         }),
         entries,
-        footer: "Changes apply to the next request".to_owned(),
+        footer: if snapshot.private {
+            "Private tab: nothing here is saved".to_owned()
+        } else {
+            "Changes apply to the next request".to_owned()
+        },
     }
 }
 
@@ -496,6 +525,7 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
         }
         BLOCKER => App::toggle_blocker(app),
         RESET_ZOOM => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
+        RESET_PERMISSIONS if snapshot.private => {}
         RESET_PERMISSIONS => {
             let (Some(origin), Some(store)) =
                 (snapshot.origin.as_ref(), App::permissions_handle(app))
@@ -506,7 +536,9 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
                 show_error_message(&format!("Bowser could not save the permissions: {error}"));
             }
         }
-        id if (PERMISSION..PERMISSION + Permission::ALL.len() * CHOICES.len()).contains(&id) => {
+        id if !snapshot.private
+            && (PERMISSION..PERMISSION + Permission::ALL.len() * CHOICES.len()).contains(&id) =>
+        {
             let offset = id - PERMISSION;
             let permission = Permission::ALL[offset / CHOICES.len()];
             let decision = CHOICES[offset % CHOICES.len()];
@@ -616,7 +648,28 @@ mod tests {
             blocking,
             tracking: Some("balanced"),
             zoom: 100,
+            private: false,
         }
+    }
+
+    #[test]
+    fn a_private_tab_page_has_no_permission_or_blocker_controls() {
+        let mut shown = snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true));
+        shown.private = true;
+        let page = html_page(&shown, true);
+        let json = crate::win32::html_popup::Page::debug_json(page, 9);
+        assert!(json.contains("\"perms\":[]"), "{json}");
+        assert!(json.contains("\"reset\":false"), "{json}");
+        assert!(json.contains("\"private\":true"), "{json}");
+        // Clearing the tab's own (in-memory) cookies stays available; nothing else is declared.
+        assert!(json.contains("\"clear\":true"), "{json}");
+        let camera = PERMISSION_ROW + permission_index(Permission::Camera) as u32;
+        // The command mapping itself is unchanged: the guard is that no act is declared for the
+        // page, and `apply` ignores permission and reset commands for a private snapshot.
+        assert!(act_command(&shown, camera, 0).is_some());
+        let normal = html_page(&snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true)), false);
+        let normal_json = crate::win32::html_popup::Page::debug_json(normal, 9);
+        assert!(!normal_json.contains("\"private\""), "{normal_json}");
     }
 
     #[test]

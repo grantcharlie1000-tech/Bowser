@@ -296,7 +296,7 @@ pub(crate) enum Action {
     SetIcon { id: u32, icon: WorkspaceIcon },
     SetColour { id: u32, colour: Option<WorkspaceColour> },
     CreateWorkspace { name: String },
-    /// Asks the main window for its profile switcher, the same one Ctrl+Shift+P opens.
+    /// Asks the main window for its profile switcher, the same one Ctrl+Shift+M opens.
     SwitchProfile,
     /// The window confirms, then clears every pinned app's site data.
     ClearWebAppData,
@@ -967,7 +967,7 @@ use std::path::PathBuf;
 use windows::Win32::{
     Foundation::{LPARAM, POINT, WPARAM},
     Graphics::Gdi::{DeleteObject, HDC, HFONT, SelectObject, SetBkMode, TRANSPARENT},
-    UI::Input::KeyboardAndMouse::{ReleaseCapture, VK_P},
+    UI::Input::KeyboardAndMouse::{ReleaseCapture, VK_M},
 };
 
 use super::{
@@ -1331,13 +1331,13 @@ impl Content {
                 }
             }
             Action::SwitchProfile => {
-                // The profile switcher lives in the main window's menu code. Ctrl+Shift+P opens it
+                // The profile switcher lives in the main window's menu code. Ctrl+Shift+M opens it
                 // through the same shortcut dispatch, so the panel asks for it the same way.
                 // Shortcut dispatch and profile switching are handled by the main-window menu.
                 crate::win32::post(
                     self.surface.owner(),
                     crate::win32::WM_SHORTCUT_KEY,
-                    WPARAM(VK_P.0 as usize),
+                    WPARAM(VK_M.0 as usize),
                     LPARAM(SHORTCUT_CTRL | SHORTCUT_SHIFT),
                 );
                 return;

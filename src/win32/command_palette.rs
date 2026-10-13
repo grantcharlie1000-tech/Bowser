@@ -616,12 +616,13 @@ const HTML_ITEMS_BUDGET: usize = 200 * 1024;
 
 /// Shortcut labels for palette commands. Each one is a real binding (`shortcuts::command_for`,
 /// checked by a test), shown right-aligned in the row.
-const ACCELERATORS: [(&str, &str); 10] = [
+const ACCELERATORS: [(&str, &str); 11] = [
     ("new-tab", "Ctrl+T"),
+    ("new-private-tab", "Ctrl+Shift+P"),
     ("close-tab", "Ctrl+W"),
     ("toggle-sidebar", "Ctrl+Shift+N"),
     ("passwords", "Ctrl+,"),
-    ("profiles", "Ctrl+Shift+P"),
+    ("profiles", "Ctrl+Shift+M"),
     ("add-bookmark", "Ctrl+D"),
     ("reload", "Ctrl+R"),
     ("back", "Alt+Left"),

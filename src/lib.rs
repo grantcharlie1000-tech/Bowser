@@ -15,6 +15,7 @@ pub mod performance;
 pub mod permissions;
 pub mod pip;
 pub mod privacy_stats;
+pub mod private;
 pub mod productivity;
 pub mod profile;
 pub mod session;

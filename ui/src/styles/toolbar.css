@@ -234,7 +234,32 @@ html[data-scheme="dark"] #app {
   color: var(--tb-warn);
 }
 
-/* Narrow pill: drop the split button first, then the site button, never the text field. */
+/* Private tab: a compact chip between the address and the split button. It never shrinks, so a
+   long URL truncates (ellipsis) before it, and it sits in the pill's flex row, so it cannot cover
+   the site (security) button or the split button. Accent-soft wash with primary text keeps AA. */
+.tb-private {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  height: var(--bw-icon-box);
+  margin-right: var(--bw-space-0_5);
+  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-1);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font-size: var(--bw-text-chrome);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.tb-private[hidden] {
+  display: none;
+}
+
+/* Narrow pill: drop the split button first, then the private label (the glyph stays), then the
+   site button, never the text field. */
 @container (max-width: 190px) {
   .tb-split {
     display: none;
@@ -244,6 +269,16 @@ html[data-scheme="dark"] #app {
 @container (max-width: 130px) {
   .tb-zoom {
     display: none;
+  }
+}
+
+@container (max-width: 240px) {
+  .tb-private-label {
+    display: none;
+  }
+
+  .tb-private {
+    padding: 0 var(--bw-space-0_5);
   }
 }
 

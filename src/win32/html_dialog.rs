@@ -153,7 +153,11 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
         out.bool("blockerSetting", snapshot.blocker_setting); out.bool("sleeping", snapshot.sleeping); out.uint("sleepAfter", snapshot.sleep_after);
         let denied = App::denied_requests(&app);
         let sites = {
-            let current = App::active_site(&app).and_then(|(_, url)| crate::permissions::origin_of(url.as_str()));
+            // A private tab's site is never offered as "current": a stored decision made here would
+            // be written to the shared permission store.
+            let current = App::active_site(&app)
+                .filter(|(tab, _)| !App::tab_private(&app, *tab))
+                .and_then(|(_, url)| crate::permissions::origin_of(url.as_str()));
             let store = App::permissions_handle(&app);
             let guard = store.as_ref().map(|store| store.borrow());
             let empty = crate::permissions::PermissionStore::default();

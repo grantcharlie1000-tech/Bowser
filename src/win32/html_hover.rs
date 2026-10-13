@@ -693,6 +693,7 @@ fn theme_json() -> String {
         label: String::new(),
         permblocked: false,
         zoom: 100,
+        private: false,
         theme: chrome_host::theme_tokens(palette),
     }
     .to_json()

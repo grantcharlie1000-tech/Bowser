@@ -133,7 +133,7 @@ test('theme colours reject everything else, including url() and other functions'
 });
 
 function tab(id) {
-  return { id, title: 't', loading: false, pinned: false, muted: false, marker: -1, g: 0, gl: false, fav: false };
+  return { id, title: 't', loading: false, pinned: false, muted: false, private: id % 2 === 0, marker: -1, g: 0, gl: false, fav: false };
 }
 
 test('a tabs message holds up to MAX_TABS items and no more', () => {

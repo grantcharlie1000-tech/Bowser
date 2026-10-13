@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'tabs-logic.ts'), 'utf8');
 const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
 const logic = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const { ACTIVE_WEIGHT, groupWeight, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
+const { ACTIVE_WEIGHT, groupWeight, privateTabName, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
 
 const tab = (id, extra = {}) => ({
   id,
@@ -18,6 +18,7 @@ const tab = (id, extra = {}) => ({
   loading: false,
   pinned: false,
   muted: false,
+  private: false,
   marker: -1,
   g: 0,
   gl: false,
@@ -171,4 +172,28 @@ test('tabs.css keeps the strip filled: no tab max-width, active weighs 1.5, grou
   assert.match(css, /\.strip \.group \{[^}]*flex: var\(--gw, 1\) 1 calc\(/);
   const tab = /\.strip \.tab \{[^}]*\}/.exec(css)?.[0] ?? '';
   assert.doesNotMatch(tab, /max-width/);
+});
+
+test('private tabs weigh, order and lay out exactly like normal tabs (the badge takes no room)', () => {
+  const plain = [
+    tab(1, { pinned: true }),
+    tab(2, { g: 5, gl: true, gname: 'Work', gcol: 2, gcollapsed: false, gsize: 2 }),
+    tab(3),
+    tab(4, { g: 5 }),
+    tab(5),
+    tab(6),
+  ];
+  // Private tabs are never grouped: mark the pinned one and two loose ones.
+  const mixed = plain.map((t) => ([1, 3, 6].includes(t.id) ? { ...t, private: true } : t));
+  for (const active of [1, 3, 4, 6, 99]) {
+    const a = buildEntries(plain, active);
+    const b = buildEntries(mixed, active);
+    assert.equal(logic.layoutSignature(b), logic.layoutSignature(a), `signature, active ${active}`);
+    assert.deepEqual(b.map((e) => e.kind), a.map((e) => e.kind));
+    const ids = (entries) => entries.map((e) => (e.kind === 'tab' ? e.slot.item.id : e.members.map((s) => s.item.id)));
+    assert.deepEqual(ids(b), ids(a));
+    const weights = (entries) => entries.map((e) => (e.kind === 'group' ? groupWeight(e.members, active) : e.slot.item.id === active ? ACTIVE_WEIGHT : 1));
+    assert.deepEqual(weights(b), weights(a), `fill-the-row weights, active ${active}`);
+  }
+  assert.equal(privateTabName('Mail'), 'Mail (Private)');
 });

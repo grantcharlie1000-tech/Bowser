@@ -295,11 +295,15 @@ pub struct DiscardCandidate {
     /// for its controller to be created.
     pub loading: bool,
     pub committed_web_url: bool,
+    /// A private tab is never discarded: closing its controller could end the in-memory private
+    /// profile, and the page could not be restored without its cookies.
+    pub private: bool,
 }
 
 /// `audible` is queried last because it crosses into WebView2, and most tabs fail an earlier check.
 pub fn tab_discard_eligible(tab: DiscardCandidate, audible: impl FnOnce() -> bool) -> bool {
     !tab.active
+        && !tab.private
         && !tab.pinned
         && tab.suspended
         && !tab.loading
@@ -579,6 +583,9 @@ pub struct App {
     privacy_session_blocked: u64,
     /// Ad/tracker blocker shared with the engine; `None` for benchmark launches or when disabled.
     blocker: Option<engine::BlockerHandle>,
+    /// Blocker for private tabs: always consulted, whatever the global switch and site exceptions
+    /// say. `None` only for benchmark launches, which never open private tabs.
+    private_blocker: Option<engine::BlockerHandle>,
     /// Stored per-site permission decisions; `None` for benchmark launches, which deny every request.
     permissions: Option<engine::PermissionsHandle>,
     /// Per-site preferences (page zoom). `None` for benchmark launches; guest sessions get an
@@ -622,12 +629,15 @@ struct AppTab {
     zoom: u16,
     /// Outcome of the last top-level navigation, for the connection state in Site information.
     load: LoadState,
+    /// A private (InPrivate) tab: see `crate::private`. Fixed when the tab is created.
+    private: bool,
 }
 
 impl AppTab {
     fn empty(id: TabId) -> Self {
         Self {
             id,
+            private: false,
             url: None,
             title: String::new(),
             loading: false,
@@ -775,10 +785,18 @@ impl App {
 
     /// Title suffix describing the blocker for the active tab, e.g. ` [12 blocked]`.
     fn blocker_suffix(state: &App) -> String {
+        let active = state.tab_model.active();
+        if let Some(tab) = state.tabs.iter().find(|tab| tab.id == active && tab.private) {
+            // The blocker is always on in a private tab; the site exceptions do not apply.
+            return if tab.blocked > 0 {
+                format!(" [Private, {} blocked]", tab.blocked)
+            } else {
+                " [Private]".to_owned()
+            };
+        }
         let Some(blocker) = state.blocker.as_ref() else {
             return String::new();
         };
-        let active = state.tab_model.active();
         let Some(tab) = state.tabs.iter().find(|tab| tab.id == active) else {
             return String::new();
         };
@@ -801,6 +819,13 @@ impl App {
     /// the site is exempted.
     pub fn blocker_active_for_site(app: &AppRef) -> Option<bool> {
         let state = app.borrow();
+        if state
+            .tabs
+            .iter()
+            .any(|tab| tab.id == state.tab_model.active() && tab.private)
+        {
+            return Some(true);
+        }
         let blocker = state.blocker.as_ref()?;
         let host = state
             .tabs
@@ -999,17 +1024,19 @@ impl App {
                 .tab_model
                 .iter()
                 .filter_map(|model| {
-                    let url = state
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.id == model.id)?
-                        .url
-                        .as_ref()?;
+                    let tab = state.tabs.iter().find(|tab| tab.id == model.id)?;
+                    let url = crate::private::snapshot_url(tab.private, tab.url.as_ref())?;
                     crate::session::persistable_url(url).map(|_| model.id)
                 })
                 .take(crate::session::MAX_TABS)
                 .collect::<Vec<_>>();
-            let mut workspaces = state.workspaces.clone();
+            let private: std::collections::HashSet<TabId> = state
+                .tabs
+                .iter()
+                .filter(|tab| tab.private)
+                .map(|tab| tab.id)
+                .collect();
+            let mut workspaces = state.workspaces.without_tabs(&private);
             workspaces.set_session_order(&order);
             (state.workspaces_path.clone(), workspaces)
         };
@@ -1047,6 +1074,11 @@ impl App {
 
     /// Ctrl+Shift+B: switches blocking off or on for the active tab's site, then reloads it.
     pub fn toggle_blocker(app: &AppRef) {
+        if Self::active_tab_private(app) {
+            // Site exceptions are saved to disk; a private tab never writes or honours them.
+            win32::show_error_message("The blocker is always on in private tabs.");
+            return;
+        }
         let (blocker, host) = {
             let state = app.borrow();
             let host = state
@@ -1183,6 +1215,16 @@ impl App {
     }
 
     pub fn new_tab(app: &AppRef) -> TabId {
+        Self::new_tab_in_mode(app, false)
+    }
+
+    /// A new tab that browses privately: its controller is created InPrivate in the shared private
+    /// profile and nothing it does is persisted (see `crate::private`).
+    pub fn new_private_tab(app: &AppRef) -> TabId {
+        Self::new_tab_in_mode(app, true)
+    }
+
+    fn new_tab_in_mode(app: &AppRef, private: bool) -> TabId {
         let (id, hwnd, old, old_has_controller, in_split) = {
             let mut state = app.borrow_mut();
             let old = state.tab_model.active();
@@ -1200,12 +1242,21 @@ impl App {
                 let _ = split.replace_focused(id);
                 state.split_view = Some(split);
             }
-            state.tabs.push(AppTab::empty(id));
+            let mut fresh = AppTab::empty(id);
+            fresh.private = private;
+            state.tabs.push(fresh);
             state.navigation_progress.reset();
             state.page_loaded = false;
             state.desired_memory_target = MemoryUsageTarget::Normal;
             (id, state.hwnd, old, old_has_controller, in_split)
         };
+        if private {
+            // Before the engine first hears of the tab, so its controller is created InPrivate.
+            Self::with_engine(app, |engine| {
+                engine.set_tab_private(id);
+                Ok(())
+            });
+        }
         if in_split {
             Self::apply_visible_panes(app);
             Self::post_tab_changed(hwnd, id);
@@ -1553,6 +1604,20 @@ impl App {
         true
     }
 
+    /// Whether `id` is a private tab.
+    pub fn tab_private(app: &AppRef, id: TabId) -> bool {
+        app.borrow()
+            .tabs
+            .iter()
+            .any(|tab| tab.id == id && tab.private)
+    }
+
+    /// Whether the active tab is a private tab.
+    pub fn active_tab_private(app: &AppRef) -> bool {
+        let active = app.borrow().tab_model.active();
+        Self::tab_private(app, active)
+    }
+
     pub fn tab_pinned(app: &AppRef, id: TabId) -> bool {
         app.borrow().tab_model.get(id).is_some_and(|tab| tab.pinned)
     }
@@ -1651,6 +1716,9 @@ impl App {
     pub fn set_tab_group_mode(app: &AppRef, id: TabId, mode: crate::tab_groups::GroupMode) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
+            if state.mirror(id).is_some_and(|tab| tab.private) {
+                return false;
+            }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
                 return false;
             };
@@ -1677,6 +1745,9 @@ impl App {
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
+            if state.mirror(id).is_some_and(|tab| tab.private) {
+                return false;
+            }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
                 return false;
             };
@@ -1948,6 +2019,15 @@ impl App {
             &self.group_preferences,
             self.settings.automatic_tab_grouping,
         );
+        // A private tab is never in a group: group names, colours and site rules are stored per
+        // site, and a private tab's site must not reach them.
+        for input in &mut inputs {
+            if self.mirror(input.id).is_some_and(|tab| tab.private) {
+                input.domain = None;
+                input.opener = None;
+                input.manual = false;
+            }
+        }
         inputs
     }
 
@@ -2657,6 +2737,8 @@ impl App {
             entry.zoom = percent;
             (entry.url.clone(), store, hwnd)
         };
+        // A private tab's zoom lives in the tab only: nothing is written to the site store.
+        let persist = persist && !Self::tab_private(app, tab);
         if persist
             && let (Some(store), Some(origin)) = (
                 store,
@@ -2673,6 +2755,10 @@ impl App {
     /// Navigation commit: shows the page at its site's stored zoom (100 for a site with none).
     /// Without a store (benchmark launches) the tab keeps whatever zoom it has.
     fn apply_stored_zoom(app: &AppRef, tab: TabId, url: &url::Url) {
+        if Self::tab_private(app, tab) {
+            // A private tab neither reads nor writes stored zoom; it keeps its own level.
+            return;
+        }
         let (store, current) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
@@ -3045,6 +3131,7 @@ impl App {
             && options.user_data_dir.is_none()
             && !profile.is_guest();
         let track_privacy = options.benchmark_url.is_none() && options.user_data_dir.is_none();
+        let allow_private_tabs = options.benchmark_url.is_none();
         let mut app = Self::from_launch_options(
             options,
             user_data_dir,
@@ -3060,6 +3147,13 @@ impl App {
             );
             state.enabled = true;
             app.blocker = Some(Rc::new(RefCell::new(state)));
+        }
+        if allow_private_tabs {
+            app.private_blocker = Some(app.blocker.clone().unwrap_or_else(|| {
+                Rc::new(RefCell::new(crate::blocker::BlockerState::matcher_only(
+                    &profile.blocker_dir(),
+                )))
+            }));
         }
         if track_privacy {
             app.permissions = Some(Rc::new(RefCell::new(
@@ -3164,6 +3258,7 @@ impl App {
             privacy_stats_path: None,
             privacy_session_blocked: 0,
             blocker: None,
+            private_blocker: None,
             permissions: None,
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
@@ -3331,7 +3426,7 @@ impl App {
                 .tabs
                 .iter()
                 .find(|tab| tab.id == model.id)
-                .and_then(|tab| tab.url.as_ref());
+                .and_then(|tab| crate::private::snapshot_url(tab.private, tab.url.as_ref()));
             if url.is_some_and(|url| crate::session::persistable_url(url).is_some()) {
                 saved_indexes.insert(model.id, saved_count);
                 saved_count += 1;
@@ -3341,7 +3436,7 @@ impl App {
             state.tab_model.iter().map(|model| {
                 let tab = state.tabs.iter().find(|tab| tab.id == model.id);
                 (
-                    tab.and_then(|tab| tab.url.as_ref()),
+                    tab.and_then(|tab| crate::private::snapshot_url(tab.private, tab.url.as_ref())),
                     tab.map_or("", |tab| tab.title.as_str()),
                     model.pinned,
                 )
@@ -3644,7 +3739,7 @@ impl App {
     fn start_engine_creation(app: &AppRef) {
         let weak = Rc::downgrade(app);
         let bounds = app.borrow_mut().latest_viewport_bounds();
-        let (hwnd, profile, tracking_prevention, blocker) = {
+        let (hwnd, profile, tracking_prevention, blocker, private_blocker) = {
             let s = app.borrow();
             (
                 s.hwnd,
@@ -3658,6 +3753,7 @@ impl App {
                     s.settings.tracking_prevention,
                 ),
                 s.blocker.clone(),
+                s.private_blocker.clone(),
             )
         };
         let events_app = Rc::downgrade(app);
@@ -3906,7 +4002,10 @@ impl App {
                 Some(Rc::new(move |source_tab, url| {
                     if let Some(app) = popup_app.upgrade() {
                         if app.borrow().tabs.iter().any(|tab| tab.id == source_tab) {
-                            let child = App::new_tab(&app);
+                            let private = crate::private::inherits_privacy(
+                                App::tab_private(&app, source_tab),
+                            );
+                            let child = App::new_tab_in_mode(&app, private);
                             let _ = app.borrow_mut().tab_model.set_opener(child, source_tab);
                             App::submit_url(&app, url, None);
                         }
@@ -3935,7 +4034,9 @@ impl App {
                         if active {
                             Self::schedule_blocked_title(&app);
                         }
-                        if count != 0 {
+                        if count != 0
+                            && !app.borrow().tabs.iter().any(|tab| tab.id == tab_id && tab.private)
+                        {
                             Self::record_blocked_request(&app, &site_host);
                         }
                     }
@@ -3970,9 +4071,13 @@ impl App {
                     if let Some(app) = denied_app.upgrade() {
                         let changed = app.try_borrow_mut().is_ok_and(|mut state| {
                             // The dashboard's recent list: origin, kind and time, never content.
-                            state
-                                .denied
-                                .record(&origin, kind, crate::permissions::now_secs());
+                            // A private tab's requests are blocked but never listed (the list
+                            // would name a private site and offer a stored Allow for it).
+                            if !state.tabs.iter().any(|tab| tab.id == tab_id && tab.private) {
+                                state
+                                    .denied
+                                    .record(&origin, kind, crate::permissions::now_secs());
+                            }
                             state
                                 .tabs
                                 .iter_mut()
@@ -4022,6 +4127,7 @@ impl App {
         let (known_extensions, extension_ids_file) = records.unzip();
         let extras = engine::EngineExtras {
             blocker,
+            private_blocker,
             browser_extensions: plan.installed || profile_may_hold_extensions,
             startup_extensions: plan.enabled,
             known_extensions: known_extensions.unwrap_or_default(),
@@ -4112,6 +4218,17 @@ impl App {
             if engine.resize(bounds).is_err() {
                 let _ = app.borrow().log.record("engine_ready_resize_failed");
             }
+        }
+        // Private tabs are marked first, so their controllers are created InPrivate.
+        let private_ids: Vec<TabId> = app
+            .borrow()
+            .tabs
+            .iter()
+            .filter(|tab| tab.private)
+            .map(|tab| tab.id)
+            .collect();
+        for tab_id in private_ids {
+            engine.set_tab_private(tab_id);
         }
         // The engine learns about logical tabs through select_tab. Register tabs that
         // existed while the shared environment was initializing before replaying a
@@ -4793,6 +4910,7 @@ impl App {
                 .url
                 .as_ref()
                 .is_some_and(|url| matches!(url.scheme(), "http" | "https")),
+            private: tab.private,
         })
     }
 
@@ -5210,9 +5328,17 @@ mod tests {
             suspended: true,
             loading: false,
             committed_web_url: true,
+            private: false,
         };
         assert!(tab_discard_eligible(eligible, || false));
         let excluded = [
+            (
+                "private",
+                DiscardCandidate {
+                    private: true,
+                    ..eligible
+                },
+            ),
             (
                 "active",
                 DiscardCandidate {
@@ -6552,6 +6678,9 @@ mod tests {
             self.calls.borrow_mut().push(format!("prewarm:{}", tab.0));
             Ok(())
         }
+        fn set_tab_private(&mut self, tab: TabId) {
+            self.calls.borrow_mut().push(format!("private:{}", tab.0));
+        }
         fn can_go_back(&self) -> bool {
             false
         }
@@ -6631,6 +6760,150 @@ mod tests {
                 "suspend:30000".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn a_private_tab_is_marked_private_for_the_engine_before_it_is_first_selected() {
+        let app = app_with_pending(rect(800, 600));
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: Vec::new(),
+        }));
+        let normal = App::active_tab_id(&app);
+        let private = App::new_private_tab(&app);
+        let plain = App::new_tab(&app);
+        assert!(!App::tab_private(&app, normal));
+        assert!(App::tab_private(&app, private));
+        assert!(!App::tab_private(&app, plain));
+        assert_eq!(
+            *calls.borrow(),
+            [
+                format!("private:{}", private.0),
+                format!("select:{}", private.0),
+                format!("select:{}", plain.0),
+            ],
+            "the mark precedes the first select, and normal tabs are never marked"
+        );
+        // Selecting the private tab makes it the active private tab.
+        assert!(App::select_tab(&app, private));
+        assert!(App::active_tab_private(&app));
+        // Closing the last private tab leaves ordinary tabs, and a replacement tab is not private.
+        assert!(App::close_tab(&app, private));
+        assert!(!App::active_tab_private(&app));
+    }
+
+    #[test]
+    fn closing_the_only_private_tab_in_a_window_replaces_it_with_a_normal_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let only = App::active_tab_id(&app);
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == only)
+            .unwrap()
+            .private = true;
+        assert!(App::tab_private(&app, only));
+        assert!(App::close_tab(&app, only));
+        let fresh = App::active_tab_id(&app);
+        assert_ne!(fresh, only);
+        assert!(!App::tab_private(&app, fresh));
+    }
+
+    #[test]
+    fn private_tabs_are_left_out_of_session_snapshots_and_never_join_groups() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let secret = App::new_private_tab(&app);
+        let third = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[
+                (first, "https://example.com/a"),
+                (second, "https://example.com/b"),
+                (secret, "https://example.com/private-page"),
+                (third, "https://example.org/c"),
+            ],
+        );
+        App::select_tab(&app, secret);
+        let snapshot = App::session_snapshot(&app).expect("normal tabs are worth saving");
+        let urls: Vec<String> = snapshot.tabs.iter().map(|tab| tab.url.clone()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.com/a",
+                "https://example.com/b",
+                "https://example.org/c"
+            ]
+        );
+        assert!(
+            !snapshot.serialize().contains("private-page"),
+            "{}",
+            snapshot.serialize()
+        );
+        // The private tab shares a registrable domain with two normal tabs but is in no group.
+        assert_eq!(tab_domain(&app, secret), None);
+        assert!(tab_domain(&app, first).is_some());
+        let inputs = App::tab_group_inputs(&app);
+        let private_input = inputs.iter().find(|input| input.id == secret).unwrap();
+        assert!(private_input.domain.is_none() && private_input.opener.is_none());
+        // Site grouping choices are refused for a private tab.
+        let rules_before = app.borrow().group_preferences.serialize();
+        assert!(!App::set_tab_group_mode(
+            &app,
+            secret,
+            crate::tab_groups::GroupMode::Always
+        ));
+        assert!(!App::set_tab_group_collapsed(&app, secret, true));
+        assert_eq!(
+            app.borrow().group_preferences.serialize(),
+            rules_before,
+            "no site rule was written for the private tab's site"
+        );
+    }
+
+    #[test]
+    fn a_window_of_only_private_tabs_has_no_session_to_save() {
+        let app = app_with_pending(rect(800, 600));
+        let only = App::active_tab_id(&app);
+        {
+            let mut state = app.borrow_mut();
+            state.tabs[0].private = true;
+        }
+        set_addresses(&app, &[(only, "https://example.com/private-page")]);
+        assert!(App::session_snapshot(&app).is_none());
+    }
+
+    #[test]
+    fn a_page_opened_from_a_private_tab_stays_private() {
+        let app = app_with_pending(rect(800, 600));
+        let source = App::new_private_tab(&app);
+        let inherit = crate::private::inherits_privacy(App::tab_private(&app, source));
+        let child = App::new_tab_in_mode(&app, inherit);
+        assert!(App::tab_private(&app, child));
+        let normal_source = App::active_tab_id(&app);
+        let _ = normal_source;
+        let plain = App::new_tab_in_mode(&app, crate::private::inherits_privacy(false));
+        assert!(!App::tab_private(&app, plain));
+    }
+
+    #[test]
+    fn the_window_title_and_blocker_state_report_a_private_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let private = App::new_private_tab(&app);
+        app.borrow_mut()
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == private)
+            .unwrap()
+            .blocked = 4;
+        assert_eq!(
+            App::blocker_suffix(&app.borrow()),
+            " [Private, 4 blocked]",
+            "the suffix does not need the global blocker"
+        );
+        assert_eq!(App::blocker_active_for_site(&app), Some(true));
     }
 
     struct RecordingEngine {
@@ -6743,6 +7016,7 @@ mod tests {
             privacy_stats_path: None,
             privacy_session_blocked: 0,
             blocker: None,
+            private_blocker: None,
             permissions: None,
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),

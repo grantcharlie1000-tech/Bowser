@@ -17,8 +17,14 @@ export interface View {
   readonly display: HTMLElement;
   readonly pill: HTMLElement;
   readonly progress: HTMLElement;
+  /** Private-tab chip in the pill (glyph + "Private"); shown while state.private is true. */
+  readonly privateChip: HTMLElement;
   readonly menu: HTMLButtonElement;
 }
+
+/** Accessible name and tooltip of the pill's private-tab chip. */
+export const PRIVATE_TIP = 'Private tab: browsing data is not saved';
+const OMNI_LABEL = 'Address and search bar';
 
 /** Attribute marking a non-interactive toolbar area as the drag surface (see main.ts). */
 export const DRAG_ATTR = 'data-drag';
@@ -109,7 +115,7 @@ export function buildView(root: HTMLElement): View {
   input.dir = 'auto';
   input.maxLength = MAX_TEXT;
   input.placeholder = 'Search or enter address';
-  input.setAttribute('aria-label', 'Address and search bar');
+  input.setAttribute('aria-label', OMNI_LABEL);
 
   // Shown instead of the input text while the omnibox is unfocused (see main.ts showDisplay).
   const display = el('div', 'omni-display');
@@ -121,8 +127,18 @@ export function buildView(root: HTMLElement): View {
   const field = el('div', 'omni-field');
   field.append(input, display);
 
+  // Private tab: a compact chip after the address (flex: none, so a long URL truncates before it).
+  const privateChip = el('span', 'tb-private');
+  privateChip.hidden = true;
+  privateChip.setAttribute('role', 'img');
+  privateChip.setAttribute('aria-label', PRIVATE_TIP);
+  setTip(privateChip, PRIVATE_TIP);
+  const privateText = el('span', 'tb-private-label');
+  privateText.textContent = 'Private';
+  privateChip.append(icon('private', { size: 14 }), privateText);
+
   const pill = el('div', 'pill');
-  pill.append(site, field, zoom, split, progress);
+  pill.append(site, field, privateChip, zoom, split, progress);
 
   const menu = iconButton('Menu', 'menu', 'tb-nav is-lg is-round');
 
@@ -142,7 +158,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, input, display, pill, progress, menu };
+  return { back, forward, reload, site, split, zoom, input, display, pill, progress, privateChip, menu };
 }
 
 /**
@@ -214,6 +230,15 @@ export function applyState(view: View, state: StateMsg): void {
     site.replaceChildren(icon(SECURITY_ICON[state.security]));
   }
   view.pill.dataset.security = state.security;
+  const priv = state.private === true;
+  if (priv) {
+    if (view.pill.dataset.private !== 'true') view.pill.dataset.private = 'true';
+  } else if (view.pill.dataset.private !== undefined) {
+    delete view.pill.dataset.private;
+  }
+  if (view.privateChip.hidden === priv) view.privateChip.hidden = !priv;
+  const omniLabel = priv ? `${OMNI_LABEL}, private tab` : OMNI_LABEL;
+  if (view.input.getAttribute('aria-label') !== omniLabel) view.input.setAttribute('aria-label', omniLabel);
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
   label(site, text);
 

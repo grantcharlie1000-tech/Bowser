@@ -566,8 +566,14 @@ impl WindowChrome {
             };
             if old.is_some_and(|t| t.loading) && !loading {
                 if let Some(url) = self.pending_history.remove(&id) {
-                    self.history.record(&url, &title);
-                    persist_profile_history(url, title.clone());
+                    // A private tab leaves no trace: not in history.txt, not in suggestions.
+                    let private = App::tab_private(app, id);
+                    if crate::private::may_persist(crate::private::Store::SuggestionHistory, private, false) {
+                        self.history.record(&url, &title);
+                    }
+                    if crate::private::may_persist(crate::private::Store::History, private, false) {
+                        persist_profile_history(url, title.clone());
+                    }
                 }
             }
             tabs.push(TabSnapshot {
@@ -3829,8 +3835,13 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const CLOSE_RIGHT: usize = 15;
     const PICTURE_IN_PICTURE: usize = 18;
     let pinned = App::tab_pinned(app, id);
+    let private = App::tab_private(app, id);
     let url = App::tab_committed_url(app, id);
-    let key = url.as_ref().and_then(tab_groups::DomainKey::from_url);
+    // A private tab is never grouped, so the site-grouping choices (saved per site) are not offered.
+    let key = url
+        .as_ref()
+        .filter(|_| !private)
+        .and_then(tab_groups::DomainKey::from_url);
     let ids = App::tab_ids(app);
     let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
         return;
@@ -3946,7 +3957,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend([
         Entry::Item(Item::new(COPY_URL, "Copy URL", Icon::None).glyph("link").disabled_if(url.is_none())),
         Entry::Item(Item::new(RELOAD, "Reload", Icon::None).glyph("reload")),
-        Entry::Item(Item::new(DUPLICATE, "Duplicate tab", Icon::Plus).glyph("copy").disabled_if(url.is_none())),
+        Entry::Item(
+            Item::new(DUPLICATE, "Duplicate tab", Icon::Plus)
+                .glyph("copy")
+                .disabled_if(url.is_none() || private),
+        ),
         Entry::Item(
             Item::new(
                 PIN,
@@ -3981,7 +3996,10 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         ),
         Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).glyph("clock").disabled_if(!can_hibernate)),
         Entry::Item(
-            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None).glyph("external").disabled_if(url.is_none()),
+            // A new window is a new process that would not be private, so a private tab stays put.
+            Item::new(MOVE_WINDOW, "Move tab to new window", Icon::None)
+                .glyph("external")
+                .disabled_if(url.is_none() || private),
         ),
     ]);
     if pip_available {
@@ -4158,7 +4176,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     // --- end popup host ---
 }
 
-/// Ctrl+Shift+P: native menu to switch, create or delete profiles. Switching starts a new Bowser
+/// Ctrl+Shift+M: native menu to switch, create or delete profiles. Switching starts a new Bowser
 /// process for that profile (WebView2 allows one browser process per data folder); the current
 /// window stays open.
 const PROFILE_NEW: usize = 1;
@@ -4683,10 +4701,17 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const SESSIONS: usize = 5013;
     const TAB_LAYOUT: usize = 5014;
     const WORKSPACES: usize = 5015;
+    const NEW_PRIVATE_TAB: usize = 5016;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
         Entry::Item(Item::new(NEW_TAB, "New tab", Icon::Plus).glyph("plus").shortcut("Ctrl+T")),
+        Entry::Item(
+            Item::new(NEW_PRIVATE_TAB, "New private tab", Icon::Shield)
+                .glyph("private")
+                .shortcut("Ctrl+Shift+P")
+                .described("Open a tab that keeps no history or site data (Ctrl+Shift+P)"),
+        ),
         Entry::Separator,
     ];
     if let Some(profiles) = &profiles {
@@ -4744,9 +4769,17 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         .glyph("shield")
         .shortcut("Ctrl+Shift+B")
         .described("Block ads & trackers on this site (Ctrl+Shift+B)");
-    entries.push(Entry::Item(match App::blocker_active_for_site(app) {
-        Some(active) => blocker.checked(active),
-        None => blocker.disabled(),
+    entries.push(Entry::Item(if App::active_tab_private(app) {
+        // Always on in a private tab; there is no per-site exception to toggle.
+        blocker
+            .described("The blocker is always on in private tabs")
+            .checked(true)
+            .disabled()
+    } else {
+        match App::blocker_active_for_site(app) {
+            Some(active) => blocker.checked(active),
+            None => blocker.disabled(),
+        }
     }));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(Item::new(SETTINGS, "Settings…", Icon::Gear).glyph("gear")));
@@ -4789,6 +4822,10 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         match chosen.id {
             NEW_TAB => {
                 App::new_tab(app);
+                focus_omni(hwnd, app, true);
+            }
+            NEW_PRIVATE_TAB => {
+                App::new_private_tab(app);
                 focus_omni(hwnd, app, true);
             }
             PROFILE => {}
@@ -4966,6 +5003,10 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
             App::new_tab(app);
             focus_omni(hwnd, app, true);
         }
+        "new-private-tab" => {
+            App::new_private_tab(app);
+            focus_omni(hwnd, app, true);
+        }
         "close-tab" => {
             let _ = App::close_tab(app, App::active_tab_id(app));
         }
@@ -5104,6 +5145,14 @@ fn show_sessions(hwnd: HWND, _app: &AppRef) {
         let active_id = App::active_tab_id(app);
         let entries: Vec<_> = App::tab_ids(app)
             .into_iter()
+            // Private tabs are never written to a saved session.
+            .filter(|id| {
+                crate::private::may_persist(
+                    crate::private::Store::SavedSessions,
+                    App::tab_private(app, *id),
+                    false,
+                )
+            })
             .filter_map(|id| App::tab_committed_url(app, id).map(|url| (id, url.to_string())))
             .filter(|(_, value)| {
                 matches!(
@@ -6043,6 +6092,7 @@ fn html_sync(hwnd: HWND) {
         label: site.summary().to_string(),
         permblocked: App::active_permission_blocked(&app),
         zoom: App::active_zoom_percent(&app),
+        private: App::tab_private(&app, id),
         theme: chrome_host::theme_tokens(palette),
     };
     let json = state.to_json();
@@ -6333,6 +6383,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         label: String::new(),
         permblocked: false,
         zoom: 100,
+        private: false,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -6716,6 +6767,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         label: site.summary().to_owned(),
         permblocked: App::active_permission_blocked(&app),
         zoom: App::active_zoom_percent(&app),
+        private: App::tab_private(&app, id),
         theme: chrome_host::theme_tokens(palette),
     };
     Some(state.to_json())
@@ -6974,6 +7026,7 @@ fn html_tabs_sync(hwnd: HWND) {
             loading,
             pinned: App::tab_pinned(&app, id),
             muted: App::tab_muted(&app, id),
+            private: App::tab_private(&app, id),
             marker,
             group: group_of
                 .get(&id)
@@ -8003,6 +8056,10 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     match cmd {
         Command::NewTab => {
             App::new_tab(app);
+            focus_omni(hwnd, app, true)
+        }
+        Command::NewPrivateTab => {
+            App::new_private_tab(app);
             focus_omni(hwnd, app, true)
         }
         Command::CloseTab => {

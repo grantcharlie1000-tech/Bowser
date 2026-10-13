@@ -1,0 +1,28 @@
+Private tab verification 2026-10-13T06:10:47
+TAINTED: foreground changed before the '07-privacy-panel' screenshot
+site-prefs.txt:
+  # Bowser per-site preferences: <origin> <field> <value>.
+  # Fields: zoom (percent, 25 to 500). A site without a line uses the defaults.
+  http://127.0.0.1:47641 zoom 150
+file: history.txt
+file: import-offer.txt
+file: last-profile.txt
+file: privacy-stats.txt
+file: running.lock
+file: session.txt
+file: site-prefs.txt
+file: workspaces.txt
+Scenario 'merge' attempt 1 tainted: True
+site-prefs.txt:
+  # Bowser per-site preferences: <origin> <field> <value>.
+  # Fields: zoom (percent, 25 to 500). A site without a line uses the defaults.
+  http://127.0.0.1:47641 zoom 150
+file: history.txt
+file: import-offer.txt
+file: last-profile.txt
+file: privacy-stats.txt
+file: running.lock
+file: session.txt
+file: site-prefs.txt
+file: workspaces.txt
+Scenario 'merge' attempt 2 tainted: False

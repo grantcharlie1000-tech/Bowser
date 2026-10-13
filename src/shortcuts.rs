@@ -28,8 +28,11 @@ pub enum Command {
     OpenPrivacyDashboard,
     /// Ctrl+Shift+B switches the ad/tracker blocker off or on for the current site.
     ToggleBlocker,
-    /// Ctrl+Shift+P opens the profile menu (switch, new, delete).
+    /// Ctrl+Shift+M opens the profile menu (switch, new, delete).
     ShowProfileMenu,
+    /// Ctrl+Shift+P opens a new private (InPrivate) tab. It took the chord that used to open the
+    /// profile menu, which moved to Ctrl+Shift+M.
+    NewPrivateTab,
     /// Ctrl+Shift+E opens the extensions menu (enable, disable, remove, install).
     ShowExtensionsMenu,
     /// Ctrl+Shift+Z undoes the latest tab group or tab placement change.
@@ -87,6 +90,7 @@ const VK_E: u32 = 0x45;
 const VK_H: u32 = 0x48;
 const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
+const VK_M: u32 = 0x4D;
 const VK_N: u32 = 0x4E;
 const VK_P: u32 = 0x50;
 const VK_R: u32 = 0x52;
@@ -134,7 +138,8 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_L, true, true, false) => Some(Command::FillPassword),
         (VK_DELETE, true, true, false) => Some(Command::OpenPrivacyDashboard),
         (VK_B, true, true, false) => Some(Command::ToggleBlocker),
-        (VK_P, true, true, false) => Some(Command::ShowProfileMenu),
+        (VK_P, true, true, false) => Some(Command::NewPrivateTab),
+        (VK_M, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_K, true, true, false) => Some(Command::ShowCommandPalette),
         (VK_N, true, true, false) => Some(Command::ToggleNotes),
         (VK_D, true, false, false) => Some(Command::AddBookmark),
@@ -190,7 +195,8 @@ mod tests {
             (VK_L, true, true, false, Command::FillPassword),
             (VK_DELETE, true, true, false, Command::OpenPrivacyDashboard),
             (VK_B, true, true, false, Command::ToggleBlocker),
-            (VK_P, true, true, false, Command::ShowProfileMenu),
+            (VK_P, true, true, false, Command::NewPrivateTab),
+            (VK_M, true, true, false, Command::ShowProfileMenu),
             (VK_K, true, true, false, Command::ShowCommandPalette),
             (VK_N, true, true, false, Command::ToggleNotes),
             (VK_D, true, false, false, Command::AddBookmark),
@@ -334,6 +340,22 @@ mod tests {
             command_for(VK_9, true, false, false),
             Some(Command::SelectLastTab)
         );
+    }
+
+    #[test]
+    fn private_tab_took_ctrl_shift_p_and_the_profile_menu_moved_to_ctrl_shift_m() {
+        assert_eq!(
+            command_for(VK_P, true, true, false),
+            Some(Command::NewPrivateTab)
+        );
+        assert_eq!(
+            command_for(VK_M, true, true, false),
+            Some(Command::ShowProfileMenu)
+        );
+        // Neighbouring chords stay unbound, including AltGr (Ctrl+Alt) forms.
+        assert_eq!(command_for(VK_P, true, false, false), None);
+        assert_eq!(command_for(VK_P, true, true, true), None);
+        assert_eq!(command_for(VK_M, true, false, false), None);
     }
 
     #[test]

@@ -38,7 +38,8 @@ character when Shift is held.
 | Ctrl+Shift+N | Notes & Tasks | Bound |
 | Ctrl+D | Add bookmark | Bound (action runs; feedback is a visual concern) |
 | Ctrl+Shift+E | Extensions menu | Bound |
-| Ctrl+Shift+P | Profile menu | Bound |
+| Ctrl+Shift+P | New private tab | Bound (took this chord from the profile menu; see below) |
+| Ctrl+Shift+M | Profile menu | Bound (moved here from Ctrl+Shift+P) |
 | Ctrl+Shift+B | Toggle blocker for site | Bound |
 | Ctrl+Shift+Y | Picture in picture | Bound |
 | Ctrl+Shift+Delete | Privacy dashboard | Bound; fixed: no longer left to the omnibox as a delete chord |
@@ -64,3 +65,11 @@ the Site information Reset button both run `ZoomReset`.
 
 Ctrl+Plus on most layouts is Ctrl+Shift+=, so both are bound; Ctrl+Alt chords (AltGr) stay unbound as
 before. While the HTML omnibox is being edited these chords still zoom the page, as in Chrome.
+
+## Ctrl+Shift+P and Ctrl+Shift+M
+
+Ctrl+Shift+P was the profile menu. It now opens a **private tab** (the same chord Firefox uses; Chrome and
+Edge use Ctrl+Shift+N, which Bowser already binds to Notes & Tasks). The profile menu moved to Ctrl+Shift+M
+(Chrome's profile switcher chord). Every place that sent a synthetic Ctrl+Shift+P for the profile menu (the
+customise panel's "Switch profile") now sends Ctrl+Shift+M. The palette shows both chords. Ctrl+Shift+P is not
+one of the editing chords the HTML omnibox keeps while it is being edited, so it works from the address field.

@@ -362,7 +362,7 @@ fn handle_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                 CustomizeAction::WorkspaceIcon(id, icon) => { let _ = crate::app::App::workspace_set_icon(&app, crate::workspaces::WorkspaceId(id), icon); }
                 CustomizeAction::WorkspaceColour(id, colour) => { let _ = crate::app::App::workspace_set_colour(&app, crate::workspaces::WorkspaceId(id), colour); }
                 CustomizeAction::SwitchProfile => {
-                    let _ = super::window::html_panel_accelerator(owner, Accel { vk: 0x50, ctrl: true, shift: true, alt: false, key_down: true, is_system: false, repeat: false });
+                    let _ = super::window::html_panel_accelerator(owner, Accel { vk: 0x4D, ctrl: true, shift: true, alt: false, key_down: true, is_system: false, repeat: false });
                 }
                 CustomizeAction::ClearAppData => {
                     if crate::win32::ask_yes_no_owned(owner, "Clear the cookies, storage and cache of every pinned web app? Each one will ask you to sign in again.") {

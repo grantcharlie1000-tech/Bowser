@@ -25,7 +25,15 @@ test('foundation Rust fixture messages parse across the bridge', () => {
   assert.deepEqual(parseInbound(fixture.state), {
     t: 'state', scale: 1.25, pillx: 0, pillw: 624, menux: 627,
     solid: true, dark: true, back: false, forward: false, loading: false, split: false, bookmarked: false,
-    progress: 0, security: 'secure', label: 'Secure', permblocked: false, zoom: 100, theme: { bg: '#123456', text: '#fff' },
+    progress: 0, security: 'secure', label: 'Secure', permblocked: false, zoom: 100, private: true, theme: { bg: '#123456', text: '#fff' },
+  });
+  assert.deepEqual(parseInbound(fixture.tabs), {
+    t: 'tabs', active: 7, items: [
+      { id: 7, title: 'Group <one>', loading: false, pinned: false, muted: false, private: false, marker: -1, g: 42, gl: true,
+        fav: true, gname: 'Work & Play', gcol: 2, gcollapsed: false, gsize: 2 },
+      { id: 8, title: 'Second 😀', loading: false, pinned: false, muted: false, private: false, marker: -1, g: 42, gl: false, fav: false },
+      { id: 9, title: 'Private browsing', loading: false, pinned: false, muted: false, private: true, marker: -1, g: 0, gl: false, fav: false },
+    ],
   });
   assert.deepEqual(parseInbound(fixture.panelshow), { t: 'panelshow', p: 'history' });
   assert.deepEqual(parseInbound(fixture.layout), { t: 'layout', mode: 'vertical' });
@@ -73,18 +81,49 @@ test('empty tabs message from Rust parses', () => {
 
 test('one tab from Rust parses', () => {
   const m = parseInbound(
-    '{"v":1,"t":"tabs","active":7,"items":[{"id":7,"title":"Home","loading":true,"pinned":true,"muted":true,"marker":2,"g":0,"gl":false,"fav":true}]}',
+    '{"v":1,"t":"tabs","active":7,"items":[{"id":7,"title":"Home","loading":true,"pinned":true,"muted":true,"private":true,"marker":2,"g":0,"gl":false,"fav":true}]}',
   );
   assert.equal(m?.t, 'tabs');
   assert.equal(m.items[0].title, 'Home');
+  assert.equal(m.items[0].private, true);
+});
+
+const TAB_ONE = { id: 1, title: 'One', loading: false, pinned: false, muted: false, private: false, marker: -1, g: 0, gl: false, fav: false };
+const tabsMsg = (item) => JSON.stringify({ v: 1, t: 'tabs', active: 1, items: [item] });
+
+test('tab items require a strict boolean private flag', () => {
+  assert.equal(parseInbound(tabsMsg(TAB_ONE)).items[0].private, false);
+  assert.equal(parseInbound(tabsMsg({ ...TAB_ONE, private: true })).items[0].private, true);
+  const { private: _drop, ...missing } = TAB_ONE;
+  assert.equal(parseInbound(tabsMsg(missing)), null);
+  for (const bad of [0, 1, 'true', 'false', null, [], {}]) {
+    assert.equal(parseInbound(tabsMsg({ ...TAB_ONE, private: bad })), null, JSON.stringify(bad));
+  }
+  // The flag adds exactly one key: anything else next to it is still rejected.
+  assert.equal(parseInbound(tabsMsg({ ...TAB_ONE, private: true, incognito: true })), null);
+});
+
+const STATE = {
+  t: 'state', scale: 1, solid: false, dark: true, back: false, forward: false, loading: false,
+  progress: 0, security: 'secure', label: 'Secure', permblocked: false, theme: {},
+};
+
+test('state.private is optional but must be a boolean when present', () => {
+  assert.equal(parseInbound(JSON.stringify(STATE)).private, undefined);
+  assert.equal('private' in parseInbound(JSON.stringify(STATE)), false);
+  assert.equal(parseInbound(JSON.stringify({ ...STATE, private: true })).private, true);
+  assert.equal(parseInbound(JSON.stringify({ ...STATE, private: false })).private, false);
+  for (const bad of [0, 1, 'true', null, [], {}]) {
+    assert.equal(parseInbound(JSON.stringify({ ...STATE, private: bad })), null, JSON.stringify(bad));
+  }
 });
 
 test('group leader and members from Rust parse', () => {
   const m = parseInbound(
     '{"v":1,"t":"tabs","active":11,"items":[' +
-      '{"id":10,"title":"Mail","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":true,"gname":"Work","gcol":3,"gcollapsed":true,"gsize":2,"fav":false},' +
-      '{"id":11,"title":"Calendar","loading":false,"pinned":false,"muted":false,"marker":-1,"g":5,"gl":false,"fav":false},' +
-      '{"id":12,"title":"Loose","loading":false,"pinned":false,"muted":false,"marker":-1,"g":0,"gl":false,"fav":false}]}',
+      '{"id":10,"title":"Mail","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":5,"gl":true,"gname":"Work","gcol":3,"gcollapsed":true,"gsize":2,"fav":false},' +
+      '{"id":11,"title":"Calendar","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":5,"gl":false,"fav":false},' +
+      '{"id":12,"title":"Loose","loading":false,"pinned":false,"muted":false,"private":false,"marker":-1,"g":0,"gl":false,"fav":false}]}',
   );
   assert.equal(m?.items.length, 3);
   assert.equal(m.items[0].gname, 'Work');

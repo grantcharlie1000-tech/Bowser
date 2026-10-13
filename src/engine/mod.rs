@@ -73,6 +73,10 @@ pub trait EngineAdapter {
     /// Toggles Chromium's native video PiP for the selected tab, if supported by its runtime.
     fn toggle_picture_in_picture(&mut self, _tab: crate::tabs::TabId) {}
     /// Creates the active tab's controller without starting a navigation.
+    /// Marks a tab private before its controller exists: it is then created InPrivate in the
+    /// shared private profile (see `crate::private`). Must be called before the tab is first
+    /// selected or navigated; a tab that already has a controller is unaffected.
+    fn set_tab_private(&mut self, _tab: crate::tabs::TabId) {}
     fn prewarm_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())
     }
@@ -316,6 +320,10 @@ pub type BlockerHandle = std::rc::Rc<std::cell::RefCell<crate::blocker::BlockerS
 pub struct EngineExtras {
     /// When set, subresource requests on every tab are checked against the blocker.
     pub blocker: Option<BlockerHandle>,
+    /// The blocker private tabs use. It is always consulted for private tabs, whatever the global
+    /// switch says (`BlockerState::should_block_private`). Without it, private tabs cannot be
+    /// created: they fail closed rather than run unblocked.
+    pub private_blocker: Option<BlockerHandle>,
     /// Creates the WebView2 environment with browser extensions enabled. Set only when the
     /// profile has an installed extension, so profiles without one pay nothing.
     pub browser_extensions: bool,

@@ -177,6 +177,8 @@ export interface StateMsg {
   readonly permblocked?: boolean;
   /** The page zoom of the active tab in percent (25 to 500). Absent in older hosts; 100 means no chip. */
   readonly zoom?: number;
+  /** The active tab is a private tab (the pill shows the private indicator). Absent in older hosts. */
+  readonly private?: boolean;
   readonly theme: Theme;
 }
 export interface SetTextMsg {
@@ -243,6 +245,8 @@ export interface TabItem {
   readonly loading: boolean;
   readonly pinned: boolean;
   readonly muted: boolean;
+  /** A private (InPrivate) tab: never grouped, nothing it does is saved. */
+  readonly private: boolean;
   /** Marker colour index 0-7, or -1 for none. */
   readonly marker: number;
   /** Group key, 0 when ungrouped. */
@@ -621,17 +625,17 @@ function parseTheme(v: unknown): Theme {
   return out;
 }
 
-const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize'];
+const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'private', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize'];
 const LEADER_KEYS = ['gname', 'gcol', 'gcollapsed', 'gsize'];
 
 /** Strict validation of one `tabs` item. Ids must be new within the message (`seen`). */
 function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
   if (!isRecord(v) || !hasOnlyKeys(v, TAB_KEYS)) return null;
-  const { id, title, loading, pinned, muted, marker, g, gl, fav } = v;
+  const { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav } = v;
   if (!isInt(id, 0, MAX_ID) || seen.has(id)) return null;
-  if (!isStr(title, MAX_TITLE) || !isBool(loading) || !isBool(pinned) || !isBool(muted) || !isBool(fav)) return null;
+  if (!isStr(title, MAX_TITLE) || !isBool(loading) || !isBool(pinned) || !isBool(muted) || !isBool(priv) || !isBool(fav)) return null;
   if (!isInt(marker, -1, 7) || !isInt(g, 0, MAX_ID) || !isBool(gl)) return null;
-  const base = { id, title, loading, pinned, muted, marker, g, gl, fav };
+  const base = { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav };
   if (!gl) {
     // Group fields are leader-only: a member must not carry them.
     if (LEADER_KEYS.some((k) => k in v)) return null;
@@ -719,9 +723,10 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'private', 'theme'])) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
+      if ('private' in raw && !isBool(raw.private)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -749,6 +754,7 @@ export function parseInbound(data: unknown): Inbound | null {
         label,
         ...(isBool(raw.permblocked) ? { permblocked: raw.permblocked } : {}),
         ...(typeof raw.zoom === 'number' ? { zoom: raw.zoom } : {}),
+        ...(isBool(raw.private) ? { private: raw.private } : {}),
         theme: parseTheme(raw.theme),
       };
     }

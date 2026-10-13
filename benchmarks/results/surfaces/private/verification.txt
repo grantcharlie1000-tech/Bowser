@@ -1,0 +1,68 @@
+Private tab verification 2026-10-13T05:44:10
+TAINTED: foreground changed before the '02-private-tab-loaded' screenshot
+Private tab visited / and reloaded (second request must carry the cookie).
+A normal tab then loaded /whoami (must NOT carry the private cookie).
+TAINTED: foreground changed before the '05-site-info-private' screenshot
+Last private tab closed.
+A new private tab loaded / again (must NOT carry the old cookie: the profile was discarded).
+TAINTED: foreground changed before the '07-privacy-panel' screenshot
+Scenario 'private' attempt 1 tainted: True
+Private tab visited / and reloaded (second request must carry the cookie).
+A normal tab then loaded /whoami (must NOT carry the private cookie).
+Last private tab closed.
+A new private tab loaded / again (must NOT carry the old cookie: the profile was discarded).
+TAINTED: foreground changed before the '07-privacy-panel' screenshot
+Scenario 'private' attempt 2 tainted: True
+Private tab visited / and reloaded (second request must carry the cookie).
+A normal tab then loaded /whoami (must NOT carry the private cookie).
+Last private tab closed.
+A new private tab loaded / again (must NOT carry the old cookie: the profile was discarded).
+Scenario 'private' attempt 3 tainted: False
+
+== Server log (request, cookie header received) ==
+8 /?who=private cookie=-
+9 /?who=private cookie=bowser_probe=visit8
+10 /whoami?who=normal cookie=-
+11 /?who=private cookie=-
+
+== Data directory scan: private run (the only normal-tab visit was /whoami?who=normal, which is expected to be recorded) (C:\Users\charlie\AppData\Local\Temp\bowser-private-verify\private-823512529) ==
+Top-level files: history.txt, import-offer.txt, last-profile.txt, privacy-stats.txt, session.txt, settings.txt, workspaces.txt
+Files in total: 397
+Markers searched in every file: bowser_probe, who=private
+RESULT: none of the markers is in any file.
+
+== Data directory scan: private run, normal-tab marker (expected: present in history.txt) (C:\Users\charlie\AppData\Local\Temp\bowser-private-verify\private-823512529) ==
+Top-level files: history.txt, import-offer.txt, last-profile.txt, privacy-stats.txt, session.txt, settings.txt, workspaces.txt
+Files in total: 397
+Markers searched in every file: who=normal
+RESULT: probe markers found:
+  \history.txt contains 'who=normal'
+  \session.txt contains 'who=normal'
+  \WebView2\EBWebView\Default\History contains 'who=normal'
+  \WebView2\EBWebView\Default\Cache\Cache_Data\data_1 contains 'who=normal'
+history.txt present: True
+Scenario 'surfaces' attempt 1 tainted: False
+Control: the same two requests in a NORMAL tab.
+Scenario 'control-normal' attempt 1 tainted: False
+
+== Server log after the control run (the last two requests are the control's visit and reload) ==
+8 /?who=private cookie=-
+9 /?who=private cookie=bowser_probe=visit8
+10 /whoami?who=normal cookie=-
+11 /?who=private cookie=-
+12 /?who=control cookie=-
+13 /?who=control cookie=bowser_probe=visit12
+
+== Data directory scan: control (normal tab) (C:\Users\charlie\AppData\Local\Temp\bowser-private-verify\control-normal-476346792) ==
+Top-level files: history.txt, import-offer.txt, last-profile.txt, privacy-stats.txt, session.txt, workspaces.txt
+Files in total: 286
+Markers searched in every file: bowser_probe, who=control
+RESULT: probe markers found:
+  \history.txt contains 'who=control'
+  \session.txt contains 'who=control'
+  \WebView2\EBWebView\Default\History contains 'who=control'
+  \WebView2\EBWebView\Default\Cache\Cache_Data\data_1 contains 'bowser_probe'
+  \WebView2\EBWebView\Default\Cache\Cache_Data\data_1 contains 'who=control'
+  \WebView2\EBWebView\Default\Network\Cookies contains 'bowser_probe'
+
+Control hits: 6 (this must be > 0, otherwise the scan proves nothing). Private hits: 0 (must be 0).
