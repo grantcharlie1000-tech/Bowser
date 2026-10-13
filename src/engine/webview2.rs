@@ -14,7 +14,8 @@ use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, ClearBrowsingDataCompletedHandler, CoTaskMemPWSTR,
     ContentLoadingEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    DOMContentLoadedEventHandler, DocumentTitleChangedEventHandler, DownloadStartingEventHandler,
+    DOMContentLoadedEventHandler, DevToolsProtocolEventReceivedEventHandler,
+    DocumentTitleChangedEventHandler, DownloadStartingEventHandler,
     ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler,
     GetCookiesCompletedHandler, GetFaviconCompletedHandler, Microsoft::Web::WebView2::Win32::*,
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
@@ -41,7 +42,6 @@ use super::{
     MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
-use crate::shield::RequestKind;
 use crate::tabs::TabId;
 use crate::{shortcuts, win32};
 
@@ -57,7 +57,17 @@ pub enum PopupDecision {
 /// What a window request becomes. Only http(s) targets ever open, as a new tab. A click or other
 /// user gesture opens one. A script-opened window opens only when the opener's site has a stored
 /// Allow for popups (`site_allows`); otherwise it is blocked, as before the store had that kind.
-pub fn popup_decision(uri: &Url, user_initiated: bool, site_allows: bool) -> PopupDecision {
+/// `target_blocked` (the target should_blocks against the opener's host) overrides both: an ad
+/// target never opens a tab, whatever the gesture or stored allow.
+pub fn popup_decision(
+    uri: &Url,
+    user_initiated: bool,
+    site_allows: bool,
+    target_blocked: bool,
+) -> PopupDecision {
+    if target_blocked {
+        return PopupDecision::Block;
+    }
     if (user_initiated || site_allows) && matches!(uri.scheme(), "http" | "https") {
         PopupDecision::NewTab
     } else {
@@ -420,12 +430,594 @@ impl std::fmt::Display for RuntimeUnavailable {
     }
 }
 
-/// Per-tab state for the request blocker: the top-level host of the current navigation and the
-/// number of requests blocked since the document started loading.
+/// Per-tab state for the request blocker: the top-level host of the current navigation, the
+/// number of requests blocked since the document started loading, and the (registrable domain,
+/// blocking, player-response rewrite) signature last pushed to DevTools as
+/// `Network.setBlockedURLs` and `Fetch.enable`, so a same-domain navigation does not rebuild and
+/// resend the pattern lists.
 #[derive(Default)]
 struct TabBlockState {
     top_host: RefCell<String>,
     count: Cell<u32>,
+    doc_filter: RefCell<Option<(String, bool, bool)>>,
+    /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
+    fetch_listener: Cell<bool>,
+    /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
+    network_enabled: Cell<bool>,
+}
+
+/// Escapes `value` for embedding as a double-quoted JavaScript or JSON string literal. Defence in
+/// depth: callers only ever pass cosmetic CSS (whose selector grammar already forbids quotes and
+/// backslashes, see `valid_cosmetic_selector`) or DevTools URL patterns built from rule hosts, so
+/// none of this should ever fire in practice, but string-building code must not depend on that.
+fn json_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' => out.push_str("\\u003c"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+const COSMETIC_STYLE_ID: &str = "bowser-cosmetic";
+
+/// Removes the cosmetic `<style>` element, if present. Safe to run on a document that never had
+/// one.
+const COSMETIC_REMOVE_SCRIPT: &str =
+    "(()=>{const s=document.getElementById('bowser-cosmetic');if(s)s.remove()})()";
+
+/// Idempotent installer: creates `<style id="bowser-cosmetic">` on `documentElement` if it is not
+/// already there, then sets its `textContent` to `css`. Safe to run more than once per document.
+fn cosmetic_install_script(css: &str) -> String {
+    format!(
+        "(()=>{{let s=document.getElementById('{COSMETIC_STYLE_ID}');\
+         if(!s){{s=document.createElement('style');s.id='{COSMETIC_STYLE_ID}';\
+         document.documentElement.appendChild(s)}}s.textContent={}}})()",
+        json_string_literal(css)
+    )
+}
+
+/// `Network.setBlockedURLs` parameters. `urlPatterns` is what current Edge blocks with.
+/// The legacy `urls` wildcard list is a fallback only: it matches the host text anywhere in
+/// the URL, including a first-party path or query, so it is not sent beside `urlPatterns`.
+fn blocked_urls_params(patterns: &[String]) -> String {
+    let mut json = String::from("{\"urlPatterns\":[");
+    for (index, pattern) in patterns.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str("{\"urlPattern\":");
+        json.push_str(&json_string_literal(pattern));
+        json.push_str(",\"block\":true}");
+    }
+    json.push_str("]}");
+    json
+}
+
+/// Older `Network.setBlockedURLs` `urls` list, used only when `urlPatterns` is rejected.
+fn blocked_urls_legacy_params(patterns: &[String]) -> String {
+    let mut json = String::from("{\"urls\":[");
+    for (index, pattern) in patterns.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(&json_string_literal(pattern));
+    }
+    json.push_str("]}");
+    json
+}
+
+/// `Fetch.enable` parameters. Only the YouTube player responses pause, at the Response stage.
+/// Host rules are blocked by `Network.setBlockedURLs`, not by pausing every request here.
+/// An empty list pauses nothing.
+fn fetch_enable_params(responses: &[crate::blocker::youtube::ResponsePattern]) -> String {
+    let mut json = String::from("{\"patterns\":[");
+    for (index, response) in responses.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str("{\"urlPattern\":");
+        json.push_str(&json_string_literal(response.url_pattern));
+        if let Some(resource_type) = response.resource_type {
+            json.push_str(",\"resourceType\":");
+            json.push_str(&json_string_literal(resource_type));
+        }
+        json.push_str(",\"requestStage\":\"Response\"}");
+    }
+    json.push_str("]}");
+    json
+}
+
+/// True when DevTools returned a protocol error as JSON (`{"code":...,"message":...}`)
+/// rather than an empty success object. A failed HRESULT is reported separately by the caller.
+fn devtools_protocol_error(result: &str) -> bool {
+    let trimmed = result.trim();
+    trimmed.starts_with('{') && trimmed.contains("\"code\"")
+}
+
+/// The first JSON string value of `key`, or `None` when it is absent.
+fn json_string_field(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = json.find(&needle)? + needle.len();
+    let mut out = String::new();
+    let mut chars = json[start..].chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.push(chars.next().unwrap_or('\\')),
+            '"' => return Some(out),
+            _ => out.push(ch),
+        }
+    }
+    None
+}
+
+fn call_devtools(webview: &ICoreWebView2, method: &str, params: &str) {
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let method = HSTRING::from(method);
+    let params = HSTRING::from(params);
+    let _ = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+}
+
+/// `Network.enable` keeps almost no response bytes. The domain is on only so
+/// `setBlockedURLs` is enforced; video bodies are not what this buffer is for.
+const NETWORK_ENABLE_PARAMS: &str =
+    r#"{"maxTotalBufferSize":1024,"maxResourceBufferSize":1024,"maxPostDataSize":0}"#;
+
+/// Sends `urlPatterns`. If that call is rejected, sends the legacy `urls` list instead.
+fn push_blocked_urls(webview: &ICoreWebView2, patterns: &[String]) {
+    let legacy = blocked_urls_legacy_params(patterns);
+    let queued_legacy = legacy.clone();
+    let target = webview.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        if error.is_err() || devtools_protocol_error(&result) {
+            call_devtools(&target, "Network.setBlockedURLs", &legacy);
+        }
+        Ok(())
+    }));
+    let method = HSTRING::from("Network.setBlockedURLs");
+    let params = HSTRING::from(blocked_urls_params(patterns));
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+    if queued.is_err() {
+        call_devtools(webview, "Network.setBlockedURLs", &queued_legacy);
+    }
+}
+
+/// Enables the Network domain once, then installs the blocked-URL list. A failed enable still
+/// installs the list: the 403 in WebResourceRequested remains the fallback when DevTools misses.
+fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>, patterns: Vec<String>) {
+    if block.network_enabled.get() {
+        push_blocked_urls(webview, &patterns);
+        return;
+    }
+    let target = webview.clone();
+    let armed = Rc::clone(block);
+    let fallback = patterns.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        if error.is_ok() && !devtools_protocol_error(&result) {
+            armed.network_enabled.set(true);
+        }
+        push_blocked_urls(&target, &patterns);
+        Ok(())
+    }));
+    let method = HSTRING::from("Network.enable");
+    let params = HSTRING::from(NETWORK_ENABLE_PARAMS);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+    if queued.is_err() {
+        push_blocked_urls(webview, &fallback);
+    }
+}
+
+fn fetch_continue(webview: &ICoreWebView2, request_id: &str) {
+    let params = format!("{{\"requestId\":{}}}", json_string_literal(request_id));
+    call_devtools(webview, "Fetch.continueRequest", &params);
+}
+
+/// Largest response body the player-ads rewrite will hold; anything bigger passes through.
+const MAX_REWRITE_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// A `Fetch.requestPaused` event at the Response stage: the request's URL, its HTTP status
+/// (`None` when the response failed) and the response headers.
+#[derive(Debug, Eq, PartialEq)]
+struct PausedResponse {
+    url: String,
+    status: Option<u16>,
+    headers: Vec<(String, String)>,
+}
+
+/// Which stage a `Fetch.requestPaused` event paused at. A Response-stage event that cannot be
+/// read is still a response, so it is continued rather than failed as a blocked request.
+#[derive(Debug, Eq, PartialEq)]
+enum PausedStage {
+    Request,
+    Response(Option<PausedResponse>),
+}
+
+fn paused_stage(event: &str) -> PausedStage {
+    use crate::blocker::json;
+    let Some(members) = json::whole_object(event) else {
+        return if event.contains("\"responseStatusCode\"")
+            || event.contains("\"responseErrorReason\"")
+        {
+            PausedStage::Response(None)
+        } else {
+            PausedStage::Request
+        };
+    };
+    let status = json::field(&members, "responseStatusCode");
+    if status.is_none() && json::field(&members, "responseErrorReason").is_none() {
+        return PausedStage::Request;
+    }
+    let url = json::field(&members, "request")
+        .and_then(json::whole_object)
+        .and_then(|request| json::field(&request, "url").and_then(json::string_value));
+    let headers = json::field(&members, "responseHeaders")
+        .and_then(json::array_elements)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .filter_map(|entry| {
+                    let entry = json::whole_object(entry)?;
+                    Some((
+                        json::string_value(json::field(&entry, "name")?)?,
+                        json::string_value(json::field(&entry, "value")?)?,
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    PausedStage::Response(url.map(|url| PausedResponse {
+        url,
+        status: status.and_then(|status| status.parse().ok()),
+        headers,
+    }))
+}
+
+/// True for a JSON or HTML response that is UTF-8 (stated, or the default for JSON and for
+/// YouTube's pages): the only bodies the rewrite will read and re-encode.
+fn utf8_text_response(headers: &[(String, String)]) -> bool {
+    let Some(content_type) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.to_ascii_lowercase())
+    else {
+        return false;
+    };
+    let mut parts = content_type.split(';');
+    let essence = parts.next().unwrap_or("").trim();
+    matches!(essence, "application/json" | "text/html")
+        && parts.all(|part| {
+            part.trim()
+                .strip_prefix("charset=")
+                .is_none_or(|charset| charset.trim_matches('"') == "utf-8")
+        })
+}
+
+/// The text of a `Fetch.getResponseBody` result, or `None` when it is not UTF-8 or is too big.
+fn response_body_text(result: &str) -> Option<String> {
+    use crate::blocker::json;
+    let members = json::whole_object(result)?;
+    let body = json::string_value(json::field(&members, "body")?)?;
+    let text = if json::field(&members, "base64Encoded") == Some("true") {
+        String::from_utf8(json::base64_decode(&body)?).ok()?
+    } else {
+        body
+    };
+    (text.len() <= MAX_REWRITE_BODY_BYTES).then_some(text)
+}
+
+/// `Fetch.fulfillRequest` parameters for a rewritten body. DevTools hands the body over already
+/// decoded, so the headers that described the network bytes (length, content and transfer
+/// encoding) are dropped; every other header, `Set-Cookie` included, is passed on as received.
+fn fulfill_params(
+    request_id: &str,
+    status: u16,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> String {
+    let mut json = format!(
+        "{{\"requestId\":{},\"responseCode\":{status},\"responseHeaders\":[",
+        json_string_literal(request_id)
+    );
+    let kept = headers.iter().filter(|(name, _)| {
+        !["content-length", "content-encoding", "transfer-encoding"]
+            .iter()
+            .any(|dropped| name.eq_ignore_ascii_case(dropped))
+    });
+    for (index, (name, value)) in kept.enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str("{\"name\":");
+        json.push_str(&json_string_literal(name));
+        json.push_str(",\"value\":");
+        json.push_str(&json_string_literal(value));
+        json.push('}');
+    }
+    json.push_str("],\"body\":\"");
+    json.push_str(&crate::blocker::json::base64_encode(body));
+    json.push_str("\"}");
+    json
+}
+
+/// Calls `method` for a paused request and continues the request unchanged if the call fails,
+/// so a paused request is never left waiting.
+fn call_devtools_or_continue(
+    webview: &ICoreWebView2,
+    method: &str,
+    params: &str,
+    request_id: &str,
+) {
+    let target = webview.clone();
+    let id = request_id.to_owned();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, _| {
+        if error.is_err() {
+            fetch_continue(&target, &id);
+        }
+        Ok(())
+    }));
+    let method = HSTRING::from(method);
+    let params = HSTRING::from(params);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(
+            PCWSTR(method.as_ptr()),
+            PCWSTR(params.as_ptr()),
+            &handler,
+        )
+    };
+    if queued.is_err() {
+        fetch_continue(webview, request_id);
+    }
+}
+
+/// Answers a request paused at the Response stage. Only the YouTube player-response patterns
+/// pause there. A response the blocker strips is fulfilled with the same status and headers and
+/// the stripped body. Every other one, and any failure along the way, continues unchanged.
+fn answer_paused_response(
+    webview: &ICoreWebView2,
+    request_id: &str,
+    paused: Option<PausedResponse>,
+    block: &TabBlockState,
+    blocker: &super::BlockerHandle,
+    private: bool,
+) {
+    let rewrite = paused
+        .filter(|paused| paused.status == Some(200) && utf8_text_response(&paused.headers))
+        .and_then(|paused| {
+            let top_host = block.top_host.borrow();
+            let payload = blocker
+                .borrow()
+                .player_ads_rewrite(&paused.url, &top_host, private)?;
+            Some((paused, payload))
+        });
+    let Some((paused, payload)) = rewrite else {
+        fetch_continue(webview, request_id);
+        return;
+    };
+    let target = webview.clone();
+    let id = request_id.to_owned();
+    let handler =
+        CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+            let stripped = error
+                .ok()
+                .and_then(|()| response_body_text(&result))
+                .and_then(|text| crate::blocker::youtube::strip_player_ads(&text, payload));
+            match stripped {
+                Some(body) => call_devtools_or_continue(
+                    &target,
+                    "Fetch.fulfillRequest",
+                    &fulfill_params(&id, 200, &paused.headers, body.as_bytes()),
+                    &id,
+                ),
+                None => fetch_continue(&target, &id),
+            }
+            Ok(())
+        }));
+    let params = format!("{{\"requestId\":{}}}", json_string_literal(request_id));
+    let method = HSTRING::from("Fetch.getResponseBody");
+    let params = HSTRING::from(params);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(
+            PCWSTR(method.as_ptr()),
+            PCWSTR(params.as_ptr()),
+            &handler,
+        )
+    };
+    if queued.is_err() {
+        fetch_continue(webview, request_id);
+    }
+}
+
+/// Subscribes to `Fetch.requestPaused` once. Enabling Fetch before this would pause matching
+/// requests with nobody to continue them, which hangs the load. Host rules are not paused here.
+fn install_fetch_listener(
+    webview: &ICoreWebView2,
+    block: &Rc<TabBlockState>,
+    blocker: super::BlockerHandle,
+    private: bool,
+) {
+    let receiver = match unsafe { webview.GetDevToolsProtocolEventReceiver(w!("Fetch.requestPaused")) } {
+        Ok(receiver) => receiver,
+        Err(_) => return,
+    };
+    let listener = Rc::clone(block);
+    let mut token = 0i64;
+    let subscribed = unsafe {
+        receiver.add_DevToolsProtocolEventReceived(
+            &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else {
+                    return Ok(());
+                };
+                let mut raw = PWSTR::null();
+                if args.ParameterObjectAsJson(&mut raw).is_err() {
+                    return Ok(());
+                }
+                let json = CoTaskMemPWSTR::from(raw).to_string();
+                let Some(request_id) = json_string_field(&json, "requestId") else {
+                    return Ok(());
+                };
+                // The Response stage is only ever the YouTube player response: rewrite or
+                // continue it. A Request-stage pause is not how hosts are blocked, so it is
+                // continued rather than left hanging.
+                if let PausedStage::Response(paused) = paused_stage(&json) {
+                    answer_paused_response(
+                        &sender,
+                        &request_id,
+                        paused,
+                        &listener,
+                        &blocker,
+                        private,
+                    );
+                    return Ok(());
+                }
+                fetch_continue(&sender, &request_id);
+                Ok(())
+            })),
+            &mut token,
+        )
+    };
+    if subscribed.is_ok() {
+        block.fetch_listener.set(true);
+    }
+}
+
+fn note_blocked_request(
+    block: &TabBlockState,
+    tab_id: TabId,
+    blocked_callback: &Option<Rc<dyn Fn(TabId, u32, String)>>,
+    policy_log: &Option<Rc<dyn Fn(&'static str)>>,
+) {
+    let count = block.count.get().saturating_add(1);
+    block.count.set(count);
+    if let Some(callback) = blocked_callback.as_ref() {
+        callback(tab_id, count, block.top_host.borrow().clone());
+    }
+    if let Some(log) = policy_log.as_ref() {
+        log("request_blocked");
+    }
+}
+
+/// Counts renderer blocks from `Network.setBlockedURLs`. Those requests never reach
+/// WebResourceRequested, so the 403 path does not see them. `blockedReason` `inspector` is
+/// that block; other failures are left to the page.
+fn install_loading_failed_listener(
+    webview: &ICoreWebView2,
+    block: &Rc<TabBlockState>,
+    tab_id: TabId,
+    blocked_callback: Option<Rc<dyn Fn(TabId, u32, String)>>,
+    policy_log: Option<Rc<dyn Fn(&'static str)>>,
+) {
+    let receiver = match unsafe { webview.GetDevToolsProtocolEventReceiver(w!("Network.loadingFailed")) }
+    {
+        Ok(receiver) => receiver,
+        Err(_) => return,
+    };
+    let listener = Rc::clone(block);
+    let mut token = 0i64;
+    let _ = unsafe {
+        receiver.add_DevToolsProtocolEventReceived(
+            &DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let mut raw = PWSTR::null();
+                if args.ParameterObjectAsJson(&mut raw).is_err() {
+                    return Ok(());
+                }
+                let json = CoTaskMemPWSTR::from(raw).to_string();
+                if json_string_field(&json, "blockedReason").as_deref() == Some("inspector") {
+                    note_blocked_request(&listener, tab_id, &blocked_callback, &policy_log);
+                }
+                Ok(())
+            })),
+            &mut token,
+        )
+    };
+}
+
+/// Pushes this tab's DevTools blocked-URL list and the YouTube response-stage `Fetch` patterns.
+/// `page_host`, when set, is the navigation that is starting; the committed top host is left
+/// as it is until the document commits. A same signature is not sent again.
+/// Called when the webview is configured (empty top host, so every listed host is blocked),
+/// on main-frame NavigationStarting for the destination host, and after the document commits.
+fn refresh_blocked_urls(
+    webview: &ICoreWebView2,
+    block: &Rc<TabBlockState>,
+    blocker: &super::BlockerHandle,
+    private: bool,
+    page_host: Option<&str>,
+) {
+    let stored_host = block.top_host.borrow().clone();
+    let top_host = page_host.unwrap_or(&stored_host);
+    let state = blocker.borrow();
+    let blocking = state.is_blocking(top_host, private);
+    let responses = state.response_patterns(private);
+    let signature = (
+        crate::blocker::registrable_domain(top_host).to_owned(),
+        blocking,
+        !responses.is_empty(),
+    );
+    if block.doc_filter.borrow().as_ref() == Some(&signature) {
+        return;
+    }
+    let patterns = if private {
+        state.blocked_url_patterns_private(top_host)
+    } else {
+        state.blocked_url_patterns(top_host)
+    };
+    drop(state);
+    *block.doc_filter.borrow_mut() = Some(signature);
+    // Host rules fail in the renderer once Network.enable has landed. The 403 below still
+    // answers anything that reaches WebResourceRequested, including path rules.
+    enable_network_then_block(webview, block, patterns);
+    if block.fetch_listener.get() {
+        call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
+    }
+}
+
+/// Installs or removes the cosmetic `<style>` element for this tab's current document, from the
+/// blocker's cosmetic rules for its page host. Never runs for a non-http(s) document (an empty
+/// top host).
+fn apply_cosmetic_css(
+    webview: &ICoreWebView2,
+    block: &TabBlockState,
+    blocker: &super::BlockerHandle,
+    private: bool,
+) {
+    let top_host = block.top_host.borrow().clone();
+    if top_host.is_empty() {
+        return;
+    }
+    let state = blocker.borrow();
+    let css = if private {
+        state.cosmetic_css_for_host_private(&top_host)
+    } else {
+        state.cosmetic_css_for_host(&top_host)
+    };
+    drop(state);
+    let script = match css {
+        Some(css) => cosmetic_install_script(&css),
+        None => COSMETIC_REMOVE_SCRIPT.to_owned(),
+    };
+    // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
+    // `engine_never_blocks_on_a_webview2_completion`).
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let wide = CoTaskMemPWSTR::from(script.as_str());
+    let _ = unsafe { webview.ExecuteScript(*wide.as_ref().as_pcwstr(), &handler) };
 }
 
 thread_local! {
@@ -433,108 +1025,16 @@ thread_local! {
     static REQUEST_URL: RefCell<String> = RefCell::new(String::with_capacity(512));
 }
 
-/// The resource contexts the request hook subscribes to, with the Shield request kind each one
-/// is filtered as. A main frame or iframe document, a stylesheet and a font are not here, so none
-/// of them is ever blocked (an iframe element is dealt with by cosmetic rules).
-const BLOCKABLE_CONTEXTS: [(COREWEBVIEW2_WEB_RESOURCE_CONTEXT, RequestKind); 8] = [
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, RequestKind::Script),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, RequestKind::Image),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, RequestKind::Media),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, RequestKind::Xhr),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, RequestKind::Xhr),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, RequestKind::Ping),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE, RequestKind::Other),
-    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER, RequestKind::Other),
+const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
 ];
-
-/// The Shield kind a request of this WebView2 context is filtered as, `None` for a context that
-/// is never filtered.
-fn request_kind(context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT) -> Option<RequestKind> {
-    BLOCKABLE_CONTEXTS
-        .iter()
-        .find(|(blockable, _)| *blockable == context)
-        .map(|(_, kind)| *kind)
-}
-
-/// The cosmetic (element hiding) script of one tab: installed at document start, and rebuilt
-/// before a navigation when a site exception changed since it was built.
-struct CosmeticScript {
-    blocker: super::BlockerHandle,
-    private: bool,
-    /// The blocker generation the installed script was built from; `None` before the first build.
-    built_from: Cell<Option<u64>>,
-    /// Counts builds, so a completion that arrives after a newer build removes its own script.
-    epoch: Rc<Cell<u64>>,
-    /// The id WebView2 gave the installed script.
-    id: Rc<RefCell<Option<String>>>,
-}
-
-impl CosmeticScript {
-    fn new(blocker: super::BlockerHandle, private: bool) -> Rc<Self> {
-        Rc::new(Self {
-            blocker,
-            private,
-            built_from: Cell::new(None),
-            epoch: Rc::new(Cell::new(0)),
-            id: Rc::new(RefCell::new(None)),
-        })
-    }
-
-    /// Installs the script for the blocker's current exceptions, replacing the previous one.
-    /// Does nothing when the exceptions have not changed. WebView2 applies script changes in call
-    /// order, so this is in place for the navigation that follows; never wait for the completion.
-    unsafe fn refresh(
-        &self,
-        webview: &ICoreWebView2,
-        log: Option<&Rc<dyn Fn(&'static str)>>,
-    ) -> Result<()> {
-        let (generation, script) = {
-            let blocker = self.blocker.borrow();
-            (blocker.generation(), blocker.cosmetic_script(self.private))
-        };
-        if self.built_from.get() == Some(generation) {
-            return Ok(());
-        }
-        self.built_from.set(Some(generation));
-        let epoch = self.epoch.get() + 1;
-        self.epoch.set(epoch);
-        if let Some(old) = self.id.borrow_mut().take() {
-            let old = CoTaskMemPWSTR::from(old.as_str());
-            unsafe { webview.RemoveScriptToExecuteOnDocumentCreated(*old.as_ref().as_pcwstr())? };
-        }
-        let Some(script) = script else {
-            return Ok(());
-        };
-        let script = CoTaskMemPWSTR::from(script.as_str());
-        let (current_epoch, slot) = (self.epoch.clone(), self.id.clone());
-        let stale_webview = webview.clone();
-        let log = log.cloned();
-        unsafe {
-            webview.AddScriptToExecuteOnDocumentCreated(
-                *script.as_ref().as_pcwstr(),
-                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-                    move |status, id| {
-                        if status.is_err() {
-                            event(log.as_ref(), "cosmetic_script_failed");
-                            return Ok(());
-                        }
-                        let id = id.to_string();
-                        if current_epoch.get() == epoch {
-                            *slot.borrow_mut() = Some(id);
-                        } else {
-                            // A newer script was installed while this one was being added.
-                            let stale = CoTaskMemPWSTR::from(id.as_str());
-                            let _ = stale_webview
-                                .RemoveScriptToExecuteOnDocumentCreated(*stale.as_ref().as_pcwstr());
-                        }
-                        Ok(())
-                    },
-                )),
-            )?;
-        }
-        Ok(())
-    }
-}
 
 struct WebView2Tab {
     environment: Option<ICoreWebView2Environment>,
@@ -2773,12 +3273,10 @@ unsafe fn configure_controller(
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let block_tab = Rc::new(TabBlockState::default());
-        let cosmetic = blocker
-            .as_ref()
-            .map(|blocker| CosmeticScript::new(blocker.clone(), private));
-        let navigation_cosmetic = cosmetic.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
+        let nav_blocker = blocker.clone();
+        let nav_block_tab = block_tab.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -2789,6 +3287,9 @@ unsafe fn configure_controller(
                         String::new()
                     };
                     let parsed = Url::parse(&uri_value).ok();
+                    // A top-level navigation is not cancelled here. Cancelling a typed address or
+                    // an ad-click landing left the tab where it was, with no site toggle that
+                    // could bring the destination back. Iframes and new windows still are.
                     let navigation_file_grant = parsed.as_ref().and_then(|uri| {
                         allowed_file_for_handler.as_ref().filter(|file| {
                             consume_allowed_file_navigation(uri, Some(*file), &allowed_file_pending)
@@ -2801,14 +3302,20 @@ unsafe fn configure_controller(
                         Some(NavigationStartPolicy::Allow) => {
                             if let Some(sender) = _sender.as_ref() {
                                 exit_native_picture_in_picture(sender);
-                                // A site exception may have changed since the cosmetic script was
-                                // built (Ctrl+Shift+B reloads the tab): rebuild it before this
-                                // navigation creates its document.
-                                if let Some(cosmetic) = navigation_cosmetic.as_ref() {
-                                    let rebuilt = cosmetic.refresh(sender, navigation_start_log.as_ref());
-                                    if rebuilt.is_err() {
-                                        event(navigation_start_log.as_ref(), "cosmetic_script_failed");
-                                    }
+                                // The destination host decides the renderer block list before the
+                                // new document's first subresources run. top_host stays the page
+                                // that is still showing until the navigation commits.
+                                if let (Some(blocker), Some(host)) = (
+                                    nav_blocker.as_ref(),
+                                    parsed.as_ref().and_then(|url| url.host_str()),
+                                ) {
+                                    refresh_blocked_urls(
+                                        sender,
+                                        &nav_block_tab,
+                                        blocker,
+                                        private,
+                                        Some(host),
+                                    );
                                 }
                             }
                             // The first-party host is set when the navigation commits (see
@@ -2836,14 +3343,37 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+        let frame_blocker = blocker.clone();
+        let frame_block_tab = block_tab.clone();
         webview.add_FrameNavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
                     let mut uri = PWSTR::null();
-                    let allowed = args.Uri(&mut uri).is_ok()
-                        && Url::parse(&CoTaskMemPWSTR::from(uri).to_string())
-                            .is_ok_and(|url| frame_navigation_scheme_allowed(&url));
-                    if !allowed {
+                    let parsed = if args.Uri(&mut uri).is_ok() {
+                        Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok()
+                    } else {
+                        None
+                    };
+                    let allowed = parsed
+                        .as_ref()
+                        .is_some_and(|url| frame_navigation_scheme_allowed(url));
+                    // blob:, data: and about:srcdoc frames are left alone: only an http(s) frame
+                    // destination is ever checked against the blocker.
+                    let blocked = allowed
+                        && parsed.as_ref().is_some_and(|url| {
+                            matches!(url.scheme(), "http" | "https") && {
+                                let top_host = frame_block_tab.top_host.borrow();
+                                frame_blocker.as_ref().is_some_and(|blocker| {
+                                    let blocker = blocker.borrow();
+                                    if private {
+                                        blocker.should_block_private(url.as_str(), &top_host)
+                                    } else {
+                                        blocker.should_block(url.as_str(), &top_host)
+                                    }
+                                })
+                            }
+                        });
+                    if !allowed || blocked {
                         let _ = args.SetCancel(true);
                     }
                 }
@@ -2855,10 +3385,15 @@ unsafe fn configure_controller(
         let content_log = events.policy_event.clone();
         let content_block_tab = block_tab.clone();
         let content_blocked = events.blocked_changed.clone();
+        let content_blocker = blocker.clone();
         webview.add_ContentLoading(
             &ContentLoadingEventHandler::create(Box::new(move |sender, args| {
                 if let Some(sender) = sender.as_ref() {
                     sync_top_host(sender, &content_block_tab);
+                    if let Some(blocker) = content_blocker.as_ref() {
+                        refresh_blocked_urls(sender, &content_block_tab, blocker, private, None);
+                        apply_cosmetic_css(sender, &content_block_tab, blocker, private);
+                    }
                 }
                 if content_block_tab.count.replace(0) != 0
                     && let Some(callback) = content_blocked.as_ref()
@@ -2942,7 +3477,11 @@ unsafe fn configure_controller(
                         } else if let Some(callback) = completed_failed.as_ref() {
                             let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
                             let _ = args.WebErrorStatus(&mut status);
-                            callback(tab_id, is_certificate_error(status));
+                            // A blocker SetCancel completes as OPERATION_CANCELED. The page that
+                            // is still showing did not fail to load, so the security pill stays.
+                            if navigation_failure_is_reportable(status) {
+                                callback(tab_id, is_certificate_error(status));
+                            }
                         }
                     }
                 }
@@ -2952,10 +3491,14 @@ unsafe fn configure_controller(
         )?;
         let address_changed = events.address_changed.clone();
         let source_block_tab = block_tab.clone();
+        let source_blocker = blocker.clone();
         webview.add_SourceChanged(
             &SourceChangedEventHandler::create(Box::new(move |sender, _args| {
                 if let Some(sender) = sender.as_ref() {
                     sync_top_host(sender, &source_block_tab);
+                    if let Some(blocker) = source_blocker.as_ref() {
+                        refresh_blocked_urls(sender, &source_block_tab, blocker, private, None);
+                    }
                 }
                 if let (Some(sender), Some(callback)) = (sender, address_changed.as_ref()) {
                     if let Some(url) = current_web_url(&sender) {
@@ -3066,6 +3609,7 @@ unsafe fn configure_controller(
         let popup_callback = events.new_window_requested.clone();
         let popup_store = permissions.clone();
         let popup_denied = events.permission_denied.clone();
+        let popup_blocker = blocker.clone();
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
@@ -3092,9 +3636,26 @@ unsafe fn configure_controller(
                         };
                     // A private tab has no stored allows: a script-opened window is always blocked.
                     let site_allows = crate::private::permission_allowed(private, stored_popups);
+                    // An ad target never opens a tab, whatever the gesture or stored allow: this is
+                    // checked against the opener's host, not the (not yet existing) new tab's.
+                    let target_blocked = target.as_ref().is_some_and(|url| {
+                        matches!(url.scheme(), "http" | "https")
+                            && opener.as_ref().and_then(|opener| opener.host_str()).is_some_and(
+                                |host| {
+                                    popup_blocker.as_ref().is_some_and(|blocker| {
+                                        let blocker = blocker.borrow();
+                                        if private {
+                                            blocker.should_block_private(url.as_str(), host)
+                                        } else {
+                                            blocker.should_block(url.as_str(), host)
+                                        }
+                                    })
+                                },
+                            )
+                    });
                     let decision = target
                         .as_ref()
-                        .map(|url| popup_decision(url, user_initiated, site_allows))
+                        .map(|url| popup_decision(url, user_initiated, site_allows, target_blocked))
                         .unwrap_or(PopupDecision::Block);
                     if decision == PopupDecision::NewTab {
                         let url = target.expect("new-tab decision requires a parsed target");
@@ -3109,8 +3670,11 @@ unsafe fn configure_controller(
                             log("popup_blocked");
                         }
                         // A blocked script popup is listed on the Privacy dashboard (origin and
-                        // kind only). A refused click, such as a mailto: link, is not a popup.
-                        if !user_initiated
+                        // kind only). A refused click, such as a mailto: link, is not a popup. An
+                        // ad target blocked here is not a popup-permission denial either: nothing
+                        // about permissions decided it.
+                        if !target_blocked
+                            && !user_initiated
                             && let Some(origin) = opener
                                 .as_ref()
                                 .and_then(|opener| crate::permissions::origin_of(opener.as_str()))
@@ -3226,56 +3790,58 @@ unsafe fn configure_controller(
         }
 
         if let Some(blocker) = blocker {
-            let response_environment = environment.clone();
             let blocked_callback = events.blocked_changed.clone();
             let policy_log = events.policy_event.clone();
+            // Listeners exist before Fetch.enable and Network.enable, which refresh sends.
+            install_fetch_listener(&webview, &block_tab, blocker.clone(), private);
+            install_loading_failed_listener(
+                &webview,
+                &block_tab,
+                tab_id,
+                blocked_callback.clone(),
+                policy_log.clone(),
+            );
+            // Installed now, with the tab's still-empty top host, so every listed host is blocked
+            // at the network layer before the first navigation commits.
+            refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
+            let response_environment = environment.clone();
             let request_tab = block_tab.clone();
             webview.add_WebResourceRequested(
                 &WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
                     let Some(args) = args else {
                         return Ok(());
                     };
-                    // A context that is not in BLOCKABLE_CONTEXTS (a document, say) is never blocked.
-                    let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
-                    let kind = match args.ResourceContext(&mut context) {
-                        Ok(()) => request_kind(context),
-                        Err(_) => None,
-                    };
-                    let Some(kind) = kind else {
-                        return Ok(());
-                    };
                     let request = args.Request()?;
                     let mut uri = PWSTR::null();
                     request.Uri(&mut uri)?;
                     let guard = CoTaskMemPWSTR::from(uri);
-                    let (block, site_host) = REQUEST_URL.with(|buffer| {
+                    let (hit, site_host) = REQUEST_URL.with(|buffer| {
                         let mut buffer = buffer.borrow_mut();
                         buffer.clear();
                         buffer.extend(
                             char::decode_utf16(uri.as_wide().iter().copied())
                                 .map(|unit| unit.unwrap_or('\u{FFFD}')),
                         );
-                        let block = {
+                        let hit = {
                             let site_host = request_tab.top_host.borrow();
                             if private {
-                                blocker
-                                    .borrow()
-                                    .should_block_private_kind(&buffer, &site_host, kind)
+                                blocker.borrow().block_hit_private(&buffer, &site_host)
                             } else {
-                                blocker
-                                    .borrow()
-                                    .should_block_kind(&buffer, &site_host, kind)
+                                blocker.borrow().block_hit(&buffer, &site_host)
                             }
                         };
-                        let site_host = if block {
+                        let site_host = if hit != crate::blocker::BlockHit::None {
                             request_tab.top_host.borrow().clone()
                         } else {
                             String::new()
                         };
-                        (block, site_host)
+                        (hit, site_host)
                     });
                     drop(guard);
-                    if block {
+                    // Host rules are normally failed in the renderer by setBlockedURLs, so they
+                    // never get here. This 403 is the fallback for a miss, and the only answer
+                    // for a path or substring rule, which the host pattern list does not cover.
+                    if hit != crate::blocker::BlockHit::None {
                         let response = response_environment.CreateWebResourceResponse(
                             None::<&IStream>,
                             403,
@@ -3302,7 +3868,7 @@ unsafe fn configure_controller(
             // which the older call does not see.
             match webview.cast::<ICoreWebView2_22>() {
                 Ok(webview22) => {
-                    for (context, _) in BLOCKABLE_CONTEXTS {
+                    for context in BLOCKABLE_CONTEXTS {
                         webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
                             w!("*"),
                             context,
@@ -3311,17 +3877,9 @@ unsafe fn configure_controller(
                     }
                 }
                 Err(_) => {
-                    for (context, _) in BLOCKABLE_CONTEXTS {
+                    for context in BLOCKABLE_CONTEXTS {
                         webview.AddWebResourceRequestedFilter(w!("*"), context)?;
                     }
-                }
-            }
-            // Element hiding for the same pages, next to the request filter. The script is
-            // built from rules read at startup; a failure leaves the tab without it.
-            if let Some(cosmetic) = cosmetic.as_ref() {
-                let installed = cosmetic.refresh(&webview, events.policy_event.as_ref());
-                if installed.is_err() {
-                    event(events.policy_event.as_ref(), "cosmetic_script_failed");
                 }
             }
         }
@@ -3462,6 +4020,12 @@ fn permission_for_kind(kind: COREWEBVIEW2_PERMISSION_KIND) -> Option<Permission>
     } else {
         None
     }
+}
+
+/// A navigation Bowser cancelled is not a failed load. Real network and certificate
+/// failures use other statuses and are still reported.
+fn navigation_failure_is_reportable(status: COREWEBVIEW2_WEB_ERROR_STATUS) -> bool {
+    status != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED
 }
 
 /// True for the certificate failures WebView2 reports for a navigation.
@@ -3771,50 +4335,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_kind_follows_the_webview2_resource_context() {
-        use crate::shield::RequestKind;
-        for (context, kind) in [
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, RequestKind::Script),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, RequestKind::Image),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, RequestKind::Media),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, RequestKind::Xhr),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, RequestKind::Xhr),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, RequestKind::Ping),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE, RequestKind::Other),
-            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER, RequestKind::Other),
-        ] {
-            assert_eq!(request_kind(context), Some(kind), "{context:?}");
-        }
-        // A document (a main frame or an iframe), a stylesheet or a font is never filtered.
-        for context in [
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        ] {
-            assert_eq!(request_kind(context), None, "{context:?}");
-        }
-    }
-
-    #[test]
-    fn the_request_hook_filters_by_kind_and_installs_the_cosmetic_script() {
-        let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
-        for needle in [
-            "args.ResourceContext(&mut context)",
-            "should_block_kind(&buffer, &site_host, kind)",
-            "should_block_private_kind(&buffer, &site_host, kind)",
-            "cosmetic.refresh(&webview",
-        ] {
-            assert!(production.contains(needle), "missing in the engine: {needle}");
-        }
-        assert!(
-            !production.contains("COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT"),
-            "the request filter must never ask for documents"
-        );
-    }
-
-    #[test]
     fn engine_never_blocks_on_a_webview2_completion() {
         // Tab controllers are configured inside WebView2's controller-created callback, where a
         // nested pump never receives the awaited completion: the login script wait hung every
@@ -3837,7 +4357,8 @@ mod tests {
             "create_private_controller(&environment, parent, &handler)",
             "verify_private_profile(&webview)?",
             // Always-on blocker, forced Strict tracking prevention, no stored permission allows.
-            "should_block_private_kind(&buffer, &site_host, kind)",
+            "block_hit_private(&buffer, &site_host)",
+            "should_block_private(url.as_str(), &top_host)",
             "crate::private::tracking_level(private, state.tracking_policy.level)",
             "crate::private::permission_allowed(private, stored)",
             "crate::private::permission_allowed(private, stored_popups)",
@@ -4173,26 +4694,265 @@ mod tests {
     }
 
     #[test]
+    fn json_string_literal_escapes_the_characters_that_would_break_out() {
+        assert_eq!(json_string_literal(".textads"), "\".textads\"");
+        assert_eq!(json_string_literal("a\"b"), "\"a\\\"b\"");
+        assert_eq!(json_string_literal("a\\b"), "\"a\\\\b\"");
+        assert_eq!(json_string_literal("a\nb"), "\"a\\nb\"");
+        assert_eq!(json_string_literal("</style>"), "\"\\u003c/style>\"");
+    }
+
+    #[test]
+    fn cosmetic_install_script_embeds_the_css_as_a_string_literal() {
+        let script = cosmetic_install_script(".adbox.banner_ads.adsbox{display:none!important}");
+        assert!(script.contains("bowser-cosmetic"));
+        assert!(script.contains("\".adbox.banner_ads.adsbox{display:none!important}\""));
+        assert!(script.contains("createElement('style')"));
+    }
+
+    #[test]
+    fn cosmetic_remove_script_targets_the_same_element_id() {
+        assert!(COSMETIC_REMOVE_SCRIPT.contains("bowser-cosmetic"));
+        assert!(COSMETIC_REMOVE_SCRIPT.contains(".remove()"));
+    }
+
+    #[test]
+    fn blocked_urls_params_builds_the_devtools_json() {
+        assert_eq!(blocked_urls_params(&[]), r#"{"urlPatterns":[]}"#);
+        assert_eq!(
+            blocked_urls_params(&["*://doubleclick.net/*".to_owned()]),
+            r#"{"urlPatterns":[{"urlPattern":"*://doubleclick.net/*","block":true}]}"#
+        );
+        assert_eq!(blocked_urls_legacy_params(&[]), r#"{"urls":[]}"#);
+        assert_eq!(
+            blocked_urls_legacy_params(&["*://doubleclick.net/*".to_owned()]),
+            r#"{"urls":["*://doubleclick.net/*"]}"#
+        );
+        assert!(!blocked_urls_params(&["*://doubleclick.net/*".to_owned()]).contains("\"urls\""));
+        assert_eq!(fetch_enable_params(&[]), r#"{"patterns":[]}"#);
+    }
+
+    #[test]
+    fn a_devtools_protocol_error_is_the_code_object_not_an_empty_success() {
+        assert!(!devtools_protocol_error(""));
+        assert!(!devtools_protocol_error("{}"));
+        assert!(!devtools_protocol_error("{\"result\":{}}"));
+        assert!(devtools_protocol_error(
+            "{\"code\":-32601,\"message\":\"'Network.setBlockedURLs' wasn't found\"}"
+        ));
+    }
+
+    #[test]
+    fn fetch_enable_params_add_the_youtube_player_responses_at_the_response_stage() {
+        let responses = &crate::blocker::youtube::RESPONSE_PATTERNS;
+        assert_eq!(
+            fetch_enable_params(responses),
+            concat!(
+                r#"{"patterns":["#,
+                r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube.com/watch\\?*","resourceType":"Document","requestStage":"Response"}]}"#,
+            )
+        );
+        assert!(
+            fetch_enable_params(responses)
+                .starts_with(r#"{"patterns":[{"urlPattern":"*://*.youtube.com/"#)
+        );
+        assert!(!fetch_enable_params(responses).contains("Request\"}"));
+    }
+
+    #[test]
+    fn a_response_stage_pause_is_never_mistaken_for_a_blocked_request() {
+        let request = r#"{"requestId":"interception-job-1.0","request":{"url":"https://doubleclick.net/x","headers":{"responseStatusCode":"1"}},"resourceType":"Fetch"}"#;
+        assert_eq!(paused_stage(request), PausedStage::Request);
+        let response = r#"{"requestId":"interception-job-2.0","request":{"url":"https://www.youtube.com/youtubei/v1/player?prettyPrint=false","method":"POST","headers":{}},"frameId":"F","resourceType":"Fetch","responseStatusCode":200,"responseHeaders":[{"name":"content-type","value":"application/json; charset=UTF-8"},{"name":"content-encoding","value":"br"},{"name":"set-cookie","value":"YSC=a; Path=/"}],"networkId":"N"}"#;
+        assert_eq!(
+            paused_stage(response),
+            PausedStage::Response(Some(PausedResponse {
+                url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false".to_owned(),
+                status: Some(200),
+                headers: vec![
+                    (
+                        "content-type".to_owned(),
+                        "application/json; charset=UTF-8".to_owned()
+                    ),
+                    ("content-encoding".to_owned(), "br".to_owned()),
+                    ("set-cookie".to_owned(), "YSC=a; Path=/".to_owned()),
+                ],
+            }))
+        );
+        let failed = r#"{"requestId":"r","request":{"url":"https://www.youtube.com/watch?v=x"},"resourceType":"Document","responseErrorReason":"ConnectionReset"}"#;
+        assert!(matches!(
+            paused_stage(failed),
+            PausedStage::Response(Some(PausedResponse { status: None, .. }))
+        ));
+        // Unreadable, but plainly a response: continued, not failed.
+        assert_eq!(
+            paused_stage(r#"{"requestId":"r","responseStatusCode":200,"#),
+            PausedStage::Response(None)
+        );
+    }
+
+    #[test]
+    fn only_utf8_json_and_html_bodies_are_rewritten() {
+        let headers = |value: &str| vec![("Content-Type".to_owned(), value.to_owned())];
+        for ok in [
+            "application/json; charset=UTF-8",
+            "application/json",
+            "text/html; charset=utf-8",
+            "text/html; charset=\"utf-8\"",
+        ] {
+            assert!(utf8_text_response(&headers(ok)), "{ok}");
+        }
+        for not in [
+            "text/html; charset=windows-1252",
+            "application/x-protobuf",
+            "video/mp4",
+            "text/plain",
+        ] {
+            assert!(!utf8_text_response(&headers(not)), "{not}");
+        }
+        assert!(!utf8_text_response(&[]));
+    }
+
+    #[test]
+    fn a_response_body_is_read_whether_or_not_devtools_base64_encoded_it() {
+        assert_eq!(
+            response_body_text(r#"{"body":"{\"adSlots\":[]}","base64Encoded":false}"#).as_deref(),
+            Some(r#"{"adSlots":[]}"#)
+        );
+        assert_eq!(
+            response_body_text(r#"{"body":"eyJhZFNsb3RzIjpbXX0=","base64Encoded":true}"#)
+                .as_deref(),
+            Some(r#"{"adSlots":[]}"#)
+        );
+        assert_eq!(
+            response_body_text(r#"{"body":"/w==","base64Encoded":true}"#),
+            None
+        );
+        assert_eq!(response_body_text(r#"{"base64Encoded":false}"#), None);
+    }
+
+    #[test]
+    fn fulfill_params_keep_status_and_headers_but_drop_the_wire_encoding() {
+        let headers = vec![
+            (
+                "content-type".to_owned(),
+                "application/json; charset=UTF-8".to_owned(),
+            ),
+            ("Content-Encoding".to_owned(), "br".to_owned()),
+            ("content-length".to_owned(), "999".to_owned()),
+            ("set-cookie".to_owned(), "YSC=a; Path=/".to_owned()),
+        ];
+        assert_eq!(
+            fulfill_params("job-1", 200, &headers, b"{}"),
+            r#"{"requestId":"job-1","responseCode":200,"responseHeaders":[{"name":"content-type","value":"application/json; charset=UTF-8"},{"name":"set-cookie","value":"YSC=a; Path=/"}],"body":"e30="}"#
+        );
+    }
+
+    #[test]
+    fn the_player_response_rewrite_stays_wired_into_the_fetch_listener() {
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        for needle in [
+            "if let PausedStage::Response(paused) = paused_stage(&json)",
+            ".player_ads_rewrite(&paused.url, &top_host, private)",
+            "fetch_enable_params(responses)",
+            "Network.loadingFailed",
+            "blockedReason",
+            "enable_network_then_block",
+        ] {
+            assert!(
+                production.contains(needle),
+                "missing in the engine: {needle}"
+            );
+        }
+        // Host rules are not paused, and a paused response is continued or rewritten
+        // before any other pause is continued.
+        assert!(!production.contains("fetch_fail"));
+        assert!(!production.contains("fetch_armed"));
+        assert!(!production.contains("document_blocked"));
+        let response_branch = production.find("paused_stage(&json)").unwrap();
+        let listener_continue = production.find("fetch_continue(&sender, &request_id)").unwrap();
+        assert!(response_branch < listener_continue);
+    }
+
+    #[test]
+    fn a_paused_fetch_event_yields_its_request_id_and_resource_type() {
+        let json = r#"{"requestId":"interception-job-1.0","request":{"url":"https://doubleclick.net/favicon.ico?adblock_test=1"},"resourceType":"Fetch"}"#;
+        assert_eq!(
+            json_string_field(json, "requestId").as_deref(),
+            Some("interception-job-1.0")
+        );
+        assert_eq!(json_string_field(json, "resourceType").as_deref(), Some("Fetch"));
+        assert_eq!(json_string_field(json, "missing"), None);
+        assert_ne!(json_string_field(json, "resourceType").as_deref(), Some("Document"));
+    }
+
+    #[test]
     fn popup_policy_contains_only_user_initiated_http_and_https() {
         let page = |text: &str| Url::parse(text).unwrap();
-        assert_eq!(popup_decision(&page("https://example.com"), true, false), PopupDecision::NewTab);
-        assert_eq!(popup_decision(&page("http://example.com"), true, false), PopupDecision::NewTab);
-        assert_eq!(popup_decision(&page("https://example.com"), false, false), PopupDecision::Block);
-        assert_eq!(popup_decision(&page("mailto:person@example.com"), true, false), PopupDecision::Block);
+        assert_eq!(popup_decision(&page("https://example.com"), true, false, false), PopupDecision::NewTab);
+        assert_eq!(popup_decision(&page("http://example.com"), true, false, false), PopupDecision::NewTab);
+        assert_eq!(popup_decision(&page("https://example.com"), false, false, false), PopupDecision::Block);
+        assert_eq!(popup_decision(&page("mailto:person@example.com"), true, false, false), PopupDecision::Block);
     }
 
     #[test]
     fn a_stored_popup_allow_opens_script_windows_but_only_as_http_or_https_tabs() {
         let page = |text: &str| Url::parse(text).unwrap();
         // The default stays deny: a script popup with no stored Allow is blocked.
-        assert_eq!(popup_decision(&page("https://ads.example/x"), false, false), PopupDecision::Block);
+        assert_eq!(popup_decision(&page("https://ads.example/x"), false, false, false), PopupDecision::Block);
         // An allowed site's script popup becomes a new tab.
-        assert_eq!(popup_decision(&page("https://pay.example/x"), false, true), PopupDecision::NewTab);
+        assert_eq!(popup_decision(&page("https://pay.example/x"), false, true, false), PopupDecision::NewTab);
         // The allow never widens the scheme gate.
         for value in ["javascript:alert(1)", "data:text/html,hi", "file:///C:/x", "about:blank", "bowser-ui://app/index.html", "mailto:a@b.test", "blob:https://a.test/1"] {
-            assert_eq!(popup_decision(&page(value), false, true), PopupDecision::Block, "{value}");
-            assert_eq!(popup_decision(&page(value), true, true), PopupDecision::Block, "{value}");
+            assert_eq!(popup_decision(&page(value), false, true, false), PopupDecision::Block, "{value}");
+            assert_eq!(popup_decision(&page(value), true, true, false), PopupDecision::Block, "{value}");
         }
+    }
+
+    #[test]
+    fn a_blocked_target_never_opens_a_tab_whatever_the_gesture_or_allow() {
+        let page = |text: &str| Url::parse(text).unwrap();
+        // An ad target blocks even for an ordinary user-initiated click...
+        assert_eq!(
+            popup_decision(&page("https://ads.example/x"), true, false, true),
+            PopupDecision::Block
+        );
+        // ...or a site with a stored popup allow.
+        assert_eq!(
+            popup_decision(&page("https://ads.example/x"), false, true, true),
+            PopupDecision::Block
+        );
+        // An ordinary user-initiated https popup still opens.
+        assert_eq!(
+            popup_decision(&page("https://example.com/x"), true, false, false),
+            PopupDecision::NewTab
+        );
+        // A script popup without a stored allow still blocks.
+        assert_eq!(
+            popup_decision(&page("https://example.com/x"), false, false, false),
+            PopupDecision::Block
+        );
+        // An allowed popup of a non-ad URL still opens.
+        assert_eq!(
+            popup_decision(&page("https://example.com/x"), false, true, false),
+            PopupDecision::NewTab
+        );
+    }
+
+    #[test]
+    fn a_cancelled_navigation_is_not_a_failed_load() {
+        assert!(!navigation_failure_is_reportable(
+            COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED
+        ));
+        assert!(navigation_failure_is_reportable(
+            COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID
+        ));
+        assert!(navigation_failure_is_reportable(
+            COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED
+        ));
     }
 
     #[test]
@@ -4316,7 +5076,7 @@ mod tests {
             );
             assert!(!navigation_scheme_allowed(&url), "{value}");
             assert!(!frame_navigation_scheme_allowed(&url), "{value}");
-            assert_eq!(popup_decision(&url, true, true), PopupDecision::Block, "{value}");
+            assert_eq!(popup_decision(&url, true, true, false), PopupDecision::Block, "{value}");
         }
     }
 
