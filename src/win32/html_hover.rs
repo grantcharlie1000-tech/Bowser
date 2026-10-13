@@ -694,6 +694,7 @@ fn theme_json() -> String {
         permblocked: false,
         zoom: 100,
         private: false,
+        reader: crate::reader::Pill::Hidden,
         theme: chrome_host::theme_tokens(palette),
     }
     .to_json()

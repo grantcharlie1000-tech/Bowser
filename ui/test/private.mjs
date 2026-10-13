@@ -165,9 +165,9 @@ test('toolbar pill: data-private and the private chip follow state.private', () 
   assert.equal(view.privateChip.getAttribute('aria-label'), ui.PRIVATE_TIP);
   assert.equal(view.privateChip.getAttribute('data-tip'), 'Private tab: browsing data is not saved');
   assert.equal(view.privateChip.find('tb-private-label').textContent, 'Private');
-  // The chips sit between the address field and the split button, never next to the site button.
+  // The chips and the reader button sit between the address field and the split button, never next to the site button.
   const at = (name) => view.pill.children.findIndex((c) => c.classList.contains(name));
-  assert.deepEqual(['tb-site', 'omni-field', 'tb-private', 'tb-zoom', 'tb-split'].map(at), [0, 1, 2, 3, 4]);
+  assert.deepEqual(['tb-site', 'omni-field', 'tb-private', 'tb-zoom', 'tb-reader', 'tb-split'].map(at), [0, 1, 2, 3, 4, 5]);
 
   ui.applyState(view, { ...STATE, private: true });
   assert.equal(view.pill.dataset.private, 'true');
@@ -183,6 +183,23 @@ test('toolbar pill: data-private and the private chip follow state.private', () 
   ui.applyState(view, STATE); // absent (older host) means not private
   assert.equal('private' in view.pill.dataset, false);
   assert.equal(view.privateChip.hidden, true);
+});
+
+test('toolbar pill: the private chip, zoom chip and reader button show together and hide independently', () => {
+  const view = ui.buildView(new FakeElement('div'));
+  ui.applyState(view, { ...STATE, private: true, zoom: 125, reader: 'available' });
+  assert.equal(view.privateChip.hidden, false);
+  assert.equal(view.zoom.hidden, false);
+  assert.equal(view.reader.hidden, false);
+  assert.equal(view.reader.getAttribute('aria-pressed'), 'false');
+  ui.applyState(view, { ...STATE, private: true, zoom: 125, reader: 'on' });
+  assert.equal(view.reader.getAttribute('aria-pressed'), 'true');
+  assert.equal(view.privateChip.hidden, false);
+  assert.equal(view.zoom.hidden, false);
+  ui.applyState(view, { ...STATE, private: true, zoom: 100 });
+  assert.equal(view.reader.hidden, true, 'absent reader (older host) means hidden');
+  assert.equal(view.zoom.hidden, true);
+  assert.equal(view.privateChip.hidden, false);
 });
 
 const rule = (css, selector) => {

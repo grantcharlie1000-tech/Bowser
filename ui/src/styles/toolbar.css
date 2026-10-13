@@ -228,6 +228,15 @@ html[data-scheme="dark"] #app {
   pointer-events: none;
 }
 
+/* Reader view: shown only for article-like pages. `hidden` has to beat the button's own display. */
+.tb-reader {
+  margin-right: var(--bw-space-0_5);
+}
+
+.tb-reader[hidden] {
+  display: none;
+}
+
 /* Security state: the lock stays neutral, a problem is warm. */
 .pill[data-security="notsecure"] .tb-site,
 .pill[data-security="certproblem"] .tb-site {
@@ -258,10 +267,11 @@ html[data-scheme="dark"] #app {
   display: none;
 }
 
-/* Narrow pill: drop the split button first, then the private label (the glyph stays), then the
+/* Narrow pill: drop the split and reader buttons first, then the private label (the glyph stays), then the
    site button, never the text field. */
 @container (max-width: 190px) {
-  .tb-split {
+  .tb-split,
+  .tb-reader {
     display: none;
   }
 }

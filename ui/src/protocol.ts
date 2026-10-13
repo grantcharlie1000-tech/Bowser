@@ -21,7 +21,9 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader';
+/** The reader view button: hidden, offered (the page looks like an article) or on. */
+export type ReaderPill = 'none' | 'available' | 'on';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
@@ -179,6 +181,8 @@ export interface StateMsg {
   readonly zoom?: number;
   /** The active tab is a private tab (the pill shows the private indicator). Absent in older hosts. */
   readonly private?: boolean;
+  /** The reader view button. Absent in older hosts, which means hidden. */
+  readonly reader?: ReaderPill;
   readonly theme: Theme;
 }
 export interface SetTextMsg {
@@ -373,6 +377,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
   return keys.every((k) => k in v);
 }
 
+const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
 const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename'];
 const PANEL_ACTION_RE = /^[a-z]{1,24}$/;
@@ -723,10 +728,11 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'private', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'private', 'reader', 'theme'])) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
       if ('private' in raw && !isBool(raw.private)) return null;
+      if ('reader' in raw && !isOneOf(raw.reader, READER_PILL)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -755,6 +761,7 @@ export function parseInbound(data: unknown): Inbound | null {
         ...(isBool(raw.permblocked) ? { permblocked: raw.permblocked } : {}),
         ...(typeof raw.zoom === 'number' ? { zoom: raw.zoom } : {}),
         ...(isBool(raw.private) ? { private: raw.private } : {}),
+        ...(isOneOf(raw.reader, READER_PILL) ? { reader: raw.reader } : {}),
         theme: parseTheme(raw.theme),
       };
     }

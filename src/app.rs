@@ -594,6 +594,9 @@ pub struct App {
     /// The newest denied permission requests and blocked popups. In memory only, origins and
     /// kinds only; shown on the Privacy dashboard.
     denied: crate::permissions::DeniedLog,
+    /// Reader theme and size as last reported by the page, passed back in on the next use. Session
+    /// only.
+    reader_prefs: crate::reader::Prefs,
 }
 
 struct AppTab {
@@ -631,6 +634,8 @@ struct AppTab {
     load: LoadState,
     /// A private (InPrivate) tab: see `crate::private`. Fixed when the tab is created.
     private: bool,
+    /// Reader view: whether the page looks like an article and whether reader view is on.
+    reader: crate::reader::TabState,
 }
 
 impl AppTab {
@@ -659,11 +664,25 @@ impl AppTab {
             permission_blocked: false,
             zoom: crate::site_prefs::ZOOM_DEFAULT,
             load: LoadState::Loaded,
+            reader: crate::reader::TabState::default(),
         }
     }
 }
 
 pub type AppRef = Rc<RefCell<App>>;
+
+/// What a reader-view command did, so the caller can tell the user when nothing happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReaderResult {
+    /// The page is now in this state (`Off` when the command left a mode).
+    Applied(crate::reader::Active),
+    /// The page has no article-like text, so reader view changed nothing.
+    NothingToRead,
+    /// Not an http(s) page, no live page, or a call is already running.
+    Unavailable,
+    /// The page did not answer or the script failed; the page was left as it was.
+    Failed,
+}
 
 /// Window timer for the throttled blocked-count title. Timer ids 1 to 4 are taken in win32/mod.rs.
 pub(crate) const BLOCKED_TITLE_TIMER: usize = 5;
@@ -1463,6 +1482,7 @@ impl App {
             Ok(())
         });
         Self::restore_discarded_tab(app, id);
+        Self::reader_probe_if_needed(app, id);
         Self::post_tab_changed(hwnd, id);
         Self::save_workspaces(app);
         Self::sync_window_title(app);
@@ -2930,6 +2950,274 @@ impl App {
         let _ = Self::call_engine(app, |engine| engine.toggle_picture_in_picture(tab));
     }
 
+    // --- reader view ---
+    /// Runs one reader script in `tab`. `done` always runs with the app unborrowed: an engine that
+    /// answers at once (no live page) is answered after `call_engine` returns.
+    fn run_reader_script(
+        app: &AppRef,
+        tab: TabId,
+        script: String,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let done = Rc::new(RefCell::new(Some(done)));
+        let early = Rc::new(RefCell::new(None::<Option<String>>));
+        let in_call = Rc::new(std::cell::Cell::new(true));
+        let answer = {
+            let (done, early, in_call) = (done.clone(), early.clone(), in_call.clone());
+            Box::new(move |text: Option<String>| {
+                if in_call.get() {
+                    *early.borrow_mut() = Some(text);
+                } else if let Some(done) = done.borrow_mut().take() {
+                    done(text);
+                }
+            }) as Box<dyn FnOnce(Option<String>)>
+        };
+        let called = Self::call_engine(app, |engine| engine.run_reader_script(tab, &script, answer));
+        in_call.set(false);
+        let text = match (called, early.borrow_mut().take()) {
+            (None, _) => Some(None),
+            (Some(()), early) => early,
+        };
+        if let Some(text) = text {
+            let done = done.borrow_mut().take();
+            if let Some(done) = done {
+                done(text);
+            }
+        }
+    }
+
+    /// The script call for `action` with the session's reader settings and Bowser's current colours.
+    fn reader_invocation(app: &AppRef, action: crate::reader::Action) -> String {
+        let prefs = app.borrow().reader_prefs;
+        let appearance = win32::glass::appearance();
+        let palette = crate::theme::palette(appearance, true);
+        crate::reader::invocation(
+            action,
+            prefs,
+            appearance == crate::theme::Appearance::Dark,
+            &crate::reader::Colours::from_palette(palette),
+        )
+    }
+
+    /// The tab's reader state, if the tab exists and shows a page reader view may script.
+    fn reader_state(app: &AppRef, tab: TabId) -> Option<crate::reader::TabState> {
+        let state = app.borrow();
+        let tab = state.tabs.iter().find(|candidate| candidate.id == tab)?;
+        tab.url
+            .as_ref()
+            .is_some_and(crate::reader::url_allowed)
+            .then_some(tab.reader)
+    }
+
+    /// Marks a call as in flight. `false` when the tab is gone or already has one.
+    fn begin_reader_call(app: &AppRef, tab: TabId) -> bool {
+        let mut state = app.borrow_mut();
+        match state.tabs.iter_mut().find(|candidate| candidate.id == tab) {
+            Some(tab) if !tab.reader.busy => {
+                tab.reader.busy = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Folds a script answer into the tab. An answer for an earlier document (`epoch` moved on) is
+    /// dropped. Returns what the user should be told.
+    fn finish_reader_call(
+        app: &AppRef,
+        tab: TabId,
+        epoch: u32,
+        outcome: Option<crate::reader::Outcome>,
+        probe: bool,
+    ) -> ReaderResult {
+        use crate::reader::Code;
+        let (hwnd, result, changed) = {
+            let mut state = app.borrow_mut();
+            let hwnd = state.hwnd;
+            if let Some(outcome) = outcome.filter(|outcome| outcome.code != Code::Failed) {
+                state.reader_prefs = outcome.prefs;
+            }
+            let Some(entry) = state.tabs.iter_mut().find(|candidate| candidate.id == tab) else {
+                return ReaderResult::Unavailable;
+            };
+            if entry.reader.epoch != epoch {
+                return ReaderResult::Unavailable;
+            }
+            let before = entry.reader.pill();
+            entry.reader.busy = false;
+            let result = match outcome {
+                None => ReaderResult::Failed,
+                Some(outcome) => {
+                    if probe {
+                        entry.reader.apply_probe(&outcome);
+                    } else {
+                        entry.reader.apply_toggle(&outcome);
+                    }
+                    match outcome.code {
+                        Code::Ok => ReaderResult::Applied(outcome.state),
+                        Code::None => ReaderResult::NothingToRead,
+                        Code::Failed => ReaderResult::Failed,
+                    }
+                }
+            };
+            (hwnd, result, before != entry.reader.pill())
+        };
+        if changed {
+            Self::post_tab_changed_kind(hwnd, tab, false, false);
+        }
+        result
+    }
+
+    /// Turns reader view or distraction hiding on or off for `tab`, on the user's request. `done`
+    /// says what happened so the caller can tell the user when nothing could be done.
+    pub fn reader_toggle(
+        app: &AppRef,
+        tab: TabId,
+        mode: crate::reader::Mode,
+        done: Box<dyn FnOnce(ReaderResult)>,
+    ) {
+        if Self::reader_state(app, tab).is_none() || !Self::begin_reader_call(app, tab) {
+            done(ReaderResult::Unavailable);
+            return;
+        }
+        let epoch = Self::reader_state(app, tab).map_or(0, |state| state.epoch);
+        let script = Self::reader_invocation(app, crate::reader::Action::Toggle(mode));
+        let weak = Rc::downgrade(app);
+        Self::run_reader_script(
+            app,
+            tab,
+            script,
+            Box::new(move |text| {
+                let Some(app) = weak.upgrade() else { return };
+                let outcome = text.as_deref().and_then(crate::reader::parse_result);
+                done(Self::finish_reader_call(&app, tab, epoch, outcome, false));
+            }),
+        );
+    }
+
+    /// Read-only: asks the page how article-like it is, so the toolbar can offer reader view. The
+    /// only automatic reader work, run once a page has finished loading in the active tab.
+    pub fn reader_probe(app: &AppRef, tab: TabId) {
+        if Self::reader_state(app, tab).is_none() || !Self::begin_reader_call(app, tab) {
+            return;
+        }
+        let epoch = Self::reader_state(app, tab).map_or(0, |state| state.epoch);
+        let script = Self::reader_invocation(app, crate::reader::Action::Probe);
+        let weak = Rc::downgrade(app);
+        Self::run_reader_script(
+            app,
+            tab,
+            script,
+            Box::new(move |text| {
+                let Some(app) = weak.upgrade() else { return };
+                let outcome = text.as_deref().and_then(crate::reader::parse_result);
+                Self::finish_reader_call(&app, tab, epoch, outcome, true);
+            }),
+        );
+    }
+
+    /// Probes a tab that finished loading while it was in the background, once it is shown.
+    fn reader_probe_if_needed(app: &AppRef, tab: TabId) {
+        let needed = {
+            let state = app.borrow();
+            state.tabs.iter().find(|candidate| candidate.id == tab).is_some_and(|tab| {
+                tab.page_usable && tab.controller_created && !tab.discarded && !tab.reader.probed
+            })
+        };
+        if needed {
+            Self::reader_probe(app, tab);
+        }
+    }
+
+    /// Leaves reader view or distraction hiding in a tab. The state is cleared at once; the page is
+    /// asked to restore itself (a no-op on a document that has already gone).
+    fn reader_leave(app: &AppRef, tab: TabId) {
+        let Some(state) = Self::reader_state(app, tab) else {
+            return;
+        };
+        if state.active == crate::reader::Active::Off {
+            return;
+        }
+        {
+            let mut app = app.borrow_mut();
+            let Some(entry) = app.tabs.iter_mut().find(|candidate| candidate.id == tab) else {
+                return;
+            };
+            entry.reader.active = crate::reader::Active::Off;
+        }
+        Self::post_tab_changed_kind(app.borrow().hwnd, tab, false, false);
+        Self::reader_run_exit(app, tab);
+    }
+
+    /// Asks a tab's page to put itself back as it was. Safe on a page that is not in reader view,
+    /// and on a document that has replaced the one that was (it then does nothing).
+    fn reader_run_exit(app: &AppRef, tab: TabId) {
+        let epoch = {
+            let state = app.borrow();
+            match state.tabs.iter().find(|candidate| candidate.id == tab) {
+                Some(entry) => entry.reader.epoch,
+                None => return,
+            }
+        };
+        let script = Self::reader_invocation(app, crate::reader::Action::Exit);
+        let weak = Rc::downgrade(app);
+        Self::run_reader_script(
+            app,
+            tab,
+            script,
+            Box::new(move |text| {
+                let Some(app) = weak.upgrade() else { return };
+                if let Some(outcome) = text.as_deref().and_then(crate::reader::parse_result)
+                    && outcome.code != crate::reader::Code::Failed
+                    && let Ok(mut state) = app.try_borrow_mut()
+                    && state
+                        .tabs
+                        .iter()
+                        .any(|entry| entry.id == tab && entry.reader.epoch == epoch)
+                {
+                    state.reader_prefs = outcome.prefs;
+                }
+            }),
+        );
+    }
+
+    /// Escape went down in a tab's page: leave reader view if it is on.
+    pub fn reader_escape(app: &AppRef, tab: TabId) {
+        let reading = app.try_borrow().is_ok_and(|state| {
+            state
+                .tabs
+                .iter()
+                .find(|candidate| candidate.id == tab)
+                .is_some_and(|tab| tab.reader.active == crate::reader::Active::Reader)
+        });
+        if reading {
+            Self::reader_leave(app, tab);
+        }
+    }
+
+    /// The toolbar button for the active tab.
+    pub fn active_reader_pill(app: &AppRef) -> crate::reader::Pill {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .filter(|tab| tab.url.as_ref().is_some_and(crate::reader::url_allowed))
+            .map_or(crate::reader::Pill::Hidden, |tab| tab.reader.pill())
+    }
+
+    /// What reader view and distraction hiding show for `tab` right now (for menu checkmarks).
+    pub fn reader_active(app: &AppRef, tab: TabId) -> crate::reader::Active {
+        Self::reader_state(app, tab).map_or(crate::reader::Active::Off, |state| state.active)
+    }
+
+    /// Whether the command can run on `tab` at all (an http(s) page).
+    pub fn reader_available(app: &AppRef, tab: TabId) -> bool {
+        Self::reader_state(app, tab).is_some()
+    }
+    // --- end reader view ---
+
     /// Copies the engine's real back/forward availability for `id` into the tab, which the native
     /// and HTML toolbars read. Called whenever the tab's address changes, which includes history
     /// navigations. Keeps the previous values while the engine is out of `self` (during a call).
@@ -3262,6 +3550,7 @@ impl App {
             permissions: None,
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
+            reader_prefs: crate::reader::Prefs::default(),
         }
     }
 
@@ -3771,11 +4060,17 @@ impl App {
         let events = engine::EngineEvents {
             address_changed: Some(Rc::new(move |tab_id, url| {
                 if let Some(app) = events_app.upgrade() {
+                    let mut left_reader = false;
                     let (edit, log, active, found) = {
                         let mut state = app.borrow_mut();
                         let active = state.tab_model.active() == tab_id;
                         let found =
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                                // A different address (also a same-document one) ends reader view.
+                                if tab.url.as_ref().is_some_and(|old| *old != url) {
+                                    left_reader = tab.reader.active != crate::reader::Active::Off;
+                                    tab.reader.reset();
+                                }
                                 tab.url = Some(url.clone());
                                 true
                             } else {
@@ -3791,6 +4086,9 @@ impl App {
                     };
                     if !found {
                         return;
+                    }
+                    if left_reader {
+                        Self::reader_run_exit(&app, tab_id);
                     }
                     if active {
                         let main = app.borrow().hwnd;
@@ -3833,6 +4131,18 @@ impl App {
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = loaded_events_app.upgrade() {
                         App::tab_page_loaded(&app, tab_id);
+                        // One read-only probe decides whether the toolbar offers reader view.
+                        if app.borrow().tab_model.active() == tab_id {
+                            App::reader_probe(&app, tab_id);
+                        }
+                    }
+                }))
+            },
+            escape_pressed: {
+                let escape_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id| {
+                    if let Some(app) = escape_app.upgrade() {
+                        App::reader_escape(&app, tab_id);
                     }
                 }))
             },
@@ -3912,6 +4222,7 @@ impl App {
                 let progress_hwnd = hwnd;
                 Some(Rc::new(move |tab_id, navigation_id| {
                     if let Some(app) = events_app.upgrade() {
+                        let mut left_reader = false;
                         if let Some(tab) = app
                             .borrow_mut()
                             .tabs
@@ -3922,6 +4233,12 @@ impl App {
                             tab.loading = true;
                             tab.load = LoadState::Loading;
                             tab.permission_blocked = false;
+                            // Any navigation, including a reload, ends reader view.
+                            left_reader = tab.reader.active != crate::reader::Active::Off;
+                            tab.reader.reset();
+                        }
+                        if left_reader {
+                            Self::reader_run_exit(&app, tab_id);
                         }
                         let found = Self::apply_tab_progress(
                             &app,
@@ -6763,6 +7080,35 @@ mod tests {
     }
 
     #[test]
+    fn reader_view_works_in_a_private_tab_and_its_settings_stay_in_memory() {
+        let app = app_with_pending(rect(800, 600));
+        let private = App::new_private_tab(&app);
+        assert!(App::tab_private(&app, private));
+        {
+            let mut state = app.borrow_mut();
+            assert!(state.site_prefs.is_none(), "this test app has no on-disk store");
+            let tab = state.tabs.iter_mut().find(|tab| tab.id == private).unwrap();
+            tab.url = Some(url::Url::parse("https://example.test/article").unwrap());
+        }
+        let prefs = crate::reader::Prefs { theme: crate::reader::Theme::Sepia, size: 24 };
+        let outcome = crate::reader::Outcome {
+            code: crate::reader::Code::Ok,
+            state: crate::reader::Active::Reader,
+            words: 900,
+            link_percent: 8,
+            prefs,
+        };
+        let epoch = App::reader_state(&app, private).expect("reader may script a private tab").epoch;
+        let result = App::finish_reader_call(&app, private, epoch, Some(outcome), false);
+        assert!(matches!(result, ReaderResult::Applied(crate::reader::Active::Reader)));
+        assert_eq!(App::reader_active(&app, private), crate::reader::Active::Reader);
+        // The reader theme and size live in the App for the session. Nothing hands them to a
+        // store: no site-prefs store exists here, and the reader module has no file access.
+        assert_eq!(app.borrow().reader_prefs, prefs);
+        assert!(app.borrow().site_prefs.is_none());
+    }
+
+    #[test]
     fn a_private_tab_is_marked_private_for_the_engine_before_it_is_first_selected() {
         let app = app_with_pending(rect(800, 600));
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -7020,6 +7366,7 @@ mod tests {
             permissions: None,
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
+            reader_prefs: crate::reader::Prefs::default(),
         }))
     }
 

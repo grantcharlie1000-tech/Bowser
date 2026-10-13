@@ -1,5 +1,5 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
-import { MAX_TEXT, THEME_TOKENS, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
+import { MAX_TEXT, THEME_TOKENS, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
@@ -12,6 +12,8 @@ export interface View {
   readonly split: HTMLButtonElement;
   /** Zoom chip: shown only while the page is not at 100%; activating it resets the zoom. */
   readonly zoom: HTMLButtonElement;
+  /** Reader view: shown only when the page looks like an article, pressed while it is on. */
+  readonly reader: HTMLButtonElement;
   readonly input: HTMLInputElement;
   /** Unfocused URL rendering with the host emphasised; visual only, aria-hidden. */
   readonly display: HTMLElement;
@@ -107,6 +109,8 @@ export function buildView(root: HTMLElement): View {
   const zoom = el('button', 'tb-zoom bw-focus-inset');
   zoom.type = 'button';
   zoom.hidden = true;
+  const reader = iconButton('Reader view', 'reader', 'tb-reader bw-focus-inset is-round', 'Reader view (Ctrl+Alt+R)');
+  reader.hidden = true;
 
   const input = el('input', 'omni');
   input.type = 'text';
@@ -138,7 +142,7 @@ export function buildView(root: HTMLElement): View {
   privateChip.append(icon('private', { size: 14 }), privateText);
 
   const pill = el('div', 'pill');
-  pill.append(site, field, privateChip, zoom, split, progress);
+  pill.append(site, field, privateChip, zoom, reader, split, progress);
 
   const menu = iconButton('Menu', 'menu', 'tb-nav is-lg is-round');
 
@@ -158,7 +162,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, input, display, pill, progress, privateChip, menu };
+  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu };
 }
 
 /**
@@ -198,6 +202,14 @@ function setReloadMode(button: HTMLButtonElement, loading: boolean): void {
   button.replaceChildren(icon(mode));
 }
 
+/** Shows the reader button only for an article-like page (or while reader view is on). */
+export function applyReader(button: HTMLButtonElement, pill: ReaderPill): void {
+  button.hidden = pill === 'none';
+  button.setAttribute('aria-pressed', String(pill === 'on'));
+  if (pill === 'on') label(button, 'Leave reader view', 'Leave reader view (Esc)');
+  else label(button, 'Reader view', 'Reader view (Ctrl+Alt+R)');
+}
+
 export function applyState(view: View, state: StateMsg): void {
   const root = document.getElementById('app');
   if (root) {
@@ -214,6 +226,7 @@ export function applyState(view: View, state: StateMsg): void {
     }
   }
   if (state.split !== undefined) view.split.setAttribute('aria-pressed', String(state.split)); // --- omnibox suggest ---
+  applyReader(view.reader, state.reader ?? 'none');
   view.back.disabled = !state.back;
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);

@@ -85,6 +85,43 @@ fn query_picture_in_picture_eligibility(webview: &ICoreWebView2, done: Box<dyn F
     }
 }
 
+/// Longest answer taken back from a reader script. A valid result is under 50 characters, so a
+/// longer one is not from this script and is dropped without being read.
+const READER_RESULT_LIMIT: usize = 64;
+
+/// Runs a reader script in a page, only while the live address is http(s). `done` gets the raw
+/// `ExecuteScript` result, or `None` when the page is not scriptable, the call failed, or the answer
+/// is oversized. It never runs for `bowser-ui:` or any other scheme: the address is read from the
+/// WebView at call time, so a navigation racing the request cannot redirect it.
+fn run_reader_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    if current_web_url(webview).is_none() {
+        done(None);
+        return;
+    }
+    let slot = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
+        let answer = status
+            .is_ok()
+            .then(|| value.to_string())
+            .filter(|text| text.len() <= READER_RESULT_LIMIT);
+        if let Some(done) = completion.borrow_mut().take() {
+            done(answer);
+        }
+        Ok(())
+    }));
+    let wide = CoTaskMemPWSTR::from(script);
+    if unsafe { webview.ExecuteScript(*wide.as_ref().as_pcwstr(), &handler) }.is_err()
+        && let Some(done) = slot.borrow_mut().take()
+    {
+        done(None);
+    }
+}
+
 fn toggle_native_picture_in_picture(webview: &ICoreWebView2) {
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
     let params = HSTRING::from(PIP_TOGGLE_PARAMETERS);
@@ -146,6 +183,18 @@ fn shortcut_forward(
         shift,
         alt,
     })
+}
+
+/// An unmodified Escape going down. A held key repeats, which is harmless: leaving reader view
+/// twice is the same as once.
+fn is_escape_press(
+    key: u32,
+    kind: COREWEBVIEW2_KEY_EVENT_KIND,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> bool {
+    is_key_down(kind) && key == u32::from(VK_ESCAPE.0) && !ctrl && !shift && !alt
 }
 
 fn is_key_down(kind: COREWEBVIEW2_KEY_EVENT_KIND) -> bool {
@@ -1785,6 +1834,23 @@ impl EngineAdapter for WebView2Engine {
         let completed = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
         unsafe { webview.ExecuteScript(PCWSTR(wide_script.as_ptr()), &completed) }
     }
+    fn run_reader_script(
+        &mut self,
+        tab: TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_reader_script(&webview, script, done),
+            None => done(None),
+        }
+    }
     fn picture_in_picture_eligible(&mut self, tab: TabId, done: Box<dyn FnOnce(bool)>) {
         let webview = self
             .core
@@ -3043,6 +3109,7 @@ unsafe fn configure_controller(
             }
         }
 
+        let escape_pressed = events.escape_pressed.clone();
         controller.add_AcceleratorKeyPressed(
             &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -3053,6 +3120,12 @@ unsafe fn configure_controller(
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let alt = GetKeyState(VK_MENU.0 as i32) < 0;
+                    // Reader view leaves itself on Escape. The page still gets the key.
+                    if is_escape_press(key, kind, ctrl, shift, alt)
+                        && let Some(callback) = escape_pressed.as_ref()
+                    {
+                        callback(tab_id);
+                    }
                     if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt) {
                         win32::post(
                             parent,

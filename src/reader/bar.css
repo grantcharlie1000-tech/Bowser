@@ -1,0 +1,6 @@
+.b{pointer-events:auto;display:flex;gap:2px;align-items:center;padding:4px;border-radius:999px;background:var(--bwr-bg);border:1px solid var(--bwr-bd);box-shadow:0 2px 12px #0005}
+button{font:600 12px "Segoe UI Variable","Segoe UI",system-ui,sans-serif;min-width:28px;height:28px;padding:0 10px;border:0;border-radius:999px;background:none;color:var(--bwr-fg);cursor:pointer}
+button:hover{background:var(--bwr-fl)}
+button[aria-pressed=true]{background:var(--bwr-ac);color:var(--bwr-bg)}
+button:focus-visible{outline:2px solid var(--bwr-ac);outline-offset:1px}
+i{width:1px;height:16px;margin:0 4px;background:var(--bwr-bd)}

@@ -56,6 +56,8 @@ pub enum OpenTarget {
     Split,
     /// The toolbar's zoom chip: back to 100% for the active page, the same as Ctrl+0.
     ZoomReset,
+    /// Toggles reader view for the active page, the same action as Ctrl+Alt+R.
+    Reader,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -809,6 +811,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "newtab" => OpenTarget::NewTab,
             "split" => OpenTarget::Split,
             "zoomreset" => OpenTarget::ZoomReset,
+            "reader" => OpenTarget::Reader,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -1015,6 +1018,8 @@ pub struct ViewState {
     pub zoom: u16,
     /// The active tab is a private tab (the pill shows the private indicator).
     pub private: bool,
+    /// The reader view button: hidden, offered (the page looks like an article) or on.
+    pub reader: crate::reader::Pill,
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1053,6 +1058,8 @@ impl ViewState {
         out.push_str(&self.zoom.clamp(crate::site_prefs::ZOOM_MIN, crate::site_prefs::ZOOM_MAX).to_string());
         out.push_str(",\"private\":");
         out.push_str(if self.private { "true" } else { "false" });
+        out.push_str(",\"reader\":");
+        out.push_str(&json_string(self.reader.as_str()));
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1510,7 +1517,7 @@ pub fn is_popup_command(command: &Command) -> bool {
         command,
         Command::BeginDrag
             | Command::Caption(_)
-            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split)
+            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader)
             | Command::Tab { action: TabAction::Menu, .. }
             | Command::Group { action: GroupAction::Menu, .. }
             // --- vertical sidebar (lane S) ---
@@ -1721,6 +1728,7 @@ mod tests {
             permblocked: false,
             zoom: 100,
             private: false,
+            reader: crate::reader::Pill::Hidden,
             theme: Vec::new(),
         }
     }
@@ -1927,6 +1935,32 @@ mod tests {
         );
         assert!(parse_command(r#"{"v":1,"t":"open","a":"zoom"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"open","a":"zoomreset","pct":100}"#).is_err());
+        assert_eq!(
+            ok(r#"{"v":1,"t":"open","a":"reader"}"#),
+            Command::Open(OpenTarget::Reader)
+        );
+    }
+
+    #[test]
+    fn open_reader_is_exact_and_strict() {
+        for raw in [
+            r#"{"v":1,"t":"open","a":"Reader"}"#,
+            r#"{"v":1,"t":"open","a":"reader "}"#,
+            r#"{"v":1,"t":"open","a":"readerview"}"#,
+            r#"{"v":1,"t":"open","a":"reader","id":1}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn state_reader_button_wire_values() {
+        use crate::reader::Pill;
+        for (pill, wire) in [(Pill::Hidden, "none"), (Pill::Available, "available"), (Pill::On, "on")] {
+            let mut state = sample_state();
+            state.reader = pill;
+            assert!(state.to_json().contains(&format!(r#""reader":"{wire}","theme""#)), "{wire}");
+        }
     }
 
     #[test]
@@ -2549,6 +2583,7 @@ mod tests {
             permblocked: true,
             zoom: 125,
             private: true,
+            reader: crate::reader::Pill::Available,
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -2556,14 +2591,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"private":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"private":true,"reader":"available","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"private":false,"theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"private":false,"reader":"none","theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
@@ -3277,6 +3312,7 @@ mod tests {
             Command::Open(OpenTarget::Menu),
             Command::Open(OpenTarget::Site),
             Command::Open(OpenTarget::Split),
+            Command::Open(OpenTarget::Reader),
             Command::Tab { action: TabAction::Menu, id: 2 },
             Command::Group { action: GroupAction::Menu, key: 2 },
         ] {

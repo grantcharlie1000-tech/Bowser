@@ -32,7 +32,7 @@ export const MENU_ICONS: readonly string[] = [
   'close', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'extensions', 'external', 'eye',
   'find', 'folder', 'forward', 'gear', 'glasses', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
-  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'refresh', 'reload', 'reset', 'search', 'settings',
+  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'search', 'settings',
   'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-view', 'star', 'stop', 'tab-close', 'tab-group', 'tab-switch', 'trash', 'unlock',
   'volume', 'warning', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
