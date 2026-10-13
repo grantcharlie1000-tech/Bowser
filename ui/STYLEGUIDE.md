@@ -79,6 +79,8 @@ message; `test/styles.mjs` fails if any file other than `tokens.css` reads them.
 | `--bw-pill-edge` | text 22% | omnibox pill border, rail rule |
 | `--bw-island` | text 13% | active tab / row island |
 | `--bw-island-idle` | black 22% | inactive island |
+| `--bw-island-active` | text 24% (light: white 92%) | the selected tab: the strongest fill in the strip |
+| `--bw-text-dim` | text-2 (light: text 86%) | inactive tab titles and rail glyphs; keeps >= 4.5:1 text / 3:1 glyphs on mid-grey light glass |
 | `--bw-island-edge` | border 45% | inactive island outline |
 | `--bw-island-hover` | hover | island hover wash |
 | `--bw-glyph-fill`, `--bw-on-glyph` | accent 35% over window, white | placeholder favicon tile and its glyph |
@@ -191,8 +193,8 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (76): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
-  caption-restore, check, chevron-down/left/right/up, clock, close, command, cookie, copy,
+- Glyphs (77): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
+  caption-restore, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
   customize, download, droplet, edit, external, eye, folder, forward, gear, grid, grip, heart,
   home, info, key, link, location, lock, menu, mic, more-horizontal, more-vertical, mute, notes,
   person, pin, pip, plus, print, puzzle, reload, reset, search, shield, sidebar, split, tab-group,
@@ -229,8 +231,8 @@ draw identical shapes.
   (palette, dialogs), `.is-scale` scales only.
 - Omnibox suggestions are not a separate popover: the pill grows down into them. While Rust says
   the list is on screen (`suggestOpen`), `.pill.is-open` squares only the pill's bottom corners
-  (top keeps `--bw-r-omnibox`) and shares the list's material and edge; the list's bottom corners
-  use `--bw-r-omnibox` too. Rust unrolls the popup's window region (167ms quint out; 100ms cubic
+  (top keeps `--bw-r-omnibox`, fill and focus ring exactly as when closed) and the list continues the
+  same ring down its sides over the pill's fill; the list's bottom corners use `--bw-r-omnibox` too. Rust unrolls the popup's window region (167ms quint out; 100ms cubic
   out on Escape/blur; instant on pick or submit; none when Windows animations are off); the list
   container never transforms, only its rows settle in on first open.
 - Exit: add `.bw-exit` (83ms fade) and remove the element on `animationend`; it keeps receiving

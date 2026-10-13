@@ -95,7 +95,7 @@
 
 .rb.ws,
 .rb.add {
-  color: var(--bw-text-2);
+  color: var(--bw-text-dim);
 }
 
 .rb:hover {
