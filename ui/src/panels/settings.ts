@@ -31,6 +31,7 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
   let draft: SettingsSnapshot | null = null;
   let issue = '';
   let note = '';
+  let confirmation = ''; // shown once the host answers with a fresh snapshot
   let resetConfirm = false;
   let current: SectionKey = 'search';
 
@@ -55,6 +56,7 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     if (!resetConfirm) { resetConfirm = true; paintFooter(); note = 'Choose Confirm reset to restore every setting to its default.'; paintFooter(); return; }
     resetConfirm = false;
     note = emit(settingsCommand('reset')) ? 'Reset request sent.' : 'Settings could not be sent.';
+    confirmation = note === 'Reset request sent.' ? 'Defaults restored.' : '';
     paintFooter();
   });
   reset.addEventListener('blur', () => { if (resetConfirm) { resetConfirm = false; note = ''; paintFooter(); } });
@@ -183,8 +185,8 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     paintFooter();
   };
 
-  scroll.addEventListener('submit', (event) => {
-    event.preventDefault();
+  // The footer (and its Save button) sits outside the form element, so Save needs its own click path.
+  const submit = (): void => {
     if (!draft || !dirty()) return;
     const command = settingsCommand('save', draft);
     if (!command) {
@@ -193,8 +195,11 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
       return;
     }
     note = emit(command) ? 'Save request sent.' : 'Settings could not be sent.';
+    confirmation = note === 'Save request sent.' ? 'Saved. Search and efficiency apply now; other changes need a restart.' : '';
     paintFooter();
-  });
+  };
+  scroll.addEventListener('submit', (event) => { event.preventDefault(); submit(); });
+  save.addEventListener('click', (event) => { event.preventDefault(); submit(); });
 
   show(current);
   paintFooter();
@@ -205,7 +210,8 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     snapshot = parsed;
     draft = { ...parsed, blockerAllow: [...parsed.blockerAllow] };
     issue = '';
-    note = '';
+    note = confirmation;
+    confirmation = '';
     resetConfirm = false;
     build();
   };
