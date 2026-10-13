@@ -7690,6 +7690,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     sidebar_viewport.right,
                     sidebar_viewport.bottom,
                 );
+                let mut empty_pane = None;
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
                         layout::split_pane_layout(
@@ -7699,6 +7700,15 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             s.layout.metrics.px(6),
                         )
                         .map(|panes| {
+                            // A pane whose tab has no page gets the themed new-tab surface rather
+                            // than the bare window behind it.
+                            empty_pane = if !App::tab_has_controller(app, split.left) {
+                                Some(panes.left)
+                            } else if !App::tab_has_controller(app, split.right) {
+                                Some(panes.right)
+                            } else {
+                                None
+                            };
                             (
                                 sidebar_viewport,
                                 Some(panes),
@@ -7715,7 +7725,9 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 // A tab with no page shows an opaque themed surface. When that appears or goes
                 // (a page took over) the whole viewport is repainted, not just the dirty part.
                 let empty_viewport = (!active_has_controller).then_some(sidebar_viewport);
-                let dirty = if s.surface.set_empty_viewport(empty_viewport) {
+                let viewport_changed = s.surface.set_empty_viewport(empty_viewport);
+                let pane_changed = s.surface.set_empty_pane(empty_pane);
+                let dirty = if viewport_changed || pane_changed {
                     dirty.union(sidebar_viewport)
                 } else {
                     dirty
