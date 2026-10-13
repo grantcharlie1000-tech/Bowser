@@ -694,7 +694,16 @@ impl WebView2Engine {
                     return Ok(());
                 };
                 let (still_open, bounds, visible) = {
-                    let state = core.borrow();
+                    let mut state = core.borrow_mut();
+                    // The active tab is what the window is showing. A blank tab opened from a
+                    // split is active before it is listed in `visible_tabs`; creating that
+                    // controller hidden leaves the page area empty after the search starts.
+                    if !state.closed
+                        && state.known_tabs.contains(&tab_id)
+                        && state.active_tab == Some(tab_id)
+                    {
+                        state.visible_tabs.insert(tab_id);
+                    }
                     (
                         !state.closed
                             && state.known_tabs.contains(&tab_id)
@@ -878,9 +887,14 @@ impl WebView2Engine {
                     url,
                 );
             }
-            if state.closed || !state.known_tabs.contains(&tab_id) {
+            if state.closed {
                 return Err(Error::from(windows::Win32::Foundation::E_POINTER));
             }
+            // Register a tab the window is navigating even if `select_tab` was skipped.
+            // `App::navigate_tab` refuses ids that are no longer open, so this does not
+            // recreate a closed tab. Unknown-and-live used to return E_POINTER, which is
+            // the "Navigation failed: Invalid pointer" dialog.
+            state.known_tabs.insert(tab_id);
             state.pending.insert(tab_id, url.clone());
             !state.creating.contains(&tab_id)
         };

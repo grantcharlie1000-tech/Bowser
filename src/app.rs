@@ -1323,7 +1323,15 @@ impl App {
             });
         }
         if in_split {
+            // Parking the split hides the pair. A blank tab has no page yet, so that pass
+            // registers nothing. Select it afterwards: otherwise the next search is
+            // E_POINTER (the engine has never heard of the tab) and the page stays blank.
             Self::apply_visible_panes(app);
+            Self::with_engine(app, |engine| {
+                engine.select_tab(id)?;
+                let _ = engine.set_memory_usage_target(MemoryUsageTarget::Normal);
+                Ok(())
+            });
             Self::post_tab_changed(hwnd, id);
             Self::save_workspaces(app);
             Self::sync_window_title(app);
@@ -4990,6 +4998,10 @@ impl App {
     }
 
     fn navigate_tab(app: &AppRef, tab_id: TabId, url: &url::Url) {
+        if !app.borrow().tabs.iter().any(|tab| tab.id == tab_id) {
+            // The engine would otherwise create a controller for an id the window already closed.
+            return;
+        }
         let (mut engine, closing) = {
             let mut state = app.borrow_mut();
             let is_background = state.tab_model.active() != tab_id;
@@ -6440,6 +6452,124 @@ mod tests {
         assert_eq!(App::tab_ids(&app), [left]);
         assert_eq!(App::active_tab_id(&app), left);
         assert!(App::split_view(&app).is_none());
+    }
+
+    /// Mirrors the WebView2 engine's tab bookkeeping: `set_visible_tabs` registers only the panes
+    /// that have a page, and navigating a tab that was never registered is `E_POINTER`.
+    struct SplitRegistrationEngine {
+        known: Rc<RefCell<std::collections::HashSet<TabId>>>,
+        visible: Rc<RefCell<std::collections::HashSet<TabId>>>,
+        navigated: Rc<RefCell<Vec<TabId>>>,
+    }
+
+    impl EngineAdapter for SplitRegistrationEngine {
+        fn navigate(&mut self, _url: &url::Url) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn navigate_tab(&mut self, tab: TabId, _url: &url::Url) -> windows::core::Result<()> {
+            self.navigated.borrow_mut().push(tab);
+            if self.known.borrow().contains(&tab) && self.visible.borrow().contains(&tab) {
+                Ok(())
+            } else {
+                Err(windows::core::Error::from(
+                    windows::Win32::Foundation::E_POINTER,
+                ))
+            }
+        }
+        fn can_go_back(&self) -> bool {
+            false
+        }
+        fn go_back(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn can_go_forward(&self) -> bool {
+            false
+        }
+        fn go_forward(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn resize(
+            &mut self,
+            _bounds: windows::Win32::Foundation::RECT,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn select_tab(&mut self, tab: TabId) -> windows::core::Result<()> {
+            self.known.borrow_mut().insert(tab);
+            self.visible.borrow_mut().clear();
+            self.visible.borrow_mut().insert(tab);
+            Ok(())
+        }
+        fn set_visible_tabs(
+            &mut self,
+            panes: &[(TabId, windows::Win32::Foundation::RECT)],
+            _active: TabId,
+        ) -> windows::core::Result<()> {
+            let mut visible = self.visible.borrow_mut();
+            visible.clear();
+            let mut known = self.known.borrow_mut();
+            for (tab, _) in panes {
+                known.insert(*tab);
+                visible.insert(*tab);
+            }
+            Ok(())
+        }
+        fn set_memory_usage_target(
+            &mut self,
+            _target: MemoryUsageTarget,
+        ) -> windows::core::Result<MemoryTargetApply> {
+            Ok(MemoryTargetApply::Applied)
+        }
+        fn close(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn new_tab_opened_while_a_split_is_shown_is_registered_and_visible_before_search() {
+        let app = app_with_pending(rect(800, 600));
+        let known = Rc::new(RefCell::new(std::collections::HashSet::new()));
+        let visible = Rc::new(RefCell::new(std::collections::HashSet::new()));
+        let navigated = Rc::new(RefCell::new(Vec::new()));
+        app.borrow_mut().engine = Some(Box::new(SplitRegistrationEngine {
+            known: known.clone(),
+            visible: visible.clone(),
+            navigated: navigated.clone(),
+        }));
+        let left = App::active_tab_id(&app);
+        let right = App::new_tab(&app);
+        assert!(App::open_split_view(
+            &app,
+            left,
+            right,
+            crate::split_view::Pane::Left,
+            (rect(0, 0), rect(400, 0)),
+        ));
+
+        let fresh = App::new_tab(&app);
+
+        assert!(App::split_view(&app).is_none());
+        assert_eq!(App::active_tab_id(&app), fresh);
+        assert!(
+            known.borrow().contains(&fresh),
+            "a blank tab opened from a split must be registered before it is searched"
+        );
+        assert!(
+            visible.borrow().contains(&fresh),
+            "the active blank tab must be visible, or its page is created hidden"
+        );
+
+        let search = url::Url::parse("https://html.duckduckgo.com/html/?q=beans&k1=-1").unwrap();
+        App::navigate_tab(&app, fresh, &search);
+        assert_eq!(*navigated.borrow(), [fresh]);
+
+        assert!(App::close_tab(&app, left));
+        App::navigate_tab(&app, left, &search);
+        assert_eq!(
+            *navigated.borrow(),
+            [fresh],
+            "a closed tab is not navigated, so the engine does not recreate it"
+        );
     }
 
     #[test]
