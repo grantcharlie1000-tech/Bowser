@@ -27,6 +27,7 @@ pub(crate) use panel_history::{
     local_offset as history_local_offset, now_secs as history_now_secs,
 };
 mod html_panel;
+mod flyout;
 mod html_dialog;
 // --- end panel host ---
 mod panel_widgets;

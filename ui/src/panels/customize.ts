@@ -6,6 +6,7 @@ import { icon, type IconName } from '../icons';
 import { dropSlot } from '../rail-logic';
 import { setTip } from '../tooltip';
 import { selectField, type SelectField } from './select';
+import { panelHeader } from './kit';
 import {
   customizeCommand, customizeDeleteDescription, moveBefore, parseCustomizeSnapshot, sentenceCase, stepDest,
   RAIL_DESCRIPTIONS, RAIL_KEYS, WORKSPACE_COLOURS, WORKSPACE_HEX, WORKSPACE_ICONS,
@@ -39,7 +40,9 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
 
   const host = h('section', 'panel-customize bw-scroll');
   host.setAttribute('aria-label', 'Customize sidebar');
-  const title = h('h1', 'cust-title', 'Customize');
+  // One header, shared with History and Bookmarks: title and close button. The sections scroll below it.
+  const header = panelHeader('Customize', 'Close customize');
+  const body = h('div', 'cust-body bw-scroll');
 
   const visibility = section('Sidebar', 'Choose what appears in the left rail.');
   const workspaces = section('Workspaces', 'Reorder with the handle, or focus it and press the Up and Down arrow keys.');
@@ -96,7 +99,8 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   confirm.setAttribute('role', 'status');
   confirm.hidden = true;
 
-  host.append(title, visibility.root, workspaces.root, apps.root, data.root, confirm);
+  body.append(visibility.root, workspaces.root, apps.root, data.root);
+  host.append(header.root, body, confirm);
   root.replaceChildren(host);
 
   function section(heading: string, hint?: string): { root: HTMLElement; list: HTMLElement } {

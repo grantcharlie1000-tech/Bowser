@@ -122,7 +122,7 @@ The Limits section above applies to these messages too: at most 512 items, title
 
 ## Milestone 3: left rail view (third controller)
 
-Third chrome host, `View::Rail`, start URL `bowser-ui://app/index.html?view=rail`, bounds = `layout.rail` (full-height pill at the left edge, rounded 20px, same translucent look as native). Active only when the page sent `ready`; while active native rail painting and hit-testing are skipped. The rail's panels (customize, bookmarks, history, web apps) stay native for now and open to the right of the rail exactly as before.
+Third chrome host, `View::Rail`, start URL `bowser-ui://app/index.html?view=rail`, bounds = `layout.rail` (full-height pill at the left edge, rounded 20px, same translucent look as native). Active only when the page sent `ready`; while active native rail painting and hit-testing are skipped. History, Bookmarks and Customize open as rail flyouts (popovers beside their button; see "Rail flyouts" below and `docs/design/flyouts.md`); web app panels stay docked to the right of the rail.
 
 Rail keys are strings: `home`, `customize`, `ws:<id>` (workspace id, decimal), `addws`, `app:<id>` (decimal), `addapp`, `bookmarks`, `history`, `menu`. Sections top to bottom: top (`home`, `customize`), workspaces (`ws:*`, `addws`), apps (`app:*`, `addapp`), bottom (`bookmarks`, `history`, `menu`). Workspaces and apps scroll (vertical, no visible scrollbar) when they overflow; top and bottom stay fixed. Section separators are hairlines.
 
@@ -130,7 +130,7 @@ Rail keys are strings: `home`, `customize`, `ws:<id>` (workspace id, decimal), `
 
 | `t` | fields | meaning |
 |---|---|---|
-| `rail` | `a`: `click`/`menu`, `k` (key string <= 24 chars matching the key grammar) | left click / right click (Rust shows the native context menu at the cursor) on a rail button |
+| `rail` | `a`: `click`/`menu`/`hover`, `k` (key string <= 24 chars matching the key grammar), `r` (optional for `click`/`menu`, required for `hover`: the button rectangle in rail CSS px, hover-layer grammar) | left click / right click (Rust shows the native context menu at the cursor) on a rail button; `hover`: the pointer rested 120 ms on a flyout button (`customize`, `bookmarks`, `history`, `menu`) while another flyout is open, so Rust switches the flyout |
 | `railmove` | `k` (a `ws:*` or `app:*` key), `before` (key of the item it is dropped before, `""` = end of that section) | drag-reorder within a section (Rust uses the same workspace_move / app reorder logic as native) |
 
 Rust validates the key against the current rail model; unknown keys are ignored.
@@ -385,3 +385,25 @@ chrome controllers share one renderer, so the hidden popup page is ready about w
 is. A menu requested earlier still falls back to native (and asks for the host if it is missing).
 Perf-log events (`--benchmark-log`): `html_toolbar_ready`, `html_popup_prewarm`,
 `html_popup_ready`, `html_popup_fallback`.
+
+## Rail flyouts (History, Bookmarks, Customize)
+
+With the HTML chrome, these three rail panels are flyouts, not docked panels (`docs/design/flyouts.md`).
+The `?view=panel` controller lives in one owned, activating `WS_POPUP` per window
+(`src/win32/flyout.rs`, created hidden and suspended with the chrome controllers); the page is
+never re-bounded. The window is the surface plus a transparent shadow room (left 4, top 8, right
+16, bottom 24 DIP; DWM frame extended over the client area so per-pixel alpha is honoured).
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> panel | `{v:1,t:"flyout",caret}` | `caret`: integer -1 to 4000, the caret centre in CSS px from the surface top (-1: no caret). Sent before `panelshow` on every open and switch; the page restarts its enter motion |
+| panel -> Rust | `{v:1,t:"panel",a:"shown"}` | the page drew the snapshot that followed `flyout`; Rust shows and activates the window (a 300 ms fallback shows it anyway) |
+| panel -> Rust | `{v:1,t:"panel",a:"dismiss"}` | Esc, the close button, or a press in the transparent shadow room |
+
+Rust closes the flyout when it loses activation (an outside click, another app, a menu popup), on
+a tab or workspace switch, on owner move or size, and when the same rail button is clicked again
+(a click on the flyout a deactivation closed under 400 ms ago does not reopen it). While a
+confirmation the flyout asked for is up, its deactivation is ignored. Opening a page in the current
+tab closes the flyout and focuses the page; opening one in a new tab keeps it open. The panel
+state's `solid` is `false`: the page paints its own opaque surface.
+

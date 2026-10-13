@@ -123,3 +123,24 @@ export function pruneRailFavs(favs: Map<string, string>, live: ReadonlySet<strin
     if (!live.has(key)) favs.delete(key);
   }
 }
+
+// --- rail flyouts ---
+/** The pointer must rest this long on another flyout button before the open flyout switches to it. */
+export const FLYOUT_HOVER_MS = 120;
+
+/** The flyout a rail button opens: History, Bookmarks, or Customize (also the rail's "more" button). */
+export function flyoutOf(key: string): 'history' | 'bookmarks' | 'customize' | null {
+  if (key === 'history' || key === 'bookmarks') return key;
+  if (key === 'customize' || key === 'menu') return 'customize';
+  return null;
+}
+
+/**
+ * Whether resting on `key` may switch an open flyout. The rail cannot tell which flyout is open
+ * (Bookmarks is also marked active when the page is bookmarked), so it reports every flyout button
+ * and Rust acts only while a different flyout is open.
+ */
+export function hoverSwitches(key: string): boolean {
+  return flyoutOf(key) !== null;
+}
+// --- end rail flyouts ---
