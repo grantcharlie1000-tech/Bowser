@@ -22,7 +22,27 @@ if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) {
     throw "Stable release pin is missing: $pinPath"
 }
 
-$pin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+$localPin = Get-Content -LiteralPath $pinPath -Raw | ConvertFrom-Json
+$pin = $localPin
+$remotePin = 'https://raw.githubusercontent.com/grantcharlie1000-tech/Bowser/main/stable/release.json'
+try {
+    $remote = Invoke-WebRequest -Uri $remotePin -UseBasicParsing
+    $remoteJson = $remote.Content | ConvertFrom-Json
+    $localRevision = 0
+    if ($localPin.revision) { $localRevision = [int]$localPin.revision }
+    $remoteRevision = 0
+    if ($remoteJson.revision) { $remoteRevision = [int]$remoteJson.revision }
+    if ($remoteRevision -ge $localRevision) {
+        $pin = $remoteJson
+        Write-Host 'Using the stable release published on GitHub.'
+    }
+    else {
+        Write-Host 'The GitHub pin is older than this folder. Using the local pin.'
+    }
+}
+catch {
+    Write-Host 'GitHub could not be reached. Using the release pin in this folder.'
+}
 foreach ($name in @('version', 'tag', 'repository', 'asset', 'sha256')) {
     if ([string]::IsNullOrWhiteSpace([string]$pin.$name)) {
         throw "stable/release.json is missing $name."
@@ -37,6 +57,9 @@ if ([string]$pin.repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
 }
 if ([string]$pin.tag -notmatch '^[A-Za-z0-9._-]+$' -or [string]$pin.asset -notmatch '^[A-Za-z0-9._-]+$') {
     throw 'stable/release.json tag and asset must be plain file names.'
+}
+if ($pin.repository -ne 'grantcharlie1000-tech/Bowser' -or $pin.asset -ne 'Bowser.exe' -or $pin.tag -notmatch '^v') {
+    throw 'The stable release pin does not name this Bowser.'
 }
 
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
@@ -83,21 +106,40 @@ function Get-InstalledBowserProcesses {
     return $found
 }
 
-function Close-InstalledBowser {
-    $processes = @(Get-InstalledBowserProcesses)
-    if ($processes.Count -eq 0) { return $true }
-    Write-Host "The previous Bowser is open. Asking it to close so the stable release can take its place..."
-    foreach ($process in $processes) {
-        if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
-            [void]$process.CloseMainWindow()
+function Get-StableInstallCandidates {
+    param([Parameter(Mandatory = $true)][string]$Preferred)
+    $preferredFull = [IO.Path]::GetFullPath($Preferred)
+    $parent = Split-Path -Parent $preferredFull
+    $names = New-Object System.Collections.Generic.List[string]
+    [void]$names.Add($preferredFull)
+    $stable = [IO.Path]::GetFullPath((Join-Path $parent 'Bowser Stable'))
+    if (-not $names.Contains($stable)) { [void]$names.Add($stable) }
+    for ($n = 2; $n -le 8; $n++) {
+        [void]$names.Add([IO.Path]::GetFullPath((Join-Path $parent "Bowser Stable $n")))
+    }
+    return $names
+}
+
+function Test-BowserExeLocked {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $full = [IO.Path]::GetFullPath($Path)
+    foreach ($process in @(Get-Process -Name 'Bowser' -ErrorAction SilentlyContinue)) {
+        $procPath = $null
+        try { $procPath = $process.Path } catch { continue }
+        if ([string]::IsNullOrWhiteSpace($procPath)) { continue }
+        if ([string]::Equals([IO.Path]::GetFullPath($procPath), $full, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
         }
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(8)
-    do {
-        Start-Sleep -Milliseconds 250
-        $processes = @(Get-InstalledBowserProcesses)
-    } while ($processes.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)
-    return ($processes.Count -eq 0)
+    try {
+        $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream.Dispose()
+        return $false
+    }
+    catch {
+        return $true
+    }
 }
 
 function Install-StableShortcuts {
@@ -129,42 +171,38 @@ function Install-StableShortcuts {
     }
 }
 
+$candidates = @(Get-StableInstallCandidates -Preferred $InstallDirectory)
 $ready = $false
-if (Test-Path -LiteralPath $installedExe -PathType Leaf) {
-    $installedHash = Get-LowerSha256 -Path $installedExe
-    if ($installedHash -eq $expectedHash) {
+foreach ($dir in $candidates) {
+    $candidateExe = Join-Path $dir 'Bowser.exe'
+    if (-not (Test-Path -LiteralPath $candidateExe -PathType Leaf)) { continue }
+    if ((Get-LowerSha256 -Path $candidateExe) -eq $expectedHash) {
+        $InstallDirectory = $dir
+        $installedExe = $candidateExe
         Write-Host "Stable Bowser $($pin.version) is already installed."
         $ready = $true
-    }
-    else {
-        Write-Host 'The installed Bowser is not the pinned stable release. Replacing it.'
+        break
     }
 }
 
 if (-not $ready) {
-    $download = Join-Path $InstallDirectory 'Bowser.exe.download'
-    New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-    if (-not [string]::IsNullOrWhiteSpace($SourceExe)) {
-        if (-not (Test-Path -LiteralPath $SourceExe -PathType Leaf)) {
-            throw "Source executable was not found: $SourceExe"
+    Write-Host 'The installed Bowser is not the pinned stable release. Replacing it.'
+    $download = Join-Path ([IO.Path]::GetTempPath()) ('Bowser-' + [guid]::NewGuid().ToString('n') + '.download')
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($SourceExe)) {
+            if (-not (Test-Path -LiteralPath $SourceExe -PathType Leaf)) {
+                throw "Source executable was not found: $SourceExe"
+            }
+            Copy-Item -LiteralPath $SourceExe -Destination $download -Force
+            Write-Host "Using local build: $SourceExe"
         }
-        Copy-Item -LiteralPath $SourceExe -Destination $download -Force
-        Write-Host "Using local build: $SourceExe"
-    }
-    else {
-        $url = "https://github.com/$($pin.repository)/releases/download/$($pin.tag)/$($pin.asset)"
-        Write-Host "Downloading stable Bowser $($pin.version)"
-        Write-Host $url
-        try {
+        else {
+            $url = "https://github.com/$($pin.repository)/releases/download/$($pin.tag)/$($pin.asset)"
+            Write-Host "Downloading stable Bowser $($pin.version)"
+            Write-Host $url
             Invoke-WebRequest -Uri $url -OutFile $download -UseBasicParsing
         }
-        catch {
-            Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
-            throw "Could not download the stable Bowser release. $_"
-        }
-    }
 
-    try {
         Test-BowserExecutable -Path $download
         $downloadHash = Get-LowerSha256 -Path $download
         if ($downloadHash -ne $expectedHash) {
@@ -176,30 +214,41 @@ if (-not $ready) {
                 throw "The downloaded Bowser size is $size bytes; the pin expects $($pin.bytes)."
             }
         }
-        $closed = Close-InstalledBowser
-        if ($closed) {
-            Move-Item -LiteralPath $download -Destination $installedExe -Force
+
+        $destDir = $null
+        foreach ($dir in $candidates) {
+            $candidateExe = Join-Path $dir 'Bowser.exe'
+            if (Test-BowserExeLocked -Path $candidateExe) {
+                Write-Host "Leaving the open Bowser in place: $candidateExe"
+                continue
+            }
+            $destDir = $dir
+            break
         }
-        else {
-            # The open Bowser still has the usual path loaded. Keep that process, and
-            # put the pinned release in a sibling folder the shortcut can open later.
-            $fallbackDirectory = Join-Path (Split-Path -Parent $InstallDirectory) 'Bowser Stable'
-            $InstallDirectory = [IO.Path]::GetFullPath($fallbackDirectory)
-            $installedExe = Join-Path $InstallDirectory 'Bowser.exe'
-            New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-            $fallbackDownload = Join-Path $InstallDirectory 'Bowser.exe.download'
-            Move-Item -LiteralPath $download -Destination $fallbackDownload -Force
-            $download = $fallbackDownload
-            Move-Item -LiteralPath $download -Destination $installedExe -Force
-            Write-Host 'The previous Bowser is still open, so its file was left in place. No process was terminated.'
+        if (-not $destDir) {
+            throw 'Every stable Bowser folder is open. Close one Bowser window, then run Open-Bowser again. No process was terminated.'
         }
+        $InstallDirectory = $destDir
+        $installedExe = Join-Path $InstallDirectory 'Bowser.exe'
+        New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
+        $staged = Join-Path $InstallDirectory 'Bowser.exe.download'
+        Copy-Item -LiteralPath $download -Destination $staged -Force
+        if (Test-Path -LiteralPath $installedExe -PathType Leaf) {
+            Remove-Item -LiteralPath $installedExe -Force
+        }
+        Move-Item -LiteralPath $staged -Destination $installedExe
         if ((Get-LowerSha256 -Path $installedExe) -ne $expectedHash) {
             throw 'The installed file did not match the pinned release after copying.'
         }
     }
     catch {
-        Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
         throw
+    }
+    finally {
+        Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
+        if ($installedExe) {
+            Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $installedExe) 'Bowser.exe.download') -Force -ErrorAction SilentlyContinue
+        }
     }
 
     $note = @(

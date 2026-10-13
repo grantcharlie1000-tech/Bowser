@@ -43,12 +43,13 @@ fn main() -> ExitCode {
     }
     let options_ephemeral = options.data_dir_ephemeral;
     let benchmark = options.benchmark_log.is_some();
-    if bowser::updater::startup(benchmark) == bowser::updater::StartupAction::Relaunch
+    bowser::profile::set_dev_launch(options.dev);
+    if bowser::updater::startup(benchmark, options.dev) == bowser::updater::StartupAction::Relaunch
         && bowser::updater::relaunch()
     {
         return ExitCode::SUCCESS;
     }
-    bowser::updater::spawn_background(benchmark);
+    bowser::updater::spawn_background(benchmark, options.dev);
     let log = match PerfLog::new(options.benchmark_log.as_deref()) {
         Ok(log) => Rc::new(log),
         Err(error) => {

@@ -1336,10 +1336,11 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         let app = Rc::new(RefCell::new(app));
         let window_title = windows::core::HSTRING::from(format!(
-            "Bowser - Search or enter address{}",
+            "Bowser - Search or enter address{}{}",
             crate::profile::active()
                 .map(|profile| profile.title_suffix())
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            crate::profile::dev_title_suffix()
         ));
         let hwnd = CreateWindowExW(
             Default::default(),

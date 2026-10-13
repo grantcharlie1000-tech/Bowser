@@ -6,11 +6,17 @@ A small experimental x64 Windows browser: one native window, one native address/
 
 The clickable application is [Bowser.exe](https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.1/Bowser.exe) from the [v0.0.1 release](https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.1). It is a 64-bit Windows 10 or 11 program. Windows needs the installed [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section); current Microsoft Edge already includes it.
 
-Opening that file starts this exact build. The copy in this repository is `Open-Bowser.cmd`. It does not compile the source tree. It checks `%LOCALAPPDATA%\Programs\Bowser\Bowser.exe` against `stable/release.json`, downloads the release above when the hash does not match, and creates Desktop and Start Menu shortcuts that open the installed file directly. If that file is still in use, the pinned release is written to `%LOCALAPPDATA%\Programs\Bowser Stable\Bowser.exe` and the shortcuts point there. The open window is left running. Close it, then use the Bowser shortcut. Browser profiles stay in `%LOCALAPPDATA%\Bowser`. Replacing the executable keeps that data.
+Opening that file starts this exact build. The copy in this repository is `Open-Bowser.cmd`. It does not compile the source tree. It checks `%LOCALAPPDATA%\Programs\Bowser\Bowser.exe` against `stable/release.json`, downloads the release above when the hash does not match, and creates Desktop and Start Menu shortcuts that open the installed file directly. If that file is still in use, the pinned release is written to the next free folder under `%LOCALAPPDATA%\Programs` (`Bowser Stable`, then `Bowser Stable 2`, and so on) and the shortcuts point there. The open window is left running. Close it, then use the Bowser shortcut. Browser profiles stay in `%LOCALAPPDATA%\Bowser`. Replacing the executable keeps that data.
 
 This build is not Authenticode-signed. Windows SmartScreen may ask you to choose More info, then Run anyway.
 
-`Start-Bowser.cmd` is the development launcher. It rebuilds when the source changes. `Open-Bowser.cmd` stays on the pinned release until `stable/release.json` changes.
+`Open-Bowser.cmd` checks that pin on GitHub before it installs. The installed Bowser also checks it after it has stayed open for about a minute, and then at most once an hour. It downloads a different build only when the SHA-256 matches the pin, and switches to it the next time Bowser starts. A build that fails to stay open is rolled back. Browser data is kept. A copy downloaded before this updater existed needs one reinstall from the release above, or one run of `Open-Bowser.cmd`. After that, Bowser keeps itself on the pinned build.
+
+## Dev Bowser
+
+`Dev-Bowser.cmd` is the working copy. It builds the source in this folder, opens a separate window titled Dev, and keeps that window's profile in `%LOCALAPPDATA%\Bowser-Dev`. It does not read or replace the installed Bowser. Leave the command window open: when the source changes, it rebuilds and reopens the dev window, so a change made by an agent shows up there. Close the command window to stop rebuilding. The dev window stays until you close it.
+
+`Start-Bowser.cmd` builds once and opens that same dev profile. It does not keep watching.
 
 ## Build and run
 
@@ -20,7 +26,7 @@ Build from this directory:
 
     cargo build --release --locked
 
-Run `Update-Bowser.cmd` once from the project to build and install Bowser for the current Windows user. It installs to `%LOCALAPPDATA%\Programs\Bowser` and creates a Start Menu shortcut that launches the installed executable directly; there is no build during normal startup. Browser profiles and settings remain in `%LOCALAPPDATA%\Bowser`. The updater validates the locked release build before closing Bowser or replacing installed files, and preserves browser data. Use Windows Settings > Apps to uninstall Bowser; uninstall removes the application and shortcuts but keeps browser data. Run `Update-Bowser.cmd` again after changing the source to deploy a new build.
+Use `Open-Bowser.cmd` to install or refresh the stable app. Use `Dev-Bowser.cmd` while changing this tree. Building with `cargo build --release --locked` produces `target\release\bowser.exe` and does not replace the installed Bowser or its profile.
 
 The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter.
 

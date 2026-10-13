@@ -30,6 +30,9 @@ pub struct LaunchOptions {
     /// `--new-window`: a window started on purpose for a profile that is already open. Skips the
     /// single-instance refusal; see `session::decide_launch`.
     pub new_window: bool,
+    /// `--dev`: a working copy. Its data lives in `%LOCALAPPDATA%\Bowser-Dev` and it never
+    /// reads or updates the installed browser's profile.
+    pub dev: bool,
 }
 
 impl LaunchOptions {
@@ -78,6 +81,13 @@ impl LaunchOptions {
                     return Err("Duplicate new window argument".into());
                 }
                 options.new_window = true;
+                continue;
+            }
+            if flag == "--dev" {
+                if options.dev {
+                    return Err("Duplicate dev argument".into());
+                }
+                options.dev = true;
                 continue;
             }
             if flag == "--guest" {
@@ -239,6 +249,7 @@ impl LaunchOptions {
             benchmark,
             real_root.as_deref(),
             &std::env::temp_dir(),
+            options.dev,
         )?;
         options.data_dir = data_dir;
         options.data_dir_ephemeral = ephemeral;
@@ -264,43 +275,57 @@ impl LaunchOptions {
     }
 }
 
+fn profile_contains(real: &Path, dir: &Path) -> Result<bool, String> {
+    let requested = canonicalize_for_comparison(dir)?;
+    let real = canonicalize_for_comparison(real)?;
+    let key = |path: &Path| {
+        let mut key = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+        while key.ends_with('\\') {
+            key.pop();
+        }
+        key
+    };
+    let (requested, real) = (key(&requested), key(&real));
+    Ok(requested == real || requested.starts_with(&format!("{real}\\")))
+}
+
 /// Decides the app-data root override. The explicit `--data-dir` wins over `BOWSER_DATA_DIR`.
 /// A benchmark launch never uses the real root: with no explicit directory it gets a fresh
 /// throwaway one under `temp_base`, and an explicit one that is (or is inside) the real root is
-/// refused. Returns the directory and whether it is ephemeral. `None` means a normal launch.
+/// refused. A dev launch defaults to `%LOCALAPPDATA%\Bowser-Dev` and also refuses the real root.
+/// Returns the directory and whether it is ephemeral. `None` means a normal launch.
 pub fn resolve_data_dir(
     explicit: Option<PathBuf>,
     env: Option<PathBuf>,
     benchmark: bool,
     real_root: Option<&Path>,
     temp_base: &Path,
+    dev: bool,
 ) -> Result<(Option<PathBuf>, bool), String> {
     let chosen = explicit.or(env);
     if let Some(dir) = chosen {
         if !dir.is_absolute() {
             return Err("The data directory must be an absolute path".into());
         }
-        if benchmark {
-            if let Some(real) = real_root {
-                let requested = canonicalize_for_comparison(&dir)?;
-                let real = canonicalize_for_comparison(real)?;
-                let key = |p: &Path| {
-                    let mut k = p.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
-                    while k.ends_with('\\') {
-                        k.pop();
-                    }
-                    k
-                };
-                let (requested, real) = (key(&requested), key(&real));
-                let inside = requested == real || requested.starts_with(&format!("{real}\\"));
-                if inside {
-                    return Err(
-                        "Benchmark runs cannot use Bowser's real app data directory".into()
-                    );
-                }
+        if let Some(real) = real_root.filter(|_| benchmark || dev) {
+            if profile_contains(real, &dir)? {
+                return Err(if dev {
+                    "Dev Bowser cannot use the real Bowser profile".into()
+                } else {
+                    "Benchmark runs cannot use Bowser's real app data directory".into()
+                });
             }
         }
         return Ok((Some(dir), false));
+    }
+    if dev {
+        let Some(real) = real_root else {
+            return Err("Dev Bowser needs a LocalAppData directory".into());
+        };
+        let Some(parent) = real.parent() else {
+            return Err("Dev Bowser needs a LocalAppData directory".into());
+        };
+        return Ok((Some(parent.join("Bowser-Dev")), false));
     }
     if benchmark {
         let nonce = std::time::SystemTime::now()
@@ -1088,7 +1113,7 @@ mod tests {
     fn benchmark_without_a_data_dir_gets_a_temp_dir_outside_the_real_root() {
         let real = Path::new(r"C:\Users\u\AppData\Local\Bowser");
         let temp = std::env::temp_dir();
-        let (dir, ephemeral) = resolve_data_dir(None, None, true, Some(real), &temp).unwrap();
+        let (dir, ephemeral) = resolve_data_dir(None, None, true, Some(real), &temp, false).unwrap();
         let dir = dir.expect("benchmark always has a data dir");
         assert!(ephemeral);
         assert!(dir.starts_with(&temp));
@@ -1102,16 +1127,16 @@ mod tests {
         let explicit = PathBuf::from(r"D:\data");
         let env = PathBuf::from(r"D:\env-data");
         assert_eq!(
-            resolve_data_dir(Some(explicit.clone()), Some(env.clone()), true, Some(real), &temp)
+            resolve_data_dir(Some(explicit.clone()), Some(env.clone()), true, Some(real), &temp, false)
                 .unwrap(),
             (Some(explicit), false)
         );
         assert_eq!(
-            resolve_data_dir(None, Some(env.clone()), false, Some(real), &temp).unwrap(),
+            resolve_data_dir(None, Some(env.clone()), false, Some(real), &temp, false).unwrap(),
             (Some(env), false)
         );
         assert_eq!(
-            resolve_data_dir(None, None, false, Some(real), &temp).unwrap(),
+            resolve_data_dir(None, None, false, Some(real), &temp, false).unwrap(),
             (None, false)
         );
         for bad in [
@@ -1121,20 +1146,57 @@ mod tests {
             r"C:\Users\u\AppData\Local\Other\..\Bowser",
         ] {
             assert!(
-                resolve_data_dir(Some(PathBuf::from(bad)), None, true, Some(real), &temp).is_err(),
+                resolve_data_dir(Some(PathBuf::from(bad)), None, true, Some(real), &temp, false).is_err(),
                 "{bad}"
             );
         }
-        assert!(resolve_data_dir(Some(PathBuf::from("rel")), None, false, None, &temp).is_err());
+        assert!(resolve_data_dir(Some(PathBuf::from("rel")), None, false, None, &temp, false).is_err());
         assert!(
             resolve_data_dir(
                 Some(PathBuf::from(r"C:\Users\u\AppData\Local\Bowser2")),
                 None,
                 true,
                 Some(real),
-                &temp
+                &temp,
+                false
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn dev_launch_uses_its_own_profile_and_refuses_the_real_one() {
+        let local = Path::new(r"C:\Users\u\AppData\Local");
+        let dev = LaunchOptions::parse_from_with_local_app_data(
+            ["--dev".to_owned()],
+            Path::new("missing"),
+            local,
+        )
+        .unwrap();
+        assert!(dev.dev);
+        assert_eq!(
+            dev.data_dir.as_deref(),
+            Some(Path::new(r"C:\Users\u\AppData\Local\Bowser-Dev"))
+        );
+        let isolated = LaunchOptions::parse_from_with_local_app_data(
+            ["--dev".to_owned(), "--data-dir".to_owned(), r"D:\bowser-work".to_owned()],
+            Path::new("missing"),
+            local,
+        )
+        .unwrap();
+        assert_eq!(
+            isolated.data_dir.as_deref(),
+            Some(Path::new(r"D:\bowser-work"))
+        );
+        let refused = LaunchOptions::parse_from_with_local_app_data(
+            [
+                "--dev".to_owned(),
+                "--data-dir".to_owned(),
+                r"C:\Users\u\AppData\Local\Bowser\Profiles\x".to_owned(),
+            ],
+            Path::new("missing"),
+            local,
+        );
+        assert!(refused.is_err(), "{refused:?}");
     }
 }

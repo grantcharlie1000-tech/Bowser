@@ -1236,7 +1236,11 @@ impl App {
                 .unwrap_or_default();
             (
                 state.hwnd,
-                format!("{title}{}{profile_suffix}", Self::blocker_suffix(&state)),
+                format!(
+                    "{title}{}{profile_suffix}{}",
+                    Self::blocker_suffix(&state),
+                    crate::profile::dev_title_suffix()
+                ),
             )
         };
         let mut title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();

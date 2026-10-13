@@ -11,7 +11,10 @@ use std::{
     io,
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -462,6 +465,22 @@ pub fn set_data_root(path: PathBuf) -> io::Result<()> {
 /// The explicit app-data root, if this process was given one.
 pub fn data_root_override() -> Option<&'static Path> {
     DATA_ROOT_OVERRIDE.get().map(PathBuf::as_path)
+}
+
+static DEV_LAUNCH: AtomicBool = AtomicBool::new(false);
+
+/// Marks this process as Dev Bowser. The window title shows it, and the updater stays off.
+pub fn set_dev_launch(on: bool) {
+    DEV_LAUNCH.store(on, Ordering::Relaxed);
+}
+
+/// Suffix that keeps a dev window distinct from the installed browser.
+pub fn dev_title_suffix() -> &'static str {
+    if DEV_LAUNCH.load(Ordering::Relaxed) {
+        " — Dev"
+    } else {
+        ""
+    }
 }
 
 /// `%LOCALAPPDATA%\Bowser`, ignoring any override. Only for comparisons; never write here from

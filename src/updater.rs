@@ -1,9 +1,14 @@
 //! Secure update foundation: signed manifest, verified download, staged swap-on-next-start with rollback.
 //!
-//! Nothing here runs unless an HTTPS manifest URL is configured (`%LOCALAPPDATA%\Bowser\update-url.txt`
-//! or the compile-time `BOWSER_UPDATE_URL`). Installation additionally requires an ECDSA P-256 public key
-//! embedded at compile time (`BOWSER_UPDATE_PUBKEY`, 128 hex characters of X||Y). Without a key the updater
-//! is check-only: it never downloads or stages anything. See `docs/updater.md`.
+//! Nothing in the signed channel runs unless an HTTPS manifest URL is configured
+//! (`%LOCALAPPDATA%\Bowser\update-url.txt` or the compile-time `BOWSER_UPDATE_URL`). Installation
+//! additionally requires an ECDSA P-256 public key embedded at compile time (`BOWSER_UPDATE_PUBKEY`,
+//! 128 hex characters of X||Y). Without a key that channel is check-only. See `docs/updater.md`.
+//!
+//! Installed builds with no signed channel instead follow the GitHub pin
+//! `stable/release.json` on `main`. That pin names one repository, tag and `Bowser.exe`. The
+//! download URL is built from those fields, and the file is replaced only when its SHA-256
+//! differs. Dev and benchmark launches never check or apply updates.
 //!
 //! Manifest (LF-only UTF-8, at most 16 KiB), signed over every byte before the final `signature=` line:
 //!
@@ -943,6 +948,12 @@ impl Layout {
     fn last_check(&self) -> PathBuf {
         self.updates.join("last-check.txt")
     }
+    fn pin_last_check(&self) -> PathBuf {
+        self.updates.join("pin-last-check.txt")
+    }
+    fn rejected_shas(&self) -> PathBuf {
+        self.updates.join("rejected-sha256.txt")
+    }
 }
 
 fn pending_text(version: Version, digest: &[u8; 32], size: u64, attempts: u32) -> String {
@@ -1036,13 +1047,35 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
         discard_staged(layout, None);
         return ApplyResult::Failed("pending record is malformed".into());
     };
-    if version <= current {
+    let pin_replacement = kv(&pairs, "pin") == Some("sha256") && version == current;
+    if version < current || (version == current && !pin_replacement) {
         discard_staged(layout, Some(version));
         return ApplyResult::Nothing;
     }
+    if pin_replacement {
+        match sha256_file(&layout.exe) {
+            Ok((running, _)) if running == digest => {
+                discard_staged(layout, Some(version));
+                return ApplyResult::Nothing;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return ApplyResult::Failed(format!("cannot hash the running build: {error}"));
+            }
+        }
+    }
     let staged = layout.staged_exe(version);
-    let fail =
-        |message: String| record_failed_apply(layout, version, &digest, size, attempts, message);
+    let fail = |message: String| {
+        record_failed_apply(
+            layout,
+            version,
+            &digest,
+            size,
+            attempts,
+            message,
+            pin_replacement,
+        )
+    };
     // Cheap size check first, so a wrong-sized file is never hashed.
     match fs::metadata(&staged) {
         Ok(meta) if meta.len() == size && size <= MAX_PACKAGE_BYTES => {}
@@ -1107,16 +1140,18 @@ fn record_failed_apply(
     size: u64,
     attempts: u32,
     message: String,
+    pin_replacement: bool,
 ) -> ApplyResult {
     let attempts = attempts.saturating_add(1);
     if attempts >= MAX_APPLY_ATTEMPTS {
         discard_staged(layout, Some(version));
         return ApplyResult::Failed(format!("{message}; discarded after {attempts} attempts"));
     }
-    let _ = write_atomic(
-        &layout.pending(),
-        &pending_text(version, digest, size, attempts),
-    );
+    let mut text = pending_text(version, digest, size, attempts);
+    if pin_replacement {
+        text.push_str("pin=sha256\n");
+    }
+    let _ = write_atomic(&layout.pending(), &text);
     ApplyResult::Failed(message)
 }
 
@@ -1186,6 +1221,7 @@ pub fn decide_trial(trial: Option<Trial>, running: Version) -> TrialAction {
 /// Restores `bowser.old.exe` over the current executable and remembers the rejected version.
 /// Callers must hold the [`SwapLock`].
 pub fn rollback(layout: &Layout, bad: Version) -> Result<(), UpdateError> {
+    remember_rejected_build(layout);
     let old = layout.old_exe();
     let _ = fs::remove_file(layout.trial());
     let _ = write_atomic(&layout.rejected(), &format!("version={bad}\n"));
@@ -1214,9 +1250,9 @@ pub enum StartupAction {
 }
 
 /// Called first thing in `main`. Cheap when no update state exists (one missing-file probe).
-/// Benchmark launches (any `--benchmark-*` flag) never touch update state.
-pub fn startup(benchmark: bool) -> StartupAction {
-    if benchmark {
+/// Benchmark launches (any `--benchmark-*` flag) and `--dev` never touch update state.
+pub fn startup(benchmark: bool, dev: bool) -> StartupAction {
+    if benchmark || dev {
         return StartupAction::Continue;
     }
     let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
@@ -1408,19 +1444,237 @@ fn download_and_verify(manifest: &Manifest, partial: &Path) -> Result<(), Update
     }
 }
 
-/// Starts the lazy background worker. It sleeps first (so it never competes with startup), then marks a
-/// surviving launch healthy and, at most once a day, checks for an update. Failures are silent.
-pub fn spawn_background(benchmark: bool) {
-    if benchmark {
+/// The installed browser follows this pin when no signed update channel is configured.
+const GITHUB_PIN_URL: &str =
+    "https://raw.githubusercontent.com/grantcharlie1000-tech/Bowser/main/stable/release.json";
+const GITHUB_REPOSITORY: &str = "grantcharlie1000-tech/Bowser";
+const GITHUB_ASSET: &str = "Bowser.exe";
+/// Bump this when publishing `stable/release.json`. A pin with a lower revision is ignored,
+/// so a cached copy of an older pin cannot replace the build that contains this number.
+const PIN_REVISION: u32 = 2;
+/// GitHub pin checks are quieter than a launch, but a restarted browser still notices a release
+/// within the hour.
+const PIN_CHECK_INTERVAL_SECS: u64 = 60 * 60;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubPin {
+    pub version: Version,
+    pub revision: u32,
+    pub tag: String,
+    pub repository: String,
+    pub asset: String,
+    pub sha256: [u8; 32],
+    pub bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PinDecision {
+    UpToDate,
+    Replace(Url),
+}
+
+/// Reads the flat `stable/release.json` object. Extra whitespace is ignored. Unknown keys are ignored
+/// so a pin can grow without breaking older browsers. The download URL is not taken from the file.
+pub fn parse_github_pin(text: &str) -> Result<GithubPin, UpdateError> {
+    if text.len() > MAX_MANIFEST_BYTES {
+        return Err(UpdateError::ManifestTooLarge);
+    }
+    if text.contains('\0') {
+        return Err(UpdateError::Malformed("NUL"));
+    }
+    let version = json_string(text, "version")
+        .and_then(|value| Version::parse(&value))
+        .ok_or(UpdateError::Malformed("version"))?;
+    let tag = json_string(text, "tag").ok_or(UpdateError::Malformed("tag"))?;
+    let repository =
+        json_string(text, "repository").ok_or(UpdateError::Malformed("repository"))?;
+    let asset = json_string(text, "asset").ok_or(UpdateError::Malformed("asset"))?;
+    let sha_text = json_string(text, "sha256").ok_or(UpdateError::Malformed("sha256"))?;
+    let sha256 = hex_decode::<32>(sha_text.trim()).ok_or(UpdateError::Malformed("sha256"))?;
+    let bytes = json_u64(text, "bytes").ok_or(UpdateError::Malformed("bytes"))?;
+    if bytes == 0 || bytes > MAX_PACKAGE_BYTES {
+        return Err(UpdateError::Oversize);
+    }
+    let revision = json_u64(text, "revision").unwrap_or(0);
+    if revision > u64::from(u32::MAX) {
+        return Err(UpdateError::Malformed("revision"));
+    }
+    Ok(GithubPin {
+        version,
+        revision: revision as u32,
+        tag,
+        repository,
+        asset,
+        sha256,
+        bytes,
+    })
+}
+
+/// Decides whether `running_sha` should be replaced by `pin`. The pin cannot name another
+/// repository or asset, and it cannot move the browser to an older version.
+pub fn decide_github_pin(
+    pin: &GithubPin,
+    running_version: Version,
+    running_sha: &[u8; 32],
+    rejected: &HashSet<[u8; 32]>,
+) -> Result<PinDecision, UpdateError> {
+    if pin.repository != GITHUB_REPOSITORY || pin.asset != GITHUB_ASSET {
+        return Err(UpdateError::Malformed("unexpected release"));
+    }
+    if !pin.tag.starts_with('v')
+        || pin.tag.len() > 64
+        || !pin
+            .tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(UpdateError::Malformed("tag"));
+    }
+    if pin.version < running_version || pin.revision < PIN_REVISION {
+        return Err(UpdateError::NotNewer);
+    }
+    if rejected.contains(&pin.sha256) {
+        return Err(UpdateError::Rejected);
+    }
+    if running_sha == &pin.sha256 {
+        return Ok(PinDecision::UpToDate);
+    }
+    let url = validate_https_url(&format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        pin.repository, pin.tag, pin.asset
+    ))?;
+    Ok(PinDecision::Replace(url))
+}
+
+fn json_string(text: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let mut rest = text.get(text.find(&pattern)? + pattern.len()..)?;
+    rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let mut chars = rest.strip_prefix('"')?.chars();
+    let mut out = String::new();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+fn json_u64(text: &str, key: &str) -> Option<u64> {
+    let pattern = format!("\"{key}\"");
+    let mut rest = text.get(text.find(&pattern)? + pattern.len()..)?;
+    rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    if digits.is_empty() || digits.len() > 12 {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn remember_rejected_build(layout: &Layout) {
+    let Ok((digest, _)) = sha256_file(&layout.exe) else {
+        return;
+    };
+    let path = layout.rejected_shas();
+    let mut text = fs::read_to_string(&path).unwrap_or_default();
+    if text.len() > 64 * 1024 {
         return;
     }
-    // Disabled (no URL configured) means no thread at all.
+    let hex = hex_encode(&digest);
+    if text
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case(&hex))
+    {
+        return;
+    }
+    text.push_str(&hex);
+    text.push('\n');
+    let _ = write_atomic(&path, &text);
+}
+
+fn read_rejected_shas(layout: &Layout) -> HashSet<[u8; 32]> {
+    let mut rejected = HashSet::new();
+    let Ok(text) = fs::read_to_string(layout.rejected_shas()) else {
+        return rejected;
+    };
+    for line in text.lines().take(64) {
+        if let Some(digest) = hex_decode::<32>(line.trim()) {
+            rejected.insert(digest);
+        }
+    }
+    rejected
+}
+
+fn write_pending_replacing_build(layout: &Layout, manifest: &Manifest) -> Result<(), UpdateError> {
+    write_atomic(
+        &layout.pending(),
+        &format!(
+            "{}pin=sha256\n",
+            pending_text(manifest.version, &manifest.sha256, manifest.size, 0)
+        ),
+    )
+}
+
+fn stage_github_pin(
+    layout: &Layout,
+    current: Version,
+    running_sha: &[u8; 32],
+) -> Result<CheckOutcome, UpdateError> {
+    fs::create_dir_all(&layout.updates)?;
+    let pin_url = validate_https_url(GITHUB_PIN_URL)?;
+    let mut text = Vec::new();
+    http::get(&pin_url, MAX_MANIFEST_BYTES as u64, &mut |chunk| {
+        text.extend_from_slice(chunk);
+        Ok(())
+    })?;
+    let text = String::from_utf8(text).map_err(|_| UpdateError::Malformed("not UTF-8"))?;
+    let pin = parse_github_pin(&text)?;
+    let url = match decide_github_pin(&pin, current, running_sha, &read_rejected_shas(layout))? {
+        PinDecision::UpToDate => return Ok(CheckOutcome::UpToDate),
+        PinDecision::Replace(url) => url,
+    };
+    let manifest = Manifest {
+        version: pin.version,
+        min_version: Version(0, 0, 1),
+        url,
+        sha256: pin.sha256,
+        size: pin.bytes,
+        notes: String::new(),
+    };
+    if rejected_version(layout) == Some(manifest.version) && manifest.version > current {
+        return Err(UpdateError::Rejected);
+    }
+    let partial = layout.download_file(manifest.version);
+    if let Err(error) = download_and_verify(&manifest, &partial) {
+        let _ = fs::remove_file(&partial);
+        return Err(error);
+    }
+    let _lock =
+        SwapLock::acquire(layout, 5_000).ok_or(UpdateError::Io("update lock is busy".into()))?;
+    let staged = layout.staged_exe(manifest.version);
+    let _ = fs::remove_file(&staged);
+    fs::rename(&partial, &staged)?;
+    write_pending_replacing_build(layout, &manifest)?;
+    Ok(CheckOutcome::Staged(manifest.version))
+}
+
+/// Starts the lazy background worker. It sleeps first (so it never competes with startup), then marks a
+/// surviving launch healthy and checks for an update. A configured signed channel is used as before.
+/// Otherwise the GitHub pin is checked, at most once an hour. Failures are silent. Dev launches
+/// do not start the thread.
+pub fn spawn_background(benchmark: bool, dev: bool) {
+    if benchmark || dev {
+        return;
+    }
     let Some(root) = data_root() else {
         return;
     };
-    let Some(config) = load_config(&root) else {
-        return;
-    };
+    let signed = load_config(&root);
     let _ = std::thread::Builder::new()
         .name("bowser-updater".into())
         .spawn(move || {
@@ -1430,25 +1684,54 @@ pub fn spawn_background(benchmark: bool) {
             };
             let layout = Layout::new(exe, &root);
             mark_healthy(&layout, Version::current());
-            let last = fs::read_to_string(layout.last_check())
-                .ok()
-                .and_then(|t| t.trim().parse().ok());
-            if !check_due(now_secs(), last) {
-                return;
-            }
             let _ = fs::create_dir_all(&layout.updates);
-            let outcome = check_and_stage(&config, &layout, Version::current());
-            let _ = write_atomic(&layout.last_check(), &now_secs().to_string());
+            let (stamp, outcome) = if let Some(config) = signed {
+                let last = fs::read_to_string(layout.last_check())
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok());
+                if !check_due(now_secs(), last) {
+                    return;
+                }
+                let outcome = check_and_stage(&config, &layout, Version::current());
+                (layout.last_check(), outcome)
+            } else {
+                let last = fs::read_to_string(layout.pin_last_check())
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok());
+                if !check_due_after(now_secs(), last, PIN_CHECK_INTERVAL_SECS) {
+                    return;
+                }
+                let running_sha = match sha256_file(&layout.exe) {
+                    Ok((digest, _)) => digest,
+                    Err(error) => {
+                        let _ = write_atomic(
+                            &layout.updates.join("status.txt"),
+                            &format!("check failed: {error}"),
+                        );
+                        return;
+                    }
+                };
+                let outcome = stage_github_pin(&layout, Version::current(), &running_sha);
+                (layout.pin_last_check(), outcome)
+            };
+            let _ = write_atomic(&stamp, &now_secs().to_string());
             let summary = match outcome {
                 Ok(CheckOutcome::UpToDate) => "up to date".to_owned(),
-                Ok(CheckOutcome::AvailableUnverified(v)) => {
-                    format!("{v} available; no signing key embedded, not installed")
+                Ok(CheckOutcome::AvailableUnverified(version)) => {
+                    format!("{version} available; no signing key embedded, not installed")
                 }
-                Ok(CheckOutcome::Staged(v)) => format!("{v} staged for next start"),
+                Ok(CheckOutcome::Staged(version)) => format!("{version} staged for next start"),
                 Err(error) => format!("check failed: {error}"),
             };
             let _ = write_atomic(&layout.updates.join("status.txt"), &summary);
         });
+}
+
+fn check_due_after(now_secs: u64, last_check_secs: Option<u64>, interval: u64) -> bool {
+    match last_check_secs {
+        Some(last) if now_secs.saturating_sub(last) < interval && now_secs >= last => false,
+        _ => true,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1979,6 +2262,66 @@ mod tests {
         assert_eq!(read_trial(&f.layout), trial(new, 0, false));
         assert_eq!(apply_pending(&f.layout, new), ApplyResult::Nothing);
         let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn same_version_pin_replaces_a_different_build_only() {
+        let f = fixture("pin-swap");
+        stage(&f, CURRENT, b"PIN BUILD");
+        assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Nothing);
+        stage(&f, CURRENT, b"PIN BUILD");
+        write_pending_replacing_build(
+            &f.layout,
+            &Manifest {
+                version: CURRENT,
+                min_version: CURRENT,
+                url: Url::parse("https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.1/Bowser.exe").unwrap(),
+                sha256: sha256(b"PIN BUILD").unwrap(),
+                size: b"PIN BUILD".len() as u64,
+                notes: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Swapped(CURRENT));
+        assert_eq!(fs::read(&f.layout.exe).unwrap(), b"PIN BUILD");
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn github_pin_stays_on_this_repository_and_skips_a_rolled_back_hash() {
+        let sha = "ab".repeat(32);
+        let pin = format!(
+            r#"{{"version":"0.0.1","revision":{PIN_REVISION},"commit":"abc","tag":"v0.0.1","repository":"{GITHUB_REPOSITORY}","asset":"{GITHUB_ASSET}","sha256":"{sha}","bytes":100}}"#
+        );
+        let parsed = parse_github_pin(&pin).unwrap();
+        let running = [0u8; 32];
+        assert!(matches!(
+            decide_github_pin(&parsed, CURRENT, &running, &HashSet::new()).unwrap(),
+            PinDecision::Replace(_)
+        ));
+        assert_eq!(
+            decide_github_pin(&parsed, CURRENT, &parsed.sha256, &HashSet::new()).unwrap(),
+            PinDecision::UpToDate
+        );
+        let mut rejected = HashSet::new();
+        rejected.insert(parsed.sha256);
+        assert!(matches!(
+            decide_github_pin(&parsed, CURRENT, &running, &rejected),
+            Err(UpdateError::Rejected)
+        ));
+        let other = parse_github_pin(&pin.replace(GITHUB_REPOSITORY, "evil/Bowser")).unwrap();
+        assert!(decide_github_pin(&other, CURRENT, &running, &HashSet::new()).is_err());
+        let older = parse_github_pin(&pin.replace("\"version\":\"0.0.1\"", "\"version\":\"0.0.0\"")).unwrap();
+        assert!(matches!(
+            decide_github_pin(&older, CURRENT, &running, &HashSet::new()),
+            Err(UpdateError::NotNewer)
+        ));
+        let from = format!("\"revision\":{PIN_REVISION}");
+        let stale = parse_github_pin(&pin.replace(&from, "\"revision\":1")).unwrap();
+        assert!(matches!(
+            decide_github_pin(&stale, CURRENT, &running, &HashSet::new()),
+            Err(UpdateError::NotNewer)
+        ));
     }
 
     #[test]
