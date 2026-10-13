@@ -10,20 +10,44 @@
 //!   EasyPrivacy text file over it and restart Bowser. Bowser never fetches filter lists itself.
 //!
 //! Supported lines (everything else is silently ignored):
-//! * `||host^` / `||host` / `||host^|`      block `host` and all of its subdomains;
+//! * `||host^` / `||host` / `||host^|`      block `host` and all of its subdomains, third-party
+//!   requests only;
 //! * `||host/path*pattern` / `||host^`      block URLs on that host whose path+query starts with the
-//!   pattern (`*` is any run, `^` is a separator or the end);
+//!   pattern (`*` is any run, `^` is a separator or the end), third-party requests only;
 //! * `/plain/substring*`                    block URLs containing the text (at most
-//!   [`MAX_SUBSTRING_RULES`] of these are kept; scanned linearly);
-//! * the only option understood is `$third-party` (`$3p`); any other option, `$domain=`,
-//!   exception rules (`@@`), cosmetic rules (`##`, `#@#`, ...), regex rules, comments and
-//!   headers are ignored, so a rule is never applied more broadly than it was written.
+//!   [`MAX_SUBSTRING_RULES`] of these are kept; scanned linearly). Applies to every request,
+//!   first-party included, unless `$third-party` restricts it, and to every page unless
+//!   `$domain=` restricts it;
+//! * `domain##selector` / `##selector`      hide `selector` on `domain` (comma-separated list;
+//!   `##` on its own applies on every page). `selector` is one or more `.class` / `#id` tokens
+//!   concatenated with no separator (ASCII `[A-Za-z_][A-Za-z0-9_-]*` per token) — no spaces,
+//!   attributes, commas or pseudo-classes;
+//! * recognised options on a substring rule are `$third-party` (`$3p`) and `$domain=a|b`,
+//!   together or alone; a domain entry with `~` (negation) drops the whole rule. Any other
+//!   option (including `$domain=` on a host or path rule), exception rules (`@@`), the other
+//!   cosmetic markers (`#@#`, `#?#`, `#$#`, `#%#`), regex rules, comments and headers are
+//!   ignored, so a rule is never applied more broadly than it was written.
 //!
 //! Safety rules that hold regardless of the lists:
-//! * only `http`/`https` URLs are considered, and the hook never sees main-frame documents;
-//! * a request whose registrable domain equals the page's (first-party) is never blocked;
+//! * only `http`/`https` URLs are considered for subresource requests;
+//! * a host or path rule never blocks a request whose registrable domain equals the page's
+//!   (first-party); a substring rule does too, unless written with `$third-party`;
 //! * sites on the allow list (settings `blocker_allow=a.com,b.org` plus the persisted runtime
 //!   toggle in `blocker-sites.txt`) are never blocked.
+//!
+//! Three more decisions live alongside the matcher and are consumed only by the WebView2 hook:
+//! * [`blocked_url_patterns`] turns the stored host rules into DevTools
+//!   `Network.setBlockedURLs` patterns, so a listed host fails at the network layer (a real
+//!   connection failure) instead of getting an HTTP response a page's own reachability probe
+//!   would see as "not blocked";
+//! * [`Blocker::cosmetic_css_for_host`] turns the `##` rules for a page into a CSS string the
+//!   hook injects as a `<style>` element;
+//! * [`BlockerState::player_ads_rewrite`] picks the YouTube player responses whose ad schedule
+//!   the hook strips (see [`youtube`]), under the same switch, site exceptions and private-tab
+//!   rule as every request rule.
+
+pub(crate) mod json;
+pub mod youtube;
 
 use std::{
     borrow::Cow,
@@ -41,14 +65,26 @@ pub const MAX_SITES_BYTES: usize = 64 * 1024;
 pub const MAX_HOST_RULES: usize = 250_000;
 pub const MAX_PATH_RULES: usize = 25_000;
 pub const MAX_SUBSTRING_RULES: usize = 256;
+pub const MAX_COSMETIC_RULES: usize = 2_048;
 const MAX_PATTERN_BYTES: usize = 160;
 const MAX_ALLOWED_SITES: usize = 1000;
 
 #[derive(Debug, Eq, PartialEq)]
 enum Rule {
     Host(String),
-    Path { host: String, pattern: String },
-    Substring(String),
+    Path {
+        host: String,
+        pattern: String,
+    },
+    Substring {
+        pattern: String,
+        third_party_only: bool,
+        domains: Vec<String>,
+    },
+    Cosmetic {
+        domains: Vec<String>,
+        selector: String,
+    },
 }
 
 /// Parses one filter line. `None` means "not supported / not a rule".
@@ -57,25 +93,23 @@ fn parse_line(line: &str) -> Option<Rule> {
     if line.is_empty() || line.starts_with('!') || line.starts_with('[') || line.starts_with("@@") {
         return None;
     }
-    if ["##", "#@#", "#?#", "#$#", "#%#"]
+    if ["#@#", "#?#", "#$#", "#%#"]
         .iter()
         .any(|marker| line.contains(marker))
     {
         return None;
     }
+    if let Some((domain_part, selector)) = line.split_once("##") {
+        return parse_cosmetic(domain_part, selector);
+    }
     let (pattern, options) = match line.rfind('$') {
         Some(index) => (&line[..index], Some(&line[index + 1..])),
         None => (line, None),
     };
-    if let Some(options) = options {
-        // Only `third-party` is understood; first-party requests are never blocked anyway.
-        let understood = options
-            .split(',')
-            .all(|option| matches!(option.trim(), "third-party" | "3p"));
-        if !understood || options.is_empty() {
-            return None;
-        }
-    }
+    let (third_party_only, domains) = match options {
+        Some(options) => parse_options(options)?,
+        None => (false, Vec::new()),
+    };
     let pattern = pattern.to_ascii_lowercase();
     if !pattern.is_ascii()
         || pattern.len() > MAX_PATTERN_BYTES
@@ -84,6 +118,11 @@ fn parse_line(line: &str) -> Option<Rule> {
         return None;
     }
     if let Some(rest) = pattern.strip_prefix("||") {
+        // `$domain=` is understood only on substring rules; host/path rules stay third-party
+        // only, unconditionally, so a domain-scoped host/path rule is unsupported and dropped.
+        if !domains.is_empty() {
+            return None;
+        }
         let end = rest
             .find(['^', '/', '*', '?', ':', '|'])
             .unwrap_or(rest.len());
@@ -119,7 +158,95 @@ fn parse_line(line: &str) -> Option<Rule> {
     if pattern.len() < 6 || pattern.contains('|') {
         return None;
     }
-    Some(Rule::Substring(pattern.to_owned()))
+    Some(Rule::Substring {
+        pattern: pattern.to_owned(),
+        third_party_only,
+        domains,
+    })
+}
+
+/// Parses the options after `$`: `third-party`/`3p`, and `domain=a|b|...`. Any other option, an
+/// empty `domain=`, or a domain entry containing `~` (negation), drops the whole rule.
+fn parse_options(options: &str) -> Option<(bool, Vec<String>)> {
+    let mut third_party_only = false;
+    let mut domains = Vec::new();
+    for option in options.split(',') {
+        let option = option.trim();
+        match option {
+            "third-party" | "3p" => third_party_only = true,
+            _ if option.starts_with("domain=") => {
+                let list = &option["domain=".len()..];
+                if list.is_empty() {
+                    return None;
+                }
+                for entry in list.split('|') {
+                    if entry.contains('~') {
+                        return None;
+                    }
+                    let entry = entry.trim().to_ascii_lowercase();
+                    if !valid_rule_host(&entry) {
+                        return None;
+                    }
+                    domains.push(entry);
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some((third_party_only, domains))
+}
+
+/// Parses `domain,domain2##selector` (`domain_part` empty means `##selector` on its own).
+fn parse_cosmetic(domain_part: &str, selector: &str) -> Option<Rule> {
+    if domain_part.contains('~') {
+        return None;
+    }
+    let selector = selector.trim();
+    if !valid_cosmetic_selector(selector) {
+        return None;
+    }
+    let domain_part = domain_part.trim();
+    let mut domains = Vec::new();
+    if !domain_part.is_empty() {
+        for entry in domain_part.split(',') {
+            let entry = entry.trim().to_ascii_lowercase();
+            if !valid_rule_host(&entry) {
+                return None;
+            }
+            domains.push(entry);
+        }
+    }
+    Some(Rule::Cosmetic {
+        domains,
+        selector: selector.to_owned(),
+    })
+}
+
+/// `selector` is one or more `.class` / `#id` tokens concatenated with no separator: the only
+/// shape the cosmetic injector can safely turn into `selector{display:none!important}` and embed
+/// in a JS string (no quotes, backslashes, spaces, attributes, commas, pseudo-classes or braces).
+fn valid_cosmetic_selector(selector: &str) -> bool {
+    if selector.is_empty() || !selector.is_ascii() {
+        return false;
+    }
+    let bytes = selector.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !matches!(bytes[i], b'.' | b'#') {
+            return false;
+        }
+        i += 1;
+        if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+            return false;
+        }
+        i += 1;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'-'))
+        {
+            i += 1;
+        }
+    }
+    true
 }
 
 fn valid_rule_host(host: &str) -> bool {
@@ -277,13 +404,53 @@ pub fn same_site(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || registrable_domain(a).eq_ignore_ascii_case(registrable_domain(b))
 }
 
+/// DevTools `Network.setBlockedURLs` patterns for every host in `hosts`, excluding any whose
+/// registrable domain equals `page_host`'s (first-party), or an empty list when `blocking` is
+/// false. Both the bare host and its subdomains are covered (`Network.setBlockedURLs` does no
+/// suffix matching of its own). The result is sorted, so it is exact to compare in tests.
+pub fn blocked_url_patterns<'a>(
+    hosts: impl IntoIterator<Item = &'a str>,
+    page_host: &str,
+    blocking: bool,
+) -> Vec<String> {
+    if !blocking {
+        return Vec::new();
+    }
+    let mut patterns: Vec<String> = hosts
+        .into_iter()
+        .filter(|host| !same_site(host, page_host))
+        .flat_map(|host| [format!("*://{host}/*"), format!("*://*.{host}/*")])
+        .collect();
+    patterns.sort_unstable();
+    patterns
+}
+
+struct SubstringRule {
+    pattern: Box<str>,
+    third_party_only: bool,
+    domains: Vec<Box<str>>,
+}
+
+struct CosmeticRule {
+    domains: Vec<Box<str>>,
+    selector: Box<str>,
+}
+
+/// True when `domains` is empty (applies everywhere) or `page_host` is one of its entries or a
+/// subdomain of one, using the same suffix test as `registrable_domain`'s callers.
+fn domain_list_matches(page_host: &str, domains: &[Box<str>]) -> bool {
+    domains.is_empty()
+        || host_suffixes(page_host).any(|suffix| domains.iter().any(|domain| domain.as_ref() == suffix))
+}
+
 /// The matcher. Cheap to query, built once at startup.
 #[derive(Default)]
 pub struct Blocker {
     hosts: HashSet<Box<str>>,
     paths: HashMap<Box<str>, Vec<Box<str>>>,
     path_count: usize,
-    substrings: Vec<Box<str>>,
+    substrings: Vec<SubstringRule>,
+    cosmetics: Vec<CosmeticRule>,
 }
 
 impl Blocker {
@@ -319,9 +486,26 @@ impl Blocker {
                         added += 1;
                     }
                 }
-                Rule::Substring(text) => {
+                Rule::Substring {
+                    pattern,
+                    third_party_only,
+                    domains,
+                } => {
                     if self.substrings.len() < MAX_SUBSTRING_RULES {
-                        self.substrings.push(text.into());
+                        self.substrings.push(SubstringRule {
+                            pattern: pattern.into(),
+                            third_party_only,
+                            domains: domains.into_iter().map(Into::into).collect(),
+                        });
+                        added += 1;
+                    }
+                }
+                Rule::Cosmetic { domains, selector } => {
+                    if self.cosmetics.len() < MAX_COSMETIC_RULES {
+                        self.cosmetics.push(CosmeticRule {
+                            domains: domains.into_iter().map(Into::into).collect(),
+                            selector: selector.into(),
+                        });
                         added += 1;
                     }
                 }
@@ -331,7 +515,17 @@ impl Blocker {
     }
 
     pub fn rule_count(&self) -> usize {
-        self.hosts.len() + self.path_count + self.substrings.len()
+        self.hosts.len() + self.path_count + self.substrings.len() + self.cosmetics.len()
+    }
+
+    /// Every stored host rule (not path or substring rules), for building DevTools patterns.
+    pub fn hosts(&self) -> impl Iterator<Item = &str> {
+        self.hosts.iter().map(|host| host.as_ref())
+    }
+
+    /// True when `host` or one of its parent domains is a host rule.
+    fn host_listed(&self, host: &str) -> bool {
+        host_suffixes(host).any(|suffix| self.hosts.contains(suffix))
     }
 
     /// Whether the rules (ignoring first-party and exceptions) match this URL.
@@ -339,28 +533,68 @@ impl Blocker {
         let Some((host, path)) = split_url(url) else {
             return false;
         };
-        self.matches_parts(&host, path, url)
+        self.matches_parts(&host, path, url, false, "")
     }
 
-    fn matches_parts(&self, host: &str, path: &str, url: &str) -> bool {
-        let path = capped(path, MAX_MATCH_TEXT_BYTES);
-        for suffix in host_suffixes(host) {
-            if self.hosts.contains(suffix) {
-                return true;
-            }
-            if let Some(patterns) = self.paths.get(suffix)
-                && patterns
-                    .iter()
-                    .any(|pattern| glob_prefix(pattern.as_bytes(), path.as_bytes()))
-            {
-                return true;
+    fn matches_parts(
+        &self,
+        host: &str,
+        path: &str,
+        url: &str,
+        first_party: bool,
+        page_host: &str,
+    ) -> bool {
+        if !first_party {
+            let path = capped(path, MAX_MATCH_TEXT_BYTES);
+            for suffix in host_suffixes(host) {
+                if self.hosts.contains(suffix) {
+                    return true;
+                }
+                if let Some(patterns) = self.paths.get(suffix)
+                    && patterns
+                        .iter()
+                        .any(|pattern| glob_prefix(pattern.as_bytes(), path.as_bytes()))
+                {
+                    return true;
+                }
             }
         }
         let url = capped(url, MAX_MATCH_TEXT_BYTES);
-        self.substrings
-            .iter()
-            .any(|needle| contains_glob(needle.as_bytes(), url.as_bytes()))
+        self.substrings.iter().any(|rule| {
+            if rule.third_party_only && first_party {
+                return false;
+            }
+            if !domain_list_matches(page_host, &rule.domains) {
+                return false;
+            }
+            contains_glob(rule.pattern.as_bytes(), url.as_bytes())
+        })
     }
+
+    /// The cosmetic CSS for `page_host`: every matching rule's selector turned into
+    /// `selector{display:none!important}` and concatenated, or `None` when nothing matches.
+    pub fn cosmetic_css_for_host(&self, page_host: &str) -> Option<String> {
+        let mut css = String::new();
+        for rule in &self.cosmetics {
+            if domain_list_matches(page_host, &rule.domains) {
+                css.push_str(&rule.selector);
+                css.push_str("{display:none!important}");
+            }
+        }
+        (!css.is_empty()).then_some(css)
+    }
+}
+
+/// Why a request was blocked, so the WebView2 hook can fail it the right way.
+///
+/// A host rule has to fail in the network stack. An HTTP response, including 403, still
+/// resolves a page's `no-cors` fetch, and reachability probes count that as "not blocked".
+/// Path and substring rules are not in the host pattern list, so the hook answers those itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockHit {
+    None,
+    Host,
+    Rule,
 }
 
 /// Matcher plus exceptions plus the enable switch; shared (behind `Rc<RefCell<..>>`) by the
@@ -443,17 +677,108 @@ impl BlockerState {
         self.decide(request_url, top_host, true)
     }
 
+    /// As [`Self::should_block`], but distinguishes a host-rule hit from any other rule.
+    pub fn block_hit(&self, request_url: &str, top_host: &str) -> BlockHit {
+        self.classify(request_url, top_host, false)
+    }
+
+    /// As [`Self::block_hit`], for a private tab.
+    pub fn block_hit_private(&self, request_url: &str, top_host: &str) -> BlockHit {
+        self.classify(request_url, top_host, true)
+    }
+
     fn decide(&self, request_url: &str, top_host: &str, private: bool) -> bool {
-        if !crate::private::blocker_applies(private, self.enabled, self.site_allowed(top_host)) {
-            return false;
+        self.classify(request_url, top_host, private) != BlockHit::None
+    }
+
+    fn classify(&self, request_url: &str, top_host: &str, private: bool) -> BlockHit {
+        if !self.is_blocking(top_host, private) {
+            return BlockHit::None;
         }
         let Some((host, path)) = split_url(request_url) else {
-            return false;
+            return BlockHit::None;
         };
-        if !top_host.is_empty() && same_site(&host, top_host) {
-            return false;
+        let first_party = !top_host.is_empty() && same_site(&host, top_host);
+        if !first_party && self.matcher.host_listed(&host) {
+            return BlockHit::Host;
         }
-        self.matcher.matches_parts(&host, path, request_url)
+        if self
+            .matcher
+            .matches_parts(&host, path, request_url, first_party, top_host)
+        {
+            BlockHit::Rule
+        } else {
+            BlockHit::None
+        }
+    }
+
+    /// Whether the blocker is in effect at all for a document on `top_host`: honours the enable
+    /// switch and site exceptions for a normal tab, and is always true for a private one.
+    pub fn is_blocking(&self, top_host: &str, private: bool) -> bool {
+        crate::private::blocker_applies(private, self.enabled, self.site_allowed(top_host))
+    }
+
+    /// The cosmetic CSS to inject for a normal tab's document on `page_host`, or `None` when the
+    /// blocker does not apply (disabled, or the site is excepted) or no rule matches the page.
+    pub fn cosmetic_css_for_host(&self, page_host: &str) -> Option<String> {
+        self.cosmetic(page_host, false)
+    }
+
+    /// As [`Self::cosmetic_css_for_host`], but for a private tab: the blocker always applies and
+    /// site exceptions never do.
+    pub fn cosmetic_css_for_host_private(&self, page_host: &str) -> Option<String> {
+        self.cosmetic(page_host, true)
+    }
+
+    fn cosmetic(&self, page_host: &str, private: bool) -> Option<String> {
+        if !self.is_blocking(page_host, private) {
+            return None;
+        }
+        self.matcher.cosmetic_css_for_host(page_host)
+    }
+
+    /// DevTools `Network.setBlockedURLs` patterns for a normal tab's document on `page_host`
+    /// (empty when the blocker does not apply there).
+    pub fn blocked_url_patterns(&self, page_host: &str) -> Vec<String> {
+        blocked_url_patterns(self.matcher.hosts(), page_host, self.is_blocking(page_host, false))
+    }
+
+    /// As [`Self::blocked_url_patterns`], but for a private tab.
+    pub fn blocked_url_patterns_private(&self, page_host: &str) -> Vec<String> {
+        blocked_url_patterns(self.matcher.hosts(), page_host, self.is_blocking(page_host, true))
+    }
+
+    /// DevTools Response-stage patterns for the YouTube player responses, whenever the blocker is
+    /// switched on for the tab at all. They do not follow the current page's site exception, so
+    /// the first watch page opened from an excepted site still pauses; each paused response is
+    /// then decided by [`Self::player_ads_rewrite`].
+    pub fn response_patterns(&self, private: bool) -> &'static [youtube::ResponsePattern] {
+        if crate::private::blocker_applies(private, self.enabled, false) {
+            &youtube::RESPONSE_PATTERNS
+        } else {
+            &[]
+        }
+    }
+
+    /// Which player response to strip of its ads for a response to `url`, or `None` to pass it
+    /// through. A watch page is the tab's next document, so its own site decides; any other
+    /// response follows the page on `top_host`, like every request rule. A private tab always
+    /// strips; a normal tab honours the switch and site exceptions.
+    pub fn player_ads_rewrite(
+        &self,
+        url: &str,
+        top_host: &str,
+        private: bool,
+    ) -> Option<youtube::PlayerPayload> {
+        let payload = youtube::player_payload(url)?;
+        let blocking = match payload {
+            youtube::PlayerPayload::WatchPage => {
+                let (host, _) = split_url(url)?;
+                self.is_blocking(&host, private)
+            }
+            youtube::PlayerPayload::Json => self.is_blocking(top_host, private),
+        };
+        blocking.then_some(payload)
     }
 
     /// Flips blocking for the site of `top_host` and persists the choice.
@@ -557,7 +882,11 @@ mod tests {
         );
         assert_eq!(
             parse_line("/banner/ads/"),
-            Some(Rule::Substring("/banner/ads/".into()))
+            Some(Rule::Substring {
+                pattern: "/banner/ads/".into(),
+                third_party_only: false,
+                domains: Vec::new(),
+            })
         );
     }
 
@@ -567,7 +896,6 @@ mod tests {
             "",
             "! comment",
             "[Adblock Plus 2.0]",
-            "example.com##.ad",
             "example.com#@#.ad",
             "@@||example.com^",
             "||example.com^$script",
@@ -583,6 +911,281 @@ mod tests {
         ] {
             assert_eq!(parse_line(line), None, "{line:?}");
         }
+    }
+
+    #[test]
+    fn parser_accepts_cosmetic_rules_with_valid_selectors() {
+        assert_eq!(
+            parse_line("adblock.turtlecute.org##.adbox.banner_ads.adsbox"),
+            Some(Rule::Cosmetic {
+                domains: vec!["adblock.turtlecute.org".into()],
+                selector: ".adbox.banner_ads.adsbox".into(),
+            })
+        );
+        assert_eq!(
+            parse_line("##.textads"),
+            Some(Rule::Cosmetic {
+                domains: Vec::new(),
+                selector: ".textads".into(),
+            })
+        );
+        assert_eq!(
+            parse_line("a.com,b.com##.ad"),
+            Some(Rule::Cosmetic {
+                domains: vec!["a.com".into(), "b.com".into()],
+                selector: ".ad".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_rejects_cosmetic_rules_with_bad_grammar_or_negated_domains() {
+        for line in [
+            "example.com#@#.ad",            // exception, still ignored
+            "example.com##.adbox .banner",  // space
+            "example.com##div",             // bare tag, not a class/id
+            "example.com##.ads[href]",      // attribute selector
+            "example.com##.a{color:red}",   // braces
+            "example.com##<script>",        // angle brackets
+            "~example.com##.ad",            // negated domain
+            "a.com,~b.com##.ad",            // negated domain in a list
+        ] {
+            assert_eq!(parse_line(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn parser_accepts_domain_and_third_party_options_on_substring_rules() {
+        assert_eq!(
+            parse_line("/prebid.js"),
+            Some(Rule::Substring {
+                pattern: "/prebid.js".into(),
+                third_party_only: false,
+                domains: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse_line("/pagead.js$domain=adblock.turtlecute.org"),
+            Some(Rule::Substring {
+                pattern: "/pagead.js".into(),
+                third_party_only: false,
+                domains: vec!["adblock.turtlecute.org".into()],
+            })
+        );
+        assert_eq!(
+            parse_line("/ads/banner.gif$third-party,domain=a.com|b.com"),
+            Some(Rule::Substring {
+                pattern: "/ads/banner.gif".into(),
+                third_party_only: true,
+                domains: vec!["a.com".into(), "b.com".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn parser_rejects_domain_option_on_host_and_path_rules() {
+        for line in [
+            "||example.com^$domain=a.com",
+            "||example.com/ads/*.js$domain=a.com",
+        ] {
+            assert_eq!(parse_line(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn parser_rejects_negated_or_empty_domain_lists() {
+        for line in [
+            "/track1$domain=~a.com",
+            "/track2$domain=",
+            "/track3$domain=a.com|~b.com",
+        ] {
+            assert_eq!(parse_line(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn bare_substring_rules_now_match_first_party_requests() {
+        let s = state("/prebid.js\n", &[]);
+        assert!(s.should_block("https://news.example/prebid.js", "news.example"));
+        assert!(!s.should_block("https://news.example/app.js", "news.example"));
+    }
+
+    #[test]
+    fn third_party_substring_rules_still_exempt_first_party() {
+        let s = state("/track-me$third-party\n", &[]);
+        assert!(!s.should_block("https://news.example/track-me", "news.example"));
+        assert!(s.should_block("https://ads.example/track-me", "news.example"));
+    }
+
+    #[test]
+    fn domain_restricted_substring_rules_apply_only_on_listed_pages() {
+        let s = state("/pagead.js$domain=adblock.turtlecute.org\n", &[]);
+        assert!(s.should_block(
+            "https://adblock.turtlecute.org/js/pagead.js",
+            "adblock.turtlecute.org"
+        ));
+        assert!(!s.should_block(
+            "https://adblock.turtlecute.org/js/pagead.js",
+            "news.example"
+        ));
+        assert!(!s.should_block("https://news.example/js/pagead.js", "news.example"));
+    }
+
+    #[test]
+    fn host_and_path_rules_stay_third_party_only_with_the_new_parser() {
+        let s = state("||tracker.net^\n||cdn.example.com/ads/*.js\n", &[]);
+        assert!(!s.should_block("https://tracker.net/a.js", "tracker.net"));
+        assert!(s.should_block("https://tracker.net/a.js", "news.example"));
+        assert!(!s.should_block("https://cdn.example.com/ads/a.js", "cdn.example.com"));
+    }
+
+    #[test]
+    fn cosmetic_css_for_host_matches_domain_and_generic_rules() {
+        let s = state(
+            "adblock.turtlecute.org##.adbox.banner_ads.adsbox\nadblock.turtlecute.org##.textads\n",
+            &[],
+        );
+        let css = s
+            .cosmetic_css_for_host("adblock.turtlecute.org")
+            .expect("rules match");
+        assert!(css.contains(".adbox.banner_ads.adsbox{display:none!important}"));
+        assert!(css.contains(".textads{display:none!important}"));
+        assert_eq!(s.cosmetic_css_for_host("news.example"), None);
+    }
+
+    #[test]
+    fn cosmetic_css_for_host_includes_generic_rules_everywhere() {
+        let s = state("##.textads\n", &[]);
+        assert_eq!(
+            s.cosmetic_css_for_host("anything.example"),
+            Some(".textads{display:none!important}".to_owned())
+        );
+    }
+
+    #[test]
+    fn cosmetic_css_for_host_drops_rules_with_bad_selector_grammar() {
+        let mut matcher = Blocker::default();
+        assert_eq!(matcher.add_list("example.com##.ad .bad\n"), 0);
+        let s = BlockerState::new(matcher, &[]);
+        assert_eq!(s.cosmetic_css_for_host("example.com"), None);
+    }
+
+    #[test]
+    fn cosmetic_css_for_host_respects_the_switch_and_site_exceptions() {
+        let mut s = state("##.textads\n", &[]);
+        assert!(s.cosmetic_css_for_host("news.example").is_some());
+        s.toggle_site("news.example");
+        assert_eq!(s.cosmetic_css_for_host("news.example"), None);
+        assert!(s.cosmetic_css_for_host_private("news.example").is_some());
+        s.enabled = false;
+        assert_eq!(s.cosmetic_css_for_host("other.example"), None);
+        assert!(s.cosmetic_css_for_host_private("other.example").is_some());
+    }
+
+    #[test]
+    fn blocked_url_patterns_covers_host_and_subdomain_wildcards() {
+        let patterns = blocked_url_patterns(["doubleclick.net"], "news.example", true);
+        assert_eq!(
+            patterns,
+            vec![
+                "*://*.doubleclick.net/*".to_owned(),
+                "*://doubleclick.net/*".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn blocked_url_patterns_excludes_same_site_hosts_and_honours_the_blocking_flag() {
+        assert!(blocked_url_patterns(["doubleclick.net"], "ad.doubleclick.net", true).is_empty());
+        assert!(blocked_url_patterns(["doubleclick.net"], "news.example", false).is_empty());
+        assert!(!blocked_url_patterns(["doubleclick.net"], "", true).is_empty());
+    }
+
+    #[test]
+    fn blocker_state_blocked_url_patterns_reflects_enable_and_site_state() {
+        let mut s = state("||doubleclick.net^\n", &[]);
+        assert!(!s.blocked_url_patterns("news.example").is_empty());
+        assert!(s.blocked_url_patterns("ad.doubleclick.net").is_empty());
+        s.toggle_site("news.example");
+        assert!(s.blocked_url_patterns("news.example").is_empty());
+        assert!(!s.blocked_url_patterns_private("news.example").is_empty());
+    }
+
+    #[test]
+    fn a_third_party_host_rule_is_a_host_hit_and_a_substring_is_not() {
+        let s = state("||doubleclick.net^\n/pagead.js\n", &[]);
+        assert_eq!(
+            s.block_hit("https://ad.doubleclick.net/favicon.ico?x=1", "news.example"),
+            BlockHit::Host
+        );
+        assert_eq!(
+            s.block_hit("https://ad.doubleclick.net/favicon.ico", "ad.doubleclick.net"),
+            BlockHit::None
+        );
+        assert_eq!(
+            s.block_hit("https://adblock.turtlecute.org/js/pagead.js", "adblock.turtlecute.org"),
+            BlockHit::Rule
+        );
+        let mut off = state("||doubleclick.net^\n", &[]);
+        off.enabled = false;
+        assert_eq!(
+            off.block_hit("https://ad.doubleclick.net/favicon.ico", "news.example"),
+            BlockHit::None
+        );
+        assert_eq!(
+            off.block_hit_private("https://ad.doubleclick.net/favicon.ico", "news.example"),
+            BlockHit::Host
+        );
+    }
+
+    #[test]
+    fn document_requests_use_the_same_third_party_host_rule() {
+        let s = state("||doubleclick.net^\n", &[]);
+        assert!(s.should_block(
+            "https://ad.doubleclick.net/fakepage.html",
+            "adblock.turtlecute.org"
+        ));
+        assert!(!s.should_block(
+            "https://ad.doubleclick.net/fakepage.html",
+            "ad.doubleclick.net"
+        ));
+        assert!(s.should_block("https://ad.doubleclick.net/fakepage.html", ""));
+    }
+
+    #[test]
+    fn builtin_blocklist_blocks_the_turtlecute_ad_scripts() {
+        let s = BlockerState::new(Blocker::from_lists(None), &[]);
+        assert!(s.should_block(
+            "https://adblock.turtlecute.org/js/pagead.js",
+            "adblock.turtlecute.org"
+        ));
+        assert!(s.should_block(
+            "https://adblock.turtlecute.org/js/widget/ads.js",
+            "adblock.turtlecute.org"
+        ));
+        assert!(!s.should_block(
+            "https://adblock.turtlecute.org/js/pagead.js",
+            "news.example"
+        ));
+    }
+
+    #[test]
+    fn builtin_blocklist_cosmetic_rules_hide_the_turtlecute_ad_nodes() {
+        let s = BlockerState::new(Blocker::from_lists(None), &[]);
+        let css = s
+            .cosmetic_css_for_host("adblock.turtlecute.org")
+            .expect("built-in cosmetic rules match the tester page");
+        assert!(css.contains(".adbox.banner_ads.adsbox{display:none!important}"));
+        assert!(css.contains(".textads{display:none!important}"));
+    }
+
+    #[test]
+    fn a_previously_missing_tester_host_is_now_blocked() {
+        let s = BlockerState::new(Blocker::from_lists(None), &[]);
+        assert!(s.should_block(
+            "https://click.googleanalytics.com/collect",
+            "adblock.turtlecute.org"
+        ));
     }
 
     #[test]
@@ -778,6 +1381,223 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "took {:?}",
             started.elapsed()
+        );
+    }
+
+    const YOUTUBE: &str = "www.youtube.com";
+    const YOUTUBE_WATCH: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+    const YOUTUBE_PLAYER: &str = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+
+    fn builtin() -> BlockerState {
+        BlockerState::new(Blocker::from_lists(None), &[])
+    }
+
+    #[test]
+    fn a_youtube_watch_page_is_never_host_blocked() {
+        let s = builtin();
+        for top in ["", YOUTUBE, "www.google.com", "news.example"] {
+            assert_eq!(s.block_hit(YOUTUBE_WATCH, top), BlockHit::None, "{top:?}");
+            assert_eq!(
+                s.block_hit_private(YOUTUBE_WATCH, top),
+                BlockHit::None,
+                "{top:?}"
+            );
+        }
+        assert!(!s.should_block("https://www.youtube.com/embed/dQw4w9WgXcQ", "news.example"));
+        for host in [
+            "youtube.com",
+            YOUTUBE,
+            "m.youtube.com",
+            "rr3---sn-aigl6nzr.googlevideo.com",
+            "i.ytimg.com",
+        ] {
+            assert!(
+                !s.matcher.host_listed(host),
+                "{host} must not be a host rule"
+            );
+        }
+        let media_hosts = [
+            "*://youtube.com/*",
+            "*://*.youtube.com/*",
+            "*://googlevideo.com/*",
+            "*://*.googlevideo.com/*",
+        ];
+        for page in ["", YOUTUBE, "news.example"] {
+            let patterns = s.blocked_url_patterns(page);
+            assert!(!patterns.is_empty());
+            for pattern in patterns.iter().chain(&s.blocked_url_patterns_private(page)) {
+                assert!(
+                    !media_hosts.contains(&pattern.as_str()),
+                    "{pattern} on {page:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn googlevideo_media_and_the_youtube_player_are_never_blocked() {
+        let s = builtin();
+        for url in [
+            // Video and audio bytes, including the itag the player chose, a SABR stream, a live
+            // manifest and the CDN warm-up ping.
+            "https://rr3---sn-aigl6nzr.googlevideo.com/videoplayback?expire=1760000000&ei=x&ip=1.2.3.4&id=o-AB&itag=137&aitags=133%2C134%2C135%2C136%2C137&source=youtube&requiressl=yes&mime=video%2Fmp4&dur=212.040&ctier=L&rn=3&range=0-1048575",
+            "https://rr3---sn-aigl6nzr.googlevideo.com/videoplayback?expire=1760000000&itag=251&source=youtube&mime=audio%2Fwebm&rn=4",
+            "https://rr1---sn-aigl6nzr.googlevideo.com/videoplayback?sabr=1&rqh=1&source=youtube&cpn=abc",
+            "https://rr1---sn-aigl6nzr.googlevideo.com/initplayback?source=youtube&oeis=1",
+            "https://rr1---sn-aigl6nzr.googlevideo.com/generate_204",
+            "https://manifest.googlevideo.com/api/manifest/hls_variant/expire/1/id/x/source/yt_live_broadcast/file/index.m3u8",
+            "https://redirector.googlevideo.com/videoplayback?id=x&itag=22&source=youtube",
+            // The player, its API and everything it needs to keep playing.
+            YOUTUBE_WATCH,
+            YOUTUBE_PLAYER,
+            "https://www.youtube.com/youtubei/v1/next?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/player/heartbeat?alt=json",
+            "https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false",
+            "https://www.youtube.com/s/player/abcd1234/player_ias.vflset/en_US/base.js",
+            "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en",
+            "https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT",
+            "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+            "https://i.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M0.jpg",
+            "https://yt3.ggpht.com/ytc/abc=s88-c-k-c0x00ffffff-no-rj",
+            // Content playback stats: watch history, resume position and playback health.
+            "https://s.youtube.com/api/stats/playback?ns=yt&el=detailpage&docid=x",
+            "https://s.youtube.com/api/stats/watchtime?ns=yt&el=detailpage&docid=x",
+            "https://s.youtube.com/api/stats/qoe?event=streamingstats&el=detailpage&docid=x",
+        ] {
+            for top in [YOUTUBE, "news.example"] {
+                assert_eq!(s.block_hit(url, top), BlockHit::None, "{url} on {top}");
+                assert_eq!(
+                    s.block_hit_private(url, top),
+                    BlockHit::None,
+                    "{url} on {top}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn youtube_ads_and_ad_beacons_are_blocked_on_youtube_and_in_embeds() {
+        let s = builtin();
+        for url in [
+            "https://www.youtube.com/pagead/adview?ai=x&sigh=y",
+            "https://www.youtube.com/pagead/paralleladview?ai=x",
+            "https://www.youtube.com/pagead/viewthroughconversion/962985656/?backend=innertube",
+            "https://www.youtube.com/api/stats/ads?ver=2&ns=1&event=2",
+            "https://s.youtube.com/api/stats/atr?docid=x&ei=y",
+            "https://s.youtube.com/api/stats/qoe?event=streamingstats&el=adunit&docid=x",
+            "https://s.youtube.com/api/stats/playback?ns=yt&el=adunit&docid=x",
+            "https://s.youtube.com/api/stats/watchtime?ns=yt&el=adunit&docid=x",
+            "https://www.youtube.com/ptracking?ptk=youtube_single&video_id=x",
+            "https://www.youtube.com/pcs/activeview?xai=x&sig=y",
+            "https://www.youtube.com/get_midroll_info?ei=x",
+            "https://www.youtube.com/youtubei/v1/player/ad_break?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/log_event?alt=json",
+            "https://www.youtube.com/csi_204?v=3&s=youtube&action=watch",
+            "https://www.youtube-nocookie.com/pagead/adview?ai=x",
+            "https://www.youtube-nocookie.com/api/stats/ads?ver=2",
+        ] {
+            for top in [YOUTUBE, "news.example"] {
+                // A path rule on YouTube's own domain: answered by the hook, never a host failure.
+                assert_eq!(s.block_hit(url, top), BlockHit::Rule, "{url} on {top}");
+                assert_eq!(
+                    s.block_hit_private(url, top),
+                    BlockHit::Rule,
+                    "{url} on {top}"
+                );
+            }
+        }
+        for url in [
+            "https://googleads.g.doubleclick.net/pagead/id",
+            "https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
+            "https://www.google.com/pagead/lvz?evtid=x",
+            "https://www.googleadservices.com/pagead/conversion/1/",
+            "https://play.google.com/log?format=json&hasfast=true",
+        ] {
+            assert!(s.should_block(url, YOUTUBE), "{url}");
+            assert!(s.should_block_private(url, YOUTUBE), "{url}");
+        }
+    }
+
+    #[test]
+    fn youtube_cosmetic_rules_hide_the_masthead_and_companion_ads() {
+        let css = builtin()
+            .cosmetic_css_for_host(YOUTUBE)
+            .expect("YouTube cosmetic rules");
+        assert!(css.contains("#masthead-ad{display:none!important}"));
+        assert!(css.contains("#player-ads{display:none!important}"));
+    }
+
+    #[test]
+    fn youtube_rules_leave_most_of_the_substring_budget_to_user_lists() {
+        assert!(Blocker::from_lists(None).substrings.len() <= MAX_SUBSTRING_RULES / 8);
+    }
+
+    #[test]
+    fn the_player_rewrite_follows_the_switch_site_exceptions_and_private_tabs() {
+        use youtube::PlayerPayload::{Json, WatchPage};
+        let beacon = "https://www.youtube.com/api/stats/ads?ver=2";
+        let mut s = builtin();
+        assert!(s.should_block(beacon, YOUTUBE));
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false),
+            Some(Json)
+        );
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_WATCH, "news.example", false),
+            Some(WatchPage)
+        );
+        let elsewhere = "https://news.example/youtubei/v1/player";
+        assert_eq!(s.player_ads_rewrite(elsewhere, YOUTUBE, false), None);
+        assert_eq!(
+            s.response_patterns(false).len(),
+            youtube::RESPONSE_PATTERNS.len()
+        );
+
+        // Ctrl+Shift+B on YouTube: a normal tab is left alone, a private one is not.
+        assert_eq!(s.toggle_site(YOUTUBE), SiteToggle::Allowed);
+        assert!(!s.should_block(beacon, YOUTUBE));
+        assert_eq!(s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false), None);
+        // The watch page's own site decides, wherever the tab was before it.
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_WATCH, "news.example", false),
+            None
+        );
+        assert!(
+            !s.response_patterns(false).is_empty(),
+            "each response is decided on its own"
+        );
+        assert!(s.should_block_private(beacon, YOUTUBE));
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, true),
+            Some(Json)
+        );
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_WATCH, "", true),
+            Some(WatchPage)
+        );
+
+        // The switch off: nothing for a normal tab, no Response-stage pauses at all.
+        s.enabled = false;
+        assert!(!s.should_block(beacon, "news.example"));
+        assert_eq!(
+            s.player_ads_rewrite(YOUTUBE_PLAYER, "news.example", false),
+            None
+        );
+        assert!(s.response_patterns(false).is_empty());
+        assert!(!s.response_patterns(true).is_empty());
+        assert!(s.should_block_private(beacon, "news.example"));
+
+        // blocker_allow in settings exempts a normal tab the same way.
+        let configured = BlockerState::new(Blocker::from_lists(None), &["youtube.com".to_owned()]);
+        assert!(!configured.should_block(beacon, YOUTUBE));
+        assert_eq!(
+            configured.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false),
+            None
+        );
+        assert!(configured.should_block_private(beacon, YOUTUBE));
+        assert_eq!(
+            configured.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, true),
+            Some(Json)
         );
     }
 
