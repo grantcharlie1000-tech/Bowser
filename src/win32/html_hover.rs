@@ -19,6 +19,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use windows::{
@@ -26,7 +27,7 @@ use windows::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
             BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-            GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+            GetMonitorInfoW, HGDIOBJ, HRGN, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
             PAINTSTRUCT, RGN_OR, SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -89,6 +90,17 @@ const WATCH_TIMER: usize = 2;
 /// Suspends the host a while after the layer hides, so quick re-shows skip the resume.
 const SUSPEND_TIMER: usize = 3;
 const WATCH_MS: u32 = 100;
+// --- omnibox suggest ---
+/// Drives the dropdown's open and close motion (the window region grows from, or shrinks into, the pill).
+const DROP_TIMER: usize = 4;
+/// Requested frame interval; Windows timers tick at about 15.6 ms, which is close to one display frame.
+const DROP_FRAME_MS: u32 = 10;
+/// Open: the list unrolls from the pill (design token --bw-dur-base). Close is faster.
+const DROP_OPEN: Duration = Duration::from_millis(167);
+const DROP_CLOSE: Duration = Duration::from_millis(100);
+/// Physical pixels the dropdown tucks under the pill's bottom edge, so no rounding can leave a gap.
+const DROP_OVERLAP: i32 = 1;
+// --- end omnibox suggest ---
 const SUSPEND_AFTER_MS: u32 = 2000;
 /// Most queued actions; more are dropped.
 const ACTION_LIMIT: usize = 8;
@@ -100,6 +112,11 @@ const TIP_GAP: i32 = 6;
 /// Logical radius of the tooltip and of the card and island menu (design tokens: 4 and 8).
 const TIP_RADIUS: i32 = 4;
 const OVERLAY_RADIUS: i32 = 8;
+// --- omnibox suggest ---
+/// Logical radius of the dropdown's bottom corners: the omnibox pill's own (half its height, token
+/// --bw-r-omnibox), so the open surface is rounded alike at both ends.
+const SUGGEST_RADIUS: i32 = crate::chrome::layout::Metrics::OMNIBOX_HEIGHT / 2;
+// --- end omnibox suggest ---
 
 /// What the layer shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,8 +200,56 @@ struct Layer {
     picks: VecDeque<(u32, u8)>,
     /// The edit seq of the dropdown last shown, kept after it hides so the toolbar can be told.
     suggest_seq: u32,
+    /// What the window shows right now (set when placed, cleared when hidden).
+    shown: Option<Kind>,
+    /// The dropdown's open or close motion while it runs.
+    drop: Option<DropMotion>,
+    /// Height of the dropdown's visible region, in physical pixels.
+    drop_h: i32,
+    /// The toolbar was told the dropdown is on screen (`suggestOpen`), so its pill joined it.
+    drop_told: bool,
     // --- end omnibox suggest ---
 }
+
+// --- omnibox suggest ---
+/// The dropdown unrolling from the pill (`closing` false) or rolling back into it, from a region
+/// height of `from` physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DropMotion {
+    started: Instant,
+    from: i32,
+    closing: bool,
+}
+
+/// Ease-out of the given power: 5 (quint) is strong, most of the travel at once; 3 (cubic) is
+/// gentler, so a short close keeps moving until its end instead of sitting nearly done. Pure.
+fn ease_out(t: f32, power: i32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(power)
+}
+
+/// How long before a close ends the toolbar is told: about two frames, its message latency, so the
+/// pill's corners round as the list's last rows roll in rather than after the list has gone.
+const DROP_UNTELL_LEAD: Duration = Duration::from_millis(33);
+
+/// Visible height `elapsed` into `motion` for a dropdown `full` pixels tall, and whether the motion
+/// is over. Pure.
+fn drop_height(motion: DropMotion, full: i32, elapsed: Duration) -> (i32, bool) {
+    let (target, length, power) = if motion.closing { (0, DROP_CLOSE, 3) } else { (full, DROP_OPEN, 5) };
+    let t = elapsed.as_secs_f32() / length.as_secs_f32();
+    if t >= 1.0 {
+        return (target, true);
+    }
+    let from = motion.from.clamp(0, full.max(0));
+    let h = from as f32 + (target - from) as f32 * ease_out(t, power);
+    (h.round() as i32, false)
+}
+
+/// Whether a close `elapsed` in is near enough its end to give the pill its corners back. Pure.
+fn drop_untell_due(motion: DropMotion, elapsed: Duration) -> bool {
+    motion.closing && elapsed + DROP_UNTELL_LEAD >= DROP_CLOSE
+}
+// --- end omnibox suggest ---
 
 thread_local! {
     static LAYERS: RefCell<HashMap<isize, Layer>> = RefCell::new(HashMap::new());
@@ -284,6 +349,10 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
                 keyboard: false,
                 picks: VecDeque::new(),
                 suggest_seq: 0,
+                shown: None,
+                drop: None,
+                drop_h: 0,
+                drop_told: false,
             },
         );
     });
@@ -731,14 +800,18 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
             scale_px(tab_card::EDGE_MARGIN, dpi),
             work,
         ),
-        // Directly under the pill, left edges aligned, no gap: the top corners attach to it.
-        Kind::Suggest => {
-            let left = clamp_span(anchor.left, width, work.left, work.right);
-            let top = clamp_span(anchor.bottom, height, work.top, work.bottom);
-            RECT { left, top, right: left + width, bottom: top + height }
-        }
+        // --- omnibox suggest ---
+        Kind::Suggest => suggest_bounds(anchor, height, work),
+        // --- end omnibox suggest ---
     };
-    let radius = scale_px(if kind == Kind::Tooltip { TIP_RADIUS } else { OVERLAY_RADIUS }, dpi);
+    let radius = scale_px(
+        match kind {
+            Kind::Tooltip => TIP_RADIUS,
+            Kind::Suggest => SUGGEST_RADIUS,
+            Kind::Card | Kind::Island => OVERLAY_RADIUS,
+        },
+        dpi,
+    );
     let (bw, bh) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
     unsafe {
         // Tooltips are click-through; the card and island menu take clicks. Neither ever activates.
@@ -751,17 +824,34 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
         if wanted != style {
             let _ = SetWindowLongPtrW(window, GWL_EXSTYLE, wanted);
         }
-        let region = CreateRoundRectRgn(0, 0, bw + 1, bh + 1, radius * 2, radius * 2);
         // --- omnibox suggest ---
-        // The dropdown's top corners touch the pill, so they stay square: the rounded region plus
-        // a rectangle over its upper half.
-        if kind == Kind::Suggest && !region.is_invalid() {
-            let top = CreateRectRgn(0, 0, bw + 1, bh / 2);
-            if !top.is_invalid() {
-                let _ = CombineRgn(Some(region), Some(region), Some(top), RGN_OR);
-                let _ = DeleteObject(HGDIOBJ(top.0));
-            }
-        }
+        // The dropdown unrolls from the pill the first time it appears (and re-opens from wherever a
+        // close left it); while it stays open, a new height applies at once, so typing never animates.
+        let visible_h = if kind == Kind::Suggest {
+            let now = Instant::now();
+            let animate = super::menu::animations_enabled();
+            with_layer(owner, |layer| {
+                let continuing = layer.visible && layer.shown == Some(Kind::Suggest);
+                let from = match layer.drop {
+                    Some(_) => layer.drop_h,
+                    None if continuing => bh,
+                    None => 0,
+                };
+                layer.drop = (animate && from < bh).then_some(DropMotion { started: now, from, closing: false });
+                layer.drop_h = if layer.drop.is_some() { from } else { bh };
+                layer.drop_h
+            })
+            .unwrap_or(bh)
+        } else {
+            let _ = with_layer(owner, |layer| layer.drop = None);
+            let _ = KillTimer(Some(window), DROP_TIMER);
+            bh
+        };
+        let region = if kind == Kind::Suggest {
+            suggest_region(bw, visible_h, radius)
+        } else {
+            CreateRoundRectRgn(0, 0, bw + 1, bh + 1, radius * 2, radius * 2)
+        };
         // --- end omnibox suggest ---
         if !region.is_invalid() && SetWindowRgn(window, Some(region), false) == 0 {
             let _ = DeleteObject(HGDIOBJ(region.0));
@@ -778,32 +868,59 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
         );
         let _ = SetTimer(Some(window), WATCH_TIMER, WATCH_MS, None);
     }
-    let _ = with_layer(owner, |layer| {
+    // --- omnibox suggest ---
+    let (animating, tell) = with_layer(owner, |layer| {
         layer.bounds = bounds;
         layer.visible = true;
-    });
+        layer.shown = Some(kind);
+        let open = kind == Kind::Suggest;
+        let tell = (layer.drop_told != open).then_some(open);
+        layer.drop_told = open;
+        (layer.drop.is_some(), tell)
+    })
+    .unwrap_or((false, None));
+    if animating {
+        unsafe {
+            let _ = SetTimer(Some(window), DROP_TIMER, DROP_FRAME_MS, None);
+        }
+    }
+    if let Some(open) = tell {
+        super::window::html_toolbar_post(owner, &protocol::suggest_open_json(open));
+    }
+    // --- end omnibox suggest ---
 }
 
 /// Hides the layer, gives the keyboard back if it had it, and schedules suspension.
 fn hide(owner: HWND) {
-    let Some((window, host, was_shown, closed_suggest)) = with_layer(owner, |layer| {
+    let Some((window, host, was_shown, closed_suggest, untell)) = with_layer(owner, |layer| {
         // --- omnibox suggest ---
         let was_suggest = matches!(layer.content, Some(Content::Suggest { .. }));
         let closed_suggest = was_suggest.then_some(layer.suggest_seq);
+        let untell = std::mem::take(&mut layer.drop_told);
+        layer.drop = None;
+        layer.shown = None;
         // --- end omnibox suggest ---
         let was_shown = layer.content.take().is_some() || layer.visible;
         layer.visible = false;
         layer.bounds = RECT::default();
         layer.tok = 0;
         layer.keyboard = false;
-        (layer.window, layer.host.clone(), was_shown, closed_suggest)
+        (layer.window, layer.host.clone(), was_shown, closed_suggest, untell)
     }) else {
         return;
     };
+    // --- omnibox suggest ---
+    unsafe {
+        let _ = KillTimer(Some(window), DROP_TIMER);
+    }
     if let Some(seq) = closed_suggest {
         tell_toolbar_closed(owner, seq);
     }
+    // --- end omnibox suggest ---
     if !was_shown {
+        if untell {
+            super::window::html_toolbar_post(owner, &protocol::suggest_open_json(false)); // --- omnibox suggest ---
+        }
         return;
     }
     unsafe {
@@ -815,6 +932,12 @@ fn hide(owner: HWND) {
         }
         let _ = SetTimer(Some(window), SUSPEND_TIMER, SUSPEND_AFTER_MS, None);
     }
+    // --- omnibox suggest ---
+    // The pill rounds its corners again only once the window is gone, so they never show a notch.
+    if untell {
+        super::window::html_toolbar_post(owner, &protocol::suggest_open_json(false));
+    }
+    // --- end omnibox suggest ---
     if let Some(host) = host {
         let _ = host.post_json(&protocol::hover_hide_json());
         let _ = host.set_visible(false);
@@ -1070,7 +1193,7 @@ fn suggest_shown(owner: HWND) -> bool {
 /// dropdown. False when the layer is not ready.
 pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, query: &str, rows: Vec<Row>) -> bool {
     if rows.is_empty() {
-        suggest_hide(owner);
+        suggest_close(owner);
         return false;
     }
     let plain: Vec<_> = rows
@@ -1085,10 +1208,124 @@ pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, quer
     true
 }
 
-/// Closes the dropdown if it is open; the toolbar page is told.
+/// Closes the dropdown at once if it is open; the toolbar page is told. For a pick or a submit:
+/// the page is about to change, so nothing lingers over it.
 pub(crate) fn suggest_hide(owner: HWND) {
     if suggest_shown(owner) {
         hide(owner);
+    }
+}
+
+/// Closes the dropdown by rolling it back into the pill (Escape, focus loss, nothing left to
+/// suggest). The rows stop answering at once: the toolbar drops its copy now, and a pick that lands
+/// during the motion finds no list. With animations off in Windows it closes at once.
+pub(crate) fn suggest_close(owner: HWND) {
+    let now = Instant::now();
+    let animate = super::menu::animations_enabled();
+    let Some(started) = with_layer(owner, |layer| {
+        if !matches!(layer.content, Some(Content::Suggest { .. })) {
+            return None;
+        }
+        let on_screen = layer.visible && layer.shown == Some(Kind::Suggest) && layer.drop_h > 0;
+        if !on_screen || !animate {
+            return Some(None);
+        }
+        layer.content = None;
+        layer.tok = 0;
+        layer.drop = Some(DropMotion { started: now, from: layer.drop_h, closing: true });
+        Some(Some((layer.window, layer.suggest_seq)))
+    })
+    .flatten() else {
+        return;
+    };
+    match started {
+        None => hide(owner),
+        Some((window, seq)) => {
+            tell_toolbar_closed(owner, seq);
+            unsafe {
+                let _ = SetTimer(Some(window), DROP_TIMER, DROP_FRAME_MS, None);
+            }
+        }
+    }
+}
+
+/// One frame of the dropdown's open or close motion; the end of a close hides the layer.
+fn drop_frame(owner: HWND) {
+    let now = Instant::now();
+    let step = with_layer(owner, |layer| {
+        let motion = layer.drop?;
+        let (bw, bh) = (layer.bounds.right - layer.bounds.left, layer.bounds.bottom - layer.bounds.top);
+        let elapsed = now.saturating_duration_since(motion.started);
+        let (h, done) = drop_height(motion, bh, elapsed);
+        layer.drop_h = h;
+        if done {
+            layer.drop = None;
+        }
+        let untell = layer.drop_told && drop_untell_due(motion, elapsed);
+        if untell {
+            layer.drop_told = false;
+        }
+        Some((bw, h, done, motion.closing, untell))
+    });
+    let Some(window) = with_layer(owner, |layer| layer.window) else {
+        return;
+    };
+    let Some(Some((bw, h, done, closing, untell))) = step else {
+        unsafe {
+            let _ = KillTimer(Some(window), DROP_TIMER);
+        }
+        return;
+    };
+    if untell {
+        super::window::html_toolbar_post(owner, &protocol::suggest_open_json(false));
+    }
+    if done {
+        unsafe {
+            let _ = KillTimer(Some(window), DROP_TIMER);
+        }
+        if closing {
+            hide(owner);
+            return;
+        }
+    }
+    let dpi = unsafe { GetDpiForWindow(window) }.max(FALLBACK_DPI);
+    unsafe {
+        let region = suggest_region(bw, h, scale_px(SUGGEST_RADIUS, dpi));
+        if !region.is_invalid() && SetWindowRgn(window, Some(region), true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(region.0));
+        }
+    }
+}
+
+/// The dropdown's bounds: tucked `DROP_OVERLAP` under the pill's bottom edge, exactly as wide as the
+/// pill and aligned with it, so its side borders continue the pill's. Kept inside the work area. Pure.
+fn suggest_bounds(anchor: RECT, height: i32, work: RECT) -> RECT {
+    let width = (anchor.right - anchor.left).max(1);
+    let left = clamp_span(anchor.left, width, work.left, work.right);
+    let top = clamp_span(anchor.bottom - DROP_OVERLAP, height, work.top, work.bottom);
+    RECT { left, top, right: left + width, bottom: top + height }
+}
+
+/// The dropdown's window region with `visible` rows of pixels showing: square where it meets the
+/// pill, rounded at its current bottom edge. Empty when nothing shows.
+unsafe fn suggest_region(width: i32, visible: i32, radius: i32) -> HRGN {
+    unsafe {
+        if visible <= 0 {
+            return CreateRectRgn(0, 0, 0, 0);
+        }
+        // GDI's aliased ellipse runs about a pixel inside the page's antialiased curve, which would
+        // shave the edge off the bottom corners; a slightly fuller corner keeps all of it (the page
+        // paints anything between the two in the edge colour, hover.css).
+        let diameter = (radius * 2 - 2).min(visible * 2).max(0);
+        let region = CreateRoundRectRgn(0, 0, width + 1, visible + 1, diameter, diameter);
+        let top = CreateRectRgn(0, 0, width + 1, (visible - radius).max(visible / 2));
+        if !region.is_invalid() && !top.is_invalid() {
+            let _ = CombineRgn(Some(region), Some(region), Some(top), RGN_OR);
+        }
+        if !top.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(top.0));
+        }
+        region
     }
 }
 
@@ -1104,7 +1341,7 @@ pub(crate) fn suggest_focus_lost(owner: HWND) {
     let mut cursor = POINT::default();
     let over = unsafe { GetCursorPos(&mut cursor) }.is_ok() && hover_square::contains(bounds, cursor);
     if !over {
-        hide(owner);
+        suggest_close(owner);
     }
 }
 
@@ -1263,11 +1500,26 @@ fn register_class() -> windows::core::Result<()> {
 }
 
 /// Fills the client with the opaque window colour, so nothing shows before the page paints.
+/// `--bw-overlay` from tokens.css (dark, light): the tint every hover surface paints over the window.
+const OVERLAY_DARK: (u8, u8, u8, f32) = (44, 44, 44, 0.94);
+const OVERLAY_LIGHT: (u8, u8, u8, f32) = (252, 252, 252, 0.94);
+
+/// The opaque colour of a hover surface: the overlay tint composited over `window`. Pure.
+fn surface_colour(window: theme::Rgba, dark: bool) -> theme::Rgba {
+    let (r, g, b, a) = if dark { OVERLAY_DARK } else { OVERLAY_LIGHT };
+    let over = |top: u8, under: u8| (f32::from(top) * a + f32::from(under) * (1.0 - a)).round() as u8;
+    theme::Rgba { r: over(r, window.r), g: over(g, window.g), b: over(b, window.b), a: 0xFF }
+}
+
 unsafe fn paint_background(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
-        let colour = theme::palette(glass::appearance(), true).window;
+        // The page's own surface colour (the overlay tint over the window colour), so any area the
+        // WebView has not painted yet, such as rows the dropdown unrolls before its first frame at the
+        // new size, already reads as the surface rather than as a band of another colour.
+        let appearance = glass::appearance();
+        let colour = surface_colour(theme::palette(appearance, true).window, appearance == theme::Appearance::Dark);
         let brush = CreateSolidBrush(COLORREF(
             u32::from(colour.r) | (u32::from(colour.g) << 8) | (u32::from(colour.b) << 16),
         ));
@@ -1327,6 +1579,7 @@ unsafe extern "system" fn window_proc(
                     open_timer(owner);
                 }
                 WATCH_TIMER => watch_timer(owner),
+                DROP_TIMER => drop_frame(owner), // --- omnibox suggest ---
                 SUSPEND_TIMER => {
                     unsafe {
                         let _ = KillTimer(Some(hwnd), SUSPEND_TIMER);
@@ -1433,6 +1686,66 @@ mod tests {
     }
 
     #[test]
+    fn dropdown_attaches_under_the_pill_at_its_exact_width() {
+        // Tucked one physical pixel under the pill, never a gap, at any width the pill has.
+        let pill = rect(300, 45, 852, 78);
+        assert_eq!(tuple(suggest_bounds(pill, 200, WORK)), (300, 77, 852, 277));
+        // A pill partly off the work area keeps its width; the dropdown slides inside it.
+        let off = suggest_bounds(rect(-40, 45, 160, 78), 120, WORK);
+        assert_eq!((off.left, off.right - off.left), (0, 200));
+        // No room below: it stays inside the work area rather than running off it.
+        assert_eq!(suggest_bounds(rect(300, 640, 700, 670), 120, WORK).bottom, 700);
+    }
+
+    #[test]
+    fn dropdown_motion_unrolls_eases_out_and_closes_faster() {
+        let started = Instant::now();
+        let open = DropMotion { started, from: 0, closing: false };
+        let ms = Duration::from_millis;
+        assert_eq!(drop_height(open, 300, ms(0)), (0, false));
+        let (early, _) = drop_height(open, 300, ms(40));
+        assert!(early > 150, "ease-out: most of the height shows in the first quarter ({early})");
+        let (late, done) = drop_height(open, 300, ms(100));
+        assert!(late < 300 && late > early && !done);
+        assert_eq!(drop_height(open, 300, DROP_OPEN), (300, true));
+        // Re-opening during a close starts from where the close left it.
+        let reopen = DropMotion { started, from: 120, closing: false };
+        assert_eq!(drop_height(reopen, 300, ms(0)).0, 120);
+        // Closing rolls back into the pill, in less time than opening took.
+        let close = DropMotion { started, from: 300, closing: true };
+        assert!(DROP_CLOSE < DROP_OPEN);
+        assert!(drop_height(close, 300, ms(30)).0 < 150);
+        assert_eq!(drop_height(close, 300, DROP_CLOSE), (0, true));
+        // The starting height never exceeds the list (rows can disappear mid-motion).
+        assert_eq!(drop_height(DropMotion { started, from: 500, closing: false }, 300, ms(0)).0, 300);
+        assert_eq!(ease_out(0.0, 5), 0.0);
+        assert_eq!(ease_out(1.0, 3), 1.0);
+        assert_eq!(ease_out(2.0, 5), 1.0);
+        // The close keeps moving to its end (cubic), so it never sits nearly done with the pill open.
+        assert!(drop_height(close, 300, ms(60)).0 > 15, "still visibly closing at 60ms");
+        // The pill gets its corners back about two frames before the close ends, never while opening.
+        assert!(!drop_untell_due(close, ms(40)));
+        assert!(drop_untell_due(close, DROP_CLOSE - DROP_UNTELL_LEAD));
+        assert!(!drop_untell_due(open, DROP_OPEN));
+    }
+
+    #[test]
+    fn dropdown_bottom_uses_the_pills_own_radius() {
+        assert_eq!(SUGGEST_RADIUS, 13, "half the 26px pill, as --bw-r-omnibox");
+        assert_eq!(scale_px(SUGGEST_RADIUS, 144), 20);
+        assert_eq!(scale_px(SUGGEST_RADIUS, 192), 26);
+    }
+
+    #[test]
+    fn popup_background_is_the_overlay_surface_colour() {
+        // The overlay tint over the solid window colours, as the page paints it (tokens.css).
+        let dark = surface_colour(theme::Rgba { r: 0x20, g: 0x24, b: 0x2C, a: 0xFF }, true);
+        assert_eq!((dark.r, dark.g, dark.b, dark.a), (43, 44, 44, 0xFF));
+        let light = surface_colour(theme::Rgba { r: 0xF4, g: 0xF6, b: 0xF8, a: 0xFF }, false);
+        assert_eq!((light.r, light.g, light.b), (252, 252, 252));
+    }
+
+    #[test]
     fn scale_px_rounds_logical_pixels_per_dpi() {
         assert_eq!(scale_px(6, 96), 6);
         assert_eq!(scale_px(6, 144), 9);
@@ -1491,6 +1804,10 @@ mod tests {
             keyboard: false,
             picks: VecDeque::new(),
             suggest_seq: 0,
+            shown: None,
+            drop: None,
+            drop_h: 0,
+            drop_told: false,
         };
         assert!(current(&layer(5, true), 5));
         assert!(!current(&layer(5, true), 4));

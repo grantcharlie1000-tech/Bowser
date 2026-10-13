@@ -335,15 +335,30 @@ body.bw-hover-body {
 
 /* ----- omnibox suggestions ----- */
 /*
- * The dropdown continues the omnibox pill: same left edge and width, no gap, squared top corners
- * (Rust squares the window region's top half; Fluent AutoSuggest rule). Rows follow the palette's
- * list vocabulary at menu density: 32px, 4px radius, 16px lead, 12px gap, Body title with a
- * Caption address, --bw-hover under the pointer and --bw-island for the keyboard selection.
- * Solid, not glass: the overlay tint is painted over the opaque window colour, as in menu.css.
- * Outlined with --bw-pill-edge so it reads as the pill's continuation in light and dark.
- * Motion: only the first appearance runs .bw-enter.is-down (hover.ts); keyboard selection and
- * per-keystroke row updates are instant.
+ * The dropdown is the omnibox pill grown downward: one surface with it. Rust places the popup
+ * exactly as wide as the painted pill and tucks it one device pixel under the pill's bottom edge;
+ * while it shows, the toolbar squares the pill's bottom corners and opens its bottom edge
+ * (toolbar.css .pill.is-open), so the pill's side borders run straight into these. Same material
+ * on both: the overlay tint over the opaque window colour (--bw-window-opaque), as in menu.css.
+ * Outlined with --bw-pill-edge, the pill's own edge; only the bottom corners are rounded, with the
+ * pill's own radius (--bw-r-omnibox), so both ends of the open surface share one curvature.
+ * Rows follow the palette's list vocabulary at menu density: 32px, 4px radius, 16px lead, 12px
+ * gap, Body title with a Caption address, --bw-hover under the pointer and --bw-island for the
+ * keyboard selection.
+ * Motion: the surface itself never moves (a transform would pull its edges off the pill's). Rust
+ * unrolls the window region from the pill (167ms strong ease-out, 100ms back on close); on the
+ * first appearance only, the rows settle in under it (.is-entering, hover.ts). Keyboard selection
+ * and per-keystroke row updates are instant.
  */
+
+/* Behind the list: Rust's window region is aliased and a touch fuller than the list's rounded
+   corners, so the few pixels between the two take the edge colour and read as edge, not as a notch. */
+body.bw-hover-body[data-hover-kind="suggest"] {
+  background:
+    linear-gradient(var(--bw-pill-edge), var(--bw-pill-edge)),
+    linear-gradient(var(--bw-overlay), var(--bw-overlay)),
+    var(--bw-window-opaque);
+}
 
 .bw-suggest {
   display: flex;
@@ -354,11 +369,29 @@ body.bw-hover-body {
      shadow, and over a white page a hairline all but disappears. */
   border: 1px solid var(--bw-pill-edge);
   border-top: 0;
-  border-radius: 0 0 var(--bw-r-overlay) var(--bw-r-overlay);
-  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window);
+  /* The pill's own curvature at the bottom, so the open surface is rounded alike at both ends. */
+  border-radius: 0 0 var(--bw-r-omnibox) var(--bw-r-omnibox);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
-  transform-origin: top center;
+}
+
+/* First appearance: rows drop 6px into place and fade in while the region unrolls. */
+@keyframes bw-suggest-rows-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+.bw-suggest.is-entering .bw-suggest-row {
+  animation: bw-suggest-rows-in var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-suggest.is-entering .bw-suggest-row {
+    animation: bw-fade-in var(--bw-dur-fast) var(--bw-ease-fade) both;
+  }
 }
 
 .bw-suggest-row {

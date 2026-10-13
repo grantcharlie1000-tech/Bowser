@@ -314,10 +314,14 @@ export function startHover(root: HTMLElement): void {
     const content = renderSuggest(msg);
     document.body.dataset.hoverKind = 'suggest';
     root.replaceChildren(content);
-    // Measured before the entrance class: a transform would shrink the box mid-animation.
+    // Measured at the pill's CSS width before the entrance class: a transform would shrink the box.
     const box = content.getBoundingClientRect();
     sendPopupSize(msg.tok, Math.max(1, Math.min(4000, Math.ceil(box.width))), Math.max(1, Math.min(4000, Math.ceil(box.height))));
-    if (opening) content.classList.add('bw-enter', 'is-down');
+    // Rust sizes the popup to the painted pill's device pixels, which can differ from w CSS px by a
+    // fraction; filling the viewport keeps the side borders on the popup's (and the pill's) edges.
+    // Same task as the measurement, so no frame ever paints the measuring width.
+    content.style.width = '100vw';
+    if (opening) content.classList.add('is-entering');
   };
   // --- end omnibox suggest ---
 

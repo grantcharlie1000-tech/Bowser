@@ -1401,6 +1401,14 @@ pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, q: &str, items: &[Su
 pub fn suggest_sel_json(seq: u32, sel: usize) -> String {
     format!("{{\"v\":1,\"t\":\"suggestSel\",\"seq\":{seq},\"sel\":{}}}", sel.min(MAX_SUGGEST_ITEMS - 1))
 }
+
+/// `{"v":1,"t":"suggestOpen","on":..}` (toolbar only): whether the dropdown is on screen under the
+/// pill, so the pill joins it as one surface. Sent when the popup is shown and again once it is
+/// fully hidden (after its close animation), never per keystroke. Independent of the toolbar's
+/// row copy, which drives the keyboard and is dropped as soon as a close starts.
+pub fn suggest_open_json(on: bool) -> String {
+    format!("{{\"v\":1,\"t\":\"suggestOpen\",\"on\":{on}}}")
+}
 // --- end omnibox suggest ---
 
 /// The favicon gate shared by `fav` and `railfav`: a PNG of at most `MAX_FAVICON_BYTES` whose IHDR
@@ -3773,6 +3781,12 @@ mod tests {
         assert_eq!(json.matches("\"fav\":\"data:image/png;base64,").count(), 1, "{json}");
     }
 
+    #[test]
+    fn suggest_open_json_is_a_flat_boolean_flag() {
+        assert_eq!(suggest_open_json(true), r#"{"v":1,"t":"suggestOpen","on":true}"#);
+        assert_eq!(suggest_open_json(false), r#"{"v":1,"t":"suggestOpen","on":false}"#);
+    }
+
     /// Writes the cross-language fixture read by `ui/test/suggest.mjs`.
     #[test]
     fn suggest_messages_write_the_ui_fixture() {
@@ -3784,11 +3798,13 @@ mod tests {
             item("search", "example", "example", ""),
         ];
         let fixture = format!(
-            "{{\"suggest\":{},\"toolbar\":{},\"sel\":{},\"close\":{}}}\n",
+            "{{\"suggest\":{},\"toolbar\":{},\"sel\":{},\"close\":{},\"open\":{},\"shut\":{}}}\n",
             suggest_json(3, 12, 560, 1, "Exa", &rows),
             suggest_json(0, 12, 0, 0, "", &rows),
             suggest_sel_json(12, 2),
             suggest_json(0, 13, 0, 0, "", &[]),
+            suggest_open_json(true),
+            suggest_open_json(false),
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/suggest-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {

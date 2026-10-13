@@ -54,6 +54,9 @@
     --bw-glyph-fill: color-mix(in srgb, var(--bw-accent) 35%, var(--bw-window)); /* placeholder favicon tile */
     --bw-accent-soft: color-mix(in srgb, var(--bw-accent) 22%, transparent); /* selected-state wash */
     --bw-on-glyph: #fff; /* glyph drawn on the placeholder favicon tile (--bw-glyph-fill) */
+    /* The window colour without the glass alpha. Rust's glass and solid palettes share the RGB, so
+       a surface built on it paints the same in the (glass) toolbar and the (solid) popups. */
+    --bw-window-opaque: rgb(from var(--bw-window) r g b);
 
     /* Colour: fixed per scheme (reference-spec.md "Proposed tokens"; Rust sends no equivalent).
        Dark is the default; [data-scheme="light"] below overrides. */
@@ -92,6 +95,10 @@
     --bw-r-island: 8px; /* tab islands, cards */
     --bw-r-overlay: 8px; /* menus, flyouts, dialogs */
     --bw-r-pill: 999px; /* fully rounded */
+    /* The omnibox pill's own corner: exactly half its height, so it is round when closed and keeps
+       that curvature when its bottom corners square off into the open suggestions list, whose
+       bottom corners use it too (a 999px radius would rescale once the bottom radii drop to 0). */
+    --bw-r-omnibox: calc(var(--bw-pill-h) / 2);
 
     /* Chrome geometry, tuned by hand (commit 2086c05). Change only with the owner's sign-off. */
     --bw-toolbar-h: 34px; /* toolbar row */

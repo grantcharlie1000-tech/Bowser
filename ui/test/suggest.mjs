@@ -48,6 +48,22 @@ test('Rust suggest fixture parses as list, toolbar copy, selection and close', (
   assert.deepEqual(parseInbound(JSON.stringify(fixture.suggest)), list);
 });
 
+test('Rust suggestOpen fixture parses as the pill flag; anything else is rejected', () => {
+  assert.deepEqual(parseInbound(fixture.open), { t: 'suggestOpen', on: true });
+  assert.deepEqual(parseInbound(fixture.shut), { t: 'suggestOpen', on: false });
+  assert.deepEqual(parseInbound(JSON.stringify(fixture.open)), { t: 'suggestOpen', on: true });
+  for (const bad of [
+    { ...fixture.open, on: 1 },
+    { ...fixture.open, on: 'true' },
+    { ...fixture.open, v: 2 },
+    { ...fixture.open, seq: 3 },
+    { v: 1, t: 'suggestOpen' },
+    (({ v, ...rest }) => rest)(fixture.open),
+  ]) {
+    assert.equal(parseInbound(bad), null, JSON.stringify(bad));
+  }
+});
+
 test('malformed suggest messages are rejected', () => {
   const row = fixture.suggest.items[0];
   for (const bad of [
@@ -139,5 +155,33 @@ test('the typed text is found in rows the way Rust matches it', () => {
   assert.equal(suggestEmphasis('wiki', 'WIKI'), null);
   assert.deepEqual(suggestEmphasis('wikihow.com/', 'wiki'), [0, 4]);
   assert.equal(suggestEmphasis('example.org/', 'wiki'), null);
+});
+
+test('the open pill and the dropdown are one surface: same material and edge, no moving container', () => {
+  const styles = (name) => readFileSync(join(here, '..', 'src', 'styles', name), 'utf8');
+  const rule = (css, selector) => {
+    const at = css.indexOf(`${selector} {`) >= 0 ? css.indexOf(`${selector} {`) : css.indexOf(`${selector},`);
+    assert.ok(at >= 0, `${selector} exists`);
+    return css.slice(css.indexOf('{', at), css.indexOf('}', at));
+  };
+  const material = 'background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);';
+  const pill = rule(styles('toolbar.css'), '.pill.is-open');
+  const list = rule(styles('hover.css'), '.bw-suggest');
+  for (const body of [pill, list]) {
+    assert.ok(body.includes(material), 'shared opaque overlay material');
+    assert.match(body, /border(-color)?: (1px solid )?var\(--bw-pill-edge\)/, 'shared pill edge');
+  }
+  assert.match(pill, /border-bottom-left-radius: 0;/);
+  assert.match(pill, /border-bottom-right-radius: 0;/);
+  assert.match(pill, /border-bottom-color: transparent;/, 'the pill opens into the list: no seam line');
+  assert.match(list, /border-top: 0;/);
+  assert.match(list, /border-radius: 0 0 var\(--bw-r-omnibox\) var\(--bw-r-omnibox\);/, "bottom = the pill's radius");
+  // The pill's own corner is explicit (half its height), so squaring the bottom never rescales the top.
+  assert.match(rule(styles('toolbar.css'), '.pill'), /border-radius: var\(--bw-r-omnibox\);/);
+  assert.doesNotMatch(pill, /border-top-(left|right)-radius|border-radius:/, 'the open state leaves the top corners alone');
+  assert.match(styles('tokens.css'), /--bw-r-omnibox: calc\(var\(--bw-pill-h\) \/ 2\);/);
+  // The container never moves (its edges must stay on the pill's); only rows animate, first open only.
+  assert.doesNotMatch(list, /transform|animation/);
+  assert.doesNotMatch(styles('hover.css'), /\.bw-suggest\.bw-enter|bw-suggest[^{]*is-down/);
 });
 // --- end omnibox suggest ---

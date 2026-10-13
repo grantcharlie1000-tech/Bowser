@@ -220,6 +220,14 @@ export interface SuggestSelMsg {
   readonly seq: number;
   readonly sel: number;
 }
+/**
+ * Whether the dropdown is on screen under the pill (toolbar only), so the pill joins it as one
+ * surface. Sent when the popup shows and once it is fully hidden; never per keystroke.
+ */
+export interface SuggestOpenMsg {
+  readonly t: 'suggestOpen';
+  readonly on: boolean;
+}
 // --- end omnibox suggest ---
 export interface CompletionMsg {
   readonly t: 'completion';
@@ -306,6 +314,7 @@ export type Inbound =
   // --- omnibox suggest ---
   | SuggestMsg
   | SuggestSelMsg
+  | SuggestOpenMsg
   // --- end omnibox suggest ---
   | SnapshotMsg;
 
@@ -690,6 +699,9 @@ export function parseInbound(data: unknown): Inbound | null {
       if (!isInt(seq, 0, MAX_SEQ) || !isInt(sel, 0, MAX_SUGGEST_ITEMS - 1)) return null;
       return { t: 'suggestSel', seq, sel };
     }
+    case 'suggestOpen':
+      if (!hasOnlyKeys(raw, ['v', 't', 'on']) || raw.v !== 1 || !isBool(raw.on)) return null;
+      return { t: 'suggestOpen', on: raw.on };
     // --- end omnibox suggest ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;

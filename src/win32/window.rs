@@ -6124,7 +6124,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             return;
         }
         ChromeCommand::SuggestEnd => {
-            super::html_hover::suggest_hide(hwnd);
+            super::html_hover::suggest_close(hwnd);
             return;
         }
         // --- end omnibox suggest ---
@@ -7264,7 +7264,7 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
     .flatten();
     App::prewarm(&app, text);
     if text.is_empty() {
-        super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
+        super::html_hover::suggest_close(hwnd); // --- omnibox suggest ---
         return;
     }
     let reply = completion_json(seq, suffix.as_deref().unwrap_or(""));
@@ -7279,10 +7279,6 @@ pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
         let _ = host.post_json(json);
     }
 }
-
-/// Narrowest suggestion dropdown, in CSS pixels. Above it the dropdown is exactly as wide as the pill,
-/// so its squared top corners meet the pill's ends; only a very narrow window makes it overhang.
-const MIN_SUGGEST_WIDTH: u32 = 320;
 
 /// Computes the dropdown rows for edit `seq` and shows them under the pill. Runs once per edit, after
 /// the inline completion, so the default row follows it. Nothing here touches the disk except one
@@ -7309,12 +7305,22 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
         };
         row.item.png = tab.and_then(|id| App::tab_favicon(app, id)).filter(|png| chrome_host::favicon_sendable(png));
     }
+    // The dropdown continues the pill as one surface: it is exactly as wide as the pill the toolbar
+    // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
         let omnibox = s.layout.omnibox;
-        let mut origin = windows::Win32::Foundation::POINT { x: omnibox.left, y: omnibox.top };
+        let pill = chrome_host::toolbar_pill_rect(&s.layout, s.dpi).unwrap_or(RECT {
+            left: omnibox.left,
+            top: omnibox.top,
+            right: omnibox.right,
+            bottom: omnibox.bottom,
+        });
+        let mut origin = windows::Win32::Foundation::POINT { x: pill.left, y: pill.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
-        let css = chrome_host::css_px_from_physical(omnibox.width(), s.dpi).max(0) as u32;
-        (RECT { left: origin.x, top: origin.y, right: origin.x + omnibox.width(), bottom: origin.y + omnibox.height() }, css.max(MIN_SUGGEST_WIDTH))
+        let (w, h) = (pill.right - pill.left, pill.bottom - pill.top);
+        let css = chrome_host::toolbar_css_placement(&s.layout, s.dpi)
+            .map_or_else(|| chrome_host::css_px_from_physical(w, s.dpi), |(_, pill_w, _)| pill_w);
+        (RECT { left: origin.x, top: origin.y, right: origin.x + w, bottom: origin.y + h }, css.max(1) as u32)
     }) else {
         return;
     };

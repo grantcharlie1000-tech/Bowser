@@ -64,7 +64,7 @@ html[data-scheme="dark"] #app {
   margin: 0 auto;
   background-color: var(--bw-fill);
   border: 1px solid var(--bw-pill-edge);
-  border-radius: var(--bw-r-pill);
+  border-radius: var(--bw-r-omnibox);
   overflow: hidden;
   container-type: inline-size;
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
@@ -96,6 +96,28 @@ html[data-scheme="dark"] #app {
   box-shadow:
     0 0 0 1px var(--bw-focus),
     inset 0 0 0 1px var(--bw-focus-inner);
+}
+
+/* Open suggestions: the pill and the dropdown under it (hover.css .bw-suggest) are one surface.
+   Same opaque overlay material and the same --bw-pill-edge outline; the bottom corners square off
+   and the bottom edge opens into the list, which Rust tucks one device pixel under it. The top
+   half is untouched: same --bw-r-omnibox curvature as when closed. The focus
+   ring steps aside while the list shows (the list is the focus indicator); the caret stays.
+   Nothing here changes the pill's box, so the text row never moves. Rust sends suggestOpen when
+   the popup is on screen and again once it is gone, so the corners never show without the list. */
+.pill.is-open,
+.pill.is-open:focus-within {
+  border-color: var(--bw-pill-edge);
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+  box-shadow: none;
+  transition: none;
+}
+
+.pill.is-open .progress {
+  visibility: hidden;
 }
 
 .omni-field {

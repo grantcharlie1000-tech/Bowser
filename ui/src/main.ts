@@ -220,6 +220,10 @@ function startToolbar(root: HTMLElement): void {
           listSel = list ? list.sel : 0;
         }
         break;
+      case 'suggestOpen':
+        // The dropdown is on screen (or fully gone): the pill and the list read as one surface.
+        view.pill.classList.toggle('is-open', msg.on);
+        break;
       // --- end omnibox suggest ---
     }
   });

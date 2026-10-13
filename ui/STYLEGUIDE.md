@@ -225,8 +225,14 @@ draw identical shapes.
   `--bw-dur-slow` for large surfaces. Easing `--bw-ease-out` for enters, `--bw-ease-move` for
   point-to-point, `linear` (`--bw-ease-fade`) for fades.
 - Enter: add `.bw-enter` (opacity 0 -> 1 with 4px drop and .98 scale, 167ms out-ease).
-  `.is-down` drops from above (menus and suggestions under the toolbar), `.is-rise` rises 8px
+  `.is-down` drops from above (menus under the toolbar), `.is-rise` rises 8px
   (palette, dialogs), `.is-scale` scales only.
+- Omnibox suggestions are not a separate popover: the pill grows down into them. While Rust says
+  the list is on screen (`suggestOpen`), `.pill.is-open` squares only the pill's bottom corners
+  (top keeps `--bw-r-omnibox`) and shares the list's material and edge; the list's bottom corners
+  use `--bw-r-omnibox` too. Rust unrolls the popup's window region (167ms quint out; 100ms cubic
+  out on Escape/blur; instant on pick or submit; none when Windows animations are off); the list
+  container never transforms, only its rows settle in on first open.
 - Exit: add `.bw-exit` (83ms fade) and remove the element on `animationend`; it keeps receiving
   input while it fades.
 - Reduced motion (`prefers-reduced-motion: reduce`): `--bw-dur-base` and `--bw-dur-slow` become

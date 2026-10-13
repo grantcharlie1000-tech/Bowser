@@ -158,6 +158,26 @@ pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32
     ))
 }
 
+/// Client-relative physical pixels of the omnibox pill as the HTML toolbar paints it: the CSS
+/// placement above, on the pill's CSS row (centred in the toolbar row), with each edge scaled and
+/// rounded to a device pixel the way Blink snaps box edges. The suggestion dropdown attaches to this
+/// rectangle rather than to `layout.omnibox`, which can sit a pixel away from the painted pill once
+/// the placement has been rounded to CSS pixels (125% and 175%).
+pub fn toolbar_pill_rect(layout: &Layout, dpi: u32) -> Option<RECT> {
+    use crate::chrome::layout::Metrics;
+    let bounds = toolbar_bounds(layout)?;
+    let (x, w, _) = toolbar_css_placement(layout, dpi)?;
+    let scale = f64::from(Metrics::new(dpi).dpi()) / 96.0;
+    let snap = |css: i32| (f64::from(css) * scale).round() as i32;
+    let top = (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2;
+    Some(RECT {
+        left: bounds.left + snap(x),
+        top: bounds.top + snap(top),
+        right: bounds.left + snap(x + w),
+        bottom: bounds.top + snap(top + Metrics::OMNIBOX_HEIGHT),
+    })
+}
+
 /// Client-relative physical pixels of the HTML tab strip: the whole tab row, including its
 /// rail-shifted left edge. `None` when the row is empty (vertical sidebar mode has no tab row).
 pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
@@ -494,6 +514,33 @@ mod tests {
             assert_eq!(pill_x, css_px_from_physical(layout.omnibox.left - bounds.left, dpi));
             assert_eq!(pill_w, css_px_from_physical(layout.omnibox.width(), dpi));
             assert_eq!(menu_x, css_px_from_physical(layout.main_menu_button.left - bounds.left, dpi));
+        }
+    }
+
+    #[test]
+    fn painted_pill_rect_snaps_each_edge_and_stays_within_a_pixel_of_the_layout() {
+        for dpi in [96, 120, 144, 168, 192] {
+            for width in [760, 1100, 1600] {
+                let layout = compute_in_frame(width, 800, dpi, 3, 0, false);
+                let pill = toolbar_pill_rect(&layout, dpi).expect("pill");
+                let bounds = toolbar_bounds(&layout).expect("toolbar");
+                let (x, w, _) = toolbar_css_placement(&layout, dpi).expect("placement");
+                let snap = |css: i32| (f64::from(css) * f64::from(dpi) / 96.0).round() as i32;
+                assert_eq!(pill.left, bounds.left + snap(x), "dpi={dpi} width={width}");
+                assert_eq!(pill.right, bounds.left + snap(x + w), "dpi={dpi} width={width}");
+                assert_eq!(pill.bottom - bounds.top, snap(30), "the 26px pill is centred in the 34px row");
+                for (painted, laid_out) in [
+                    (pill.left, layout.omnibox.left),
+                    (pill.right, layout.omnibox.right),
+                    (pill.top, layout.omnibox.top),
+                    (pill.bottom, layout.omnibox.bottom),
+                ] {
+                    assert!((painted - laid_out).abs() <= 1, "dpi={dpi} width={width}: {painted} vs {laid_out}");
+                }
+                if dpi == 96 {
+                    assert_eq!((pill.left, pill.top, pill.right, pill.bottom), (layout.omnibox.left, layout.omnibox.top, layout.omnibox.right, layout.omnibox.bottom));
+                }
+            }
         }
     }
 
