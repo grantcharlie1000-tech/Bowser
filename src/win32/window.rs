@@ -2795,12 +2795,8 @@ unsafe extern "system" fn window_proc(
                         let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
                         menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
                             header: None,
-                            entries: vec![
-                                Entry::Item(Item::new(1, "Import", Icon::Grid).glyph("download")),
-                                Entry::Item(Item::new(2, "Not now", Icon::Close).glyph("clock")),
-                                Entry::Item(Item::new(3, "Don't ask again", Icon::Close).glyph("close")),
-                            ],
-                            footer: "Import bookmarks and supported search settings from another browser. You can also import later from the main menu.".into(),
+                            entries: import_offer_entries(),
+                            footer: IMPORT_OFFER_FOOTER.into(),
                         }, "import-offer", move |_, selected| {
                             let _ = profile.remember_import_offer_choice();
                             if selected.is_some_and(|item| item.id == 1) {
@@ -3594,6 +3590,22 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
         W::Globe => "workspace-globe",
         W::Leaf => "workspace-leaf",
     }
+}
+
+/// The first-run import offer as a compact notice in the ordinary menu model: a title, one
+/// explanatory line, then the three choices (V31).
+const IMPORT_OFFER_TITLE: &str = "Import from another browser?";
+const IMPORT_OFFER_DETAIL: &str = "Bring over bookmarks and search settings.";
+const IMPORT_OFFER_FOOTER: &str = "Also available later in the main menu.";
+
+fn import_offer_entries() -> Vec<Entry> {
+    vec![
+        Entry::SectionHeader(IMPORT_OFFER_TITLE.to_owned()),
+        Entry::SectionHeader(IMPORT_OFFER_DETAIL.to_owned()),
+        Entry::Item(Item::new(1, "Import", Icon::Grid).glyph("download")),
+        Entry::Item(Item::new(2, "Not now", Icon::Close).glyph("clock")),
+        Entry::Item(Item::new(3, "Don't ask again", Icon::Close).glyph("close")),
+    ]
 }
 
 /// Where a rail context menu opens: at the pointer, but never over the rail itself, so the menu
@@ -8344,6 +8356,17 @@ mod tests {
         assert_eq!((rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).x, rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).y), (36, 220));
         // A pointer already past the rail stays where it is.
         assert_eq!(rail_menu_anchor(POINT { x: 90, y: 5 }, rail_right).x, 90);
+    }
+
+    #[test]
+    fn import_offer_is_a_title_one_explanatory_line_then_the_three_choices() {
+        let entries = import_offer_entries();
+        assert!(matches!(&entries[0], Entry::SectionHeader(title) if title == IMPORT_OFFER_TITLE));
+        assert!(matches!(&entries[1], Entry::SectionHeader(detail) if detail == IMPORT_OFFER_DETAIL));
+        let ids: Vec<usize> = entries.iter().filter_map(|entry| if let Entry::Item(item) = entry { Some(item.id) } else { None }).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        // Short enough to stay on one line in a compact menu.
+        assert!(IMPORT_OFFER_TITLE.len() <= 32 && IMPORT_OFFER_DETAIL.len() <= 44 && IMPORT_OFFER_FOOTER.len() <= 44);
     }
 
     #[test]

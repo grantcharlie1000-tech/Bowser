@@ -222,6 +222,13 @@
   padding-top: var(--bw-space-1);
 }
 
+/* A heading straight after another is its explanatory line: regular weight, tucked under the title
+   (the first-run import offer is a title, one sentence, then the choices). */
+.html-menu-section + .html-menu-section {
+  padding-top: 0;
+  font-weight: 400;
+}
+
 /* Back row of a drill-in page: chevron and the parent's name. */
 .html-menu-back {
   margin-bottom: var(--bw-space-1);
