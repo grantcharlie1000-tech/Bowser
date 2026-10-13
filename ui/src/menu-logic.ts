@@ -29,7 +29,7 @@ export interface MenuMessage {
 export const MENU_ICONS: readonly string[] = [
   'app-tile', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
-  'close', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'extensions', 'external', 'eye',
+  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'extensions', 'external', 'eye',
   'find', 'folder', 'forward', 'gear', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
   'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'profile', 'puzzle', 'refresh', 'reload', 'reset', 'search', 'settings',

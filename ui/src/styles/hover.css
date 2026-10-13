@@ -14,7 +14,8 @@
 }
 
 body.bw-hover-body {
-  background: var(--bw-overlay);
+  /* Opaque: the overlay tint over the window colour without its glass alpha. */
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   color: var(--bw-text);
   font: 12px/1.35 var(--bw-font);
 }
@@ -60,7 +61,7 @@ body.bw-hover-body {
   padding: 10px;
   border: 1px solid var(--bw-hairline);
   border-radius: var(--bw-r-overlay);
-  background: var(--bw-overlay);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   color: var(--bw-text);
 }
 
@@ -110,8 +111,8 @@ body.bw-hover-body {
 .bw-card-marker-next {
   display: grid;
   place-items: center;
-  border-radius: var(--bw-r-control);
-  box-shadow: inset 0 0 0 1px var(--bw-hairline);
+  /* Same circle as the markers it sits among. */
+  box-shadow: inset 0 0 0 1px var(--bw-pill-edge);
   color: var(--bw-text-2);
 }
 
@@ -145,14 +146,10 @@ body.bw-hover-body {
   place-items: center;
 }
 
-.bw-card-fav.is-empty::after,
-.bw-card-row-fav.is-empty::after,
-.bw-island-row-fav.is-empty::after {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--bw-text-2);
+.bw-card-fav.is-empty,
+.bw-card-row-fav.is-empty,
+.bw-island-row-fav.is-empty {
+  color: var(--bw-text-2);
 }
 
 .bw-card-text {

@@ -64,8 +64,7 @@ function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: Rea
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
-  node.root.setAttribute('aria-label', label);
-  setTip(node.root, label);
+  node.root.setAttribute('aria-label', label); // no data-tip: the hover card shows the title
   node.root.setAttribute('aria-selected', String(active));
   node.root.setAttribute('aria-level', item.g > 0 ? '2' : '1');
   node.root.dataset.g = String(item.g);

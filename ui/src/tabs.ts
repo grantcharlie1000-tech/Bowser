@@ -126,8 +126,8 @@ function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): v
   if (n.title.textContent !== item.title) n.title.textContent = item.title;
   const label = item.title !== '' ? item.title : 'Tab';
   if (n.root.getAttribute('aria-label') !== label) {
+    // No data-tip on the tab itself: the hover card shows the title, and a plain tooltip would flash before it.
     n.root.setAttribute('aria-label', label);
-    setTip(n.root, label);
   }
   n.root.setAttribute('aria-selected', String(selected));
   n.close.setAttribute('aria-label', `Close tab: ${label}`);

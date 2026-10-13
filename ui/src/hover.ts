@@ -28,9 +28,11 @@ const MARKER_NAMES = ['Heart', 'Flame', 'Bag', 'Palm', 'Eyes'] as const;
 
 function favicon(uri: string, className: string): HTMLElement {
   if (uri === '') {
-    const dot = el('span', `${className} is-empty`);
-    dot.setAttribute('aria-hidden', 'true');
-    return dot;
+    // No cached favicon: the family's globe glyph (never a bare bullet).
+    const glyph = el('span', `${className} is-empty`);
+    glyph.setAttribute('aria-hidden', 'true');
+    glyph.append(icon('workspace-globe'));
+    return glyph;
   }
   const img = el('img', className);
   img.alt = '';

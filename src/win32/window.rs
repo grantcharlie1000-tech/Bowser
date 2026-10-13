@@ -3976,7 +3976,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 },
                 Icon::None,
             )
-            .glyph("workspace-globe")
+            .glyph(if mute_site { "mute" } else { "volume" })
             .disabled_if(!can_mute_site),
         ),
         Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).glyph("clock").disabled_if(!can_hibernate)),
@@ -3996,7 +3996,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).glyph("close")),
         Entry::Item(
-            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).glyph("trash").disabled_if(ids.len() <= 1),
+            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).glyph("close-others").disabled_if(ids.len() <= 1),
         ),
         Entry::Item(
             Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).glyph("back").disabled_if(index == 0),
@@ -6821,7 +6821,11 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
             App::set_tab_muted(&app, id, !muted);
         }
         TabAction::Menu => {
-            if let Some((x, y)) = cursor_client_point(hwnd) {
+            if let Some((x, mut y)) = cursor_client_point(hwnd) {
+                // Open below the tab, not over it (the horizontal strip; the sidebar has no tab row).
+                if let Some(bottom) = with_chrome(hwnd, |s| (!s.layout.tab_row.is_empty()).then_some(s.layout.tab_row.bottom)).flatten() {
+                    y = y.max(bottom);
+                }
                 defer_html_command(hwnd, DeferredChromeCommand::TabMenu { id, x, y });
             }
         }
