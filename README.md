@@ -60,6 +60,24 @@ The dashboard can clear cookies and site data, cache, or WebView2 browsing histo
 
 Bookmarks, hosted account management, and a download manager are not included. The main menu provides profiles, extensions, Passwords & Passkeys, the site blocker, the Privacy dashboard, and Settings. It is an experimental browser and the benchmark report describes its observed behavior and limits.
 
+## Private tabs
+
+Choose **New private tab** from the main menu, the command palette, or press **Ctrl+Shift+P** (this chord used to open the profile menu, which moved to **Ctrl+Shift+M**). A private tab belongs to the current window and workspace like any other tab, shows a private glyph on the tab and in the address pill, and is created InPrivate (`ICoreWebView2ControllerOptions.IsInPrivateModeEnabled`) in one shared, in-memory WebView2 profile named `BowserPrivate`. All private tabs of a window share that profile, so a site you sign in to in one private tab is signed in in the others; it is separate from the browsing profile and from Bowser's own chrome profile. Pages opened from a private tab (link and script popups that Bowser allows) are private too.
+
+What a private tab never does:
+
+- **History, suggestions and favicons:** nothing is added to `history.txt`, to the address-bar suggestions, or to any favicon store.
+- **Cookies, storage and cache:** held in memory by WebView2 and discarded when the last private tab of the window closes (or the window exits or crashes). Nothing is written to the profile's WebView2 folder.
+- **Sessions:** private tabs are left out of the crash-recovery session, named sessions and the tab lists saved with workspaces, so they are not restored after a restart.
+- **Tab groups:** a private tab is never in a group, so a private site never reaches `tab-groups.txt` (site modes, names, colours, collapse). Grouping choices are not offered on its tab menu, and it cannot be duplicated or moved to another window (a new window is a new process that would not be private).
+- **Permissions:** every permission request is denied. Stored site choices do not apply and none can be saved from a private tab; Site information lists them as blocked. Downloads are cancelled and popups follow the usual policy.
+- **Blocker and statistics:** the blocker is always on in a private tab and ignores both the global switch and per-site exceptions (the main-menu item is shown checked and disabled), and blocked requests are not counted in the Privacy dashboard or `privacy-stats.txt`.
+- **Tracking prevention:** forced to Strict for the private profile, and a private tab is not created if Strict cannot be applied and read back.
+- **Sign-ins:** no save prompts are offered; its pages get no message channel for the sign-in detector. Filling a saved sign-in with Ctrl+Shift+L remains your explicit choice.
+- **Sleeping tabs:** a private tab is never discarded (closing its controller could end the in-memory profile); it can still be suspended.
+
+A bookmark is the one thing a private tab may write, and only when you add it yourself (Ctrl+D). Extensions are installed into the browsing profile only and do not run in private tabs. Private tabs are not a defence against the network, the sites you visit, your employer or Microsoft Defender SmartScreen reputation checks (which may still see visited addresses); they only keep Bowser from keeping a local record. Guest windows (`--guest`) remain separate: a new process with its own temporary profile folder that is deleted on exit. Private tabs are the lighter choice when you want one private page in your normal window; Guest is the choice for handing the whole browser to someone else.
+
 ## Interface
 
 The window has two rows over a translucent surface:
@@ -102,6 +120,8 @@ Shortcuts match modifiers exactly, so Ctrl+Alt combinations (AltGr on some keybo
 | Action | Shortcut |
 | --- | --- |
 | New tab (focuses the address field) | Ctrl+T |
+| New private tab | Ctrl+Shift+P |
+| Profile menu (switch, create, delete) | Ctrl+Shift+M |
 | Close tab | Ctrl+W, Ctrl+F4 |
 | Next tab | Ctrl+Tab, Ctrl+Page Down |
 | Previous tab | Ctrl+Shift+Tab, Ctrl+Page Up |

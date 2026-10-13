@@ -50,7 +50,7 @@ Any message with more than six keys is rejected as soon as the seventh key start
 
 | `t` | fields |
 |---|---|
-| `state` | `scale` number (device pixel ratio hint), `pillx`, `pillw` and `menux` non-negative integers in CSS px relative to the toolbar host's left edge, `solid` bool, `dark` bool, `back` bool, `forward` bool, `loading` bool, `progress` int 0-100, `security` one of `secure`/`notsecure`/`certproblem`/`internal`/`unknown`/`none`, `label` string (security summary, short), `theme` object of CSS colour strings keyed by token: `bg`, `fill`, `border`, `focusBorder`, `text`, `placeholder`, `completion`, `selection`, `hover`, `progress`. Older states without the three placement fields use flex centring. |
+| `state` | `scale` number (device pixel ratio hint), `pillx`, `pillw` and `menux` non-negative integers in CSS px relative to the toolbar host's left edge, `solid` bool, `dark` bool, `back` bool, `forward` bool, `loading` bool, `progress` int 0-100, `security` one of `secure`/`notsecure`/`certproblem`/`internal`/`unknown`/`none`, `label` string (security summary, short), `permblocked` bool (optional), `private` bool (optional: the active tab is a private tab; the pill shows the private indicator), `theme` object of CSS colour strings keyed by token: `bg`, `fill`, `border`, `focusBorder`, `text`, `placeholder`, `completion`, `selection`, `hover`, `progress`. Older states without the three placement fields use flex centring. |
 | `setText` | `text` string, `select` bool (Rust-set omnibox text, e.g. on tab switch or Ctrl+L). Sent when the active tab changes even while the omnibox is focused (a blank new tab sends `""` with `select: true`); within the same tab, only while the omnibox is unfocused, so typing is never overwritten |
 | `focusOmnibox` | `select` bool |
 | `completion` | `seq` int, `suffix` string (inline completion for edit `seq`; JS ignores stale seq or if value no longer matches) |
@@ -111,7 +111,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 
 | `t` | fields |
 |---|---|
-| `tabs` | `active` id, `items` array of `{id, title, loading, pinned, muted, marker (int, -1 none), g (group key int, 0 none), gl (bool: group leader), gname (leader only), gcol (leader only, int colour id, -1 accent), gcollapsed (leader only), gsize (leader only), fav (bool: a favicon is cached for this id)}`. Titles are length-capped by Rust. |
+| `tabs` | `active` id, `items` array of `{id, title, loading, pinned, muted, private (bool: a private tab, never grouped, so `g` is `0`), marker (int, -1 none), g (group key int, 0 none), gl (bool: group leader), gname (leader only), gcol (leader only, int colour id, -1 accent), gcollapsed (leader only), gsize (leader only), fav (bool: a favicon is cached for this id)}`. Titles are length-capped by Rust. |
 | `fav` | `id`, `uri` (`data:image/png;base64,...`, validated PNG, <= 16 KiB) sent once per favicon change |
 | `layout` | `mode`: `vertical`/`horizontal` | tells the Tabs view which renderer to show |
 | `workspace` | `name`, `icon` (`g:` plus a known workspace glyph) | current workspace label and glyph for the vertical header |
@@ -287,6 +287,25 @@ the active tab's current page was denied (no stored Allow). It is set by the Web
 new navigation. It is passive (the decision is already final; nothing prompts). The toolbar owner
 styles it as a small icon in the pill; the site info page shows the same fact as `blockedHere`.
 The field is optional for the page parser (older states omit it) and must be a bool.
+
+### Private tabs: `tabs[].private`, `state.private`
+
+A private (InPrivate) tab is an ordinary tab whose controller Rust creates with
+`ICoreWebView2ControllerOptions.IsInPrivateModeEnabled = true` and `ProfileName = "BowserPrivate"` (not the
+chrome's `BowserChrome`), via the same `Environment10::CreateCoreWebView2ControllerOptions` path the chrome
+hosts use; after creation Rust verifies `ICoreWebView2_13::Profile` really is that InPrivate profile and that
+Strict tracking prevention read back, else the tab is not created. The wire carries only presentation state:
+
+- Every `tabs` item has a required `private` bool placed after `muted`. A private tab is never grouped, so its
+  `g` is `0` and it carries no group fields, and pinning does not put it in a group. The page validates the key
+  strictly (a missing or non-bool value rejects the whole message) and sets `data-private="true"` on the tab.
+- `state.private` (optional bool, rejected when present and not a bool) is true while the active tab is private;
+  the toolbar pill shows the private indicator and sets `data-private="true"`.
+- `siteinfo` carries an optional `private: true` (sent only for a private tab): `perms` is then empty,
+  `reset` is false and no permission or blocker action is declared.
+
+Nothing new goes JS -> Rust: the six-key and 16 KiB inbound limits are unchanged, and the page cannot make a tab
+private (only the native `New private tab` command, Ctrl+Shift+P, can).
 
 ### Name prompt dialog (`?view=dialog&p=rename`, `View::DialogRename`)
 
