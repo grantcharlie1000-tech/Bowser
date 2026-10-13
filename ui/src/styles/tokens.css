@@ -49,6 +49,8 @@
     --bw-pill-edge: color-mix(in srgb, var(--bw-text) 22%, transparent); /* omnibox pill border, rail rule */
     --bw-island: color-mix(in srgb, var(--bw-text) 13%, transparent); /* active tab / row island */
     --bw-island-idle: color-mix(in srgb, #000 22%, transparent); /* inactive tab / row island */
+    --bw-island-active: color-mix(in srgb, var(--bw-text) 24%, transparent); /* the selected tab: the strongest fill in the strip */
+    --bw-text-dim: var(--bw-text-2); /* inactive tab titles and rail glyphs (>= 4.5:1 text, 3:1 glyphs over the glass) */
     --bw-island-edge: color-mix(in srgb, var(--bw-border) 45%, transparent); /* inactive island outline */
     --bw-island-hover: var(--bw-hover);
     --bw-glyph-fill: color-mix(in srgb, var(--bw-accent) 35%, var(--bw-window)); /* placeholder favicon tile */
@@ -156,6 +158,10 @@
     --bw-focus-inner: #fff;
     --bw-on-accent: #fff;
     --bw-scrim: rgba(0, 0, 0, 0.3);
+    /* Light glass sits on whatever the desktop shows, often a mid grey: dim text is ink at 86%, not
+       the 62% placeholder, so inactive tabs and rail glyphs keep their contrast there. */
+    --bw-text-dim: color-mix(in srgb, var(--bw-text) 86%, transparent);
+    --bw-island-active: rgba(255, 255, 255, 0.92);
   }
 
   /* Reduced motion: movement durations collapse to 0; fades stay at <= 83ms. Together with the

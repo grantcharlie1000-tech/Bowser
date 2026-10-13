@@ -31,12 +31,12 @@
   align-items: center;
   gap: var(--bw-space-1);
   flex: 1 1 0;
-  min-width: var(--bw-tab-h);
+  min-width: 32px;
   height: var(--bw-tab-h);
   padding: 0 var(--bw-space-0_5) 0 7px; /* 1px border + 7px = the 8px favicon inset */
   border: 1px solid var(--bw-island-edge);
   border-radius: var(--bw-r-tab);
-  color: var(--bw-text-2);
+  color: var(--bw-text-dim);
   cursor: default;
   touch-action: none;
   transition: transform var(--bw-dur-base) var(--bw-ease-out), box-shadow var(--bw-dur-base) var(--bw-ease-out);
@@ -57,10 +57,15 @@
     background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-/* The selected tab is always the widest: 1.5x an inactive tab's share of the row. */
-.strip .tab.active { flex-grow: 1.5; }
+/* The selected tab is always the widest: 1.5x an inactive tab's share of the row, and never below
+   enough room for its icon, a readable title and its close button. */
+.strip .tab.active {
+  flex-grow: 1.5;
+  min-width: 96px;
+}
 
-/* Inactive tabs are a darker translucent fill; the active tab is a lighter one. */
+/* Inactive tabs are a recessed translucent fill with dim text; the active tab is a raised island:
+   the strongest fill in the strip, a hairline edge, a soft shadow and full-strength text. */
 .strip .tab::before { background: var(--bw-island-idle); }
 
 .strip .tab::after {
@@ -73,20 +78,20 @@
 .strip .tab:active::after { opacity: 1; background: var(--bw-island); }
 
 .strip .tab.active {
-  border-color: var(--bw-border);
+  border-color: var(--bw-pill-edge);
+  box-shadow: var(--bw-sh-tip);
   color: var(--bw-text);
 }
 
-.strip .tab.active::before { background: var(--bw-island); }
+.strip .tab.active::before { background: var(--bw-island-active); }
 .strip .tab.active::after { opacity: 0; }
 .strip .tab.active:hover::after { opacity: 1; }
 
-/* Light scheme: the shared idle wash is a black 22%, which dulls the glass and drops secondary text
-   below 4.5:1. Inactive tabs get a faint ink wash instead and the active tab a lighter, near-white
-   island (as in the native strip, where the selected tab is the lightest surface). */
+/* Light scheme: the shared idle wash is a black 22%, which dulls the glass. Inactive tabs get a faint
+   ink wash instead; the active tab is a near-white island (as in the native strip, where the selected
+   tab is the lightest surface). */
 :root[data-scheme="light"] .strip .tab::before { background: color-mix(in srgb, var(--bw-text) 7%, transparent); }
-:root[data-scheme="light"] .strip .tab.active::before { background: color-mix(in srgb, #fff 72%, transparent); }
-:root[data-scheme="light"] .strip .tab:not(.active) { border-color: color-mix(in srgb, var(--bw-text) 12%, transparent); }
+:root[data-scheme="light"] .strip .tab:not(.active) { border-color: color-mix(in srgb, var(--bw-text) 14%, transparent); }
 
 /* Applied for one frame while a position animation is set up (and by FLIP re-measuring). */
 .strip.settle .tab { transition: none; }
@@ -139,7 +144,7 @@
 }
 
 /* No favicon yet: the family's globe glyph, quiet, not a tile. */
-.strip .glyph { color: var(--bw-text-2); }
+.strip .glyph { color: var(--bw-text-dim); }
 .strip .tab.active .glyph { color: var(--bw-text); }
 .strip .glyph svg { --bw-icon-stroke: 1.25px; }
 
@@ -151,15 +156,15 @@
 
 .strip .tab.muted .fav { opacity: 0.6; }
 
-/* ---- Title: left-aligned, fades out instead of an ellipsis ---- */
+/* ---- Title: left-aligned, ellipsised at the end ---- */
 .strip .title {
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
   text-align: start;
   unicode-bidi: isolate;
-  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
 }
 
 .strip .marker {
@@ -198,6 +203,19 @@
   .strip .tab:not(.active) .audio { display: none; }
 }
 
+/* Very narrow inactive tabs (a crowded row or a small window) show only their favicon, centred; the
+   title is in the tooltip. The query measures the content box, ~11px less than the tab (border and
+   padding), so 52px here is a tab of about 63px. The active tab keeps its title (min-width above),
+   and the row stays full. */
+@container (max-width: 51.9px) {
+  .strip .tab:not(.active) .ico {
+    margin-inline: auto;
+    translate: -2.5px 0; /* the tab's padding is 7px / 2px: centre the icon in the box instead */
+  }
+  .strip .tab:not(.active) .title,
+  .strip .tab:not(.active) .marker { display: none; }
+}
+
 /* ---- Pinned: a 32px icon tile at the start of the strip ---- */
 .strip .tab.pinned {
   flex: 0 0 32px;
@@ -221,48 +239,57 @@
   /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
      active one). The basis is the island's own chrome (header chip --go, a gap per child, padding), so
      what is left over is shared exactly like top-level tabs: a group never leaves the row short. */
-  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1) + var(--bw-space-1) + var(--bw-space-0_5));
+  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
   min-width: min-content;
   height: var(--bw-tab-h);
-  padding: 0 var(--bw-space-1) 0 var(--bw-space-0_5);
+  padding: 0;
 }
 
+/* The group's colour is a 2px underline running under the header and its tabs, not a pill around them. */
 .strip .group::before {
   content: "";
   position: absolute;
-  inset: -1px 0;
+  left: 0;
+  right: 0;
+  bottom: -3px;
   z-index: -1;
-  border-radius: calc(var(--bw-r-tab) + 2px);
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gc, var(--bw-focus)) 60%, transparent);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--gc, var(--bw-focus));
   pointer-events: none;
 }
 
-/* Group header: coloured dot and the group name. Collapsed groups fill the chip with the colour. */
+/* Group header: a 6px colour dot, the name and a small disclosure chevron. It is deliberately quieter
+   than a tab: no island fill, regular weight, a smaller footprint, so the selected tab (the strongest
+   fill and edge in the strip) is never confused with a collapsed group. */
 .strip .ball {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 5px;
+  gap: var(--bw-space-1);
   height: 20px;
-  max-width: 120px;
+  max-width: 96px;
   margin: 0;
-  padding: 0 6px;
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-1_5);
   border: 0;
-  border-radius: calc(var(--bw-r-tab) - 2px);
+  border-radius: var(--bw-r-control);
   background: transparent;
-  color: var(--bw-text);
+  color: var(--bw-text-dim);
   font: inherit;
+  font-weight: 400;
   cursor: default;
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.strip .ball:hover { background: var(--bw-hover); }
+.strip .ball:hover {
+  background: var(--bw-hover);
+  color: var(--bw-text);
+}
 
 .strip .ball .dot {
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--gc, var(--bw-focus));
 }
@@ -270,20 +297,31 @@
 .strip .ball .gname {
   min-width: 0;
   overflow: hidden;
-  font-weight: 600;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .strip .ball .gname:empty { display: none; }
-.strip .ball:has(.gname:empty) { padding: 0 5px; }
 
+.strip .ball .disclose {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  opacity: 0.8;
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.strip .ball[aria-expanded="true"] .disclose { transform: rotate(90deg); }
+
+/* Collapsed: a faint tint of the group's colour, never an island fill. */
 .strip .ball[aria-expanded="false"] {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 32%, transparent);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 14%, transparent);
 }
 
 .strip .ball[aria-expanded="false"]:hover {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 46%, transparent);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 24%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

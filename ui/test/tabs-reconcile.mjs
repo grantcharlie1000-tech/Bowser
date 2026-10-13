@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'tabs-logic.ts'), 'utf8');
 const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
 const logic = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const { ACTIVE_WEIGHT, groupWeight, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
+const { beforeSlotId, groupColourIndex, ACTIVE_WEIGHT, groupWeight, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
 
 const tab = (id, extra = {}) => ({
   id,
@@ -167,8 +167,27 @@ test('a group of eight keeps its active tab visible and heaviest', () => {
 test('tabs.css keeps the strip filled: no tab max-width, active weighs 1.5, groups grow by weight', () => {
   const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
   assert.match(css, /\.strip \.tab \{[^}]*flex: 1 1 0;/);
-  assert.match(css, /\.strip \.tab\.active \{ flex-grow: 1\.5; \}/);
+  assert.match(css, /\.strip \.tab\.active \{[^}]*flex-grow: 1\.5;/);
   assert.match(css, /\.strip \.group \{[^}]*flex: var\(--gw, 1\) 1 calc\(/);
   const tab = /\.strip \.tab \{[^}]*\}/.exec(css)?.[0] ?? '';
   assert.doesNotMatch(tab, /max-width/);
+});
+
+test('a collapsed group is one drop slot: dropping before it targets its first member', () => {
+  // Group g1 = tabs 2,3,4 with 3 (active) the only visible member; tab 5 follows.
+  const leaders = new Map([[3, 2]]);
+  assert.equal(beforeSlotId([1, 3, 5], 1, leaders), 2, 'before the group, not between its members');
+  assert.equal(beforeSlotId([1, 3, 5], 2, leaders), 5, 'after the group is before the next tab');
+  assert.equal(beforeSlotId([1, 3, 5], 3, leaders), 0, 'past the last slot means last');
+  assert.equal(beforeSlotId([1, 3, 5], 0, leaders), 1);
+});
+
+test('automatic groups (no colour id) get a stable palette colour, explicit ids are kept', () => {
+  assert.equal(groupColourIndex(5, 1, 'x'), 5);
+  assert.equal(groupColourIndex(9, 1, 'x'), 1, 'ids wrap into the 8-colour palette');
+  const a = groupColourIndex(-1, 4, 'wikipedia.org');
+  assert.equal(a, groupColourIndex(undefined, 99, 'wikipedia.org'), 'depends on the name, not the key');
+  assert.ok(a >= 0 && a < 8);
+  const used = new Set(['wikipedia.org', 'github.com', 'bbc.com', 'rust-lang.org', 'docs.rs', 'crates.io'].map((n) => groupColourIndex(-1, 1, n)));
+  assert.ok(used.size >= 3, 'different sites spread over the palette');
 });
