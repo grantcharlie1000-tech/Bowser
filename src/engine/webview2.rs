@@ -41,6 +41,7 @@ use super::{
     MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
+use crate::shield::RequestKind;
 use crate::tabs::TabId;
 use crate::{shortcuts, win32};
 
@@ -432,16 +433,108 @@ thread_local! {
     static REQUEST_URL: RefCell<String> = RefCell::new(String::with_capacity(512));
 }
 
-const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER,
+/// The resource contexts the request hook subscribes to, with the Shield request kind each one
+/// is filtered as. A main frame or iframe document, a stylesheet and a font are not here, so none
+/// of them is ever blocked (an iframe element is dealt with by cosmetic rules).
+const BLOCKABLE_CONTEXTS: [(COREWEBVIEW2_WEB_RESOURCE_CONTEXT, RequestKind); 8] = [
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, RequestKind::Script),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, RequestKind::Image),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, RequestKind::Media),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, RequestKind::Xhr),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, RequestKind::Xhr),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, RequestKind::Ping),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE, RequestKind::Other),
+    (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER, RequestKind::Other),
 ];
+
+/// The Shield kind a request of this WebView2 context is filtered as, `None` for a context that
+/// is never filtered.
+fn request_kind(context: COREWEBVIEW2_WEB_RESOURCE_CONTEXT) -> Option<RequestKind> {
+    BLOCKABLE_CONTEXTS
+        .iter()
+        .find(|(blockable, _)| *blockable == context)
+        .map(|(_, kind)| *kind)
+}
+
+/// The cosmetic (element hiding) script of one tab: installed at document start, and rebuilt
+/// before a navigation when a site exception changed since it was built.
+struct CosmeticScript {
+    blocker: super::BlockerHandle,
+    private: bool,
+    /// The blocker generation the installed script was built from; `None` before the first build.
+    built_from: Cell<Option<u64>>,
+    /// Counts builds, so a completion that arrives after a newer build removes its own script.
+    epoch: Rc<Cell<u64>>,
+    /// The id WebView2 gave the installed script.
+    id: Rc<RefCell<Option<String>>>,
+}
+
+impl CosmeticScript {
+    fn new(blocker: super::BlockerHandle, private: bool) -> Rc<Self> {
+        Rc::new(Self {
+            blocker,
+            private,
+            built_from: Cell::new(None),
+            epoch: Rc::new(Cell::new(0)),
+            id: Rc::new(RefCell::new(None)),
+        })
+    }
+
+    /// Installs the script for the blocker's current exceptions, replacing the previous one.
+    /// Does nothing when the exceptions have not changed. WebView2 applies script changes in call
+    /// order, so this is in place for the navigation that follows; never wait for the completion.
+    unsafe fn refresh(
+        &self,
+        webview: &ICoreWebView2,
+        log: Option<&Rc<dyn Fn(&'static str)>>,
+    ) -> Result<()> {
+        let (generation, script) = {
+            let blocker = self.blocker.borrow();
+            (blocker.generation(), blocker.cosmetic_script(self.private))
+        };
+        if self.built_from.get() == Some(generation) {
+            return Ok(());
+        }
+        self.built_from.set(Some(generation));
+        let epoch = self.epoch.get() + 1;
+        self.epoch.set(epoch);
+        if let Some(old) = self.id.borrow_mut().take() {
+            let old = CoTaskMemPWSTR::from(old.as_str());
+            unsafe { webview.RemoveScriptToExecuteOnDocumentCreated(*old.as_ref().as_pcwstr())? };
+        }
+        let Some(script) = script else {
+            return Ok(());
+        };
+        let script = CoTaskMemPWSTR::from(script.as_str());
+        let (current_epoch, slot) = (self.epoch.clone(), self.id.clone());
+        let stale_webview = webview.clone();
+        let log = log.cloned();
+        unsafe {
+            webview.AddScriptToExecuteOnDocumentCreated(
+                *script.as_ref().as_pcwstr(),
+                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                    move |status, id| {
+                        if status.is_err() {
+                            event(log.as_ref(), "cosmetic_script_failed");
+                            return Ok(());
+                        }
+                        let id = id.to_string();
+                        if current_epoch.get() == epoch {
+                            *slot.borrow_mut() = Some(id);
+                        } else {
+                            // A newer script was installed while this one was being added.
+                            let stale = CoTaskMemPWSTR::from(id.as_str());
+                            let _ = stale_webview
+                                .RemoveScriptToExecuteOnDocumentCreated(*stale.as_ref().as_pcwstr());
+                        }
+                        Ok(())
+                    },
+                )),
+            )?;
+        }
+        Ok(())
+    }
+}
 
 struct WebView2Tab {
     environment: Option<ICoreWebView2Environment>,
@@ -2680,6 +2773,10 @@ unsafe fn configure_controller(
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let block_tab = Rc::new(TabBlockState::default());
+        let cosmetic = blocker
+            .as_ref()
+            .map(|blocker| CosmeticScript::new(blocker.clone(), private));
+        let navigation_cosmetic = cosmetic.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         webview.add_NavigationStarting(
@@ -2704,6 +2801,15 @@ unsafe fn configure_controller(
                         Some(NavigationStartPolicy::Allow) => {
                             if let Some(sender) = _sender.as_ref() {
                                 exit_native_picture_in_picture(sender);
+                                // A site exception may have changed since the cosmetic script was
+                                // built (Ctrl+Shift+B reloads the tab): rebuild it before this
+                                // navigation creates its document.
+                                if let Some(cosmetic) = navigation_cosmetic.as_ref() {
+                                    let rebuilt = cosmetic.refresh(sender, navigation_start_log.as_ref());
+                                    if rebuilt.is_err() {
+                                        event(navigation_start_log.as_ref(), "cosmetic_script_failed");
+                                    }
+                                }
                             }
                             // The first-party host is set when the navigation commits (see
                             // sync_top_host), not here: a navigation can still be superseded.
@@ -3129,6 +3235,15 @@ unsafe fn configure_controller(
                     let Some(args) = args else {
                         return Ok(());
                     };
+                    // A context that is not in BLOCKABLE_CONTEXTS (a document, say) is never blocked.
+                    let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT::default();
+                    let kind = match args.ResourceContext(&mut context) {
+                        Ok(()) => request_kind(context),
+                        Err(_) => None,
+                    };
+                    let Some(kind) = kind else {
+                        return Ok(());
+                    };
                     let request = args.Request()?;
                     let mut uri = PWSTR::null();
                     request.Uri(&mut uri)?;
@@ -3143,9 +3258,13 @@ unsafe fn configure_controller(
                         let block = {
                             let site_host = request_tab.top_host.borrow();
                             if private {
-                                blocker.borrow().should_block_private(&buffer, &site_host)
+                                blocker
+                                    .borrow()
+                                    .should_block_private_kind(&buffer, &site_host, kind)
                             } else {
-                                blocker.borrow().should_block(&buffer, &site_host)
+                                blocker
+                                    .borrow()
+                                    .should_block_kind(&buffer, &site_host, kind)
                             }
                         };
                         let site_host = if block {
@@ -3183,7 +3302,7 @@ unsafe fn configure_controller(
             // which the older call does not see.
             match webview.cast::<ICoreWebView2_22>() {
                 Ok(webview22) => {
-                    for context in BLOCKABLE_CONTEXTS {
+                    for (context, _) in BLOCKABLE_CONTEXTS {
                         webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
                             w!("*"),
                             context,
@@ -3192,9 +3311,17 @@ unsafe fn configure_controller(
                     }
                 }
                 Err(_) => {
-                    for context in BLOCKABLE_CONTEXTS {
+                    for (context, _) in BLOCKABLE_CONTEXTS {
                         webview.AddWebResourceRequestedFilter(w!("*"), context)?;
                     }
+                }
+            }
+            // Element hiding for the same pages, next to the request filter. The script is
+            // built from rules read at startup; a failure leaves the tab without it.
+            if let Some(cosmetic) = cosmetic.as_ref() {
+                let installed = cosmetic.refresh(&webview, events.policy_event.as_ref());
+                if installed.is_err() {
+                    event(events.policy_event.as_ref(), "cosmetic_script_failed");
                 }
             }
         }
@@ -3644,6 +3771,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn request_kind_follows_the_webview2_resource_context() {
+        use crate::shield::RequestKind;
+        for (context, kind) in [
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, RequestKind::Script),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, RequestKind::Image),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA, RequestKind::Media),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST, RequestKind::Xhr),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, RequestKind::Xhr),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, RequestKind::Ping),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_EVENT_SOURCE, RequestKind::Other),
+            (COREWEBVIEW2_WEB_RESOURCE_CONTEXT_OTHER, RequestKind::Other),
+        ] {
+            assert_eq!(request_kind(context), Some(kind), "{context:?}");
+        }
+        // A document (a main frame or an iframe), a stylesheet or a font is never filtered.
+        for context in [
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        ] {
+            assert_eq!(request_kind(context), None, "{context:?}");
+        }
+    }
+
+    #[test]
+    fn the_request_hook_filters_by_kind_and_installs_the_cosmetic_script() {
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        for needle in [
+            "args.ResourceContext(&mut context)",
+            "should_block_kind(&buffer, &site_host, kind)",
+            "should_block_private_kind(&buffer, &site_host, kind)",
+            "cosmetic.refresh(&webview",
+        ] {
+            assert!(production.contains(needle), "missing in the engine: {needle}");
+        }
+        assert!(
+            !production.contains("COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT"),
+            "the request filter must never ask for documents"
+        );
+    }
+
+    #[test]
     fn engine_never_blocks_on_a_webview2_completion() {
         // Tab controllers are configured inside WebView2's controller-created callback, where a
         // nested pump never receives the awaited completion: the login script wait hung every
@@ -3666,7 +3837,7 @@ mod tests {
             "create_private_controller(&environment, parent, &handler)",
             "verify_private_profile(&webview)?",
             // Always-on blocker, forced Strict tracking prevention, no stored permission allows.
-            "should_block_private(&buffer, &site_host)",
+            "should_block_private_kind(&buffer, &site_host, kind)",
             "crate::private::tracking_level(private, state.tracking_policy.level)",
             "crate::private::permission_allowed(private, stored)",
             "crate::private::permission_allowed(private, stored_popups)",
