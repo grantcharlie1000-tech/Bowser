@@ -76,6 +76,10 @@ enum Rule {
         host: String,
         pattern: String,
     },
+    Exact {
+        host: String,
+        path: String,
+    },
     Substring {
         pattern: String,
         third_party_only: bool,
@@ -133,6 +137,20 @@ fn parse_line(line: &str) -> Option<Rule> {
         let tail = &rest[end..];
         return match tail {
             "" | "^" | "|" | "^|" => Some(Rule::Host(host.to_owned())),
+            // `||host/path|`: that one URL and nothing longer. Only plain path characters, so the
+            // same text is also a literal DevTools URL pattern (`:`, `(`, `{`, `+`, `*` and `?`
+            // all mean something in one).
+            _ if tail.starts_with('/')
+                && tail.ends_with('|')
+                && tail[..tail.len() - 1].bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'~' | b'%')
+                }) =>
+            {
+                Some(Rule::Exact {
+                    host: host.to_owned(),
+                    path: tail.trim_end_matches('|').to_owned(),
+                })
+            }
             _ if tail.starts_with('/') || tail.starts_with('?') => {
                 let pattern = tail.trim_end_matches('|');
                 Some(Rule::Path {
@@ -425,6 +443,25 @@ pub fn blocked_url_patterns<'a>(
     patterns
 }
 
+/// DevTools patterns for `||host/path|` rules: that one URL on the host and on its subdomains.
+/// The trailing `?#` pins the (empty) query and fragment, which a URL pattern otherwise leaves
+/// open, so `https://host/path?x` and `https://host/path/more` still load. Paths are lowercase,
+/// as in the list; the in-process 403 fallback is the case-insensitive backstop. Same
+/// first-party and `blocking` rules as [`blocked_url_patterns`].
+pub fn exact_url_patterns<'a>(
+    urls: impl IntoIterator<Item = (&'a str, &'a str)>,
+    page_host: &str,
+    blocking: bool,
+) -> Vec<String> {
+    if !blocking {
+        return Vec::new();
+    }
+    urls.into_iter()
+        .filter(|(host, _)| !same_site(host, page_host))
+        .flat_map(|(host, path)| [format!("*://{host}{path}?#"), format!("*://*.{host}{path}?#")])
+        .collect()
+}
+
 struct SubstringRule {
     pattern: Box<str>,
     third_party_only: bool,
@@ -448,6 +485,8 @@ fn domain_list_matches(page_host: &str, domains: &[Box<str>]) -> bool {
 pub struct Blocker {
     hosts: HashSet<Box<str>>,
     paths: HashMap<Box<str>, Vec<Box<str>>>,
+    /// `||host/path|` rules: whole-URL paths, matched exactly and also failed by DevTools.
+    exact: HashMap<Box<str>, Vec<Box<str>>>,
     path_count: usize,
     substrings: Vec<SubstringRule>,
     cosmetics: Vec<CosmeticRule>,
@@ -484,6 +523,16 @@ impl Blocker {
                             .push(pattern.into());
                         self.path_count += 1;
                         added += 1;
+                    }
+                }
+                Rule::Exact { host, path } => {
+                    if self.path_count < MAX_PATH_RULES {
+                        let paths = self.exact.entry(host.into()).or_default();
+                        if !paths.iter().any(|known| **known == *path) {
+                            paths.push(path.into());
+                            self.path_count += 1;
+                            added += 1;
+                        }
                     }
                 }
                 Rule::Substring {
@@ -523,6 +572,13 @@ impl Blocker {
         self.hosts.iter().map(|host| host.as_ref())
     }
 
+    /// Every `||host/path|` rule as (host, path).
+    pub fn exact_urls(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.exact
+            .iter()
+            .flat_map(|(host, paths)| paths.iter().map(move |path| (host.as_ref(), path.as_ref())))
+    }
+
     /// True when `host` or one of its parent domains is a host rule.
     fn host_listed(&self, host: &str) -> bool {
         host_suffixes(host).any(|suffix| self.hosts.contains(suffix))
@@ -548,6 +604,11 @@ impl Blocker {
             let path = capped(path, MAX_MATCH_TEXT_BYTES);
             for suffix in host_suffixes(host) {
                 if self.hosts.contains(suffix) {
+                    return true;
+                }
+                if let Some(exact) = self.exact.get(suffix)
+                    && exact.iter().any(|exact| path.eq_ignore_ascii_case(exact))
+                {
                     return true;
                 }
                 if let Some(patterns) = self.paths.get(suffix)
@@ -740,12 +801,21 @@ impl BlockerState {
     /// DevTools `Network.setBlockedURLs` patterns for a normal tab's document on `page_host`
     /// (empty when the blocker does not apply there).
     pub fn blocked_url_patterns(&self, page_host: &str) -> Vec<String> {
-        blocked_url_patterns(self.matcher.hosts(), page_host, self.is_blocking(page_host, false))
+        self.devtools_patterns(page_host, self.is_blocking(page_host, false))
     }
 
     /// As [`Self::blocked_url_patterns`], but for a private tab.
     pub fn blocked_url_patterns_private(&self, page_host: &str) -> Vec<String> {
-        blocked_url_patterns(self.matcher.hosts(), page_host, self.is_blocking(page_host, true))
+        self.devtools_patterns(page_host, self.is_blocking(page_host, true))
+    }
+
+    /// Host patterns, then the exact-URL patterns, each sorted.
+    fn devtools_patterns(&self, page_host: &str, blocking: bool) -> Vec<String> {
+        let mut patterns = blocked_url_patterns(self.matcher.hosts(), page_host, blocking);
+        let mut exact = exact_url_patterns(self.matcher.exact_urls(), page_host, blocking);
+        exact.sort_unstable();
+        patterns.append(&mut exact);
+        patterns
     }
 
     /// DevTools Response-stage patterns for the YouTube player responses, whenever the blocker is
@@ -1170,6 +1240,141 @@ mod tests {
     }
 
     #[test]
+    fn builtin_blocklist_covers_the_superadblocktest_host_gaps() {
+        const NEW_HOSTS: &[&str] = &[
+            "advertising-api-eu.amazon.com",
+            "aan.amazon.com",
+            "bingads.microsoft.com",
+            "ads.microsoft.com",
+            "c.bing.com",
+            "onclickads.net",
+            "liftoff.io",
+            "htlbid.com",
+            "advertising.yahoo.com",
+            "unityads.unity3d.com",
+            "advertising.yandex.ru",
+            "ironsource.mobi",
+            "smartyads.com",
+            "ad.gt",
+            "tagmanager.google.com",
+            "analytics.adobe.io",
+            "metrics.adobe.com",
+            "cloudflareinsights.com",
+            "us.i.posthog.com",
+            "rudderlabs.com",
+            "snowplowanalytics.com",
+            "permutive.com",
+            "uidapi.com",
+            "api2.branch.io",
+            "bnc.lt",
+            "wzrkt.com",
+            "ingest.sentry.io",
+            "browser-intake-datadoghq.com",
+            "lr-ingest.com",
+            "coinimp.com",
+            "webminepool.com",
+            "minero.cc",
+            "mineralt.io",
+            "monerominer.rocks",
+            "statdynamic.com",
+            "tr.facebook.com",
+            "ads.snapchat.com",
+            "sc-analytics.appspot.com",
+            "ads-api.x.com",
+            "analytics.x.com",
+            "ads.x.com",
+            "pixel.redditmedia.com",
+            "d.reddit.com",
+            "mon.byteoversea.com",
+            "mcs-va.tiktokv.com",
+            "mon.tiktokv.com",
+            "pixel.quora.com",
+            "qevents.quora.com",
+            "px.srvcs.tumblr.com",
+            "ads.vk.com",
+            "ad.mail.ru",
+            "xp.apple.com",
+            "ads.huawei.com",
+            "adlog.vivo.com",
+            "ads-api.vivo.com",
+            "a.lenovo.com",
+            "lgsmartad.com",
+            "us.ibs.lgappstv.com",
+            "ad.lgappstv.com",
+            "yumenetworks.com",
+            "smartclip.com",
+            "settings-win.data.microsoft.com",
+            "vortex.data.microsoft.com",
+            "vortex-win.data.microsoft.com",
+            "telemetry.microsoft.com",
+            "browser.events.data.msn.com",
+            "device-metrics-us.amazon.com",
+            "device-metrics-us-2.amazon.com",
+            "mads-eu.amazon.com",
+            "logs.roku.com",
+            "ads.roku.com",
+            "amoeba.web.roku.com",
+            "ads.vizio.com",
+            "tvinteractive.tv",
+            "tvpixel.com",
+            "firebase-settings.crashlytics.com",
+            "geolocation.onetrust.com",
+            "cmp.usercentrics.eu",
+            "sourcepoint.mgr.consensu.org",
+            "impactradius-event.com",
+            "partnerstack.com",
+            "refersion.com",
+            "pepperjamnetwork.com",
+            "redirectingat.com",
+            "events.launchdarkly.com",
+            "track.hubspot.com",
+            "click.mailchimp.com",
+            "braze.com",
+            "customer.io",
+            "jwpltx.com",
+            "connatix.com",
+            "metrics.brightcove.com",
+        ];
+        let s = BlockerState::new(Blocker::from_lists(None), &[]);
+        let patterns = s.blocked_url_patterns("superadblocktest.com");
+        for host in NEW_HOSTS {
+            assert_eq!(
+                s.block_hit(&format!("https://{host}/"), "superadblocktest.com"),
+                BlockHit::Host,
+                "{host}"
+            );
+            assert!(
+                patterns.contains(&format!("*://{host}/*")),
+                "{host}"
+            );
+        }
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://s.youtube.com/api/stats/playback?ns=yt",
+            "https://redirector.googlevideo.com/videoplayback?id=x&itag=22",
+            "https://vk.com/",
+            "https://www.facebook.com/",
+            "https://www.google.com/",
+            "https://posthog.com/",
+            "https://sentry.io/",
+        ] {
+            assert_eq!(
+                s.block_hit(url, "superadblocktest.com"),
+                BlockHit::None,
+                "{url}"
+            );
+        }
+        for pattern in [
+            "*://youtube.com/*",
+            "*://*.youtube.com/*",
+            "*://googlevideo.com/*",
+            "*://*.googlevideo.com/*",
+        ] {
+            assert!(!patterns.contains(&pattern.to_owned()), "{pattern}");
+        }
+    }
+
+    #[test]
     fn builtin_blocklist_cosmetic_rules_hide_the_turtlecute_ad_nodes() {
         let s = BlockerState::new(Blocker::from_lists(None), &[]);
         let css = s
@@ -1431,6 +1636,152 @@ mod tests {
                     "{pattern} on {page:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_exact_url_rule_blocks_that_url_and_nothing_longer() {
+        let s = state("||redirector.example.net/|\n||redirector.example.net/robots.txt|\n", &[]);
+        for url in [
+            "https://redirector.example.net/",
+            "https://redirector.example.net",
+            "https://REDIRECTOR.example.net/robots.txt",
+            "https://sub.redirector.example.net/",
+        ] {
+            assert_eq!(s.block_hit(url, "news.example"), BlockHit::Rule, "{url}");
+            assert_eq!(s.block_hit_private(url, "news.example"), BlockHit::Rule, "{url}");
+        }
+        for url in [
+            "https://redirector.example.net/videoplayback?itag=18",
+            "https://redirector.example.net/?x=1",
+            "https://redirector.example.net/robots.txt?x",
+            "https://redirector.example.net/robots.txt/more",
+            "https://other.example.net/",
+        ] {
+            assert_eq!(s.block_hit(url, "news.example"), BlockHit::None, "{url}");
+        }
+        // First-party, and off for a normal tab; a private tab ignores the switch.
+        assert_eq!(s.block_hit("https://redirector.example.net/", "example.net"), BlockHit::None);
+        let mut off = state("||redirector.example.net/|\n", &[]);
+        off.enabled = false;
+        assert_eq!(off.block_hit("https://redirector.example.net/", "news.example"), BlockHit::None);
+        assert_eq!(off.block_hit_private("https://redirector.example.net/", "news.example"), BlockHit::Rule);
+        // Anything that is pattern syntax in DevTools keeps the old prefix meaning: not an exact rule.
+        for line in ["a*b", "a^", "a?b", "a:b", "a+b.js", "a(b)", "a{b}", "a#b", "a\\b", "a b"] {
+            let prefix = state(&format!("||redirector.example.net/{line}|\n"), &[]);
+            assert_eq!(prefix.matcher.exact_urls().count(), 0, "{line}");
+        }
+        // A repeated rule is one rule.
+        let twice = state("||redirector.example.net/x.js|\n||redirector.example.net/x.js|\n", &[]);
+        assert_eq!(twice.matcher.exact_urls().count(), 1);
+    }
+
+    #[test]
+    fn exact_url_rules_become_literal_devtools_patterns() {
+        let s = state("||redirector.example.net/robots.txt|\n||doubleclick.net^\n", &[]);
+        let patterns = s.blocked_url_patterns("news.example");
+        for pattern in [
+            "*://doubleclick.net/*",
+            "*://redirector.example.net/robots.txt?#",
+            "*://*.redirector.example.net/robots.txt?#",
+        ] {
+            assert!(patterns.contains(&pattern.to_owned()), "{pattern}");
+        }
+        // The empty query and fragment are pinned, so a longer URL is not matched.
+        assert!(patterns.iter().filter(|p| p.contains("redirector")).all(|p| p.ends_with("?#")));
+        assert!(s.blocked_url_patterns("example.net").iter().all(|p| !p.contains("redirector")));
+        assert!(!s.blocked_url_patterns_private("news.example").is_empty());
+        let mut off = state("||redirector.example.net/robots.txt|\n", &[]);
+        off.enabled = false;
+        assert!(off.blocked_url_patterns("news.example").is_empty());
+    }
+
+    #[test]
+    fn the_youtube_video_ad_host_probes_fail_and_real_traffic_still_loads() {
+        let s = builtin();
+        for host in ["s.youtube.com", "redirector.googlevideo.com", "ads.youtube.com"] {
+            for path in ["/", "/favicon.ico", "/robots.txt"] {
+                let url = format!("https://{host}{path}");
+                assert_ne!(s.block_hit(&url, "superadblocktest.com"), BlockHit::None, "{url}");
+                assert_ne!(s.block_hit_private(&url, "superadblocktest.com"), BlockHit::None, "{url}");
+            }
+        }
+        let patterns = s.blocked_url_patterns("superadblocktest.com");
+        for host in ["s.youtube.com", "redirector.googlevideo.com"] {
+            for path in ["/", "/favicon.ico", "/robots.txt"] {
+                assert!(patterns.contains(&format!("*://{host}{path}?#")), "{host}{path}");
+            }
+        }
+        // Playback and watch-history traffic on those same hosts is untouched, on YouTube and off it.
+        for top in [YOUTUBE, "news.example", ""] {
+            for url in [
+                "https://redirector.googlevideo.com/videoplayback?id=x&itag=22&source=youtube",
+                "https://redirector.googlevideo.com/initplayback?source=youtube&oeis=1",
+                "https://s.youtube.com/api/stats/playback?ns=yt&el=detailpage&docid=x",
+                "https://s.youtube.com/api/stats/watchtime?ns=yt&el=detailpage&docid=x",
+            ] {
+                assert_eq!(s.block_hit(url, top), BlockHit::None, "{url} on {top:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_reachability_probe_hosts_fail_and_functional_traffic_still_loads() {
+        let s = builtin();
+        let page = "superadblocktest.com";
+        let probes = [
+            "app.posthog.com", "eu.posthog.com", "ngfts.lge.com", "g.jwpsrv.com",
+            "widgets.pinterest.com", "connect.facebook.net", "static.klaviyo.com", "a.klaviyo.com", "cmp.quantcast.com", "consent.cookiebot.com", "cdn.cookielaw.org", "consent.trustarc.com", "sdk.privacy-center.org", "sourcepoint.privacy-mgmt.com", "cmp.osano.com", "fingerprintjs.com", "api.fpjs.io", "cdn.siftscience.com",
+            "graph.facebook.com", "graph.instagram.com", "i.instagram.com", "dai.google.com",
+            "widget.intercom.io", "js.driftt.com", "clientstream.launchdarkly.com",
+            "privacyportal.onetrust.com", "app.usercentrics.eu",
+        ];
+        let patterns = s.blocked_url_patterns(page);
+        for host in probes {
+            for path in ["/", "/favicon.ico", "/robots.txt"] {
+                let url = format!("https://{host}{path}");
+                assert_ne!(s.block_hit(&url, page), BlockHit::None, "{url}");
+                assert_ne!(s.block_hit_private(&url, page), BlockHit::None, "{url}");
+                // Failed in the renderer, so a no-cors probe is rejected rather than answered.
+                assert!(
+                    host_suffixes(host).any(|suffix| {
+                        [
+                            format!("*://{suffix}{path}?#"),
+                            format!("*://*.{suffix}{path}?#"),
+                            format!("*://{suffix}/*"),
+                            format!("*://*.{suffix}/*"),
+                        ]
+                        .iter()
+                        .any(|pattern| patterns.contains(pattern))
+                    }),
+                    "{url}"
+                );
+            }
+        }
+        assert_eq!(s.block_hit("https://vk.com/rtrg", page), BlockHit::Rule);
+        assert!(patterns.contains(&"*://vk.com/rtrg?#".to_owned()));
+        assert_eq!(s.block_hit("https://vk.com/rtrg?p=x", page), BlockHit::Rule);
+        assert_eq!(s.block_hit("https://vk.com/id1", page), BlockHit::None);
+        for url in [
+            "https://connect.facebook.net/en_US/sdk.js",
+            "https://graph.facebook.com/v18.0/me?access_token=x",
+            "https://graph.instagram.com/me/media?access_token=x",
+            "https://dai.google.com/ondemand/hls/content/x/vid/y/stream/z/master.m3u8",
+            "https://widget.intercom.io/widget/abcd1234",
+            "https://js.driftt.com/include/1/abc.js",
+            "https://clientstream.launchdarkly.com/all?auth=x",
+            "https://privacyportal.onetrust.com/request/v1/consentreceipts",
+            "https://app.usercentrics.eu/browser-ui/latest/loader.js",
+            "https://consent.cookiebot.com/uc.js",
+            "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js",
+            "https://static.klaviyo.com/onsite/js/klaviyo.js",
+            "https://a.klaviyo.com/client/subscriptions",
+            "https://cmp.quantcast.com/choice/abc/example.com/choice.js",
+            "https://sourcepoint.privacy-mgmt.com/index.html",
+            "https://cdn.siftscience.com/s.js",
+            "https://api.fpjs.io/v3/",
+        ] {
+            assert_eq!(s.block_hit(url, page), BlockHit::None, "{url}");
         }
     }
 
