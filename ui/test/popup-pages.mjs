@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { filterPalette, flatten, moveSelection, scoreItem, subsequenceGap, validPalettePayload, MAX_RESULTS } from '../src/palette-logic.ts';
-import { validSiteInfoPayload, cookieText, blockerText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES } from '../src/siteinfo-logic.ts';
+import { validSiteInfoPayload, cookieText, blockerText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, ACT_ZOOM_RESET, CHOICES } from '../src/siteinfo-logic.ts';
 import * as esbuild from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -69,18 +69,28 @@ test('palette keyboard movement wraps single steps and clamps pages', () => {
 test('Rust site info page passes the strict site info contract', () => {
   const page = fixture.siteinfo;
   assert.equal(validSiteInfoPayload(page), true);
-  assert.deepEqual(page.perms.map((p) => p.k), ['camera', 'mic', 'location', 'notifications']);
+  assert.deepEqual(page.perms.map((p) => p.k), ['camera', 'mic', 'location', 'notifications', 'popups']);
+  assert.equal(page.perms.find((p) => p.k === 'popups').state, 'allow', 'popups is a stored kind like the others');
+  assert.equal(page.perms.find((p) => p.k === 'popups').id, 5);
   assert.equal(page.perms.find((p) => p.k === 'camera').state, 'allow');
   assert.equal(page.perms.find((p) => p.k === 'mic').state, 'default');
   // The act the page sends for "camera: Allow" is the one Rust parses.
   const camera = page.perms.find((p) => p.k === 'camera');
   assert.deepEqual(fixture.act, { v: 1, t: 'act', tok: page.tok, id: camera.id, n: CHOICES.indexOf('allow') });
-  assert.equal(camera.id, 2, 'ids follow Permission::ALL (microphone, camera, location, notifications)');
-  assert.deepEqual([ACT_CLEAR_COOKIES, ACT_BLOCKER, ACT_RESET], [10, 11, 12]);
+  assert.equal(camera.id, 2, 'ids follow Permission::ALL (microphone, camera, location, notifications, popups)');
+  assert.deepEqual([ACT_CLEAR_COOKIES, ACT_BLOCKER, ACT_RESET, ACT_ZOOM_RESET], [10, 11, 12, 13]);
+  assert.equal(page.zoom, 125, 'the fixture page is zoomed, so the zoom row shows');
   for (const bad of [
     { ...page, perms: [{ ...page.perms[0], state: 'ask' }] },
     { ...page, cookies: { ...page.cookies, extra: true } },
     { ...page, security: 'evil' },
+    { ...page, zoom: 24 },
+    { ...page, zoom: 501 },
+    { ...page, zoom: 125.5 },
+    { ...page, zoom: '125' },
+    (({ zoom, ...rest }) => rest)(page),
+    { ...page, perms: [{ id: 5, k: 'popups', label: 'Popups', state: 'ask' }] },
+    { ...page, perms: [{ id: 5, k: 'bluetooth', label: 'Bluetooth', state: 'allow' }] },
     { ...page, blocker: { state: 'on' } },
     (({ blockedHere, ...rest }) => rest)(page),
   ]) assert.equal(validSiteInfoPayload(bad), false);
@@ -93,6 +103,17 @@ test('state carries the optional permblocked flag, strictly typed', () => {
   assert.equal(parseInbound({ ...base, permblocked: true }).permblocked, true);
   assert.equal(parseInbound(base).permblocked, undefined);
   assert.equal(parseInbound({ ...base, permblocked: 'yes' }), null);
+});
+
+test('state carries the optional zoom percent, strictly typed and bounded', () => {
+  const base = { t: 'state', scale: 1, solid: false, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'secure', label: '', theme: {} };
+  assert.equal(parseInbound(base).zoom, undefined, 'older hosts omit it');
+  assert.equal(parseInbound({ ...base, zoom: 100 }).zoom, 100);
+  assert.equal(parseInbound({ ...base, zoom: 25 }).zoom, 25);
+  assert.equal(parseInbound({ ...base, zoom: 500 }).zoom, 500);
+  for (const zoom of [24, 501, 0, -100, 125.5, '125', null, true, NaN, Infinity, [125]]) {
+    assert.equal(parseInbound({ ...base, zoom }), null, JSON.stringify(zoom));
+  }
 });
 
 test('rename snapshot is strict and local validation mirrors the shared Rust rules', () => {

@@ -2,6 +2,7 @@
 import { MAX_TEXT, THEME_TOKENS, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
+import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
 
 export interface View {
   readonly back: HTMLButtonElement;
@@ -9,6 +10,8 @@ export interface View {
   readonly reload: HTMLButtonElement;
   readonly site: HTMLButtonElement;
   readonly split: HTMLButtonElement;
+  /** Zoom chip: shown only while the page is not at 100%; activating it resets the zoom. */
+  readonly zoom: HTMLButtonElement;
   readonly input: HTMLInputElement;
   /** Unfocused URL rendering with the host emphasised; visual only, aria-hidden. */
   readonly display: HTMLElement;
@@ -95,6 +98,9 @@ export function buildView(root: HTMLElement): View {
   const reload = iconButton('Reload', 'reload', 'tb-nav is-lg is-round', 'Reload (Ctrl+R)');
   const site = iconButton('Site information', 'info', 'tb-site bw-focus-inset is-round');
   const split = iconButton('Split view', 'split', 'tb-split bw-focus-inset is-round');
+  const zoom = el('button', 'tb-zoom bw-focus-inset');
+  zoom.type = 'button';
+  zoom.hidden = true;
 
   const input = el('input', 'omni');
   input.type = 'text';
@@ -116,7 +122,7 @@ export function buildView(root: HTMLElement): View {
   field.append(input, display);
 
   const pill = el('div', 'pill');
-  pill.append(site, field, split, progress);
+  pill.append(site, field, zoom, split, progress);
 
   const menu = iconButton('Menu', 'menu', 'tb-nav is-lg is-round');
 
@@ -136,7 +142,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, input, display, pill, progress, menu };
+  return { back, forward, reload, site, split, zoom, input, display, pill, progress, menu };
 }
 
 /**
@@ -210,6 +216,20 @@ export function applyState(view: View, state: StateMsg): void {
   view.pill.dataset.security = state.security;
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
   label(site, text);
+
+  // Zoom chip: only while the page is zoomed. Nothing about the pill's box changes at 100%.
+  const zoomed = isZoomed(state.zoom);
+  view.zoom.hidden = !zoomed;
+  if (zoomed) {
+    const zoom = state.zoom as number;
+    if (view.zoom.dataset.zoom !== String(zoom)) {
+      view.zoom.dataset.zoom = String(zoom);
+      view.zoom.replaceChildren(icon(zoom > 100 ? 'zoom-in' : 'zoom-out', { size: 12, fine: true }), document.createTextNode(zoomText(zoom)));
+      label(view.zoom, zoomChipLabel(zoom), zoomChipTip(zoom));
+    }
+  } else {
+    delete view.zoom.dataset.zoom;
+  }
 }
 
 export function applyTheme(theme: Theme, solid: boolean, dark: boolean): void {

@@ -40,7 +40,7 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `submit` | `text` string <= 2048 | Enter in omnibox; Rust normalises (never raw navigate) |
 | `escape` | - | Esc in omnibox: Rust restores text and returns focus to tab |
 | `focus` | `on` bool | omnibox gained/lost focus |
-| `open` | `a`: `menu`/`site`/`newtab`/`split` | open native menu / site-info / new tab / toggle split view (same action as Ctrl+Shift+\) |
+| `open` | `a`: `menu`/`site`/`newtab`/`split`/`zoomreset` | open native menu / site-info / new tab / toggle split view (same action as Ctrl+Shift+\) / reset the active page's zoom to 100% (the toolbar zoom chip; same as Ctrl+0; not a popup command, so it is not throttled) |
 | `drag` | - | left mousedown on an empty toolbar area (drag surface only, never a button, input or pill); Rust begins a native window move |
 | `caption` | `a`: `toggleMaximize`/`systemMenu` | double-click (`toggleMaximize`) or right-click (`systemMenu`) on an empty toolbar area |
 
@@ -50,7 +50,7 @@ Any message with more than six keys is rejected as soon as the seventh key start
 
 | `t` | fields |
 |---|---|
-| `state` | `scale` number (device pixel ratio hint), `pillx`, `pillw` and `menux` non-negative integers in CSS px relative to the toolbar host's left edge, `solid` bool, `dark` bool, `back` bool, `forward` bool, `loading` bool, `progress` int 0-100, `security` one of `secure`/`notsecure`/`certproblem`/`internal`/`unknown`/`none`, `label` string (security summary, short), `theme` object of CSS colour strings keyed by token: `bg`, `fill`, `border`, `focusBorder`, `text`, `placeholder`, `completion`, `selection`, `hover`, `progress`. Older states without the three placement fields use flex centring. |
+| `state` | `scale` number (device pixel ratio hint), `pillx`, `pillw` and `menux` non-negative integers in CSS px relative to the toolbar host's left edge, `solid` bool, `dark` bool, `back` bool, `forward` bool, `loading` bool, `progress` int 0-100, `security` one of `secure`/`notsecure`/`certproblem`/`internal`/`unknown`/`none`, `label` string (security summary, short), `permblocked` bool, `zoom` integer 25 to 500 (the active tab's page zoom in percent; optional, so older hosts omit it; the toolbar shows a chip with a reset action while it is not 100), `theme` object of CSS colour strings keyed by token: `bg`, `fill`, `border`, `focusBorder`, `text`, `placeholder`, `completion`, `selection`, `hover`, `progress`. Older states without the three placement fields use flex centring. |
 | `setText` | `text` string, `select` bool (Rust-set omnibox text, e.g. on tab switch or Ctrl+L). Sent when the active tab changes even while the omnibox is focused (a blank new tab sends `""` with `select: true`); within the same tab, only while the omnibox is unfocused, so typing is never overwritten |
 | `focusOmnibox` | `select` bool |
 | `completion` | `seq` int, `suffix` string (inline completion for edit `seq`; JS ignores stale seq or if value no longer matches) |
@@ -257,7 +257,7 @@ The popup host (`?view=popup`) shows one page at a time, chosen by the message `
 | `t` | fields |
 |---|---|
 | `palette` | `v`, `tok`, `kind` (`"palette"`), `placeholder`, `items`: array (<= 1024) of `{id, s, label, detail, acc?}`; `id` unique u32 (the index Rust maps back to its action), `s` one of `tab`/`command`/`bookmark`/`history`, `label` <= 128 and `detail` <= 256 UTF-16 units, `acc` (accelerator label, <= 32) only for commands bound in `shortcuts.rs`. Rust caps tabs 100, bookmarks 200, history 200 (newest first, one row per address, http(s) only) and the whole message to 240 KiB (`html_popup::MAX_PAGE_BYTES`). |
-| `siteinfo` | `v`, `tok`, `kind` (`"site-info"`), `host`, `origin`, `security` (as in `state`), `summary`, `perms`: array (0 or 4) of `{id, k, label, state}` with `k` `camera`/`mic`/`location`/`notifications` and `state` `allow`/`block`/`default` (`default` = nothing stored = blocked), `cookies` `{state: count/unavailable/none, n, clear}`, `blocker` `{state: on/off/unavailable, n}`, `tracking` (level or `""`), `reset` bool, `blockedHere` bool. Every key is required; the page rejects extra keys. |
+| `siteinfo` | `v`, `tok`, `kind` (`"site-info"`), `host`, `origin`, `security` (as in `state`), `summary`, `perms`: array (0 or 5) of `{id, k, label, state}` with `k` `camera`/`mic`/`location`/`notifications`/`popups` and `state` `allow`/`block`/`default` (`default` = nothing stored = blocked), `cookies` `{state: count/unavailable/none, n, clear}`, `blocker` `{state: on/off/unavailable, n}`, `tracking` (level or `""`), `zoom` int 25..=500 (the page zoom in percent; 100 shows no zoom row), `reset` bool, `blockedHere` bool. Every key is required; the page rejects extra keys. |
 
 The page filters the palette itself (exact, prefix, word prefix, detail prefix, then ordered fuzzy
 matches, the same scoring as `productivity::rank_items`; 12 results grouped by section) and reports
@@ -273,9 +273,9 @@ anchor; the palette centred on the window, its top edge 12% down the window, 560
 | `act` | `tok`, `id`, `n` (0..=7, `MAX_ACT_CHOICE`) | in-place action on an open page (site info); the popup stays open. Rust checks `tok` and that `id` was declared by the page with `n` within its range, runs it from the deferred queue (`DeferredChromeCommand::PopupAct`), then re-posts the page under the same `tok` |
 
 Site info act ids: permission row `id` (1 + index in `Permission::ALL`: 1 microphone, 2 camera,
-3 location, 4 notifications) with `n` 0 Allow, 1 Block, 2 Default; `10` clear cookies (only
+3 location, 4 notifications, 5 popups) with `n` 0 Allow, 1 Block, 2 Default; `10` clear cookies (only
 declared when there are cookies); `11` blocker with `n` the wanted state (1 on, 0 off; only when
-the blocker is available); `12` reset permissions (only when something is stored). Policy is
+the blocker is available); `12` reset permissions (only when something is stored); `13` reset zoom to 100% (only declared while the page is zoomed). Policy is
 unchanged: a request is granted only by a stored Allow, Default is blocked, and nothing ever
 prompts. If the active site changed since the page opened, an `act` closes the popup instead.
 
@@ -287,6 +287,59 @@ the active tab's current page was denied (no stored Allow). It is set by the Web
 new navigation. It is passive (the decision is already final; nothing prompts). The toolbar owner
 styles it as a small icon in the pill; the site info page shows the same fact as `blockedHere`.
 The field is optional for the page parser (older states omit it) and must be a bool.
+
+### Toolbar zoom chip: `state.zoom`, `open` `zoomreset`
+
+`state` carries `zoom` (integer 25 to 500, percent): the active tab's page zoom. The page parser
+accepts it only as a whole number in that range (anything else drops the message) and treats an absent
+field as 100. While it is not 100 the toolbar shows `.tb-zoom` inside the pill, between the address
+field and the split button: a 20 px chip (inside the unchanged 26 px pill) with a 12 px magnifier
+glyph and the percentage. Activating it sends `{v:1,t:"open",a:"zoomreset"}`, which runs the same
+`App::zoom_active(Reset)` as Ctrl+0. The chip is hidden by the `hidden` attribute at 100% and by a
+container query when the pill is narrower than 130 px. Site information carries the same value as
+`siteinfo.zoom` with a Reset button (act `13`). The zoom itself is stored per origin in
+`site-prefs.txt` (`src/site_prefs.rs`) and applied at navigation commit; see `docs/shortcuts.md`.
+
+### Privacy dashboard permissions (`priv`, `src/chrome_host/panels/privacy.rs`)
+
+The `privacy` snapshot's former `permissions` array is replaced by two members, built by
+`panels::privacy::write_permissions`:
+
+- `sites`: array (<= 1000, three keys each so the 4096-key page budget holds) of
+  `{origin, current, kinds}`. `origin` is a canonical http(s) origin (scheme, host, port with the
+  default port dropped; <= 256 chars), `current` marks the active tab's site (listed first, even when
+  nothing is stored), and `kinds` is exactly five strings in the order `camera`, `microphone`,
+  `location`, `notifications`, `popups`, each `allow`, `block` or `default` (`default` = nothing stored
+  = blocked). The list holds every origin with a stored decision, the current site, and every origin
+  in the recent denied list, so a site that just asked can be changed. Origins are unique.
+- `denied`: array (<= 50, `DENIED_LOG_CAP`) of `{origin, kind, ago, n}`, newest first. `kind` is one of
+  the five kinds above, `ago` is whole seconds since the latest request (so the page needs no clock
+  or timezone), `n` is how many identical requests in a row the entry stands for (<= 999). The log is
+  an in-memory ring in `App`: it is never written to disk, is gone when Bowser exits, and holds only the
+  origin, kind and time, never a path, title or page content.
+
+Commands (`{v:1,t:"priv",...}`, four fields at most, all validated in `panels::privacy::map_command`
+before anything reaches the permission store; anything else is dropped):
+
+| `a` | fields | meaning |
+|---|---|---|
+| `perm-set` | `text` canonical origin, `id` kind index 0..=4 (the `kinds` order), `n` 0 Allow / 1 Block / 2 Default | store a decision (Default removes the line) |
+| `perm-reset` | `text` canonical origin | clear every stored decision for one site ("Reset site") |
+| `perm-reset-all` | none | clear every stored decision, all sites ("Reset all"; the page asks for confirmation first, in the page) |
+| `denied-clear` | none | empty the recent denied list |
+
+`text` is accepted only when it is already a canonical origin (`permissions::canonical_origin`: an
+http(s) origin equal to its own normal form, so no path, query, user info, uppercase host or default
+port, and at most 256 characters). The old index-based `permission` command is removed. Policy is
+unchanged: a request is granted only by a stored Allow for that exact origin, and nothing ever
+prompts. The store refuses a new decision past 2048 stored rules (`MAX_RULES`).
+
+Popups are a fifth stored kind (`popups` in `permissions.txt`). The `NewWindowRequested` handler asks
+the store about the opener's exact origin: a click-initiated http(s) request opens a new tab as
+before, a script-opened window opens as a tab only with a stored Allow, and every other request is
+blocked (the default). An allow never widens the scheme gate: `javascript:`, `data:`, `file:`,
+`about:`, `blob:` and `bowser-ui:` targets stay blocked. A blocked script popup is logged to the denied
+list and sets `permblocked` like a refused permission request.
 
 ### Name prompt dialog (`?view=dialog&p=rename`, `View::DialogRename`)
 

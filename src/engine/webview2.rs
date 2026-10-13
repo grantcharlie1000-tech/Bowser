@@ -21,7 +21,7 @@ use webview2_com::{
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
     ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
     SourceChangedEventHandler, TrySuspendCompletedHandler, WebMessageReceivedEventHandler,
-    WebResourceRequestedEventHandler,
+    WebResourceRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
 use windows::{
     Win32::{
@@ -50,8 +50,11 @@ pub enum PopupDecision {
     Block,
 }
 
-pub fn popup_decision(uri: &Url, user_initiated: bool) -> PopupDecision {
-    if user_initiated && matches!(uri.scheme(), "http" | "https") {
+/// What a window request becomes. Only http(s) targets ever open, as a new tab. A click or other
+/// user gesture opens one. A script-opened window opens only when the opener's site has a stored
+/// Allow for popups (`site_allows`); otherwise it is blocked, as before the store had that kind.
+pub fn popup_decision(uri: &Url, user_initiated: bool, site_allows: bool) -> PopupDecision {
+    if (user_initiated || site_allows) && matches!(uri.scheme(), "http" | "https") {
         PopupDecision::NewTab
     } else {
         PopupDecision::Block
@@ -1658,6 +1661,27 @@ impl EngineAdapter for WebView2Engine {
         tracking_prevention_label(level)
     }
 
+    fn zoom_percent(&self, tab: TabId) -> Option<u16> {
+        let controller = self.core.borrow().tabs.get(&tab)?.controller.clone()?;
+        let mut factor = 1.0_f64;
+        unsafe { controller.ZoomFactor(&mut factor) }.ok()?;
+        Some(crate::site_prefs::percent_of_factor(factor))
+    }
+
+    fn set_zoom_percent(&mut self, tab: TabId, percent: u16) -> Result<bool> {
+        let controller = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.controller.clone());
+        let Some(controller) = controller else {
+            return Ok(false);
+        };
+        unsafe { controller.SetZoomFactor(crate::site_prefs::factor_of_percent(percent)) }?;
+        Ok(true)
+    }
+
     fn smart_screen_enabled(&self, tab: TabId) -> Option<bool> {
         let webview = self.core.borrow().tabs.get(&tab)?.webview.clone()?;
         let settings = unsafe {
@@ -2735,12 +2759,14 @@ unsafe fn configure_controller(
                             "permission_denied"
                         });
                     }
-                    // Passive indicator only: the decision above is final and nothing prompts.
+                    // Passive indicator and denied-request log only: the decision above is final and
+                    // nothing prompts. Only the origin and kind leave this handler.
                     if !allowed
-                        && known.is_some()
+                        && let Some(permission) = known
+                        && let Some(origin) = crate::permissions::origin_of(&uri)
                         && let Some(callback) = permission_denied.as_ref()
                     {
-                        callback(tab_id);
+                        callback(tab_id, permission, origin);
                     }
                 }
                 Ok(())
@@ -2765,24 +2791,35 @@ unsafe fn configure_controller(
 
         let policy_event = events.policy_event.clone();
         let popup_callback = events.new_window_requested.clone();
+        let popup_store = permissions.clone();
+        let popup_denied = events.permission_denied.clone();
         webview.add_NewWindowRequested(
-            &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
+            &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
                     let mut uri = PWSTR::null();
                     let mut initiated = BOOL::default();
                     let uri_result = args.Uri(&mut uri);
                     let initiated_result = args.IsUserInitiated(&mut initiated);
                     let uri_text = CoTaskMemPWSTR::from(uri).to_string();
-                    let safe =
-                        uri_result.is_ok() && initiated_result.is_ok() && initiated.as_bool();
-                    let target = if safe {
+                    let user_initiated = initiated_result.is_ok() && initiated.as_bool();
+                    let target = if uri_result.is_ok() {
                         Url::parse(&uri_text).ok()
                     } else {
                         None
                     };
+                    // The opener is the page showing now. Only a stored Allow for popups on its
+                    // exact origin lets a script-opened window through.
+                    let opener = sender.as_ref().and_then(current_web_url);
+                    let site_allows = !user_initiated
+                        && match (opener.as_ref(), popup_store.as_ref()) {
+                            (Some(opener), Some(store)) => {
+                                store.borrow().allows(opener.as_str(), Permission::Popups)
+                            }
+                            _ => false,
+                        };
                     let decision = target
                         .as_ref()
-                        .map(|url| popup_decision(url, initiated.as_bool()))
+                        .map(|url| popup_decision(url, user_initiated, site_allows))
                         .unwrap_or(PopupDecision::Block);
                     if decision == PopupDecision::NewTab {
                         let url = target.expect("new-tab decision requires a parsed target");
@@ -2792,8 +2829,20 @@ unsafe fn configure_controller(
                         if let Some(log) = policy_event.as_ref() {
                             log("popup_new_tab");
                         }
-                    } else if let Some(log) = policy_event.as_ref() {
-                        log("popup_blocked");
+                    } else {
+                        if let Some(log) = policy_event.as_ref() {
+                            log("popup_blocked");
+                        }
+                        // A blocked script popup is listed on the Privacy dashboard (origin and
+                        // kind only). A refused click, such as a mailto: link, is not a popup.
+                        if !user_initiated
+                            && let Some(origin) = opener
+                                .as_ref()
+                                .and_then(|opener| crate::permissions::origin_of(opener.as_str()))
+                            && let Some(callback) = popup_denied.as_ref()
+                        {
+                            callback(tab_id, Permission::Popups, origin);
+                        }
                     }
                     let _ = args.SetHandled(true);
                 }
@@ -2941,6 +2990,22 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+        // Fires for our own SetZoomFactor calls and for the page's own zoom (Ctrl+wheel), so the
+        // app sees every change.
+        if let Some(callback) = events.zoom_changed.clone() {
+            controller.add_ZoomFactorChanged(
+                &ZoomFactorChangedEventHandler::create(Box::new(move |sender, _args| {
+                    if let Some(sender) = sender {
+                        let mut factor = 1.0_f64;
+                        if sender.ZoomFactor(&mut factor).is_ok() {
+                            callback(tab_id, crate::site_prefs::percent_of_factor(factor));
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
         if let Some(callback) = events.focus_changed.clone() {
             controller.add_GotFocus(
                 &FocusChangedEventHandler::create(Box::new(move |_sender, _args| {
@@ -3628,22 +3693,25 @@ mod tests {
 
     #[test]
     fn popup_policy_contains_only_user_initiated_http_and_https() {
-        assert_eq!(
-            popup_decision(&Url::parse("https://example.com").unwrap(), true),
-            PopupDecision::NewTab
-        );
-        assert_eq!(
-            popup_decision(&Url::parse("http://example.com").unwrap(), true),
-            PopupDecision::NewTab
-        );
-        assert_eq!(
-            popup_decision(&Url::parse("https://example.com").unwrap(), false),
-            PopupDecision::Block
-        );
-        assert_eq!(
-            popup_decision(&Url::parse("mailto:person@example.com").unwrap(), true),
-            PopupDecision::Block
-        );
+        let page = |text: &str| Url::parse(text).unwrap();
+        assert_eq!(popup_decision(&page("https://example.com"), true, false), PopupDecision::NewTab);
+        assert_eq!(popup_decision(&page("http://example.com"), true, false), PopupDecision::NewTab);
+        assert_eq!(popup_decision(&page("https://example.com"), false, false), PopupDecision::Block);
+        assert_eq!(popup_decision(&page("mailto:person@example.com"), true, false), PopupDecision::Block);
+    }
+
+    #[test]
+    fn a_stored_popup_allow_opens_script_windows_but_only_as_http_or_https_tabs() {
+        let page = |text: &str| Url::parse(text).unwrap();
+        // The default stays deny: a script popup with no stored Allow is blocked.
+        assert_eq!(popup_decision(&page("https://ads.example/x"), false, false), PopupDecision::Block);
+        // An allowed site's script popup becomes a new tab.
+        assert_eq!(popup_decision(&page("https://pay.example/x"), false, true), PopupDecision::NewTab);
+        // The allow never widens the scheme gate.
+        for value in ["javascript:alert(1)", "data:text/html,hi", "file:///C:/x", "about:blank", "bowser-ui://app/index.html", "mailto:a@b.test", "blob:https://a.test/1"] {
+            assert_eq!(popup_decision(&page(value), false, true), PopupDecision::Block, "{value}");
+            assert_eq!(popup_decision(&page(value), true, true), PopupDecision::Block, "{value}");
+        }
     }
 
     #[test]
@@ -3767,7 +3835,7 @@ mod tests {
             );
             assert!(!navigation_scheme_allowed(&url), "{value}");
             assert!(!frame_navigation_scheme_allowed(&url), "{value}");
-            assert_eq!(popup_decision(&url, true), PopupDecision::Block, "{value}");
+            assert_eq!(popup_decision(&url, true, true), PopupDecision::Block, "{value}");
         }
     }
 

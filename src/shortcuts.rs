@@ -46,6 +46,12 @@ pub enum Command {
     ToggleTabLayout,
     /// Ctrl+H opens the History side panel.
     ShowHistory,
+    /// Ctrl+Plus (and Ctrl+=, Ctrl+Numpad Plus) zooms the page in one step.
+    ZoomIn,
+    /// Ctrl+Minus (and Ctrl+Numpad Minus) zooms the page out one step.
+    ZoomOut,
+    /// Ctrl+0 (and Ctrl+Numpad 0) returns the page to 100%.
+    ZoomReset,
 }
 
 /// Commands that flip a setting. An auto-repeated key press must not flip it again.
@@ -69,6 +75,12 @@ const VK_RIGHT: u32 = 0x27;
 const VK_1: u32 = 0x31;
 const VK_8: u32 = 0x38;
 const VK_9: u32 = 0x39;
+const VK_0: u32 = 0x30;
+const VK_NUMPAD0: u32 = 0x60;
+const VK_ADD: u32 = 0x6B;
+const VK_SUBTRACT: u32 = 0x6D;
+const VK_OEM_PLUS: u32 = 0xBB;
+const VK_OEM_MINUS: u32 = 0xBD;
 const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
@@ -135,6 +147,12 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         (VK_V, true, true, false) => Some(Command::ToggleTabLayout),
         (VK_H, true, false, false) => Some(Command::ShowHistory),
+        // Ctrl+= and Ctrl+Shift+= (Ctrl+Plus on most layouts) both zoom in, as in Chrome.
+        (VK_OEM_PLUS, true, _, false) | (VK_ADD, true, false, false) => Some(Command::ZoomIn),
+        (VK_OEM_MINUS, true, false, false) | (VK_SUBTRACT, true, false, false) => {
+            Some(Command::ZoomOut)
+        }
+        (VK_0, true, false, false) | (VK_NUMPAD0, true, false, false) => Some(Command::ZoomReset),
         _ => None,
     }
 }
@@ -185,6 +203,13 @@ mod tests {
             (VK_W, true, true, false, Command::CloseSplitPane),
             (VK_V, true, true, false, Command::ToggleTabLayout),
             (VK_H, true, false, false, Command::ShowHistory),
+            (VK_OEM_PLUS, true, false, false, Command::ZoomIn),
+            (VK_OEM_PLUS, true, true, false, Command::ZoomIn),
+            (VK_ADD, true, false, false, Command::ZoomIn),
+            (VK_OEM_MINUS, true, false, false, Command::ZoomOut),
+            (VK_SUBTRACT, true, false, false, Command::ZoomOut),
+            (VK_0, true, false, false, Command::ZoomReset),
+            (VK_NUMPAD0, true, false, false, Command::ZoomReset),
         ];
         for index in 0..8 {
             table.push((
@@ -265,6 +290,34 @@ mod tests {
         ] {
             assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");
         }
+    }
+
+    #[test]
+    fn zoom_chords_follow_chrome_and_never_catch_alt_or_unrelated_shift() {
+        for key in [VK_OEM_PLUS, VK_ADD] {
+            assert_eq!(command_for(key, true, false, false), Some(Command::ZoomIn));
+        }
+        // Ctrl+Plus on a US layout is Ctrl+Shift+=.
+        assert_eq!(command_for(VK_OEM_PLUS, true, true, false), Some(Command::ZoomIn));
+        for key in [VK_OEM_MINUS, VK_SUBTRACT] {
+            assert_eq!(command_for(key, true, false, false), Some(Command::ZoomOut));
+        }
+        for key in [VK_0, VK_NUMPAD0] {
+            assert_eq!(command_for(key, true, false, false), Some(Command::ZoomReset));
+        }
+        for (key, ctrl, shift, alt) in [
+            (VK_OEM_PLUS, false, false, false),
+            (VK_OEM_PLUS, true, false, true), // AltGr layouts
+            (VK_OEM_MINUS, false, false, false),
+            (VK_OEM_MINUS, true, true, false),
+            (VK_0, false, false, false),
+            (VK_0, true, true, false),
+            (VK_0, true, false, true),
+            (VK_ADD, true, true, false),
+        ] {
+            assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
+        }
+        assert!(!is_toggle(Command::ZoomIn), "holding Ctrl+Plus keeps zooming");
     }
 
     #[test]

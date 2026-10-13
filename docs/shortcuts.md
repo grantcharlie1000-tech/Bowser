@@ -43,5 +43,24 @@ character when Shift is held.
 | Ctrl+Shift+Y | Picture in picture | Bound |
 | Ctrl+Shift+Delete | Privacy dashboard | Bound; fixed: no longer left to the omnibox as a delete chord |
 | Ctrl+H | History side panel | Bound (new) |
+| Ctrl+Plus, Ctrl+=, Ctrl+Numpad Plus | Zoom in one step (25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500) | Bound (new); stored per origin in `site-prefs.txt`; Ctrl+Shift+= also zooms in |
+| Ctrl+Minus, Ctrl+Numpad Minus | Zoom out one step | Bound (new) |
+| Ctrl+0, Ctrl+Numpad 0 | Reset zoom to 100% | Bound (new) |
+| Ctrl+mouse wheel | Zoom in / out | Not a chord: WebView2's own page zoom stays on, and `ZoomFactorChanged` stores the result like a key press |
 | Ctrl+J | Downloads | Unbound on purpose: downloads are cancelled by policy, there is no download manager |
 | Shift+F10 / Menu key | Page context menu | Not a browser chord; handled natively by the focused page |
+
+## Page zoom
+
+`ZoomIn`, `ZoomOut` and `ZoomReset` run `App::zoom_active` (`src/app.rs`), which steps the active tab
+with `ICoreWebView2Controller::SetZoomFactor` through `site_prefs::ZoomStep` (Chrome's levels, 25% to
+500%). The new value is stored for the tab's origin in `site-prefs.txt`, so the next navigation to that
+origin, or a restart, shows the same zoom. At each navigation commit (`SourceChanged`) the app sets the
+tab to the stored zoom of the new origin, or 100% for a site with none. A zoom the page changes itself
+(Ctrl+wheel, handled by WebView2) arrives as `ZoomFactorChanged`; it is stored the same way, and the
+events for zooms the app set itself are recognised and ignored. Guest sessions keep the values in
+memory only. The toolbar shows a chip with the percentage while the page is not at 100%; the chip and
+the Site information Reset button both run `ZoomReset`.
+
+Ctrl+Plus on most layouts is Ctrl+Shift+=, so both are bound; Ctrl+Alt chords (AltGr) stay unbound as
+before. While the HTML omnibox is being edited these chords still zoom the page, as in Chrome.

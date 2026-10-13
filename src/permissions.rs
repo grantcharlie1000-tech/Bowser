@@ -1,9 +1,11 @@
-//! Per-site decisions for the camera, microphone, location and notification permissions.
+//! Per-site decisions for the camera, microphone, location, notification and popup permissions.
 //!
 //! Pure logic and file I/O only. The WebView2 `PermissionRequested` handler asks [`PermissionStore::allows`]
-//! for every request, and the Site information panel reads and writes the same store, so a change
-//! applies to the next request. Nothing is asked of the user: a site with no stored decision is
-//! blocked, which is what Bowser did before this store existed.
+//! for every request, and the Site information panel and the Privacy dashboard read and write the
+//! same store, so a change applies to the next request. Nothing is asked of the user: a site with no
+//! stored decision is blocked, which is what Bowser did before this store existed. Popups are not a
+//! WebView2 permission: the new-window handler asks the same store whether a window a page opened
+//! from script may become a new tab. A user-initiated http(s) link click opens a tab regardless.
 //!
 //! The file is `permissions.txt` in the profile directory, one decision per line:
 //!
@@ -29,9 +31,15 @@ pub const FILE_NAME: &str = "permissions.txt";
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 /// Largest number of stored decisions, across all sites.
 pub const MAX_RULES: usize = 2048;
+/// Longest origin text accepted from the user interface.
+pub const MAX_ORIGIN_CHARS: usize = 256;
+/// How many denied requests the in-memory log keeps.
+pub const DENIED_LOG_CAP: usize = 50;
+/// Number of permission kinds, the length of [`Permission::ALL`].
+pub const PERMISSION_COUNT: usize = 5;
 
 const HEADER: &str = "# Bowser per-site permissions: <origin> <allow|block> <permission>.\n\
-# Permissions: microphone, camera, geolocation, notifications. A site without a line is blocked.\n";
+# Permissions: microphone, camera, geolocation, notifications, popups. A site without a line is blocked.\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Permission {
@@ -39,14 +47,17 @@ pub enum Permission {
     Camera,
     Geolocation,
     Notifications,
+    /// Windows a page opens from script, with no click behind them.
+    Popups,
 }
 
 impl Permission {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; PERMISSION_COUNT] = [
         Self::Microphone,
         Self::Camera,
         Self::Geolocation,
         Self::Notifications,
+        Self::Popups,
     ];
 
     /// The word used in `permissions.txt`.
@@ -56,7 +67,20 @@ impl Permission {
             Self::Camera => "camera",
             Self::Geolocation => "geolocation",
             Self::Notifications => "notifications",
+            Self::Popups => "popups",
         }
+    }
+
+    /// The kind name on the Privacy dashboard wire. It differs from [`Self::name`] only for location.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Geolocation => "location",
+            other => other.name(),
+        }
+    }
+
+    pub fn from_wire(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.wire_name() == text)
     }
 
     /// The row label shown in the Site information panel.
@@ -66,6 +90,7 @@ impl Permission {
             Self::Camera => "Camera",
             Self::Geolocation => "Location",
             Self::Notifications => "Notifications",
+            Self::Popups => "Popups",
         }
     }
 
@@ -96,6 +121,16 @@ impl Decision {
             _ => None,
         }
     }
+}
+
+/// `text` when it is already a canonical http(s) origin (`origin_of(text) == text`, within
+/// [`MAX_ORIGIN_CHARS`]). The interface sends origins it received from Rust, so anything else, such
+/// as a URL with a path, an uppercase host or another scheme, is refused rather than repaired.
+pub fn canonical_origin(text: &str) -> Option<String> {
+    if text.is_empty() || text.chars().count() > MAX_ORIGIN_CHARS {
+        return None;
+    }
+    origin_of(text).filter(|origin| origin == text)
 }
 
 /// The canonical origin (`scheme://host[:port]`) of an http or https URL, or `None` for any other
@@ -146,9 +181,19 @@ impl PermissionStore {
             .is_some_and(|decision| decision == Decision::Allow)
     }
 
-    /// The four permissions for one origin, in [`Permission::ALL`] order.
-    pub fn site_decisions(&self, origin: &str) -> [Option<Decision>; 4] {
+    /// Every permission for one origin, in [`Permission::ALL`] order.
+    pub fn site_decisions(&self, origin: &str) -> [Option<Decision>; PERMISSION_COUNT] {
         Permission::ALL.map(|permission| self.decision(origin, permission))
+    }
+
+    /// Every origin with at least one stored decision, in order.
+    pub fn origins(&self) -> impl Iterator<Item = &str> {
+        self.rules.keys().map(String::as_str)
+    }
+
+    /// How many decisions are stored, across all sites.
+    pub fn rule_count(&self) -> usize {
+        self.rules.values().map(BTreeMap::len).sum()
     }
 
     /// Every explicitly stored decision, grouped deterministically by origin then kind.
@@ -175,6 +220,9 @@ impl PermissionStore {
         if previous == decision {
             return Ok(());
         }
+        if previous.is_none() && decision.is_some() && self.rule_count() >= MAX_RULES {
+            return Err(io::Error::other("too many stored site permissions"));
+        }
         self.write_rule(origin, permission, decision);
         if let Err(error) = self.save() {
             self.write_rule(origin, permission, previous);
@@ -191,6 +239,20 @@ impl PermissionStore {
         let removed = previous.len();
         if let Err(error) = self.save() {
             self.rules.insert(origin.to_owned(), previous);
+            return Err(error);
+        }
+        Ok(removed)
+    }
+
+    /// Clears every stored decision, for every site. Returns how many were removed.
+    pub fn reset_all(&mut self) -> io::Result<usize> {
+        if self.rules.is_empty() {
+            return Ok(0);
+        }
+        let removed = self.rule_count();
+        let previous = std::mem::take(&mut self.rules);
+        if let Err(error) = self.save() {
+            self.rules = previous;
             return Err(error);
         }
         Ok(removed)
@@ -289,6 +351,78 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
     fs::rename(&temp, path)
+}
+
+/// One denied request, as the Privacy dashboard lists it. Only the site's origin, the kind and the
+/// time are kept: never a URL path, title or any page content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeniedAttempt {
+    pub origin: String,
+    pub kind: Permission,
+    /// Seconds since the Unix epoch of the most recent request.
+    pub at_secs: u64,
+    /// How many identical requests in a row this entry stands for (at most [`MAX_DENIED_REPEATS`]).
+    pub count: u32,
+}
+
+/// Cap on [`DeniedAttempt::count`], so a page that asks in a loop cannot overflow the counter.
+pub const MAX_DENIED_REPEATS: u32 = 999;
+
+/// The most recent denied requests, newest first. Held in memory only: it is never written to disk
+/// and is gone when Bowser exits.
+#[derive(Debug, Default)]
+pub struct DeniedLog {
+    entries: std::collections::VecDeque<DeniedAttempt>,
+}
+
+impl DeniedLog {
+    /// Records a denied request. A request identical to the newest entry (same origin and kind)
+    /// is folded into it, so a page that asks on every load does not push everything else out.
+    /// Origins that are not canonical http(s) origins are ignored.
+    pub fn record(&mut self, origin: &str, kind: Permission, now_secs: u64) {
+        if canonical_origin(origin).is_none() {
+            return;
+        }
+        if let Some(newest) = self.entries.front_mut()
+            && newest.origin == origin
+            && newest.kind == kind
+        {
+            newest.count = (newest.count + 1).min(MAX_DENIED_REPEATS);
+            newest.at_secs = now_secs;
+            return;
+        }
+        self.entries.push_front(DeniedAttempt {
+            origin: origin.to_owned(),
+            kind,
+            at_secs: now_secs,
+            count: 1,
+        });
+        self.entries.truncate(DENIED_LOG_CAP);
+    }
+
+    /// Newest first.
+    pub fn recent(&self) -> impl Iterator<Item = &DeniedAttempt> {
+        self.entries.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Seconds since the Unix epoch, or 0 when the clock is before it.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[cfg(test)]
@@ -427,12 +561,12 @@ mod tests {
         assert!(!store.allows("https://a.test", Permission::Camera));
         assert_eq!(
             store.site_decisions("https://a.test"),
-            [None, Some(Decision::Block), None, None]
+            [None, Some(Decision::Block), None, None, None]
         );
         store
             .set("https://a.test", Permission::Camera, None)
             .unwrap();
-        assert_eq!(store.site_decisions("https://a.test"), [None; 4]);
+        assert_eq!(store.site_decisions("https://a.test"), [None; PERMISSION_COUNT]);
         let text = fs::read_to_string(&path).unwrap();
         assert!(
             !text.lines().any(|line| line.starts_with("https://")),
@@ -531,7 +665,7 @@ mod tests {
         let result = store.set("https://a.test", Permission::Camera, Some(Decision::Allow));
         assert!(result.is_err(), "the parent directory does not exist");
         assert!(!store.allows("https://a.test", Permission::Camera));
-        assert_eq!(store.site_decisions("https://a.test"), [None; 4]);
+        assert_eq!(store.site_decisions("https://a.test"), [None; PERMISSION_COUNT]);
     }
 
     #[test]
@@ -547,6 +681,170 @@ mod tests {
 
         let missing = PermissionStore::load(&path.with_file_name("absent.txt"));
         assert!(!missing.allows("https://a.test", Permission::Camera));
+    }
+
+    #[test]
+    fn popups_are_a_stored_kind_that_defaults_to_blocked() {
+        let path = temp_file("popups");
+        let mut store = PermissionStore::load(&path);
+        assert!(!store.allows("https://a.test/", Permission::Popups));
+        store
+            .set("https://a.test", Permission::Popups, Some(Decision::Allow))
+            .unwrap();
+        assert!(store.allows("https://a.test/page", Permission::Popups));
+        assert!(!store.allows("https://b.test/", Permission::Popups));
+        assert!(
+            !store.allows("https://a.test/", Permission::Camera),
+            "a popup decision grants nothing else"
+        );
+        let reloaded = PermissionStore::load(&path);
+        assert!(reloaded.allows("https://a.test/", Permission::Popups));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("https://a.test allow popups\n"), "{text}");
+        // A file written by this version stays readable: unknown kinds are skipped, not fatal.
+        assert_eq!(parse("https://a.test allow popups\nhttps://a.test allow bluetooth\n").len(), 1);
+    }
+
+    #[test]
+    fn wire_names_round_trip_and_only_location_differs() {
+        for kind in Permission::ALL {
+            assert_eq!(Permission::from_wire(kind.wire_name()), Some(kind));
+        }
+        assert_eq!(Permission::Geolocation.wire_name(), "location");
+        assert_eq!(Permission::Geolocation.name(), "geolocation");
+        assert_eq!(Permission::from_wire("geolocation"), None);
+        assert_eq!(Permission::from_wire("mic"), None);
+        assert_eq!(Permission::from_wire(""), None);
+        assert_eq!(Permission::from_wire("Camera"), None);
+    }
+
+    #[test]
+    fn canonical_origin_accepts_only_origins_already_in_canonical_form() {
+        assert_eq!(
+            canonical_origin("https://example.com").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            canonical_origin("http://localhost:8080").as_deref(),
+            Some("http://localhost:8080")
+        );
+        for text in [
+            "",
+            "https://example.com/",
+            "https://example.com/path",
+            "https://Example.com",
+            "https://example.com:443",
+            "file:///C:/x",
+            "ftp://example.com",
+            "example.com",
+            "https://example.com?x=1",
+            "https://user@example.com",
+        ] {
+            assert_eq!(canonical_origin(text), None, "{text}");
+        }
+        let long = format!("https://{}.test", "a".repeat(MAX_ORIGIN_CHARS));
+        assert_eq!(canonical_origin(&long), None, "over the length cap");
+    }
+
+    #[test]
+    fn reset_all_clears_every_site_and_persists() {
+        let path = temp_file("reset-all");
+        let mut store = PermissionStore::load(&path);
+        assert_eq!(store.reset_all().unwrap(), 0);
+        store
+            .set("https://a.test", Permission::Camera, Some(Decision::Allow))
+            .unwrap();
+        store
+            .set("https://b.test", Permission::Popups, Some(Decision::Block))
+            .unwrap();
+        assert_eq!(store.rule_count(), 2);
+        assert_eq!(store.origins().collect::<Vec<_>>(), ["https://a.test", "https://b.test"]);
+        assert_eq!(store.reset_all().unwrap(), 2);
+        assert_eq!(store.rule_count(), 0);
+        let reloaded = PermissionStore::load(&path);
+        assert_eq!(reloaded.rule_count(), 0);
+    }
+
+    #[test]
+    fn a_failed_reset_all_keeps_the_rules() {
+        let dir = std::env::temp_dir().join(format!(
+            "bowser-permissions-{}-reset-all-fail",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let mut store = PermissionStore::load(&path);
+        store
+            .set("https://a.test", Permission::Camera, Some(Decision::Allow))
+            .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(store.reset_all().is_err());
+        assert!(store.allows("https://a.test", Permission::Camera));
+    }
+
+    #[test]
+    fn set_refuses_a_new_decision_past_the_rule_cap() {
+        let mut store = PermissionStore::default();
+        for index in 0..MAX_RULES {
+            store
+                .set(
+                    &format!("https://site{index}.test"),
+                    Permission::Camera,
+                    Some(Decision::Allow),
+                )
+                .unwrap();
+        }
+        assert!(store
+            .set("https://extra.test", Permission::Camera, Some(Decision::Allow))
+            .is_err());
+        assert!(!store.allows("https://extra.test", Permission::Camera));
+        // Changing or clearing an existing decision still works at the cap.
+        store
+            .set("https://site0.test", Permission::Camera, Some(Decision::Block))
+            .unwrap();
+        store
+            .set("https://site1.test", Permission::Camera, None)
+            .unwrap();
+        assert_eq!(store.rule_count(), MAX_RULES - 1);
+    }
+
+    #[test]
+    fn denied_log_keeps_the_newest_fifty_and_never_a_path() {
+        let mut log = DeniedLog::default();
+        for index in 0..DENIED_LOG_CAP + 10 {
+            log.record(&format!("https://site{index}.test"), Permission::Camera, index as u64);
+        }
+        assert_eq!(log.len(), DENIED_LOG_CAP);
+        let newest = log.recent().next().unwrap();
+        assert_eq!(newest.origin, format!("https://site{}.test", DENIED_LOG_CAP + 9));
+        assert_eq!(log.recent().last().unwrap().origin, "https://site10.test");
+        // Anything that is not a canonical origin (a URL with a path, a file page) is not recorded.
+        let before = log.len();
+        log.record("https://a.test/secret/path?q=1", Permission::Camera, 1);
+        log.record("file:///C:/x.html", Permission::Camera, 1);
+        log.record("", Permission::Camera, 1);
+        assert_eq!(log.len(), before);
+        log.clear();
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn denied_log_folds_an_identical_newest_request_and_caps_the_count() {
+        let mut log = DeniedLog::default();
+        log.record("https://a.test", Permission::Notifications, 10);
+        log.record("https://a.test", Permission::Notifications, 12);
+        log.record("https://a.test", Permission::Camera, 13);
+        log.record("https://a.test", Permission::Notifications, 14);
+        let entries: Vec<_> = log.recent().cloned().collect();
+        assert_eq!(entries.len(), 3, "only the newest entry is folded into");
+        assert_eq!(entries[2].count, 2);
+        assert_eq!(entries[2].at_secs, 12);
+        assert_eq!(entries[0].count, 1);
+        for _ in 0..2000 {
+            log.record("https://a.test", Permission::Notifications, 20);
+        }
+        assert_eq!(log.recent().next().unwrap().count, MAX_DENIED_REPEATS);
     }
 
     #[test]

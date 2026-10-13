@@ -581,6 +581,12 @@ pub struct App {
     blocker: Option<engine::BlockerHandle>,
     /// Stored per-site permission decisions; `None` for benchmark launches, which deny every request.
     permissions: Option<engine::PermissionsHandle>,
+    /// Per-site preferences (page zoom). `None` for benchmark launches; guest sessions get an
+    /// in-memory store.
+    site_prefs: Option<crate::site_prefs::SitePrefsHandle>,
+    /// The newest denied permission requests and blocked popups. In memory only, origins and
+    /// kinds only; shown on the Privacy dashboard.
+    denied: crate::permissions::DeniedLog,
 }
 
 struct AppTab {
@@ -612,6 +618,8 @@ struct AppTab {
     blocked: u32,
     /// A permission request from the current page was denied (toolbar indicator).
     permission_blocked: bool,
+    /// The page zoom in percent this tab last showed or was set to (100 for a new controller).
+    zoom: u16,
     /// Outcome of the last top-level navigation, for the connection state in Site information.
     load: LoadState,
 }
@@ -639,6 +647,7 @@ impl AppTab {
             last_crash_reload: None,
             blocked: 0,
             permission_blocked: false,
+            zoom: crate::site_prefs::ZOOM_DEFAULT,
             load: LoadState::Loaded,
         }
     }
@@ -2593,6 +2602,115 @@ impl App {
             .is_some_and(|tab| tab.permission_blocked)
     }
 
+    /// The newest denied permission requests and blocked popups, newest first (at most 50). Held in
+    /// memory only; origin, kind and time, never page content.
+    pub fn denied_requests(app: &AppRef) -> Vec<crate::permissions::DeniedAttempt> {
+        app.borrow().denied.recent().cloned().collect()
+    }
+
+    pub fn clear_denied_requests(app: &AppRef) {
+        app.borrow_mut().denied.clear();
+    }
+
+    /// The page zoom in percent of the active tab, 100 when it has none.
+    pub fn active_zoom_percent(app: &AppRef) -> u16 {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == active)
+            .map_or(crate::site_prefs::ZOOM_DEFAULT, |tab| tab.zoom)
+    }
+
+    /// Ctrl+Plus, Ctrl+Minus and Ctrl+0 on the active tab.
+    pub fn zoom_active(app: &AppRef, step: crate::site_prefs::ZoomStep) {
+        let tab = app.borrow().tab_model.active();
+        let current = Self::call_engine(app, |engine| engine.zoom_percent(tab))
+            .flatten()
+            .unwrap_or_else(|| Self::active_zoom_percent(app));
+        Self::set_tab_zoom(app, tab, step.apply(current));
+    }
+
+    /// Sets one tab's zoom and, when the tab shows a web page, stores it for that page's origin
+    /// (guest sessions keep it in memory only). Returns whether the engine applied it.
+    pub fn set_tab_zoom(app: &AppRef, tab: TabId, percent: u16) -> bool {
+        let percent = percent.clamp(crate::site_prefs::ZOOM_MIN, crate::site_prefs::ZOOM_MAX);
+        let applied = Self::call_engine(app, |engine| engine.set_zoom_percent(tab, percent))
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if applied {
+            Self::note_tab_zoom(app, tab, percent, true);
+        }
+        applied
+    }
+
+    /// Records a tab's zoom, optionally stores it for the page's origin, and refreshes the toolbar.
+    fn note_tab_zoom(app: &AppRef, tab: TabId, percent: u16, persist: bool) {
+        let (url, store, hwnd) = {
+            let mut state = app.borrow_mut();
+            let store = state.site_prefs.clone();
+            let hwnd = state.hwnd;
+            let Some(entry) = state.tabs.iter_mut().find(|entry| entry.id == tab) else {
+                return;
+            };
+            entry.zoom = percent;
+            (entry.url.clone(), store, hwnd)
+        };
+        if persist
+            && let (Some(store), Some(origin)) = (
+                store,
+                url.as_ref()
+                    .and_then(|url| crate::permissions::origin_of(url.as_str())),
+            )
+        {
+            // A full or unwritable store leaves the zoom applied for this tab only.
+            let _ = store.borrow_mut().set_zoom(&origin, Some(percent));
+        }
+        Self::post_tab_changed_kind(hwnd, tab, false, false);
+    }
+
+    /// Navigation commit: shows the page at its site's stored zoom (100 for a site with none).
+    /// Without a store (benchmark launches) the tab keeps whatever zoom it has.
+    fn apply_stored_zoom(app: &AppRef, tab: TabId, url: &url::Url) {
+        let (store, current) = {
+            let state = app.borrow();
+            let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
+                return;
+            };
+            (state.site_prefs.clone(), entry.zoom)
+        };
+        let Some(store) = store else {
+            return;
+        };
+        let target = store.borrow().zoom_for_uri(url.as_str());
+        if target == current {
+            return;
+        }
+        let applied = Self::call_engine(app, |engine| engine.set_zoom_percent(tab, target))
+            .and_then(Result::ok)
+            .unwrap_or(false);
+        if applied {
+            Self::note_tab_zoom(app, tab, target, false);
+        }
+    }
+
+    /// The engine reports a zoom change. The ones this app made are already recorded (equal to the
+    /// tab's value) and ignored; what is left is the page's own zoom, such as Ctrl+wheel, which is
+    /// stored for the site like a key press.
+    fn page_zoom_changed(app: &AppRef, tab: TabId, percent: u16) {
+        let differs = app.try_borrow().is_ok_and(|state| {
+            state
+                .tabs
+                .iter()
+                .find(|entry| entry.id == tab)
+                .is_some_and(|entry| entry.zoom != percent)
+        });
+        if differs {
+            Self::note_tab_zoom(app, tab, percent, true);
+        }
+    }
+
     /// Requests the blocker stopped on the active tab's current page.
     pub fn active_blocked_count(app: &AppRef) -> u32 {
         let state = app.borrow();
@@ -2947,6 +3065,12 @@ impl App {
             app.permissions = Some(Rc::new(RefCell::new(
                 crate::permissions::PermissionStore::load(&profile.permissions_file()),
             )));
+            // Guests remember zoom for the session only; nothing of theirs reaches the disk.
+            app.site_prefs = Some(Rc::new(RefCell::new(if profile.is_guest() {
+                crate::site_prefs::SitePrefsStore::in_memory()
+            } else {
+                crate::site_prefs::SitePrefsStore::load(&profile.site_prefs_file())
+            })));
             app.privacy_stats_path = Some(profile.privacy_stats_file());
             app.privacy_stats = Some(crate::privacy_stats::PrivacyStats::load(
                 &profile.privacy_stats_file(),
@@ -3041,6 +3165,8 @@ impl App {
             privacy_session_blocked: 0,
             blocker: None,
             permissions: None,
+            site_prefs: None,
+            denied: crate::permissions::DeniedLog::default(),
         }
     }
 
@@ -3579,6 +3705,8 @@ impl App {
                         };
                         let _ = log.record(event);
                     }
+                    // Navigation commit: the page shows at its site's stored zoom from here on.
+                    Self::apply_stored_zoom(&app, tab_id, &url);
                     Self::post_tab_changed(app.borrow().hwnd, tab_id);
                 }
             })),
@@ -3625,6 +3753,9 @@ impl App {
                                     .is_some_and(|split| split.pane_for(tab_id).is_some());
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.controller_created = true;
+                                // A new controller starts at 100%; the next commit re-applies
+                                // the site's stored zoom.
+                                tab.zoom = crate::site_prefs::ZOOM_DEFAULT;
                                 tab.hidden_since = (!visible).then(Instant::now);
                                 tab.suspended = false;
                                 tab.muted
@@ -3835,9 +3966,13 @@ impl App {
             })),
             permission_denied: {
                 let denied_app = Rc::downgrade(app);
-                Some(Rc::new(move |tab_id| {
+                Some(Rc::new(move |tab_id, kind, origin| {
                     if let Some(app) = denied_app.upgrade() {
                         let changed = app.try_borrow_mut().is_ok_and(|mut state| {
+                            // The dashboard's recent list: origin, kind and time, never content.
+                            state
+                                .denied
+                                .record(&origin, kind, crate::permissions::now_secs());
                             state
                                 .tabs
                                 .iter_mut()
@@ -3847,6 +3982,14 @@ impl App {
                         if changed {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                         }
+                    }
+                }))
+            },
+            zoom_changed: {
+                let zoom_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, percent| {
+                    if let Some(app) = zoom_app.upgrade() {
+                        Self::page_zoom_changed(&app, tab_id, percent);
                     }
                 }))
             },
@@ -6601,6 +6744,8 @@ mod tests {
             privacy_session_blocked: 0,
             blocker: None,
             permissions: None,
+            site_prefs: None,
+            denied: crate::permissions::DeniedLog::default(),
         }))
     }
 

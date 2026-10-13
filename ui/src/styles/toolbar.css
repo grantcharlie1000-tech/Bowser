@@ -193,6 +193,41 @@ html[data-scheme="dark"] #app {
   margin-right: var(--bw-space-0_5);
 }
 
+/* Zoom chip (view.ts): shown only while the page is zoomed, and hidden through the [hidden]
+   attribute. 20px high inside the 26px pill, so the pill's geometry never changes. Click resets
+   the zoom. Same accent wash as other selected states; text stays --bw-text for contrast. */
+.tb-zoom {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: var(--bw-space-0_5);
+  height: 20px;
+  margin: 0 var(--bw-space-0_5) 0 0;
+  padding: 0 var(--bw-space-1);
+  border: 0;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font: inherit;
+  font-size: var(--bw-text-chrome);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.tb-zoom[hidden] {
+  display: none;
+}
+
+.tb-zoom:hover {
+  background: color-mix(in srgb, var(--bw-accent-soft), var(--bw-hover));
+}
+
+.tb-zoom > svg {
+  pointer-events: none;
+}
+
 /* Security state: the lock stays neutral, a problem is warm. */
 .pill[data-security="notsecure"] .tb-site,
 .pill[data-security="certproblem"] .tb-site {
@@ -202,6 +237,12 @@ html[data-scheme="dark"] #app {
 /* Narrow pill: drop the split button first, then the site button, never the text field. */
 @container (max-width: 190px) {
   .tb-split {
+    display: none;
+  }
+}
+
+@container (max-width: 130px) {
+  .tb-zoom {
     display: none;
   }
 }

@@ -229,6 +229,19 @@ pub trait EngineAdapter {
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {
         None
     }
+    /// The tab's page zoom in percent, or `None` when it has no live page.
+    fn zoom_percent(&self, _tab: crate::tabs::TabId) -> Option<u16> {
+        None
+    }
+    /// Sets the tab's page zoom (25 to 500). `Ok(false)` when the tab has no live page to zoom.
+    /// The engine reports the change through `EngineEvents::zoom_changed`.
+    fn set_zoom_percent(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _percent: u16,
+    ) -> windows::core::Result<bool> {
+        Ok(false)
+    }
     /// Current WebView2 reputation-checking setting, or `None` when the runtime cannot report it.
     fn smart_screen_enabled(&self, _tab: crate::tabs::TabId) -> Option<bool> {
         None
@@ -274,9 +287,13 @@ pub struct EngineEvents {
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
     pub failed: Option<std::rc::Rc<dyn Fn(windows::core::Error)>>,
-    /// A camera, microphone, location or notification request from this tab's page was denied
-    /// (no stored Allow). Bowser never prompts; the toolbar shows a passive indicator.
-    pub permission_denied: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// A camera, microphone, location or notification request, or a script popup, from this tab's
+    /// page was denied (no stored Allow). The origin is the page's canonical origin only.
+    /// Bowser never prompts; the toolbar shows a passive indicator.
+    pub permission_denied:
+        Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::permissions::Permission, String)>>,
+    /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
+    pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
 }
 

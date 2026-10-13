@@ -13,10 +13,11 @@
 import { icon, type IconName } from './icons';
 import { sendPopupAct, sendPopupDismiss, sendPopupSize, type Security } from './protocol';
 import {
-  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES, CHOICE_LABEL, blockerText, cookieText,
+  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, CHOICE_LABEL, blockerText, cookieText,
   validSiteInfoPayload, type PermissionKey, type SiteInfoMessage,
 } from './siteinfo-logic';
 import type { PageView } from './palette';
+import { isZoomed, zoomText } from './zoom-logic';
 
 export const SITEINFO_WIDTH = 320;
 
@@ -24,7 +25,7 @@ const SECURITY_ICON: Readonly<Record<Security, IconName>> = {
   secure: 'lock', notsecure: 'unlock', certproblem: 'warning', internal: 'info', unknown: 'info', none: 'info',
 };
 const PERMISSION_ICON: Readonly<Record<PermissionKey, IconName>> = {
-  camera: 'camera', mic: 'mic', location: 'location', notifications: 'bell',
+  camera: 'camera', mic: 'mic', location: 'location', notifications: 'bell', popups: 'external',
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -166,6 +167,12 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     });
     nodes.push(row('shield', 'Tracker blocker', blockerText(msg.blocker), toggle, 'blocker'));
     nodes.push(row('eye', 'Tracking prevention', msg.tracking === '' ? 'Unavailable' : msg.tracking.charAt(0).toUpperCase() + msg.tracking.slice(1), null, 'tracking'));
+    if (isZoomed(msg.zoom)) {
+      const zoomReset = button('bw-button is-subtle', 'Reset', 'zoom');
+      zoomReset.setAttribute('aria-label', 'Reset zoom to 100%');
+      zoomReset.addEventListener('click', () => { if (!busy()) act(ACT_ZOOM_RESET, 0, zoomReset); });
+      nodes.push(row(msg.zoom > 100 ? 'zoom-in' : 'zoom-out', 'Zoom', zoomText(msg.zoom), zoomReset, 'zoom'));
+    }
 
     nodes.push(el('div', 'bw-separator'));
     const footer = el('div', 'bw-siteinfo-footer');
@@ -173,7 +180,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     reset.prepend(icon('reset'));
     reset.disabled = !msg.reset;
     reset.addEventListener('click', () => { if (!busy()) act(ACT_RESET, 0, reset); });
-    footer.append(reset, el('p', 'bw-siteinfo-policy', 'Sites never get a prompt. Anything not allowed here is blocked.'));
+    footer.append(reset, el('p', 'bw-siteinfo-policy', 'Sites never get a prompt. Anything not allowed here is blocked. Links you click still open in new tabs.'));
     nodes.push(footer);
 
     page.replaceChildren(...nodes);

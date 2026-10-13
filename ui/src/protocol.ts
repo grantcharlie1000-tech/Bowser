@@ -1,6 +1,7 @@
 // Typed bridge for the toolbar, tab strip and left rail pages. Mirrors docs/html-chrome-protocol.md (v1).
 // Page-controlled text reaches the DOM only through textContent or attributes (see view.ts, tabs.ts, rail.ts).
 import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail-logic';
+import { validZoom } from './zoom-logic';
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_TEXT = 2048;
@@ -20,7 +21,7 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
@@ -174,6 +175,8 @@ export interface StateMsg {
   readonly label: string;
   /** A permission request on the current page was denied (passive toolbar indicator). */
   readonly permblocked?: boolean;
+  /** The page zoom of the active tab in percent (25 to 500). Absent in older hosts; 100 means no chip. */
+  readonly zoom?: number;
   readonly theme: Theme;
 }
 export interface SetTextMsg {
@@ -716,8 +719,9 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'theme'])) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
+      if ('zoom' in raw && !validZoom(raw.zoom)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -744,6 +748,7 @@ export function parseInbound(data: unknown): Inbound | null {
         security,
         label,
         ...(isBool(raw.permblocked) ? { permblocked: raw.permblocked } : {}),
+        ...(typeof raw.zoom === 'number' ? { zoom: raw.zoom } : {}),
         theme: parseTheme(raw.theme),
       };
     }

@@ -2,7 +2,7 @@
 // Pure (no DOM), tested in test/siteinfo.mjs against the Rust fixture.
 import type { Security } from './protocol';
 
-export type PermissionKey = 'camera' | 'mic' | 'location' | 'notifications';
+export type PermissionKey = 'camera' | 'mic' | 'location' | 'notifications' | 'popups';
 export type PermissionState = 'allow' | 'block' | 'default';
 
 export interface SitePermission {
@@ -24,6 +24,8 @@ export interface SiteInfoMessage {
   readonly cookies: { readonly state: 'count' | 'unavailable' | 'none'; readonly n: number; readonly clear: boolean };
   readonly blocker: { readonly state: 'on' | 'off' | 'unavailable'; readonly n: number };
   readonly tracking: string;
+  /** Page zoom in percent (25 to 500); 100 shows no zoom row. */
+  readonly zoom: number;
   readonly reset: boolean;
   readonly blockedHere: boolean;
 }
@@ -35,9 +37,14 @@ export const CHOICE_LABEL: Readonly<Record<PermissionState, string>> = { allow: 
 export const ACT_CLEAR_COOKIES = 10;
 export const ACT_BLOCKER = 11;
 export const ACT_RESET = 12;
+/** Rust: ACT_ZOOM_RESET. Declared only while the page is zoomed. */
+export const ACT_ZOOM_RESET = 13;
+/** Page zoom limits in percent (Rust: site_prefs::ZOOM_MIN, ZOOM_MAX; zoom-logic.ts). */
+const ZOOM_MIN = 25;
+const ZOOM_MAX = 500;
 
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const KEYS: readonly PermissionKey[] = ['camera', 'mic', 'location', 'notifications'];
+const KEYS: readonly PermissionKey[] = ['camera', 'mic', 'location', 'notifications', 'popups'];
 const MAX_TEXT = 256;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -59,7 +66,8 @@ function isOneOf<T extends string>(v: unknown, list: readonly T[]): v is T {
 /** Strict check of a `siteinfo` message: every key present, nothing extra, closed value sets. */
 export function validSiteInfoPayload(raw: unknown): raw is SiteInfoMessage {
   if (!isRecord(raw) || raw.t !== 'siteinfo' || raw.v !== 1) return false;
-  if (!onlyKeys(raw, ['v', 't', 'tok', 'kind', 'host', 'origin', 'security', 'summary', 'perms', 'cookies', 'blocker', 'tracking', 'reset', 'blockedHere'])) return false;
+  if (!onlyKeys(raw, ['v', 't', 'tok', 'kind', 'host', 'origin', 'security', 'summary', 'perms', 'cookies', 'blocker', 'tracking', 'zoom', 'reset', 'blockedHere'])) return false;
+  if (!isInt(raw.zoom, ZOOM_MIN, ZOOM_MAX)) return false;
   if (!isInt(raw.tok, 0, 0xffffffff) || !isStr(raw.kind, 32) || !isStr(raw.host) || !isStr(raw.origin) || !isStr(raw.summary) || !isStr(raw.tracking, 64)) return false;
   if (!isOneOf(raw.security, SECURITY) || typeof raw.reset !== 'boolean' || typeof raw.blockedHere !== 'boolean') return false;
   if (!Array.isArray(raw.perms) || raw.perms.length > KEYS.length) return false;
