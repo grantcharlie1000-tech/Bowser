@@ -1,0 +1,132 @@
+/*
+ * Surface: FLYOUT (?view=panel, shown as a rail flyout: History, Bookmarks, Customize).
+ * Owner: flyouts agent (docs/design/flyouts.md). Built by ui/src/panel.ts. The panel bodies are
+ * panels/history.ts, bookmarks.ts and customize.ts, styled by panels.css and rail.css; this file
+ * owns only the frame: the transparent shadow room, the opaque surface, the caret and the enter
+ * motion, plus the few overrides that let a full-height panel body sit inside a floating surface.
+ *
+ *   window (transparent)                 .fly-surface: opaque overlay colour, 8px radius,
+ *   +-4-+--------------------+--16--+    1px hairline, --bw-sh-flyout drawn in the room
+ *   8   | header  title   [x] |      |    .fly-caret: 8px square turned 45deg on the left
+ *   <|  | search / list       |      |    edge, centred on the rail button (--fly-caret-y)
+ *         | footer              |      |
+ *   +-----+--------------------+------+
+ *                  24 (shadow room)
+ */
+
+/* The room must match flyout::SHADOW in src/win32/flyout.rs (left 4, top 8, right 16, bottom 24). */
+#app.fly-root {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: var(--bw-space-2) var(--bw-space-4) var(--bw-space-6) var(--bw-space-1);
+  background: transparent;
+}
+
+.fly {
+  /* The surface colour: the overlay colour at full alpha (relative colour syntax keeps the origin's
+     alpha unless it is given, hence the explicit / 1). */
+  --fly-bg: rgb(from var(--bw-overlay) r g b / 1);
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* Enter: an 83ms linear fade and an 8px slide out of the rail over 167ms. Reduced motion zeroes
+   --bw-dur-base, which leaves the fade. Close is instant (the window hides): see the design doc. */
+.fly.is-entering {
+  animation:
+    fly-fade var(--bw-dur-fast) var(--bw-ease-fade) both,
+    fly-slide var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+@keyframes fly-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fly-slide {
+  from {
+    transform: translateX(calc(var(--bw-space-2) * -1));
+  }
+}
+
+/* Opaque: the overlay colour at full alpha, so page text never shows through (V4). The caret uses
+   the same colour so the two read as one shape. */
+.fly-surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: var(--fly-bg);
+  box-shadow: var(--bw-sh-flyout);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+/* The surface takes focus on open when it has no search field (Customize) so Tab starts at its
+   first control; it is a container, not a control, so it draws no ring of its own. */
+.fly-surface:focus {
+  outline: none;
+}
+
+/* Points at the rail button. Drawn over the surface's left edge in the surface colour, so it reads
+   as one shape; only its two outer sides carry the hairline. */
+.fly-caret {
+  position: absolute;
+  z-index: 1;
+  top: calc(var(--fly-caret-y, 22px) - var(--bw-space-1));
+  left: calc(var(--bw-space-0_5) * -1);
+  width: var(--bw-space-2);
+  height: var(--bw-space-2);
+  border-bottom: 1px solid var(--bw-hairline);
+  border-left: 1px solid var(--bw-hairline);
+  background: var(--fly-bg);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.fly-caret[hidden] {
+  display: none;
+}
+
+/* ---- Panel bodies inside the surface: full height, no own background, no own enter motion. ---- */
+.fly-surface > .pn {
+  height: 100%;
+  background: transparent;
+}
+
+/* Sticky day headers paint the surface colour so rows scroll under them invisibly. */
+.fly-surface .pn-day {
+  background: var(--fly-bg);
+}
+
+.fly-surface > .bw-enter {
+  animation: none;
+}
+
+.fly-surface > .panel-customize {
+  gap: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+}
+
+.fly-surface > .panel-customize > .cust-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+  min-height: 0;
+  padding: 0 var(--bw-space-4);
+}
+
+.fly-surface > .panel-customize > .cust-confirm {
+  margin: 0;
+}

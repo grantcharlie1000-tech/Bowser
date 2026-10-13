@@ -1,11 +1,13 @@
 // Left rail view (?view=rail): keyed reconciliation of the rail buttons, favicons, pointer reorder and keyboard.
 // Labels reach the DOM only through textContent and attributes; favicons are validated data: URIs set as img.src.
-import { onInbound, send, type RailItem, type RailMsg } from './protocol';
+import { onInbound, send, sendRail, type RailItem, type RailMsg } from './protocol';
 import { setTip } from './tooltip';
 import {
   ADD_BUTTONS,
   beforeKey,
   dropSlot,
+  FLYOUT_HOVER_MS,
+  hoverSwitches,
   initialOf,
   isDraggable,
   keyboardMoveBefore,
@@ -355,8 +357,38 @@ export function startRail(root: HTMLElement): void {
       ignoreClick = false;
       return;
     }
-    send({ v: 1, t: 'rail', a: 'click', k: btn.dataset.k ?? '' });
+    // The button's rectangle anchors the flyout that History, Bookmarks and Customize open.
+    sendRail('click', btn.dataset.k ?? '', btn.getBoundingClientRect());
   });
+
+  // --- rail flyouts ---
+  // While a flyout is open, resting on another flyout button for FLYOUT_HOVER_MS switches to it
+  // (the menu-bar rule); leaving it, or pressing, before then cancels.
+  let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+  let hoverKey = '';
+  const cancelHover = (): void => {
+    if (hoverTimer !== undefined) clearTimeout(hoverTimer);
+    hoverTimer = undefined;
+    hoverKey = '';
+  };
+  root.addEventListener('pointerover', (ev) => {
+    const btn = ev.target instanceof Element ? ev.target.closest<HTMLButtonElement>('.rb') : null;
+    const key = btn?.dataset.k ?? '';
+    if (key === hoverKey) return;
+    cancelHover();
+    if (!btn || drag?.active || !hoverSwitches(key)) return;
+    hoverKey = key;
+    hoverTimer = setTimeout(() => {
+      hoverTimer = undefined;
+      hoverKey = '';
+      if (btn.isConnected && btn.matches(':hover')) {
+        sendRail('hover', key, btn.getBoundingClientRect());
+      }
+    }, FLYOUT_HOVER_MS);
+  });
+  root.addEventListener('pointerleave', cancelHover);
+  root.addEventListener('pointerdown', cancelHover);
+  // --- end rail flyouts ---
 
   // Right click on any part of the rail opens the native menu for the button under the cursor.
   root.addEventListener('contextmenu', (ev) => {
