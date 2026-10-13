@@ -302,6 +302,8 @@ pub struct TabRow {
     pub loading: bool,
     pub pinned: bool,
     pub muted: bool,
+    /// A private tab. Private tabs never join a group, so a private row's group is ignored.
+    pub private: bool,
     pub marker: Option<Marker>,
     /// Pinned tabs never join a group, so a pinned row's group is ignored.
     pub group: Option<RowGroup>,
@@ -313,7 +315,7 @@ pub struct TabRow {
 /// no wire form is left out.
 pub fn tab_items(rows: &[TabRow]) -> Vec<TabItem> {
     fn grouped(row: &TabRow) -> Option<&RowGroup> {
-        row.group.as_ref().filter(|_| !row.pinned)
+        row.group.as_ref().filter(|_| !row.pinned && !row.private)
     }
     let mut sizes: HashMap<&TabGroupKey, u32> = HashMap::new();
     for group in rows.iter().filter_map(grouped) {
@@ -341,6 +343,7 @@ pub fn tab_items(rows: &[TabRow]) -> Vec<TabItem> {
                 loading: row.loading,
                 pinned: row.pinned,
                 muted: row.muted,
+                private: row.private,
                 marker: row.marker.map_or(-1, |marker| i32::from(marker.id())),
                 group: wire_group,
                 leader,
@@ -835,6 +838,7 @@ mod tests {
             loading: false,
             pinned,
             muted: false,
+            private: false,
             marker: None,
             group,
             has_favicon: id == 1,

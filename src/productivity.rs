@@ -77,6 +77,11 @@ pub fn browser_commands() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
     for (label, detail, action) in [
         ("New tab", "Open a blank tab", "new-tab"),
+        (
+            "New private tab",
+            "Open a tab that keeps no history or site data",
+            "new-private-tab",
+        ),
         ("Close tab", "Close the current tab", "close-tab"),
         ("Settings", "Open browser settings", "settings"),
         (
