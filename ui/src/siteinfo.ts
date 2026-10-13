@@ -5,16 +5,18 @@
 //     .bw-siteinfo-header[data-security] > svg, .bw-siteinfo-title > .bw-siteinfo-host + .bw-siteinfo-summary
 //     .bw-siteinfo-notice                            "a request was blocked" (only when one was)
 //     .bw-section-header
+//     .bw-siteinfo-empty.bw-siteinfo-private         private tab: note in place of the permission rows
 //     .bw-siteinfo-row[data-k] > svg, .bw-siteinfo-text > .bw-siteinfo-label (+ .bw-siteinfo-meta),
 //         control (.bw-segmented[role=radiogroup] > button[role=radio][aria-checked] | .bw-toggle | .bw-button)
+//         (private tab, .bw-siteinfo.is-private: the blocker row has no toggle and reads "Always on")
 //     .bw-separator
 //     .bw-siteinfo-footer > .bw-button (reset), .bw-siteinfo-policy
 // Controls send `act` (the popup stays open) and Rust answers with a refreshed page.
 import { icon, type IconName } from './icons';
 import { sendPopupAct, sendPopupDismiss, sendPopupSize, type Security } from './protocol';
 import {
-  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES, CHOICE_LABEL, blockerText, cookieText,
-  validSiteInfoPayload, type PermissionKey, type SiteInfoMessage,
+  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES, CHOICE_LABEL, PRIVATE_SITE_NOTE, blockedNoticeText, blockerText,
+  cookieText, validSiteInfoPayload, type PermissionKey, type SiteInfoMessage,
 } from './siteinfo-logic';
 import type { PageView } from './palette';
 
@@ -95,6 +97,8 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     page.removeAttribute('aria-busy');
     page.setAttribute('aria-label', `Site information for ${msg.host}`);
     const nodes: HTMLElement[] = [];
+    const priv = msg.private === true;
+    page.classList.toggle('is-private', priv);
 
     const header = el('div', 'bw-siteinfo-header');
     header.dataset.security = msg.security;
@@ -108,15 +112,19 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     if (msg.blockedHere) {
       const notice = el('div', 'bw-siteinfo-notice');
       notice.setAttribute('role', 'status');
-      notice.append(icon('shield'), el('span', '', 'This page asked for a permission and was blocked. Allow it below to use it here.'));
+      notice.append(icon('shield'), el('span', '', blockedNoticeText(priv)));
       nodes.push(notice);
     }
 
     nodes.push(el('h2', 'bw-section-header', 'Permissions'));
-    if (msg.perms.length === 0) {
+    // A private tab blocks every request and saves no choice: a note replaces the rows (Rust
+    // declares no permission act for the page, so rows could not be used anyway).
+    if (priv) {
+      nodes.push(el('p', 'bw-siteinfo-empty bw-siteinfo-private', PRIVATE_SITE_NOTE));
+    } else if (msg.perms.length === 0) {
       nodes.push(el('p', 'bw-siteinfo-empty', 'Permissions apply to http and https pages.'));
     }
-    for (const perm of msg.perms) {
+    for (const perm of priv ? [] : msg.perms) {
       const group = el('div', 'bw-segmented');
       group.setAttribute('role', 'radiogroup');
       group.setAttribute('aria-label', perm.label);
@@ -153,18 +161,24 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     }
     nodes.push(row('cookie', 'Cookies', cookieText(msg.cookies), clear, 'cookies'));
 
-    const toggle = button('bw-toggle', '', 'blocker');
-    toggle.setAttribute('role', 'switch');
-    toggle.setAttribute('aria-label', 'Tracker blocker on this site');
-    toggle.setAttribute('aria-checked', String(msg.blocker.state === 'on'));
-    toggle.disabled = msg.blocker.state === 'unavailable';
-    toggle.addEventListener('click', () => {
-      if (busy()) return;
-      const on = toggle.getAttribute('aria-checked') !== 'true';
-      toggle.setAttribute('aria-checked', String(on));
-      act(ACT_BLOCKER, on ? 1 : 0, toggle);
-    });
-    nodes.push(row('shield', 'Tracker blocker', blockerText(msg.blocker), toggle, 'blocker'));
+    // Private tab: the blocker is always on and Rust declares no blocker act, so the row is plain
+    // text ("Always on") with no switch that could flip and then sit pending.
+    let toggle: HTMLButtonElement | null = null;
+    if (!priv) {
+      const control = button('bw-toggle', '', 'blocker');
+      control.setAttribute('role', 'switch');
+      control.setAttribute('aria-label', 'Tracker blocker on this site');
+      control.setAttribute('aria-checked', String(msg.blocker.state === 'on'));
+      control.disabled = msg.blocker.state === 'unavailable';
+      control.addEventListener('click', () => {
+        if (busy()) return;
+        const on = control.getAttribute('aria-checked') !== 'true';
+        control.setAttribute('aria-checked', String(on));
+        act(ACT_BLOCKER, on ? 1 : 0, control);
+      });
+      toggle = control;
+    }
+    nodes.push(row('shield', 'Tracker blocker', blockerText(msg.blocker, priv), toggle, 'blocker'));
     nodes.push(row('eye', 'Tracking prevention', msg.tracking === '' ? 'Unavailable' : msg.tracking.charAt(0).toUpperCase() + msg.tracking.slice(1), null, 'tracking'));
 
     nodes.push(el('div', 'bw-separator'));

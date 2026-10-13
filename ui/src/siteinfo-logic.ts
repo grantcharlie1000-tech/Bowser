@@ -26,7 +26,12 @@ export interface SiteInfoMessage {
   readonly tracking: string;
   readonly reset: boolean;
   readonly blockedHere: boolean;
+  /** The tab is private: no permission rows or blocker toggle (Rust declares no act for them). */
+  readonly private?: boolean;
 }
+
+/** Shown in place of the permission rows on a private tab. */
+export const PRIVATE_SITE_NOTE = 'Private tab: every permission request is blocked and nothing about this site is saved.';
 
 /** Choice values of a permission row's `act` (Rust: CHOICES). Default stores nothing: blocked. */
 export const CHOICES: readonly PermissionState[] = ['allow', 'block', 'default'];
@@ -39,6 +44,7 @@ export const ACT_RESET = 12;
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
 const KEYS: readonly PermissionKey[] = ['camera', 'mic', 'location', 'notifications'];
 const MAX_TEXT = 256;
+const PAGE_KEYS = ['v', 't', 'tok', 'kind', 'host', 'origin', 'security', 'summary', 'perms', 'cookies', 'blocker', 'tracking', 'reset', 'blockedHere'];
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -56,10 +62,15 @@ function isOneOf<T extends string>(v: unknown, list: readonly T[]): v is T {
   return typeof v === 'string' && (list as readonly string[]).includes(v);
 }
 
-/** Strict check of a `siteinfo` message: every key present, nothing extra, closed value sets. */
+/**
+ * Strict check of a `siteinfo` message: every key present, nothing extra, closed value sets.
+ * `private` is the one optional key (Rust sends it only as `true`); when present it must be a bool.
+ */
 export function validSiteInfoPayload(raw: unknown): raw is SiteInfoMessage {
   if (!isRecord(raw) || raw.t !== 'siteinfo' || raw.v !== 1) return false;
-  if (!onlyKeys(raw, ['v', 't', 'tok', 'kind', 'host', 'origin', 'security', 'summary', 'perms', 'cookies', 'blocker', 'tracking', 'reset', 'blockedHere'])) return false;
+  const hasPrivate = 'private' in raw;
+  if (hasPrivate && typeof raw.private !== 'boolean') return false;
+  if (!onlyKeys(raw, hasPrivate ? [...PAGE_KEYS, 'private'] : PAGE_KEYS)) return false;
   if (!isInt(raw.tok, 0, 0xffffffff) || !isStr(raw.kind, 32) || !isStr(raw.host) || !isStr(raw.origin) || !isStr(raw.summary) || !isStr(raw.tracking, 64)) return false;
   if (!isOneOf(raw.security, SECURITY) || typeof raw.reset !== 'boolean' || typeof raw.blockedHere !== 'boolean') return false;
   if (!Array.isArray(raw.perms) || raw.perms.length > KEYS.length) return false;
@@ -86,11 +97,21 @@ export function cookieText(cookies: SiteInfoMessage['cookies']): string {
   }
 }
 
-/** Caption under "Tracker blocker". */
-export function blockerText(blocker: SiteInfoMessage['blocker']): string {
+/** Caption under "Tracker blocker". A private tab's blocker is always on (no toggle). */
+export function blockerText(blocker: SiteInfoMessage['blocker'], priv = false): string {
   switch (blocker.state) {
-    case 'on': return blocker.n === 1 ? 'On · 1 request blocked here' : `On · ${blocker.n} requests blocked here`;
+    case 'on': {
+      const lead = priv ? 'Always on' : 'On';
+      return blocker.n === 1 ? `${lead} · 1 request blocked here` : `${lead} · ${blocker.n} requests blocked here`;
+    }
     case 'off': return 'Off for this site';
     default: return 'Unavailable';
   }
+}
+
+/** The "a request was blocked" notice; a private tab has nothing to allow. */
+export function blockedNoticeText(priv: boolean): string {
+  return priv
+    ? 'This page asked for a permission and was blocked. Private tabs block every request.'
+    : 'This page asked for a permission and was blocked. Allow it below to use it here.';
 }

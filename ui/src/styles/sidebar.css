@@ -160,6 +160,35 @@
 .side-spin { box-sizing: border-box; width: 14px; height: 14px; border: 2px solid var(--bw-border); border-top-color: var(--bw-accent); border-radius: 50%; animation: bw-spin var(--bw-dur-spin) linear infinite; }
 .side-tab.muted .side-fav { opacity: 0.55; }
 
+/* Private row (same rules as the strip, see tabs.css): nothing changes the row grid.
+   - Edge: accent-tinted border plus a 2px accent bar on the row's leading edge (inset shadow; a
+     vertical list reads a side bar better than an underline, and private rows are never grouped, so
+     it cannot be mistaken for the group rail). Focus and drag keep their own shadows.
+   - No favicon: the private glyph replaces the globe tile, 16px, in --bw-text.
+   - Favicon or spinner: a 10px glasses badge inside the favicon's bottom-right corner, --bw-text on
+     the opaque window with a 1px --bw-text-2 ring. */
+.side-tab[data-private="true"] { border-color: color-mix(in srgb, var(--bw-accent) 45%, transparent); }
+.side-tab[data-private="true"].is-active { border-color: color-mix(in srgb, var(--bw-accent) 75%, transparent); }
+.side-tab[data-private="true"]:not(:focus-visible, .dragging) { box-shadow: inset var(--bw-space-0_5) 0 0 var(--bw-accent); }
+.side-tab[data-private="true"].is-active:not(:focus-visible, .dragging) { box-shadow: inset var(--bw-space-0_5) 0 0 var(--bw-accent), var(--bw-sh-tip); }
+.side-tab[data-private="true"] .side-face[data-state="glyph"] > .side-glyph { display: none; }
+.side-tab[data-private="true"] .side-face[data-state="glyph"] > .side-priv-glyph { display: grid; place-items: center; color: var(--bw-text); }
+.side-priv-glyph svg { --bw-icon-stroke: 1.25px; }
+.side-tab[data-private="true"] .side-face:not([data-state="glyph"]) > .side-priv {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  width: calc(var(--bw-space-2) + var(--bw-space-0_5));
+  height: calc(var(--bw-space-2) + var(--bw-space-0_5));
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bw-window-opaque);
+  box-shadow: 0 0 0 1px var(--bw-text-2);
+  color: var(--bw-text);
+  pointer-events: none;
+}
+
 .side-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
 
 .side-flags { display: flex; align-items: center; gap: var(--bw-space-1); }

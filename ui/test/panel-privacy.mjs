@@ -25,3 +25,17 @@ test('privacy commands are limited to explicit flat panel fields', () => {
   assert.equal(logic.privacyCommand('clear-data', { n: 4 }), null);
   assert.equal(logic.privacyCommand('anything'), null);
 });
+
+test('the Private tabs note says, in plain words, what private tabs keep and block', () => {
+  assert.equal(logic.PRIVATE_TABS_TITLE, 'Private tabs');
+  const text = logic.PRIVATE_TABS_NOTE.map(([label, body]) => `${label}. ${body}`).join(' ');
+  for (const phrase of [
+    'Ctrl+Shift+P', 'New private tab', 'no history, cookies, site data, permission choices or blocker statistics on disk',
+    'memory only', 'last private tab closes', 'not restored after a restart or crash', 'never grouped',
+    'Strict tracking prevention and the blocker are always on', 'Per-site blocker exceptions are ignored',
+    'Every permission request and download in a private tab is blocked',
+  ]) assert.ok(text.includes(phrase), phrase);
+  // Sentence case, no uppercase eyebrows.
+  for (const [label] of logic.PRIVATE_TABS_NOTE) assert.notEqual(label, label.toUpperCase());
+  assert.notEqual(logic.PRIVATE_TABS_TITLE, logic.PRIVATE_TABS_TITLE.toUpperCase());
+});

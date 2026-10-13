@@ -8,6 +8,11 @@ export const DRAG_EDGE_PX = 24;
 export const TAB_WEIGHT = 1;
 export const ACTIVE_WEIGHT = 1.5;
 
+/** Accessible name and tooltip of a private tab (the strip and the sidebar use the same words). */
+export function privateTabName(title: string): string {
+  return `${title} (Private)`;
+}
+
 /**
  * Flex-grow of a group island: the sum of its visible members' weights, so a group's tabs end up
  * exactly as wide as ungrouped ones (active 1.5x, the rest equal). 0 for a group with no visible tab.

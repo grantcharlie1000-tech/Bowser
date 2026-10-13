@@ -15,6 +15,7 @@ import {
   groupWeight,
   hiddenForTab,
   layoutSignature,
+  privateTabName,
   pruneFavs,
   rememberFav,
   slotShift,
@@ -40,7 +41,7 @@ const DRAG_START_PX = 4;
 /** Above this many tabs, position animations are skipped (each one costs a measured layout). */
 const FLIP_MAX_TABS = 80;
 
-interface TabNode {
+export interface TabNode {
   readonly id: number;
   readonly root: HTMLDivElement;
   readonly img: HTMLImageElement;
@@ -83,7 +84,8 @@ function colourOf(gcol: number | undefined): string {
   return ISLAND[gcol & 7] ?? ACCENT;
 }
 
-function createTab(id: number): TabNode {
+/** Exported for test/private.mjs (fake DOM); the strip itself is built by startTabs. */
+export function createTab(id: number): TabNode {
   const root = el('div', 'tab bw-focus-inset');
   root.setAttribute('role', 'tab');
   root.dataset.id = String(id);
@@ -97,8 +99,17 @@ function createTab(id: number): TabNode {
   glyph.setAttribute('aria-hidden', 'true');
   glyph.append(icon('workspace-globe'));
   const spin = el('span', 'spin bw-spinner');
+  // Private tabs (tabs.css): with no favicon the private glyph replaces the globe; with a favicon (or
+  // the spinner) a small glasses badge sits inside the icon's corner, out of flow, so neither ever
+  // moves or sizes anything in the row.
+  const privGlyph = el('span', 'priv-glyph');
+  privGlyph.setAttribute('aria-hidden', 'true');
+  privGlyph.append(icon('private'));
+  const priv = el('span', 'priv');
+  priv.setAttribute('aria-hidden', 'true');
+  priv.append(icon('glasses', { size: 8, fine: true }));
   const ico = el('span', 'ico');
-  ico.append(img, glyph, spin);
+  ico.append(img, glyph, privGlyph, spin, priv);
 
   const title = el('span', 'title');
   title.dir = 'auto';
@@ -122,12 +133,18 @@ function createTab(id: number): TabNode {
   return { id, root, img, title, marker, audio, close, uri: '', shift: 0 };
 }
 
-function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): void {
+export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): void {
   if (n.title.textContent !== item.title) n.title.textContent = item.title;
   const label = item.title !== '' ? item.title : 'Tab';
-  if (n.root.getAttribute('aria-label') !== label) {
-    n.root.setAttribute('aria-label', label);
-    setTip(n.root, label);
+  const name = item.private ? privateTabName(label) : label;
+  if (n.root.getAttribute('aria-label') !== name) {
+    n.root.setAttribute('aria-label', name);
+    setTip(n.root, name);
+  }
+  if (item.private) {
+    if (n.root.dataset.private !== 'true') n.root.dataset.private = 'true';
+  } else if (n.root.dataset.private !== undefined) {
+    delete n.root.dataset.private;
   }
   n.root.setAttribute('aria-selected', String(selected));
   n.close.setAttribute('aria-label', `Close tab: ${label}`);

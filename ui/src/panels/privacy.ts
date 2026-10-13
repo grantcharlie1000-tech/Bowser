@@ -1,6 +1,6 @@
 import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
-import { parsePrivacySnapshot, privacyCommand, type PrivacySnapshot } from './privacy-logic';
+import { parsePrivacySnapshot, privacyCommand, PRIVATE_TABS_NOTE, PRIVATE_TABS_TITLE, type PrivacySnapshot } from './privacy-logic';
 import { enter, iconButton, pageSection, panelHeader, segmented, settingRow, textButton } from './kit';
 
 function emit(a: string, fields: { id?: number; n?: number } = {}): void {
@@ -86,6 +86,12 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
       settingRow('Tab sleeping', null, snapshot.sleeping ? `On, after ${snapshot.sleepAfter} seconds` : 'Off'),
     );
     sections.push(protection.root);
+
+    // Static, plain-language note on what a private tab keeps (nothing on disk) and what it blocks.
+    const privateTabs = pageSection(PRIVATE_TABS_TITLE);
+    privateTabs.root.classList.add('pg-private');
+    for (const [label, text] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, text));
+    sections.push(privateTabs.root);
 
     const permissions = pageSection('Site permissions');
     snapshot.permissions.forEach((item, index) => {

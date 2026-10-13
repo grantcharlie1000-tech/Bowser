@@ -17,7 +17,7 @@ const bundled = await esbuild.build({
 const logic = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`);
 
 const tab = (id, extra = {}) => ({
-  id, title: `t${id}`, loading: false, pinned: false, muted: false,
+  id, title: `t${id}`, loading: false, pinned: false, muted: false, private: false,
   marker: -1, g: 0, gl: false, fav: false, ...extra,
 });
 
@@ -60,4 +60,11 @@ test('roving focus clamps at both ends and ignores other keys', () => {
   assert.equal(logic.rovingTarget('Home', 3, 5), 0);
   assert.equal(logic.rovingTarget('End', 1, 5), 4);
   assert.equal(logic.rovingTarget('x', 2, 5), 2);
+});
+
+test('private rows sort and group exactly like normal rows (never inside a group)', () => {
+  const items = [tab(1, { pinned: true, private: true }), tab(2, { g: 9, gl: true, gname: 'R', gcol: 1, gcollapsed: false, gsize: 1 }), tab(3, { private: true })];
+  const plain = items.map((t) => ({ ...t, private: false }));
+  const shape = (entries) => entries.map((e) => `${e.kind}:${e.kind === 'tab' ? e.item.id : e.key}`);
+  assert.deepEqual(shape(logic.buildSidebarEntries(items, 3)), shape(logic.buildSidebarEntries(plain, 3)));
 });

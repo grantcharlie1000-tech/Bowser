@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { filterPalette, flatten, moveSelection, scoreItem, subsequenceGap, validPalettePayload, MAX_RESULTS } from '../src/palette-logic.ts';
-import { validSiteInfoPayload, cookieText, blockerText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES } from '../src/siteinfo-logic.ts';
+import { validSiteInfoPayload, cookieText, blockerText, blockedNoticeText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, CHOICES, PRIVATE_SITE_NOTE } from '../src/siteinfo-logic.ts';
 import * as esbuild from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,11 @@ test('Rust palette page passes the strict palette contract', () => {
   const sections = new Set(fixture.palette.items.map((item) => item.s));
   assert.deepEqual([...sections], ['tab', 'command', 'bookmark', 'history']);
   assert.ok(fixture.palette.items.some((item) => item.acc === 'Ctrl+T'));
+  const commands = fixture.palette.items.filter((item) => item.s === 'command').map((item) => item.label);
+  assert.deepEqual(commands.slice(0, 3), ['New tab', 'New private tab', 'Close tab']);
+  const priv = fixture.palette.items.find((item) => item.label === 'New private tab');
+  assert.deepEqual(priv, { id: priv.id, s: 'command', label: 'New private tab', detail: 'Open a tab that keeps no history or site data', acc: 'Ctrl+Shift+P' });
+  assert.equal(fixture.palette.items.find((item) => item.label === 'Profiles').acc, 'Ctrl+Shift+M');
   for (const bad of [
     { ...fixture.palette, extra: 1 },
     { ...fixture.palette, tok: -1 },
@@ -86,6 +91,24 @@ test('Rust site info page passes the strict site info contract', () => {
   ]) assert.equal(validSiteInfoPayload(bad), false);
   assert.equal(cookieText({ state: 'count', n: 1, clear: true }), '1 cookie sent to this site');
   assert.equal(blockerText({ state: 'on', n: 3 }), 'On · 3 requests blocked here');
+});
+
+test('site info accepts an optional strict boolean private flag and nothing else extra', () => {
+  const page = fixture.siteinfo;
+  assert.equal('private' in page, false, 'a normal page carries no private key');
+  const priv = { ...page, perms: [], reset: false, private: true };
+  assert.equal(validSiteInfoPayload(priv), true);
+  assert.deepEqual(Object.keys(priv).slice(-2), ['blockedHere', 'private'], 'Rust sends it last, after blockedHere');
+  assert.equal(validSiteInfoPayload({ ...page, private: false }), true);
+  for (const bad of [1, 0, 'true', null, [], {}]) assert.equal(validSiteInfoPayload({ ...priv, private: bad }), false, JSON.stringify(bad));
+  assert.equal(validSiteInfoPayload({ ...priv, incognito: true }), false);
+  assert.equal(validSiteInfoPayload((({ blockedHere, ...rest }) => rest)(priv)), false, 'private does not stand in for a required key');
+  assert.equal(blockerText({ state: 'on', n: 3 }, true), 'Always on · 3 requests blocked here');
+  assert.equal(blockerText({ state: 'on', n: 1 }, true), 'Always on · 1 request blocked here');
+  assert.equal(blockerText({ state: 'on', n: 3 }, false), 'On · 3 requests blocked here');
+  assert.equal(PRIVATE_SITE_NOTE, 'Private tab: every permission request is blocked and nothing about this site is saved.');
+  assert.doesNotMatch(blockedNoticeText(true), /Allow it below/);
+  assert.match(blockedNoticeText(false), /Allow it below/);
 });
 
 test('state carries the optional permblocked flag, strictly typed', () => {

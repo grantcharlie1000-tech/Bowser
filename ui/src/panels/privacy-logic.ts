@@ -25,6 +25,17 @@ export function parsePrivacySnapshot(value: unknown): PrivacySnapshot | null {
   return { ...value, stats: { allTime: value.stats.allTime, session: value.stats.session, currentSite: value.stats.currentSite, topSites, days }, permissions } as PrivacySnapshot;
 }
 
+/** Static "Private tabs" note: [label, description] rows, rendered as plain setting rows. */
+export const PRIVATE_TABS_TITLE = 'Private tabs';
+export const PRIVATE_TABS_NOTE: readonly (readonly [string, string])[] = [
+  ['Open a private tab', 'Press Ctrl+Shift+P, or choose New private tab in the main menu.'],
+  ['Nothing saved to disk', 'Private tabs keep no history, cookies, site data, permission choices or blocker statistics on disk.'],
+  ['Cookies and site data', 'Held in memory only, and discarded when the last private tab closes.'],
+  ['Restore and groups', 'Private tabs are not restored after a restart or crash, and are never grouped.'],
+  ['Protection', 'Strict tracking prevention and the blocker are always on. Per-site blocker exceptions are ignored.'],
+  ['Permissions and downloads', 'Every permission request and download in a private tab is blocked.'],
+];
+
 type Fields = { id?: number; n?: number; on?: boolean };
 export function privacyCommand(a: string, fields: Fields = {}): ({ a: string } & Fields) | null {
   if (a === 'clear-stats') return Object.keys(fields).length ? null : { a };

@@ -8,7 +8,7 @@ import { send, sendSide, type TabItem, type TabsMsg } from './protocol';
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta } from './tabs-logic';
+import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
 import {
   buildSidebarEntries, dropIndexVertical, rovingTarget, scrollIntoViewDelta, verticalSlotShift,
   workspaceIconName,
@@ -23,7 +23,7 @@ const MAX_ENTER = 12;
 /** Safety net for the leave animation when `animationend` never fires (hidden window). */
 const LEAVE_MS = 200;
 
-interface SidebarTabNode {
+export interface SidebarTabNode {
   item: TabItem;
   readonly root: HTMLDivElement;
   readonly image: HTMLImageElement;
@@ -60,11 +60,19 @@ function setFace(node: SidebarTabNode, uri: string | undefined): void {
   else node.image.removeAttribute('src');
 }
 
-function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): void {
+export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): void {
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
-  setTip(node.root, label);
+  setTip(node.root, item.private ? privateTabName(label) : label);
+  // A private row names itself as private; a normal row keeps its content-derived name.
+  if (item.private) {
+    node.root.setAttribute('aria-label', privateTabName(label));
+    node.root.dataset.private = 'true';
+  } else {
+    node.root.removeAttribute('aria-label');
+    delete node.root.dataset.private;
+  }
   node.root.setAttribute('aria-selected', String(active));
   node.root.setAttribute('aria-level', item.g > 0 ? '2' : '1');
   node.root.dataset.g = String(item.g);
@@ -81,7 +89,8 @@ function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: Rea
   if (item.marker >= 0) node.marker.style.setProperty('--mc', colour(item.marker));
 }
 
-function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): SidebarTabNode {
+/** Exported (with syncTab) for test/private.mjs (fake DOM); rows are built by createSidebarRenderer. */
+export function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): SidebarTabNode {
   const root = el('div', 'side-tab bw-island bw-focus-inset');
   root.setAttribute('role', 'treeitem');
   root.dataset.id = String(item.id);
@@ -93,7 +102,15 @@ function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, strin
   const glyph = el('span', 'side-glyph');
   glyph.append(icon('workspace-globe', { size: 12, fine: true }));
   const spin = el('span', 'side-spin');
-  face.append(image, glyph, spin);
+  // Private rows (sidebar.css): the private glyph replaces the globe tile when there is no favicon;
+  // otherwise a glasses badge sits inside the favicon's corner, out of flow, so the grid never changes.
+  const privGlyph = el('span', 'side-priv-glyph');
+  privGlyph.setAttribute('aria-hidden', 'true');
+  privGlyph.append(icon('private'));
+  const priv = el('span', 'side-priv');
+  priv.setAttribute('aria-hidden', 'true');
+  priv.append(icon('glasses', { size: 8, fine: true }));
+  face.append(image, glyph, privGlyph, spin, priv);
   const title = el('span', 'side-title');
   title.dir = 'auto';
   const flags = el('span', 'side-flags');
