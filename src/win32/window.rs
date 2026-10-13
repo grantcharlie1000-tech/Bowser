@@ -3607,9 +3607,10 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
 
 /// Whether a page that just committed should take the keyboard from the omnibox (V35): only when the
 /// omnibox has it, the user has neither typed in it nor deliberately taken it, and the page is a
-/// real one (a blank or new tab is waiting for the user to type). Pure.
-fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, blank_page: bool) -> bool {
-    omnibox_focused && !edited && !claimed && !blank_page
+/// real one (a blank or new tab is waiting for the user to type) and no menu or popup is open, since
+/// moving the keyboard would dismiss it. Pure.
+fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, blank_page: bool, popup_open: bool) -> bool {
+    omnibox_focused && !edited && !claimed && !blank_page && !popup_open
 }
 
 fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
@@ -3623,7 +3624,8 @@ fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
         )
     });
     let Some((focused, edited, claimed, blank)) = state else { return };
-    if should_focus_page_after_commit(focused, edited, claimed, blank) {
+    let popup_open = html_popup::is_active(hwnd) || menu::is_tracking();
+    if should_focus_page_after_commit(focused, edited, claimed, blank, popup_open) {
         App::focus_page(app);
     }
 }
@@ -8415,12 +8417,14 @@ mod tests {
     #[test]
     fn a_committed_page_takes_the_keyboard_only_from_an_untouched_omnibox() {
         // The omnibox holds the focus it started with and the page is a real one: move to the page.
-        assert!(should_focus_page_after_commit(true, false, false, false));
-        // Typing, a deliberate Ctrl+L / new tab / click, a blank page, or no omnibox focus: leave it.
-        assert!(!should_focus_page_after_commit(true, true, false, false));
-        assert!(!should_focus_page_after_commit(true, false, true, false));
-        assert!(!should_focus_page_after_commit(true, false, false, true));
-        assert!(!should_focus_page_after_commit(false, false, false, false));
+        assert!(should_focus_page_after_commit(true, false, false, false, false));
+        // Typing, a deliberate Ctrl+L / new tab / click, a blank page, no omnibox focus, or an open
+        // menu or popup (the import offer): leave it.
+        assert!(!should_focus_page_after_commit(true, true, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, true, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, true, false));
+        assert!(!should_focus_page_after_commit(false, false, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, false, true));
     }
 
     #[test]
