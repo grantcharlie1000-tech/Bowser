@@ -13,7 +13,7 @@ import {
   type SuggestMsg,
 } from './protocol';
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
-import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay } from './view';
+import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
 import { startPanel } from './panel';
@@ -205,6 +205,7 @@ function startToolbar(root: HTMLElement): void {
         input.value = msg.text;
         if (msg.select) input.select();
         showDisplay();
+        syncSiteIcon(view);
         break;
       case 'focusOmnibox':
         input.focus();

@@ -361,19 +361,39 @@ body.bw-hover-body[data-hover-kind="suggest"] {
 }
 
 .bw-suggest {
+  position: relative;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   padding: var(--bw-space-1);
-  /* The pill's own edge, not the 8-10% hairline: the popup is clipped to its region, so it has no
-     shadow, and over a white page a hairline all but disappears. */
-  border: 1px solid var(--bw-pill-edge);
+  /* The pill's own ring continues down the sides and along the bottom: 1px accent border here, the
+     second accent pixel and the contrast line in ::after (toolbar.css .pill::after), so the open
+     surface reads as the focused pill grown downwards. The popup is clipped to its region, so it
+     has no shadow. */
+  border: 1px solid var(--bw-focus);
   border-top: 0;
   /* The pill's own curvature at the bottom, so the open surface is rounded alike at both ends. */
   border-radius: 0 0 var(--bw-r-omnibox) var(--bw-r-omnibox);
-  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+  /* The pill's fill over the opaque window colour: the same material as the pill above it, and
+     opaque so the page never shows through. */
+  background: linear-gradient(var(--bw-fill), var(--bw-fill)), var(--bw-window-opaque);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+.bw-suggest::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 0 1px var(--bw-focus),
+    inset 0 0 0 2px var(--bw-focus-inner);
+  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000), linear-gradient(#000, #000);
+  mask-size: 100% calc(100% - 2px), 2px 100%, 2px 100%;
+  mask-position: 0 100%, 0 0, 100% 0;
+  mask-repeat: no-repeat;
+  pointer-events: none;
 }
 
 /* First appearance: rows drop 6px into place and fade in while the region unrolls. */

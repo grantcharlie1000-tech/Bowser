@@ -182,6 +182,21 @@ function setReloadMode(button: HTMLButtonElement, loading: boolean): void {
   button.replaceChildren(icon(mode));
 }
 
+/** The site button's glyph: a search glyph while there is no site (new tab, empty address), else the security glyph. */
+export function syncSiteIcon(view: View): void {
+  const security = (view.pill.dataset.security ?? 'none') as Security;
+  const name = siteIconFor(security, view.input.value);
+  if (view.site.dataset.glyph === name) return;
+  view.site.dataset.glyph = name;
+  view.site.replaceChildren(icon(name));
+}
+
+/** Pure choice of the site-button glyph (exported for tests). */
+export function siteIconFor(security: Security, address: string): IconName {
+  if (security === 'none' || (address.trim() === '' && security !== 'secure' && security !== 'notsecure' && security !== 'certproblem')) return 'search';
+  return SECURITY_ICON[security];
+}
+
 export function applyState(view: View, state: StateMsg): void {
   const root = document.getElementById('app');
   if (root) {
@@ -209,11 +224,8 @@ export function applyState(view: View, state: StateMsg): void {
   view.pill.classList.toggle('is-loading', loadingNow);
 
   const site = view.site;
-  if (site.dataset.security !== state.security) {
-    site.dataset.security = state.security;
-    site.replaceChildren(icon(SECURITY_ICON[state.security]));
-  }
   view.pill.dataset.security = state.security;
+  syncSiteIcon(view);
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
   label(site, text);
 
