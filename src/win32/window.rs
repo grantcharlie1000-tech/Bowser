@@ -3446,7 +3446,11 @@ fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
     let viewport = to_win_rect(layout.viewport);
     notes_panel::sync(hwnd, viewport, dpi(hwnd));
     side_panel::sync(hwnd, viewport, dpi(hwnd));
-    if let Some(panes) = split_rects(hwnd, None) {
+    // `split_rects` computes a pane layout from the saved divider even when no split view exists,
+    // so it cannot decide which path applies: only a real split gets pane bounds. Otherwise the
+    // single page was never re-bounded when a panel opened, and the panel hid behind it (V1).
+    let panes = App::split_view(app).and_then(|_| split_rects(hwnd, None));
+    if let Some(panes) = panes {
         App::update_split_bounds(app, panes);
     } else {
         let bounds = adjusted_viewport(hwnd, viewport, dpi(hwnd));
@@ -6335,6 +6339,12 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         zoom: 100,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
+}
+
+/// The page area (below the toolbar, right of the rail) in client coordinates, before any panel
+/// takes a share of it. Panel hosts are created and placed from this, never from the whole client.
+pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
+    with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
 
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {

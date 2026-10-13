@@ -54,6 +54,9 @@ struct Runtime {
     query: String,
     bookmarks_query: String,
     panel: PanelId,
+    /// Bumped each time a panel is shown. The panels share one host, so a retired panel's late
+    /// blur must not hide the host that a newer panel is showing (V10).
+    generation: u64,
 }
 
 thread_local! {
@@ -65,17 +68,18 @@ pub(crate) fn register(app: &AppRef, owner: HWND, env: ChromeEnv) {
     let runtime = Rc::new(RefCell::new(Runtime {
         app: app.clone(), owner, env, parent: None, bounds: RECT::default(), host: None,
         started: false, ready: false, active: false, suspended: false, closed: false, failed: false,
-        failed_posts: 0, query: String::new(), bookmarks_query: String::new(), panel: PanelId::History,
+        failed_posts: 0, query: String::new(), bookmarks_query: String::new(), panel: PanelId::History, generation: 0,
     }));
     RUNTIMES.with(|runtimes| { runtimes.borrow_mut().insert(owner.0 as isize, runtime.clone()); });
     let history_runtime = runtime.clone();
     side_panel::register_content(PanelId::History, move || Box::new(HtmlPanel {
         id: PanelId::History,
         runtime: history_runtime.clone(),
+        generation: 0,
     }));
     for id in [PanelId::Bookmarks, PanelId::Customize] {
         let runtime = runtime.clone();
-        side_panel::register_content(id, move || Box::new(HtmlPanel { id, runtime: runtime.clone() }));
+        side_panel::register_content(id, move || Box::new(HtmlPanel { id, runtime: runtime.clone(), generation: 0 }));
     }
 }
 
@@ -96,7 +100,13 @@ pub(crate) fn close(owner: HWND) { fail(owner); }
 struct HtmlPanel {
     id: PanelId,
     runtime: Rc<RefCell<Runtime>>,
+    /// The runtime generation this panel was shown at; 0 until shown.
+    generation: u64,
 }
+
+/// Whether a blur from the panel shown at `own` may hide the shared host, given the runtime's
+/// current generation. A newer panel owns the host after a quick close and reopen. Pure.
+fn blur_owns_host(own: u64, current: u64) -> bool { own == current }
 
 impl HtmlPanel {
     fn start(runtime: &Rc<RefCell<Runtime>>) {
@@ -152,14 +162,24 @@ impl PanelContent for HtmlPanel {
 
     fn on_focus(&mut self, focused: bool) {
         if focused { return; }
+        let current = self.runtime.try_borrow().map(|state| state.generation).unwrap_or(self.generation);
+        if !blur_owns_host(self.generation, current) { return; }
         suspend_panel(&self.runtime);
     }
 
+    fn native_header(&self) -> bool { false }
+
     fn after_shown(&mut self) {
-        if let Ok(mut state) = self.runtime.try_borrow_mut() { state.panel = self.id; }
+        if let Ok(mut state) = self.runtime.try_borrow_mut() {
+            state.panel = self.id;
+            state.generation = state.generation.wrapping_add(1);
+            self.generation = state.generation;
+        }
         show_panel(&self.runtime);
     }
-    fn title(&self) -> &str { if self.id == PanelId::History { "History" } else { "Panel" } }
+    fn title(&self) -> &str {
+        match self.id { PanelId::History => "History", PanelId::Bookmarks => "Bookmarks", PanelId::Customize => "Customize", _ => "" }
+    }
 }
 
 fn show_panel(runtime: &Rc<RefCell<Runtime>>) {
@@ -389,6 +409,14 @@ mod tests {
         let content = RECT { left: 0, top: 48, right: 340, bottom: 720 };
         assert_eq!(content_bounds(content, 96), RECT { right: 334, ..content });
         assert_eq!(content_bounds(content, 192), RECT { right: 328, ..content });
+    }
+
+    #[test]
+    fn a_retired_panels_late_blur_does_not_own_the_host_after_a_reopen() {
+        // First panel shown at generation 1, closed, a second shown at 2 before the first's blur runs.
+        assert!(blur_owns_host(1, 1));
+        assert!(!blur_owns_host(1, 2));
+        assert!(blur_owns_host(2, 2));
     }
 
     #[test]
