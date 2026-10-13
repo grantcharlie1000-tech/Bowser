@@ -1341,7 +1341,9 @@ pub fn hover_hide_json() -> String {
 // --- omnibox suggest ---
 /// Most rows in one `suggest` message, the default row included.
 pub const MAX_SUGGEST_ITEMS: usize = 8;
-/// Longest suggestion text and URL sent to the page, in characters.
+/// Longest suggestion text and URL sent to the page, in UTF-16 code units: the unit the page
+/// validates in (JavaScript string length), so an emoji-heavy row is cut here instead of rejected
+/// there. Cuts fall on character boundaries.
 pub const MAX_SUGGEST_TEXT_CHARS: usize = 256;
 /// Widest dropdown Rust may ask for, in CSS pixels.
 pub const MAX_SUGGEST_WIDTH: u32 = 4000;
@@ -1365,9 +1367,10 @@ pub struct SuggestItem {
 /// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"q":..,"items":[{"k","text","title","url","fav"?}]}`.
 /// `seq` is the edit the list answers; `tok` is the hover layer's content token (`0` for the
 /// toolbar's copy, which carries no favicons); `w` is the dropdown width in CSS pixels; `q` is the
-/// typed text the rows answer (capped at `MAX_SUGGEST_TEXT_CHARS`), used to emphasise matches. At most
-/// `MAX_SUGGEST_ITEMS` rows are sent, with text and URL capped at `MAX_SUGGEST_TEXT_CHARS` and
-/// titles at `MAX_TAB_TITLE_CHARS`. `sel` is clamped to the rows sent. No rows closes the list.
+/// typed text the rows answer (capped at twice `MAX_SUGGEST_TEXT_CHARS` UTF-16 units), used to emphasise
+/// matches. At most `MAX_SUGGEST_ITEMS` rows are sent, with text and URL capped at
+/// `MAX_SUGGEST_TEXT_CHARS` UTF-16 units and titles at `MAX_TAB_TITLE_CHARS` characters (so never
+/// past the page's title limit). `sel` is clamped to the rows sent. No rows closes the list.
 pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, q: &str, items: &[SuggestItem]) -> String {
     let mut budget = MAX_HOVER_FAV_TEXT;
     let items = &items[..items.len().min(MAX_SUGGEST_ITEMS)];
@@ -1378,15 +1381,15 @@ pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, q: &str, items: &[Su
         out.uint("seq", u64::from(seq));
         out.uint("w", u64::from(w.min(MAX_SUGGEST_WIDTH)));
         out.uint("sel", sel.min(items.len().saturating_sub(1)) as u64);
-        out.string("q", truncate_chars(q, MAX_SUGGEST_TEXT_CHARS));
+        out.string("q", truncate_utf16(q, MAX_SUGGEST_TEXT_CHARS * 2));
         out.array("items", |list| {
             for item in items {
                 list.object(|row| {
                     let kind = SUGGEST_KINDS.iter().find(|k| **k == item.kind).copied().unwrap_or("url");
                     row.string("k", kind);
-                    row.string("text", truncate_chars(&item.text, MAX_SUGGEST_TEXT_CHARS));
+                    row.string("text", truncate_utf16(&item.text, MAX_SUGGEST_TEXT_CHARS));
                     row.string("title", truncate_chars(&item.title, MAX_TAB_TITLE_CHARS));
-                    row.string("url", truncate_chars(&item.url, MAX_SUGGEST_TEXT_CHARS));
+                    row.string("url", truncate_utf16(&item.url, MAX_SUGGEST_TEXT_CHARS));
                     let fav = budgeted_uri(item.png.as_deref(), &mut budget);
                     if !fav.is_empty() {
                         row.string("fav", &fav);
@@ -3753,13 +3756,56 @@ mod tests {
         assert!(!json.contains('\n'));
     }
 
+    /// Every value of string field `key` in `json`, counted as the page counts it (UTF-16 units).
+    fn field_units(json: &str, key: &str) -> Vec<usize> {
+        let marker = format!("\"{key}\":\"");
+        json.match_indices(&marker)
+            .map(|(at, _)| {
+                let rest = &json[at + marker.len()..];
+                let end = rest.find('"').expect("closing quote");
+                // The writer only escapes ASCII, so the raw text is the decoded text.
+                rest[..end].encode_utf16().count()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn suggest_json_cuts_emoji_cjk_and_rtl_rows_to_what_the_page_accepts() {
+        // The page validates text and url as JavaScript string length (UTF-16 units), so a row of
+        // astral emoji must be cut in units, not characters, or the whole list is rejected.
+        let emoji = "\u{1F600}".repeat(MAX_SUGGEST_TEXT_CHARS + 40);
+        let cjk = "\u{6F22}\u{5B57}".repeat(MAX_SUGGEST_TEXT_CHARS);
+        let rtl = "\u{5E9}\u{5DC}\u{5D5}\u{5DD}\u{5D0}".repeat(MAX_SUGGEST_TEXT_CHARS);
+        let zwj = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}".repeat(MAX_SUGGEST_TEXT_CHARS);
+        let rows = [
+            item("search", &emoji, &emoji, ""),
+            item("hist", &cjk, &cjk, &cjk),
+            item("bm", &rtl, &rtl, &rtl),
+            item("tab", &zwj, &zwj, &zwj),
+        ];
+        let json = suggest_json(0, 1, 500, 0, &emoji.repeat(2), &rows);
+        for key in ["text", "url"] {
+            let units = field_units(&json, key);
+            assert_eq!(units.len(), 4);
+            assert!(units.iter().all(|n| *n <= MAX_SUGGEST_TEXT_CHARS), "{key}: {units:?}");
+        }
+        assert!(field_units(&json, "title").iter().all(|n| *n <= 512), "titles stay under the page limit");
+        assert!(field_units(&json, "q").iter().all(|n| *n <= MAX_SUGGEST_TEXT_CHARS * 2));
+        // Cut on a character boundary: the emoji row keeps whole emoji (128 of them, 256 units).
+        assert!(json.contains(&format!(r#""text":"{}""#, "\u{1F600}".repeat(MAX_SUGGEST_TEXT_CHARS / 2))), "{json}");
+        assert_eq!(json.matches(r#""k":"#).count(), 4, "no row is dropped");
+        assert_eq!(truncate_utf16("a\u{1F600}", 2), "a", "a pair that does not fit is dropped whole");
+        assert_eq!(truncate_utf16("\u{1F600}", 1), "");
+        assert_eq!(truncate_utf16("\u{6F22}\u{5B57}", 1), "\u{6F22}");
+    }
+
     #[test]
     fn suggest_json_caps_rows_clamps_selection_and_width() {
         let rows: Vec<SuggestItem> = (0..12).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
-        let json = suggest_json(1, 2, 999_999, 40, &"q".repeat(300), &rows);
+        let json = suggest_json(1, 2, 999_999, 40, &"q".repeat(600), &rows);
         assert_eq!(json.matches(r#""k":"hist""#).count(), MAX_SUGGEST_ITEMS);
         assert!(json.contains(&format!(r#""w":{MAX_SUGGEST_WIDTH},"sel":{}"#, MAX_SUGGEST_ITEMS - 1)), "{json}");
-        assert!(json.contains(&format!(r#""q":"{}""#, "q".repeat(MAX_SUGGEST_TEXT_CHARS))), "the query is capped");
+        assert!(json.contains(&format!(r#""q":"{}""#, "q".repeat(MAX_SUGGEST_TEXT_CHARS * 2))), "the query is capped");
         let empty = suggest_json(0, 5, 0, 3, "", &[]);
         assert_eq!(empty, r#"{"v":1,"t":"suggest","tok":0,"seq":5,"w":0,"sel":0,"q":"","items":[]}"#);
         assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":7}"#);
@@ -3797,14 +3843,20 @@ mod tests {
             item("hist", "example.net/a", "Net", "example.net/a"),
             item("search", "example", "example", ""),
         ];
+        // Rows far past every limit, in scripts that count differently in UTF-16 units and bytes.
+        let heavy: Vec<SuggestItem> = ["\u{1F600}", "\u{6F22}\u{5B57}", "\u{5E9}\u{5DC}\u{5D5}\u{5DD}", "\u{1F468}\u{200D}\u{1F469}"]
+            .iter()
+            .map(|unit| item("search", &unit.repeat(400), &unit.repeat(400), &unit.repeat(400)))
+            .collect();
         let fixture = format!(
-            "{{\"suggest\":{},\"toolbar\":{},\"sel\":{},\"close\":{},\"open\":{},\"shut\":{}}}\n",
+            "{{\"suggest\":{},\"toolbar\":{},\"sel\":{},\"close\":{},\"open\":{},\"shut\":{},\"heavy\":{}}}\n",
             suggest_json(3, 12, 560, 1, "Exa", &rows),
             suggest_json(0, 12, 0, 0, "", &rows),
             suggest_sel_json(12, 2),
             suggest_json(0, 13, 0, 0, "", &[]),
             suggest_open_json(true),
             suggest_open_json(false),
+            suggest_json(0, 14, 0, 2, &"\u{1F600}".repeat(400), &heavy),
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/suggest-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {

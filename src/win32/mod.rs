@@ -40,7 +40,7 @@ mod site_info;
 mod smooth;
 mod window;
 
-pub(crate) use window::{schedule_idle_timer, sync_address_input};
+pub(crate) use window::{schedule_idle_timer, show_pending_address, sync_address_input};
 
 use windows::{
     Win32::{

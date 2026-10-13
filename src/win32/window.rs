@@ -60,7 +60,7 @@ use windows::{
         System::Threading::GetCurrentProcessId,
         UI::{
             Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
-            Controls::{EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
+            Controls::{EM_GETMODIFY, EM_GETSEL, EM_SETMARGINS, EM_SETSEL},
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
                 GetAsyncKeyState, GetCapture, GetDoubleClickTime, GetFocus, GetKeyState,
@@ -5916,8 +5916,11 @@ fn html_refresh(hwnd: HWND) {
         let app = app_of(hwnd)?;
         let id = App::active_tab_id(&app);
         let committed = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())?;
+        let modified = unsafe {
+            SendMessageW(edit, EM_GETMODIFY, None, None).0 != 0
+        };
         chrome_host::should_handoff_edit(native_focused, &text, &committed)
-            .then_some((id, text))
+            .then(|| (id, chrome_host::handoff_text(&text, modified, &committed).to_owned()))
     });
     sync_html_host_bounds(hwnd);
     if activating {
@@ -7661,6 +7664,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     None
                 };
                 s.surface.set_page_regions(page_regions);
+                // A tab with no page shows an opaque themed surface. When that appears or goes
+                // (a page took over) the whole viewport is repainted, not just the dirty part.
+                let empty_viewport = (!active_has_controller).then_some(sidebar_viewport);
+                let dirty = if s.surface.set_empty_viewport(empty_viewport) {
+                    dirty.union(sidebar_viewport)
+                } else {
+                    dirty
+                };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
                 if let Some(sidebar) = s.sidebar {
@@ -7812,6 +7823,27 @@ fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     });
     sync_foreground(hwnd, Some(app));
     invalidate_omni(hwnd)
+}
+/// Remembers the address a navigation was just requested for as the tab's omnibox text, so the bar
+/// shows it at once (also before the engine exists or the page commits) instead of the placeholder.
+/// A native field nobody has typed in yet (the blank start state, which already owns the focus) is
+/// filled in and selected so typing replaces it; a field the user is editing is left alone, and the
+/// address reaches the HTML omnibox the way a committed one does.
+pub(crate) fn show_pending_address(hwnd: HWND, edit: HWND, id: TabId, url: &url::Url) {
+    let shown = omnibox::display_form(url);
+    if with_chrome(hwnd, |s| s.urls.insert(id, shown.clone())).is_none() {
+        return;
+    }
+    unsafe {
+        let pristine = !edit.is_invalid()
+            && SendMessageW(edit, EM_GETMODIFY, None, None).0 == 0
+            && read_edit(edit).is_empty();
+        if pristine {
+            let _ = super::set_input_text(edit, &shown);
+            let _ = SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+        }
+    }
+    invalidate_omni(hwnd);
 }
 /// Shows a navigation's address in the omnibox. While the field has focus the user owns its text and
 /// selection, so the address is only remembered and appears once focus leaves.

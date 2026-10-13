@@ -3329,6 +3329,12 @@ impl App {
     }
 
     fn submit_url(app: &AppRef, url: url::Url, allowed_file: Option<url::Url>) {
+        // The address bar shows the target now, not after the engine starts and the page commits.
+        let (hwnd, edit, active) = {
+            let state = app.borrow();
+            (state.hwnd, state.edit, state.tab_model.active())
+        };
+        win32::show_pending_address(hwnd, edit, active, &url);
         {
             let mut state = app.borrow_mut();
             let _ = state.log.record("submitted");

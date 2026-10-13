@@ -483,17 +483,23 @@ function parseSuggestMsg(raw: Record<string, unknown>): SuggestMsg | null {
   if (!hasOnlyKeys(raw, ['v', 't', 'tok', 'seq', 'w', 'sel', 'q', 'items']) || raw.v !== 1) return null;
   const { tok, seq, w, sel, q, items } = raw;
   if (!isInt(tok, 0, MAX_ID) || !isInt(seq, 0, MAX_SEQ) || !isInt(w, 0, MAX_SUGGEST_WIDTH)) return null;
-  // Rust caps the query in chars; one char can be two UTF-16 units.
+  // Rust caps the query in UTF-16 units (twice the row text limit).
   if (!isStr(q, MAX_SUGGEST_TEXT * 2)) return null;
   if (!Array.isArray(items) || items.length > MAX_SUGGEST_ITEMS || !isInt(sel, 0, MAX_SUGGEST_ITEMS - 1)) return null;
+  if (items.length > 0 && sel >= items.length) return null;
+  // One bad row (say an over-long one) must not take the whole list down with it: keep the valid
+  // rows, and move the selection with them (to the first row if its own was dropped). A list whose
+  // rows are all invalid is rejected.
   const out: SuggestItem[] = [];
-  for (const v of items) {
+  let keptSel = items.length === 0 ? sel : 0;
+  items.forEach((v, index) => {
     const item = parseSuggestItem(v);
-    if (!item) return null;
+    if (!item) return;
+    if (index === sel) keptSel = out.length;
     out.push(item);
-  }
-  if (out.length > 0 && sel >= out.length) return null;
-  return { t: 'suggest', tok, seq, w, sel, q, items: out };
+  });
+  if (items.length > 0 && out.length === 0) return null;
+  return { t: 'suggest', tok, seq, w, sel: keptSel, q, items: out };
 }
 
 export function sendSuggestPick(seq: number, i: number): boolean {

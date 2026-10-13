@@ -90,6 +90,37 @@ test('malformed suggest messages are rejected', () => {
   }
 });
 
+test('emoji, CJK and RTL rows from Rust survive validation; no row is dropped', () => {
+  const list = parseInbound(fixture.heavy);
+  assert.equal(list?.t, 'suggest', 'a list of over-long non-Latin rows must still parse');
+  assert.equal(list.items.length, 4);
+  assert.equal(list.sel, 2);
+  for (const item of list.items) {
+    assert.ok(item.text.length <= 256 && item.url.length <= 256, 'cut to the page limit in UTF-16 units');
+    assert.ok(item.text.length > 200, 'and not cut more than needed');
+    assert.ok(!/[\uD800-\uDBFF]$/.test(item.text) && !/^[\uDC00-\uDFFF]/.test(item.text), 'never mid-surrogate');
+  }
+  assert.ok(list.q.length <= 512);
+});
+
+test('one invalid row is dropped, not the whole list, and the selection follows its row', () => {
+  const rows = fixture.suggest.items;
+  const bad = { ...rows[0], text: 'x'.repeat(257) };
+  const mixed = (items, sel) => parseInbound({ ...fixture.suggest, items, sel });
+  let list = mixed([rows[0], bad, rows[2], rows[3]], 2);
+  assert.deepEqual(list.items.map((i) => i.k), ['url', 'bm', 'hist']);
+  assert.equal(list.sel, 1, 'row 2 (bm) is now at 1');
+  list = mixed([bad, rows[1], rows[2]], 0);
+  assert.deepEqual(list.items.map((i) => i.k), ['tab', 'bm']);
+  assert.equal(list.sel, 0, 'a dropped selected row falls back to the first');
+  list = mixed([rows[0], rows[1], { ...rows[2], extra: 1 }], 1);
+  assert.deepEqual(list.items.map((i) => i.k), ['url', 'tab']);
+  assert.equal(list.sel, 1);
+  assert.equal(mixed([bad, bad], 0), null, 'a list with no valid row at all is rejected');
+  assert.equal(mixed([rows[0], bad], 2), null, 'the selection must still point inside the message');
+  assert.equal(mixed([], 0).items.length, 0, 'an empty list still closes the dropdown');
+});
+
 test('state accepts the split and bookmarked flags and rejects other types', () => {
   const state = { t: 'state', scale: 1, solid: true, dark: false, back: false, forward: false, loading: false, progress: 0, security: 'secure', label: 'x', theme: {} };
   assert.equal(parseInbound(state).split, undefined);

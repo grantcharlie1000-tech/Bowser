@@ -149,6 +149,9 @@ pub struct ChromeSurface {
     caret_rect: Rect,
     last_presented: Option<PresentedSurface>,
     page_regions: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
+    /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
+    /// it never shows the desktop through the glass. `None` while a page is on screen.
+    empty_viewport: Option<Rect>,
     /// Press and active motion of the left rail's buttons, advanced as the rail paints.
     rail_motion: RailMotion,
     /// The rail icons' outlines, built once and reused by every frame.
@@ -222,6 +225,7 @@ impl ChromeSurface {
             caret_rect: Rect::default(),
             last_presented: None,
             page_regions: None,
+            empty_viewport: None,
             rail_motion: RailMotion::new(false),
             rail_icons: IconCache::default(),
             html_toolbar: false,
@@ -285,6 +289,13 @@ impl ChromeSurface {
         content: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
     ) {
         self.page_regions = content;
+    }
+
+    /// Sets the viewport of the page-less (new) tab, or `None` when a page covers it. Returns whether
+    /// that changed, so the caller repaints the whole viewport (to put the surface up or take it
+    /// down above a page that has just appeared).
+    pub fn set_empty_viewport(&mut self, viewport: Option<Rect>) -> bool {
+        std::mem::replace(&mut self.empty_viewport, viewport) != viewport
     }
 
     /// Hands the toolbar's back, forward, reload, omnibox and main menu to the HTML chrome.
@@ -542,6 +553,19 @@ impl ChromeSurface {
             self.paint_omnibox(view, dirty);
         }
         self.paint_page_boundary(view, dirty);
+        self.paint_empty_viewport(view, dirty);
+    }
+
+    /// The new-tab surface: the window colour made opaque (the glass tint alone would let the
+    /// desktop through), inside the same rounded edge a page gets.
+    fn paint_empty_viewport(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let Some(viewport) = self.empty_viewport else {
+            return;
+        };
+        let radius = view.layout.metrics.px(9);
+        let fill = Rgba { a: 255, ..view.palette.window };
+        self.round(viewport, radius, fill, dirty);
+        self.border(viewport, radius, 1.0, view.palette.omnibox_border, dirty);
     }
 
     fn paint_page_boundary(&mut self, view: &ChromeView<'_>, dirty: Rect) {

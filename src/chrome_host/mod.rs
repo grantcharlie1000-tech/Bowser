@@ -92,6 +92,14 @@ pub fn should_handoff_edit(native_focused: bool, native_text: &str, committed_te
     native_focused || native_text != committed_text
 }
 
+/// The text the HTML omnibox starts with when it takes over from the native edit. An empty field
+/// that nobody has typed in (`native_modified` is false) is just the blank start state of a window
+/// whose page is still loading, so the tab's address (`committed_text`, which may be the requested
+/// one) is shown instead of a placeholder; anything the user typed or cleared is kept.
+pub fn handoff_text<'a>(native_text: &'a str, native_modified: bool, committed_text: &'a str) -> &'a str {
+    if native_text.is_empty() && !native_modified { committed_text } else { native_text }
+}
+
 /// Whether the HTML chrome is enabled. Read once from `BOWSER_UI`: `html` enables it and `native`
 /// (or `gdi`) disables it. When the variable is unset or has another value, builds made with the
 /// `html-chrome-default` feature (the installer's release build) use the HTML chrome and plain
@@ -457,6 +465,15 @@ mod tests {
         assert!(!should_handoff_edit(false, "https://a.test", "https://a.test"));
         assert!(should_handoff_edit(true, "https://a.test", "https://a.test"));
         assert!(should_handoff_edit(false, "https://typed.test", "https://a.test"));
+    }
+
+    #[test]
+    fn handoff_shows_the_loading_address_unless_the_user_edited_the_field() {
+        assert_eq!(handoff_text("", false, "example.com/"), "example.com/", "pristine blank field: show the target");
+        assert_eq!(handoff_text("", true, "example.com/"), "", "the user cleared it: keep it cleared");
+        assert_eq!(handoff_text("typed", false, "example.com/"), "typed");
+        assert_eq!(handoff_text("typed", true, "example.com/"), "typed");
+        assert_eq!(handoff_text("", false, ""), "", "a new tab stays blank");
     }
     use crate::chrome::layout::{Metrics, Rect, compute_in_frame};
 
