@@ -2,6 +2,16 @@
 
 A small experimental x64 Windows browser: one native window, one native address/search input, and a WebView2 viewport. Its goal is useful browsing with few application components and measured resource use.
 
+## Stable download
+
+The clickable application is [Bowser.exe](https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.1/Bowser.exe) from the [v0.0.1 release](https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.1). It is a 64-bit Windows 10 or 11 program. Windows needs the installed [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section); current Microsoft Edge already includes it.
+
+Opening that file starts this exact build. The copy in this repository is `Open-Bowser.cmd`. It does not compile the source tree. It checks `%LOCALAPPDATA%\Programs\Bowser\Bowser.exe` against `stable/release.json`, downloads the release above when the hash does not match, and creates Desktop and Start Menu shortcuts that open the installed file directly. If that file is still in use, the pinned release is written to `%LOCALAPPDATA%\Programs\Bowser Stable\Bowser.exe` and the shortcuts point there. The open window is left running. Close it, then use the Bowser shortcut. Browser profiles stay in `%LOCALAPPDATA%\Bowser`. Replacing the executable keeps that data.
+
+This build is not Authenticode-signed. Windows SmartScreen may ask you to choose More info, then Run anyway.
+
+`Start-Bowser.cmd` is the development launcher. It rebuilds when the source changes. `Open-Bowser.cmd` stays on the pinned release until `stable/release.json` changes.
+
 ## Build and run
 
 Requirements: Windows 10 or later (x64), Rust with the MSVC target, Visual Studio C++ Build Tools and Windows SDK, and the installed [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section).
