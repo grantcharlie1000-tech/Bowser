@@ -101,7 +101,9 @@ html[data-scheme="dark"] #app {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: inherit;
+  /* The padding box's own radius, stated outright: `inherit` would scale differently once the
+     bottom corners square off (13 + 13 > 24 closed, 13 + 0 open) and shift the ring's arc. */
+  border-radius: calc(var(--bw-r-omnibox) - 1px);
   box-shadow:
     inset 0 0 0 1px var(--bw-focus),
     inset 0 0 0 2px var(--bw-focus-inner);
@@ -122,17 +124,16 @@ html[data-scheme="dark"] #app {
    popup is on screen and again once it is gone, so the corners never show without the list. */
 .pill.is-open,
 .pill.is-open:focus-within {
-  border-color: var(--bw-focus);
-  border-bottom-color: transparent;
+  border-color: var(--bw-focus); /* uniform, so the top edge rasterises exactly as when closed */
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
 
 .pill.is-open::after {
-  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000), linear-gradient(#000, #000);
-  mask-size: 100% calc(100% - 2px), 2px 100%, 2px 100%;
-  mask-position: 0 0, 0 0, 100% 0;
-  mask-repeat: no-repeat;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  /* Integer-pixel clip (no mask raster): everything except the bottom strip between the side rings. */
+  clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 2px) 100%, calc(100% - 2px) calc(100% - 2px), 2px calc(100% - 2px), 2px 100%, 0 100%);
 }
 
 .pill.is-open .progress {
