@@ -30,7 +30,7 @@
   overflow: hidden;
   border: 1px solid var(--bw-hairline);
   border-radius: var(--bw-r-overlay);
-  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   box-shadow: var(--bw-sh-flyout);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);

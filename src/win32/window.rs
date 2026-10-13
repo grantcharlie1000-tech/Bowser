@@ -111,6 +111,9 @@ const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
+/// Delay timer for the native new-tab button's HTML tooltip.
+const WM_NEWTAB_TOOLTIP_TIMER: usize = 0xB05A;
+const NEWTAB_TOOLTIP_TEXT: &str = "New tab (Ctrl+T)";
 // --- popup host (lane M) ---
 const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
@@ -294,6 +297,8 @@ struct WindowChrome {
     rail_previous_focus: HWND,
     rail_tooltip_key: Option<RailKey>,
     rail_tooltip_visible: bool,
+    /// The HTML tooltip for the native new-tab button is up.
+    newtab_tooltip_shown: bool,
     vertical_drag: Option<TabId>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
@@ -446,6 +451,7 @@ impl WindowChrome {
             rail_previous_focus: HWND::default(),
             rail_tooltip_key: None,
             rail_tooltip_visible: false,
+            newtab_tooltip_shown: false,
             vertical_drag: None,
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
@@ -2770,6 +2776,23 @@ unsafe extern "system" fn window_proc(
                 if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_NEWTAB_TOOLTIP_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER);
+                let button = with_chrome(hwnd, |s| {
+                    (s.hover == Hit::NewTab && s.pressed == Hit::None && s.rail_drag.is_none() && s.drag.is_none())
+                        .then_some(s.layout.new_tab_button)
+                }).flatten();
+                if let Some(button) = button {
+                    let mut top_left = POINT { x: button.left, y: button.top };
+                    let mut bottom_right = POINT { x: button.right, y: button.bottom };
+                    let _ = ClientToScreen(hwnd, &mut top_left);
+                    let _ = ClientToScreen(hwnd, &mut bottom_right);
+                    let anchor = RECT { left: top_left.x, top: top_left.y, right: bottom_right.x.max(top_left.x + 1), bottom: bottom_right.y.max(top_left.y + 1) };
+                    let _ = with_chrome(hwnd, |s| s.newtab_tooltip_shown = true);
+                    super::html_hover::tip(hwnd, anchor, NEWTAB_TOOLTIP_TEXT, false);
+                }
+                LRESULT(0)
+            }
             // Only an HTML chrome run starts or fails these; in native mode they do nothing.
             WM_HTML_CHROME_START => {
                 if chrome_host::html_ui_enabled() {
@@ -3702,7 +3725,16 @@ fn commit_rail_drop(hwnd: HWND, app: &AppRef, key: RailKey, index: usize) {
     }
 }
 
+/// Hides the new-tab button's tooltip and cancels its pending delay. Safe to call at any time:
+/// the shared HTML tooltip is only touched when this button put it up.
+fn hide_newtab_tooltip(hwnd: HWND) {
+    unsafe { let _ = KillTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER); }
+    let shown = with_chrome(hwnd, |state| std::mem::take(&mut state.newtab_tooltip_shown)).unwrap_or(false);
+    if shown { super::html_hover::tip_off(hwnd); }
+}
+
 fn hide_rail_tooltip(hwnd: HWND) {
+    hide_newtab_tooltip(hwnd);
     let visible = with_chrome(hwnd, |state| {
         let visible = state.rail_tooltip_visible;
         state.rail_tooltip_visible = false;
@@ -4051,7 +4083,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 },
                 Icon::None,
             )
-            .glyph("workspace-globe")
+            .glyph(if mute_site { "mute" } else { "volume" })
             .disabled_if(!can_mute_site),
         ),
         Entry::Item(Item::new(HIBERNATE, "Hibernate tab", Icon::None).glyph("clock").disabled_if(!can_hibernate)),
@@ -4074,7 +4106,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).glyph("close")),
         Entry::Item(
-            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).glyph("trash").disabled_if(ids.len() <= 1),
+            Item::new(CLOSE_OTHERS, "Close other tabs", Icon::Close).glyph("close-others").disabled_if(ids.len() <= 1),
         ),
         Entry::Item(
             Item::new(CLOSE_LEFT, "Close tabs to the left", Icon::Close).glyph("back").disabled_if(index == 0),
@@ -5010,7 +5042,14 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
         if html_popup::is_active(hwnd) {
             html_popup::cancel(hwnd, app);
         }
-        let items = command_palette::html_items(&tabs, &bookmarks, &history, &commands);
+        let items = command_palette::html_items_with_favicons(
+            &tabs,
+            &bookmarks,
+            &history,
+            &commands,
+            |id| App::tab_favicon(app, TabId(id)),
+            |host| crate::favicon::load_favicon_bytes(host).ok().flatten(),
+        );
         let page = command_palette::html_page(&items);
         let mut window = RECT::default();
         unsafe {
@@ -5813,6 +5852,12 @@ fn set_hover(hwnd: HWND, h: Hit) {
             if tooltip_key.is_some() {
                 let _ = SetTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER, card::HOVER_DELAY_MS, None);
             }
+        }
+    }
+    if old != h && (old == Hit::NewTab || h == Hit::NewTab) {
+        hide_newtab_tooltip(hwnd);
+        if h == Hit::NewTab {
+            unsafe { let _ = SetTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER, card::HOVER_DELAY_MS, None); }
         }
     }
     if old != h {
@@ -6751,6 +6796,16 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
                         focus_omni(hwnd, &app, true);
                     }
                 }
+                SideAction::Collapse => {
+                    if let Some(app) = app_of(hwnd) {
+                        // Same relayout as the drag-resize path, then persist the toggle.
+                        App::set_sidebar_collapsed(&app, !App::sidebar_collapsed(&app));
+                        App::save_settings(&app);
+                        let _ = with_chrome(hwnd, |s| s.refresh(&app, true));
+                        sync_split_ratio(hwnd, App::split_view(&app));
+                        apply_sidebar_bounds(hwnd, &app);
+                    }
+                }
             }
         }
         // --- end vertical sidebar ---
@@ -7018,7 +7073,11 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
             App::set_tab_muted(&app, id, !muted);
         }
         TabAction::Menu => {
-            if let Some((x, y)) = cursor_client_point(hwnd) {
+            if let Some((x, mut y)) = cursor_client_point(hwnd) {
+                // Open below the tab, not over it (the horizontal strip; the sidebar has no tab row).
+                if let Some(bottom) = with_chrome(hwnd, |s| (!s.layout.tab_row.is_empty()).then_some(s.layout.tab_row.bottom)).flatten() {
+                    y = y.max(bottom);
+                }
                 defer_html_command(hwnd, DeferredChromeCommand::TabMenu { id, x, y });
             }
         }
@@ -7944,7 +8003,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 // A tab with no page shows an opaque themed surface. When that appears or goes
                 // (a page took over) the whole viewport is repainted, not just the dirty part.
                 let empty_viewport = (!active_has_controller).then_some(sidebar_viewport);
-                let dirty = if s.surface.set_empty_viewport(empty_viewport) {
+                let viewport_changed = s.surface.set_empty_viewport(empty_viewport);
+                let dirty = if viewport_changed {
                     dirty.union(sidebar_viewport)
                 } else {
                     dirty

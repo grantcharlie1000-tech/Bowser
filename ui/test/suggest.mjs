@@ -195,16 +195,19 @@ test('the open pill and the dropdown are one surface: same material and edge, no
     assert.ok(at >= 0, `${selector} exists`);
     return css.slice(css.indexOf('{', at), css.indexOf('}', at));
   };
-  const material = 'background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);';
+  const material = 'background: linear-gradient(var(--bw-fill), var(--bw-fill)), var(--bw-window-opaque);';
   const pill = rule(styles('toolbar.css'), '.pill.is-open');
   const list = rule(styles('hover.css'), '.bw-suggest');
-  for (const body of [pill, list]) {
-    assert.ok(body.includes(material), 'shared opaque overlay material');
-    assert.match(body, /border(-color)?: (1px solid )?var\(--bw-pill-edge\)/, 'shared pill edge');
-  }
+  assert.ok(list.includes(material), "the list is the pill's fill over the opaque window colour");
+  assert.match(list, /border: 1px solid var\(--bw-focus\)/, "the list carries the pill's focus ring down its sides");
+  // V11: the pill's top half is identical open and closed, so the open rule changes no fill, ring or edge colour.
+  assert.doesNotMatch(pill, /background|box-shadow|transition/, 'open leaves the closed-and-focused fill and ring alone');
+  const ring = rule(styles('toolbar.css'), '.pill::after');
+  assert.match(ring, /box-shadow:\s*inset 0 0 0 1px var\(--bw-focus\),\s*inset 0 0 0 2px var\(--bw-focus-inner\)/, 'ring is drawn inside the box');
   assert.match(pill, /border-bottom-left-radius: 0;/);
   assert.match(pill, /border-bottom-right-radius: 0;/);
-  assert.match(pill, /border-bottom-color: transparent;/, 'the pill opens into the list: no seam line');
+  assert.match(pill, /border-color: var\(--bw-focus\)/, 'the open edge is the same focus colour as the closed pill');
+  assert.doesNotMatch(pill, /border-bottom-color/, 'a different bottom colour would shift the top arc');
   assert.match(list, /border-top: 0;/);
   assert.match(list, /border-radius: 0 0 var\(--bw-r-omnibox\) var\(--bw-r-omnibox\);/, "bottom = the pill's radius");
   // The pill's own corner is explicit (half its height), so squaring the bottom never rescales the top.

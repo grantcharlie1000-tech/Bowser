@@ -20,8 +20,9 @@
   overflow: hidden;
   border: 1px solid var(--bw-hairline);
   border-radius: var(--bw-r-overlay);
-  /* Opaque: the popup window is not glass. */
-  background: var(--bw-window);
+  /* Opaque: the popup window is not glass. --bw-window carries the glass alpha Rust sends, so the
+     overlay tint goes over the same colour without it (V4: page text showed through the popup). */
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
   outline: none;
@@ -76,11 +77,18 @@
 }
 
 .bw-palette-section {
+  /* The first heading sits 8px under the input's hairline; later ones get 8px of margin above them
+     (below), so a heading never butts against the row before it. */
   padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-1);
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
   font-weight: var(--bw-weight-strong);
+}
+
+.bw-palette-row + .bw-palette-section {
+  margin-top: var(--bw-space-2);
+  padding-top: var(--bw-space-1);
 }
 
 .bw-palette-row {
@@ -93,9 +101,20 @@
   cursor: default;
 }
 
-.bw-palette-row > svg {
+.bw-palette-row > svg,
+.bw-palette-fav {
   flex: none;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.bw-palette-row > svg {
   color: var(--bw-text-2);
+}
+
+.bw-palette-fav {
+  border-radius: 2px;
+  object-fit: contain;
 }
 
 .bw-palette-row[aria-selected="true"] {

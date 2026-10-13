@@ -76,6 +76,20 @@ mod tests {
     }
 
     #[test]
+    fn hyphenated_wire_actions_reach_the_handler_from_raw_messages() {
+        use crate::chrome_host::protocol::{parse_command, Command, PanelType};
+        // The page must be able to send these verbatim: `workspace-create` has a hyphen.
+        for (raw, expected) in [
+            (r#"{"v":1,"t":"cust","a":"workspace-create","text":"Work"}"#, Action::WorkspaceCreate("Work".into())),
+            (r#"{"v":1,"t":"cust","a":"workspace-icon","id":1,"text":"code"}"#, Action::WorkspaceIcon(1, WorkspaceIcon::Code)),
+            (r#"{"v":1,"t":"cust","a":"app-add","text":"Mail","url":"https://mail.example/"}"#, Action::AppAdd("Mail".into(), "https://mail.example/".into())),
+        ] {
+            let Ok(Command::Panel { kind: PanelType::Customize, f }) = parse_command(raw) else { panic!("{raw}") };
+            assert_eq!(map_command(f), Some(expected), "{raw}");
+        }
+    }
+
+    #[test]
     fn actions_reject_unknown_fields_values_and_invalid_palette_entries() {
         let mut fields = PanelFields { a: "visibility".into(), text: Some("menu".into()), on: Some(false), ..PanelFields::default() };
         assert_eq!(map_command(fields.clone()), None);

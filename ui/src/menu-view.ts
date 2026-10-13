@@ -43,6 +43,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   let closed = true;
   // Which way the page last changed (+1 deeper, -1 back, 0 first show), for the drill-in slide.
   let drill: -1 | 0 | 1 = 0;
+  // Width of the root page as last measured: a drill-in page keeps it, so the menu never jumps sideways.
+  let rootWidth = 0;
 
   const rows = (): HTMLElement[] => Array.from(root.querySelectorAll<HTMLElement>('.html-menu-row'));
 
@@ -83,6 +85,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       if (!message || message.tok !== tok) return;
       root.style.maxHeight = 'none';
       const rect = root.getBoundingClientRect();
+      if (nav?.pages.length === 1) rootWidth = Math.ceil(rect.width);
       root.style.maxHeight = '100vh';
       sendPopupSize(tok, Math.max(1, Math.ceil(rect.width)), Math.max(1, Math.ceil(rect.height)));
       // The enter motion starts when the size is reported, which is when the window is shown.
@@ -97,6 +100,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const kind = message.kind;
     const nodes: HTMLElement[] = [];
     root.dataset.page = String(nav.pages.length - 1);
+    // A sub-page is at least as wide as the root page it came from (and the footer stays on the root only).
+    root.style.minWidth = !top && rootWidth > 0 ? `${rootWidth}px` : '';
     root.setAttribute('aria-label', top ? (message.footer || kind) : page.label);
     const lead = hasLeadColumn(page.entries);
     const trail = hasTrailColumn(page.entries);
@@ -226,7 +231,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     scroller.append(...list);
     nodes.push(scroller);
 
-    if (message.footer && footerVisible(kind)) {
+    if (top && message.footer && footerVisible(kind)) {
       const footer = document.createElement('div');
       footer.className = 'html-menu-footer';
       footer.setAttribute('aria-hidden', 'true');
@@ -263,6 +268,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       nav = createNav(raw.entries);
       closed = false;
       drill = 0;
+      rootWidth = 0;
       root.className = 'html-menu bw-menu-surface';
       root.tabIndex = -1;
       root.setAttribute('role', 'menu');

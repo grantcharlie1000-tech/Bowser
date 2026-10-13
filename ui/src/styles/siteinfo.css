@@ -84,7 +84,13 @@
   align-items: center;
   gap: var(--bw-space-3);
   min-height: 36px;
-  padding: 0 var(--bw-space-3) 0 var(--bw-space-4);
+  padding: var(--bw-space-0_5) var(--bw-space-3) var(--bw-space-0_5) var(--bw-space-4);
+}
+
+/* 36px rhythm: rows are at least 36px and 4px apart, so two-line rows (label + caption, 36px of text)
+   never touch the next row. */
+.bw-siteinfo-row + .bw-siteinfo-row {
+  margin-top: var(--bw-space-1);
 }
 
 .bw-siteinfo-row > svg {
@@ -127,7 +133,7 @@
   flex-direction: column;
   align-items: flex-start;
   gap: var(--bw-space-2);
-  padding: var(--bw-space-1) var(--bw-space-4) var(--bw-space-2);
+  padding: var(--bw-space-2) var(--bw-space-4) var(--bw-space-2);
 }
 
 .bw-siteinfo-policy {

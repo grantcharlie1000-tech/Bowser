@@ -10,6 +10,8 @@ export interface PaletteItem {
   readonly label: string;
   readonly detail: string;
   readonly acc?: string;
+  /** Cached favicon (PNG data: URI) for tab, bookmark and history rows; absent when none is cached. */
+  readonly fav?: string;
 }
 
 export interface PaletteMessage {
@@ -45,7 +47,10 @@ export const MAX_RESULTS = 12;
 export const EMPTY_QUERY_LIMIT: Readonly<Record<PaletteSection, number>> = { tab: 5, command: 8, bookmark: 0, history: 0 };
 
 const MAX_ID = 0xffffffff;
-const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc'];
+const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc', 'fav'];
+/** Same gate as the other favicon fields (protocol.ts MAX_FAV_URI): a small PNG data: URI. */
+const FAV_PREFIX = 'data:image/png;base64,';
+const MAX_FAV = 24 * 1024;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -71,6 +76,7 @@ export function validPalettePayload(raw: unknown): raw is PaletteMessage {
     if (typeof item.s !== 'string' || !(SECTIONS as readonly string[]).includes(item.s)) return false;
     if (!isStr(item.label, MAX_PALETTE_LABEL) || !isStr(item.detail, MAX_PALETTE_DETAIL)) return false;
     if (item.acc !== undefined && !isStr(item.acc, MAX_PALETTE_ACCEL)) return false;
+    if (item.fav !== undefined && !(isStr(item.fav, MAX_FAV) && item.fav.startsWith(FAV_PREFIX) && /^[A-Za-z0-9+/=]*$/.test(item.fav.slice(FAV_PREFIX.length)))) return false;
   }
   return true;
 }
@@ -145,6 +151,37 @@ export function filterPalette(items: readonly PaletteItem[], query: string): Pal
 /** Rows in display order, for keyboard movement. */
 export function flatten(groups: readonly PaletteGroup[]): PaletteItem[] {
   return groups.flatMap(group => group.items);
+}
+
+/** Shown for an untitled tab. */
+export const UNTITLED_TAB = 'New tab';
+
+/** The row's label: an untitled tab reads "New tab", never a blank row. */
+export function rowLabel(item: PaletteItem): string {
+  return item.label.trim() === '' ? (item.s === 'tab' ? UNTITLED_TAB : item.detail) : item.label;
+}
+
+/** Glyph (an icons.ts name) for each built-in command, by its label; any other command gets the command glyph. */
+const COMMAND_GLYPH: Readonly<Record<string, string>> = {
+  'new tab': 'new-tab',
+  'close tab': 'close',
+  'settings': 'gear',
+  'toggle notes and tasks': 'notes',
+  'profiles': 'person',
+  'save session': 'folder',
+  'saved sessions': 'tab-switch',
+  'add bookmark': 'bookmark',
+  'reload': 'reload',
+  'back': 'back',
+  'forward': 'forward',
+  'extensions': 'puzzle',
+};
+
+export function commandGlyph(label: string): string {
+  const key = label.trim().toLocaleLowerCase();
+  // The secrets command is matched by prefix: chrome sources never spell out the store's name (guard.rs).
+  if (key.startsWith('pass')) return 'key';
+  return COMMAND_GLYPH[key] ?? 'command';
 }
 
 /** Next selection after a key; `count` rows, wrapping for single steps, clamping for pages. */

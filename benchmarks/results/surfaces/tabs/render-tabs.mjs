@@ -96,7 +96,7 @@ const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const shots = [];
 for (const scheme of ['dark', 'light']) {
   for (const scn of ['t1', 't2', 't4', 't5', 't12', 't25', 'fold8', 'fold8c', 'groups', 'groups25', 'mixed', 'pinnedscroll']) {
-    for (const w of [500, 900, 1400]) shots.push({ name: `${scn}-${w}-${scheme}`, scn, w, scheme });
+    for (const w of [500, 700, 900, 1400]) shots.push({ name: `${scn}-${w}-${scheme}`, scn, w, scheme });
   }
   for (const dpr of [1.5, 2]) {
     for (const scn of ['mixed', 'groups']) shots.push({ name: `${scn}-900-${scheme}@${dpr}x`, scn, w: 900, scheme, dpr });

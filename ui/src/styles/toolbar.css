@@ -90,30 +90,50 @@ html[data-scheme="dark"] #app {
   background-color: color-mix(in srgb, var(--bw-fill), var(--bw-hover));
 }
 
-/* Focus: accent border, a second accent pixel outside it (2px ring) and a 1px contrast line inside. */
+/* Focus ring, drawn entirely inside the pill's 26px box: the 1px accent border, a second accent pixel
+   and a 1px contrast line (the ::after layer). Nothing is drawn outside, so the pill and the
+   suggestions list below it share the same left and right edges. */
 .pill:focus-within {
   border-color: var(--bw-focus);
+}
+
+.pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* The padding box's own radius, stated outright: `inherit` would scale differently once the
+     bottom corners square off (13 + 13 > 24 closed, 13 + 0 open) and shift the ring's arc. */
+  border-radius: calc(var(--bw-r-omnibox) - 1px);
   box-shadow:
-    0 0 0 1px var(--bw-focus),
-    inset 0 0 0 1px var(--bw-focus-inner);
+    inset 0 0 0 1px var(--bw-focus),
+    inset 0 0 0 2px var(--bw-focus-inner);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pill:focus-within::after,
+.pill.is-open::after {
+  opacity: 1;
 }
 
 /* Open suggestions: the pill and the dropdown under it (hover.css .bw-suggest) are one surface.
-   Same opaque overlay material and the same --bw-pill-edge outline; the bottom corners square off
-   and the bottom edge opens into the list, which Rust tucks one device pixel under it. The top
-   half is untouched: same --bw-r-omnibox curvature as when closed. The focus
-   ring steps aside while the list shows (the list is the focus indicator); the caret stays.
-   Nothing here changes the pill's box, so the text row never moves. Rust sends suggestOpen when
-   the popup is on screen and again once it is gone, so the corners never show without the list. */
+   The pill's top half is exactly what it is when closed and focused (same fill, same ring, same
+   edge position, same --bw-r-omnibox curvature); only the bottom corners square off and the bottom
+   edge opens into the list, which Rust tucks one device pixel under it. The ring's bottom strip is
+   masked away so the side rings run straight down into the list's. Rust sends suggestOpen when the
+   popup is on screen and again once it is gone, so the corners never show without the list. */
 .pill.is-open,
 .pill.is-open:focus-within {
-  border-color: var(--bw-pill-edge);
-  border-bottom-color: transparent;
+  border-color: var(--bw-focus); /* uniform, so the top edge rasterises exactly as when closed */
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
-  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
-  box-shadow: none;
-  transition: none;
+}
+
+.pill.is-open::after {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  /* Integer-pixel clip (no mask raster): everything except the bottom strip between the side rings. */
+  clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 2px) 100%, calc(100% - 2px) calc(100% - 2px), 2px calc(100% - 2px), 2px 100%, 0 100%);
 }
 
 .pill.is-open .progress {

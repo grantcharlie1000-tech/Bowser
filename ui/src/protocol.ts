@@ -76,7 +76,7 @@ export type Command =
   | { v: 1; t: 'tabmove'; id: number; before: number }
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   // --- vertical sidebar (lane S) ---
-  | { v: 1; t: 'side'; a: 'workspace' | 'newtab' }
+  | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
   // --- end vertical sidebar ---
   | { v: 1; t: 'rail'; a: RailAction; k: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
@@ -390,7 +390,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
 const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename'];
-// Lower-case words joined by single hyphens ("add-note"), at most 24 characters, as the Rust parser requires.
+/** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
 const MAX_SNAPSHOT_KEYS = 4096;
@@ -414,8 +414,8 @@ export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
 }
 
 // --- vertical sidebar (lane S) ---
-export function sendSide(a: 'workspace' | 'newtab'): boolean {
-  return (a === 'workspace' || a === 'newtab') && send({ v: 1, t: 'side', a });
+export function sendSide(a: 'workspace' | 'newtab' | 'collapse'): boolean {
+  return (a === 'workspace' || a === 'newtab' || a === 'collapse') && send({ v: 1, t: 'side', a });
 }
 // --- end vertical sidebar ---
 

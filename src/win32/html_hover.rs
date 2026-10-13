@@ -737,8 +737,11 @@ fn show_card(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) {
     }
 }
 
-fn theme_json() -> String {
-    let palette = theme::palette(glass::appearance(), true);
+/// Theme state for a popup. Hover cards and tooltips use the opaque palette; the omnibox suggestions
+/// are the pill grown downward, so they take the toolbar's own palette (focus ring colour and fill)
+/// and the ring and material run on from the pill without a colour change.
+fn theme_json(like_toolbar: bool) -> String {
+    let palette = if like_toolbar { glass::palette() } else { theme::palette(glass::appearance(), true) };
     ViewState {
         scale: 1.0,
         pillx: 0,
@@ -768,7 +771,7 @@ fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
     let Some(host) = ready_host(owner) else {
         return false;
     };
-    let state = theme_json();
+    let state = theme_json(matches!(content, Content::Suggest { .. }));
     let Some((window, tok, json, post_state, closed_suggest)) = with_layer(owner, |layer| {
         let tok = layer.next_tok;
         layer.next_tok = layer.next_tok.wrapping_add(1).max(1);

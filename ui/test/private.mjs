@@ -122,12 +122,12 @@ test('strip tab: data-private and the private name are set, then cleared', () =>
   ui.updateTab(node, item(4, { private: true }), true, '');
   assert.equal(node.root.dataset.private, 'true');
   assert.equal(node.root.getAttribute('aria-label'), 'Tab 4 (Private)');
-  assert.equal(node.root.getAttribute('data-tip'), 'Tab 4 (Private)');
+  assert.equal(node.root.getAttribute('data-tip'), null, 'the hover card shows the title; a tooltip would flash first');
 
   ui.updateTab(node, item(4, { private: false }), true, '');
   assert.equal('private' in node.root.dataset, false);
   assert.equal(node.root.getAttribute('aria-label'), 'Tab 4');
-  assert.equal(node.root.getAttribute('data-tip'), 'Tab 4');
+  assert.equal(node.root.getAttribute('data-tip'), null);
 });
 
 test('pinned private strip tab keeps the pinned tile and the private mark', () => {
@@ -145,12 +145,12 @@ test('sidebar row: data-private and the private name are set, then cleared', () 
   assert.equal(node.face.dataset.state, 'glyph', 'no favicon: CSS swaps the globe tile for the private glyph');
   assert.equal(node.root.dataset.private, 'true');
   assert.equal(node.root.getAttribute('aria-label'), 'Tab 6 (Private)');
-  assert.equal(node.root.getAttribute('data-tip'), 'Tab 6 (Private)');
+  assert.equal(node.root.getAttribute('data-tip'), null, 'the hover card shows the title; a tooltip would flash first');
 
   ui.syncTab(node, item(6), false, favs);
   assert.equal('private' in node.root.dataset, false);
   assert.equal(node.root.getAttribute('aria-label'), null, 'a normal row keeps its content name');
-  assert.equal(node.root.getAttribute('data-tip'), 'Tab 6');
+  assert.equal(node.root.getAttribute('data-tip'), null);
 });
 
 const STATE = {

@@ -697,6 +697,10 @@ impl Layout {
                 self.stack_group_slots[index / 64] |= 1 << (index % 64);
             }
         }
+        // The vertical sidebar has no tab row: fitting group slots would place an overflow picker above the window.
+        if self.tab_row.is_empty() {
+            return self;
+        }
         let m = self.metrics;
         let original_visible = self.visible_count;
         let original_first = self.first_visible;
@@ -991,6 +995,8 @@ pub fn compute_vertical_in_frame(
     layout.rail = left_rail(client_h, dpi);
     layout.tab_row = Rect::default();
     layout.tab_zone = Rect::default();
+    // The overflow picker belongs to the horizontal tab row; with no row it would be placed above the window.
+    layout.tab_menu_button = Rect::default();
     layout.viewport = sidebar.viewport;
     (layout, sidebar)
 }
@@ -1424,6 +1430,17 @@ mod tests {
             l.tab_menu_button.is_empty(),
             "all tabs fit, so hide the overflow menu"
         );
+    }
+
+    #[test]
+    fn vertical_layout_with_group_slots_never_places_an_overflow_picker() {
+        let (l, _) = compute_vertical_in_frame(1100, 800, 96, 12, 11, false, 260);
+        let l = l.with_group_slots(
+            (0..12).map(|i| i == 2),
+            (0..12).map(|_| false),
+            (0..12).map(|_| false),
+        );
+        assert!(l.tab_menu_button.is_empty(), "no tab row, so no picker above the window");
     }
 
     #[test]

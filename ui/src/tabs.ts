@@ -13,7 +13,8 @@ import { validSplitCommand, type PairMsg, type SplitCommand } from './split-prot
 import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
 import {
-  beforeId,
+  beforeSlotId,
+  groupColourIndex,
   buildEntries,
   dropIndex,
   dragScrollDelta,
@@ -84,9 +85,8 @@ interface Drag {
   dx: number;
 }
 
-function colourOf(gcol: number | undefined): string {
-  if (gcol === undefined || gcol < 0) return ACCENT;
-  return ISLAND[gcol & 7] ?? ACCENT;
+function colourOf(index: number): string {
+  return ISLAND[index & 7] ?? ACCENT;
 }
 
 /** Exported for test/private.mjs (fake DOM); the strip itself is built by startTabs. */
@@ -143,8 +143,8 @@ export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: str
   const label = item.title !== '' ? item.title : 'Tab';
   const name = item.private ? privateTabName(label) : label;
   if (n.root.getAttribute('aria-label') !== name) {
+    // No data-tip on the tab itself: the hover card shows the title, and a plain tooltip would flash before it.
     n.root.setAttribute('aria-label', name);
-    setTip(n.root, name);
   }
   if (item.private) {
     if (n.root.dataset.private !== 'true') n.root.dataset.private = 'true';
@@ -188,7 +188,10 @@ function createGroup(key: number): GroupNode {
   dot.setAttribute('aria-hidden', 'true');
   const name = el('span', 'gname');
   name.dir = 'auto';
-  ball.append(dot, name);
+  const disclose = el('span', 'disclose');
+  disclose.setAttribute('aria-hidden', 'true');
+  disclose.append(icon('chevron-right', { size: 12, fine: true }));
+  ball.append(dot, name, disclose);
   // The group is one flex item: `--go` (header chip width) lets CSS give its tabs the same share of the
   // row as ungrouped tabs, `--gw` / `--gn` the summed weight and number of visible tabs.
   const watch = new ResizeObserver(() => {
@@ -211,7 +214,7 @@ function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: 
   const expanded = String(!e.collapsed);
   if (g.ball.getAttribute('aria-expanded') !== expanded) g.ball.setAttribute('aria-expanded', expanded);
 
-  const color = colourOf(e.leader.gcol);
+  const color = colourOf(groupColourIndex(e.leader.gcol, e.key, name));
   if (g.color !== color) {
     g.color = color;
     g.shell.style.setProperty('--gc', color);
@@ -472,6 +475,19 @@ export function startTabs(strip: HTMLElement): void {
     endDrag(false);
   };
 
+  /** Visible tab of every collapsed group -> the group's first member (the slot's edge), except the dragged tab's. */
+  const collapsedLeaders = (dragged: number): Map<number, number> => {
+    const map = new Map<number, number>();
+    if (!latest) return map;
+    for (const e of buildEntries(latest.items, latest.active)) {
+      if (e.kind !== 'group' || !e.collapsed) continue;
+      const first = e.members.find((m) => m.item.id !== dragged);
+      if (!first) continue;
+      for (const m of e.members) if (!m.hidden) map.set(m.item.id, first.item.id);
+    }
+    return map;
+  };
+
   const endDrag = (commit: boolean): void => {
     const d = drag;
     if (!d) return;
@@ -500,7 +516,7 @@ export function startTabs(strip: HTMLElement): void {
       // Leave every tab visually where it landed; the host's reorder then arrives and render()
       // slides from these positions to the real ones, so nothing snaps back and forth.
       const others = d.order.filter((n) => n !== d.node).map((n) => n.id);
-      send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeId(others, d.dest) });
+      send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeSlotId(others, d.dest, collapsedLeaders(d.node.id)) });
       settling = true;
       d.node.root.style.transform = `translateX(${d.dx}px)`;
       clearTimeout(settleTimer);
@@ -597,7 +613,9 @@ export function startTabs(strip: HTMLElement): void {
       return;
     }
     // --- end split view ---
-    d.dest = dropIndex(d.centers, d.from, (d.centers[d.from] ?? 0) + dx);
+    // The slot comes from the pointer, not from the dragged tab's centre: grabbing a wide tab by its edge
+    // must not shift the drop by the grab offset.
+    d.dest = dropIndex(d.centers, d.from, ev.clientX);
     d.order.forEach((n, i) => {
       if (i !== d.from) setShift(n, slotShift(d.centers, i, d.from, d.dest));
     });

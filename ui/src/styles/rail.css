@@ -95,7 +95,7 @@
 
 .rb.ws,
 .rb.add {
-  color: var(--bw-text-2);
+  color: var(--bw-text-dim);
 }
 
 .rb:hover {
@@ -287,6 +287,20 @@
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
   font-weight: var(--bw-weight-strong);
+}
+
+/* Helper text wraps inside the text column (it is an instruction, not a label: never "sid..."); the
+   control stays aligned to the first line, and every row keeps the same 8px of vertical padding. */
+.panel-customize .cust-row {
+  align-items: flex-start;
+  padding-block: var(--bw-space-2);
+}
+
+.panel-customize .cust-row .bw-row-meta {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .panel-customize .cust-hint,

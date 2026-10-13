@@ -29,6 +29,21 @@ pub enum WorkspaceIcon {
     Leaf,
 }
 impl WorkspaceIcon {
+    /// Every icon in picker order; new workspaces take the first one not already in use.
+    const ALL: [Self; 12] = [
+        Self::Briefcase,
+        Self::Home,
+        Self::Code,
+        Self::Book,
+        Self::Cart,
+        Self::Game,
+        Self::Music,
+        Self::Heart,
+        Self::Star,
+        Self::Bolt,
+        Self::Globe,
+        Self::Leaf,
+    ];
     fn key(self) -> &'static str {
         match self {
             Self::Briefcase => "briefcase",
@@ -76,6 +91,17 @@ pub enum WorkspaceColour {
     Slate,
 }
 impl WorkspaceColour {
+    /// Every colour in picker order; new workspaces take the first one not already in use.
+    const ALL: [Self; 8] = [
+        Self::Blue,
+        Self::Violet,
+        Self::Teal,
+        Self::Amber,
+        Self::Rose,
+        Self::Red,
+        Self::Green,
+        Self::Slate,
+    ];
     fn key(self) -> &'static str {
         match self {
             Self::Blue => "blue",
@@ -418,15 +444,31 @@ impl WorkspaceSet {
         }
         let id = WorkspaceId(self.next_id);
         self.next_id = self.next_id.checked_add(1).ok_or(WorkspaceError::TooMany)?;
+        let (icon, colour) = self.next_identity();
         self.workspaces.push(Workspace {
             id,
             name,
             tabs: vec![first_tab],
             active_tab: first_tab,
-            icon: WorkspaceIcon::default(),
-            colour: None,
+            icon,
+            colour: Some(colour),
         });
         Ok(id)
+    }
+
+    /// The first icon and colour no workspace uses yet, so a new workspace is told apart at a
+    /// glance; once every one is taken the choice cycles by workspace count.
+    fn next_identity(&self) -> (WorkspaceIcon, WorkspaceColour) {
+        let count = self.workspaces.len();
+        let icon = WorkspaceIcon::ALL
+            .into_iter()
+            .find(|icon| self.workspaces.iter().all(|w| w.icon != *icon))
+            .unwrap_or(WorkspaceIcon::ALL[count % WorkspaceIcon::ALL.len()]);
+        let colour = WorkspaceColour::ALL
+            .into_iter()
+            .find(|colour| self.workspaces.iter().all(|w| w.colour != Some(*colour)))
+            .unwrap_or(WorkspaceColour::ALL[count % WorkspaceColour::ALL.len()]);
+        (icon, colour)
     }
 
     pub fn rename(&mut self, id: WorkspaceId, name: &str) -> Result<(), WorkspaceError> {
@@ -785,6 +827,36 @@ mod tests {
         assert!(WorkspaceSet::parse(&text).is_ok(), "{text}");
         // The original is untouched.
         assert_eq!(workspaces.get(WorkspaceId(0)).unwrap().tabs().len(), 3);
+    }
+
+    #[test]
+    fn new_workspaces_take_the_next_unused_icon_and_colour() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        let a = workspaces.create("A", TabId(2)).unwrap();
+        let b = workspaces.create("B", TabId(3)).unwrap();
+        assert_eq!(workspaces.get(WorkspaceId(0)).unwrap().icon(), WorkspaceIcon::Briefcase);
+        assert_eq!(workspaces.get(WorkspaceId(0)).unwrap().colour(), None);
+        assert_eq!(workspaces.get(a).unwrap().icon(), WorkspaceIcon::Home);
+        assert_eq!(workspaces.get(a).unwrap().colour(), Some(WorkspaceColour::Blue));
+        assert_eq!(workspaces.get(b).unwrap().icon(), WorkspaceIcon::Code);
+        assert_eq!(workspaces.get(b).unwrap().colour(), Some(WorkspaceColour::Violet));
+        // A freed or manually chosen value is skipped or reused as appropriate.
+        workspaces.set_colour(a, Some(WorkspaceColour::Violet)).unwrap();
+        workspaces.set_icon(b, WorkspaceIcon::Book).unwrap();
+        let c = workspaces.create("C", TabId(4)).unwrap();
+        assert_eq!(workspaces.get(c).unwrap().icon(), WorkspaceIcon::Code);
+        assert_eq!(workspaces.get(c).unwrap().colour(), Some(WorkspaceColour::Blue));
+    }
+
+    #[test]
+    fn identity_cycles_once_every_icon_and_colour_is_taken() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        for n in 0..20u32 {
+            workspaces.create(&format!("W{n}"), TabId(n + 2)).unwrap();
+        }
+        let icons: HashSet<_> = workspaces.all().iter().map(|w| w.icon()).collect();
+        assert_eq!(icons.len(), WorkspaceIcon::ALL.len());
+        assert!(workspaces.all().iter().skip(1).all(|w| w.colour().is_some()));
     }
 
     #[test]

@@ -12,19 +12,33 @@
 import { icon, type IconName } from './icons';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
 import {
-  filterPalette, flatten, moveSelection, MAX_QUERY, validPalettePayload,
+  commandGlyph, filterPalette, flatten, moveSelection, MAX_QUERY, rowLabel, validPalettePayload,
   type PaletteItem, type PaletteMessage, type PaletteSection,
 } from './palette-logic';
 
 /** Width from the reference spec; Rust centres the popup 12% down the window. */
 export const PALETTE_WIDTH = 560;
 
+/** Fallback glyph while a row has no favicon (commands pick their own, see commandGlyph). */
 const SECTION_ICON: Readonly<Record<PaletteSection, IconName>> = {
-  tab: 'app-tile',
+  tab: 'workspace-globe',
   command: 'command',
   bookmark: 'bookmark',
   history: 'clock',
 };
+
+/** Leading visual of a row: the cached favicon for pages, else the command's or section's glyph. */
+function leading(item: PaletteItem): Element {
+  if (item.fav !== undefined && item.s !== 'command') {
+    const img = el('img', 'bw-palette-fav');
+    img.alt = '';
+    img.draggable = false;
+    img.src = item.fav;
+    return img;
+  }
+  const name = item.s === 'command' ? (commandGlyph(item.label) as IconName) : SECTION_ICON[item.s];
+  return icon(name);
+}
 
 export interface PageView {
   /** Shows a message of this page type; false (and nothing changes) when it is invalid. */
@@ -127,7 +141,7 @@ export function createPaletteView(root: HTMLElement): PageView {
         row.setAttribute('role', 'option');
         const text = el('span', 'bw-palette-text');
         const label = el('span', 'bw-palette-label');
-        label.textContent = item.label;
+        label.textContent = rowLabel(item);
         label.dir = 'auto';
         text.append(label);
         if (item.detail) {
@@ -136,7 +150,7 @@ export function createPaletteView(root: HTMLElement): PageView {
           detail.dir = 'auto';
           text.append(detail);
         }
-        row.append(icon(SECTION_ICON[item.s]), text);
+        row.append(leading(item), text);
         if (item.acc) {
           const accel = el('span', 'bw-palette-accel');
           accel.textContent = item.acc;

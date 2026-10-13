@@ -122,6 +122,8 @@ impl TabLayout {
 }
 
 pub const MIN_SIDEBAR_WIDTH: u16 = 180;
+/// Logical width of the collapsed (icons-only) vertical sidebar.
+pub const COLLAPSED_SIDEBAR_WIDTH: u16 = 48;
 pub const MAX_SIDEBAR_WIDTH: u16 = 360;
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 260;
 pub const MIN_SIDE_PANEL_WIDTH: u16 = 280;
@@ -133,6 +135,9 @@ pub struct Settings {
     pub tab_layout: TabLayout,
     /// Sidebar width in logical 96 DPI pixels.
     pub sidebar_width: u16,
+    /// Vertical sidebar collapsed to an icons-only strip. `sidebar_width` is kept so the
+    /// expanded width survives a collapse.
+    pub sidebar_collapsed: bool,
     /// Opera-style rail panel width in logical 96 DPI pixels.
     pub side_panel_width: u16,
     /// Whether hidden tabs sleep (are discarded) after `sleep_after_secs` even without memory
@@ -160,6 +165,7 @@ impl Default for Settings {
         Self {
             tab_layout: TabLayout::Horizontal,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_collapsed: false,
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
@@ -169,6 +175,17 @@ impl Default for Settings {
             automatic_tab_grouping: true,
             efficiency_mode: EfficiencyMode::Auto,
             tracking_prevention: TrackingLevel::Balanced,
+        }
+    }
+}
+
+impl Settings {
+    /// The sidebar width used for layout: the collapsed strip width, or the saved width.
+    pub fn effective_sidebar_width(&self) -> u16 {
+        if self.sidebar_collapsed {
+            COLLAPSED_SIDEBAR_WIDTH
+        } else {
+            self.sidebar_width
         }
     }
 }
@@ -204,6 +221,11 @@ impl Settings {
                 "sidebar_width" => {
                     if let Ok(width) = value.parse::<u16>() {
                         settings.sidebar_width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+                    }
+                }
+                "sidebar_collapsed" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.sidebar_collapsed = on;
                     }
                 }
                 "side_panel_width" => {
@@ -336,9 +358,13 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 11] = [
+    let values: [(&str, Option<String>); 12] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
+        (
+            "sidebar_collapsed",
+            Some(bool_text(settings.sidebar_collapsed).to_owned()),
+        ),
         ("side_panel_width", Some(settings.side_panel_width.to_string())),
         (
             "sleep_enabled",
@@ -370,7 +396,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             Some(settings.tracking_prevention.key().to_owned()),
         ),
     ];
-    let mut written = [false; 11];
+    let mut written = [false; 12];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -577,10 +603,28 @@ mod tests {
         assert_eq!(Settings::parse(&saved).side_panel_width, 410);
     }
 
+    #[test]
+    fn sidebar_collapsed_round_trips_and_keeps_the_expanded_width() {
+        assert!(!Settings::default().sidebar_collapsed);
+        assert!(Settings::parse("sidebar_collapsed=true").sidebar_collapsed);
+        assert!(!Settings::parse("sidebar_collapsed=banana").sidebar_collapsed);
+        let mut settings = Settings::parse("sidebar_width=300
+");
+        settings.sidebar_collapsed = true;
+        let saved = render_updated("sidebar_width=300
+", &settings);
+        assert!(saved.contains("sidebar_collapsed=true
+"));
+        let back = Settings::parse(&saved);
+        assert!(back.sidebar_collapsed);
+        assert_eq!(back.sidebar_width, 300);
+    }
+
     fn sample() -> Settings {
         Settings {
             tab_layout: TabLayout::Vertical,
             sidebar_width: 300,
+            sidebar_collapsed: false,
             side_panel_width: 340,
             sleep_enabled: false,
             sleep_after_secs: 900,
@@ -763,7 +807,7 @@ mod tests {
         assert_eq!(
             text,
             "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
-             tab_layout=vertical\r\nsidebar_width=300\r\nside_panel_width=340\r\nsleep_after_secs=900\r\n\
+             tab_layout=vertical\r\nsidebar_width=300\r\nsidebar_collapsed=false\r\nside_panel_width=340\r\nsleep_after_secs=900\r\n\
              blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
              automatic_tab_grouping=false\r\nefficiency_mode=on\r\ntracking_prevention=strict\r\n"
         );

@@ -113,7 +113,7 @@ pub fn layout_needs_sync(cached: Option<LayoutMode>, current: LayoutMode) -> boo
 }
 // --- vertical sidebar (lane S) ---
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SideAction { Workspace, NewTab }
+pub enum SideAction { Workspace, NewTab, Collapse }
 // --- end vertical sidebar ---
 
 
@@ -918,6 +918,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "side" => Command::Side(match str_field(fields, "a")? {
             "workspace" => SideAction::Workspace,
             "newtab" => SideAction::NewTab,
+            "collapse" => SideAction::Collapse,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         // --- end vertical sidebar ---
@@ -1890,6 +1891,8 @@ mod tests {
     fn parses_side_commands_strictly() {
         assert_eq!(ok(r#"{"v":1,"t":"side","a":"workspace"}"#), Command::Side(SideAction::Workspace));
         assert_eq!(ok(r#"{"v":1,"t":"side","a":"newtab"}"#), Command::Side(SideAction::NewTab));
+        assert_eq!(ok(r#"{"v":1,"t":"side","a":"collapse"}"#), Command::Side(SideAction::Collapse));
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"collapse","id":1}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"side","a":"menu"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"side","a":"workspace","id":1}"#).is_err());
     }

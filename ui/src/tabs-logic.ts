@@ -171,6 +171,34 @@ export function stepMoveBefore(ids: readonly number[], at: number, dir: -1 | 1):
   return beforeId(others, dest);
 }
 
+/**
+ * Palette index (0-7) of a group. Rust sends the chosen colour id, or a negative id for an automatic
+ * group (one folded per site); those get a stable palette colour from the group's name (or key) so
+ * every group is told apart, instead of all sharing the theme accent.
+ */
+export function groupColourIndex(gcol: number | undefined, key: number, name: string | undefined): number {
+  if (gcol !== undefined && gcol >= 0) return gcol & 7;
+  const text = name !== undefined && name !== '' ? name : `#${key}`;
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) % 8;
+}
+
+/**
+ * `before` id for a drop at slot `dest` among the visible `others`. A collapsed group is one slot: its
+ * only visible tab stands for the whole group, so dropping before it means before the group's first
+ * member (`leaderOf` maps a collapsed group's visible tab to that first member), never between its
+ * hidden members.
+ */
+export function beforeSlotId(others: readonly number[], dest: number, leaderOf: ReadonlyMap<number, number>): number {
+  const id = others[dest];
+  if (id === undefined) return 0;
+  return leaderOf.get(id) ?? id;
+}
+
 /** Stores a favicon and keeps the map bounded (oldest insertion dropped first). */
 export function rememberFav(favs: Map<number, string>, id: number, uri: string, live: ReadonlySet<number>, max = FAV_CACHE_MAX): void {
   pruneFavs(favs, live);

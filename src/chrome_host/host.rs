@@ -1001,7 +1001,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
         View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),
             // --- end split view ---
@@ -1203,6 +1203,14 @@ mod tests {
             assert!(!is_start_url(view, &format!("{url}#top")));
             assert!(!is_trusted_message(view, START_URL, url));
             assert!(!is_trusted_message(view, url, START_URL));
+        }
+        // The vertical sidebar (the Tabs view) sends workspace, new tab and collapse; no other view may.
+        for action in ["workspace", "newtab", "collapse"] {
+            let side = parse_command(&format!(r#"{{"v":1,"t":"side","a":"{action}"}}"#)).unwrap();
+            assert!(view_accepts_command(View::Tabs, &side), "{action}");
+            for view in [View::Toolbar, View::Rail, View::Panel, View::Popup, View::Dialog] {
+                assert!(!view_accepts_command(view, &side), "{view:?} {action}");
+            }
         }
         let panel = parse_command(r#"{"v":1,"t":"hist","a":"open","id":1}"#).unwrap();
         let popup = parse_command(r#"{"v":1,"t":"pick","tok":1,"id":2}"#).unwrap();
