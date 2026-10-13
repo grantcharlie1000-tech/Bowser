@@ -1,0 +1,3 @@
+// Resource 1 is the application icon. Explorer, the taskbar shortcut, and
+// LoadImage(MAKEINTRESOURCE(1)) all use this group.
+1 ICON "icons\\bowser.ico"

@@ -75,11 +75,13 @@ use windows::{
                 EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_STYLE, GWLP_USERDATA, GetCaretBlinkTime,
                 EnumChildWindows, GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW,
                 GetParent, GetSystemMenu, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
-                GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HTCAPTION,
+                GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, HMENU,
+                HTCAPTION, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW,
                 HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, HideCaret, IDC_SIZEWE, IsIconic,
                 IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow, NCCALCSIZE_PARAMS,
                 PostMessageW, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE,
-                SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME,
+                SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXICON,
+                SM_CXSMICON,
                 SM_CXPADDEDBORDER, SM_CYFRAME, SM_SWAPBUTTON, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOW,
                 SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -1293,6 +1295,22 @@ unsafe extern "system" fn foreground_changed(
     }
 }
 
+/// The icon compiled from `icons/bowser.ico` as resource 1. A missing resource keeps the default icon.
+fn app_icon(instance: HINSTANCE, size: i32) -> HICON {
+    unsafe {
+        LoadImageW(
+            Some(instance),
+            windows::core::PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            size,
+            size,
+            LR_SHARED,
+        )
+        .map(|handle| HICON(handle.0))
+        .unwrap_or_default()
+    }
+}
+
 pub fn run(app: App) -> windows::core::Result<()> {
     // Overlaps font realization with window creation; the first paint otherwise waits for it.
     let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() };
@@ -1301,10 +1319,13 @@ pub fn run(app: App) -> windows::core::Result<()> {
         .spawn(move || paint::prewarm_text(dpi));
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
+        let big_icon = app_icon(instance, GetSystemMetrics(SM_CXICON));
+        let small_icon = app_icon(instance, GetSystemMetrics(SM_CXSMICON));
         let class = WNDCLASSW {
             style: CS_DBLCLKS,
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
+            hIcon: big_icon,
             hCursor: LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_ARROW)?,
             hbrBackground: Default::default(),
             lpszClassName: CLASS_NAME,
@@ -1334,6 +1355,22 @@ pub fn run(app: App) -> windows::core::Result<()> {
             Some(instance),
             Some((&app as *const AppRef).cast()),
         )?;
+        if !big_icon.0.is_null() {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_BIG as usize)),
+                Some(LPARAM(big_icon.0 as isize)),
+            );
+        }
+        if !small_icon.0.is_null() {
+            let _ = SendMessageW(
+                hwnd,
+                WM_SETICON,
+                Some(WPARAM(ICON_SMALL as usize)),
+                Some(LPARAM(small_icon.0 as isize)),
+            );
+        }
         super::panel_bookmarks::register(&app);
         super::panel_history::register(&app);
         super::panel_customize::register(&app);
