@@ -34,6 +34,12 @@ pub const CRASHED_NAME: &str = "session.crashed";
 pub const CRASHED_PREFIX: &str = "session.crashed-";
 pub const MAX_CRASHED_KEPT: usize = 3;
 pub const LOCK_NAME: &str = "running.lock";
+/// Left by "Restart to update" just before a clean close, so the next start reopens the saved
+/// tabs without asking, as if the browser had not closed.
+pub const RESTART_NAME: &str = "restart.marker";
+/// An older restart marker is ignored, so a relaunch that failed does not restore tabs on some
+/// later, ordinary start.
+const RESTART_MARKER_SECS: u64 = 120;
 pub const MAX_FILE_BYTES: usize = 512 * 1024;
 pub const MAX_TABS: usize = 200;
 pub const MAX_URL_BYTES: usize = 4096;
@@ -360,6 +366,26 @@ fn parse_lock(text: &str) -> u32 {
 pub struct Offer {
     pub session: Session,
     pub consecutive: u32,
+    /// False after "Restart to update": the tabs come back without the crash prompt.
+    pub ask: bool,
+}
+
+/// Records that this profile is closing only to restart. The clean close still saves the tabs.
+pub fn mark_restart(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::write(dir.join(RESTART_NAME), crate::permissions::now_secs().to_string())
+}
+
+/// Removes the restart marker and says whether it was recent enough to act on.
+fn take_restart_marker(dir: &Path) -> bool {
+    let path = dir.join(RESTART_NAME);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return false;
+    };
+    let _ = fs::remove_file(&path);
+    text.trim()
+        .parse::<u64>()
+        .is_ok_and(|stamp| crate::permissions::now_secs().saturating_sub(stamp) <= RESTART_MARKER_SECS)
 }
 
 pub struct SessionStore {
@@ -509,12 +535,19 @@ impl SessionStore {
             rotated: false,
             last_text: None,
         };
+        let restart = take_restart_marker(dir);
         let offer = match decide_start(prior) {
+            StartDecision::Clean if restart => store.read_session().map(|session| Offer {
+                session,
+                consecutive: 0,
+                ask: false,
+            }),
             StartDecision::Clean => None,
             StartDecision::OfferRestore { consecutive } => {
                 store.read_session().map(|session| Offer {
                     session,
                     consecutive,
+                    ask: true,
                 })
             }
             StartDecision::CrashLoop => {
@@ -807,6 +840,31 @@ mod tests {
     }
 
     #[test]
+    fn restart_marker_restores_a_clean_exit_once_without_asking() {
+        let dir = temp_dir("restart");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        mark_restart(&dir).unwrap();
+        store.finish(Some(&sample()));
+        let (mut store, offer) = SessionStore::open(&dir).unwrap();
+        let offer = offer.expect("a restart reopens the saved tabs");
+        assert!(!offer.ask);
+        assert_eq!(offer.consecutive, 0);
+        assert_eq!(offer.session, sample());
+        assert!(!dir.join(RESTART_NAME).exists(), "the marker is used once");
+        store.begin_run(Some(&offer));
+        store.finish(Some(&sample()));
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        assert!(offer.is_none(), "the next ordinary start is clean");
+        // A stale marker, from a relaunch that never happened, is dropped without restoring.
+        fs::write(dir.join(RESTART_NAME), "1").unwrap();
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        assert!(offer.is_none());
+        assert!(!dir.join(RESTART_NAME).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn crash_is_offered_once_and_a_second_crash_sets_the_file_aside() {
         let dir = temp_dir("crash");
         {
@@ -817,6 +875,7 @@ mod tests {
         }
         let (mut store, offer) = SessionStore::open(&dir).unwrap();
         let offer = offer.expect("crash offers a restore");
+        assert!(offer.ask, "a crash restore is confirmed by the user");
         assert_eq!(offer.consecutive, 1);
         assert_eq!(offer.session, sample());
         store.begin_run(Some(&offer));

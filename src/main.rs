@@ -76,6 +76,10 @@ fn main() -> ExitCode {
         if let Some(dir) = bowser::profile::data_root_override() {
             let _ = fs::remove_dir_all(dir);
         }
+    } else if result.is_ok() && bowser::updater::restart_requested() {
+        // "Restart to update", once this process has let go of COM and its profile. The new
+        // process installs the staged build as it starts.
+        let _ = bowser::updater::relaunch_for_restart();
     }
     if let Some(error) = log.failure() {
         show_error(&format!(

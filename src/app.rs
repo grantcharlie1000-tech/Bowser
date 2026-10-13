@@ -3971,15 +3971,16 @@ impl App {
             return false; // another Bowser is running; leave its files alone
         };
         let accepted = offer.filter(|offer| {
-            win32::ask_yes_no(&format!(
-                "Bowser did not close properly last time. Restore your {} open tab{}?",
-                offer.session.tabs.len(),
-                if offer.session.tabs.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ))
+            !offer.ask
+                || win32::ask_yes_no(&format!(
+                    "Bowser did not close properly last time. Restore your {} open tab{}?",
+                    offer.session.tabs.len(),
+                    if offer.session.tabs.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ))
         });
         store.begin_run(accepted.as_ref());
         self.pending_restore = accepted.map(|offer| offer.session);

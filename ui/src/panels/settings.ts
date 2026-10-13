@@ -20,11 +20,12 @@ function numberField(label: string, value: number, min: number, max: number): HT
   return input;
 }
 
-type SectionKey = 'search' | 'tabs' | 'privacy' | 'media';
+type SectionKey = 'search' | 'tabs' | 'privacy' | 'updates' | 'media';
 const SECTIONS: ReadonlyArray<readonly [SectionKey, string, IconName]> = [
   ['search', 'Search', 'search'],
   ['tabs', 'Tabs', 'sidebar'],
   ['privacy', 'Blocking', 'shield'],
+  ['updates', 'Updates', 'download'],
   ['media', 'Media support', 'volume'],
 ];
 
@@ -168,7 +169,7 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     return JSON.stringify(snapshot) !== JSON.stringify(draft);
   };
   function paintFooter(): void {
-    message.textContent = issue || note || (snapshot ? 'Search and efficiency apply immediately. Other changes need a restart.' : 'Loading settings…');
+    message.textContent = issue || note || (snapshot ? 'Search, efficiency and updates apply immediately. Other changes need a restart.' : 'Loading settings…');
     save.disabled = !dirty();
     save.setAttribute('aria-disabled', String(!dirty()));
     reset.replaceChildren(document.createTextNode(resetConfirm ? 'Confirm reset' : 'Reset to defaults'));
@@ -243,7 +244,19 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     const privacy = el('div');
     privacy.append(blocking.root, tracking.root);
 
-    const sections: Record<Exclude<SectionKey, 'media'>, HTMLElement> = { search: search.root, tabs, privacy };
+    const updates = pageSection('Automatic updates');
+    updates.body.append(
+      settingRow('Update Bowser automatically', 'Checks for a new version in the background and installs it the next time Bowser starts. Applies immediately, to every profile. When off, use Check for updates in the menu. Turning this off also drops an update that is waiting to install.',
+        toggleSwitch(d.autoUpdate, (on) => {
+          if (!emit(settingsCommand('autoupdate', on))) { note = 'The update setting could not be sent.'; paintFooter(); return; }
+          // Applied at once, so it never makes the page dirty.
+          d.autoUpdate = on;
+          if (snapshot) snapshot.autoUpdate = on;
+          touch();
+        })),
+    );
+
+    const sections: Record<Exclude<SectionKey, 'media'>, HTMLElement> = { search: search.root, tabs, privacy, updates: updates.root };
     for (const [key] of SECTIONS) {
       if (key === 'media') continue;
       const pane = sections[key];
@@ -265,7 +278,7 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
       return;
     }
     note = emit(command) ? 'Save request sent.' : 'Settings could not be sent.';
-    confirmation = note === 'Save request sent.' ? 'Saved. Search and efficiency apply now; other changes need a restart.' : '';
+    confirmation = note === 'Save request sent.' ? 'Saved. Search, efficiency and updates apply now; other changes need a restart.' : '';
     paintFooter();
   };
   scroll.addEventListener('submit', (event) => { event.preventDefault(); submit(); });

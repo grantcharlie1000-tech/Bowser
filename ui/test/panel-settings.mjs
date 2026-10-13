@@ -14,7 +14,7 @@ const snapshot = {
   tabLayout: 'vertical', sidebarWidth: 260, sleepEnabled: true, sleepAfterSecs: 300,
   blockerEnabled: true, blockerAllow: ['example.com'], searchEngine: 'optimised',
   searchFallback: 'default', automaticTabGrouping: true,
-  efficiencyMode: 'auto', efficiencyActive: false, trackingPrevention: 'balanced',
+  efficiencyMode: 'auto', efficiencyActive: false, trackingPrevention: 'balanced', autoUpdate: true,
 };
 
 test('settings snapshot accepts exactly the fields backed by Settings and search-provider state', () => {
@@ -26,6 +26,9 @@ test('settings snapshot accepts exactly the fields backed by Settings and search
   assert.equal(logic.parseSettingsSnapshot({ ...snapshot, efficiencyMode: 'sometimes' }), null);
   assert.equal(logic.parseSettingsSnapshot({ ...snapshot, efficiencyActive: 1 }), null);
   assert.equal(logic.parseSettingsSnapshot({ ...snapshot, trackingPrevention: 'off' }), null);
+  assert.equal(logic.parseSettingsSnapshot({ ...snapshot, autoUpdate: 'yes' }), null);
+  const { autoUpdate: _missing, ...noUpdate } = snapshot;
+  assert.equal(logic.parseSettingsSnapshot(noUpdate), null);
   const { efficiencyMode: _omitted, ...partial } = snapshot;
   assert.equal(logic.parseSettingsSnapshot(partial), null);
   assert.equal(logic.parseSettingsSnapshot({ ...snapshot, blockerAllow: ['bad site.example'] }), null);
@@ -33,6 +36,9 @@ test('settings snapshot accepts exactly the fields backed by Settings and search
 
 test('settings action serializes a complete validated value through the existing flat set channel', () => {
   assert.deepEqual(logic.settingsCommand('save', snapshot), { a: 'save', text: 'tab_layout=vertical\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised' });
+  assert.doesNotMatch(logic.settingsCommand('save', { ...snapshot, autoUpdate: false }).text, /auto_update/);
+  assert.deepEqual(logic.settingsCommand('autoupdate', false), { a: 'autoupdate', on: false });
+  assert.equal(logic.settingsCommand('autoupdate', 'off'), null);
   const strict = logic.settingsCommand('save', { ...snapshot, efficiencyMode: 'on', efficiencyActive: true, trackingPrevention: 'strict' });
   assert.match(strict.text, /efficiency_mode=on\ntracking_prevention=strict/);
   assert.doesNotMatch(strict.text, /efficiencyActive|efficiency_active/);
