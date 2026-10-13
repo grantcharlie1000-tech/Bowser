@@ -2167,6 +2167,7 @@ impl App {
                 let committed = self
                     .mirror(tab.id)
                     .and_then(|mirror| mirror.url.as_ref())
+                    .filter(|url| !tab_groups::is_search_results(url))
                     .and_then(tab_groups::DomainKey::from_url);
                 tab_groups::TabGroupInput {
                     id: tab.id,
@@ -2230,6 +2231,7 @@ impl App {
         let before = self
             .mirror(id)
             .and_then(|tab| tab.url.as_ref())
+            .filter(|url| !tab_groups::is_search_results(url))
             .and_then(tab_groups::DomainKey::from_url);
         self.in_flight_domains.begin(id, before);
     }
@@ -3969,15 +3971,16 @@ impl App {
             return false; // another Bowser is running; leave its files alone
         };
         let accepted = offer.filter(|offer| {
-            win32::ask_yes_no(&format!(
-                "Bowser did not close properly last time. Restore your {} open tab{}?",
-                offer.session.tabs.len(),
-                if offer.session.tabs.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ))
+            !offer.ask
+                || win32::ask_yes_no(&format!(
+                    "Bowser did not close properly last time. Restore your {} open tab{}?",
+                    offer.session.tabs.len(),
+                    if offer.session.tabs.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ))
         });
         store.begin_run(accepted.as_ref());
         self.pending_restore = accepted.map(|offer| offer.session);
@@ -7283,6 +7286,36 @@ mod tests {
         assert!(App::tab_is_grouped(&app, third));
         assert!(App::switch_workspace(&app, home));
         assert!(!App::tab_is_grouped(&app, first));
+    }
+
+    #[test]
+    fn search_result_tabs_are_not_grouped_by_their_search_engine() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        set_addresses(
+            &app,
+            &[
+                (first, "https://duckduckgo.com/?q=beans"),
+                (second, "https://www.google.com/search?q=rust"),
+                (third, "https://www.google.com/search?q=cats"),
+            ],
+        );
+        for id in [first, second, third] {
+            assert!(!App::tab_is_grouped(&app, id));
+        }
+
+        // Other pages of the same site still group.
+        set_addresses(
+            &app,
+            &[
+                (second, "https://mail.google.com/mail/u/0/"),
+                (third, "https://docs.google.com/document/d/1/edit"),
+            ],
+        );
+        assert!(App::tab_is_grouped(&app, second));
+        assert!(App::tab_is_grouped(&app, third));
     }
 
     #[test]

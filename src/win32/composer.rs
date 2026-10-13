@@ -1,4 +1,4 @@
-//! Anchored composers: New workspace, Add web app and Edit web app.
+//! Anchored composers: New workspace, Rename workspace, Add web app and Edit web app.
 //!
 //! Each opens as a page (`{t:"composer"}`) on the menu popup host, below-left of the control that
 //! asked for it, instead of a centred name dialog. Nothing is created until the user confirms: the
@@ -14,7 +14,7 @@ use crate::{
     app::{App, AppRef},
     chrome_host,
     win32::html_popup::{self, ActOutcome, Anchor, Page, Placement},
-    workspaces::WorkspaceError,
+    workspaces::{WorkspaceError, WorkspaceId},
 };
 
 /// Longest workspace or web app name the composer accepts, in characters. The page checks it first.
@@ -24,16 +24,19 @@ pub(crate) const MAX_NAME_CHARS: usize = 40;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Composer {
     WorkspaceNew,
+    /// Renames the workspace with this id (`WorkspaceId`'s inner value).
+    WorkspaceRename(u32),
     AppAdd,
     AppEdit(u32),
 }
 
 impl Composer {
     /// The popup kind, which also keys the reopen guard: reclicking the button that closed it
-    /// does not reopen it.
+    /// does not reopen it. At most 32 UTF-16 code units on the wire.
     fn kind(&self) -> String {
         match self {
             Self::WorkspaceNew => "composer:workspace-new".to_owned(),
+            Self::WorkspaceRename(id) => format!("composer:ws-rename:{id}"),
             Self::AppAdd => "composer:app-add".to_owned(),
             Self::AppEdit(id) => format!("composer:app-edit:{id}"),
         }
@@ -42,13 +45,14 @@ impl Composer {
     fn mode(&self) -> &'static str {
         match self {
             Self::WorkspaceNew => "workspace-new",
+            Self::WorkspaceRename(_) => "workspace-rename",
             Self::AppAdd => "app-add",
             Self::AppEdit(_) => "app-edit",
         }
     }
 
     fn has_address(&self) -> bool {
-        !matches!(self, Self::WorkspaceNew)
+        !matches!(self, Self::WorkspaceNew | Self::WorkspaceRename(_))
     }
 }
 
@@ -157,6 +161,17 @@ fn apply(owner: HWND, app: &AppRef, composer: &Composer, name: &str, url: Option
                 },
             )
         }),
+        Composer::WorkspaceRename(id) => App::rename_workspace(app, WorkspaceId(*id), &name).map_err(|error| {
+            reject(
+                Field::Name,
+                match error {
+                    WorkspaceError::DuplicateName => format!("A workspace named “{name}” already exists."),
+                    WorkspaceError::TooMany => "No more workspaces can be added.".to_owned(),
+                    WorkspaceError::InvalidName => "Enter a name.".to_owned(),
+                    _ => "The workspace could not be renamed.".to_owned(),
+                },
+            )
+        }),
         Composer::AppAdd | Composer::AppEdit(_) => {
             let address = address.unwrap_or_default();
             let profile = crate::profile::active().map_err(|_| reject(Field::Name, "The profile could not be opened."))?;
@@ -206,6 +221,10 @@ fn sidebar_rejection(error: crate::sidebar::SidebarError) -> Rejection {
 fn initial_values(app: &AppRef, composer: &Composer, prefill: Option<(String, String)>) -> Option<(String, String)> {
     match composer {
         Composer::WorkspaceNew => Some((format!("Workspace {}", App::workspace_entries(app).len() + 1), String::new())),
+        Composer::WorkspaceRename(id) => App::workspace_entries(app)
+            .into_iter()
+            .find(|(entry_id, ..)| entry_id.0 == *id)
+            .map(|(_, name, ..)| (name, String::new())),
         Composer::AppAdd => Some(prefill.unwrap_or_default()),
         Composer::AppEdit(id) => {
             let profile = crate::profile::active().ok()?;
@@ -296,7 +315,20 @@ mod tests {
         assert_eq!(Composer::WorkspaceNew.kind(), "composer:workspace-new");
         assert_eq!(Composer::AppAdd.kind(), "composer:app-add");
         assert_eq!(Composer::AppEdit(7).kind(), "composer:app-edit:7");
+        assert_eq!(Composer::WorkspaceRename(7).kind(), "composer:ws-rename:7");
         assert!(Composer::AppEdit(u32::MAX).kind().encode_utf16().count() <= 32);
+        assert!(Composer::WorkspaceRename(u32::MAX).kind().encode_utf16().count() <= 32);
+    }
+
+    #[test]
+    fn workspace_composers_are_name_only() {
+        assert_eq!(Composer::WorkspaceRename(3).mode(), "workspace-rename");
+        assert!(!Composer::WorkspaceNew.has_address());
+        assert!(!Composer::WorkspaceRename(3).has_address());
+        assert!(Composer::AppAdd.has_address());
+        assert!(Composer::AppEdit(3).has_address());
+        let json = html_popup::Page::debug_json(page(&Composer::WorkspaceRename(3), "Work", "", None, false), 4);
+        assert_eq!(json, "{\"v\":1,\"t\":\"composer\",\"tok\":4,\"kind\":\"composer\",\"mode\":\"workspace-rename\",\"max\":40,\"name\":\"Work\"}");
     }
 
     #[test]

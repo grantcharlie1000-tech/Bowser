@@ -410,6 +410,7 @@ fn settings_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
         out.string("searchFallback", fallback); out.bool("automaticTabGrouping", settings.automatic_tab_grouping);
         out.string("efficiencyMode", settings.efficiency_mode.key()); out.bool("efficiencyActive", efficiency_active);
         out.string("trackingPrevention", settings.tracking_prevention.key());
+        out.bool("autoUpdate", crate::updater::auto_update_enabled());
     })
 }
 
@@ -446,6 +447,12 @@ fn handle_settings(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let result = match f.a.as_str() {
         "openfile" if empty_fields(&f, false) => {
             if let Err(message) = super::settings_panel::launch_settings_file(&profile.settings_file()) { show_error_message(&message); }
+            return;
+        }
+        // Install-wide and applied at once, so it is not part of Save. No snapshot follows: one
+        // would replace the page's unsaved edits.
+        "autoupdate" if f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.text.is_none() && f.url.is_none() && f.on.is_some() => {
+            if let Err(error) = crate::updater::set_auto_update(f.on.unwrap_or(true)) { show_error_message(&format!("Automatic updates could not be changed: {error}")); send_current(runtime); }
             return;
         }
         // The page asks for its own confirmation before sending this, so there is no second prompt.
@@ -550,5 +557,6 @@ mod tests {
         assert!(!apply_settings_text(&mut settings, &valid.replace("\nefficiency_mode=on", "")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nunknown=x")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblocker_enabled=false")));
+        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nauto_update=false")), "the update switch is not a profile setting");
     }
 }

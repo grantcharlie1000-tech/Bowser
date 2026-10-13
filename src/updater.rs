@@ -28,6 +28,7 @@ use std::{
     fmt, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -74,6 +75,8 @@ pub enum UpdateError {
     Authenticode(i32),
     Network(String),
     Io(String),
+    /// Automatic updates were turned off while a background check was downloading.
+    SwitchedOff,
 }
 
 impl fmt::Display for UpdateError {
@@ -96,6 +99,7 @@ impl fmt::Display for UpdateError {
             Self::Authenticode(code) => write!(f, "Authenticode check failed ({code:#x})"),
             Self::Network(why) => write!(f, "network error: {why}"),
             Self::Io(why) => write!(f, "file error: {why}"),
+            Self::SwitchedOff => f.write_str("automatic updates are off"),
         }
     }
 }
@@ -948,6 +952,9 @@ impl Layout {
     fn last_check(&self) -> PathBuf {
         self.updates.join("last-check.txt")
     }
+    fn status_file(&self) -> PathBuf {
+        self.updates.join("status.txt")
+    }
     fn pin_last_check(&self) -> PathBuf {
         self.updates.join("pin-last-check.txt")
     }
@@ -1028,6 +1035,12 @@ fn discard_staged(layout: &Layout, version: Option<Version>) {
     }
 }
 
+/// Whether the next start installs the staged `version` of a pending record rather than discarding
+/// it: a newer build, or a same-version build that a GitHub pin replaces by hash.
+fn installs_over(version: Version, pending: &[(String, String)], running: Version) -> bool {
+    version > running || (version == running && kv(pending, "pin") == Some("sha256"))
+}
+
 /// Applies a staged update, re-verifying the staged file against the pending record first.
 /// Swap order: copy staged next to the exe, rename exe to `bowser.old.exe`, rename the copy into place.
 /// On any failure after the first rename the old exe is restored. A failed attempt is counted in
@@ -1047,11 +1060,12 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
         discard_staged(layout, None);
         return ApplyResult::Failed("pending record is malformed".into());
     };
-    let pin_replacement = kv(&pairs, "pin") == Some("sha256") && version == current;
-    if version < current || (version == current && !pin_replacement) {
+    if !installs_over(version, &pairs, current) {
         discard_staged(layout, Some(version));
         return ApplyResult::Nothing;
     }
+    // Only a pin record may install the running version again (a rebuilt `Bowser.exe`).
+    let pin_replacement = version == current;
     if pin_replacement {
         match sha256_file(&layout.exe) {
             Ok((running, _)) if running == digest => {
@@ -1263,7 +1277,15 @@ pub fn startup(benchmark: bool, dev: bool) -> StartupAction {
         return StartupAction::Continue;
     }
     // Never wait here: if another process is swapping, this one simply starts the build it has.
-    let Some(_lock) = SwapLock::acquire(&layout, 0) else {
+    // The exception is a "Restart to update" start, whose parent may still be letting go.
+    let wait_ms = if std::env::var_os(RESTART_ENV).is_some() {
+        // SAFETY: called first thing in `main`, before any other thread exists.
+        unsafe { std::env::remove_var(RESTART_ENV) };
+        5_000
+    } else {
+        0
+    };
+    let Some(_lock) = SwapLock::acquire(&layout, wait_ms) else {
         return StartupAction::Continue;
     };
     let running = Version::current();
@@ -1370,10 +1392,12 @@ pub enum CheckOutcome {
 }
 
 /// One full check: fetch and evaluate the manifest, then (only when authentic) download, verify, stage.
+/// With `gate`, see [`publish_staged`].
 pub fn check_and_stage(
     config: &Config,
     layout: &Layout,
     current: Version,
+    gate: Option<&Path>,
 ) -> Result<CheckOutcome, UpdateError> {
     fs::create_dir_all(&layout.updates)?;
     let mut text = Vec::new();
@@ -1404,14 +1428,30 @@ pub fn check_and_stage(
         let _ = fs::remove_file(&partial);
         return Err(error);
     }
-    // Publish the staged file and its record under the lock so a starting process never pairs them
-    // half-way through.
+    publish_staged(layout, &manifest, &partial, write_pending, gate)
+}
+
+/// Moves a verified download into place and writes its pending record with `write`, under the lock
+/// so a starting process never pairs them half-way through. With `gate` (a data root), the
+/// automatic-update switch is read again under the same lock, so a background check never stages a
+/// build after the switch was turned off.
+fn publish_staged(
+    layout: &Layout,
+    manifest: &Manifest,
+    partial: &Path,
+    write: fn(&Layout, &Manifest) -> Result<(), UpdateError>,
+    gate: Option<&Path>,
+) -> Result<CheckOutcome, UpdateError> {
     let _lock =
         SwapLock::acquire(layout, 5_000).ok_or(UpdateError::Io("update lock is busy".into()))?;
+    if gate.is_some_and(|root| !auto_update_in(root)) {
+        let _ = fs::remove_file(partial);
+        return Err(UpdateError::SwitchedOff);
+    }
     let staged = layout.staged_exe(manifest.version);
     let _ = fs::remove_file(&staged);
-    fs::rename(&partial, &staged)?;
-    write_pending(layout, &manifest)?;
+    fs::rename(partial, &staged)?;
+    write(layout, manifest)?;
     Ok(CheckOutcome::Staged(manifest.version))
 }
 
@@ -1624,6 +1664,7 @@ fn stage_github_pin(
     layout: &Layout,
     current: Version,
     running_sha: &[u8; 32],
+    gate: Option<&Path>,
 ) -> Result<CheckOutcome, UpdateError> {
     fs::create_dir_all(&layout.updates)?;
     let pin_url = validate_https_url(GITHUB_PIN_URL)?;
@@ -1654,19 +1695,187 @@ fn stage_github_pin(
         let _ = fs::remove_file(&partial);
         return Err(error);
     }
-    let _lock =
-        SwapLock::acquire(layout, 5_000).ok_or(UpdateError::Io("update lock is busy".into()))?;
-    let staged = layout.staged_exe(manifest.version);
-    let _ = fs::remove_file(&staged);
-    fs::rename(&partial, &staged)?;
-    write_pending_replacing_build(layout, &manifest)?;
-    Ok(CheckOutcome::Staged(manifest.version))
+    publish_staged(layout, &manifest, &partial, write_pending_replacing_build, gate)
+}
+
+/// Set once this process may check for updates: an installed launch, not a dev or benchmark one.
+static CHANNEL_OPEN: AtomicBool = AtomicBool::new(false);
+/// Set while a background or requested check is running, so two never overlap.
+static CHECKING: AtomicBool = AtomicBool::new(false);
+/// Set by "Restart to update": `main` starts Bowser again after a clean exit.
+static RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Install-wide switch for automatic updates. It lives in the data root, not in a profile's
+/// `settings.txt`, because every profile runs the same executable.
+const AUTO_UPDATE_FILE: &str = "auto-update.txt";
+
+fn auto_update_in(root: &Path) -> bool {
+    read_kv(&root.join(AUTO_UPDATE_FILE))
+        .and_then(|pairs| kv(&pairs, "auto_update").map(|value| value != "false"))
+        .unwrap_or(true)
+}
+
+/// Whether Bowser checks for, downloads and installs updates without being asked (default on).
+pub fn auto_update_enabled() -> bool {
+    data_root().is_none_or(|root| auto_update_in(&root))
+}
+
+/// Saves the automatic-update switch. Turning it off also drops an update that was already staged,
+/// so the next start installs nothing the user did not ask for.
+pub fn set_auto_update(on: bool) -> Result<(), UpdateError> {
+    let root = data_root().ok_or_else(|| UpdateError::Io("no data directory".into()))?;
+    set_auto_update_in(&root, std::env::current_exe().ok(), on)
+}
+
+fn set_auto_update_in(root: &Path, exe: Option<PathBuf>, on: bool) -> Result<(), UpdateError> {
+    fs::create_dir_all(root)?;
+    let switch = root.join(AUTO_UPDATE_FILE);
+    let text = if on { "auto_update=true\n" } else { "auto_update=false\n" };
+    let (false, Some(exe)) = (on, exe) else {
+        return write_atomic(&switch, text);
+    };
+    // Staging re-reads the switch under this lock (see `publish_staged`), so once it is written no
+    // background check can stage again. A busy lock (held briefly) leaves the switch unchanged.
+    let layout = Layout::new(exe, root);
+    let _lock = SwapLock::acquire(&layout, 1_000)
+        .ok_or_else(|| UpdateError::Io("update lock is busy".into()))?;
+    write_atomic(&switch, text)?;
+    if let Some(pairs) = read_kv(&layout.pending()) {
+        discard_staged(&layout, kv(&pairs, "version").and_then(Version::parse));
+    }
+    Ok(())
+}
+
+/// The staged version the next start would install; a record that start would only discard is
+/// not offered.
+fn ready_version(layout: &Layout, running: Version) -> Option<Version> {
+    let pairs = read_kv(&layout.pending())?;
+    let version = kv(&pairs, "version").and_then(Version::parse)?;
+    (installs_over(version, &pairs, running) && layout.staged_exe(version).is_file())
+        .then_some(version)
+}
+
+/// `status.txt` texts the menu tells apart.
+const STATUS_UP_TO_DATE: &str = "up to date";
+const STATUS_FAILED: &str = "check failed";
+
+/// The result of the most recent check, as far as the menu cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastCheck {
+    UpToDate,
+    Failed,
+    /// Anything else, such as an unverified newer version.
+    Other,
+}
+
+/// What the main menu shows about updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// Dev and benchmark launches never check.
+    Unavailable,
+    Checking,
+    /// A verified build is staged; the next start installs it.
+    Ready(Version),
+    /// Nothing staged. `last` is the result of the most recent check, if one ran.
+    Idle { last: Option<LastCheck> },
+}
+
+pub fn status() -> Status {
+    if !CHANNEL_OPEN.load(Ordering::Acquire) {
+        return Status::Unavailable;
+    }
+    if CHECKING.load(Ordering::Acquire) {
+        return Status::Checking;
+    }
+    let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
+        return Status::Unavailable;
+    };
+    let layout = Layout::new(exe, &root);
+    if let Some(version) = ready_version(&layout, Version::current()) {
+        return Status::Ready(version);
+    }
+    let last = fs::read(layout.status_file())
+        .ok()
+        .filter(|bytes| !bytes.is_empty() && bytes.len() <= 512)
+        .map(|bytes| {
+            if bytes.starts_with(STATUS_UP_TO_DATE.as_bytes()) {
+                LastCheck::UpToDate
+            } else if bytes.starts_with(STATUS_FAILED.as_bytes()) {
+                LastCheck::Failed
+            } else {
+                LastCheck::Other
+            }
+        });
+    Status::Idle { last }
+}
+
+/// Holds [`CHECKING`] for one check and clears it however the check ends.
+struct CheckGuard;
+
+impl CheckGuard {
+    fn take() -> Option<Self> {
+        CHECKING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(Self)
+    }
+}
+
+impl Drop for CheckGuard {
+    fn drop(&mut self) {
+        CHECKING.store(false, Ordering::Release);
+    }
+}
+
+/// One check of whichever channel is configured: the signed manifest, otherwise the GitHub pin.
+/// A background check (not `forced`) returns `None` when that channel's interval has not passed,
+/// and stages nothing once automatic updates are off. The time and result are recorded for the
+/// next check and for [`status`].
+fn run_check(root: &Path, layout: &Layout, forced: bool) -> Option<Result<CheckOutcome, UpdateError>> {
+    let _ = fs::create_dir_all(&layout.updates);
+    let config = load_config(root);
+    let (stamp, interval) = match config {
+        Some(_) => (layout.last_check(), CHECK_INTERVAL_SECS),
+        None => (layout.pin_last_check(), PIN_CHECK_INTERVAL_SECS),
+    };
+    if !forced {
+        let last = fs::read_to_string(&stamp)
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        if !check_due_after(now_secs(), last, interval) {
+            return None;
+        }
+    }
+    let gate = (!forced).then_some(root);
+    let outcome = match &config {
+        Some(config) => check_and_stage(config, layout, Version::current(), gate),
+        None => match sha256_file(&layout.exe) {
+            Ok((running_sha, _)) => stage_github_pin(layout, Version::current(), &running_sha, gate),
+            // Not stamped, so the next launch tries again rather than waiting out the interval.
+            Err(error) => {
+                let _ = write_atomic(&layout.status_file(), &format!("{STATUS_FAILED}: {error}"));
+                return Some(Err(error));
+            }
+        },
+    };
+    let _ = write_atomic(&stamp, &now_secs().to_string());
+    let summary = match &outcome {
+        Ok(CheckOutcome::UpToDate) => STATUS_UP_TO_DATE.to_owned(),
+        Ok(CheckOutcome::AvailableUnverified(version)) => {
+            format!("{version} available; no signing key embedded, not installed")
+        }
+        Ok(CheckOutcome::Staged(version)) => format!("{version} staged for next start"),
+        Err(UpdateError::SwitchedOff) => UpdateError::SwitchedOff.to_string(),
+        Err(error) => format!("{STATUS_FAILED}: {error}"),
+    };
+    let _ = write_atomic(&layout.status_file(), &summary);
+    Some(outcome)
 }
 
 /// Starts the lazy background worker. It sleeps first (so it never competes with startup), then marks a
-/// surviving launch healthy and checks for an update. A configured signed channel is used as before.
-/// Otherwise the GitHub pin is checked, at most once an hour. Failures are silent. Dev launches
-/// do not start the thread.
+/// surviving launch healthy and, when automatic updates are on, checks for an update. A configured
+/// signed channel is used as before. Otherwise the GitHub pin is checked, at most once an hour.
+/// Failures are silent. Dev launches do not start the thread.
 pub fn spawn_background(benchmark: bool, dev: bool) {
     if benchmark || dev {
         return;
@@ -1674,7 +1883,7 @@ pub fn spawn_background(benchmark: bool, dev: bool) {
     let Some(root) = data_root() else {
         return;
     };
-    let signed = load_config(&root);
+    CHANNEL_OPEN.store(true, Ordering::Release);
     let _ = std::thread::Builder::new()
         .name("bowser-updater".into())
         .spawn(move || {
@@ -1684,47 +1893,81 @@ pub fn spawn_background(benchmark: bool, dev: bool) {
             };
             let layout = Layout::new(exe, &root);
             mark_healthy(&layout, Version::current());
-            let _ = fs::create_dir_all(&layout.updates);
-            let (stamp, outcome) = if let Some(config) = signed {
-                let last = fs::read_to_string(layout.last_check())
-                    .ok()
-                    .and_then(|text| text.trim().parse().ok());
-                if !check_due(now_secs(), last) {
-                    return;
-                }
-                let outcome = check_and_stage(&config, &layout, Version::current());
-                (layout.last_check(), outcome)
-            } else {
-                let last = fs::read_to_string(layout.pin_last_check())
-                    .ok()
-                    .and_then(|text| text.trim().parse().ok());
-                if !check_due_after(now_secs(), last, PIN_CHECK_INTERVAL_SECS) {
-                    return;
-                }
-                let running_sha = match sha256_file(&layout.exe) {
-                    Ok((digest, _)) => digest,
-                    Err(error) => {
-                        let _ = write_atomic(
-                            &layout.updates.join("status.txt"),
-                            &format!("check failed: {error}"),
-                        );
-                        return;
-                    }
-                };
-                let outcome = stage_github_pin(&layout, Version::current(), &running_sha);
-                (layout.pin_last_check(), outcome)
+            // Read now rather than at launch, so switching it off during the first 45 s counts.
+            if !auto_update_in(&root) {
+                return;
+            }
+            let Some(_guard) = CheckGuard::take() else {
+                return;
             };
-            let _ = write_atomic(&stamp, &now_secs().to_string());
-            let summary = match outcome {
-                Ok(CheckOutcome::UpToDate) => "up to date".to_owned(),
-                Ok(CheckOutcome::AvailableUnverified(version)) => {
-                    format!("{version} available; no signing key embedded, not installed")
-                }
-                Ok(CheckOutcome::Staged(version)) => format!("{version} staged for next start"),
-                Err(error) => format!("check failed: {error}"),
-            };
-            let _ = write_atomic(&layout.updates.join("status.txt"), &summary);
+            let _ = run_check(&root, &layout, false);
         });
+}
+
+/// Why a requested check did not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckRefused {
+    /// Dev and benchmark launches never check.
+    Unavailable,
+    /// Another check is already running.
+    Busy,
+}
+
+/// A check the user asked for. It ignores the interval and the automatic-update switch, and stages
+/// a verified build the same way the background check does. It blocks on the network, so call it
+/// off the UI thread.
+pub fn check_now() -> Result<Result<CheckOutcome, UpdateError>, CheckRefused> {
+    if !CHANNEL_OPEN.load(Ordering::Acquire) {
+        return Err(CheckRefused::Unavailable);
+    }
+    let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
+        return Err(CheckRefused::Unavailable);
+    };
+    let _guard = CheckGuard::take().ok_or(CheckRefused::Busy)?;
+    let layout = Layout::new(exe, &root);
+    Ok(run_check(&root, &layout, true).unwrap_or(Ok(CheckOutcome::UpToDate)))
+}
+
+/// Asks `main` to start Bowser again once this process has closed cleanly; that start installs
+/// the staged build. The caller closes the window.
+pub fn request_restart() {
+    RESTART_REQUESTED.store(true, Ordering::Release);
+}
+
+pub fn restart_requested() -> bool {
+    RESTART_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Set on the process "Restart to update" starts. Its [`startup`] waits a little for the swap
+/// lock, which the closing process may still hold, instead of skipping the update.
+const RESTART_ENV: &str = "BOWSER_UPDATE_RESTART";
+
+/// The arguments a restart passes on: the launch's own, minus `--open-url <url>`, whose page is
+/// already among the tabs the restart restores.
+fn restart_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    let mut out = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--open-url" {
+            args.next();
+        } else {
+            out.push(arg);
+        }
+    }
+    out
+}
+
+/// Starts Bowser again for "Restart to update". Call it once this process has closed its window
+/// and released its profile. Returns false on failure.
+pub fn relaunch_for_restart() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    std::process::Command::new(exe)
+        .args(restart_args(std::env::args_os().skip(1)))
+        .env(RESTART_ENV, "1")
+        .spawn()
+        .is_ok()
 }
 
 fn check_due_after(now_secs: u64, last_check_secs: Option<u64>, interval: u64) -> bool {
@@ -1750,6 +1993,69 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn restart_drops_the_one_shot_url_and_keeps_the_rest() {
+        let args = ["--profile", "Work", "--open-url", "https://example.com/", "--new-window"]
+            .map(std::ffi::OsString::from);
+        assert_eq!(
+            restart_args(args),
+            ["--profile", "Work", "--new-window"].map(std::ffi::OsString::from)
+        );
+    }
+
+    #[test]
+    fn only_a_build_the_next_start_would_install_is_ready() {
+        let root = temp_dir("ready");
+        let layout = Layout::new(root.join("bowser.exe"), &root);
+        fs::create_dir_all(&layout.updates).unwrap();
+        let running = Version(1, 0, 0);
+        let stage = |version: Version, pin: bool| {
+            fs::write(layout.staged_exe(version), b"build").unwrap();
+            let pin = if pin { "pin=sha256\n" } else { "" };
+            let record = format!("{}{pin}", pending_text(version, &[0; 32], 5, 0));
+            write_atomic(&layout.pending(), &record).unwrap();
+        };
+        assert_eq!(ready_version(&layout, running), None);
+        stage(Version(1, 1, 0), false);
+        assert_eq!(ready_version(&layout, running), Some(Version(1, 1, 0)));
+        stage(Version(0, 9, 0), false);
+        assert_eq!(ready_version(&layout, running), None, "older builds are discarded at start");
+        stage(running, false);
+        assert_eq!(ready_version(&layout, running), None, "same version needs a pin record");
+        stage(running, true);
+        assert_eq!(ready_version(&layout, running), Some(running));
+        fs::remove_file(layout.staged_exe(running)).unwrap();
+        assert_eq!(ready_version(&layout, running), None, "the staged file must exist");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn auto_update_defaults_on_and_turning_it_off_drops_a_staged_build() {
+        let root = temp_dir("auto-update");
+        let exe = root.join("bowser.exe");
+        assert!(auto_update_in(&root), "no switch file means updates are on");
+        let layout = Layout::new(exe.clone(), &root);
+        fs::create_dir_all(&layout.updates).unwrap();
+        let staged = layout.staged_exe(Version(9, 0, 0));
+        fs::write(&staged, b"new build").unwrap();
+        write_atomic(&layout.pending(), &pending_text(Version(9, 0, 0), &[0; 32], 9, 0)).unwrap();
+        assert_eq!(ready_version(&layout, CURRENT), Some(Version(9, 0, 0)));
+
+        set_auto_update_in(&root, Some(exe.clone()), true).unwrap();
+        assert!(auto_update_in(&root));
+        assert!(layout.pending().is_file(), "turning it on keeps the staged build");
+
+        set_auto_update_in(&root, Some(exe), false).unwrap();
+        assert!(!auto_update_in(&root));
+        assert!(!layout.pending().exists());
+        assert!(!staged.exists());
+        assert_eq!(ready_version(&layout, CURRENT), None);
+
+        fs::write(root.join(AUTO_UPDATE_FILE), "junk").unwrap();
+        assert!(auto_update_in(&root), "an unreadable switch leaves updates on");
+        let _ = fs::remove_dir_all(root);
     }
 
     fn body(version: &str, min: &str, url: &str, sha: &str, size: u64) -> String {

@@ -132,6 +132,14 @@ const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 const WM_HTML_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7E;
 /// Posted when the HTML left rail's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_RAIL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7F;
+/// Posted by the "Check for updates" worker when its check ends; `wparam` is an `UPDATE_*` code.
+const WM_UPDATE_CHECKED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x83;
+const UPDATE_UP_TO_DATE: usize = 0;
+const UPDATE_STAGED: usize = 1;
+const UPDATE_UNVERIFIED: usize = 2;
+const UPDATE_FAILED: usize = 3;
+const UPDATE_BUSY: usize = 4;
+const UPDATE_UNAVAILABLE: usize = 5;
 /// Most deferred chrome commands waiting at once. A command that finds the queue full is dropped.
 const HTML_DEFERRED_LIMIT: usize = 8;
 
@@ -2901,6 +2909,10 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_UPDATE_CHECKED => {
+                show_update_result(hwnd, wparam.0);
+                LRESULT(0)
+            }
             // --- popup host (lane M) ---
             WM_TIMER if wparam.0 == WM_HTML_POPUP_PREWARM_TIMER => {
                 let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER);
@@ -3847,18 +3859,10 @@ fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, 
 /// else (keyboard activation) at the rail's right edge level with the button's top.
 fn open_rail_composer(hwnd: HWND, app: &AppRef, key: RailKey, composer: super::composer::Composer) {
     let at = rail_composer_anchor(hwnd, key);
-    if !super::composer::open(hwnd, app, composer.clone(), None, at) {
-        // Native chrome has no popup host: Add web app opens Customize as before, and a new
-        // workspace is named first and created only if the prompt is confirmed.
-        match composer {
-            super::composer::Composer::AppAdd => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
-            _ => {
-                let name = format!("Workspace {}", App::workspace_entries(app).len() + 1);
-                if let Some(name) = super::profile_rename::prompt(hwnd, &name, "New workspace", "Create") {
-                    let _ = App::workspace_create(app, &name);
-                }
-            }
-        }
+    // No centred name dialog. Native chrome has no popup host, so Customize (fields in the dock)
+    // is the only fallback.
+    if !super::composer::open(hwnd, app, composer, None, at) {
+        rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key));
     }
 }
 
@@ -4060,7 +4064,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 let set = App::workspaces(app);
                 if !set.all().iter().any(|workspace| workspace.id() == id) { return; }
                 match chosen.id {
-                    1 => if let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
+                    // The anchored composer renames only on confirm. No centred dialog.
+                    1 => {
+                        if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(id.0), None, point) {
+                            rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
+                        }
+                    }
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
@@ -4892,19 +4901,21 @@ fn show_workspaces_menu(hwnd: HWND, app: &AppRef) {
     let (built, active) = workspace_menu_snapshot(app);
     menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "workspaces", move |app, chosen| {
         if let Some(chosen) = chosen {
-            run_workspace_action(hwnd, app, chosen.id, &built, active);
+            run_workspace_action(hwnd, app, chosen.id, &built, active, point);
         }
     });
 }
 
 /// Runs a workspace menu command. `built` and `active_at_open` come from
 /// `workspace_menu_snapshot` when the menu was built; a workspace that has gone since is ignored.
+/// `point` is the screen point the menu opened at: the composers open below-left of it.
 fn run_workspace_action(
     hwnd: HWND,
     app: &AppRef,
     command: usize,
     built: &[crate::workspaces::WorkspaceId],
     active_at_open: crate::workspaces::WorkspaceId,
+    point: POINT,
 ) {
     let workspaces = App::workspaces(app);
     if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&command) {
@@ -4920,22 +4931,16 @@ fn run_workspace_action(
     }
     let active = workspaces.active();
     match command {
+        // Both open the anchored composer and change nothing until confirm. There is no centred
+        // dialog; without the popup host, Customize opens instead.
         WORKSPACE_CREATE => {
-            if let Some(name) = super::profile_rename::prompt(hwnd, "", "New workspace", "Create") {
-                if let Err(error) = App::create_workspace(app, &name) {
-                    show_profile_notice(
-                        hwnd,
-                        &format!("Workspace could not be created: {error:?}"),
-                    );
-                }
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceNew, None, point) {
+                rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
             }
         }
         WORKSPACE_RENAME => {
-            if let Some(name) =
-                super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
-                && let Err(error) = App::rename_workspace(app, active.id(), &name)
-            {
-                show_profile_notice(hwnd, &format!("Workspace could not be renamed: {error:?}"));
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(active.id().0), None, point) {
+                rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
             }
         }
         WORKSPACE_DELETE => {
@@ -4985,6 +4990,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const NEW_PRIVATE_TAB: usize = 5016;
     const READER: usize = 5017;
     const CALM: usize = 5018;
+    const CHECK_UPDATES: usize = 5019;
+    const RESTART_TO_UPDATE: usize = 5020;
+    const AUTO_UPDATE: usize = 5021;
 
     let profiles = ProfileMenu::load(hwnd);
     let mut entries = vec![
@@ -5086,6 +5094,30 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(PRIVACY, "Privacy dashboard", Icon::Shield).glyph("eye").shortcut("Ctrl+Shift+Del"),
     ));
     entries.push(Entry::Separator);
+    let update_status = crate::updater::status();
+    entries.push(Entry::SectionHeader("Updates".to_owned()));
+    entries.push(Entry::Item(match update_status {
+        crate::updater::Status::Ready(_) => {
+            Item::new(RESTART_TO_UPDATE, "Restart to update", Icon::Check).glyph("refresh")
+        }
+        crate::updater::Status::Checking => {
+            Item::new(CHECK_UPDATES, "Checking for updates…", Icon::Info).glyph("refresh").disabled()
+        }
+        crate::updater::Status::Unavailable => Item::new(CHECK_UPDATES, "Check for updates", Icon::Info)
+            .glyph("refresh")
+            .described("Development and benchmark launches do not update")
+            .disabled(),
+        crate::updater::Status::Idle { .. } => {
+            Item::new(CHECK_UPDATES, "Check for updates", Icon::Info).glyph("refresh")
+        }
+    }));
+    entries.push(Entry::Item(
+        Item::new(AUTO_UPDATE, "Update automatically", Icon::Check)
+            .glyph("download")
+            .checked(crate::updater::auto_update_enabled())
+            .disabled_if(update_status == crate::updater::Status::Unavailable),
+    ));
+    entries.push(Entry::Separator);
     entries.push(Entry::Item(
         Item::new(EXIT, "Exit", Icon::Close).glyph("close").shortcut("Alt+F4"),
     ));
@@ -5106,7 +5138,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             ),
         }),
         entries,
-        footer: format!("Bowser {}", env!("CARGO_PKG_VERSION")),
+        footer: update_footer(&update_status),
     };
 
     // Right-aligned under the button, so the menu grows leftwards and stays on screen.
@@ -5168,6 +5200,13 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 }
             }
             PRIVACY => privacy_panel::open(hwnd, app),
+            CHECK_UPDATES => check_for_updates(hwnd),
+            RESTART_TO_UPDATE => restart_to_update(hwnd),
+            AUTO_UPDATE => {
+                if let Err(error) = crate::updater::set_auto_update(!crate::updater::auto_update_enabled()) {
+                    show_error_message(&format!("Automatic updates could not be changed: {error}"));
+                }
+            }
             EXIT => unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                     Some(hwnd),
@@ -5204,7 +5243,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
                 || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) =>
             {
-                run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace)
+                run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace, point)
             }
             _ => {}
         }
@@ -5213,6 +5252,97 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
     });
     // --- end popup host ---
+}
+
+/// The main menu's footer: the running version and, when there is news, the update state.
+fn update_footer(status: &crate::updater::Status) -> String {
+    use crate::updater::{LastCheck, Status, Version};
+    let running = Version::current();
+    let note = match status {
+        Status::Ready(version) if *version > running => Some(format!("Update {version} ready")),
+        Status::Ready(_) => Some("Update ready".to_owned()),
+        Status::Checking => Some("Checking for updates".to_owned()),
+        Status::Idle { last: Some(LastCheck::UpToDate) } => Some("Up to date".to_owned()),
+        Status::Idle { last: Some(LastCheck::Failed) } => Some("Last update check failed".to_owned()),
+        Status::Idle { .. } | Status::Unavailable => None,
+    };
+    match note {
+        Some(note) => format!("Bowser {running} · {note}"),
+        None => format!("Bowser {running}"),
+    }
+}
+
+/// "Check for updates": runs one check off the UI thread, then reports it with a toast.
+fn check_for_updates(hwnd: HWND) {
+    let window = hwnd.0 as isize;
+    let spawned = std::thread::Builder::new()
+        .name("bowser-update-check".into())
+        .spawn(move || {
+            use crate::updater::{CheckOutcome, CheckRefused};
+            let code = match crate::updater::check_now() {
+                Ok(Ok(CheckOutcome::UpToDate)) => UPDATE_UP_TO_DATE,
+                Ok(Ok(CheckOutcome::Staged(_))) => UPDATE_STAGED,
+                Ok(Ok(CheckOutcome::AvailableUnverified(_))) => UPDATE_UNVERIFIED,
+                Ok(Err(_)) => UPDATE_FAILED,
+                Err(CheckRefused::Busy) => UPDATE_BUSY,
+                Err(CheckRefused::Unavailable) => UPDATE_UNAVAILABLE,
+            };
+            super::post(HWND(window as *mut _), WM_UPDATE_CHECKED, WPARAM(code), LPARAM(0));
+        });
+    if spawned.is_err() {
+        show_update_result(hwnd, UPDATE_FAILED);
+    }
+}
+
+/// The toast that ends "Check for updates". A staged build offers "Restart to update".
+fn show_update_result(hwnd: HWND, code: usize) {
+    const RESTART: usize = 1;
+    let item = match code {
+        UPDATE_STAGED => Item::new(RESTART, "Update downloaded. Restart to update", Icon::Check).glyph("refresh"),
+        UPDATE_UP_TO_DATE => Item::new(0, "Bowser is up to date", Icon::Check).glyph("check").disabled(),
+        UPDATE_UNVERIFIED => {
+            Item::new(0, "A newer version could not be verified, so it was not downloaded", Icon::Info)
+                .glyph("warning")
+                .disabled()
+        }
+        UPDATE_BUSY => Item::new(0, "Already checking for updates", Icon::Info).glyph("refresh").disabled(),
+        UPDATE_UNAVAILABLE => {
+            Item::new(0, "Development builds do not update", Icon::Info).glyph("info").disabled()
+        }
+        _ => Item::new(0, "The update check failed. Try again later", Icon::Info).glyph("warning").disabled(),
+    };
+    menu::show(
+        hwnd,
+        screen_point(hwnd, main_menu_anchor(hwnd)),
+        menu::Placement::AboveLeft,
+        Menu { header: None, entries: vec![Entry::Item(item)], footer: "Updates".into() },
+        "update-toast",
+        move |_, chosen| {
+            if chosen.is_some_and(|chosen| chosen.id == RESTART) {
+                restart_to_update(hwnd);
+            }
+        },
+    );
+}
+
+/// "Restart to update": closes this window cleanly, and `main` then starts Bowser again, which
+/// installs the staged build. The clean close saves the tabs; the restart marker reopens them
+/// without the crash prompt.
+fn restart_to_update(hwnd: HWND) {
+    let marked = crate::profile::active()
+        .map_err(|error| error.to_string())
+        .and_then(|profile| {
+            if profile.is_guest() {
+                return Ok(()); // a guest session is never restored
+            }
+            crate::session::mark_restart(&profile.session_dir()).map_err(|error| error.to_string())
+        });
+    if let Err(error) = marked {
+        show_error_message(&format!("Bowser could not prepare to restart: {error}"));
+        return;
+    }
+    crate::updater::request_restart();
+    super::post(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
 }
 
 fn run_command_palette(hwnd: HWND, app: &AppRef) {
