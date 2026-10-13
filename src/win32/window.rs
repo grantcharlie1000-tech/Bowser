@@ -1847,6 +1847,20 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- split view ---
+            super::WM_SPLIT_COMMAND => {
+                if let Some(app) = app {
+                    super::split_ui::run_queued(hwnd, app);
+                }
+                LRESULT(0)
+            }
+            super::WM_SPLIT_LINK => {
+                if let Some(app) = app {
+                    super::split_ui::run_links(hwnd, app);
+                }
+                LRESULT(0)
+            }
+            // --- end split view ---
             WM_PANE_FOCUSED => {
                 if let Some(app) = app
                     && App::focus_split_tab(app, TabId(wparam.0 as u32))
@@ -1914,6 +1928,7 @@ unsafe extern "system" fn window_proc(
                     }
                     card::sync(hwnd, app, |id| tab_anchor(hwnd, id));
                     island_menu::sync(hwnd, app, |id| ball_anchor(hwnd, id));
+                    super::split_ui::tabs_changed(hwnd, app); // --- split view ---
                     if structural {
                         position_edit(hwnd);
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -2002,16 +2017,16 @@ unsafe extern "system" fn window_proc(
                     } else {
                         let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
                         if dragging
-                            && let Some(panes) = split_rects(hwnd, Some(p.x))
+                            && super::split_ui::divider_dragged(hwnd, p.x) // --- split view ---
+                            && let Some(panes) = split_rects(hwnd, Some(p.x - split_px(hwnd, crate::split_view::GAP_DIP) / 2))
                             && let Some(app) = app
                         {
                             let divider = panes.0.right;
                             let _ = with_chrome(hwnd, |s| s.split_divider = divider);
                             if let Some(viewport) = with_chrome(hwnd, |s| s.layout.viewport) {
                                 let viewport = adjusted_viewport(hwnd, to_win_rect(viewport), dpi(hwnd));
-                                let ratio = (((divider + 3 - viewport.left) * 100)
-                                    / (viewport.right - viewport.left).max(1))
-                                .clamp(20, 80) as u8;
+                                let gap = with_chrome(hwnd, |s| s.layout.metrics.px(crate::split_view::GAP_DIP)).unwrap_or(8);
+                                let ratio = crate::split_view::ratio_for_divider(viewport.left, viewport.right, divider, gap);
                                 App::set_split_ratio(app, ratio);
                             }
                             queue_split_bounds(hwnd, panes);
@@ -2314,6 +2329,7 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::SplitDivider => {
                         let _ = with_chrome(hwnd, |s| s.split_dragging = true);
+                        super::split_ui::divider_pressed(hwnd, p.x); // --- split view ---
                         let _ = SetCapture(hwnd);
                     }
                     Hit::SiteInfo => {
@@ -2398,7 +2414,14 @@ unsafe extern "system" fn window_proc(
                 if was_split_drag {
                     let _ = ReleaseCapture();
                     if let Some(app) = app {
-                        App::split_state_changed(app);
+                        // --- split view ---
+                        // A press that never moved is a click on the divider: its menu opens.
+                        if super::split_ui::divider_released(hwnd) {
+                            super::split_ui::divider_menu(hwnd, app, p.y);
+                        } else {
+                            App::split_state_changed(app);
+                        }
+                        // --- end split view ---
                     }
                 } else if let Some(id) = with_chrome(hwnd, |s| s.vertical_drag.take()).flatten() {
                     if let Some(app) = app {
@@ -2497,7 +2520,7 @@ unsafe extern "system" fn window_proc(
                         if was == Hit::Split
                             && let Some(app) = app
                         {
-                            show_split_menu(hwnd, app);
+                            super::split_ui::toolbar_button(hwnd, app); // --- split view ---
                         }
                         caption_command(hwnd, was)
                     }
@@ -2549,6 +2572,9 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     match hit(hwnd, p.x, p.y) {
                         Hit::Rail(key) => show_rail_context_menu(hwnd, app, key, p.x, p.y),
+                        // --- split view ---
+                        Hit::SplitDivider => super::split_ui::divider_menu(hwnd, app, p.y),
+                        // --- end split view ---
                         Hit::GroupBall(i) => {
                             card::cancel(hwnd);
                             if let Some(id) = slot_tab_id(hwnd, i) {
@@ -2987,6 +3013,13 @@ unsafe extern "system" fn window_proc(
                 if with_chrome(hwnd, |s| s.rail_keyboard_focus).unwrap_or(false) {
                     return LRESULT(0);
                 }
+                // --- split view ---
+                // The window got the keyboard back (activation, or a page-less side was focused):
+                // the empty side's search field takes it when that side is the focused one.
+                if super::split_ui::take_focus(hwnd) {
+                    return LRESULT(0);
+                }
+                // --- end split view ---
                 // The native address input is hidden while the HTML toolbar is active.
                 if with_chrome(hwnd, |s| s.html_toolbar_active).unwrap_or(false) {
                     return LRESULT(0);
@@ -3148,8 +3181,8 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                     Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom)
                 },
                 s.split_divider,
-                s.layout.metrics.px(220),
-                s.layout.metrics.px(6),
+                s.layout.metrics.px(crate::split_view::MIN_PANE_DIP),
+                s.layout.metrics.px(crate::split_view::GAP_DIP),
             )
             .is_some_and(|panes| panes.divider.contains(x, y))
         {
@@ -3372,7 +3405,7 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     }
 }
 
-fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
+pub(super) fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
     let (layout, saved_divider) = with_chrome(hwnd, |state| (state.layout, state.split_divider))?;
     let divider = divider_left.unwrap_or(saved_divider);
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
@@ -3380,8 +3413,8 @@ fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
     let panes = layout::split_pane_layout(
         viewport,
         divider,
-        layout.metrics.px(220),
-        layout.metrics.px(6),
+        layout.metrics.px(crate::split_view::MIN_PANE_DIP),
+        layout.metrics.px(crate::split_view::GAP_DIP),
     )?;
     Some((
         RECT {
@@ -3399,13 +3432,16 @@ fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
     ))
 }
 
-fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::SplitView>) {
+pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::SplitView>) {
     let Some(split) = split else { return };
     let _ = with_chrome(hwnd, |state| {
         let viewport = adjusted_viewport(hwnd, to_win_rect(state.layout.viewport), state.dpi);
-        state.split_divider = viewport.left
-            + (viewport.right - viewport.left) * i32::from(split.ratio) / 100
-            - state.layout.metrics.px(3);
+        state.split_divider = crate::split_view::divider_for_ratio(
+            viewport.left,
+            viewport.right,
+            split.ratio,
+            state.layout.metrics.px(crate::split_view::GAP_DIP),
+        );
     });
 }
 
@@ -3460,6 +3496,99 @@ fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
     }
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
+
+// --- split view ---
+/// Repaints the window, which re-syncs the split host (`split_ui::sync` runs from the paint).
+pub(super) fn split_ui_invalidate(hwnd: HWND) {
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// The page area (client coordinates) the panes share, or `None` before the first layout.
+pub(super) fn split_viewport(hwnd: HWND) -> Option<RECT> {
+    let layout = with_chrome(hwnd, |state| state.layout)?;
+    let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
+    (viewport.right > viewport.left && viewport.bottom > viewport.top).then_some(viewport)
+}
+
+/// `dip` logical pixels at the window's DPI.
+pub(super) fn split_px(hwnd: HWND, dip: i32) -> i32 {
+    with_chrome(hwnd, |state| state.layout.metrics.px(dip)).unwrap_or(dip)
+}
+
+/// The divider gap (client coordinates) of the shown split.
+pub(super) fn split_gap(hwnd: HWND) -> Option<RECT> {
+    let (left, right) = split_rects(hwnd, None)?;
+    Some(RECT { left: left.right, top: left.top, right: right.left, bottom: left.bottom })
+}
+
+/// Pane rectangles at `ratio` without moving the divider (for a split about to open).
+pub(super) fn split_rects_for_ratio(hwnd: HWND, ratio: u8) -> Option<(RECT, RECT)> {
+    let viewport = split_viewport(hwnd)?;
+    let gap = split_px(hwnd, crate::split_view::GAP_DIP);
+    split_rects(hwnd, Some(crate::split_view::divider_for_ratio(viewport.left, viewport.right, ratio, gap)))
+}
+
+/// The HTML tab view's screen rectangle and the window DPI, while that view is active.
+pub(super) fn tabs_host_screen(hwnd: HWND) -> Option<(RECT, u32)> {
+    let (host, dpi) = with_chrome(hwnd, |s| (s.html_tab_region().and(s.html_tabs.clone()), s.dpi))?;
+    Some((host?.screen_bounds()?, dpi))
+}
+
+/// The split view's `state`: the panel state with the window colour made opaque, so the empty
+/// side matches the overlay's opaque fill of a page-less pane and never shows the desktop.
+pub(super) fn split_host_state(hwnd: HWND) -> String {
+    let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
+        .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
+    let mut palette = palette.clone();
+    palette.window.a = 255;
+    ViewState {
+        scale: dpi as f32 / 96.0,
+        pillx: 0,
+        pillw: 0,
+        menux: 0,
+        solid: true,
+        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        back: false,
+        forward: false,
+        loading: false,
+        split: false,
+        bookmarked: false,
+        progress: 0,
+        security: crate::chrome_host::protocol::Security::None,
+        label: String::new(),
+        permblocked: false,
+        zoom: 100,
+        private: false,
+        theme: chrome_host::theme_tokens(&palette),
+    }
+    .to_json()
+}
+
+pub(super) fn html_split_accelerator(hwnd: HWND, accel: Accel) -> bool {
+    html_accelerator(hwnd, accel, View::Split)
+}
+
+/// Sends the `pair` message to the toolbar and the tab strip when it changed (or the page reloaded).
+fn html_broadcast_pair(hwnd: HWND, app: &AppRef) {
+    let json = super::split_ui::pair_message(app);
+    let Some(hosts) = with_chrome(hwnd, |s| {
+        [
+            (s.html_page_ready.then(|| s.html.clone()).flatten(), s.html_state_generation[0]),
+            (s.html_tabs_page_ready.then(|| s.html_tabs.clone()).flatten(), s.html_state_generation[1]),
+        ]
+    }) else {
+        return;
+    };
+    for (index, (host, generation)) in hosts.into_iter().enumerate() {
+        let Some(host) = host else { continue };
+        if super::split_ui::pair_needs_send(hwnd, index, generation, &json) && host.post_json(&json).is_ok() {
+            super::split_ui::pair_sent(hwnd, index, generation, &json);
+        }
+    }
+}
+// --- end split view ---
 
 /// Rail handlers call this with the semantic panel ID; the host stays alive when switching IDs.
 pub fn rail_activate(hwnd: HWND, app: &AppRef, key: side_panel::PanelId) -> bool {
@@ -3676,145 +3805,10 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
 }
 // --- end popup host ---
 
-fn split_tab_rows(app: &AppRef, skip: Option<TabId>) -> Vec<Entry> {
-    App::tab_ids(app)
-        .into_iter()
-        .filter(|id| Some(*id) != skip)
-        .map(|id| {
-            let title = App::tab_title(app, id)
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or_else(|| "New tab".to_owned());
-            let favicon =
-                App::tab_favicon(app, id).and_then(|bytes| crate::favicon::decode(&bytes, 24));
-            Entry::Item(
-                Item::new(id.0 as usize + 100, title.clone(), Icon::Grid)
-                    .glyph("workspace-globe")
-                    .favicon_png(
-                        App::tab_favicon(app, id)
-                            .filter(|bytes| bytes.len() <= chrome_host::protocol::MAX_FAVICON_BYTES)
-                            .map(std::rc::Rc::new),
-                    )
-                    .rich_row(title, favicon),
-            )
-        })
-        .collect()
-}
-
-// --- popup host (lane M): async split menu ---
-fn show_split_menu(hwnd: HWND, app: &AppRef) {
-    const OPEN_BASE: usize = 100;
-    const SWAP: usize = 1;
-    const CLOSE_LEFT: usize = 2;
-    const CLOSE_RIGHT: usize = 3;
-    const REPLACE: usize = 4;
-    const OPEN_NEW: usize = 5;
-    // Submenu parents need ids of their own: the HTML menu rejects duplicate ids.
-    const OPEN_WITH: usize = 6;
-    let split = App::split_view(app);
-    let entries = if let Some(split) = split {
-        vec![
-            Entry::Item(Item::new(SWAP, "Swap panes", Icon::Grid).glyph("reload")),
-            Entry::Item(Item::new(CLOSE_LEFT, "Close left pane", Icon::Close).glyph("back")),
-            Entry::Item(Item::new(CLOSE_RIGHT, "Close right pane", Icon::Close).glyph("forward")),
-            Entry::Item(
-                Item::new(REPLACE, "Replace pane with tab…", Icon::Grid)
-                    .glyph("split")
-                    .submenu_with(split_tab_rows(app, Some(split.other_tab()))),
-            ),
-        ]
-    } else {
-        let active = App::active_tab_id(app);
-        let mut entries = vec![Entry::Item(Item::new(
-            OPEN_NEW,
-            "Open split view with a new tab",
-            Icon::Plus,
-        )
-        .glyph("plus"))];
-        entries.push(Entry::Separator);
-        entries.push(Entry::Item(
-            Item::new(OPEN_WITH, "Open split view with…", Icon::Grid)
-                .glyph("split")
-                .submenu_with(split_tab_rows(app, Some(active))),
-        ));
-        entries
-    };
-    let point = screen_point(hwnd, main_menu_anchor(hwnd));
-    let was_split = split.is_some();
-    menu::show(
-        hwnd,
-        point,
-        menu::Placement::AboveLeft,
-        Menu {
-            header: None,
-            entries,
-            footer: "Split view".to_owned(),
-        },
-        "split",
-        move |app, chosen| {
-            let command = chosen.map_or(0, |chosen| chosen.id);
-            // The split may have opened or closed, or the picked tab gone, while the menu was open.
-            let picked_tab = (command >= OPEN_BASE)
-                .then(|| TabId((command - OPEN_BASE) as u32))
-                .filter(|tab| App::tab_ids(app).contains(tab));
-            if command >= OPEN_BASE && picked_tab.is_none() {
-                return;
-            }
-            if App::split_view(app).is_some() != was_split {
-                return;
-            }
-            if was_split {
-                match command {
-                    SWAP => {
-                        let _ = App::swap_split_panes(app);
-                    }
-                    CLOSE_LEFT => {
-                        let _ = App::close_split_pane(app, crate::split_view::Pane::Left);
-                    }
-                    CLOSE_RIGHT => {
-                        let _ = App::close_split_pane(app, crate::split_view::Pane::Right);
-                    }
-                    _ => {
-                        if let Some(tab) = picked_tab {
-                            let _ = App::replace_focused_split_pane(app, tab);
-                        }
-                    }
-                }
-            } else {
-                let active = App::active_tab_id(app);
-                if command == OPEN_NEW {
-                    let new = App::new_tab(app);
-                    if let Some(bounds) = split_rects(hwnd, None) {
-                        let _ = App::open_split_view(
-                            app,
-                            active,
-                            new,
-                            crate::split_view::Pane::Right,
-                            bounds,
-                        );
-                    }
-                } else if let Some(other) = picked_tab.filter(|other| *other != active) {
-                    if let Some(bounds) = split_rects(hwnd, None) {
-                        let _ = App::open_split_view(
-                            app,
-                            active,
-                            other,
-                            crate::split_view::Pane::Right,
-                            bounds,
-                        );
-                    }
-                }
-            }
-            unsafe {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
-        },
-    );
-}
-// --- end popup host ---
+// --- split view: the split menus live in split_ui.rs ---
 
 fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pip_available: bool) {
     const NEW_RIGHT: usize = 1;
-    const TAB_SPLIT_VIEW_HOOK: usize = 2;
     const GROUP: usize = 3;
     const GROUP_NEW: usize = 30;
     const GROUP_AUTO: usize = 31;
@@ -3878,17 +3872,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             .all(|candidate| App::tab_supports_muting(app, *candidate));
     let mut entries = vec![
         Entry::Item(Item::new(NEW_RIGHT, "New tab to the right", Icon::Plus).glyph("plus")),
-        Entry::Item(
-            Item::new(
-                TAB_SPLIT_VIEW_HOOK,
-                "New split view with current tab",
-                Icon::Grid,
-            )
-            .glyph("split")
-            .disabled_if(App::tab_count(app) < 2 || App::split_view(app).is_some()),
-        ),
-        Entry::Separator,
     ];
+    // --- split view ---
+    entries.extend(super::split_ui::tab_menu_entries(app, id));
+    entries.push(Entry::Separator);
+    // --- end split view ---
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
@@ -4059,25 +4047,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 let _ = App::move_tab(app, created, after);
                 focus_omni(hwnd, app, true);
             }
-            TAB_SPLIT_VIEW_HOOK => {
-                let active = App::active_tab_id(app);
-                let companion = if id != active {
-                    Some(active)
-                } else {
-                    App::tab_ids(app)
-                        .into_iter()
-                        .find(|candidate| *candidate != id)
-                };
-                if let (Some(companion), Some(bounds)) = (companion, split_rects(hwnd, None)) {
-                    let _ = App::open_split_view(
-                        app,
-                        id,
-                        companion,
-                        crate::split_view::Pane::Left,
-                        bounds,
-                    );
-                }
-            }
+            // --- split view ---
+            split if super::split_ui::tab_menu_pick(hwnd, app, id, split) => {}
+            // --- end split view ---
             GROUP_NEW => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
             }
@@ -5878,6 +5850,7 @@ fn close_html_chrome(hwnd: HWND) {
     // --- panel host (lane P) ---
     html_panel::close(hwnd);
     // --- end panel host ---
+    super::split_ui::close(hwnd); // --- split view ---
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
@@ -6097,6 +6070,7 @@ fn html_sync(hwnd: HWND) {
     };
     let json = state.to_json();
     html_broadcast_state(hwnd, &json);
+    html_broadcast_pair(hwnd, &app); // --- split view ---
     let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
         return;
     };
@@ -6309,6 +6283,9 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         // --- popup host (lane M) ---
         | ChromeCommand::Side(_) => {}
         // --- end popup host ---
+        // --- split view ---
+        ChromeCommand::Split(_) => {}
+        // --- end split view ---
     }
     html_sync(hwnd);
 }
@@ -6329,8 +6306,8 @@ fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
         return true;
     }
     // --- end popup host ---
-    let editing =
-        view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false);
+    let editing = view == View::Split // --- split view --- (the empty side's search field)
+        || (view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false));
     if view != View::Panel
         && side_panel::should_dismiss_panel_accelerator(
             accel.vk, accel.key_down, side_panel::is_open(hwnd), editing,
@@ -6444,7 +6421,7 @@ pub(super) fn popup_context(hwnd: HWND) -> Option<html_popup::MenuContext> {
 }
 
 /// A menu anchor in screen coordinates from a client point.
-fn screen_point(hwnd: HWND, mut point: POINT) -> POINT {
+pub(super) fn screen_point(hwnd: HWND, mut point: POINT) -> POINT {
     unsafe {
         let _ = ClientToScreen(hwnd, &mut point);
     }
@@ -6622,6 +6599,13 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
             }
         }
         // --- end vertical sidebar ---
+        // --- split view ---
+        // A tab dragged out of the strip over the page; runs from the window procedure.
+        ChromeCommand::Split(command) => {
+            super::split_ui::queue_from_tabs(hwnd, command);
+            return;
+        }
+        // --- end split view ---
         // The strip sends nothing else. Any other message is ignored.
         _ => return,
     }
@@ -6635,7 +6619,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy | View::DialogRename | View::Hover => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogSettings | View::DialogPrivacy | View::DialogRename | View::Hover | View::Split => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -6789,7 +6773,7 @@ fn run_deferred_html_command(hwnd: HWND) {
             let button = with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
             site_info::show(hwnd, &app, button);
         }
-        DeferredChromeCommand::SplitMenu => show_split_menu(hwnd, &app),
+        DeferredChromeCommand::SplitMenu => super::split_ui::toolbar_button(hwnd, &app), // --- split view ---
         DeferredChromeCommand::TabMenu { id, x, y } => {
             // The tab may have closed while the command waited.
             if App::tab_ids(&app).contains(&id) {
@@ -7601,19 +7585,29 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     html_sync(hwnd);
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
+    // --- split view ---
+    if let Some(app) = app {
+        super::split_ui::sync(hwnd, app);
+    }
+    // --- end split view ---
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
         if let Some(app) = app {
             let active = App::active_tab_id(app);
             let split_view = App::split_view(app);
-            let active_has_controller = split_view.map_or_else(
-                || App::active_tab_has_controller(app),
-                |split| {
-                    App::tab_has_controller(app, split.left)
-                        || App::tab_has_controller(app, split.right)
-                },
-            );
+            // --- split view --- a shown split always draws its pane frames (an empty side is filled)
+            let active_has_controller = split_view.is_some() || App::active_tab_has_controller(app);
+            // --- split view ---
+            // The side whose tab has no page, unless the HTML "choose a tab" surface covers it,
+            // and a tab drag target the HTML card cannot show yet.
+            let picker_pane = super::split_ui::picker_pane(hwnd);
+            let split_unfilled = split_view.map(|split| {
+                [crate::split_view::Pane::Left, crate::split_view::Pane::Right]
+                    .map(|pane| (!App::tab_has_controller(app, split.tab(pane)) && picker_pane != Some(pane)).then_some(pane))
+            });
+            let split_drop_fallback = super::split_ui::drop_fallback(hwnd);
+            // --- end split view ---
             let progress_target = App::tab_progress_percent(app, active);
             let can_back = App::tab_can_go_back(app, active);
             let can_forward = App::tab_can_go_forward(app, active);
@@ -7748,8 +7742,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         layout::split_pane_layout(
                             sidebar_viewport,
                             s.split_divider,
-                            s.layout.metrics.px(220),
-                            s.layout.metrics.px(6),
+                            s.layout.metrics.px(crate::split_view::MIN_PANE_DIP),
+                            s.layout.metrics.px(crate::split_view::GAP_DIP),
                         )
                         .map(|panes| {
                             (
@@ -7758,12 +7752,32 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                                 split.focused == crate::split_view::Pane::Left,
                             )
                         })
+                        // --- split view --- too narrow for two panes: the focused side alone
+                        .or(Some((sidebar_viewport, None, false)))
                     } else {
                         Some((sidebar_viewport, None, false))
                     }
                 } else {
                     None
                 };
+                // --- split view ---
+                let grip = if s.split_dragging {
+                    crate::chrome::paint::SplitGrip::Drag
+                } else if s.hover == Hit::SplitDivider {
+                    crate::chrome::paint::SplitGrip::Hover
+                } else {
+                    crate::chrome::paint::SplitGrip::Idle
+                };
+                let empty_pane = match (split_unfilled, page_regions.and_then(|(_, panes, _)| panes)) {
+                    (Some([left, right]), Some(panes)) => [left.map(|_| panes.left), right.map(|_| panes.right)],
+                    _ => [None, None],
+                };
+                let dirty = if s.surface.set_split_chrome(grip, empty_pane) {
+                    dirty.union(sidebar_viewport)
+                } else {
+                    dirty
+                };
+                // --- end split view ---
                 s.surface.set_page_regions(page_regions);
                 // A tab with no page shows an opaque themed surface. When that appears or goes
                 // (a page took over) the whole viewport is repainted, not just the dirty part.
@@ -7790,7 +7804,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         p,
                     );
                 }
-                if let Some(pane) = s.split_drop {
+                if let Some(pane) = s.split_drop.or(split_drop_fallback) { // --- split view ---
                     s.surface.paint_split_drop(sidebar_viewport, pane, p, dirty);
                 }
                 let t1 = std::time::Instant::now();
@@ -7894,7 +7908,7 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str) {
         });
     }
 }
-fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     // While the HTML toolbar is active, its page owns the omnibox and the native input stays hidden.
     if let Some(host) = with_chrome(hwnd, |s| {
         if s.html_toolbar_active { s.html.clone() } else { None }
@@ -8020,23 +8034,10 @@ fn omnibox_drag(hwnd: HWND, app: &AppRef, client_x: i32) {
 /// Split view toggle: closes the split when one is open, otherwise splits the active tab with the
 /// most recent other tab on the right. Shared by Ctrl+Shift+\ and the HTML toolbar's `open split`.
 fn toggle_split(hwnd: HWND, app: &AppRef) {
-    if let Some(split) = App::split_view(app) {
-        let _ = App::close_split_pane(app, split.focused);
-    } else {
-        let tabs = App::tab_ids(app);
-        let active = App::active_tab_id(app);
-        if let Some(other) = tabs.into_iter().find(|id| *id != active)
-            && let Some(bounds) = split_rects(hwnd, None)
-        {
-            let _ = App::open_split_view(
-                app,
-                active,
-                other,
-                crate::split_view::Pane::Right,
-                bounds,
-            );
-        }
-    }
+    // --- split view ---
+    // Separate views when split (both tabs stay open); otherwise split with an empty side.
+    super::split_ui::toggle(hwnd, app);
+    // --- end split view ---
 }
 
 fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {

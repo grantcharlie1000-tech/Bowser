@@ -2,6 +2,10 @@
 // Page-controlled text reaches the DOM only through textContent or attributes (see view.ts, tabs.ts, rail.ts).
 import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail-logic';
 import { validZoom } from './zoom-logic';
+// --- split view ---
+import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
+export type { PairMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
+// --- end split view ---
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_TEXT = 2048;
@@ -91,8 +95,11 @@ export type Command =
   // --- omnibox suggest ---
   | { v: 1; t: 'suggestPick'; seq: number; i: number }
   | { v: 1; t: 'suggestPreview'; seq: number; i: number }
-  | { v: 1; t: 'suggestEnd' };
+  | { v: 1; t: 'suggestEnd' }
   // --- end omnibox suggest ---
+  // --- split view ---
+  | SplitCommand;
+  // --- end split view ---
 
 // --- hover layer ---
 /** Longest tooltip text Rust accepts, in code points. */
@@ -323,6 +330,9 @@ export type Inbound =
   | SuggestSelMsg
   | SuggestOpenMsg
   // --- end omnibox suggest ---
+  // --- split view ---
+  | SplitInbound
+  // --- end split view ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -716,6 +726,13 @@ export function parseInbound(data: unknown): Inbound | null {
       if (!hasOnlyKeys(raw, ['v', 't', 'on']) || raw.v !== 1 || !isBool(raw.on)) return null;
       return { t: 'suggestOpen', on: raw.on };
     // --- end omnibox suggest ---
+    // --- split view ---
+    case 'pair':
+    case 'splitpick':
+    case 'splitdrop':
+    case 'splithide':
+      return parseSplitInbound(raw);
+    // --- end split view ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
       const budget = { keys: 0 };

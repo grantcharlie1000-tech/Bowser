@@ -299,6 +299,10 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    // --- split view ---
+    /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
+    pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    // --- end split view ---
 }
 
 /// Per-site permission decisions, shared between the UI (Site information) and the WebView2 request

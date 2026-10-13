@@ -4,6 +4,11 @@ import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './p
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
+// --- split view ---
+import { markPair } from './split-chrome';
+import { overPage, pairOrder, pairWeight, wirePoint } from './split-logic';
+import { validSplitCommand, type PairMsg, type SplitCommand } from './split-protocol';
+// --- end split view ---
 // --- vertical sidebar (lane S) ---
 import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
@@ -194,7 +199,7 @@ function createGroup(key: number): GroupNode {
   return { shell, ball, name, label: '', color: '', weight: -1, visible: -1, watch };
 }
 
-function syncGroup(g: GroupNode, e: GroupEntry, active: number): void {
+function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: number, fallback: number) => number): void {
   const name = e.leader.gname;
   const label = name !== undefined && name !== '' ? name : 'Tab group';
   if (g.label !== label) {
@@ -213,7 +218,7 @@ function syncGroup(g: GroupNode, e: GroupEntry, active: number): void {
   }
   g.shell.classList.toggle('collapsed', e.collapsed);
 
-  const weight = groupWeight(e.members, active);
+  const weight = groupWeight(e.members, active, weightOf);
   if (g.weight !== weight) {
     g.weight = weight;
     g.shell.style.setProperty('--gw', String(weight));
@@ -263,6 +268,18 @@ export function startTabs(strip: HTMLElement): void {
   let settling = false;
   let settleTimer = 0;
   const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // --- split view ---
+  // The window's split pair (joined capsule) and a tab drag that left the strip for the page.
+  let pair: PairMsg | null = null;
+  let splitStartY = 0;
+  let splitOut = false;
+  let splitFrame = 0;
+  let splitPoint: { x: number; y: number } | null = null;
+  const sendSplit = (cmd: SplitCommand): void => {
+    if (validSplitCommand(cmd)) send(cmd);
+  };
+  const splitWeight = (id: number, fallback: number): number => pairWeight(id, pair, fallback);
+  // --- end split view ---
 
   const schedule = (): void => {
     if (frame === 0) frame = requestAnimationFrame(flush);
@@ -274,7 +291,8 @@ export function startTabs(strip: HTMLElement): void {
     const msg = latest;
     if (drag?.active || !dirty || msg === null) return;
     dirty = false;
-    render(msg);
+    render({ ...msg, items: pairOrder(msg.items, pair) }); // --- split view ---
+    markPair(strip, pair); // --- split view ---
   };
 
   const tabFor = (item: TabItem): TabNode => {
@@ -404,7 +422,7 @@ export function startTabs(strip: HTMLElement): void {
         g = createGroup(e.key);
         groups.set(e.key, g);
       }
-      syncGroup(g, e, activeId);
+      syncGroup(g, e, activeId, splitWeight); // --- split view ---
       const nodes: HTMLElement[] = [g.ball];
       for (const slot of e.members) {
         const n = syncTab(slot.item);
@@ -463,6 +481,21 @@ export function startTabs(strip: HTMLElement): void {
     if (!d.active) return;
     ignoreClick = true;
     d.node.root.classList.remove('dragging');
+    // --- split view ---
+    // Released over the page: Rust opens the split if it showed a drop target there.
+    if (splitOut) {
+      splitOut = false;
+      cancelAnimationFrame(splitFrame);
+      splitFrame = 0;
+      strip.classList.remove('split-out');
+      sendSplit({ v: 1, t: 'split', a: commit ? 'drop' : 'end', id: d.node.id });
+      d.node.root.style.transform = '';
+      d.node.shift = 0;
+      for (const n of d.order) setShift(n, 0);
+      schedule();
+      return;
+    }
+    // --- end split view ---
     if (commit && d.dest !== d.from) {
       // Leave every tab visually where it landed; the host's reorder then arrives and render()
       // slides from these positions to the real ones, so nothing snaps back and forth.
@@ -513,6 +546,7 @@ export function startTabs(strip: HTMLElement): void {
       return r.left + r.width / 2;
     });
     drag = { pointerId: ev.pointerId, startX: ev.clientX, node, order, centers, from, active: false, dest: from, dx: 0 };
+    splitStartY = ev.clientY; // --- split view ---
     try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
 
@@ -521,7 +555,8 @@ export function startTabs(strip: HTMLElement): void {
     if (!d || ev.pointerId !== d.pointerId) return;
     const dx = ev.clientX - d.startX;
     if (!d.active) {
-      if (Math.abs(dx) < DRAG_START_PX) return;
+      // --- split view --- a drag straight down (onto the page) starts a drag too
+      if (Math.abs(dx) < DRAG_START_PX && Math.abs(ev.clientY - splitStartY) < DRAG_START_PX) return;
       d.active = true;
       d.node.root.classList.add('dragging');
       window.addEventListener('keydown', onDragKey, true);
@@ -534,6 +569,34 @@ export function startTabs(strip: HTMLElement): void {
       updateEdges();
       d.centers = d.order.map((n) => { const r = n.root.getBoundingClientRect(); return r.left + r.width / 2; });
     }
+    // --- split view ---
+    // Below the strip the tab is over the page: the strip keeps its order and Rust shows where the
+    // tab would open (one report per frame); back over the strip the reorder resumes.
+    const out = overPage(ev.clientY, strip.getBoundingClientRect().bottom);
+    if (out !== splitOut) {
+      splitOut = out;
+      strip.classList.toggle('split-out', out);
+      if (!out) {
+        cancelAnimationFrame(splitFrame);
+        splitFrame = 0;
+        sendSplit({ v: 1, t: 'split', a: 'end', id: d.node.id });
+      }
+    }
+    if (out) {
+      splitPoint = wirePoint(ev.clientX, ev.clientY);
+      if (splitFrame === 0) {
+        splitFrame = requestAnimationFrame(() => {
+          splitFrame = 0;
+          if (splitOut && splitPoint && drag) sendSplit({ v: 1, t: 'split', a: 'over', id: drag.node.id, x: splitPoint.x, y: splitPoint.y });
+        });
+      }
+      d.dest = d.from;
+      d.order.forEach((n, i) => {
+        if (i !== d.from) setShift(n, 0);
+      });
+      return;
+    }
+    // --- end split view ---
     d.dest = dropIndex(d.centers, d.from, (d.centers[d.from] ?? 0) + dx);
     d.order.forEach((n, i) => {
       if (i !== d.from) setShift(n, slotShift(d.centers, i, d.from, d.dest));
@@ -712,6 +775,13 @@ export function startTabs(strip: HTMLElement): void {
         dirty = true;
         schedule();
         break;
+      // --- split view ---
+      case 'pair':
+        pair = msg;
+        dirty = true;
+        schedule();
+        break;
+      // --- end split view ---
     }
   });
 

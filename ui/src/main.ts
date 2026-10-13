@@ -19,6 +19,10 @@ import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+// --- split view ---
+import { startSplit } from './split';
+import { syncSplitButton } from './split-chrome';
+// --- end split view ---
 // --- hover layer ---
 import { startHover } from './hover';
 import { installHoverTargets, installTooltips, tabStripHoverTarget } from './tooltip';
@@ -226,6 +230,11 @@ function startToolbar(root: HTMLElement): void {
         view.pill.classList.toggle('is-open', msg.on);
         break;
       // --- end omnibox suggest ---
+      // --- split view ---
+      case 'pair':
+        syncSplitButton(view.split, msg);
+        break;
+      // --- end split view ---
     }
   });
 
@@ -273,6 +282,7 @@ function start(): void {
   else if (view === 'popup') startPopup(root);
   else if (view === 'dialog') startDialog(root);
   else if (view === 'hover') startHover(root); // --- hover layer ---
+  else if (view === 'split') startSplit(root); // --- split view ---
   else {
     startToolbar(root);
     installTooltips(root); // --- hover layer ---
