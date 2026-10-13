@@ -66,8 +66,26 @@ export function emptyState(name: IconName, text: string): HTMLElement {
   return root;
 }
 
-/** Placeholder favicon: a 16px tile with the first letter of the host or title. */
-export function faviconTile(text: string): HTMLElement {
+const FAV_PNG = /^data:image\/png;base64,[A-Za-z0-9+/=]{1,32768}$/;
+
+/** True for a cached favicon the host may send: a small base64 PNG data: URI. */
+export function isFavUri(value: unknown): value is string {
+  return typeof value === 'string' && FAV_PNG.test(value);
+}
+
+/**
+ * Favicon for a row: the cached image when the host sent one, else a 16px tile with the first letter
+ * of the host or title (the quiet fallback for sites without an icon).
+ */
+export function faviconTile(text: string, uri?: string): HTMLElement {
+  if (uri !== undefined && isFavUri(uri)) {
+    const img = el('img', 'pn-favicon is-image');
+    img.alt = '';
+    img.draggable = false;
+    img.src = uri;
+    img.setAttribute('aria-hidden', 'true');
+    return img;
+  }
   const tile = el('span', 'pn-favicon');
   tile.setAttribute('aria-hidden', 'true');
   tile.textContent = tileLetter(text);

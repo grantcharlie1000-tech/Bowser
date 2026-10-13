@@ -1,7 +1,7 @@
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
 import { historyOpenCommand } from './history-logic';
-import { emptyState, enter, faviconTile, iconButton, moveFocus, panelHeader, searchField, sectionHeader, textButton } from './kit';
+import { emptyState, enter, faviconTile, iconButton, isFavUri, moveFocus, panelHeader, searchField, sectionHeader, textButton } from './kit';
 
 type Entry = { id: number; title: string; host: string; clock: string };
 type Day = { label: string; count: number };
@@ -10,6 +10,8 @@ const isEntry = (row: Row): row is Entry => 'id' in row;
 
 export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void {
   let rows: Row[] = [];
+  /** Cached favicons by host (the snapshot's `favs`); a host without one gets the letter tile. */
+  let favs: Record<string, string> = {};
   let selected: number | null = null;
   let pendingFocus: number | null = null;
   let composing = false;
@@ -94,7 +96,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
         iconButton('workspace-globe', `Remove all visits to ${row.host} from history`, (event) => { event.stopPropagation(); removeAndAdvance(row.id, 'removesite'); }),
       );
       trail.append(meta, actions);
-      item.append(faviconTile(row.host || name), title, trail);
+      item.append(faviconTile(row.host || name, favs[row.host]), title, trail);
       item.addEventListener('click', () => { select(row.id); openRow(row.id, false); });
       nodes.push(item);
     }
@@ -157,6 +159,11 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       if (typeof row.id === 'number') return Number.isSafeInteger(row.id) && row.id > 0 && row.id <= 0xffffffff && typeof row.title === 'string' && typeof row.host === 'string' && typeof row.clock === 'string';
       return typeof row.label === 'string' && typeof row.count === 'number' && Number.isSafeInteger(row.count) && row.count >= 0;
     });
+    const incomingFavs = message.d.favs;
+    favs = {};
+    if (typeof incomingFavs === 'object' && incomingFavs !== null && !Array.isArray(incomingFavs)) {
+      for (const [host, uri] of Object.entries(incomingFavs)) if (isFavUri(uri)) favs[host] = uri;
+    }
     render();
   };
   render();

@@ -156,6 +156,11 @@
   white-space: nowrap;
 }
 
+.pn-favicon.is-image {
+  background: none;
+  object-fit: contain;
+}
+
 .pn-favicon {
   display: grid;
   flex: none;
