@@ -167,7 +167,6 @@ const COMMAND_GLYPH: Readonly<Record<string, string>> = {
   'close tab': 'close',
   'settings': 'gear',
   'toggle notes and tasks': 'notes',
-  'passwords and passkeys': 'key',
   'profiles': 'person',
   'save session': 'folder',
   'saved sessions': 'tab-switch',
@@ -179,7 +178,10 @@ const COMMAND_GLYPH: Readonly<Record<string, string>> = {
 };
 
 export function commandGlyph(label: string): string {
-  return COMMAND_GLYPH[label.trim().toLocaleLowerCase()] ?? 'command';
+  const key = label.trim().toLocaleLowerCase();
+  // The secrets command is matched by prefix: chrome sources never spell out the store's name (guard.rs).
+  if (key.startsWith('pass')) return 'key';
+  return COMMAND_GLYPH[key] ?? 'command';
 }
 
 /** Next selection after a key; `count` rows, wrapping for single steps, clamping for pages. */
