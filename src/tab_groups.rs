@@ -93,6 +93,37 @@ impl fmt::Display for DomainKey {
     }
 }
 
+/// Whether `url` is a results page of a well-known search engine. Searches on one engine are
+/// unrelated to each other, so such a page is never grouped by its site. Only a results URL counts,
+/// with a query in it: the engine's other pages (mail, documents, its home page) still group.
+pub fn is_search_results(url: &Url) -> bool {
+    let Some(key) = DomainKey::from_url(url) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or_default();
+    let path = url.path();
+    let has = |names: &[&str]| {
+        url.query_pairs()
+            .any(|(name, value)| names.contains(&&*name) && !value.trim().is_empty())
+    };
+    match key.as_str() {
+        domain if domain.starts_with("google.") => {
+            matches!(host.strip_prefix("www."), Some(rest) if rest == domain)
+                && path == "/search"
+                && has(&["q"])
+        }
+        // Covers both duckduckgo.com/?q= and html.duckduckgo.com/html/?q=.
+        "duckduckgo.com" => has(&["q"]),
+        "bing.com" => path.starts_with("/search") && has(&["q"]),
+        "yahoo.com" => host == "search.yahoo.com" && has(&["p"]),
+        "brave.com" => host == "search.brave.com" && path.starts_with("/search") && has(&["q"]),
+        "ecosia.org" => path.starts_with("/search") && has(&["q"]),
+        "startpage.com" => path.ends_with("/search") && has(&["query"]),
+        "kagi.com" => path.starts_with("/search") && has(&["q"]),
+        _ => false,
+    }
+}
+
 fn valid_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= 63
@@ -781,6 +812,34 @@ mod tests {
             pinned,
             opener: opener.map(crate::tabs::TabId),
             manual: false,
+        }
+    }
+
+    #[test]
+    fn search_results_are_recognised_only_on_known_engines_with_a_query() {
+        let results = [
+            "https://www.google.com/search?q=beans",
+            "https://www.google.co.uk/search?q=beans&tbm=isch",
+            "https://duckduckgo.com/?q=beans",
+            "https://html.duckduckgo.com/html/?q=beans&k1=-1",
+            "https://www.bing.com/search?q=beans",
+            "https://search.yahoo.com/search?p=beans",
+            "https://search.brave.com/search?q=beans",
+        ];
+        for url in results {
+            assert!(is_search_results(&Url::parse(url).unwrap()), "{url}");
+        }
+        let other = [
+            "https://www.google.com/",
+            "https://www.google.com/search?q=",
+            "https://mail.google.com/search?q=beans",
+            "https://duckduckgo.com/",
+            "https://example.com/search?q=beans",
+            "https://www.bing.com/maps?q=beans",
+            "about:blank",
+        ];
+        for url in other {
+            assert!(!is_search_results(&Url::parse(url).unwrap()), "{url}");
         }
     }
 
