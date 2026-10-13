@@ -655,6 +655,7 @@ fn cap_utf16(text: &str, max: usize) -> String {
 /// The palette's item list: open tabs, commands, bookmarks, then recent history (newest first,
 /// one row per address). Capped per section and to a byte budget (history goes first, then
 /// bookmarks), so the page message always fits.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn html_items(
     tabs: &[(u32, String, String)],
     bookmarks: &[(String, String, String)],

@@ -111,6 +111,9 @@ const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_SIDEBAR_SCROLL_TIMER: usize = 0xB053;
 const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
+/// Delay timer for the native new-tab button's HTML tooltip.
+const WM_NEWTAB_TOOLTIP_TIMER: usize = 0xB05A;
+const NEWTAB_TOOLTIP_TEXT: &str = "New tab (Ctrl+T)";
 // --- popup host (lane M) ---
 const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
@@ -294,6 +297,8 @@ struct WindowChrome {
     rail_previous_focus: HWND,
     rail_tooltip_key: Option<RailKey>,
     rail_tooltip_visible: bool,
+    /// The HTML tooltip for the native new-tab button is up.
+    newtab_tooltip_shown: bool,
     vertical_drag: Option<TabId>,
     views: Vec<TabView<'static>>,
     favicons: FaviconCache,
@@ -440,6 +445,7 @@ impl WindowChrome {
             rail_previous_focus: HWND::default(),
             rail_tooltip_key: None,
             rail_tooltip_visible: false,
+            newtab_tooltip_shown: false,
             vertical_drag: None,
             views: Vec::with_capacity(8),
             favicons: FaviconCache::default(),
@@ -2725,6 +2731,23 @@ unsafe extern "system" fn window_proc(
                 if shown { with_chrome(hwnd, |s| invalidate(hwnd, s.layout.rail)); }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_NEWTAB_TOOLTIP_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER);
+                let button = with_chrome(hwnd, |s| {
+                    (s.hover == Hit::NewTab && s.pressed == Hit::None && s.rail_drag.is_none() && s.drag.is_none())
+                        .then_some(s.layout.new_tab_button)
+                }).flatten();
+                if let Some(button) = button {
+                    let mut top_left = POINT { x: button.left, y: button.top };
+                    let mut bottom_right = POINT { x: button.right, y: button.bottom };
+                    let _ = ClientToScreen(hwnd, &mut top_left);
+                    let _ = ClientToScreen(hwnd, &mut bottom_right);
+                    let anchor = RECT { left: top_left.x, top: top_left.y, right: bottom_right.x.max(top_left.x + 1), bottom: bottom_right.y.max(top_left.y + 1) };
+                    let _ = with_chrome(hwnd, |s| s.newtab_tooltip_shown = true);
+                    super::html_hover::tip(hwnd, anchor, NEWTAB_TOOLTIP_TEXT, false);
+                }
+                LRESULT(0)
+            }
             // Only an HTML chrome run starts or fails these; in native mode they do nothing.
             WM_HTML_CHROME_START => {
                 if chrome_host::html_ui_enabled() {
@@ -3553,7 +3576,16 @@ fn commit_rail_drop(hwnd: HWND, app: &AppRef, key: RailKey, index: usize) {
     }
 }
 
+/// Hides the new-tab button's tooltip and cancels its pending delay. Safe to call at any time:
+/// the shared HTML tooltip is only touched when this button put it up.
+fn hide_newtab_tooltip(hwnd: HWND) {
+    unsafe { let _ = KillTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER); }
+    let shown = with_chrome(hwnd, |state| std::mem::take(&mut state.newtab_tooltip_shown)).unwrap_or(false);
+    if shown { super::html_hover::tip_off(hwnd); }
+}
+
 fn hide_rail_tooltip(hwnd: HWND) {
+    hide_newtab_tooltip(hwnd);
     let visible = with_chrome(hwnd, |state| {
         let visible = state.rail_tooltip_visible;
         state.rail_tooltip_visible = false;
@@ -5661,6 +5693,12 @@ fn set_hover(hwnd: HWND, h: Hit) {
             if tooltip_key.is_some() {
                 let _ = SetTimer(Some(hwnd), WM_RAIL_TOOLTIP_TIMER, card::HOVER_DELAY_MS, None);
             }
+        }
+    }
+    if old != h && (old == Hit::NewTab || h == Hit::NewTab) {
+        hide_newtab_tooltip(hwnd);
+        if h == Hit::NewTab {
+            unsafe { let _ = SetTimer(Some(hwnd), WM_NEWTAB_TOOLTIP_TIMER, card::HOVER_DELAY_MS, None); }
         }
     }
     if old != h {
