@@ -984,6 +984,7 @@ fn save_form(hwnd: HWND) {
         tracking_prevention: current.tracking_prevention,
         tab_layout,
         sidebar_width,
+        sidebar_collapsed: current.sidebar_collapsed,
         side_panel_width: current.side_panel_width,
         sleep_enabled,
         sleep_after_secs,

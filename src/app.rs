@@ -815,13 +815,32 @@ impl App {
         app.borrow().settings.tab_layout
     }
 
+    /// Layout width of the vertical sidebar: 48 when collapsed, else the saved width.
     pub fn sidebar_width(app: &AppRef) -> u16 {
-        app.borrow().settings.sidebar_width
+        app.borrow().settings.effective_sidebar_width()
+    }
+
+    pub fn sidebar_collapsed(app: &AppRef) -> bool {
+        app.borrow().settings.sidebar_collapsed
+    }
+
+    /// Collapses or expands the sidebar (the saved expanded width is untouched) and relays out.
+    pub fn set_sidebar_collapsed(app: &AppRef, collapsed: bool) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            state.settings.sidebar_collapsed = collapsed;
+            state.hwnd
+        };
+        let bounds = app.borrow_mut().latest_viewport_bounds();
+        Self::resize_current(app, bounds);
+        Self::post_tab_changed(hwnd, Self::active_tab_id(app));
     }
 
     pub fn set_sidebar_width(app: &AppRef, width: u16) {
         let hwnd = {
             let mut state = app.borrow_mut();
+            // Dragging the resize handle of a collapsed sidebar expands it again.
+            state.settings.sidebar_collapsed = false;
             state.settings.sidebar_width = width.clamp(
                 crate::settings::MIN_SIDEBAR_WIDTH,
                 crate::settings::MAX_SIDEBAR_WIDTH,
@@ -1025,7 +1044,8 @@ impl App {
             crate::settings::TabLayout::Horizontal => crate::settings::TabLayout::Vertical,
             crate::settings::TabLayout::Vertical => crate::settings::TabLayout::Horizontal,
         };
-        Self::apply_tab_layout_settings(app, layout, Self::sidebar_width(app));
+        let saved_width = app.borrow().settings.sidebar_width;
+        Self::apply_tab_layout_settings(app, layout, saved_width);
         Self::save_settings(app);
         layout
     }
@@ -4981,7 +5001,7 @@ impl App {
             self.tabs.len(),
             maximised,
             self.settings.tab_layout,
-            self.settings.sidebar_width,
+            self.settings.effective_sidebar_width(),
             crate::win32::side_panel::active_width_px(self.hwnd),
         );
         if valid_viewport_bounds(bounds) {
@@ -4998,7 +5018,7 @@ impl App {
                     self.tabs.len(),
                     maximised,
                     self.settings.tab_layout,
-                    self.settings.sidebar_width,
+                    self.settings.effective_sidebar_width(),
                     crate::win32::side_panel::active_width_px(self.hwnd),
                 );
                 self.last_valid_viewport_bounds = Some(fallback);

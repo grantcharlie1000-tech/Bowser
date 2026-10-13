@@ -6568,6 +6568,16 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
                         focus_omni(hwnd, &app, true);
                     }
                 }
+                SideAction::Collapse => {
+                    if let Some(app) = app_of(hwnd) {
+                        // Same relayout as the drag-resize path, then persist the toggle.
+                        App::set_sidebar_collapsed(&app, !App::sidebar_collapsed(&app));
+                        App::save_settings(&app);
+                        let _ = with_chrome(hwnd, |s| s.refresh(&app, true));
+                        sync_split_ratio(hwnd, App::split_view(&app));
+                        apply_sidebar_bounds(hwnd, &app);
+                    }
+                }
             }
         }
         // --- end vertical sidebar ---

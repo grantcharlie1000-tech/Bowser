@@ -3,6 +3,8 @@
 use crate::chrome::layout::{self, Metrics, Rect};
 
 pub const MIN_WIDTH: i32 = 180;
+/// Width of the collapsed, icons-only sidebar strip.
+pub const COLLAPSED_WIDTH: i32 = 48;
 pub const MAX_WIDTH: i32 = 360;
 pub const DEFAULT_WIDTH: i32 = 260;
 pub const RESIZE_HANDLE_WIDTH: i32 = 5;
@@ -44,7 +46,9 @@ impl SidebarLayout {
         let m = Metrics::new(dpi);
         let content = layout::content_rect(width, height, dpi, maximised);
         let available_width = content.right.saturating_sub(1).max(0);
-        let min_width = m.px(MIN_WIDTH).min(available_width);
+        // A request at or below the collapsed width is honoured; anything else keeps MIN_WIDTH.
+        let floor = if requested_width <= COLLAPSED_WIDTH { COLLAPSED_WIDTH } else { MIN_WIDTH };
+        let min_width = m.px(floor).min(available_width);
         let max_width = m.px(MAX_WIDTH).min(available_width);
         let side_width = m.px(requested_width).clamp(min_width, max_width);
         let top_margin = m.px(Metrics::TOP_MARGIN).min(height);
@@ -185,6 +189,18 @@ mod tests {
         let narrow = SidebarLayout::compute(180, 500, 96, MIN_WIDTH, false);
         assert!(narrow.sidebar.width() < MIN_WIDTH);
         assert!(narrow.viewport.width() >= 1);
+    }
+
+    #[test]
+    fn collapsed_width_is_honoured_and_larger_requests_keep_the_old_minimum() {
+        for dpi in [96, 144] {
+            let m = Metrics::new(dpi);
+            let collapsed = SidebarLayout::compute(900, 700, dpi, COLLAPSED_WIDTH, false);
+            assert_eq!(collapsed.sidebar.width(), m.px(COLLAPSED_WIDTH), "dpi={dpi}");
+            assert_eq!(collapsed.viewport.left, collapsed.sidebar.right, "dpi={dpi}");
+            let small = SidebarLayout::compute(900, 700, dpi, 100, false);
+            assert_eq!(small.sidebar.width(), m.px(MIN_WIDTH), "dpi={dpi}");
+        }
     }
 
     #[test]
