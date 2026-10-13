@@ -1,6 +1,7 @@
 import { sendPanel, type Inbound, type PanelFields } from '../protocol';
 import { el, icon, type IconName } from '../dom';
 import { parseSettingsSnapshot, settingsCommand, type EfficiencyMode, type SearchEngine, type SettingsSnapshot, type TrackingPrevention } from './settings-logic';
+import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './media-logic';
 import { enter, moveFocus, pageSection, panelHeader, segmented, settingRow, textButton, toggleSwitch } from './kit';
 
 function emit(fields: ReturnType<typeof settingsCommand>): boolean {
@@ -19,11 +20,12 @@ function numberField(label: string, value: number, min: number, max: number): HT
   return input;
 }
 
-type SectionKey = 'search' | 'tabs' | 'privacy';
+type SectionKey = 'search' | 'tabs' | 'privacy' | 'media';
 const SECTIONS: ReadonlyArray<readonly [SectionKey, string, IconName]> = [
   ['search', 'Search', 'search'],
   ['tabs', 'Tabs', 'sidebar'],
   ['privacy', 'Blocking', 'shield'],
+  ['media', 'Media support', 'volume'],
 ];
 
 export function startSettingsPanel(root: HTMLElement): (message: Inbound) => void {
@@ -33,6 +35,9 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
   let note = '';
   let resetConfirm = false;
   let current: SectionKey = 'search';
+  let mediaRun = 0;
+  let mediaStarted = false;
+  let mediaRunning = false;
 
   const host = el('div', 'pn pg-settings');
   const nav = el('nav', 'pg-nav');
@@ -79,6 +84,67 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
   }
   navList.addEventListener('keydown', (event) => { moveFocus(navList, '.pg-nav-item', event); });
 
+  // The media pane is built once and survives snapshot rebuilds; a run id drops stale results.
+  const media = el('div', 'pg-media');
+  const mediaStatus = el('p', 'pg-note');
+  mediaStatus.setAttribute('role', 'status');
+  mediaStatus.setAttribute('aria-live', 'polite');
+  const mediaResults = el('div', 'pg-media-results');
+  const paintMedia = (report: MediaReport | null): void => {
+    mediaResults.replaceChildren();
+    if (!report) return;
+    const decoding = pageSection('Video decoding');
+    for (const codec of report.codecs) {
+      const row = settingRow(codec.label, codecDetail(codec), verdictText(codec.verdict));
+      row.querySelector('.pg-value')?.classList.add('pg-chip', `is-${codec.verdict}`);
+      decoding.body.append(row);
+    }
+    const protectedContent = pageSection('Protected streaming');
+    for (const system of report.drm) {
+      const row = settingRow(system.label, null, drmText(system.state));
+      row.querySelector('.pg-value')?.classList.add('pg-chip', `is-${system.state}`);
+      protectedContent.body.append(row);
+    }
+    const advice = pageSection('Suggestions');
+    const lines = guidance(report);
+    const list = el('ul', 'pg-hints');
+    for (const line of lines.length > 0 ? lines : ['Nothing needs attention.']) {
+      const item = el('li');
+      item.textContent = line;
+      list.append(item);
+    }
+    advice.body.append(list);
+    mediaResults.append(decoding.root, protectedContent.root, advice.root);
+  };
+  const checkMedia = (): void => {
+    if (mediaRunning) return;
+    mediaStarted = true;
+    mediaRunning = true;
+    const run = ++mediaRun;
+    recheck.disabled = true;
+    mediaStatus.textContent = 'Checking...';
+    paintMedia(null);
+    void runMediaCheck(browserProbes()).then((report) => {
+      if (run !== mediaRun) return;
+      mediaRunning = false;
+      recheck.disabled = false;
+      paintMedia(report);
+      mediaStatus.textContent = 'Check complete.';
+    }, () => {
+      if (run !== mediaRun) return;
+      mediaRunning = false;
+      recheck.disabled = false;
+      mediaStatus.textContent = 'The check could not run.';
+    });
+  };
+  const recheck = textButton('Check again', checkMedia);
+  const mediaIntro = el('p', 'pg-desc');
+  mediaIntro.textContent = 'Shows which video formats and protected streaming systems this device can play. The check runs on this device only and sends nothing.';
+  const mediaBar = el('div', 'pg-media-bar');
+  mediaBar.append(mediaStatus, recheck);
+  media.append(mediaIntro, mediaBar, mediaResults);
+  media.classList.add('pg-pane');
+
   const panes = new Map<SectionKey, HTMLElement>();
   const show = (key: SectionKey): void => {
     current = key;
@@ -87,6 +153,8 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     }
     for (const [name, pane] of panes) pane.hidden = name !== key;
     header.title.textContent = SECTIONS.find(([name]) => name === key)?.[1] ?? '';
+    footer.hidden = key === 'media';
+    if (key === 'media' && !mediaStarted) checkMedia();
   };
 
   const dirty = (): boolean => {
@@ -107,7 +175,8 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
   const build = (): void => {
     panes.clear();
     column.replaceChildren();
-    if (!snapshot || !draft) { paintFooter(); return; }
+    const mountMedia = (): void => { panes.set('media', media); column.append(media); show(current); };
+    if (!snapshot || !draft) { mountMedia(); paintFooter(); return; }
     const d = draft;
 
     const search = pageSection('Search engine');
@@ -168,14 +237,15 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     const privacy = el('div');
     privacy.append(blocking.root, tracking.root);
 
-    const sections: Record<SectionKey, HTMLElement> = { search: search.root, tabs, privacy };
+    const sections: Record<Exclude<SectionKey, 'media'>, HTMLElement> = { search: search.root, tabs, privacy };
     for (const [key] of SECTIONS) {
+      if (key === 'media') continue;
       const pane = sections[key];
       pane.classList.add('pg-pane');
       panes.set(key, pane);
       column.append(pane);
     }
-    show(current);
+    mountMedia();
     paintFooter();
   };
 

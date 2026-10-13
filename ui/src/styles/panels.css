@@ -688,6 +688,57 @@
   line-height: var(--bw-leading-caption);
 }
 
+.pg-footer[hidden] {
+  display: none;
+}
+
+/* Settings > Media support: on-demand check, status chips, suggestion list */
+.pg-settings .pg-media-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-3);
+}
+
+.pg-settings .pg-media > .pg-desc {
+  display: block;
+  margin-top: var(--bw-space-3);
+}
+
+.pg-settings .pg-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-pill);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.pg-settings .pg-chip.is-hardware,
+.pg-settings .pg-chip.is-available {
+  border-color: transparent;
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+}
+
+.pg-settings .pg-chip.is-software {
+  border-color: var(--bw-border);
+  color: var(--bw-text);
+}
+
+.pg-settings .pg-hints {
+  margin: 0;
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-2) var(--bw-space-6);
+  line-height: var(--bw-leading-body);
+}
+
+.pg-settings .pg-hints li + li {
+  margin-top: var(--bw-space-2);
+}
+
 @media (max-width: 640px) {
   .pg-settings {
     flex-direction: column;
