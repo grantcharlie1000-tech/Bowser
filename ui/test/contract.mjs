@@ -63,6 +63,9 @@ test('typed foundation senders enforce wire ranges and field cap', () => {
     { v: 1, t: 'pick', tok: 1, id: 2 },
     { v: 1, t: 'dismiss', tok: 1 },
   ]);
+  // Hyphenated actions such as add-note are valid; malformed hyphenation and over-long names are not.
+  assert.equal(sendPanel('notes', { a: 'add-note' }), true);
+  for (const bad of ['-add', 'add-', 'add--note', 'add_note', 'a'.repeat(25)]) assert.equal(sendPanel('notes', { a: bad }), false);
   delete globalThis.window;
 });
 
