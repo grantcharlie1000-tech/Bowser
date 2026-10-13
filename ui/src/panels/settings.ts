@@ -61,7 +61,11 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
   const save = el('button', 'bw-button is-primary');
   save.type = 'submit';
   save.textContent = 'Save changes';
-  footer.append(message, reset, save);
+  const openFile = textButton('Open settings file', () => {
+    note = emit(settingsCommand('openfile')) ? '' : 'The settings file could not be opened.';
+    paintFooter();
+  });
+  footer.append(message, openFile, reset, save);
   main.append(header.root, scroll, footer);
   host.append(nav, main);
   enter(host);

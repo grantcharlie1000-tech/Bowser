@@ -37,6 +37,8 @@ test('settings action serializes a complete validated value through the existing
   assert.match(strict.text, /efficiency_mode=on\ntracking_prevention=strict/);
   assert.doesNotMatch(strict.text, /efficiencyActive|efficiency_active/);
   assert.deepEqual(logic.settingsCommand('reset'), { a: 'reset' });
+  assert.deepEqual(logic.settingsCommand('openfile'), { a: 'openfile' });
+  assert.equal(logic.settingsCommand('openfile', 1), null);
   assert.equal(logic.settingsCommand('save', { ...snapshot, sidebarWidth: 999 }), null);
   assert.equal(logic.settingsCommand('unknown'), null);
 });

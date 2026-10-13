@@ -53,10 +53,11 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   };
 }
 
-export type SettingsCommand = { a: 'save'; text: string } | { a: 'reset' };
+export type SettingsCommand = { a: 'save'; text: string } | { a: 'reset' } | { a: 'openfile' };
 /** Uses the generic settings panel's existing flat `text` field; backend dispatch is not wired yet. */
-export function settingsCommand(action: 'save' | 'reset', value?: unknown): SettingsCommand | null {
+export function settingsCommand(action: 'save' | 'reset' | 'openfile', value?: unknown): SettingsCommand | null {
   if (action === 'reset') return value === undefined ? { a: 'reset' } : null;
+  if (action === 'openfile') return value === undefined ? { a: 'openfile' } : null;
   if (action !== 'save') return null;
   const parsed = parseSettingsSnapshot(value);
   if (!parsed) return null;
