@@ -411,6 +411,10 @@ struct EngineCore {
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
     blocker: Option<super::BlockerHandle>,
+    /// Blocker for private tabs, which ignores the global switch and per-site exceptions.
+    private_blocker: Option<super::BlockerHandle>,
+    /// Tabs created InPrivate (see `crate::private`). Marked before the controller exists.
+    private_tabs: HashSet<TabId>,
     active_tab: Option<TabId>,
     /// Tabs whose controllers currently occupy one of the visible page panes.
     visible_tabs: HashSet<TabId>,
@@ -513,7 +517,16 @@ impl WebView2Engine {
         tab_id: TabId,
         prewarm: bool,
     ) -> Result<()> {
-        let (environment, parent, allowed_file, events, tracking_policy, blocker, permissions) = {
+        let (
+            environment,
+            parent,
+            allowed_file,
+            events,
+            tracking_policy,
+            blocker,
+            permissions,
+            private,
+        ) = {
             let mut state = core.borrow_mut();
             if state.closed || !state.known_tabs.contains(&tab_id) {
                 return Ok(());
@@ -531,6 +544,17 @@ impl WebView2Engine {
                 }
                 return Ok(());
             }
+            let private = state.private_tabs.contains(&tab_id);
+            if private && state.private_blocker.is_none() {
+                // Fail closed: a private tab never runs without its always-on blocker.
+                let failed = state.events.failed.clone();
+                drop(state);
+                let error = Error::from(windows::Win32::Foundation::E_ACCESSDENIED);
+                if let Some(failed) = failed {
+                    failed(error.clone());
+                }
+                return Err(error);
+            }
             state.creating.insert(tab_id);
             if prewarm {
                 if state.creating.len() > 1 {
@@ -547,9 +571,17 @@ impl WebView2Engine {
                 state.parent,
                 state.allowed_file.take(),
                 state.events.clone(),
-                state.tracking_policy,
-                state.blocker.clone(),
+                TrackingPolicy {
+                    level: crate::private::tracking_level(private, state.tracking_policy.level),
+                    enabled: state.tracking_policy.enabled,
+                },
+                if private {
+                    state.private_blocker.clone()
+                } else {
+                    state.blocker.clone()
+                },
                 state.permissions.clone(),
+                private,
             )
         };
 
@@ -641,6 +673,7 @@ impl WebView2Engine {
                         blocker.clone(),
                         permissions.clone(),
                         visible,
+                        private,
                     )
                 };
                 if let Some(log) = completion_events.policy_event.as_ref() {
@@ -708,10 +741,13 @@ impl WebView2Engine {
                 if let Some(log) = completion_events.policy_event.as_ref() {
                     log("controller_ready");
                 }
+                // Extensions live in the browsing profile only: a private tab's webview is in the
+                // private profile and must never be taken for it.
                 let first_webview = core
                     .borrow()
                     .tabs
                     .get(&tab_id)
+                    .filter(|_| !private)
                     .and_then(|tab| tab.webview.clone());
                 if let Some(webview) = first_webview {
                     capture_extension_profile(&core, &webview);
@@ -750,7 +786,12 @@ impl WebView2Engine {
                 Ok(())
             },
         ));
-        if let Err(error) = unsafe { environment.CreateCoreWebView2Controller(parent, &handler) } {
+        let created = if private {
+            create_private_controller(&environment, parent, &handler)
+        } else {
+            unsafe { environment.CreateCoreWebView2Controller(parent, &handler) }
+        };
+        if let Err(error) = created {
             let mut state = core.borrow_mut();
             state.creating.remove(&tab_id);
             state.prewarming.remove(&tab_id);
@@ -1250,6 +1291,7 @@ impl WebView2Engine {
         F: FnOnce(Result<Self>) + 'static,
     {
         let blocker = extras.blocker;
+        let private_blocker = extras.private_blocker;
         let browser_extensions = extras.browser_extensions;
         let startup_extensions = extras.startup_extensions;
         let known_extensions = extras.known_extensions;
@@ -1364,6 +1406,8 @@ impl WebView2Engine {
                             enabled: tracking_prevention_enabled,
                         },
                         blocker: blocker.clone(),
+                        private_blocker: private_blocker.clone(),
+                        private_tabs: HashSet::new(),
                         active_tab: None,
                         visible_tabs: HashSet::new(),
                         target: MemoryUsageTarget::Normal,
@@ -1741,6 +1785,12 @@ impl EngineAdapter for WebView2Engine {
             toggle_native_picture_in_picture(&webview);
         }
     }
+    fn set_tab_private(&mut self, tab: TabId) {
+        let mut state = self.core.borrow_mut();
+        if !state.closed && !state.tabs.contains_key(&tab) {
+            state.private_tabs.insert(tab);
+        }
+    }
     fn prewarm_tab(&mut self, tab: TabId) -> Result<()> {
         let eligible = {
             let mut state = self.core.borrow_mut();
@@ -1956,6 +2006,7 @@ impl EngineAdapter for WebView2Engine {
         let removed = {
             let mut state = self.core.borrow_mut();
             state.known_tabs.remove(&tab_id);
+            state.private_tabs.remove(&tab_id);
             state.visible_tabs.remove(&tab_id);
             state.waiting_controllers.retain(|queued| *queued != tab_id);
             if state.prewarm_waiting == Some(tab_id) {
@@ -2342,11 +2393,17 @@ unsafe fn configure_controller(
     blocker: Option<super::BlockerHandle>,
     permissions: Option<PermissionsHandle>,
     visible: bool,
+    private: bool,
 ) -> Result<WebView2Tab> {
     unsafe {
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
+        if private {
+            // A runtime that ignored the controller options must never leave a private tab in the
+            // browsing profile.
+            verify_private_profile(&webview)?;
+        }
         let settings = webview.Settings()?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
@@ -2369,7 +2426,10 @@ unsafe fn configure_controller(
             ControllerSecuritySetting::WebMessages => settings.SetIsWebMessageEnabled(false),
             ControllerSecuritySetting::HostObjects => settings.SetAreHostObjectsAllowed(false),
         })?;
-        if let Some(login_callback) = events.login_message.clone() {
+        // Private tabs never capture sign-ins, so their pages get no message channel at all.
+        if let Some(login_callback) = events.login_message.clone().filter(|_| {
+            crate::private::may_persist(crate::private::Store::SignInCapture, private, false)
+        }) {
             settings.SetIsWebMessageEnabled(true)?;
             let mut web_messages_enabled = BOOL::default();
             settings.IsWebMessageEnabled(&mut web_messages_enabled)?;
@@ -2462,12 +2522,21 @@ unsafe fn configure_controller(
         }
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         if let Some(level) = tracking_policy.level {
-            apply_tracking_prevention(
+            let verified = apply_tracking_prevention(
                 &webview,
                 level,
                 tracking_policy.enabled,
                 events.policy_event.as_ref(),
             );
+            if private && !verified {
+                // Strict tracking prevention is part of what makes the tab private.
+                return Err(Error::new(
+                    windows::Win32::Foundation::E_ACCESSDENIED,
+                    "WebView2 could not apply strict tracking prevention to a private tab",
+                ));
+            }
+        } else if private {
+            return Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED));
         }
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
@@ -2695,10 +2764,12 @@ unsafe fn configure_controller(
                     // Only a stored Allow for this exact origin grants. Everything else, including
                     // kinds Bowser has no store for, is denied, as before the store existed.
                     let known = permission_for_kind(kind);
-                    let allowed = match (known, permission_store.as_ref()) {
+                    let stored = match (known, permission_store.as_ref()) {
                         (Some(permission), Some(store)) => store.borrow().allows(&uri, permission),
                         _ => false,
                     };
+                    // A private tab has no stored allows: every request is denied.
+                    let allowed = crate::private::permission_allowed(private, stored);
                     let state = if allowed {
                         COREWEBVIEW2_PERMISSION_STATE_ALLOW
                     } else {
@@ -2846,7 +2917,11 @@ unsafe fn configure_controller(
                         );
                         let block = {
                             let site_host = request_tab.top_host.borrow();
-                            blocker.borrow().should_block(&buffer, &site_host)
+                            if private {
+                                blocker.borrow().should_block_private(&buffer, &site_host)
+                            } else {
+                                blocker.borrow().should_block(&buffer, &site_host)
+                            }
                         };
                         let site_host = if block {
                             request_tab.top_host.borrow().clone()
@@ -3198,12 +3273,13 @@ fn restore_tracking_prevention_level<E>(
     }
 }
 
+/// Whether the requested level is in effect afterwards (read back from the profile).
 fn apply_tracking_prevention(
     webview: &ICoreWebView2,
     requested: TrackingPreventionLevel,
     enabled: bool,
     log: Option<&Rc<dyn Fn(&'static str)>>,
-) {
+) -> bool {
     event(
         log,
         match requested {
@@ -3221,7 +3297,7 @@ fn apply_tracking_prevention(
     );
     if !enabled {
         event(log, "tracking_prevention_unsupported");
-        return;
+        return false;
     }
 
     let profile = match webview
@@ -3236,10 +3312,10 @@ fn apply_tracking_prevention(
             } else {
                 event(log, "tracking_prevention_error");
             }
-            return;
+            return false;
         }
     };
-    let _ = apply_tracking_prevention_transaction(
+    let result = apply_tracking_prevention_transaction(
         tracking_prevention_value(requested),
         || {
             let mut level = COREWEBVIEW2_TRACKING_PREVENTION_LEVEL(0);
@@ -3249,6 +3325,49 @@ fn apply_tracking_prevention(
         |level| unsafe { profile.SetPreferredTrackingPreventionLevel(level) },
         |name| event(log, name),
     );
+    matches!(result, TrackingPolicyApplyResult::Verified)
+}
+
+/// Creates a controller in the shared in-memory private profile. WebView2 keeps an InPrivate
+/// profile's cookies, storage and cache in memory and drops them when its last controller closes.
+fn create_private_controller(
+    environment: &ICoreWebView2Environment,
+    parent: HWND,
+    handler: &ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
+) -> Result<()> {
+    debug_assert!(crate::private::profile_name_valid());
+    let environment10: ICoreWebView2Environment10 = environment.cast()?;
+    let options = unsafe { environment10.CreateCoreWebView2ControllerOptions()? };
+    let name: Vec<u16> = crate::private::PRIVATE_PROFILE
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        options.SetProfileName(PCWSTR(name.as_ptr()))?;
+        options.SetIsInPrivateModeEnabled(true)?;
+        environment10.CreateCoreWebView2ControllerWithOptions(parent, &options, handler)
+    }
+}
+
+/// Confirms a private tab's webview really is in the InPrivate private profile.
+fn verify_private_profile(webview: &ICoreWebView2) -> Result<()> {
+    let webview13: ICoreWebView2_13 = webview.cast()?;
+    let profile = unsafe { webview13.Profile()? };
+    let mut name = PWSTR::null();
+    let mut in_private = BOOL::default();
+    unsafe {
+        profile.ProfileName(&mut name)?;
+        profile.IsInPrivateModeEnabled(&mut in_private)?;
+    }
+    let name = CoTaskMemPWSTR::from(name).to_string();
+    if name.eq_ignore_ascii_case(crate::private::PRIVATE_PROFILE) && in_private.as_bool() {
+        Ok(())
+    } else {
+        Err(Error::new(
+            windows::Win32::Foundation::E_ACCESSDENIED,
+            "WebView2 did not use the private profile for a private tab",
+        ))
+    }
 }
 
 fn memory_target_value(target: MemoryUsageTarget) -> COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL {
@@ -3284,6 +3403,31 @@ mod tests {
         let source = include_str!("webview2.rs");
         for blocking in [concat!("wait_for_async", "_operation"), concat!("wait_with", "_pump")] {
             assert!(!source.contains(blocking), "src/engine/webview2.rs uses {blocking}");
+        }
+    }
+
+    #[test]
+    fn private_tab_guards_stay_wired_into_the_engine() {
+        // The controller code is not unit-testable without WebView2, so these source checks keep the
+        // private-tab guarantees from being dropped by a refactor.
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        for needle in [
+            // Created InPrivate, in the named private profile, and verified afterwards.
+            "SetIsInPrivateModeEnabled(true)",
+            "create_private_controller(&environment, parent, &handler)",
+            "verify_private_profile(&webview)?",
+            // Always-on blocker, forced Strict tracking prevention, no stored permission allows.
+            "should_block_private(&buffer, &site_host)",
+            "crate::private::tracking_level(private, state.tracking_policy.level)",
+            "crate::private::permission_allowed(private, stored)",
+            // No sign-in capture channel, and never mistaken for the extensions' profile.
+            "Store::SignInCapture, private, false",
+            ".filter(|_| !private)",
+            // Fails closed without a private blocker.
+            "state.private_blocker.is_none()",
+        ] {
+            assert!(production.contains(needle), "missing in the engine: {needle}");
         }
     }
 

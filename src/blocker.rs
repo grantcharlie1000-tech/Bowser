@@ -415,6 +415,13 @@ impl BlockerState {
         state
     }
 
+    /// A state with only the rule lists from `dir` (the built-in list and the user list): no
+    /// site exceptions are read or saved. Private tabs use it when the global blocker is off.
+    pub fn matcher_only(dir: &Path) -> Self {
+        let user_list = read_capped(&dir.join(USER_LIST_NAME), MAX_USER_LIST_BYTES);
+        Self::new(Blocker::from_lists(user_list.as_deref()), &[])
+    }
+
     pub fn rule_count(&self) -> usize {
         self.matcher.rule_count()
     }
@@ -427,7 +434,17 @@ impl BlockerState {
 
     /// The decision for one subresource request made by a page on `top_host`.
     pub fn should_block(&self, request_url: &str, top_host: &str) -> bool {
-        if !self.enabled || self.site_allowed(top_host) {
+        self.decide(request_url, top_host, false)
+    }
+
+    /// The decision for a request made by a private tab: the blocker is always on, so neither the
+    /// enable switch nor any per-site exception applies.
+    pub fn should_block_private(&self, request_url: &str, top_host: &str) -> bool {
+        self.decide(request_url, top_host, true)
+    }
+
+    fn decide(&self, request_url: &str, top_host: &str, private: bool) -> bool {
+        if !crate::private::blocker_applies(private, self.enabled, self.site_allowed(top_host)) {
             return false;
         }
         let Some((host, path)) = split_url(request_url) else {
@@ -645,6 +662,21 @@ mod tests {
         assert!(s.should_block("https://tracker.net/a.js", "example.com"));
         s.enabled = false;
         assert!(!s.should_block("https://tracker.net/a.js", "example.org"));
+    }
+
+    #[test]
+    fn private_requests_ignore_the_switch_and_every_site_exception() {
+        let mut s = state("||tracker.net^
+", &["shop.example.com"]);
+        // A normal tab on an excepted site is not blocked; a private tab there is.
+        assert!(!s.should_block("https://tracker.net/a.js", "shop.example.com"));
+        assert!(s.should_block_private("https://tracker.net/a.js", "shop.example.com"));
+        s.enabled = false;
+        assert!(!s.should_block("https://tracker.net/a.js", "example.org"));
+        assert!(s.should_block_private("https://tracker.net/a.js", "example.org"));
+        // First-party requests and unmatched requests are still left alone.
+        assert!(!s.should_block_private("https://tracker.net/a.js", "tracker.net"));
+        assert!(!s.should_block_private("https://fine.example/a.js", "example.org"));
     }
 
     #[test]
