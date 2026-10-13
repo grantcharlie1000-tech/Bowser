@@ -1,0 +1,106 @@
+[
+  {
+    "name": "host becomes requestDomains, with third party as the default domainType",
+    "src": "block host:a.example",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty" } }
+    ]
+  },
+  {
+    "name": "party any leaves domainType out",
+    "src": "block host:a.example party any",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"] } }
+    ]
+  },
+  {
+    "name": "party first becomes firstParty",
+    "src": "block host:a.example party first",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "firstParty" } }
+    ]
+  },
+  {
+    "name": "kind maps through the resource type table, with ping and other expanding",
+    "src": "block host:a.example kind script,ping",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty", "resourceTypes": ["script", "ping", "csp_report"] } }
+    ]
+  },
+  {
+    "name": "frame, xhr, style and other map to their declarativeNetRequest names, in table order",
+    "src": "block host:a.example kind other,style,xhr,frame",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty", "resourceTypes": ["sub_frame", "xmlhttprequest", "stylesheet", "object", "websocket", "webtransport", "other"] } }
+    ]
+  },
+  {
+    "name": "image, media and font map one to one",
+    "src": "block host:a.example kind font,media,image",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty", "resourceTypes": ["image", "media", "font"] } }
+    ]
+  },
+  {
+    "name": "path becomes a case-insensitive plain urlFilter",
+    "src": "block path:/ad-slot/",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "urlFilter": "/ad-slot/", "isUrlFilterCaseSensitive": false, "domainType": "thirdParty" } }
+    ]
+  },
+  {
+    "name": "label becomes an anchored regex over the host",
+    "src": "block label:adserver",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "regexFilter": "^https?://([a-z0-9-]+\\.)*[a-z0-9-]*adserver[a-z0-9-]*\\.", "isUrlFilterCaseSensitive": false, "domainType": "thirdParty" } }
+    ]
+  },
+  {
+    "name": "only and except become initiator domains",
+    "src": "block host:a.example party any only x.example,y.example except z.example",
+    "expect": [
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "initiatorDomains": ["x.example", "y.example"], "excludedInitiatorDomains": ["z.example"] } }
+    ]
+  },
+  {
+    "name": "allow gets the allow action, the allow band and priority 2",
+    "src": "allow host:a.example",
+    "expect": [
+      { "id": 20000, "priority": 2, "action": { "type": "allow" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty" } }
+    ]
+  },
+  {
+    "name": "off site becomes allowAllRequests on the main frame, priority 3",
+    "src": "off site:bank.example",
+    "expect": [
+      { "id": 30000, "priority": 3, "action": { "type": "allowAllRequests" }, "condition": { "requestDomains": ["bank.example"], "resourceTypes": ["main_frame"] } }
+    ]
+  },
+  {
+    "name": "hide rules never become network rules",
+    "src": "hide css:div.promo\nhide css:div.x only a.example",
+    "expect": []
+  },
+  {
+    "name": "ids are assigned by position within each band, so other verbs do not shift them",
+    "src": "block host:a.example\nhide css:div.promo\nallow host:b.example\nblock host:c.example\noff site:d.example\nallow host:e.example\noff site:f.example",
+    "expect": [
+      { "id": 30000, "priority": 3, "action": { "type": "allowAllRequests" }, "condition": { "requestDomains": ["d.example"], "resourceTypes": ["main_frame"] } },
+      { "id": 30001, "priority": 3, "action": { "type": "allowAllRequests" }, "condition": { "requestDomains": ["f.example"], "resourceTypes": ["main_frame"] } },
+      { "id": 20000, "priority": 2, "action": { "type": "allow" }, "condition": { "requestDomains": ["b.example"], "domainType": "thirdParty" } },
+      { "id": 20001, "priority": 2, "action": { "type": "allow" }, "condition": { "requestDomains": ["e.example"], "domainType": "thirdParty" } },
+      { "id": 10000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty" } },
+      { "id": 10001, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["c.example"], "domainType": "thirdParty" } }
+    ]
+  },
+  {
+    "name": "the starter source uses the static bands",
+    "source": "starter",
+    "src": "block host:a.example\nallow host:b.example\nblock host:c.example",
+    "expect": [
+      { "id": 2000, "priority": 2, "action": { "type": "allow" }, "condition": { "requestDomains": ["b.example"], "domainType": "thirdParty" } },
+      { "id": 1000, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["a.example"], "domainType": "thirdParty" } },
+      { "id": 1001, "priority": 1, "action": { "type": "block" }, "condition": { "requestDomains": ["c.example"], "domainType": "thirdParty" } }
+    ]
+  }
+]

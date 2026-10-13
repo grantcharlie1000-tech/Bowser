@@ -1698,9 +1698,27 @@ unsafe fn draw_icon(dc: HDC, icon: Icon, r: RECT, colour: Rgba,
                 line(17.0, 11.0, 17.0, 14.0);
             }
             Icon::Shield => {
-                let points = [(12.0, 2.5), (20.0, 6.0), (20.0, 11.0), (18.0, 16.5), (12.0, 21.5), (6.0, 16.5), (4.0, 11.0), (4.0, 6.0), (12.0, 2.5)]
-                    .map(|(x,y)| grid(x,y));
-                polyline(dc, &points, colour, stroke);
+                // A recurve bow with a nocked arrow, the same mark as icons/menu/shield.svg.
+                // The stave is the SVG's cubic M5 2.5 C6.5 6.5 15 7.5 15 12, sampled and then
+                // mirrored about y = 12 for the lower limb.
+                let limb: [(f32, f32); 9] = std::array::from_fn(|i| {
+                    let t = i as f32 / 8.0;
+                    let u = 1.0 - t;
+                    (
+                        u * u * u * 5.0 + 3.0 * u * u * t * 6.5
+                            + 3.0 * u * t * t * 15.0 + t * t * t * 15.0,
+                        u * u * u * 2.5 + 3.0 * u * u * t * 6.5
+                            + 3.0 * u * t * t * 7.5 + t * t * t * 12.0,
+                    )
+                });
+                let stave: [(f32, f32); 17] = std::array::from_fn(|i| {
+                    if i < 9 { limb[i] } else { let (x, y) = limb[16 - i]; (x, 24.0 - y) }
+                });
+                path(&stave);
+                path(&[(8.5, 5.5), (4.5, 12.0), (8.5, 18.5)]);
+                line(4.5, 12.0, 21.0, 12.0);
+                line(17.5, 8.5, 21.0, 12.0);
+                line(21.0, 12.0, 17.5, 15.5);
             }
             Icon::Gear => {
                 let points = [(10.0,2.5),(14.0,2.5),(14.5,5.0),(17.0,6.0),(19.0,4.5),(21.5,7.5),(19.5,9.5),(20.0,12.0),(21.5,14.5),(19.0,17.5),(17.0,16.5),(14.5,18.0),(14.0,21.5),(10.0,21.5),(9.5,18.0),(7.0,16.5),(5.0,17.5),(2.5,14.5),(4.5,12.0),(4.5,9.5),(2.5,7.5),(5.0,4.5),(7.0,6.0),(9.5,5.0),(10.0,2.5)]

@@ -1,0 +1,382 @@
+[
+  {
+    "name": "accepts a bare block rule and applies the third-party default",
+    "src": "block host:a.example",
+    "expect": {
+      "rules": [
+        { "line": 1, "verb": "block", "kind": "host", "value": "a.example", "types": 511, "party": 2, "only": null, "except": null }
+      ]
+    }
+  },
+  {
+    "name": "accepts allow with the same third-party default",
+    "src": "allow label:click-track",
+    "expect": {
+      "rules": [
+        { "line": 1, "verb": "allow", "kind": "label", "value": "click-track", "types": 511, "party": 2 }
+      ]
+    }
+  },
+  {
+    "name": "accepts qualifiers in any order",
+    "src": "block host:a.example only b.example party first kind script,image",
+    "expect": {
+      "rules": [
+        { "verb": "block", "value": "a.example", "types": 3, "party": 1, "only": ["b.example"], "except": null }
+      ]
+    }
+  },
+  {
+    "name": "accepts the same qualifiers in the opposite order",
+    "src": "block host:a.example kind script,image party first only b.example",
+    "expect": {
+      "rules": [
+        { "types": 3, "party": 1, "only": ["b.example"] }
+      ]
+    }
+  },
+  {
+    "name": "accepts multiple spaces between tokens",
+    "src": "block    host:a.example    party   any",
+    "expect": { "rules": [{ "party": 0, "value": "a.example" }] }
+  },
+  {
+    "name": "accepts CRLF line endings",
+    "src": "block host:a.example\r\nallow host:b.example\r\n",
+    "expect": {
+      "rules": [
+        { "line": 1, "verb": "block", "value": "a.example" },
+        { "line": 2, "verb": "allow", "value": "b.example" }
+      ]
+    }
+  },
+  {
+    "name": "accepts a trailing newline",
+    "src": "block host:a.example\n",
+    "expect": { "rules": [{ "line": 1 }] }
+  },
+  {
+    "name": "accepts a missing trailing newline",
+    "src": "block host:a.example\nblock host:b.example",
+    "expect": { "rules": [{ "line": 1 }, { "line": 2 }] }
+  },
+  {
+    "name": "accepts trailing spaces after a rule",
+    "src": "block host:a.example   ",
+    "expect": { "rules": [{ "value": "a.example" }] }
+  },
+  {
+    "name": "skips blank lines and whole-line comments but keeps line numbers",
+    "src": "# first\n\n   \n  # indented comment\n# a tab\tinside a comment is still a comment\nblock host:a.example",
+    "expect": { "rules": [{ "line": 6 }] }
+  },
+  {
+    "name": "keeps a hash inside a css selector",
+    "src": "hide css:div#sidebar>iframe[src*=\"/ad-slot/\"]",
+    "expect": {
+      "rules": [
+        { "verb": "hide", "kind": "css", "value": "div#sidebar>iframe[src*=\"/ad-slot/\"]", "party": 0, "types": 511 }
+      ]
+    }
+  },
+  {
+    "name": "accepts a css selector that starts with an attribute",
+    "src": "hide css:[data-widget-type=\"sponsored\"]",
+    "expect": { "rules": [{ "kind": "css", "value": "[data-widget-type=\"sponsored\"]" }] }
+  },
+  {
+    "name": "accepts hide with only and except",
+    "src": "hide css:div.promo only a.example,b.example except c.example",
+    "expect": {
+      "rules": [
+        { "verb": "hide", "only": ["a.example", "b.example"], "except": ["c.example"] }
+      ]
+    }
+  },
+  {
+    "name": "accepts off site",
+    "src": "off site:bank.example",
+    "expect": { "rules": [{ "verb": "off", "kind": "site", "value": "bank.example", "party": 0, "only": null, "except": null }] }
+  },
+  {
+    "name": "accepts party any and a path with query characters",
+    "src": "block path:/metrics/collect?id= party any",
+    "expect": { "rules": [{ "kind": "path", "value": "/metrics/collect?id=", "party": 0 }] }
+  },
+  {
+    "name": "accepts every kind name",
+    "src": "block host:a.example kind script,image,frame,xhr,media,font,style,ping,other",
+    "expect": { "rules": [{ "types": 511 }] }
+  },
+  {
+    "name": "maps each kind name to its own bit",
+    "src": "block host:a.example kind xhr\nblock host:b.example kind ping\nblock host:c.example kind other",
+    "expect": { "rules": [{ "types": 8 }, { "types": 128 }, { "types": 256 }] }
+  },
+  {
+    "name": "collapses an identical line to one rule and warns",
+    "src": "block host:a.example\nblock host:a.example",
+    "expect": {
+      "rules": [{ "line": 1 }],
+      "warnings": [{ "line": 2, "code": "duplicate-rule" }]
+    }
+  },
+  {
+    "name": "rejects an uppercase verb",
+    "src": "Block host:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-verb", "column": 1 }] }
+  },
+  {
+    "name": "rejects an unknown verb",
+    "src": "deny host:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-verb" }] }
+  },
+  {
+    "name": "rejects a rule with no target",
+    "src": "block",
+    "expect": { "errors": [{ "line": 1, "code": "bad-target" }] }
+  },
+  {
+    "name": "rejects a target with no colon",
+    "src": "block host",
+    "expect": { "errors": [{ "line": 1, "code": "bad-target", "column": 7 }] }
+  },
+  {
+    "name": "rejects an unknown kind",
+    "src": "block domain:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-kind", "column": 7 }] }
+  },
+  {
+    "name": "rejects an uppercase kind",
+    "src": "block Host:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-kind" }] }
+  },
+  {
+    "name": "rejects a one-label host",
+    "src": "block host:example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects a host label that starts with a hyphen",
+    "src": "block host:-a.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects a host label that ends with a hyphen",
+    "src": "block host:a-.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects an uppercase host",
+    "src": "block host:A.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects an empty host label",
+    "src": "block host:a..example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects a host shorter than four characters",
+    "src": "block host:a.b",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects an underscore in a host",
+    "src": "block host:a_b.example",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects a site that is one label",
+    "src": "off site:localhost",
+    "expect": { "errors": [{ "line": 1, "code": "bad-site" }] }
+  },
+  {
+    "name": "rejects a two-character label",
+    "src": "block label:ad",
+    "expect": { "errors": [{ "line": 1, "code": "label-too-short" }] }
+  },
+  {
+    "name": "rejects a three-character label",
+    "src": "block label:ads",
+    "expect": { "errors": [{ "line": 1, "code": "label-too-short" }] }
+  },
+  {
+    "name": "rejects an all-digit label",
+    "src": "block label:1234",
+    "expect": { "errors": [{ "line": 1, "code": "label-all-digits" }] }
+  },
+  {
+    "name": "rejects a label with a dot",
+    "src": "block label:click.track",
+    "expect": { "errors": [{ "line": 1, "code": "bad-label" }] }
+  },
+  {
+    "name": "rejects a label that starts with a hyphen",
+    "src": "block label:-adserver",
+    "expect": { "errors": [{ "line": 1, "code": "bad-label" }] }
+  },
+  {
+    "name": "rejects a label over forty characters",
+    "src": "block label:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expect": { "errors": [{ "line": 1, "code": "bad-label" }] }
+  },
+  {
+    "name": "accepts a label of exactly forty characters",
+    "src": "block label:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expect": { "rules": [{ "kind": "label" }] }
+  },
+  {
+    "name": "rejects a path with no leading slash",
+    "src": "block path:ad-slot",
+    "expect": { "errors": [{ "line": 1, "code": "path-no-slash" }] }
+  },
+  {
+    "name": "rejects a path shorter than three characters",
+    "src": "block path:/a",
+    "expect": { "errors": [{ "line": 1, "code": "bad-path" }] }
+  },
+  {
+    "name": "rejects a path with a double quote",
+    "src": "block path:/a\"b",
+    "expect": { "errors": [{ "line": 1, "code": "bad-path" }] }
+  },
+  {
+    "name": "rejects a path with a hash",
+    "src": "block path:/a#b",
+    "expect": { "errors": [{ "line": 1, "code": "bad-path" }] }
+  },
+  {
+    "name": "rejects a bare tag selector",
+    "src": "hide css:div",
+    "expect": { "errors": [{ "line": 1, "code": "css-too-broad" }] }
+  },
+  {
+    "name": "rejects the universal selector",
+    "src": "hide css:*",
+    "expect": { "errors": [{ "line": 1, "code": "css-too-broad" }] }
+  },
+  {
+    "name": "rejects iframe and body selectors with no narrowing",
+    "src": "hide css:iframe\nhide css:body",
+    "expect": { "errors": [{ "line": 1, "code": "css-too-broad" }, { "line": 2, "code": "css-too-broad" }] }
+  },
+  {
+    "name": "rejects a brace or semicolon in a selector, so a hide rule cannot carry a declaration",
+    "src": "hide css:div.a{color:red}\nhide css:div.b}\nhide css:div.c;color:red\nhide css:div.d{",
+    "expect": {
+      "errors": [
+        { "line": 1, "code": "bad-css", "message": "a selector cannot contain { } or ;" },
+        { "line": 2, "code": "bad-css", "message": "a selector cannot contain { } or ;" },
+        { "line": 3, "code": "bad-css", "message": "a selector cannot contain { } or ;" },
+        { "line": 4, "code": "bad-css", "message": "a selector cannot contain { } or ;" }
+      ]
+    }
+  },
+  {
+    "name": "rejects a comma in a selector",
+    "src": "hide css:div[a],span[b]",
+    "expect": { "errors": [{ "line": 1, "code": "css-comma" }] }
+  },
+  {
+    "name": "rejects a space inside a selector",
+    "src": "hide css:div[a] > iframe",
+    "expect": { "errors": [{ "line": 1, "code": "css-space" }] }
+  },
+  {
+    "name": "rejects a css selector longer than 200 characters",
+    "src": "hide css:div.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expect": { "errors": [{ "line": 1, "code": "css-length" }] }
+  },
+  {
+    "name": "rejects a css target on a block verb",
+    "src": "block css:div[a]",
+    "expect": { "errors": [{ "line": 1, "code": "kind-not-allowed" }] }
+  },
+  {
+    "name": "rejects a host target on a hide verb",
+    "src": "hide host:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "kind-not-allowed" }] }
+  },
+  {
+    "name": "rejects a path target on an off verb",
+    "src": "off path:/a/b/",
+    "expect": { "errors": [{ "line": 1, "code": "kind-not-allowed" }] }
+  },
+  {
+    "name": "rejects a kind qualifier on hide",
+    "src": "hide css:div[a] kind script",
+    "expect": { "errors": [{ "line": 1, "code": "qualifier-not-allowed" }] }
+  },
+  {
+    "name": "rejects a party qualifier on hide",
+    "src": "hide css:div[a] party any",
+    "expect": { "errors": [{ "line": 1, "code": "qualifier-not-allowed" }] }
+  },
+  {
+    "name": "rejects any qualifier on off",
+    "src": "off site:a.example only b.example",
+    "expect": { "errors": [{ "line": 1, "code": "qualifier-not-allowed" }] }
+  },
+  {
+    "name": "rejects an unknown party",
+    "src": "block host:a.example party both",
+    "expect": { "errors": [{ "line": 1, "code": "bad-party", "column": 28 }] }
+  },
+  {
+    "name": "rejects an unknown type in a kind list",
+    "src": "block host:a.example kind script,bogus",
+    "expect": { "errors": [{ "line": 1, "code": "bad-type" }] }
+  },
+  {
+    "name": "rejects an empty entry in a kind list",
+    "src": "block host:a.example kind script,",
+    "expect": { "errors": [{ "line": 1, "code": "bad-type" }] }
+  },
+  {
+    "name": "rejects a bad host inside only",
+    "src": "block host:a.example only b.example,nodots",
+    "expect": { "errors": [{ "line": 1, "code": "bad-host" }] }
+  },
+  {
+    "name": "rejects a repeated qualifier",
+    "src": "block host:a.example party any party first",
+    "expect": { "errors": [{ "line": 1, "code": "duplicate-qualifier" }] }
+  },
+  {
+    "name": "rejects an unknown qualifier word",
+    "src": "block host:a.example bogus x",
+    "expect": { "errors": [{ "line": 1, "code": "bad-qualifier" }] }
+  },
+  {
+    "name": "rejects a qualifier with no value",
+    "src": "block host:a.example only",
+    "expect": { "errors": [{ "line": 1, "code": "qualifier-no-value" }] }
+  },
+  {
+    "name": "rejects a tab used as a separator",
+    "src": "block\thost:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "tab", "column": 6 }] }
+  },
+  {
+    "name": "rejects a leading space before a rule",
+    "src": " block host:a.example",
+    "expect": { "errors": [{ "line": 1, "code": "leading-space" }] }
+  },
+  {
+    "name": "rejects an unprintable character in a selector",
+    "src": "hide css:div.a\u0001b",
+    "expect": { "errors": [{ "line": 1, "code": "bad-css" }] }
+  },
+  {
+    "name": "reports each bad line and compiles the rest",
+    "src": "block host:a.example\nblock host:b.example\nblock host:c.example\nblock host:nodots\nblock host:e.example\nblock host:f.example\nblock host:g.example\nblock host:h.example\nblock host:i.example\nblock host:j.example",
+    "expect": {
+      "rules": [
+        { "line": 1 }, { "line": 2 }, { "line": 3 }, { "line": 5 }, { "line": 6 },
+        { "line": 7 }, { "line": 8 }, { "line": 9 }, { "line": 10 }
+      ],
+      "errors": [{ "line": 4, "code": "bad-host" }]
+    }
+  }
+]
