@@ -381,7 +381,8 @@ impl Profile {
         self.root.clone()
     }
 
-    /// Directory holding `blocker-sites.txt` and the optional `filters.txt`.
+    /// Directory holding `blocker-sites.txt` and the optional `shield.srl` (the user's Bowser
+    /// Shield rules, at most 256 KiB, read at startup).
     pub fn blocker_dir(&self) -> PathBuf {
         self.root.clone()
     }
