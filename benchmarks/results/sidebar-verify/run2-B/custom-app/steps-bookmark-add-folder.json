@@ -1,0 +1,23 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  314,
+                        "x":  105,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  500
+                    },
+                    {
+                        "y":  174,
+                        "x":  105,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  500
+                    }
+                ],
+    "name":  "bookmark-added-and-new-folder"
+}

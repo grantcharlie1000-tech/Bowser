@@ -1,0 +1,14 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  266,
+                        "x":  22,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  1800
+                    }
+                ],
+    "name":  "webapp-open-after-workspace-growth"
+}

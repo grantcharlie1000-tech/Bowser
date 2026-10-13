@@ -1,0 +1,9 @@
+﻿
+
+Algorithm : SHA256
+Hash      : F7B84D161F215213E0CE6C505352501C18FC2801672C51E27FF0B338260EF584
+Path      : C:\Users\charlie\Documents\ChatGPT\Bowser\benchmarks\results\sidebar-verify\run2-A\test-bin\bowser.exe
+
+
+
+

@@ -1,0 +1,23 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  488,
+                        "x":  850,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  500
+                    },
+                    {
+                        "y":  173,
+                        "x":  215,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  700
+                    }
+                ],
+    "name":  "cancel-stress-workspace-dialog-and-add-bookmark"
+}

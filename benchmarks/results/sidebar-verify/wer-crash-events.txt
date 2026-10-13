@@ -1,0 +1,28 @@
+﻿Time: 10/12/2026 02:26:29
+EventId: 1000
+Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3644
+Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+Exception code: 0xc0000005
+Fault offset: 0x000000000001f18b
+Faulting process ID: 0xbef0
+Faulting application start time: 0x01dd59e8b3225649
+Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\benchmarks\results\sidebar-verify\test-bin\bowser.exe
+Faulting module path: C:\Windows\System32\USER32.dll
+Report ID: 68daeba1-5213-4205-b907-1f6afb2a647d
+Faulting package full name: 
+Faulting package-relative application ID: 
+---
+Time: 10/12/2026 02:26:48
+EventId: 1000
+Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3644
+Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+Exception code: 0xc000041d
+Fault offset: 0x000000000001f18b
+Faulting process ID: 0xbef0
+Faulting application start time: 0x01dd59e8b3225649
+Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\benchmarks\results\sidebar-verify\test-bin\bowser.exe
+Faulting module path: C:\Windows\System32\USER32.dll
+Report ID: 37e80e8a-921e-4e01-9aa7-154f36c2e1b3
+Faulting package full name: 
+Faulting package-relative application ID: 
+---

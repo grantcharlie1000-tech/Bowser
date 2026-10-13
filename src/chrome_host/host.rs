@@ -1006,8 +1006,8 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),
             // --- end split view ---
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
-        View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. }),
-        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. }),
+        View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
+        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
@@ -1240,6 +1240,17 @@ mod tests {
         for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Dialog, View::DialogRename] {
             assert!(!view_accepts_command(view, &act), "{view:?}");
         }
+        // The composer's submit reaches only the popup host; the Customize flyout alone may open one.
+        let compose = parse_command(r#"{"v":1,"t":"compose","tok":1,"name":"Work"}"#).unwrap();
+        assert!(view_accepts_command(View::Popup, &compose));
+        let open_composer = parse_command(r#"{"v":1,"t":"composeopen","a":"app-add","r":"1,2,3,4"}"#).unwrap();
+        assert!(view_accepts_command(View::Panel, &open_composer));
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Dialog, View::DialogRename, View::Hover] {
+            assert!(!view_accepts_command(view, &compose), "{view:?}");
+            assert!(!view_accepts_command(view, &open_composer), "{view:?}");
+        }
+        assert!(!view_accepts_command(View::Panel, &compose));
+        assert!(!view_accepts_command(View::Popup, &open_composer));
         let rename = parse_command(r#"{"v":1,"t":"ren","a":"save","text":"Work"}"#).unwrap();
         assert!(view_accepts_command(View::DialogRename, &rename));
         for view in [View::Popup, View::Panel, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy] {

@@ -97,11 +97,17 @@ pub(crate) struct Page {
     write: Box<dyn FnOnce(&mut Object<'_>)>,
     picks: HashSet<u32>,
     acts: HashMap<u32, u8>,
+    compose: Option<ComposeHandler>,
 }
 
 impl Page {
     pub(crate) fn new(t: &'static str, write: impl FnOnce(&mut Object<'_>) + 'static) -> Self {
-        Self { t, write: Box::new(write), picks: HashSet::new(), acts: HashMap::new() }
+        Self { t, write: Box::new(write), picks: HashSet::new(), acts: HashMap::new(), compose: None }
+    }
+    /// Lets the page submit text (`compose`: a name and, for web apps, an address). Without a
+    /// handler the popup accepts no `compose` at all.
+    pub(crate) fn compose(&mut self, handler: ComposeHandler) {
+        self.compose = Some(handler);
     }
     /// Lets a `pick` name `id` (it closes the popup and runs the result callback).
     pub(crate) fn pick(&mut self, id: u32) {
@@ -128,13 +134,18 @@ pub(crate) enum ActOutcome {
 
 pub(crate) type ActHandler = Rc<dyn Fn(&AppRef, u32, u8) -> ActOutcome>;
 
+/// Runs a composer's submit: the trimmed-by-the-page name and optional address. `Refresh` re-posts
+/// the page (with Rust's error, or `done` once the change is made); the popup closes only when the
+/// page then dismisses itself.
+pub(crate) type ComposeHandler = Rc<dyn Fn(&AppRef, &str, Option<&str>) -> ActOutcome>;
+
 type Built = (String, HashSet<u32>, HashMap<u32, u8>);
 
 fn page_json(tok: u32, kind: &str, page: Page) -> Option<Built> {
     if kind.is_empty() || kind.encode_utf16().count() > 32 {
         return None;
     }
-    let Page { t, write, picks, acts } = page;
+    let Page { t, write, picks, acts, .. } = page;
     let json = Json::object(|out| {
         out.int("v", 1);
         out.string("t", t);
@@ -176,6 +187,9 @@ struct Popup {
     /// In-place actions the open page accepts (`act`), id -> largest choice.
     acts: HashMap<u32, u8>,
     on_act: Option<ActHandler>,
+    /// A composer page's submit handler, and the text of a submit waiting in the deferred queue.
+    on_compose: Option<ComposeHandler>,
+    pending_compose: Option<(String, Option<String>)>,
     at: Anchor,
     /// The page has been placed and shown; a later `size` only re-bounds it, without refocusing.
     shown: bool,
@@ -360,6 +374,8 @@ fn adopt_ready(owner: HWND) {
                     enabled_ids: HashSet::new(),
                     acts: HashMap::new(),
                     on_act: None,
+                    on_compose: None,
+                    pending_compose: None,
                     at: Anchor::Point(POINT::default(), Placement::BelowLeft),
                     shown: false,
                     dpi,
@@ -402,6 +418,7 @@ pub(crate) fn show_menu(
         },
         on_result,
         None,
+        None,
     )
 }
 
@@ -415,11 +432,12 @@ pub(crate) fn show_page(
     at: Anchor,
     kind: &str,
     context: Option<MenuContext>,
-    page: Page,
+    mut page: Page,
     on_result: ResultCallback,
     on_act: Option<ActHandler>,
 ) -> Result<(), ShowRefused> {
-    open(owner, at, kind, context, |token| page_json(token, kind, page), on_result, on_act)
+    let on_compose = page.compose.take();
+    open(owner, at, kind, context, |token| page_json(token, kind, page), on_result, on_act, on_compose)
 }
 
 /// Whether a popup page could be shown now (host adopted and page ready). Callers that build an
@@ -444,6 +462,7 @@ fn open(
     build: impl FnOnce(u32) -> Option<Built>,
     on_result: ResultCallback,
     on_act: Option<ActHandler>,
+    on_compose: Option<ComposeHandler>,
 ) -> Result<(), ShowRefused> {
     if !chrome_host::html_ui_enabled() || kind.is_empty() || kind.len() > 32 {
         return Err(ShowRefused::Unavailable(on_result));
@@ -480,6 +499,8 @@ fn open(
         popup.enabled_ids = ids;
         popup.acts = acts;
         popup.on_act = on_act;
+        popup.on_compose = on_compose;
+        popup.pending_compose = None;
         popup.at = at;
         popup.shown = false;
         popup.context = context;
@@ -587,6 +608,8 @@ fn close_now(owner: HWND) {
             let was_active = popup.dismiss.close(Instant::now());
             popup.callback = None;
             popup.on_act = None;
+            popup.on_compose = None;
+            popup.pending_compose = None;
             popup.acts.clear();
             popup.shown = false;
             (
@@ -649,7 +672,8 @@ fn popup_command(owner: HWND, command: Command) {
         command @ (Command::PopupSize { .. }
         | Command::PopupPick { .. }
         | Command::PopupDismiss { .. }
-        | Command::PopupAct { .. }) => crate::win32::window::html_popup_command(owner, command),
+        | Command::PopupAct { .. }
+        | Command::PopupCompose { .. }) => crate::win32::window::html_popup_command(owner, command),
         _ => {}
     }
 }
@@ -677,10 +701,11 @@ fn popup_accelerator(owner: HWND, accel: Accel) -> bool {
     if !accel.key_down || accel.vk != 0x1B {
         return false;
     }
+    // A composer plays its own 100 ms exit on Escape and then dismisses itself.
     let tok = POPUPS.with(|p| {
         p.borrow()
             .get(&(owner.0 as isize))
-            .filter(|p| p.dismiss.is_active())
+            .filter(|p| p.dismiss.is_active() && p.on_compose.is_none())
             .map(|p| p.token)
     });
     if let Some(tok) = tok {
@@ -716,7 +741,50 @@ pub(crate) fn run_act(owner: HWND, token: u32, id: u32, n: u8, app: &AppRef) {
     let Some(handler) = POPUPS.with(|p| p.borrow().get(&(owner.0 as isize)).and_then(|p| p.on_act.clone())) else {
         return;
     };
-    match handler(app, id, n) {
+    apply_outcome(owner, token, handler(app, id, n), app);
+}
+
+/// Whether `token` names the open composer page, which has no submit waiting yet.
+pub(super) fn valid_compose(owner: HWND, token: u32) -> bool {
+    POPUPS.with(|p| {
+        p.borrow().get(&(owner.0 as isize)).is_some_and(|p| {
+            popup_token_matches(p.dismiss.is_active(), p.token, token)
+                && p.on_compose.is_some()
+                && p.pending_compose.is_none()
+        })
+    })
+}
+
+/// Holds a composer's text until the deferred queue runs it (the deferred command is `Copy`).
+/// False when `token` is not the open composer, or a submit is already waiting.
+pub(super) fn stash_compose(owner: HWND, token: u32, name: String, url: Option<String>) -> bool {
+    if !valid_compose(owner, token) {
+        return false;
+    }
+    POPUPS.with(|p| {
+        p.borrow_mut().get_mut(&(owner.0 as isize)).map(|popup| popup.pending_compose = Some((name, url)))
+    }).is_some()
+}
+
+/// Runs a composer's stashed submit from the deferred queue. The handler validates the text again
+/// and answers with the page to show: Rust's error, or `done` after the change is made.
+pub(crate) fn run_compose(owner: HWND, token: u32, app: &AppRef) {
+    let taken = POPUPS.with(|p| {
+        p.borrow_mut().get_mut(&(owner.0 as isize)).and_then(|popup| {
+            if !popup_token_matches(popup.dismiss.is_active(), popup.token, token) {
+                return None;
+            }
+            Some((popup.on_compose.clone()?, popup.pending_compose.take()?))
+        })
+    });
+    let Some((handler, (name, url))) = taken else {
+        return;
+    };
+    apply_outcome(owner, token, handler(app, &name, url.as_deref()), app);
+}
+
+fn apply_outcome(owner: HWND, token: u32, outcome: ActOutcome, app: &AppRef) {
+    match outcome {
         ActOutcome::Keep => {}
         ActOutcome::Close => run_result(owner, token, None, app),
         ActOutcome::Refresh(page) => {
@@ -1227,6 +1295,18 @@ mod tests {
         let huge = Page::new("palette", |out| out.string("x", &"a".repeat(MAX_PAGE_BYTES)));
         assert!(page_json(1, "palette", huge).is_none(), "oversized pages are refused");
         assert!(page_json(1, "", Page::new("palette", |_| {})).is_none());
+    }
+
+    #[test]
+    fn a_composer_page_declares_no_pick_or_act_and_its_submit_handler_never_reaches_the_wire() {
+        let mut page = Page::new("composer", |out| out.string("mode", "app-add"));
+        page.compose(Rc::new(|_, _, _| ActOutcome::Keep));
+        assert!(page.compose.is_some());
+        let (json, picks, acts) = page_json(9, "composer:app-add", page).expect("small page");
+        assert_eq!(json, "{\"v\":1,\"t\":\"composer\",\"tok\":9,\"kind\":\"composer:app-add\",\"mode\":\"app-add\"}");
+        assert!(picks.is_empty(), "a composer is closed by dismissing, never by picking");
+        assert!(acts.is_empty());
+        assert!(!json.contains("compose\""), "the handler is Rust state, not page data");
     }
 
     #[test]

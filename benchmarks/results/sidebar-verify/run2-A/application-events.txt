@@ -1,0 +1,295 @@
+﻿
+
+TimeCreated  : 12/10/2026 02:46:26
+Id           : 1001
+ProviderName : Windows Error Reporting
+Message      : Fault bucket 1555906884923776594, type 4
+               Event Name: APPCRASH
+               Response: Not available
+               Cab Id: 0
+               
+               Problem signature:
+               P1: bowser.exe
+               P2: 0.0.0.0
+               P3: 6acc3b64
+               P4: USER32.dll
+               P5: 10.0.19041.6456
+               P6: 5094b343
+               P7: c0000005
+               P8: 000000000001f18b
+               P9: 
+               P10: 
+               
+               Attached files:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER954D.tmp.dmp
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER95EB.tmp.WERInternalMetadata.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER9698.tmp.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER96A7.tmp.csv
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER9706.tmp.txt
+               
+               These files may be available here:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\ReportArchive\AppCrash_bowser.exe_1dee9a6a2f604d512337a63f48c359fbcfa3d8c2_f0900962_b3573006-d4f4-4903-a1d3-b557adb83ad6
+               
+               Analysis symbol: 
+               Rechecking for solution: 0
+               Report Id: d6256a7d-7f47-433d-929c-c340310f80fd
+               Report Status: 268435456
+               Hashed bucket: 819e9b64f266cde35597b1117b775e52
+               Cab Guid: 0
+
+TimeCreated  : 12/10/2026 02:46:24
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3b64
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0x14418
+               Faulting application start time: 0x01dd59eb79f55e16
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\target-opus\debug\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: d6256a7d-7f47-433d-929c-c340310f80fd
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:45:28
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3b64
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0x12bec
+               Faulting application start time: 0x01dd59eb58545d76
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\target-opus\debug\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: 987c05bd-fbca-4d8e-8da2-52c318ba60aa
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:26:50
+Id           : 1001
+ProviderName : Windows Error Reporting
+Message      : Fault bucket 1536925316193699656, type 4
+               Event Name: APPCRASH
+               Response: Not available
+               Cab Id: 0
+               
+               Problem signature:
+               P1: bowser.exe
+               P2: 0.0.0.0
+               P3: 6acc3644
+               P4: USER32.dll
+               P5: 10.0.19041.6456
+               P6: 5094b343
+               P7: c000041d
+               P8: 000000000001f18b
+               P9: 
+               P10: 
+               
+               Attached files:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERA226.tmp.dmp
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERA2F2.tmp.WERInternalMetadata.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERA43B.tmp.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERA44F.tmp.csv
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERA4FC.tmp.txt
+               
+               These files may be available here:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\ReportArchive\AppCrash_bowser.exe_2c8dbd80a0769580ea057e3cd8f87e41d32f3a_8583d02e_353d132e-f124-42b1-a804-a41705f4c444
+               
+               Analysis symbol: 
+               Rechecking for solution: 0
+               Report Id: 37e80e8a-921e-4e01-9aa7-154f36c2e1b3
+               Report Status: 268435456
+               Hashed bucket: a717946be290dba9f554416e9e07c748
+               Cab Guid: 0
+
+TimeCreated  : 12/10/2026 02:26:48
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3644
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc000041d
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0xbef0
+               Faulting application start time: 0x01dd59e8b3225649
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\benchmarks\results\sidebar-verify\test-bin\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: 37e80e8a-921e-4e01-9aa7-154f36c2e1b3
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:26:29
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc3644
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0xbef0
+               Faulting application start time: 0x01dd59e8b3225649
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\benchmarks\results\sidebar-verify\test-bin\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: 68daeba1-5213-4205-b907-1f6afb2a647d
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:24:52
+Id           : 1001
+ProviderName : Windows Error Reporting
+Message      : Fault bucket 1843696787694524091, type 4
+               Event Name: APPCRASH
+               Response: Not available
+               Cab Id: 0
+               
+               Problem signature:
+               P1: bowser.exe
+               P2: 0.0.0.0
+               P3: 6acc36af
+               P4: USER32.dll
+               P5: 10.0.19041.6456
+               P6: 5094b343
+               P7: c0000005
+               P8: 000000000001f18b
+               P9: 
+               P10: 
+               
+               Attached files:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERD44C.tmp.dmp
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERD527.tmp.WERInternalMetadata.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERD651.tmp.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERD663.tmp.csv
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WERD6B2.tmp.txt
+               
+               These files may be available here:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\ReportArchive\AppCrash_bowser.exe_7919dfea9a8f8a1b5d7e8d9d3435d8b33684795_65d84eb1_f82ece27-5194-4292-a94d-cfa4cfad1468
+               
+               Analysis symbol: 
+               Rechecking for solution: 0
+               Report Id: 2be6fa94-406e-41b5-a0b8-c4897c94fa4a
+               Report Status: 268435456
+               Hashed bucket: 1f8cd4745599fa1959962075c80f96bb
+               Cab Guid: 0
+
+TimeCreated  : 12/10/2026 02:24:50
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc36af
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0x3b50
+               Faulting application start time: 0x01dd59e871d9e0bd
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\target-haiku2\debug\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: 2be6fa94-406e-41b5-a0b8-c4897c94fa4a
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:24:34
+Id           : 1001
+ProviderName : Windows Error Reporting
+Message      : Fault bucket 1843696787694524091, type 4
+               Event Name: APPCRASH
+               Response: Not available
+               Cab Id: 0
+               
+               Problem signature:
+               P1: bowser.exe
+               P2: 0.0.0.0
+               P3: 6acc36af
+               P4: USER32.dll
+               P5: 10.0.19041.6456
+               P6: 5094b343
+               P7: c0000005
+               P8: 000000000001f18b
+               P9: 
+               P10: 
+               
+               Attached files:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER8DDC.tmp.dmp
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER8E99.tmp.WERInternalMetadata.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER8F36.tmp.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER8F36.tmp.csv
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER8F95.tmp.txt
+               
+               These files may be available here:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\ReportArchive\AppCrash_bowser.exe_7919dfea9a8f8a1b5d7e8d9d3435d8b33684795_65d84eb1_6110c5e9-d3a1-4f31-a4ef-0666cca902c1
+               
+               Analysis symbol: 
+               Rechecking for solution: 0
+               Report Id: 8198f2b2-ed44-4d2d-aea4-548c932723b6
+               Report Status: 268435456
+               Hashed bucket: 1f8cd4745599fa1959962075c80f96bb
+               Cab Guid: 0
+
+TimeCreated  : 12/10/2026 02:24:32
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc36af
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0x14064
+               Faulting application start time: 0x01dd59e8678a3564
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\target-haiku2\debug\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: 8198f2b2-ed44-4d2d-aea4-548c932723b6
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+TimeCreated  : 12/10/2026 02:24:17
+Id           : 1001
+ProviderName : Windows Error Reporting
+Message      : Fault bucket 1843696787694524091, type 4
+               Event Name: APPCRASH
+               Response: Not available
+               Cab Id: 0
+               
+               Problem signature:
+               P1: bowser.exe
+               P2: 0.0.0.0
+               P3: 6acc36af
+               P4: USER32.dll
+               P5: 10.0.19041.6456
+               P6: 5094b343
+               P7: c0000005
+               P8: 000000000001f18b
+               P9: 
+               P10: 
+               
+               Attached files:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER4B55.tmp.dmp
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER4C41.tmp.WERInternalMetadata.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER4CCE.tmp.xml
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER4CDC.tmp.csv
+               \\?\C:\ProgramData\Microsoft\Windows\WER\Temp\WER4D79.tmp.txt
+               
+               These files may be available here:
+               \\?\C:\ProgramData\Microsoft\Windows\WER\ReportArchive\AppCrash_bowser.exe_7919dfea9a8f8a1b5d7e8d9d3435d8b33684795_65d84eb1_b9c1e27d-6261-45ee-a7a7-4df4574fc902
+               
+               Analysis symbol: 
+               Rechecking for solution: 0
+               Report Id: dd6a9f32-32e9-484b-bda9-db13f2e3e468
+               Report Status: 268435456
+               Hashed bucket: 1f8cd4745599fa1959962075c80f96bb
+               Cab Guid: 0
+
+TimeCreated  : 12/10/2026 02:24:15
+Id           : 1000
+ProviderName : Application Error
+Message      : Faulting application name: bowser.exe, version: 0.0.0.0, time stamp: 0x6acc36af
+               Faulting module name: USER32.dll, version: 10.0.19041.6456, time stamp: 0x5094b343
+               Exception code: 0xc0000005
+               Fault offset: 0x000000000001f18b
+               Faulting process ID: 0x61c8
+               Faulting application start time: 0x01dd59e85cfe382b
+               Faulting application path: C:\Users\charlie\Documents\ChatGPT\Bowser\target-haiku2\debug\bowser.exe
+               Faulting module path: C:\Windows\System32\USER32.dll
+               Report ID: dd6a9f32-32e9-484b-bda9-db13f2e3e468
+               Faulting package full name: 
+               Faulting package-relative application ID: 
+
+
+
+

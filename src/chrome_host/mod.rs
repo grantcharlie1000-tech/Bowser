@@ -189,17 +189,30 @@ pub fn toolbar_pill_rect(layout: &Layout, dpi: u32) -> Option<RECT> {
     })
 }
 
-/// Client-relative physical pixels of the HTML tab strip: the whole tab row, including its
-/// rail-shifted left edge. `None` when the row is empty (vertical sidebar mode has no tab row).
+/// Client-relative physical pixels of the HTML tab strip: the tab row, including its rail-shifted
+/// left edge. While the native overflow chevron is showing, the strip stops one island gap before
+/// it, so the last tab is not painted under the button. `None` when the row is empty (vertical
+/// sidebar mode has no tab row) or the chevron leaves no room.
 pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
+    use crate::chrome::layout::Metrics;
     let row = layout.tab_row;
     if row.is_empty() {
+        return None;
+    }
+    let button = layout.tab_menu_button;
+    let right = if button.is_empty() {
+        row.right
+    } else {
+        let gap = layout.metrics.px(Metrics::ISLAND_GAP);
+        (button.left - gap).max(row.left).min(row.right)
+    };
+    if right <= row.left {
         return None;
     }
     Some(RECT {
         left: row.left,
         top: row.top,
-        right: row.right,
+        right,
         bottom: row.bottom,
     })
 }
@@ -681,6 +694,8 @@ mod tests {
         assert_eq!(bounds.top, layout.tab_row.top);
         assert_eq!(bounds.right, layout.tab_row.right);
         assert_eq!(bounds.bottom, layout.tab_row.bottom);
+        // Three tabs do not overflow, so no chevron takes a slot.
+        assert!(layout.tab_menu_button.is_empty());
         // The rail-shifted left edge is kept as laid out.
         layout.tab_row = Rect::new(60, 34, 1200, 62);
         assert_eq!(tab_row_bounds(&layout).map(|bounds| bounds.left), Some(60));
@@ -689,6 +704,27 @@ mod tests {
         assert!(tab_row_bounds(&layout).is_none());
         layout.tab_row = Rect::new(0, 34, 0, 62);
         assert!(tab_row_bounds(&layout).is_none());
+    }
+
+    #[test]
+    fn tab_row_bounds_stops_one_island_gap_before_the_overflow_chevron() {
+        use crate::chrome::layout::Metrics;
+        for dpi in [96, 120, 144, 192] {
+            let mut layout = compute_in_frame(1200, 700, dpi, 40, 0, false);
+            let button = layout.tab_menu_button;
+            assert!(!button.is_empty(), "forty tabs overflow, dpi={dpi}");
+            let gap = layout.metrics.px(Metrics::ISLAND_GAP);
+            let bounds = tab_row_bounds(&layout).expect("overflowing row keeps a strip");
+            assert_eq!(bounds.left, layout.tab_row.left, "dpi={dpi}");
+            assert_eq!(bounds.top, layout.tab_row.top, "dpi={dpi}");
+            assert_eq!(bounds.bottom, layout.tab_row.bottom, "dpi={dpi}");
+            assert_eq!(bounds.right, button.left - gap, "dpi={dpi}");
+            assert!(bounds.right < button.left, "dpi={dpi}");
+
+            // A chevron that leaves no room for the strip leaves no strip.
+            layout.tab_menu_button = Rect::new(layout.tab_row.left, 41, layout.tab_row.left + 26, 67);
+            assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}");
+        }
     }
 
     // --- vertical sidebar (lane S) ---

@@ -121,7 +121,7 @@ Caption `--bw-text-caption`/`--bw-leading-caption` 12/16, Body 14/20, Subtitle 2
 `--bw-sh-tip`, `--bw-sh-flyout`, `--bw-sh-dialog`;
 `--bw-dur-fast` 83ms (opacity, colour), `--bw-dur-base` 167ms (position, scale),
 `--bw-dur-slow` 250ms (sidebar width), `--bw-dur-spin` 900ms;
-`--bw-ease-out` cubic-bezier(0,0,0,1), `--bw-ease-move` cubic-bezier(.55,.55,0,1), `--bw-ease-fade` linear;
+`--bw-ease-out` cubic-bezier(0,0,0,1), `--bw-ease-move` cubic-bezier(.55,.55,0,1), `--bw-ease-fade` linear, `--bw-ease-in` cubic-bezier(.4,0,1,1) (exits);
 z-layers `--bw-z-page` 0, `-chrome` 10, `-sidebar-flyout` 20, `-menu` 30, `-popup` 40,
 `-tooltip` 50, `-palette` 60, `-dialog` 70 (local stacking inside one surface may use 1-3).
 
@@ -225,7 +225,7 @@ draw identical shapes.
   transition on focus or caret, nothing that runs before a click is handled.
 - Durations: `--bw-dur-fast` for fades and hover colour, `--bw-dur-base` for movement and scale,
   `--bw-dur-slow` for large surfaces. Easing `--bw-ease-out` for enters, `--bw-ease-move` for
-  point-to-point, `linear` (`--bw-ease-fade`) for fades.
+  point-to-point, `linear` (`--bw-ease-fade`) for fades, `--bw-ease-in` for exits.
 - Enter: add `.bw-enter` (opacity 0 -> 1 with 4px drop and .98 scale, 167ms out-ease).
   `.is-down` drops from above (menus under the toolbar), `.is-rise` rises 8px
   (palette, dialogs), `.is-scale` scales only.

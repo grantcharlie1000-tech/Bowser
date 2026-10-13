@@ -306,3 +306,87 @@
     animation: none;
   }
 }
+
+/* ---- Composer (New workspace, Add web app, Edit web app): ui/src/composer.ts. ----
+   The menu surface as it is, at a fixed 280px (inside the 200..360 range). The page is a heading,
+   one 28px field row per value (glyph column, then an input in the label column), an error line
+   under the field it concerns, a separator, and a confirm row. No Cancel: Escape and click-away. */
+#app.html-menu[data-kind="composer"] {
+  width: 280px;
+}
+
+.html-composer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  outline: none;
+}
+
+.html-composer-field {
+  box-sizing: border-box;
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: var(--menu-item-h);
+  padding: 0 var(--bw-space-2);
+}
+
+.html-composer-field ~ .html-composer-field {
+  margin-top: var(--bw-space-1);
+}
+
+/* The shared text input, 28px tall: its edge lines up with the label column of ordinary rows. */
+.html-composer-input {
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  height: var(--menu-item-h);
+}
+
+/* Directly under its field, starting where the input's text starts (row padding, glyph column, gap,
+   input border and padding). Present but 0 high until there is an error. */
+.html-composer-error {
+  flex: none;
+  padding-inline: calc(var(--bw-space-2) + var(--bw-icon) + var(--menu-icon-gap) + 1px + var(--bw-space-2)) var(--bw-space-2);
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+  font-weight: var(--bw-weight-strong);
+  line-height: var(--bw-leading-caption);
+  overflow-wrap: anywhere;
+}
+
+.html-composer-error:not(:empty) {
+  padding-block: var(--bw-space-1) 0;
+}
+
+.html-composer-error.is-shown {
+  animation: html-menu-fade var(--bw-dur-fast) linear both;
+}
+
+/* The confirm row is never disabled: an invalid submit explains itself. Hover is the menu tint. */
+.html-composer-confirm:hover {
+  background: color-mix(in srgb, var(--bw-text) 10%, transparent);
+}
+
+.html-composer-confirm:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+/* Exit on Escape, or after Rust accepts: opacity out over 100ms, ease-in. A click away hides the
+   window at once and never plays this. */
+@keyframes html-composer-exit {
+  to {
+    opacity: 0;
+  }
+}
+
+#app.html-menu.is-leaving {
+  animation: html-composer-exit 100ms var(--bw-ease-in) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.html-menu.is-leaving {
+    animation: none;
+  }
+}

@@ -1,0 +1,80 @@
+[
+    {
+        "hwnd":  11407788,
+        "pid":  80140,
+        "class":  "Edit",
+        "title":  "",
+        "visible":  true,
+        "rect":  [
+                     670,
+                     4,
+                     671,
+                     5
+                 ]
+    },
+    {
+        "hwnd":  113774870,
+        "pid":  80140,
+        "class":  "BowserSidePanelHost",
+        "title":  "",
+        "visible":  true,
+        "rect":  [
+                     44,
+                     64,
+                     404,
+                     1079
+                 ]
+    },
+    {
+        "hwnd":  55775042,
+        "pid":  80140,
+        "class":  "Chrome_WidgetWin_0",
+        "title":  "",
+        "visible":  false,
+        "rect":  [
+                     44,
+                     190,
+                     404,
+                     1079
+                 ]
+    },
+    {
+        "hwnd":  12980938,
+        "pid":  58104,
+        "class":  "Chrome_WidgetWin_1",
+        "title":  "Bowser sidebar probe",
+        "visible":  false,
+        "rect":  [
+                     44,
+                     190,
+                     404,
+                     1079
+                 ]
+    },
+    {
+        "hwnd":  141823370,
+        "pid":  58104,
+        "class":  "Chrome_RenderWidgetHostHWND",
+        "title":  "Chrome Legacy Window",
+        "visible":  false,
+        "rect":  [
+                     44,
+                     190,
+                     404,
+                     1079
+                 ]
+    },
+    {
+        "hwnd":  725752,
+        "pid":  48216,
+        "class":  "Intermediate D3D Window",
+        "title":  "",
+        "visible":  false,
+        "rect":  [
+                     44,
+                     190,
+                     404,
+                     1470
+                 ]
+    }
+]

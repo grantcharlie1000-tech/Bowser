@@ -139,6 +139,30 @@ export function slotShift(centers: readonly number[], i: number, from: number, d
   return there - here;
 }
 
+/**
+ * Left edge a dragged tab visually held when its host reorder lands: its slot's left edge once the
+ * drag transform is cleared (`home`) plus the drag offset it carried (`prev`). Used instead of a
+ * transformed rect so the 1.02 lift scale does not skew it.
+ */
+export function landingFirst(home: number, prev: number): number {
+  return home + prev;
+}
+
+/** FLIP invert: the translation that puts a tab back at `first` while it sits at `last`. */
+export function flipInvert(first: number, last: number): number {
+  return first - last;
+}
+
+/**
+ * What a render does while a dropped tab is landing: 'stale' (same layout as at the drop: content
+ * only, no transform touched) or 'reorder' (the layout changed: one FLIP from where the tab was
+ * released). 'none' when nothing is landing.
+ */
+export function landingPhase(landingSignature: string | null, nextSignature: string): 'none' | 'stale' | 'reorder' {
+  if (landingSignature === null) return 'none';
+  return landingSignature === nextSignature ? 'stale' : 'reorder';
+}
+
 /** Id of the tab to the right of the drop slot. `others` are the ids without the dragged tab; 0 when last. */
 export function beforeId(others: readonly number[], dest: number): number {
   return others[dest] ?? 0;

@@ -586,6 +586,14 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             }
             send_current(runtime);
         }
+        Command::ComposerOpen { mode, id, name, url, rect } => {
+            let (owner, host) = {
+                let Ok(state) = runtime.try_borrow() else { return; };
+                (state.owner, state.host.clone())
+            };
+            let Some(view) = host.and_then(|host| host.screen_bounds()) else { return; };
+            super::window::request_composer(owner, view, mode, id, name, url, rect);
+        }
         Command::Panel { kind: PanelType::Customize, f } => {
             let (app, owner) = {
                 let Ok(state) = runtime.try_borrow() else { return; };
@@ -601,20 +609,6 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                 CustomizeAction::Visibility(kind, visible) => {
                     if sidebar.set_visible(kind, visible).is_ok() { changed_sidebar = true; }
                 }
-                CustomizeAction::AppAdd(name, url) => {
-                    if sidebar.add_app(&name, &url).is_ok() {
-                        if let Some(web_app) = sidebar.apps.last().cloned() { super::panel_webapp::register_app(&app, web_app); }
-                        changed_sidebar = true;
-                    }
-                }
-                CustomizeAction::AppUpdate(id, name, url) => {
-                    if sidebar.apps.iter().any(|item| item.id == id)
-                        && sidebar.rename_app(id, &name).is_ok() && sidebar.edit_url(id, &url).is_ok() {
-                        super::panel_webapp::forget_app(id);
-                        if let Some(web_app) = sidebar.apps.iter().find(|item| item.id == id).cloned() { super::panel_webapp::register_app(&app, web_app); }
-                        changed_sidebar = true;
-                    }
-                }
                 CustomizeAction::AppRemove(id) => {
                     if sidebar.remove_app(id) { super::panel_webapp::forget_app(id); changed_sidebar = true; }
                 }
@@ -624,7 +618,6 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                     if position > from { position = position.saturating_sub(1); }
                     if sidebar.reorder_app(id, position).unwrap_or(false) { changed_sidebar = true; }
                 }
-                CustomizeAction::WorkspaceCreate(name) => { let _ = crate::app::App::workspace_create(&app, &name); }
                 CustomizeAction::WorkspaceRename(id, name) => { let _ = crate::app::App::rename_workspace(&app, crate::workspaces::WorkspaceId(id), &name); }
                 CustomizeAction::WorkspaceDelete(id) => { let _ = crate::app::App::delete_workspace(&app, crate::workspaces::WorkspaceId(id)); }
                 CustomizeAction::WorkspaceMove(id, before) => {

@@ -1,0 +1,42 @@
+﻿[
+    {
+        "name":  "state-start",
+        "pid":  80140,
+        "path":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-B\\test-bin\\bowser.exe",
+        "alive":  true,
+        "title":  "Bowser [V vB-20261012-02]",
+        "mainHwnd":  102305932,
+        "foregroundHwnd":  102305932,
+        "windowRect":  [
+                           120,
+                           90,
+                           1400,
+                           910
+                       ],
+        "client":  [
+                       1280,
+                       820
+                   ],
+        "capture":  "benchmarks\\results\\sidebar-verify\\run2-B\\custom-app\\state-start.png"
+    },
+    {
+        "name":  "webapp-open-after-workspace-growth",
+        "pid":  80140,
+        "path":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-B\\test-bin\\bowser.exe",
+        "alive":  true,
+        "title":  "Bowser [V vB-20261012-02]",
+        "mainHwnd":  102305932,
+        "foregroundHwnd":  102305932,
+        "windowRect":  [
+                           120,
+                           90,
+                           1400,
+                           910
+                       ],
+        "client":  [
+                       1280,
+                       820
+                   ],
+        "capture":  "benchmarks\\results\\sidebar-verify\\run2-B\\custom-app\\webapp-open-after-workspace-growth.png"
+    }
+]

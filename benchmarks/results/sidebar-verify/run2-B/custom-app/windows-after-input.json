@@ -1,0 +1,86 @@
+[
+    {
+        "hwnd":  84217658,
+        "title":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-B\\test-bin\\bowser.exe",
+        "class":  "ConsoleWindowClass",
+        "visible":  true,
+        "rect":  [
+                     156,
+                     156,
+                     1149,
+                     675
+                 ]
+    },
+    {
+        "hwnd":  63443346,
+        "title":  "GDI+ Window (bowser.exe)",
+        "class":  "GDI+ Hook Window Class",
+        "visible":  false,
+        "rect":  [
+                     0,
+                     0,
+                     1,
+                     1
+                 ]
+    },
+    {
+        "hwnd":  37487514,
+        "title":  "",
+        "class":  "Static",
+        "visible":  false,
+        "rect":  [
+                     0,
+                     0,
+                     1920,
+                     1079
+                 ]
+    },
+    {
+        "hwnd":  102305932,
+        "title":  "Bowser [V vB-20261012-02]",
+        "class":  "BowserNativeWindow",
+        "visible":  true,
+        "rect":  [
+                     -32000,
+                     -32000,
+                     -31840,
+                     -31972
+                 ]
+    },
+    {
+        "hwnd":  229377196,
+        "title":  "Default IME",
+        "class":  "IME",
+        "visible":  false,
+        "rect":  [
+                     0,
+                     0,
+                     0,
+                     0
+                 ]
+    },
+    {
+        "hwnd":  125569654,
+        "title":  "MSCTFIME UI",
+        "class":  "MSCTFIME UI",
+        "visible":  false,
+        "rect":  [
+                     0,
+                     0,
+                     0,
+                     0
+                 ]
+    },
+    {
+        "hwnd":  85069686,
+        "title":  "Default IME",
+        "class":  "IME",
+        "visible":  false,
+        "rect":  [
+                     0,
+                     0,
+                     0,
+                     0
+                 ]
+    }
+]

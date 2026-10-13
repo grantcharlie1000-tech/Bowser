@@ -24,11 +24,12 @@ test('customize snapshot parser accepts only bounded visibility, workspace, and 
 
 test('customize commands use the existing flat cust field families and validate ids', () => {
   assert.deepEqual(logic.customizeCommand('visibility', { text: 'apps', on: true }), { a: 'visibility', text: 'apps', on: true });
-  assert.deepEqual(logic.customizeCommand('app-update', { id: 9, text: 'Mail', url: 'https://mail.example/' }), { a: 'app-update', id: 9, text: 'Mail', url: 'https://mail.example/' });
+  assert.deepEqual(logic.customizeCommand('workspace-rename', { id: 1, text: 'Work' }), { a: 'workspace-rename', id: 1, text: 'Work' });
   assert.deepEqual(logic.customizeCommand('workspace-move', { id: 1, before: 2 }), { a: 'workspace-move', id: 1, before: 2 });
   assert.deepEqual(logic.customizeCommand('workspace-delete', { id: 0 }), { a: 'workspace-delete', id: 0 });
   assert.equal(logic.customizeCommand('app-remove', { id: 0 }), null);
-  assert.equal(logic.customizeCommand('app-add', { name: '<img>', url: 'javascript:alert(1)' }), null);
+  // Create and edit go through the anchored composer, not the Customize bridge.
+  for (const a of ['workspace-create', 'app-add', 'app-update']) assert.equal(logic.customizeCommand(a, { id: 9, text: 'Mail', url: 'https://mail.example/' }), null, a);
   assert.equal(logic.customizeCommand('arbitrary', {}), null);
 });
 

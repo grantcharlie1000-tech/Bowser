@@ -2,9 +2,11 @@ import { startShell } from './shell';
 import { createMenuView } from './menu-view';
 import { createPaletteView } from './palette';
 import { createSiteInfoView } from './siteinfo';
+import { createComposerView } from './composer';
 
 // The popup host shows one page at a time on #app, chosen by the message type: `menu` (menu-view),
-// `palette` (command palette) and `siteinfo` (site information). Each view validates its own
+// `palette` (command palette), `siteinfo` (site information) and `composer` (anchored name and
+// address form on the menu surface). Each view validates its own
 // payload; anything else is ignored.
 export function startPopup(root: HTMLElement): void {
   startShell(root, 'popup');
@@ -12,6 +14,7 @@ export function startPopup(root: HTMLElement): void {
   const menu = createMenuView(root);
   const palette = createPaletteView(root);
   const siteinfo = createSiteInfoView(root);
+  const composer = createComposerView(root);
   window.chrome?.webview?.addEventListener('message', (event: { readonly data: unknown }) => {
     let value: unknown = event.data;
     if (typeof value === 'string') {
@@ -22,6 +25,7 @@ export function startPopup(root: HTMLElement): void {
       case 'menu': menu.show(value); break;
       case 'palette': palette.show(value); break;
       case 'siteinfo': siteinfo.show(value); break;
+      case 'composer': composer.show(value); break;
     }
   });
 }

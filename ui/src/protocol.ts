@@ -86,6 +86,8 @@ export type Command =
   | { v: 1; t: 'dismiss'; tok: number }
   // --- popup surfaces (lane PP) ---
   | { v: 1; t: 'act'; tok: number; id: number; n: number }
+  | { v: 1; t: 'compose'; tok: number; name: string; url?: string }
+  | { v: 1; t: 'composeopen'; a: 'workspace-new' | 'app-add' | 'app-edit'; id?: number; name?: string; url?: string; r: string }
   // --- end popup surfaces ---
   // --- hover layer ---
   | { v: 1; t: 'tip'; text: string; r: string }
@@ -440,6 +442,43 @@ export const MAX_ACT_CHOICE = 7;
 /** In-place action on an open popup page (site info control); the popup stays open. */
 export function sendPopupAct(tok: number, id: number, n: number): boolean {
   return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && isInt(n, 0, MAX_ACT_CHOICE) && send({ v: 1, t: 'act', tok, id, n });
+}
+
+/** Longest composer name Rust accepts (MAX_COMPOSER_NAME_CHARS). */
+export const MAX_COMPOSE_NAME = 128;
+/**
+ * Enter or the confirm row of an open composer page: the name and, for web apps, the address as
+ * typed. Rust validates both again and answers with the page (an error, or `done`).
+ */
+export function sendPopupCompose(tok: number, name: string, url?: string): boolean {
+  if (!isInt(tok, 0, MAX_ID) || !isStr(name, MAX_COMPOSE_NAME) || (url !== undefined && !isStr(url, MAX_TEXT))) return false;
+  return send(url === undefined ? { v: 1, t: 'compose', tok, name } : { v: 1, t: 'compose', tok, name, url });
+}
+
+export interface ComposerOpenFields {
+  /** The web app an edit changes. */
+  readonly id?: number;
+  /** Prefill (a preset): both or neither. */
+  readonly name?: string;
+  readonly url?: string;
+}
+/**
+ * A Customize flyout button asks Rust for an anchored composer, opening below-left of `rect` (the
+ * button, in the panel's CSS pixels).
+ */
+export function sendComposerOpen(
+  mode: 'workspace-new' | 'app-add' | 'app-edit',
+  rect: Parameters<typeof rectWire>[0],
+  fields: ComposerOpenFields = {},
+): boolean {
+  const r = rectWire(rect);
+  if (r === null || !isRectWire(r)) return false;
+  if ((mode === 'app-edit') !== (fields.id !== undefined)) return false;
+  if (fields.id !== undefined && !isInt(fields.id, 0, MAX_ID)) return false;
+  if (fields.name !== undefined && !isStr(fields.name, MAX_COMPOSE_NAME)) return false;
+  if (fields.url !== undefined && !isStr(fields.url, MAX_TEXT)) return false;
+  if (mode === 'workspace-new' && (fields.name !== undefined || fields.url !== undefined)) return false;
+  return send({ v: 1, t: 'composeopen', a: mode, ...fields, r });
 }
 // --- end popup surfaces ---
 

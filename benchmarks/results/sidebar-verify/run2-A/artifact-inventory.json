@@ -1,0 +1,138 @@
+﻿[
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\00-start.png",
+        "Length":  161602
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\10-bookmarks-open.png",
+        "Length":  192597
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\10-customize-open.png",
+        "Length":  207264
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\10-history-open.png",
+        "Length":  206647
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\11-bookmarks-toggle-close.png",
+        "Length":  219114
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\11-customize-toggle-close.png",
+        "Length":  207266
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\11-history-toggle-close.png",
+        "Length":  206647
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\20-home.png",
+        "Length":  206663
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\21-close-button.png",
+        "Length":  206647
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\22-escape-close.png",
+        "Length":  190609
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\23-direct-switch-to-history.png",
+        "Length":  191619
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\application-events.txt",
+        "Length":  13968
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\build.log",
+        "Length":  2250
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\capture-test-window.ps1",
+        "Length":  2482
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\cleanup-owned-profiles.ps1",
+        "Length":  3595
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\cleanup-summary.json",
+        "Length":  699
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\crash-log-status.txt",
+        "Length":  33
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-attempt.json",
+        "Length":  390
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\owned-processes-before-cleanup.json",
+        "Length":  333
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\owned-test-events.txt",
+        "Length":  115
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\panel-run.json",
+        "Length":  5456
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\panel-summary.json",
+        "Length":  8334
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\profile-files-before-cleanup.txt",
+        "Length":  1253
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\report.md",
+        "Length":  4114
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\run-panels-A.ps1",
+        "Length":  10573
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-executable-sha256.txt",
+        "Length":  229
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-window-printwindow.json",
+        "Length":  542
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-window-printwindow.png",
+        "Length":  63379
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-retry\\00-start.png",
+        "Length":  217203
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-retry\\10-bookmarks-open.png",
+        "Length":  209238
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-retry\\10-history-open.png",
+        "Length":  406636
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-retry\\11-bookmarks-toggle-close.png",
+        "Length":  533197
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\foreground-retry\\run-panels-A.ps1",
+        "Length":  10573
+    },
+    {
+        "FullName":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-bin\\bowser.exe",
+        "Length":  10860032
+    }
+]

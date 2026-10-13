@@ -1,0 +1,13 @@
+﻿{
+    "actions":  [
+                    {
+                        "kind":  "key",
+                        "vk":  13
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  4000
+                    }
+                ],
+    "name":  "local-normal-tab-enter"
+}

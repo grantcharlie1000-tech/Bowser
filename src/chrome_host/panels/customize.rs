@@ -4,8 +4,9 @@ use crate::{sidebar::{SidebarConfig, SidebarKind}, workspaces::{WorkspaceColour,
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Visibility(SidebarKind, bool),
-    AppAdd(String, String), AppUpdate(u32, String, String), AppRemove(u32), AppMove(u32, Option<u32>),
-    WorkspaceCreate(String), WorkspaceRename(u32, String), WorkspaceDelete(u32), WorkspaceMove(u32, Option<u32>),
+    // New and edited workspaces and web apps come from the anchored composer (win32/composer.rs).
+    AppRemove(u32), AppMove(u32, Option<u32>),
+    WorkspaceRename(u32, String), WorkspaceDelete(u32), WorkspaceMove(u32, Option<u32>),
     WorkspaceIcon(u32, WorkspaceIcon), WorkspaceColour(u32, Option<WorkspaceColour>),
     SwitchProfile, ClearAppData,
 }
@@ -41,11 +42,8 @@ pub(crate) fn map_command(f: PanelFields) -> Option<Action> {
     let before = || match f.before { None => Some(None), Some(0) => Some(None), Some(value) => Some(Some(u32::try_from(value).ok()?)) };
     match f.a.as_str() {
         "visibility" if exact(false,false,false,true,true,false) => Some(Action::Visibility(sidebar_kind(f.text.as_deref()?)?, f.on?)),
-        "app-add" if exact(false,false,false,false,true,true) => Some(Action::AppAdd(f.text?, f.url?)),
-        "app-update" if exact(true,false,false,false,true,true) => Some(Action::AppUpdate(id()?, f.text?, f.url?)),
         "app-remove" if exact(true,false,false,false,false,false) => Some(Action::AppRemove(id()?)),
         "app-move" if exact(true,true,false,false,false,false) => Some(Action::AppMove(id()?, before()?)),
-        "workspace-create" if exact(false,false,false,false,true,false) => Some(Action::WorkspaceCreate(f.text?)),
         "workspace-rename" if exact(true,false,false,false,true,false) => Some(Action::WorkspaceRename(id()?, f.text?)),
         "workspace-delete" if exact(true,false,false,false,false,false) => Some(Action::WorkspaceDelete(id()?)),
         "workspace-move" if exact(true,true,false,false,false,false) => Some(Action::WorkspaceMove(id()?, before()?)),
@@ -78,14 +76,26 @@ mod tests {
     #[test]
     fn hyphenated_wire_actions_reach_the_handler_from_raw_messages() {
         use crate::chrome_host::protocol::{parse_command, Command, PanelType};
-        // The page must be able to send these verbatim: `workspace-create` has a hyphen.
+        // The page must be able to send these verbatim: `workspace-icon` has a hyphen.
         for (raw, expected) in [
-            (r#"{"v":1,"t":"cust","a":"workspace-create","text":"Work"}"#, Action::WorkspaceCreate("Work".into())),
             (r#"{"v":1,"t":"cust","a":"workspace-icon","id":1,"text":"code"}"#, Action::WorkspaceIcon(1, WorkspaceIcon::Code)),
-            (r#"{"v":1,"t":"cust","a":"app-add","text":"Mail","url":"https://mail.example/"}"#, Action::AppAdd("Mail".into(), "https://mail.example/".into())),
+            (r#"{"v":1,"t":"cust","a":"app-remove","id":4}"#, Action::AppRemove(4)),
         ] {
             let Ok(Command::Panel { kind: PanelType::Customize, f }) = parse_command(raw) else { panic!("{raw}") };
             assert_eq!(map_command(f), Some(expected), "{raw}");
+        }
+    }
+
+    #[test]
+    fn creating_and_editing_go_through_the_composer_not_the_customize_bridge() {
+        use crate::chrome_host::protocol::{parse_command, Command, PanelType};
+        for raw in [
+            r#"{"v":1,"t":"cust","a":"workspace-create","text":"Work"}"#,
+            r#"{"v":1,"t":"cust","a":"app-add","text":"Mail","url":"https://mail.example/"}"#,
+            r#"{"v":1,"t":"cust","a":"app-update","id":4,"text":"Mail","url":"https://mail.example/"}"#,
+        ] {
+            let Ok(Command::Panel { kind: PanelType::Customize, f }) = parse_command(raw) else { panic!("{raw}") };
+            assert_eq!(map_command(f), None, "{raw}");
         }
     }
 

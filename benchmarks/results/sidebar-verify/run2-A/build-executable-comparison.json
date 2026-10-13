@@ -1,0 +1,20 @@
+﻿[
+    {
+        "path":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\target-luna3\\debug\\bowser.exe",
+        "length":  10867200,
+        "lastWriteTime":  "\/Date(1791771977595)\/",
+        "sha256":  "8E24B3C203FBE9FB58B6734E786D51BAFFD652129004C09D553FF89F32481E87"
+    },
+    {
+        "path":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-bin\\bowser.exe",
+        "length":  10860032,
+        "lastWriteTime":  "\/Date(1791771342915)\/",
+        "sha256":  "F7B84D161F215213E0CE6C505352501C18FC2801672C51E27FF0B338260EF584"
+    },
+    {
+        "path":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\built-after-test-bowser.exe",
+        "length":  10867200,
+        "lastWriteTime":  "\/Date(1791771977595)\/",
+        "sha256":  "8E24B3C203FBE9FB58B6734E786D51BAFFD652129004C09D553FF89F32481E87"
+    }
+]

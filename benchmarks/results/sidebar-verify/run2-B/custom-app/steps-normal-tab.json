@@ -1,0 +1,21 @@
+﻿{
+    "actions":  [
+                    {
+                        "kind":  "ctrlKey",
+                        "vk":  76
+                    },
+                    {
+                        "kind":  "type",
+                        "text":  "http://127.0.0.1:8765/"
+                    },
+                    {
+                        "kind":  "key",
+                        "vk":  13
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  5000
+                    }
+                ],
+    "name":  "normal-tab-local-probe"
+}

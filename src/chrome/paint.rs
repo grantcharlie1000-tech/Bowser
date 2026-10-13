@@ -598,7 +598,7 @@ impl ChromeSurface {
     }
 
     /// The window colour made opaque (the glass tint alone would let the desktop through), inside
-    /// the same rounded edge a page gets, with a themed card holding a centred search field. Every
+    /// the same rounded edge a page gets. Nothing else is drawn: an empty page stays empty. Every
     /// colour comes from the palette, composited down to opaque so it reads the same on glass.
     fn paint_new_tab_surface(&mut self, view: &ChromeView<'_>, region: Rect, dirty: Rect) {
         if region.intersect(dirty).is_empty() {
@@ -610,43 +610,6 @@ impl ChromeSurface {
         let base = Rgba { a: 255, ..palette.window };
         self.round(region, radius, base, dirty);
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
-
-        let line = self.text.line_height();
-        let pad = m.px(20);
-        let pill_height = (line + m.px(20)).max(m.px(40));
-        let card_height = pad + line + m.px(14) + pill_height + pad;
-        let card_width = m.px(420).min(region.width() - m.px(32));
-        if card_width < m.px(220) || card_height > region.height() - m.px(32) {
-            return;
-        }
-        let (cx, cy) = center(region);
-        // Sit a little above true centre, where the eye expects a start page's content.
-        let top = (cy - card_height / 2 - region.height() / 16).max(region.top + m.px(16));
-        let card = Rect::new(cx - card_width / 2, top, cx - card_width / 2 + card_width, top + card_height);
-        let card_fill = opaque_over(base, palette.omnibox_fill);
-        let card_radius = m.px(14);
-        self.round(card, card_radius, card_fill, dirty);
-        self.border(card, card_radius, 1.0, palette.omnibox_border, dirty);
-
-        let title_rect = Rect::new(card.left + pad, card.top + pad, card.right - pad, card.top + pad + line);
-        self.draw_text("New tab", title_rect, palette.omnibox_text, true, title_rect, dirty);
-
-        let pill = Rect::new(card.left + pad, title_rect.bottom + m.px(14), card.right - pad, title_rect.bottom + m.px(14) + pill_height);
-        let pill_fill = opaque_over(card_fill, palette.omnibox_fill);
-        self.round(pill, pill_height / 2, pill_fill, dirty);
-        self.border(pill, pill_height / 2, 1.0, palette.omnibox_border, dirty);
-        // A magnifier drawn from a ring and a handle, in the placeholder colour.
-        let glass = m.px(12);
-        let glass_left = pill.left + m.px(16);
-        let glass_top = (pill.top + pill.bottom - glass) / 2 - m.px(1);
-        let ring = Rect::new(glass_left, glass_top, glass_left + glass, glass_top + glass);
-        let stroke = (1.5 * m.dpi() as f32 / 96.0).max(1.0);
-        self.border(ring, glass / 2, stroke, palette.omnibox_placeholder, dirty);
-        let (rx, ry) = (ring.right as f32 - glass as f32 * 0.15, ring.bottom as f32 - glass as f32 * 0.15);
-        self.line_f(rx, ry, rx + glass as f32 * 0.4, ry + glass as f32 * 0.4, stroke, palette.omnibox_placeholder, dirty);
-        let text_left = ring.right + m.px(12);
-        let text_rect = Rect::new(text_left, (pill.top + pill.bottom - line) / 2, pill.right - m.px(16), (pill.top + pill.bottom + line) / 2);
-        self.draw_text("Search or enter address", text_rect, palette.omnibox_placeholder, true, text_rect, dirty);
     }
 
     fn paint_page_boundary(&mut self, view: &ChromeView<'_>, dirty: Rect) {
@@ -2422,14 +2385,6 @@ fn blend_pixel(dst: &mut [u8], color: Rgba, coverage: u8) {
     }
 }
 
-/// Blends two colours by weighting each with its alpha, so a transparent end adds no tint.
-/// `top` laid over the opaque `base`, as one opaque colour.
-fn opaque_over(base: Rgba, top: Rgba) -> Rgba {
-    let alpha = u32::from(top.a);
-    let channel = |under: u8, over: u8| ((u32::from(over) * alpha + u32::from(under) * (255 - alpha) + 127) / 255) as u8;
-    Rgba { r: channel(base.r, top.r), g: channel(base.g, top.g), b: channel(base.b, top.b), a: 255 }
-}
-
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let (wa, wb) = ((1.0 - t) * f32::from(a.a), t * f32::from(b.a));
     let alpha = wa + wb;
@@ -3078,15 +3033,6 @@ mod tests {
             upload_decision(None, surface((10, 20), 400, 100, 96), Rect::new(1, 2, 3, 4)),
             Upload::Full
         );
-    }
-
-    #[test]
-    fn opaque_over_composites_a_translucent_colour_onto_an_opaque_base() {
-        let base = Rgba::hex(0x000000, 0xFF);
-        assert_eq!(opaque_over(base, Rgba::hex(0xFFFFFF, 0xFF)), Rgba::hex(0xFFFFFF, 0xFF));
-        assert_eq!(opaque_over(base, Rgba::hex(0xFFFFFF, 0x00)), base);
-        let half = opaque_over(base, Rgba::hex(0xFFFFFF, 0x80));
-        assert_eq!((half.r, half.a), (128, 255));
     }
 
     #[test]

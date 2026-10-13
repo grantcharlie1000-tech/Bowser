@@ -1,0 +1,29 @@
+﻿PROFILE vA-1 C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-1
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-1\privacy-stats.txt length=61
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-1\running.lock length=13
+---
+PROFILE vA-2 C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-2
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-2\privacy-stats.txt length=61
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-2\running.lock length=13
+---
+PROFILE vA-3 C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-3
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-3\privacy-stats.txt length=61
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-3\running.lock length=13
+---
+PROFILE vA-4 C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-4
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-4\privacy-stats.txt length=61
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-4\settings.txt length=165
+tab_layout=horizontal
+sidebar_width=260
+side_panel_width=340
+sleep_enabled=true
+sleep_after_secs=300
+blocker_enabled=true
+blocker_allow=
+automatic_tab_grouping=true
+
+FILE C:\Users\charlie\AppData\Local\Bowser\Profiles\vA-4\workspaces.txt length=45
+active=0
+workspace=0	Default	0	0	briefcase	-
+
+---

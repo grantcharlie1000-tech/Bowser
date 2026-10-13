@@ -1,0 +1,11 @@
+﻿<!doctype html><meta charset="utf-8"><title>Bowser sidebar probe</title>
+<style>body{font:20px Segoe UI;background:#e8f4ff;color:#123;padding:2rem}button,a{font:18px;margin:.5rem;padding:.6rem}.good{color:green}.bad{color:red}pre{white-space:pre-wrap;background:white;padding:1rem}</style>
+<h1>Sidebar web app probe</h1><p id="counter"></p><p id="stamp"></p><p id="origin"></p><p id="capability"></p><p id="storage"></p>
+<button id="windowOpen">window.open example.com</button><a href="https://example.com/" target="_blank">Cross-site link example.com</a>
+<button id="storageCheck">Read local storage and cookie</button><pre id="log"></pre>
+<script>
+let n=+(localStorage.getItem('probe-count')||0)+1; localStorage.setItem('probe-count',n); document.cookie='probe-cookie=webapp; path=/; SameSite=Lax';
+document.querySelector('#counter').textContent='Load counter: '+n; document.querySelector('#stamp').textContent='Loaded: '+new Date().toISOString(); document.querySelector('#origin').textContent='Origin: '+location.origin;
+let w=!!(window.chrome&&window.chrome.webview); document.querySelector('#capability').textContent='window.chrome.webview: '+w; let log=[]; try{if(w){window.chrome.webview.postMessage({kind:'sidebar-probe',origin:location.origin});log.push('postMessage returned')}else log.push('no WebView host object')}catch(e){log.push('postMessage exception: '+e)}; document.querySelector('#log').textContent=log.join('\n');
+document.querySelector('#storage').textContent='Cookie: '+document.cookie+'; localStorage: '+localStorage.getItem('probe-count'); document.querySelector('#storageCheck').onclick=()=>document.querySelector('#storage').textContent='Cookie: '+document.cookie+'; localStorage: '+localStorage.getItem('probe-count'); document.querySelector('#windowOpen').onclick=()=>window.open('https://example.com/','_blank');
+</script>

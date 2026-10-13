@@ -1,0 +1,14 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  56,
+                        "x":  22,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  1200
+                    }
+                ],
+    "name":  "customize-open"
+}

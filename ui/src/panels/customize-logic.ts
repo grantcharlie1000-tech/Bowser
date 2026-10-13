@@ -34,7 +34,8 @@ export function parseCustomizeSnapshot(value: unknown): CustomizeSnapshot | null
 }
 
 type Payload = { id?: number; parent?: number; before?: number; n?: number; on?: boolean; text?: string; url?: string };
-const ACTIONS = new Set(['visibility', 'app-add', 'app-update', 'app-remove', 'app-move', 'workspace-create', 'workspace-rename', 'workspace-delete', 'workspace-move', 'workspace-icon', 'workspace-colour', 'switch-profile', 'clear-app-data']);
+// Creating a workspace or web app, and editing one, go through the anchored composer (composer-logic.ts), not here.
+const ACTIONS = new Set(['visibility', 'app-remove', 'app-move', 'workspace-rename', 'workspace-delete', 'workspace-move', 'workspace-icon', 'workspace-colour', 'switch-profile', 'clear-app-data']);
 
 /** Builds only commands expressible through the current flat PanelFields bridge. */
 export function customizeCommand(a: string, payload: Payload): ({ a: string } & Payload) | null {
@@ -50,15 +51,12 @@ export function customizeCommand(a: string, payload: Payload): ({ a: string } & 
   if (payload.text !== undefined && (typeof payload.text !== 'string' || payload.text.length > 2048)) return null;
   if (payload.url !== undefined && !webUrl(payload.url)) return null;
   if (a === 'visibility' && (!RAIL_KEYS.includes(payload.text as never) || typeof payload.on !== 'boolean')) return null;
-  if (a === 'app-add' && (!name(payload.text) || !webUrl(payload.url))) return null;
-  if (a === 'app-update' && (!id(payload.id) || !name(payload.text) || !webUrl(payload.url))) return null;
   if (a === 'app-remove' && !id(payload.id)) return null;
   if (a === 'workspace-delete' && !workspaceId(payload.id)) return null;
   if (a === 'app-move' && (!id(payload.id) || (payload.before !== undefined && !id(payload.before)))) return null;
   if (a === 'workspace-move' && (!workspaceId(payload.id) || (payload.before !== undefined && !workspaceId(payload.before)))) return null;
   if (['workspace-rename', 'workspace-icon', 'workspace-colour'].includes(a) && !workspaceId(payload.id)) return null;
   if (a === 'workspace-rename' && !name(payload.text)) return null;
-  if (a === 'workspace-create' && !name(payload.text)) return null;
   if (a === 'workspace-icon' && !WORKSPACE_ICONS.includes(payload.text as never)) return null;
   if (a === 'workspace-colour' && payload.n !== -1 && (!Number.isInteger(payload.n) || (payload.n as number) < 0 || (payload.n as number) > 7)) return null;
   if (['switch-profile', 'clear-app-data'].includes(a) && fields.length !== 0) return null;

@@ -1,0 +1,1 @@
+﻿No Application Error/WER 1000/1001 event matched owned test process PID 67992 (vA-4) since 12/10/2026 03:19:48

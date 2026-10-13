@@ -103,6 +103,10 @@
   transition: box-shadow var(--bw-dur-base) var(--bw-ease-out);
 }
 
+/* Released: the dropped tab keeps its place above its neighbours until it lands. Its shadow eases back
+   to the tab's own through the base box-shadow transition; transform shares that 167ms ease-out. */
+.strip .tab.landing { z-index: 5; }
+
 /* A closed tab fades where it stood while its neighbours slide into the gap. */
 .strip .tab.ghost,
 .strip .tab.pinned.ghost {
@@ -372,5 +376,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .strip .tab.dragging { box-shadow: var(--bw-sh-tip); }
+  .strip .tab.dragging,
+  .strip .tab.landing { box-shadow: var(--bw-sh-tip); }
 }

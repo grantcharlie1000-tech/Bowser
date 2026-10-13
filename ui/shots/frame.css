@@ -1,0 +1,2 @@
+html, body { margin: 0; background: #202124; }
+body { display: flex; justify-content: flex-start; padding: 24px; }

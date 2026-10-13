@@ -1,0 +1,15 @@
+﻿{
+    "ownedProcessIdsBefore":  [
+                                  67992
+                              ],
+    "ownedProcessesRemaining":  0,
+    "profileRootsRemoved":  [
+                                "vA-1",
+                                "vA-2",
+                                "vA-3",
+                                "vA-4"
+                            ],
+    "crashLogPresent":  false,
+    "eventsFile":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\owned-test-events.txt",
+    "profilesFile":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\profile-files-before-cleanup.txt"
+}

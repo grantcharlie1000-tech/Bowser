@@ -163,6 +163,10 @@ enum DeferredChromeCommand {
     // --- popup surfaces (lane PP) ---
     /// An in-place action on an open popup page (site info toggle).
     PopupAct { tok: u32, id: u32, n: u8 },
+    /// A composer's submit; its text waits in `html_popup`.
+    PopupCompose { tok: u32 },
+    /// A composer the Customize flyout asked for; the request waits in `composer`.
+    ComposerOpen,
     // --- end popup surfaces ---
 }
 /// Frame interval while chrome transitions run; about 60 frames a second.
@@ -3689,12 +3693,12 @@ fn html_broadcast_pair(hwnd: HWND, app: &AppRef) {
 // --- end split view ---
 // --- rail flyouts ---
 /// The flyout a rail button opens, if it opens one (History, Bookmarks, Customize, and the rail's
-/// more and add-web-app buttons, which open Customize).
+/// more button, which opens Customize). The Add buttons open a composer, not a flyout.
 fn flyout_panel(key: RailKey) -> Option<side_panel::PanelId> {
     match key {
         RailKey::History => Some(side_panel::PanelId::History),
         RailKey::Bookmarks => Some(side_panel::PanelId::Bookmarks),
-        RailKey::Customize | RailKey::Menu | RailKey::AddApp => Some(side_panel::PanelId::Customize),
+        RailKey::Customize | RailKey::Menu => Some(side_panel::PanelId::Customize),
         _ => None,
     }
 }
@@ -3796,17 +3800,11 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
     // --- end rail flyouts ---
     match key {
         RailKey::Home => { App::new_tab(app); focus_omni(hwnd, app, true); }
-        RailKey::Customize | RailKey::Menu | RailKey::AddApp => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
+        RailKey::Customize | RailKey::Menu => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
         RailKey::Workspace(id) => { let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id as u32)); }
-        RailKey::AddWorkspace => {
-            let count = App::workspace_entries(app).len();
-            let name = format!("Workspace {}", count + 1);
-            if let Ok(id) = App::workspace_create(app, &name) {
-                if let Some(renamed) = super::profile_rename::prompt(hwnd, &name, "New workspace", "Create") {
-                    let _ = App::rename_workspace(app, id, &renamed);
-                }
-            }
-        }
+        // A composer below the button; nothing is created until it is confirmed.
+        RailKey::AddWorkspace => open_rail_composer(hwnd, app, key, super::composer::Composer::WorkspaceNew),
+        RailKey::AddApp => open_rail_composer(hwnd, app, key, super::composer::Composer::AppAdd),
         RailKey::App(id) => {
             if let Ok(profile) = crate::profile::active() {
                 if let Ok(config) = crate::sidebar::SidebarConfig::load(profile.root()) {
@@ -3845,7 +3843,49 @@ fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, 
     }).flatten()
 }
 
-fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32) {
+/// Opens a composer for a rail Add button: at the click point when the pointer is on the button,
+/// else (keyboard activation) at the rail's right edge level with the button's top.
+fn open_rail_composer(hwnd: HWND, app: &AppRef, key: RailKey, composer: super::composer::Composer) {
+    let at = rail_composer_anchor(hwnd, key);
+    if !super::composer::open(hwnd, app, composer.clone(), None, at) {
+        // Native chrome has no popup host: Add web app opens Customize as before, and a new
+        // workspace is named first and created only if the prompt is confirmed.
+        match composer {
+            super::composer::Composer::AppAdd => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
+            _ => {
+                let name = format!("Workspace {}", App::workspace_entries(app).len() + 1);
+                if let Some(name) = super::profile_rename::prompt(hwnd, &name, "New workspace", "Create") {
+                    let _ = App::workspace_create(app, &name);
+                }
+            }
+        }
+    }
+}
+
+fn rail_composer_anchor(hwnd: HWND, key: RailKey) -> POINT {
+    let mut cursor = POINT::default();
+    let has_cursor = unsafe { GetCursorPos(&mut cursor) }.is_ok();
+    let anchor = flyout_anchor(hwnd, key);
+    match anchor {
+        Some(anchor) if !(has_cursor
+            && cursor.x >= anchor.button.left && cursor.x < anchor.button.right
+            && cursor.y >= anchor.button.top && cursor.y < anchor.button.bottom) =>
+        {
+            POINT { x: anchor.rail_right, y: anchor.button.top }
+        }
+        _ => {
+            let mut client = cursor;
+            unsafe { let _ = ScreenToClient(hwnd, &mut client); }
+            screen_point(hwnd, rail_menu_anchor(client, layout::left_rail_inset(dpi(hwnd))))
+        }
+    }
+}
+
+/// Edit… on a rail web app: the composer opens where the menu was (`at`, screen pixels).
+fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32, at: POINT) {
+    if super::composer::open(hwnd, app, super::composer::Composer::AppEdit(id), None, at) {
+        return;
+    }
     super::panel_customize::focus_app(id);
     // --- rail flyouts ---
     if html_panel::active_id(hwnd) == Some(side_panel::PanelId::Customize) {
@@ -4054,7 +4094,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 if !rail_model_keys(hwnd).contains(&key) { return; }
                 match chosen.id {
                     1 => activate_rail(hwnd, app, key),
-                    2 => edit_rail_app(hwnd, app, id),
+                    2 => edit_rail_app(hwnd, app, id, point),
                     3 if crate::win32::ask_yes_no("Remove this web app from the rail?") => {
                         if let Ok(profile) = crate::profile::active() {
                             let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
@@ -6627,6 +6667,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::PopupPick { .. }
         | ChromeCommand::PopupDismiss { .. }
         | ChromeCommand::PopupAct { .. }
+        | ChromeCommand::PopupCompose { .. }
+        | ChromeCommand::ComposerOpen { .. }
         // --- hover layer ---
         | ChromeCommand::Hover(_)
         | ChromeCommand::HoverAct { .. }
@@ -7094,9 +7136,42 @@ pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
                 defer_html_command(hwnd, DeferredChromeCommand::PopupAct { tok, id, n });
             }
         }
+        ChromeCommand::PopupCompose { tok, name, url } => {
+            if html_popup::stash_compose(hwnd, tok, name, url) {
+                defer_html_command(hwnd, DeferredChromeCommand::PopupCompose { tok });
+            }
+        }
         // --- end popup surfaces ---
         _ => {}
     }
+}
+
+/// A Customize flyout button asked for a composer below-left of `rect` (CSS pixels of the flyout,
+/// whose controller covers `view` on screen). The request runs from the deferred queue, after the
+/// WebView2 callback that delivered it.
+pub(super) fn request_composer(
+    hwnd: HWND,
+    view: RECT,
+    mode: chrome_host::protocol::ComposerMode,
+    id: Option<u32>,
+    name: Option<String>,
+    url: Option<String>,
+    rect: chrome_host::protocol::HoverRect,
+) {
+    use chrome_host::protocol::ComposerMode;
+    let composer = match (mode, id) {
+        (ComposerMode::WorkspaceNew, _) => super::composer::Composer::WorkspaceNew,
+        (ComposerMode::AppAdd, _) => super::composer::Composer::AppAdd,
+        (ComposerMode::AppEdit, Some(id)) => super::composer::Composer::AppEdit(id),
+        (ComposerMode::AppEdit, None) => return,
+    };
+    let button = super::html_hover::anchor_to_screen(view, dpi(hwnd) as f32 / 96.0, rect);
+    super::composer::stash(hwnd, super::composer::Request {
+        composer,
+        prefill: name.zip(url),
+        at: POINT { x: button.left, y: button.bottom },
+    });
+    defer_html_command(hwnd, DeferredChromeCommand::ComposerOpen);
 }
 
 pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
@@ -7192,6 +7267,14 @@ fn run_deferred_html_command(hwnd: HWND) {
             super::html_hover::popup_closed(hwnd);
         }
         DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
+        DeferredChromeCommand::PopupCompose { tok } => html_popup::run_compose(hwnd, tok, &app),
+        DeferredChromeCommand::ComposerOpen => {
+            if let Some(request) = super::composer::take(hwnd) {
+                // The flyout closes first so the composer takes the page's focus, not the flyout's.
+                html_panel::dismiss(hwnd);
+                super::composer::open(hwnd, &app, request.composer, request.prefill, request.at);
+            }
+        }
         // --- end popup host ---
     }
     html_sync(hwnd);
@@ -7630,7 +7713,8 @@ fn html_rail_action(hwnd: HWND, action: RailAction, wire: RailKeyWire, rect: Opt
         return;
     };
     // --- rail flyouts ---
-    if let Some(rect) = rect.filter(|_| flyout_panel(key).is_some()) {
+    // The Add buttons keep their rectangle too: it places the composer they open.
+    if let Some(rect) = rect.filter(|_| flyout_panel(key).is_some() || matches!(key, RailKey::AddWorkspace | RailKey::AddApp)) {
         let _ = with_chrome(hwnd, |s| s.html_rail_anchors.insert(key, rect));
     }
     // --- end rail flyouts ---

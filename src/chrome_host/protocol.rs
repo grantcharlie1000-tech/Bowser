@@ -11,6 +11,8 @@ use std::{fmt, time::{Duration, Instant}};
 pub const MAX_RAW_BYTES: usize = 16 * 1024;
 /// Longest text field accepted from the page, in characters.
 pub const MAX_TEXT_CHARS: usize = 2048;
+/// Longest name a composer page may submit (the page limits names to 40; Rust checks again).
+pub const MAX_COMPOSER_NAME_CHARS: usize = 128;
 /// Most keys one page message may carry (`v` and `t` included). The largest message type uses four
 /// more; a seventh key is rejected before its duplicate check runs.
 pub const MAX_FIELDS: usize = 6;
@@ -93,6 +95,10 @@ pub enum RailAction {
     /// intent delay while a flyout is open: Rust switches the open flyout to it.
     Hover,
 }
+
+/// What an anchored composer creates or edits (`composeopen`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename }
@@ -231,6 +237,12 @@ pub enum Command {
     /// token `tok` set to choice `n`. The popup stays open; Rust validates `id` and `n` against the
     /// page it sent and answers with a refreshed page.
     PopupAct { tok: u32, id: u32, n: u8 },
+    /// Enter or the confirm row on an open composer page: the name (and, for web apps, the address)
+    /// as typed. Rust validates them again and answers with the page, carrying an error or `done`.
+    PopupCompose { tok: u32, name: String, url: Option<String> },
+    /// A Customize flyout button asks for a composer below-left of `rect` (CSS pixels of the
+    /// panel). `id` names the web app of an edit; `name` and `url` prefill a preset.
+    ComposerOpen { mode: ComposerMode, id: Option<u32>, name: Option<String>, url: Option<String>, rect: HoverRect },
     // --- hover layer ---
     /// A `data-tip` element was hovered long enough: show `text` under `rect`, a rectangle in CSS
     /// pixels of the sending view's viewport.
@@ -845,6 +857,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "pick" => &["tok", "id"],
         "dismiss" => &["tok"],
         "act" => &["tok", "id", "n"],
+        "compose" => &["tok", "name", "url"],
+        "composeopen" => &["a", "id", "name", "url", "r"],
         // --- hover layer ---
         "tip" => &["text", "r"],
         "tipoff" => &[],
@@ -986,6 +1000,30 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             let n = uint_field(fields, "n")?;
             if n > u32::from(MAX_ACT_CHOICE) { return Err(ProtocolError::InvalidValue("n")); }
             Command::PopupAct { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")?, n: n as u8 }
+        }
+        "compose" => {
+            let name = str_field(fields, "name")?;
+            if name.chars().count() > MAX_COMPOSER_NAME_CHARS { return Err(ProtocolError::TooLong("name")); }
+            Command::PopupCompose { tok: uint_field(fields, "tok")?, name: name.to_owned(), url: optional_text(fields, "url")? }
+        }
+        "composeopen" => {
+            let mode = match str_field(fields, "a")? {
+                "workspace-new" => ComposerMode::WorkspaceNew,
+                "app-add" => ComposerMode::AppAdd,
+                "app-edit" => ComposerMode::AppEdit,
+                _ => return Err(ProtocolError::InvalidValue("a")),
+            };
+            let id = match field(fields, "id") {
+                None => None,
+                Some(_) => Some(uint_field(fields, "id")?),
+            };
+            // An edit names its app; the other two never do. Only a web app carries an address.
+            if (mode == ComposerMode::AppEdit) != id.is_some() { return Err(ProtocolError::InvalidValue("id")); }
+            let name = optional_text(fields, "name")?;
+            let url = optional_text(fields, "url")?;
+            if name.as_ref().is_some_and(|name| name.chars().count() > MAX_COMPOSER_NAME_CHARS) { return Err(ProtocolError::TooLong("name")); }
+            if mode == ComposerMode::WorkspaceNew && url.is_some() { return Err(ProtocolError::UnknownKey("url".into())); }
+            Command::ComposerOpen { mode, id, name, url, rect: rect_field(fields)? }
         }
         // --- hover layer ---
         "tip" => {
@@ -1803,6 +1841,47 @@ mod tests {
 
     fn ok(raw: &str) -> Command {
         parse_command(raw).unwrap_or_else(|e| panic!("{raw:?} rejected: {e}"))
+    }
+
+    #[test]
+    fn composer_messages_carry_text_and_a_rectangle_and_nothing_else() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"compose","tok":3,"name":"Work"}"#),
+            Command::PopupCompose { tok: 3, name: "Work".into(), url: None },
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"compose","tok":3,"name":"Mail","url":"https://mail.example/"}"#),
+            Command::PopupCompose { tok: 3, name: "Mail".into(), url: Some("https://mail.example/".into()) },
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"composeopen","a":"workspace-new","r":"4,8,120,28"}"#),
+            Command::ComposerOpen { mode: ComposerMode::WorkspaceNew, id: None, name: None, url: None, rect: HoverRect { x: 4, y: 8, w: 120, h: 28 } },
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"composeopen","a":"app-add","name":"Spotify","url":"https://open.spotify.com/","r":"1,2,3,4"}"#),
+            Command::ComposerOpen {
+                mode: ComposerMode::AppAdd, id: None, name: Some("Spotify".into()), url: Some("https://open.spotify.com/".into()),
+                rect: HoverRect { x: 1, y: 2, w: 3, h: 4 },
+            },
+        );
+        assert!(matches!(
+            ok(r#"{"v":1,"t":"composeopen","a":"app-edit","id":9,"r":"1,2,3,4"}"#),
+            Command::ComposerOpen { mode: ComposerMode::AppEdit, id: Some(9), .. }
+        ));
+        for raw in [
+            r#"{"v":1,"t":"compose","tok":3}"#,
+            r#"{"v":1,"t":"compose","tok":3,"name":"x","extra":1}"#,
+            r#"{"v":1,"t":"compose","name":"x"}"#,
+            r#"{"v":1,"t":"composeopen","a":"app-edit","r":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"composeopen","a":"app-add","id":1,"r":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"composeopen","a":"workspace-new","url":"https://x.test/","r":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"composeopen","a":"delete","r":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"composeopen","a":"app-add"}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+        let long = "a".repeat(MAX_COMPOSER_NAME_CHARS + 1);
+        assert!(parse_command(&format!(r#"{{"v":1,"t":"compose","tok":3,"name":"{long}"}}"#)).is_err());
     }
 
     fn err(raw: &str) -> ProtocolError {

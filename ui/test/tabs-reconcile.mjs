@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'tabs-logic.ts'), 'utf8');
 const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
 const logic = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const { beforeSlotId, groupColourIndex, ACTIVE_WEIGHT, groupWeight, privateTabName, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
+const { flipInvert, landingFirst, landingPhase, beforeSlotId, groupColourIndex, ACTIVE_WEIGHT, groupWeight, privateTabName, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
 
 const tab = (id, extra = {}) => ({
   id,
@@ -215,4 +215,57 @@ test('automatic groups (no colour id) get a stable palette colour, explicit ids 
   assert.ok(a >= 0 && a < 8);
   const used = new Set(['wikipedia.org', 'github.com', 'bbc.com', 'rust-lang.org', 'docs.rs', 'crates.io'].map((n) => groupColourIndex(-1, 1, n)));
   assert.ok(used.size >= 3, 'different sites spread over the palette');
+});
+
+test('landingPhase: only a changed layout reorders; the layout the drop left is stale', () => {
+  assert.equal(landingPhase(null, 'a b c'), 'none');
+  assert.equal(landingPhase('a b c', 'a b c'), 'stale');
+  assert.equal(landingPhase('a b c', 'b a c'), 'reorder');
+});
+
+// Slots of 100px: tabs a b c at 0, 100, 200. Tab a is dragged 250px right and dropped after c.
+// Release: the dropped tab sits at home + offset (0 + 250); the host reorders to b c a, so a's slot is 200.
+test('drop FLIP: a dragged tab travels from the release point to its slot, never back through the origin', () => {
+  const home = 0;
+  const dx = 250;
+  const first = landingFirst(home, dx);
+  assert.equal(first, 250);
+  const last = 200; // new slot, measured once the drag transform is cleared and the order applied
+  const invert = flipInvert(first, last);
+  assert.equal(invert, 50);
+  // The tab starts at last + invert (the release point) and eases to last: every position in between
+  // lies between 250 and 200, so it never reaches its origin slot (0).
+  for (let t = 0; t <= 1; t += 0.25) {
+    const x = last + invert * (1 - t);
+    assert.ok(x >= last && x <= first, 'monotonic between release point and slot');
+    assert.ok(x > home, 'does not pass the origin');
+  }
+  // The old bug re-read the leftover transform: first = rect incl. dx, last = newHome + dx, which inverted to
+  // oldHome - newHome (the origin). The explicit offset arithmetic does not.
+  const buggyInvert = flipInvert(home + dx, 200 + dx);
+  assert.equal(buggyInvert, -200);
+  assert.notEqual(invert, buggyInvert);
+});
+
+test('drop FLIP: a leftward drag and a neighbour close up by their own displacement', () => {
+  // Tab c at 200 dragged 150 left to 50 and dropped before a; reordered to c a b: c's slot is 0.
+  assert.equal(flipInvert(landingFirst(200, -150), 0), 50);
+  // Neighbour a, shifted +100 by the slide, reads its rect at 100 and lands at 100: no residual.
+  assert.equal(flipInvert(100, 100), 0);
+});
+
+test('tabs.ts: one landing flag, an honest shift and a single 167ms ease-out (no second trip through the origin)', () => {
+  const ts = readFileSync(join(here, '..', 'src', 'tabs.ts'), 'utf8');
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
+  assert.doesNotMatch(ts, /settling|settleTimer/, 'the settling flag and its timer are replaced by landing');
+  assert.match(ts, /let landing: Landing \| null/);
+  assert.match(ts, /d\.node\.shift = dx;/, 'the dragged tab tracks its transform in shift');
+  assert.match(ts, /n\.root\.style\.transform === ''/, 'setShift(n, 0) clears the dragged tab even when shift was 0');
+  assert.match(ts, /landingPhase\(landing\?\.signature \?\? null, nextSignature\)/, 'a stale render never touches transforms');
+  assert.match(ts, /classList\.add\('landing'\);\s*d\.node\.root\.classList\.remove\('dragging'\);/, '.dragging hands over to .landing, never both dropped');
+  assert.match(ts, /scale\(\$\{LIFT_SCALE\}\)/, 'the lift rides inside the landing transform');
+  assert.match(ts, /ev\.propertyName === 'transform'/);
+  assert.match(css, /\.strip \.tab\.landing \{ z-index: 5; \}/);
+  assert.match(css, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\), box-shadow var\(--bw-dur-base\) var\(--bw-ease-out\);/);
+  assert.doesNotMatch(css, /\.tab\.landing[^}]*transition/, 'landing adds no second transition');
 });

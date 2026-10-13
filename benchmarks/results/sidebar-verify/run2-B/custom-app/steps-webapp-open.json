@@ -1,0 +1,14 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  166,
+                        "x":  22,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  4500
+                    }
+                ],
+    "name":  "webapp-open"
+}

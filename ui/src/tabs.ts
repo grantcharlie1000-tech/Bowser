@@ -18,8 +18,11 @@ import {
   buildEntries,
   dropIndex,
   dragScrollDelta,
+  flipInvert,
   groupWeight,
   hiddenForTab,
+  landingFirst,
+  landingPhase,
   layoutSignature,
   privateTabName,
   pruneFavs,
@@ -46,6 +49,20 @@ const ACCENT = 'var(--bw-accent)';
 const DRAG_START_PX = 4;
 /** Above this many tabs, position animations are skipped (each one costs a measured layout). */
 const FLIP_MAX_TABS = 80;
+/** Scale of the held tab; it rides inside the landing transform and reaches 1 as the tab arrives. */
+const LIFT_SCALE = 1.02;
+/** Wait for the host's reorder after a drop before the tab eases back to where it started. */
+const REFUSE_MS = 400;
+/** Longest a landing transition is waited for (167ms plus slack) before `.landing` is dropped anyway. */
+const LAND_FALLBACK_MS = 250;
+
+/** A dropped tab on its way to its slot. `timer` is the refuse fallback, then the transition fallback. */
+interface Landing {
+  readonly node: TabNode;
+  readonly signature: string;
+  timer: number;
+  off: (() => void) | null;
+}
 
 export interface TabNode {
   readonly id: number;
@@ -233,7 +250,8 @@ function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: 
 }
 
 function setShift(n: TabNode, px: number): void {
-  if (n.shift === px) return;
+  // A dragged tab's transform also carries the lift scale, so 0 must clear it even when shift is 0.
+  if (n.shift === px && (px !== 0 || n.root.style.transform === '')) return;
   n.shift = px;
   n.root.style.transform = px === 0 ? '' : `translateX(${px}px)`;
 }
@@ -267,9 +285,11 @@ export function startTabs(strip: HTMLElement): void {
   let signature = '';
   /** Tab id to refocus after the next render (keyboard reorder moves the focused node). */
   let refocus = 0;
-  /** A committed drag leaves its transforms in place until the host's reorder arrives. */
-  let settling = false;
-  let settleTimer = 0;
+  /**
+   * A released drag leaves its transforms in place until the host's reorder arrives (or is refused):
+   * the dropped tab keeps its lift and its place above its neighbours while it lands.
+   */
+  let landing: Landing | null = null;
   const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
   // --- split view ---
   // The window's split pair (joined capsule) and a tab drag that left the strip for the page.
@@ -361,23 +381,29 @@ export function startTabs(strip: HTMLElement): void {
     // FLIP "first": where every visible tab is now (drag transforms included), measured only when
     // the arrangement is about to change.
     const nextSignature = layoutSignature(entries);
-    const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && (nextSignature !== signature || settling);
+    const phase = landingPhase(landing?.signature ?? null, nextSignature);
+    // A stale render (the layout the drop left) updates content only: no transform is touched.
+    const changed = nextSignature !== signature && phase !== 'stale';
+    const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && changed;
     const before = new Map<TabNode, number>();
     const ghosts: HTMLElement[] = [];
+    const landed = phase === 'reorder' ? landing : null;
     if (animate) {
       for (const n of tabNodes.values()) {
         if (n.root.isConnected && !n.root.hidden) before.set(n, n.root.getBoundingClientRect().left);
       }
       strip.classList.add('settle');
+      // The dropped tab still carries its drag offset: its "first" is home + offset, not a scaled rect.
+      const held = landed !== null && landed.node.shift !== 0 ? landed.node : null;
+      const prev = held ? held.shift : 0;
       for (const n of tabNodes.values()) setShift(n, 0);
-    } else if (settling) {
+      if (held && before.has(held)) before.set(held, landingFirst(held.root.getBoundingClientRect().left, prev));
+    } else if (landed !== null) {
       strip.classList.add('settle');
       for (const n of tabNodes.values()) setShift(n, 0);
       void strip.offsetWidth;
       strip.classList.remove('settle');
     }
-    clearTimeout(settleTimer);
-    settling = false;
 
     for (const [id, n] of tabNodes) {
       if (!live.has(id)) {
@@ -443,16 +469,22 @@ export function startTabs(strip: HTMLElement): void {
       let moved = false;
       for (const [n, left] of before) {
         if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost')) continue;
-        const dx = left - n.root.getBoundingClientRect().left;
-        if (Math.abs(dx) < 0.5) continue;
-        n.root.style.transform = `translateX(${dx}px)`;
+        const dx = flipInvert(left, n.root.getBoundingClientRect().left);
+        const lifted = n === landed?.node;
+        if (Math.abs(dx) < 0.5 && !lifted) continue;
+        // The dropped tab keeps its lift through the invert, so the scale eases to 1 as it arrives.
+        n.root.style.transform = lifted ? `translateX(${dx}px) scale(${LIFT_SCALE})` : `translateX(${dx}px)`;
         moved = true;
       }
       if (moved) void strip.offsetWidth;
       strip.classList.remove('settle');
       for (const n of before.keys()) if (n.root.style.transform !== '') n.root.style.transform = '';
     }
-    signature = nextSignature;
+    if (landed !== null) {
+      if (animate) landTransition(landed.node);
+      else endLanding();
+    }
+    if (phase !== 'stale') signature = nextSignature;
     rendered = true;
     applyRoving();
     if (refocus !== 0) {
@@ -488,6 +520,50 @@ export function startTabs(strip: HTMLElement): void {
     return map;
   };
 
+  /** Drops `.landing` and the landing record; the tab is home. */
+  const endLanding = (): void => {
+    const l = landing;
+    if (!l) return;
+    landing = null;
+    clearTimeout(l.timer);
+    l.off?.();
+    l.node.root.classList.remove('landing');
+  };
+
+  /** Keeps `.landing` (the lift's z-index) until the tab's own transform transition ends. */
+  const landTransition = (node: TabNode): void => {
+    const l = landing;
+    if (!l || l.node !== node) return;
+    clearTimeout(l.timer);
+    l.off?.();
+    const done = (): void => {
+      if (landing === l) endLanding();
+    };
+    const onEnd = (ev: TransitionEvent): void => {
+      if (ev.target === node.root && ev.propertyName === 'transform') done();
+    };
+    node.root.addEventListener('transitionend', onEnd);
+    l.off = () => node.root.removeEventListener('transitionend', onEnd);
+    l.timer = window.setTimeout(done, LAND_FALLBACK_MS);
+  };
+
+  /** One ease back to where the drag began (refused move, Escape, a drop on the same slot). */
+  const landHome = (): void => {
+    const l = landing;
+    if (!l) return;
+    const nodes = Array.from(tabNodes.values());
+    if (!reduced() && tabNodes.size <= FLIP_MAX_TABS) {
+      for (const n of nodes) setShift(n, 0);
+      landTransition(l.node);
+      return;
+    }
+    strip.classList.add('settle');
+    for (const n of nodes) setShift(n, 0);
+    void strip.offsetWidth;
+    strip.classList.remove('settle');
+    endLanding();
+  };
+
   const endDrag = (commit: boolean): void => {
     const d = drag;
     if (!d) return;
@@ -496,7 +572,6 @@ export function startTabs(strip: HTMLElement): void {
     try { if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
     if (!d.active) return;
     ignoreClick = true;
-    d.node.root.classList.remove('dragging');
     // --- split view ---
     // Released over the page: Rust opens the split if it showed a drop target there.
     if (splitOut) {
@@ -504,6 +579,7 @@ export function startTabs(strip: HTMLElement): void {
       cancelAnimationFrame(splitFrame);
       splitFrame = 0;
       strip.classList.remove('split-out');
+      d.node.root.classList.remove('dragging');
       sendSplit({ v: 1, t: 'split', a: commit ? 'drop' : 'end', id: d.node.id });
       d.node.root.style.transform = '';
       d.node.shift = 0;
@@ -512,27 +588,25 @@ export function startTabs(strip: HTMLElement): void {
       return;
     }
     // --- end split view ---
+    // `.landing` takes over from `.dragging` in the same frame (same stacking, the tab's own shadow),
+    // and no transform changes yet: the tab stays where it was released.
+    d.node.root.classList.add('landing');
+    d.node.root.classList.remove('dragging');
+    endLanding();
+    landing = { node: d.node, signature, timer: 0, off: null };
     if (commit && d.dest !== d.from) {
-      // Leave every tab visually where it landed; the host's reorder then arrives and render()
-      // slides from these positions to the real ones, so nothing snaps back and forth.
+      // The host's reorder then arrives and render() makes one FLIP from the release point to the
+      // slot; if it never comes, the tab eases back to its origin.
       const others = d.order.filter((n) => n !== d.node).map((n) => n.id);
       send({ v: 1, t: 'tabmove', id: d.node.id, before: beforeSlotId(others, d.dest, collapsedLeaders(d.node.id)) });
-      settling = true;
-      d.node.root.style.transform = `translateX(${d.dx}px)`;
-      clearTimeout(settleTimer);
-      settleTimer = window.setTimeout(() => {
-        // The host never reordered (refused move): ease everything back.
-        if (!settling) return;
-        settling = false;
-        d.node.root.style.transform = '';
-        for (const n of d.order) setShift(n, 0);
-      }, 400);
+      const l = landing;
+      l.timer = window.setTimeout(() => {
+        if (landing === l) landHome();
+      }, REFUSE_MS);
       schedule();
       return;
     }
-    d.node.root.style.transform = '';
-    d.node.shift = 0;
-    for (const n of d.order) setShift(n, 0);
+    landHome();
     schedule();
   };
 
@@ -545,7 +619,7 @@ export function startTabs(strip: HTMLElement): void {
 
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
-    if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
+    if (ev.button !== 0 || drag !== null || landing !== null || !(ev.target instanceof Element)) return;
     if (ev.target.closest('.close, .audio, .ball')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
@@ -578,7 +652,9 @@ export function startTabs(strip: HTMLElement): void {
       window.addEventListener('keydown', onDragKey, true);
     }
     d.dx = dx;
-    d.node.root.style.transform = `translateX(${dx}px) scale(1.02)`;
+    // shift tracks the transform, so a later setShift(n, 0) clears the dragged tab like any other.
+    d.node.shift = dx;
+    d.node.root.style.transform = reduced() ? `translateX(${dx}px)` : `translateX(${dx}px) scale(${LIFT_SCALE})`;
     const edgeDelta = dragScrollDelta(ev.clientX, strip.getBoundingClientRect().left, strip.getBoundingClientRect().right);
     if (edgeDelta !== 0) {
       strip.scrollLeft += edgeDelta;

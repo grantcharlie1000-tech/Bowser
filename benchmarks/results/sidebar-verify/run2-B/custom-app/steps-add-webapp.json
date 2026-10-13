@@ -1,0 +1,32 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  557,
+                        "x":  210,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "type",
+                        "text":  "Probe"
+                    },
+                    {
+                        "y":  594,
+                        "x":  210,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "type",
+                        "text":  "http://127.0.0.1:8765/"
+                    },
+                    {
+                        "y":  715,
+                        "x":  215,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  1400
+                    }
+                ],
+    "name":  "add-webapp"
+}

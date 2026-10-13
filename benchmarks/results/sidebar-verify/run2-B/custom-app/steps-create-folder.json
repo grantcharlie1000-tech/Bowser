@@ -1,0 +1,23 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  200,
+                        "x":  220,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "type",
+                        "text":  "Folder A"
+                    },
+                    {
+                        "y":  279,
+                        "x":  105,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  500
+                    }
+                ],
+    "name":  "create-bookmark-folder"
+}

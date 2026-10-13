@@ -1,0 +1,14 @@
+﻿{
+    "actions":  [
+                    {
+                        "y":  990,
+                        "x":  22,
+                        "kind":  "clickClient"
+                    },
+                    {
+                        "kind":  "wait",
+                        "ms":  800
+                    }
+                ],
+    "name":  "bookmarks-open-after-webapp"
+}

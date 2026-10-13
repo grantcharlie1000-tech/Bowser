@@ -1,0 +1,110 @@
+﻿{
+    "profile":  "vB-20261012-02",
+    "actionsRequested":  240,
+    "durationSeconds":  60,
+    "cycleCount":  20,
+    "samples":  [
+                    {
+                        "tag":  "start",
+                        "time":  "2026-10-12T03:41:25.2206322+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       1920,
+                                       1079
+                                   ],
+                        "handles":  314,
+                        "gdi":  35,
+                        "user":  26,
+                        "cpuSeconds":  22.84375,
+                        "privateBytes":  21377024,
+                        "workingSet":  44204032
+                    },
+                    {
+                        "tag":  "after-20-webapp-open-close-cycles",
+                        "time":  "2026-10-12T03:41:36.6016060+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       1920,
+                                       1079
+                                   ],
+                        "handles":  314,
+                        "gdi":  36,
+                        "user":  28,
+                        "cpuSeconds":  32.859375,
+                        "privateBytes":  21454848,
+                        "workingSet":  44298240
+                    },
+                    {
+                        "tag":  "action-80",
+                        "time":  "2026-10-12T03:41:58.4825112+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       1024,
+                                       700
+                                   ],
+                        "handles":  316,
+                        "gdi":  43,
+                        "user":  36,
+                        "cpuSeconds":  47.4375,
+                        "privateBytes":  10702848,
+                        "workingSet":  33566720
+                    },
+                    {
+                        "tag":  "action-160",
+                        "time":  "2026-10-12T03:42:18.9623505+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       900,
+                                       650
+                                   ],
+                        "handles":  316,
+                        "gdi":  40,
+                        "user":  33,
+                        "cpuSeconds":  59.5,
+                        "privateBytes":  9728000,
+                        "workingSet":  32555008
+                    },
+                    {
+                        "tag":  "action-240",
+                        "time":  "2026-10-12T03:42:39.2955759+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       1280,
+                                       820
+                                   ],
+                        "handles":  314,
+                        "gdi":  41,
+                        "user":  31,
+                        "cpuSeconds":  72.8125,
+                        "privateBytes":  13615104,
+                        "workingSet":  36458496
+                    },
+                    {
+                        "tag":  "end",
+                        "time":  "2026-10-12T03:42:39.5166270+01:00",
+                        "alive":  true,
+                        "responded":  true,
+                        "hwnd":  102305932,
+                        "client":  [
+                                       1280,
+                                       820
+                                   ],
+                        "handles":  314,
+                        "gdi":  41,
+                        "user":  31,
+                        "cpuSeconds":  72.859375,
+                        "privateBytes":  13615104,
+                        "workingSet":  36458496
+                    }
+                ]
+}

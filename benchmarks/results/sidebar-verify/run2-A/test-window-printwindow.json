@@ -1,0 +1,12 @@
+﻿{
+    "profile":  "vA-4",
+    "pid":  67992,
+    "executable":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-bin\\bowser.exe",
+    "hwnd":  136841834,
+    "title":  "Bowser - Search or enter address [V vA-4]",
+    "windowRect":  "[234,234,1234,954]",
+    "dwmResult":  0,
+    "dwmRect":  "[234,234,1234,954]",
+    "printWindow":  true,
+    "png":  "C:\\Users\\charlie\\Documents\\ChatGPT\\Bowser\\benchmarks\\results\\sidebar-verify\\run2-A\\test-window-printwindow.png"
+}

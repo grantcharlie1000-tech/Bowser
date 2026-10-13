@@ -141,6 +141,7 @@
     --bw-ease-out: cubic-bezier(0, 0, 0, 1); /* direct entrance and exit */
     --bw-ease-move: cubic-bezier(0.55, 0.55, 0, 1); /* point-to-point */
     --bw-ease-fade: linear; /* opacity fades */
+    --bw-ease-in: cubic-bezier(0.4, 0, 1, 1); /* exits: leaving content accelerates away */
 
     /* Z-layers between top-level surfaces (local stacking inside a surface may use 1-3). */
     --bw-z-page: 0;
@@ -238,6 +239,7 @@
     --ease-out: var(--bw-ease-out);
     --ease-move: var(--bw-ease-move);
     --ease-fade: var(--bw-ease-fade);
+    --ease-in: var(--bw-ease-in);
 
     --animate-spin: bw-spin var(--bw-dur-spin) linear infinite;
   }

@@ -1,7 +1,7 @@
 // Sidebar customisation panel: setting rows with switches, reorderable workspace and web app lists.
 // Text reaches the DOM only through textContent and attributes. Styles live in styles/rail.css
 // under `.panel-customize`; controls are the shared .bw-* components.
-import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
+import { sendComposerOpen, sendPanel, type ComposerOpenFields, type Inbound, type SnapshotMsg } from '../protocol';
 import { icon, type IconName } from '../icons';
 import { dropSlot } from '../rail-logic';
 import { setTip } from '../tooltip';
@@ -33,7 +33,6 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, te
 export function startCustomizePanel(root: HTMLElement): (message: Inbound) => void {
   let snapshot: CustomizeSnapshot | null = null;
   let deleting: DeleteTarget = null;
-  let editingApp: number | null = null;
   let editingWorkspace: number | null = null;
   let uid = 0;
   const nextId = (prefix: string): string => `${prefix}-${++uid}`;
@@ -48,42 +47,34 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
   const workspaces = section('Workspaces', 'Reorder with the handle, or focus it and press the Up and Down arrow keys.');
   const workspaceRows = h('div', 'cust-list');
   workspaceRows.setAttribute('role', 'list');
-  const createWorkspace = h('form', 'cust-form');
-  const workspaceName = input('New workspace name', 'Workspace name');
-  createWorkspace.append(workspaceName, submitButton('Create workspace'));
-  createWorkspace.addEventListener('submit', event => {
-    event.preventDefault();
-    const fields = customizeCommand('workspace-create', { text: workspaceName.value.trim() });
-    if (fields && sendPanel('cust', fields)) workspaceName.value = ''; else workspaceName.focus();
-  });
+  // New workspace, Add web app and Edit web app open one composer, anchored below-left of the
+  // control that asked. Nothing is created here: Rust makes the change when the composer confirms.
+  const openComposer = (mode: Parameters<typeof sendComposerOpen>[0], anchor: HTMLElement, fields?: ComposerOpenFields): void => {
+    sendComposerOpen(mode, anchor.getBoundingClientRect(), fields);
+  };
+  const createWorkspace = h('div', 'cust-form');
+  const newWorkspace = button('New workspace', () => openComposer('workspace-new', newWorkspace));
+  createWorkspace.append(newWorkspace);
   workspaces.root.append(workspaceRows, createWorkspace);
 
   const apps = section('Pinned web apps', 'Sites pinned to the rail open in the side panel.');
   const appRows = h('div', 'cust-list');
   appRows.setAttribute('role', 'list');
-  const appForm = h('form', 'cust-form is-stack');
-  const appName = input('Web app name', 'Name');
-  const appUrl = input('Web app address', 'https://example.com/');
-  appUrl.type = 'url';
+  const appForm = h('div', 'cust-form is-stack');
   const preset = selectField({
     options: PRESETS.map(([name, url]) => ({ value: url, label: name })),
     value: null,
     label: 'Choose a web app preset',
     placeholder: 'Choose a preset',
     momentary: true,
+    // A preset opens the same composer, prefilled.
     onChange: url => {
       const chosen = PRESETS.find(([, address]) => address === url);
-      if (chosen) { appName.value = chosen[0]; appUrl.value = chosen[1]; }
+      if (chosen) openComposer('app-add', preset.root, { name: chosen[0], url: chosen[1] });
     },
   });
-  const appFields = h('div', 'cust-form-fields');
-  appFields.append(appName, appUrl);
-  appForm.append(preset.root, appFields, submitButton('Add web app'));
-  appForm.addEventListener('submit', event => {
-    event.preventDefault();
-    const fields = customizeCommand('app-add', { text: appName.value.trim(), url: appUrl.value.trim() });
-    if (fields) { sendPanel('cust', fields); appName.value = ''; appUrl.value = ''; preset.set(null); } else (appName.value.trim() === '' ? appName : appUrl).focus();
-  });
+  const addApp = button('Add web app', () => openComposer('app-add', addApp));
+  appForm.append(preset.root, addApp);
   apps.root.append(appRows, appForm);
 
   const data = section('Profile and data');
@@ -350,28 +341,11 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     const lead = h('span', 'cust-lead');
     lead.append(icon('grid'));
     const handle = handleButton(app.name);
-    const editing = editingApp === app.id;
-    const edit = iconButton('edit', editing ? `Close editor for ${app.name}` : `Edit ${app.name}`, () => { editingApp = editing ? null : app.id; render(); });
-    edit.setAttribute('aria-expanded', String(editing));
+    const edit = iconButton('edit', `Edit ${app.name}`, () => openComposer('app-edit', edit, { id: app.id }));
     edit.dataset.fk = `app-edit:${app.id}`;
     const remove = iconButton('trash', `Remove ${app.name}`, () => askDelete({ kind: 'app', id: app.id, label: app.name }));
     const { item, row } = itemRow(app.name, app.url, lead, handle, [edit, remove]);
     wireHandle(handle, row, appRows, ids, app.id, before => sendAction('app-move', { id: app.id, ...(before !== undefined ? { before } : {}) }), `app-handle:${app.id}`);
-    if (editing) {
-      const editor = h('form', 'cust-editor');
-      const name = input(`Name for ${app.name}`, 'Name');
-      name.value = app.name;
-      const url = input(`Address for ${app.name}`, 'https://example.com/');
-      url.type = 'url';
-      url.value = app.url;
-      editor.addEventListener('submit', event => {
-        event.preventDefault();
-        const fields = customizeCommand('app-update', { id: app.id, text: name.value.trim(), url: url.value.trim() });
-        if (fields) { sendPanel('cust', fields); editingApp = null; }
-      });
-      editor.append(name, url, submitButton('Save web app'));
-      item.append(editor);
-    }
     return item;
   }
 

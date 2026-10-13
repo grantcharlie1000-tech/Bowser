@@ -1,0 +1,81 @@
+ D Launch-Bowser-Debug.cmd
+ D Launch-Bowser-Debug.ps1
+ D Start-Bowser.cmd
+ D Start-Bowser.ps1
+ M src/app.rs
+ M src/chrome/island_menu.rs
+ M src/chrome/layout.rs
+ M src/chrome/mod.rs
+ M src/chrome/motion.rs
+ M src/chrome/paint.rs
+ M src/chrome/vertical_paint.rs
+ M src/engine/mod.rs
+ M src/engine/webview2.rs
+ M src/favicon.rs
+ M src/import/mod.rs
+ M src/lib.rs
+ M src/main.rs
+ M src/navigation.rs
+ M src/omnibox.rs
+ M src/passwords/mod.rs
+ M src/performance.rs
+ M src/permissions.rs
+ M src/productivity.rs
+ M src/profile.rs
+ M src/session.rs
+ M src/settings.rs
+ M src/shortcuts.rs
+ M src/site_security.rs
+ M src/split_view.rs
+ M src/tab_groups.rs
+ M src/vertical_tabs.rs
+ M src/win32/card.rs
+ M src/win32/command_palette.rs
+ M src/win32/frame.rs
+ M src/win32/island_menu.rs
+ M src/win32/menu.rs
+ M src/win32/mod.rs
+ M src/win32/notes_panel.rs
+ M src/win32/passwords_panel.rs
+ M src/win32/profile_rename.rs
+ M src/win32/settings_panel.rs
+ M src/win32/site_info.rs
+ M src/win32/smooth.rs
+ M src/win32/window.rs
+ M src/workspaces.rs
+?? Uninstall-Bowser.ps1
+?? Update-Bowser.cmd
+?? Update-Bowser.ps1
+?? benchmarks/results/perf-probe/
+?? benchmarks/results/sidebar-verify/
+?? docs/sidebar-panel-host.md
+?? icons/
+?? src/bookmarks.rs
+?? src/chrome/rail.rs
+?? src/chrome/rail_icons.rs
+?? src/engine/web_app.rs
+?? src/sidebar.rs
+?? src/win32/panel_bookmarks.rs
+?? src/win32/panel_customize.rs
+?? src/win32/panel_history.rs
+?? src/win32/panel_webapp.rs
+?? src/win32/panel_widgets.rs
+?? src/win32/side_panel.rs
+?? target-check/
+?? target-haiku/
+?? target-haiku2-build1.log
+?? target-haiku2-check.log
+?? target-haiku2/
+?? target-icons-menu/
+?? target-icons-rail/
+?? target-luna/
+?? target-luna2/
+?? target-luna3/
+?? target-luna4/
+?? target-luna5/
+?? target-luna6/
+?? target-motion-menu/
+?? target-motion-rail/
+?? target-opus-fix/
+?? target-opus/
+?? target-sol/
