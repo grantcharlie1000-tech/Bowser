@@ -63,10 +63,12 @@ const LINE: i32 = 24;
 const ROW: i32 = 40;
 const BUTTON_HEIGHT: i32 = 36;
 const RADIUS: i32 = 10;
-const NOTICE: &str = "Passkey use is unverified in Bowser. Manage Windows Hello passkeys in Windows Settings; Bowser cannot import or export them.";
+const NOTICE: &str = "Passkeys are not managed here. Use Windows Settings to view or remove your Windows Hello passkeys; Bowser cannot import or export them.";
 const INTRO: &str =
-    "DPAPI protects saved passwords at rest; reveal has no Windows re-authentication.";
-const REMINDER: &str = "CSV exports contain plaintext passwords. Bowser reads the selected file locally and never deletes it.";
+    "Saved passwords are encrypted for your Windows account. Showing one does not ask for your Windows password again.";
+const REMINDER: &str = "A CSV export holds your passwords as plain text. Bowser reads the file you pick on this PC and never deletes it, so delete it yourself when you are done.";
+/// Shown while saved passwords are listed but none is chosen, so the greyed buttons explain themselves.
+const SELECT_HINT: &str = "Select a password to show, copy, edit or delete it.";
 pub(crate) const CLIPBOARD_CLEAR_TIMER: usize = 31;
 const REVEAL_CLEAR_TIMER: usize = 32;
 
@@ -120,7 +122,7 @@ impl Panel {
                 self.entries.clear();
                 self.selected = None;
                 self.revealed = None;
-                self.notice = Some("The profile password vault could not be opened.");
+                self.notice = Some("Saved passwords could not be opened for this profile.");
             }
         }
     }
@@ -590,7 +592,7 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
             {
                 "Hide"
             } else {
-                "Reveal"
+                "Show"
             },
         ),
         (Target::Copy, "Copy"),
@@ -618,7 +620,7 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
             has_selection,
         );
     }
-    if let Some(notice) = panel.notice {
+    if let Some(notice) = panel.notice.or_else(|| select_hint(panel.entries.is_empty(), has_selection)) {
         scene.text(
             rect(x0, second_row - s(28), x1, second_row - s(4)),
             notice,
@@ -626,6 +628,12 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
         );
     }
     scene
+}
+
+/// The line that explains why Show, Copy, Edit and Delete are greyed: saved passwords exist but none
+/// is selected. Pure.
+fn select_hint(no_entries: bool, has_selection: bool) -> Option<&'static str> {
+    (!no_entries && !has_selection).then_some(SELECT_HINT)
 }
 
 fn build_editor(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
@@ -654,7 +662,7 @@ fn build_editor(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
     );
     scene.text(
         rect(x0, s(68), x1, s(100)),
-        "Use an HTTPS site address. HTTP is accepted only for localhost.",
+        "Enter the site address starting with https://. Plain http:// only works for localhost.",
         Style::Muted,
     );
     let fields = [
@@ -762,7 +770,7 @@ fn error_message(error: ImportError) -> &'static str {
             "That file couldn't be read as this source. Nothing was imported."
         }
         ImportError::VaultUnavailable => {
-            "Bowser's password vault couldn't be opened or saved. Nothing was imported."
+            "Saved passwords couldn't be opened or updated. Nothing was imported."
         }
     }
 }
@@ -1123,7 +1131,9 @@ unsafe fn paint_control(
                     (false, true) => (palette.omnibox_fill, palette.omnibox_text),
                     (false, false) => (palette.omnibox_fill, palette.omnibox_placeholder),
                 };
-                round_rect(dc, bounds, fill, palette.omnibox_border);
+                // A disabled button loses its fill and its edge, so it cannot pass for a live one.
+                let (fill, edge) = if control.enabled { (fill, palette.omnibox_border) } else { (palette.window, palette.hairline) };
+                round_rect(dc, bounds, fill, edge);
                 draw_text(
                     dc,
                     bounds,
@@ -1752,12 +1762,12 @@ fn set_notice(hwnd: HWND, notice: &'static str) {
 fn password_error_message(error: PasswordError) -> &'static str {
     match error {
         PasswordError::Disabled => "Password storage is unavailable in this profile.",
-        PasswordError::InsecureOrigin => "Use HTTPS, except HTTP is allowed for localhost.",
+        PasswordError::InsecureOrigin => "Use an https:// address. http:// is only allowed for localhost.",
         PasswordError::Duplicate => "This exact password entry is already saved.",
         PasswordError::Conflict => "That site and username already have a different password.",
         PasswordError::MissingEntry => "That password entry is no longer available.",
         PasswordError::InvalidGenerator => "Password generator settings are invalid.",
-        _ => "The password vault could not be read or saved.",
+        _ => "Saved passwords could not be read or updated.",
     }
 }
 
@@ -1988,5 +1998,31 @@ mod tests {
         assert_eq!(list_window(&entries, 3, 2), &[40, 50]);
         assert_eq!(list_window(&entries, 99, 5), &[]);
         assert_eq!(list_window(&entries, 4, 99), &[50, 60]);
+    }
+
+    #[test]
+    fn greyed_buttons_are_explained_only_when_passwords_exist_but_none_is_selected() {
+        assert_eq!(select_hint(false, false), Some(SELECT_HINT));
+        assert_eq!(select_hint(false, true), None);
+        assert_eq!(select_hint(true, false), None);
+    }
+
+    #[test]
+    fn row_actions_are_disabled_without_a_selection_and_copy_has_no_developer_terms() {
+        let panel = Panel {
+            flow: Flow::new(Vec::new()), plan: None, hover: Target::None, pressed: Target::None, view: PanelView::Vault,
+            entries: Vec::new(), selected: None, list_offset: 0, search: String::new(), search_focused: false,
+            editor: None, revealed: None, notice: None,
+        };
+        let enabled = |panel: &Panel| {
+            let scene = build_vault(panel, 520, 600, 96);
+            [Target::Reveal, Target::Copy, Target::Edit, Target::Delete].map(|target| scene.enabled(target))
+        };
+        assert_eq!(enabled(&panel), [false; 4]);
+        for text in [INTRO, NOTICE, REMINDER, SELECT_HINT] {
+            for term in ["DPAPI", "vault", "plaintext", "re-authentication", "unverified"] {
+                assert!(!text.to_lowercase().contains(&term.to_lowercase()), "{text} mentions {term}");
+            }
+        }
     }
 }

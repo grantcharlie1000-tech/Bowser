@@ -10,7 +10,9 @@ const isPanelToken = (value: string | null): value is PanelToken =>
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');
   installTooltips(root);
-  root.addEventListener('keydown', event => {
+  // On the document, not the root: with nothing focused inside the page, Esc targets <body> and a
+  // root listener never sees it, so the dialog would not close from the keyboard.
+  document.addEventListener('keydown', event => {
     if (event.key === 'Escape' && !event.defaultPrevented) {
       event.preventDefault();
       sendPanel('panel', { a: 'dismiss' });

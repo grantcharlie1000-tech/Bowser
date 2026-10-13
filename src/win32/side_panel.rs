@@ -19,8 +19,8 @@ use windows::{
             WindowsAndMessaging::{
                 CREATESTRUCTW, CreateWindowExW, DefWindowProcW, GWLP_USERDATA,
                 GetClientRect, GetWindowLongPtrW, IDC_ARROW, IDC_SIZEWE, LoadCursorW,
-                RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow, SW_HIDE,
-                SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, WM_CHAR, WM_ERASEBKGND,
+                RegisterClassW, SetCursor, SetWindowLongPtrW, SetWindowPos, ShowWindow, HWND_TOP, SW_HIDE,
+                SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_CHAR, WM_ERASEBKGND,
                 WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
                 WM_NCDESTROY, WM_PAINT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
             },
@@ -70,6 +70,9 @@ pub trait PanelContent {
     fn min_width(&self) -> i32 { MIN_WIDTH_DIP }
     fn preferred_width(&self) -> i32 { DEFAULT_WIDTH_DIP }
     fn title(&self) -> &str;
+    /// Whether the host paints its own title and close button above the content. HTML panels draw
+    /// their own header, so a second native one would double it (V23).
+    fn native_header(&self) -> bool { true }
     fn wants_native_child(&self) -> Option<HWND> { None }
 }
 
@@ -124,6 +127,8 @@ pub struct SidePanelHost {
     client: RECT,
     resizing: bool,
     animation: Option<Animation>,
+    /// The current content wants the native title row and close button.
+    header: bool,
     edit_brush: windows::Win32::Graphics::Gdi::HBRUSH,
 }
 
@@ -158,11 +163,13 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             state.previous_focus = unsafe { GetFocus() };
             if let Some(previous) = state.content.as_mut() { previous.on_focus(false); }
             state.id = Some(id);
+            state.header = content.native_header();
             state.width_dip = state.width_dip.max(content.min_width()).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
             if let Some(previous) = state.content.take() { state.retired.push(previous); state.retired_blur.push(false); }
             state.content = Some(content);
             if let Some(current) = state.content.as_mut() { current.on_focus(true); }
             state.animation = Some(Animation { from: state.width, to: desired_width(state.width_dip, owner), started: Instant::now() });
+            raise(hwnd);
             unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
             // --- panel host (lane P) ---
             if let Some(current) = state.content.as_mut() { current.after_shown(); }
@@ -174,7 +181,9 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
         }
     }
     if !REGISTERED.with(Cell::get) && !register_class() { return false; }
-    let client = base_viewport(owner);
+    // The page area below the toolbar, not the whole client: a host created at y=0 painted its
+    // title and wash over the toolbar, and left them there (V5).
+    let client = super::window::page_viewport(owner).unwrap_or_else(|| base_viewport(owner));
     let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
     let mut content = factory();
     let saved_width = crate::profile::active().ok().map(|profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_width as i32).unwrap_or_else(|| GUEST_WIDTH.with(Cell::get));
@@ -186,9 +195,10 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
         return false;
     };
     content.on_focus(true);
-    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
+    let header = content.native_header();
+    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
     let instance = HINSTANCE(unsafe { GetModuleHandleW(None).unwrap_or_default().0 });
-    let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, inset, client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
+    let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, panel_origin(client.left, inset), client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
     let Ok(hwnd) = hwnd else { return false };
     HOSTS.with(|hosts| { hosts.borrow_mut().insert(owner.0 as isize, hwnd.0 as isize); });
     if let Some(state) = unsafe { host(hwnd) }
@@ -196,6 +206,7 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     {
         content.on_host_created(hwnd);
     }
+    raise(hwnd);
     unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
     // --- panel host (lane P) ---
     if let Some(current) = unsafe { host(hwnd) }.and_then(|state| state.content.as_mut()) { current.after_shown(); }
@@ -259,7 +270,7 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
         if let Some(content) = state.content.as_mut() {
             content.on_bounds_changed(RECT {
                 left: 0,
-                top: scale(HEADER_DIP, window_dpi),
+                top: header_px(state.header, window_dpi),
                 right: width,
                 bottom: (viewport.bottom - viewport.top).max(0),
             });
@@ -271,9 +282,22 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
 pub fn adjust_viewport(viewport: RECT, owner: HWND) -> RECT {
     let width = active_width_px(owner);
     if width == 0 { return viewport; }
-    let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
-    let left = (viewport.left + width).max(inset + width);
+    reserved_viewport(viewport, crate::chrome::layout::left_rail_inset(dpi(owner)), width)
+}
+
+/// The page area left of which a panel of `width` takes: the panel starts at the rail inset or the
+/// viewport edge, whichever is further right, and the page begins where the panel ends. Pure.
+fn reserved_viewport(viewport: RECT, inset: i32, width: i32) -> RECT {
+    let left = panel_origin(viewport.left, inset) + width.max(0);
     RECT { left, ..viewport }
+}
+
+/// Height of the native title row: none when the content draws its own header. Pure.
+fn header_px(native_header: bool, dpi: u32) -> i32 { if native_header { scale(HEADER_DIP, dpi) } else { 0 } }
+
+/// Puts the host above the tab page controllers, which are created later and so start on top.
+fn raise(hwnd: HWND) {
+    unsafe { let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
 }
 
 pub fn timer(owner: HWND) -> bool {
@@ -333,7 +357,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32;
             let close_owner = if let Some(s)=host(hwnd) {
                 if x>=s.width-scale(RESIZE_DIP,dpi(hwnd)) { s.resizing=true; let _=SetCapture(hwnd); None }
-                else if y<scale(HEADER_DIP,dpi(hwnd)) && x>s.width-scale(36,dpi(hwnd)) { Some(s.owner) }
+                else if s.header && y<scale(HEADER_DIP,dpi(hwnd)) && x>s.width-scale(36,dpi(hwnd)) { Some(s.owner) }
                 else { if let Some(c)=s.content.as_mut() { c.on_mouse_down(x,y); } None }
             } else { None };
             if let Some(owner)=close_owner { close(owner); }
@@ -376,9 +400,11 @@ fn paint(hwnd: HWND) {
         let brush=CreateSolidBrush(colorref(p.window)); let _=FillRect(memory,&r,brush); let _=DeleteObject(brush.into());
         SetBkMode(memory,TRANSPARENT); SetTextColor(memory,colorref(p.tab_text_active));
         let title=s.content.as_ref().map_or_else(|| s.id.map_or(String::new(),PanelId::title),|c| c.title().to_owned());
+        // HTML content draws its own header; the host then only paints the backing fill.
+        if s.header {
         if let Some(mut title16) = super::panel_widgets::nonempty_wide(&title) { let mut header=RECT{left:scale(16,dpi(hwnd)),top:0,right:r.right-scale(40,dpi(hwnd)),bottom:scale(HEADER_DIP,dpi(hwnd))}; let _=DrawTextW(memory,&mut title16,&mut header,windows::Win32::Graphics::Gdi::DT_LEFT|windows::Win32::Graphics::Gdi::DT_VCENTER|windows::Win32::Graphics::Gdi::DT_SINGLELINE); }
-        let mut close_text="×".encode_utf16().collect::<Vec<_>>(); let mut close_rect=RECT{left:r.right-scale(36,dpi(hwnd)),top:0,right:r.right,bottom:scale(HEADER_DIP,dpi(hwnd))}; let _=DrawTextW(memory,&mut close_text,&mut close_rect,windows::Win32::Graphics::Gdi::DT_CENTER|windows::Win32::Graphics::Gdi::DT_VCENTER|windows::Win32::Graphics::Gdi::DT_SINGLELINE);
-        if let Some(content)=s.content.as_mut() { content.paint(memory,RECT{left:0,top:scale(HEADER_DIP,dpi(hwnd)),right:r.right,bottom:r.bottom},p); }
+        let mut close_text="×".encode_utf16().collect::<Vec<_>>(); let mut close_rect=RECT{left:r.right-scale(36,dpi(hwnd)),top:0,right:r.right,bottom:scale(HEADER_DIP,dpi(hwnd))}; let _=DrawTextW(memory,&mut close_text,&mut close_rect,windows::Win32::Graphics::Gdi::DT_CENTER|windows::Win32::Graphics::Gdi::DT_VCENTER|windows::Win32::Graphics::Gdi::DT_SINGLELINE); }
+        if let Some(content)=s.content.as_mut() { content.paint(memory,RECT{left:0,top:header_px(s.header,dpi(hwnd)),right:r.right,bottom:r.bottom},p); }
         if !bits.is_null() { for pixel in std::slice::from_raw_parts_mut(bits.cast::<u32>(), (width as usize).saturating_mul(height as usize)) { *pixel |= 0xFF00_0000; } }
         let _=BitBlt(dc,0,0,width,height,Some(memory),0,0,SRCCOPY);
         let _=SelectObject(memory,previous); let _=DeleteObject(bitmap.into()); let _=DeleteDC(memory);
@@ -435,6 +461,30 @@ mod tests {
         let page = reserve_viewport(viewport, panel.right - panel.left);
         assert_eq!(panel, RECT { left: 300, top: 80, right: 660, bottom: 900 });
         assert_eq!(page.left, panel.right);
+    }
+
+    #[test]
+    fn page_is_rebounded_to_the_space_right_of_an_open_panel_and_restored_on_close() {
+        let viewport = RECT { left: 34, top: 70, right: 1276, bottom: 796 };
+        // Open at full width: the page starts where the panel ends (rail inset 34 + 340).
+        assert_eq!(reserved_viewport(viewport, 34, 340), RECT { left: 374, ..viewport });
+        // Mid animation and closed, the same formula follows the width back to the full page.
+        assert_eq!(reserved_viewport(viewport, 34, 120).left, 154);
+        assert_eq!(reserved_viewport(viewport, 34, 0), viewport);
+        // A viewport that starts left of the rail inset still clears the rail.
+        assert_eq!(reserved_viewport(RECT { left: 0, ..viewport }, 34, 340).left, 374);
+        // A vertical sidebar pushes the viewport right of the inset: the panel sits after it.
+        assert_eq!(reserved_viewport(RECT { left: 300, ..viewport }, 34, 340).left, 640);
+        // Never negative width.
+        assert_eq!(reserved_viewport(viewport, 34, -5), viewport);
+    }
+
+    #[test]
+    fn html_content_has_no_native_header_row() {
+        assert_eq!(header_px(true, 96), HEADER_DIP);
+        assert_eq!(header_px(true, 192), HEADER_DIP * 2);
+        assert_eq!(header_px(false, 96), 0);
+        assert_eq!(header_px(false, 192), 0);
     }
 
     #[test]

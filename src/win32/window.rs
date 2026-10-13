@@ -340,6 +340,12 @@ struct WindowChrome {
     html_toolbar_active: bool,
     /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
     html_omnibox_focused: bool,
+    /// The user has typed in the omnibox since it last took focus, so a page load must not move the
+    /// keyboard away from it (V35).
+    omnibox_edited: bool,
+    /// The user deliberately took the omnibox (Ctrl+L, a new tab, a click), as opposed to it merely
+    /// holding the focus it started with.
+    omnibox_claimed: bool,
     /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
     html_last_state: Option<String>,
     html_tabs_last_state: Option<String>,
@@ -476,6 +482,8 @@ impl WindowChrome {
             html_page_ready: false,
             html_toolbar_active: false,
             html_omnibox_focused: false,
+            omnibox_edited: false,
+            omnibox_claimed: false,
             html_last_state: None,
             html_tabs_last_state: None,
             html_rail_last_state: None,
@@ -1779,6 +1787,7 @@ unsafe extern "system" fn window_proc(
                         s.edit_text.push_str(&text);
                         let programmatic = s.programmatic_text_update;
                         if !programmatic {
+                            s.omnibox_edited = true;
                             s.update_completion();
                         }
                         !programmatic
@@ -1816,6 +1825,10 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     let navigation_id = wparam.0 as u64;
                     if App::navigation_progress_message(app, navigation_id, lparam.0) {
+                        // The page has committed: if the user is not using the omnibox, the keyboard goes to it.
+                        if matches!(lparam.0, 1 | 2) {
+                            focus_page_after_commit(hwnd, app);
+                        }
                         if let Some(target) =
                             App::tab_progress_percent(app, App::active_tab_id(app))
                         {
@@ -2827,12 +2840,8 @@ unsafe extern "system" fn window_proc(
                         let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
                         menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
                             header: None,
-                            entries: vec![
-                                Entry::Item(Item::new(1, "Import", Icon::Grid).glyph("download")),
-                                Entry::Item(Item::new(2, "Not now", Icon::Close).glyph("clock")),
-                                Entry::Item(Item::new(3, "Don't ask again", Icon::Close).glyph("close")),
-                            ],
-                            footer: "Import bookmarks and supported search settings from another browser. You can also import later from the main menu.".into(),
+                            entries: import_offer_entries(),
+                            footer: IMPORT_OFFER_FOOTER.into(),
                         }, "import-offer", move |_, selected| {
                             let _ = profile.remember_import_offer_choice();
                             if selected.is_some_and(|item| item.id == 1) {
@@ -3488,7 +3497,11 @@ fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
     let viewport = to_win_rect(layout.viewport);
     notes_panel::sync(hwnd, viewport, dpi(hwnd));
     side_panel::sync(hwnd, viewport, dpi(hwnd));
-    if let Some(panes) = split_rects(hwnd, None) {
+    // `split_rects` computes a pane layout from the saved divider even when no split view exists,
+    // so it cannot decide which path applies: only a real split gets pane bounds. Otherwise the
+    // single page was never re-bounded when a panel opened, and the panel hid behind it (V1).
+    let panes = App::split_view(app).and_then(|_| split_rects(hwnd, None));
+    if let Some(panes) = panes {
         App::update_split_bounds(app, panes);
     } else {
         let bounds = adjusted_viewport(hwnd, viewport, dpi(hwnd));
@@ -3728,8 +3741,65 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
     }
 }
 
+/// Whether a page that just committed should take the keyboard from the omnibox (V35): only when the
+/// omnibox has it, the user has neither typed in it nor deliberately taken it, and the page is a
+/// real one (a blank or new tab is waiting for the user to type) and no menu or popup is open, since
+/// moving the keyboard would dismiss it. Pure.
+fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, blank_page: bool, popup_open: bool) -> bool {
+    omnibox_focused && !edited && !claimed && !blank_page && !popup_open
+}
+
+fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
+    let id = App::active_tab_id(app);
+    let state = with_chrome(hwnd, |s| {
+        (
+            s.html_omnibox_focused || (!s.edit.is_invalid() && unsafe { GetFocus() } == s.edit),
+            s.omnibox_edited,
+            s.omnibox_claimed,
+            s.urls.get(&id).is_none_or(|url| url.is_empty()),
+        )
+    });
+    let Some((focused, edited, claimed, blank)) = state else { return };
+    let popup_open = html_popup::is_active(hwnd) || menu::is_tracking();
+    if should_focus_page_after_commit(focused, edited, claimed, blank, popup_open) {
+        App::focus_page(app);
+    }
+}
+
+/// The first-run import offer as a compact notice in the ordinary menu model: a title, one
+/// explanatory line, then the three choices (V31).
+const IMPORT_OFFER_TITLE: &str = "Import from another browser?";
+const IMPORT_OFFER_DETAIL: &str = "Bring over bookmarks and search settings.";
+const IMPORT_OFFER_FOOTER: &str = "Also available later in the main menu.";
+
+fn import_offer_entries() -> Vec<Entry> {
+    vec![
+        Entry::SectionHeader(IMPORT_OFFER_TITLE.to_owned()),
+        Entry::SectionHeader(IMPORT_OFFER_DETAIL.to_owned()),
+        Entry::Item(Item::new(1, "Import", Icon::Grid).glyph("download")),
+        Entry::Item(Item::new(2, "Not now", Icon::Close).glyph("clock")),
+        Entry::Item(Item::new(3, "Don't ask again", Icon::Close).glyph("close")),
+    ]
+}
+
+/// Where a rail context menu opens: at the pointer, but never over the rail itself, so the menu
+/// goes rightwards into the window instead of off its left edge. `rail_right` is the client x where
+/// the rail ends. Pure.
+fn rail_menu_anchor(pointer: POINT, rail_right: i32) -> POINT {
+    POINT { x: pointer.x.max(rail_right), y: pointer.y }
+}
+
+/// Whether "Move up" and "Move down" can do anything for the workspace at `index` of `count`. Pure.
+fn workspace_move_enabled(index: Option<usize>, count: usize) -> (bool, bool) {
+    match index {
+        Some(index) => (index > 0, index + 1 < count),
+        None => (false, false),
+    }
+}
+
 fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32) {
-    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
+    // The menu opens to the right of the rail from the pointer, never leftwards over the window edge.
+    let point = screen_point(hwnd, rail_menu_anchor(windows::Win32::Foundation::POINT { x, y }, layout::left_rail_inset(dpi(hwnd))));
     match key {
         RailKey::Workspace(raw_id) => {
             let id = crate::workspaces::WorkspaceId(raw_id as u32);
@@ -3737,16 +3807,17 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             let entries = App::workspace_entries(app);
             let Some((_, name, _, _, _, _)) = entries.iter().find(|(entry_id, ..)| *entry_id == id) else { return; };
             let name = name.clone();
+            let (can_up, can_down) = workspace_move_enabled(set.all().iter().position(|workspace| workspace.id() == id), set.workspace_count());
             let menu_entries = vec![
                 Entry::Item(Item::new(1, "Rename…", Icon::Person).glyph("edit")),
                 Entry::Item(Item::new(2, "Change icon…", Icon::Grid).glyph("workspace")),
                 Entry::Item(Item::new(3, "Change colour…", Icon::Grid).glyph("droplet")),
-                Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up")),
-                Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down")),
+                Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up").disabled_if(!can_up)),
+                Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down").disabled_if(!can_down)),
                 Entry::Item(Item::new(6, "Delete…", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
             ];
             let kind = format!("rail-ws:{raw_id}");
-            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
                 // The workspace may have been deleted while the menu was open.
                 let set = App::workspaces(app);
@@ -3757,7 +3828,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
-                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
+                        menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
                             if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
                         });
                     }
@@ -3765,12 +3836,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                         let choices = ["Blue", "Violet", "Teal", "Amber", "Rose", "Red", "Green", "Slate"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid).profile_badge("", crate::theme::Rgba::hex(WORKSPACE_SWATCHES[i], 0xFF)))).collect();
                         let colours = [crate::workspaces::WorkspaceColour::Blue, crate::workspaces::WorkspaceColour::Violet, crate::workspaces::WorkspaceColour::Teal, crate::workspaces::WorkspaceColour::Amber, crate::workspaces::WorkspaceColour::Rose, crate::workspaces::WorkspaceColour::Red, crate::workspaces::WorkspaceColour::Green, crate::workspaces::WorkspaceColour::Slate];
-                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
+                        menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
                             if let Some(colour) = chosen.and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
                         });
                     }
-                    4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index.saturating_sub(1)); },
-                    5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index + 1); },
+                    4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).0 { let _ = App::workspace_move(app, id, index - 1); },
+                    5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).1 { let _ = App::workspace_move(app, id, index + 1); },
                     // --- popup surfaces (lane PP) --- confirm in the HTML popup, not a MessageBox
                     6 => if set.workspace_count() > 1 { confirm_rail_workspace_delete(hwnd, point, id, &name); },
                     _ => {}
@@ -3780,7 +3851,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
         RailKey::App(id) => {
             let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
             let kind = format!("rail-app:{id}");
-            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
                 // The app may have been removed while the menu was open.
                 if !rail_model_keys(hwnd).contains(&key) { return; }
@@ -4467,7 +4538,7 @@ fn confirm_rail_workspace_delete(hwnd: HWND, point: POINT, id: crate::workspaces
         ],
         footer: "This cannot be undone".to_owned(),
     };
-    menu::show(hwnd, point, menu::Placement::AboveLeft, confirm, "workspace-delete", move |app, chosen| {
+    menu::show(hwnd, point, menu::Placement::BelowLeft, confirm, "workspace-delete", move |app, chosen| {
         if chosen.is_some_and(|chosen| chosen.id == 1)
             && App::workspaces(app).workspace_count() > 1
             && App::workspaces(app).all().iter().any(|workspace| workspace.id() == id)
@@ -6305,6 +6376,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             let _ = with_chrome(hwnd, |s| {
                 s.html_omnibox_focused = on;
                 if !on {
+                    s.omnibox_claimed = false;
+                    s.omnibox_edited = false;
                     // Leaving the omnibox discards typed text, as the native edit does. The next
                     // sync sends the tab's address again.
                     s.html_text_sent = None;
@@ -6439,6 +6512,12 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         reader: crate::reader::Pill::Hidden,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
+}
+
+/// The page area (below the toolbar, right of the rail) in client coordinates, before any panel
+/// takes a share of it. Panel hosts are created and placed from this, never from the whole client.
+pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
+    with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
 
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
@@ -6882,7 +6961,12 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::SidebarWorkspaceMenu => show_workspaces_menu(hwnd, &app),
         // --- end vertical sidebar ---
         // --- popup host (lane M) ---
-        DeferredChromeCommand::MenuResult { tok, id } => html_popup::run_result(hwnd, tok, id, &app),
+        DeferredChromeCommand::MenuResult { tok, id } => {
+            html_popup::run_result(hwnd, tok, id, &app);
+            // Every close path ends here (pick, Esc, outside click, toggle by the menu button):
+            // clear the hover layer so tooltips and cards keep working afterwards (V6).
+            super::html_hover::popup_closed(hwnd);
+        }
         DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
         // --- end popup host ---
     }
@@ -7419,6 +7503,7 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
         return;
     };
     let suffix = with_chrome(hwnd, |s| {
+        s.omnibox_edited = true;
         // Shorter text means Backspace or Delete, where completion must not reappear.
         s.suppress_completion = text.chars().count() < s.edit_text.chars().count();
         s.edit_text.clear();
@@ -7986,6 +8071,10 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str) {
     }
 }
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    let _ = with_chrome(hwnd, |s| {
+        s.omnibox_claimed = true;
+        s.omnibox_edited = false;
+    });
     // While the HTML toolbar is active, its page owns the omnibox and the native input stays hidden.
     if let Some(host) = with_chrome(hwnd, |s| {
         if s.html_toolbar_active { s.html.clone() } else { None }
@@ -8440,6 +8529,48 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn rail_menu_opens_right_of_the_rail_and_keeps_the_pointer_height() {
+        let rail_right = 36;
+        // A click on the rail itself moves the anchor out to the rail's right edge.
+        assert_eq!((rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).x, rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).y), (36, 220));
+        // A pointer already past the rail stays where it is.
+        assert_eq!(rail_menu_anchor(POINT { x: 90, y: 5 }, rail_right).x, 90);
+    }
+
+    #[test]
+    fn import_offer_is_a_title_one_explanatory_line_then_the_three_choices() {
+        let entries = import_offer_entries();
+        assert!(matches!(&entries[0], Entry::SectionHeader(title) if title == IMPORT_OFFER_TITLE));
+        assert!(matches!(&entries[1], Entry::SectionHeader(detail) if detail == IMPORT_OFFER_DETAIL));
+        let ids: Vec<usize> = entries.iter().filter_map(|entry| if let Entry::Item(item) = entry { Some(item.id) } else { None }).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        // Short enough to stay on one line in a compact menu.
+        assert!(IMPORT_OFFER_TITLE.len() <= 32 && IMPORT_OFFER_DETAIL.len() <= 44 && IMPORT_OFFER_FOOTER.len() <= 44);
+    }
+
+    #[test]
+    fn a_committed_page_takes_the_keyboard_only_from_an_untouched_omnibox() {
+        // The omnibox holds the focus it started with and the page is a real one: move to the page.
+        assert!(should_focus_page_after_commit(true, false, false, false, false));
+        // Typing, a deliberate Ctrl+L / new tab / click, a blank page, no omnibox focus, or an open
+        // menu or popup (the import offer): leave it.
+        assert!(!should_focus_page_after_commit(true, true, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, true, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, true, false));
+        assert!(!should_focus_page_after_commit(false, false, false, false, false));
+        assert!(!should_focus_page_after_commit(true, false, false, false, true));
+    }
+
+    #[test]
+    fn workspace_move_items_are_enabled_only_when_they_can_move() {
+        assert_eq!(workspace_move_enabled(Some(0), 1), (false, false));
+        assert_eq!(workspace_move_enabled(Some(0), 3), (false, true));
+        assert_eq!(workspace_move_enabled(Some(1), 3), (true, true));
+        assert_eq!(workspace_move_enabled(Some(2), 3), (true, false));
+        assert_eq!(workspace_move_enabled(None, 3), (false, false));
+    }
 
     #[test]
     fn progress_finishes_then_fades_before_settling() {

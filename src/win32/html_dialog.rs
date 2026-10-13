@@ -1,7 +1,22 @@
 //! Lazy HTML hosts layered over owned browser chrome windows.
 
-use std::{cell::RefCell, collections::HashMap, rc::{Rc, Weak}, time::{SystemTime, UNIX_EPOCH}};
-use windows::Win32::{Foundation::{HWND, RECT}, UI::WindowsAndMessaging::{DestroyWindow, GetClientRect}};
+use std::{cell::{Cell, RefCell}, collections::HashMap, rc::{Rc, Weak}, time::{SystemTime, UNIX_EPOCH}};
+use windows::{
+    Win32::{
+        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
+        Graphics::Gdi::{CreateSolidBrush, DeleteObject, FillRect, GetMonitorInfoW, HDC, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            HiDpi::GetDpiForWindow,
+            WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IDC_ARROW, IsWindow, LoadCursorW,
+                RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, WM_CLOSE, WM_ERASEBKGND, WM_NCDESTROY,
+                WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_POPUP,
+            },
+        },
+    },
+    core::{PCWSTR, w},
+};
 use crate::{
     app::{App, AppRef},
     chrome_host::{host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View}, panels, protocol::{self, Command, PanelFields, PanelType}},
@@ -18,13 +33,127 @@ impl Kind {
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
-thread_local! { static RUNTIMES: RefCell<HashMap<isize, Rc<RefCell<Runtime>>>> = RefCell::new(HashMap::new()); }
+thread_local! {
+    static RUNTIMES: RefCell<HashMap<isize, Rc<RefCell<Runtime>>>> = RefCell::new(HashMap::new());
+    static CLASS_READY: Cell<bool> = const { Cell::new(false) };
+    /// The open Privacy dashboard window, so a second request focuses it instead of stacking one.
+    static PRIVACY: Cell<isize> = const { Cell::new(0) };
+    /// An HTML dialog host could not be created: later dialogs use their native windows.
+    static FAILED: Cell<bool> = const { Cell::new(false) };
+}
+
+const DIALOG_CLASS: PCWSTR = w!("BowserHtmlDialog");
+/// Logical (96 DPI) sizes of the dialogs that own a window.
+pub(crate) const SETTINGS_WIDTH: i32 = 640;
+pub(crate) const SETTINGS_HEIGHT: i32 = 720;
+const PRIVACY_WIDTH: i32 = 640;
+const PRIVACY_HEIGHT: i32 = 760;
+/// The Notes window keeps its native resize strip on the left edge, so the page starts after it.
+const NOTES_RESIZE_STRIP_DIP: i32 = 9;
+
+/// Whether Settings, Notes and Privacy show the HTML page as their only content: the HTML chrome is
+/// on, its environment exists and no dialog host has failed yet. Otherwise the native window runs.
+pub(crate) fn html_only(owner: HWND) -> bool {
+    crate::chrome_host::html_ui_enabled() && !FAILED.with(Cell::get) && super::window::html_environment(owner).is_some()
+}
+
+/// Where a `width` x `height` dialog goes: centred over `owner`, then kept inside the monitor work
+/// area (never above its top edge). With `fit` it also shrinks to fit a short work area. Pure.
+pub(crate) fn dialog_rect(owner: RECT, work: RECT, width: i32, height: i32, fit: bool) -> RECT {
+    let (width, height) = if fit { (width.min(work.right - work.left), height.min(work.bottom - work.top)) } else { (width, height) };
+    let left = (owner.left + (owner.right - owner.left - width) / 2).min(work.right - width).max(work.left);
+    let top = (owner.top + (owner.bottom - owner.top - height) / 2).min(work.bottom - height).max(work.top);
+    RECT { left, top, right: left + width, bottom: top + height }
+}
+
+/// The work area (screen minus taskbar) of the monitor `hwnd` is on.
+pub(crate) fn work_area_of(hwnd: HWND) -> RECT {
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() { info.rcWork } else { RECT { left: 0, top: 0, right: 1920, bottom: 1040 } }
+    }
+}
+
+/// The rectangle the HTML page covers inside its window. Pure.
+fn host_bounds(kind: Kind, client: RECT, dpi: u32) -> RECT {
+    let strip = if kind == Kind::Notes { NOTES_RESIZE_STRIP_DIP * dpi.max(96) as i32 / 96 } else { 0 };
+    RECT { left: (client.left + strip).min(client.right), ..client }
+}
+
+fn bounds_of(kind: Kind, parent: HWND) -> RECT {
+    let mut client = RECT::default();
+    unsafe { let _ = GetClientRect(parent, &mut client); }
+    host_bounds(kind, client, unsafe { GetDpiForWindow(parent) })
+}
+
+#[link(name = "dwmapi")]
+unsafe extern "system" {
+    fn DwmSetWindowAttribute(hwnd: HWND, attribute: u32, value: *const std::ffi::c_void, size: u32) -> i32;
+}
+
+unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match message {
+            WM_ERASEBKGND => {
+                let mut client = RECT::default();
+                let _ = GetClientRect(hwnd, &mut client);
+                let palette = crate::theme::palette(super::glass::appearance(), true);
+                let brush = CreateSolidBrush(windows::Win32::Foundation::COLORREF(u32::from(palette.window.r) | (u32::from(palette.window.g) << 8) | (u32::from(palette.window.b) << 16)));
+                FillRect(HDC(wparam.0 as *mut std::ffi::c_void), &client, brush);
+                let _ = DeleteObject(brush.into());
+                LRESULT(1)
+            }
+            WM_SIZE => { resize(hwnd); LRESULT(0) }
+            WM_CLOSE => { let _ = DestroyWindow(hwnd); LRESULT(0) }
+            WM_NCDESTROY => {
+                close(hwnd);
+                PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+}
+
+/// An owned top-level window for a dialog that has no native window of its own, centred over
+/// `owner` inside its monitor work area. The HTML host becomes its only child.
+fn create_window(owner: HWND, title: &str, width_dip: i32, height_dip: i32) -> Option<HWND> {
+    unsafe {
+        let instance = HINSTANCE(GetModuleHandleW(None).ok()?.0);
+        if !CLASS_READY.with(Cell::get) {
+            let class = WNDCLASSW { lpfnWndProc: Some(dialog_proc), hInstance: instance, hCursor: LoadCursorW(None, IDC_ARROW).ok()?, lpszClassName: DIALOG_CLASS, ..Default::default() };
+            if RegisterClassW(&class) == 0 { return None; }
+            CLASS_READY.with(|ready| ready.set(true));
+        }
+        let dpi = GetDpiForWindow(owner).max(96) as i32;
+        let mut owner_rect = RECT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(owner, &mut owner_rect);
+        let placed = dialog_rect(owner_rect, work_area_of(owner), width_dip * dpi / 96, height_dip * dpi / 96, true);
+        let title: Vec<u16> = title.encode_utf16().chain([0]).collect();
+        let hwnd = CreateWindowExW(Default::default(), DIALOG_CLASS, PCWSTR(title.as_ptr()), WS_POPUP | WS_CLIPCHILDREN, placed.left, placed.top, placed.right - placed.left, placed.bottom - placed.top, Some(owner), None, Some(instance), None).ok()?;
+        // Rounded corners where the system supports them (Windows 11).
+        let round: i32 = 2;
+        let _ = DwmSetWindowAttribute(hwnd, 33, (&round as *const i32).cast(), 4);
+        Some(hwnd)
+    }
+}
+
+/// Gives up on a dialog whose HTML host could not be created: its window would stay blank, so it is
+/// destroyed and later dialogs use their native windows.
+fn abandon(runtime: &Rc<RefCell<Runtime>>) {
+    let (kind, parent) = runtime.try_borrow().map(|state| (state.kind, state.parent)).unwrap_or((Kind::Rename, HWND::default()));
+    close_runtime(runtime);
+    if kind != Kind::Rename && !parent.0.is_null() {
+        FAILED.with(|failed| failed.set(true));
+        unsafe { let _ = DestroyWindow(parent); }
+    }
+}
 
 pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, kind: Kind) {
     let runtime = Rc::new(RefCell::new(Runtime { app: app.clone(), owner, parent, kind, host: None, ready: false, closed: false }));
     RUNTIMES.with(|map| { map.borrow_mut().insert(parent.0 as isize, runtime.clone()); });
-    let mut bounds = RECT::default();
-    unsafe { let _ = GetClientRect(parent, &mut bounds); }
+    let bounds = bounds_of(kind, parent);
     let weak: Weak<RefCell<Runtime>> = Rc::downgrade(&runtime);
     let commands: Rc<dyn Fn(Command)> = Rc::new(move |command| if let Some(state) = weak.upgrade() { handle(&state, command); });
     let failed_weak = Rc::downgrade(&runtime);
@@ -32,7 +161,7 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
         // --- popup surfaces (lane PP) ---
         let rename = state.try_borrow().ok().filter(|s| s.kind == Kind::Rename).map(|s| s.parent);
         // --- end popup surfaces ---
-        close_runtime(&state);
+        abandon(&state);
         if let Some(parent) = rename { super::profile_rename::html_failed(parent); }
     });
     let accel_owner = owner;
@@ -45,15 +174,16 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
                 if runtime.closed { host.close(); return; }
                 runtime.host = Some(host.clone());
                 let _ = host.set_visible(true);
+                let _ = host.focus();
             } else { host.close(); }
         } else { host.close(); },
         Err(_) => if let Some(state) = ready_weak.upgrade() {
             let rename = state.try_borrow().ok().filter(|s| s.kind == Kind::Rename).map(|s| s.parent);
-            close_runtime(&state);
+            abandon(&state);
             if let Some(parent) = rename { super::profile_rename::html_failed(parent); }
         },
     }) {
-        close_runtime(&runtime);
+        abandon(&runtime);
         // --- popup surfaces (lane PP) ---
         if kind == Kind::Rename { super::profile_rename::html_failed(parent); return; }
         // --- end popup surfaces ---
@@ -61,9 +191,28 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
     }
 }
 
+/// Opens the Privacy dashboard in its own owned window, or brings the open one to the front. The host
+/// used to be a child of the main window, created under the tab and chrome controllers (V2).
 pub(crate) fn open_privacy(owner: HWND, app: &AppRef, env: ChromeEnv) {
-    if RUNTIMES.with(|map| map.borrow().contains_key(&(owner.0 as isize))) { return; }
-    attach(app, owner, owner, env, Kind::Privacy);
+    let existing = PRIVACY.with(Cell::get);
+    if existing != 0 {
+        let window = HWND(existing as *mut std::ffi::c_void);
+        if unsafe { IsWindow(Some(window)) }.as_bool() {
+            unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+            if let Some(host) = RUNTIMES.with(|map| map.borrow().get(&existing).cloned()).and_then(|runtime| runtime.try_borrow().ok().and_then(|state| state.host.clone())) {
+                let _ = host.focus();
+            }
+            return;
+        }
+        PRIVACY.with(|slot| slot.set(0));
+    }
+    let Some(window) = create_window(owner, Kind::Privacy.title(), PRIVACY_WIDTH, PRIVACY_HEIGHT) else {
+        show_error_message("The Privacy dashboard could not be opened.");
+        return;
+    };
+    PRIVACY.with(|slot| slot.set(window.0 as isize));
+    attach(app, owner, window, env, Kind::Privacy);
+    unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
 pub(crate) fn resize(parent: HWND) {
@@ -72,8 +221,8 @@ pub(crate) fn resize(parent: HWND) {
     let (host, closed) = runtime.try_borrow().map(|state| (state.host.clone(), state.closed)).unwrap_or((None, true));
     if closed { return; }
     if let Some(host) = host {
-        let mut bounds = RECT::default(); unsafe { let _ = GetClientRect(parent, &mut bounds); }
-        if host.set_bounds(bounds).is_err() { close_runtime(&runtime); }
+        let kind = runtime.try_borrow().map(|state| state.kind).unwrap_or(Kind::Rename);
+        if host.set_bounds(bounds_of(kind, parent)).is_err() { close_runtime(&runtime); }
     }
 }
 
@@ -110,11 +259,10 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         Command::Panel { kind: PanelType::Rename, f } if runtime.borrow().kind == Kind::Rename => handle_rename(runtime, f),
         // --- end popup surfaces ---
         Command::Panel { kind: PanelType::Panel, f } if empty_fields(&f, false) && f.a == "dismiss" => {
-            let (parent, kind) = { let state = runtime.borrow(); (state.parent, state.kind) };
-            if kind == Kind::Privacy {
-                RUNTIMES.with(|map| { map.borrow_mut().remove(&(parent.0 as isize)); });
-                close_runtime(runtime);
-            } else { unsafe { let _ = DestroyWindow(parent); } }
+            // Every HTML dialog owns its window, so the close button and Esc destroy it; the
+            // window's destruction then releases the host.
+            let parent = runtime.borrow().parent;
+            unsafe { let _ = DestroyWindow(parent); }
         }
         Command::Panel { kind: PanelType::Notes, f } if runtime.borrow().kind == Kind::Notes => handle_notes(runtime, f),
         Command::Panel { kind: PanelType::Settings, f } if runtime.borrow().kind == Kind::Settings => handle_settings(runtime, f),
@@ -293,11 +441,15 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
 }
 
 fn handle_settings(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
-    let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
+    let app = match runtime.try_borrow() { Ok(state) => state.app.clone(), Err(_) => return };
     let Ok(profile) = profile::active() else { return; };
     let result = match f.a.as_str() {
+        "openfile" if empty_fields(&f, false) => {
+            if let Err(message) = super::settings_panel::launch_settings_file(&profile.settings_file()) { show_error_message(&message); }
+            return;
+        }
+        // The page asks for its own confirmation before sending this, so there is no second prompt.
         "reset" if empty_fields(&f, false) => {
-            if !crate::win32::ask_yes_no_owned(owner, "Reset all settings to their defaults? Comments and other lines in settings.txt are kept.") { return; }
             crate::settings::save(&profile.settings_file(), &crate::settings::Settings::default()).map(|()| {
                 crate::app::App::apply_tab_layout_settings(&app, crate::settings::TabLayout::Horizontal, crate::settings::DEFAULT_SIDEBAR_WIDTH);
                 crate::app::App::apply_efficiency_mode(&app, crate::settings::EfficiencyMode::Auto);
@@ -347,6 +499,40 @@ fn next_id(existing: impl Iterator<Item = u64>) -> u64 { existing.max().unwrap_o
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT { RECT { left, top, right, bottom } }
+
+    #[test]
+    fn dialog_is_centred_over_the_owner_and_never_leaves_the_work_area() {
+        let work = rect(0, 0, 1920, 1040);
+        // Centred over a normal window.
+        let placed = dialog_rect(rect(40, 30, 1320, 830), work, 640, 720, true);
+        assert_eq!(placed, rect(360, 70, 1000, 790));
+        // A native window taller than the owner used to start 16px above the screen top (V3).
+        let tall = dialog_rect(rect(40, 30, 1320, 830), work, 600, 892, false);
+        assert_eq!((tall.top, tall.bottom - tall.top), (0, 892));
+        // Shrinks to a short work area instead of overflowing it.
+        let short = dialog_rect(rect(0, 0, 1280, 720), rect(0, 0, 1280, 680), 640, 720, true);
+        assert_eq!((short.top, short.bottom), (0, 680));
+        // An owner dragged mostly off the right edge still leaves the dialog on screen.
+        let edge = dialog_rect(rect(1700, 100, 2500, 800), work, 640, 600, true);
+        assert_eq!(edge.right, 1920);
+        assert!(edge.left >= 0);
+        // A second monitor to the left keeps its own origin.
+        let left_monitor = dialog_rect(rect(-1900, 50, -700, 750), rect(-1920, 0, 0, 1040), 640, 600, true);
+        assert!(left_monitor.left >= -1920 && left_monitor.right <= 0);
+    }
+
+    #[test]
+    fn notes_page_leaves_the_native_resize_strip_and_other_dialogs_fill_the_window() {
+        let client = rect(0, 0, 340, 700);
+        assert_eq!(host_bounds(Kind::Notes, client, 96), rect(9, 0, 340, 700));
+        assert_eq!(host_bounds(Kind::Notes, client, 192), rect(18, 0, 340, 700));
+        assert_eq!(host_bounds(Kind::Settings, client, 192), client);
+        assert_eq!(host_bounds(Kind::Privacy, client, 96), client);
+        // A window narrower than the strip never inverts the rectangle.
+        assert_eq!(host_bounds(Kind::Notes, rect(0, 0, 4, 10), 96).left, 4);
+    }
+
     #[test]
     fn settings_payload_updates_only_known_values_and_requires_every_control() {
         let mut settings = crate::settings::Settings::default();

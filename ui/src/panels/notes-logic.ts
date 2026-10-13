@@ -4,7 +4,8 @@ export type NotesSnapshot = { notes: Note[]; tasks: Task[] };
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: readonly string[]): boolean => Object.keys(value).every(key => keys.includes(key)) && keys.every(key => key in value);
-const id = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= 0xffff_ffff;
+// Note and task ids are microsecond timestamps (about 1.8e15), so the bound is the safe-integer range, not u32.
+const id = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const text = (value: unknown): value is string => typeof value === 'string' && value.length <= 2048;
 
 /** Reject the entire host payload before rendering any portion of it. */

@@ -56,11 +56,11 @@ pub(crate) struct Snapshot {
 }
 
 pub(crate) fn open(hwnd: HWND, app: &AppRef) {
-    if crate::chrome_host::html_ui_enabled() {
-        if let Some(env) = super::window::html_environment(hwnd) {
-            super::html_dialog::open_privacy(hwnd, app, env);
-            return;
-        }
+    if super::html_dialog::html_only(hwnd)
+        && let Some(env) = super::window::html_environment(hwnd)
+    {
+        super::html_dialog::open_privacy(hwnd, app, env);
+        return;
     }
     let profile = crate::profile::active().ok();
     let mut status = None;

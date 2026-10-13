@@ -72,9 +72,12 @@ struct Panel {
     updating: bool,
     resizing: bool,
     edit_brush: windows::Win32::Graphics::Gdi::HBRUSH,
+    /// The HTML page is the only content: no native EDIT controls, and the window paints only its
+    /// backing fill and border (V7).
+    html_only: bool,
 }
 
-thread_local! { static REGISTERED: Cell<bool> = const { Cell::new(false) }; static OPEN: Cell<isize> = const { Cell::new(0) }; static GUEST_WIDTH: Cell<i32> = const { Cell::new(DEFAULT_WIDTH_DIP) }; static GUEST_DATA: RefCell<(Vec<data::Note>, Vec<data::Task>)> = const { RefCell::new((Vec::new(), Vec::new())) }; }
+thread_local! { static HTML_ONLY: Cell<bool> = const { Cell::new(false) }; static REGISTERED: Cell<bool> = const { Cell::new(false) }; static OPEN: Cell<isize> = const { Cell::new(0) }; static GUEST_WIDTH: Cell<i32> = const { Cell::new(DEFAULT_WIDTH_DIP) }; static GUEST_DATA: RefCell<(Vec<data::Note>, Vec<data::Task>)> = const { RefCell::new((Vec::new(), Vec::new())) }; }
 
 pub(crate) fn width_px(width_dip: i32, dpi: u32, available: i32) -> i32 {
     let width_dip = width_dip.clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
@@ -171,6 +174,7 @@ pub(crate) fn open(owner: HWND) {
     unsafe {
         let _ = GetClientRect(owner, &mut client);
     }
+    let html_only = super::html_dialog::html_only(owner);
     let viewport_top = (client.bottom - 500).max(0); // replaced with the live viewport by sync immediately below
     let mut state = Box::new(Panel {
         owner,
@@ -195,6 +199,7 @@ pub(crate) fn open(owner: HWND) {
                 theme::palette(glass::appearance(), true).omnibox_fill,
             ))
         },
+        html_only,
     });
     let width = state.width;
     let height = state.height;
@@ -203,6 +208,7 @@ pub(crate) fn open(owner: HWND) {
         let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(owner, &mut owner_rect);
     }
     let instance = unsafe { HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0) };
+    HTML_ONLY.with(|flag| flag.set(html_only));
     let hwnd = unsafe {
         match CreateWindowExW(
             WS_EX_TOOLWINDOW,
@@ -218,8 +224,14 @@ pub(crate) fn open(owner: HWND) {
             Some(instance),
             Some((&mut *state as *mut Panel).cast::<c_void>()),
         ) {
-            Ok(hwnd) => hwnd,
-            Err(_) => return,
+            Ok(hwnd) => {
+                HTML_ONLY.with(|flag| flag.set(false));
+                hwnd
+            }
+            Err(_) => {
+                HTML_ONLY.with(|flag| flag.set(false));
+                return;
+            }
         }
     };
     OPEN.with(|slot| slot.set(hwnd.0 as isize));
@@ -242,7 +254,9 @@ pub(crate) fn open(owner: HWND) {
         if !state.tasks.is_empty() {
             state.selected_task = Some(state.tasks[0].id);
         }
-        populate_edits(hwnd);
+        if !html_only {
+            populate_edits(hwnd);
+        }
     }
 }
 
@@ -318,6 +332,9 @@ fn create_edit(hwnd: HWND, id: usize, style: i32, instance: HINSTANCE) -> HWND {
 }
 
 fn position_controls(hwnd: HWND, s: &Panel) {
+    if s.html_only {
+        return;
+    }
     let dpi = unsafe { GetDpiForWindow(hwnd).max(96) };
     let scale = |v: i32| v * dpi as i32 / 96;
     let show = |window: HWND, visible: bool| unsafe {
@@ -689,6 +706,11 @@ fn paint(hwnd: HWND) {
             p.hairline,
             1,
         );
+        // The HTML page draws the title, tabs and close button; only the backing is native.
+        if panel(hwnd).is_some_and(|s| s.html_only) {
+            let _ = EndPaint(hwnd, &ps);
+            return;
+        }
         SetBkMode(dc, TRANSPARENT);
         text(
             dc,
@@ -998,7 +1020,9 @@ unsafe extern "system" fn proc(
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CREATE => {
-                if let Some(s) = panel(hwnd) {
+                if !HTML_ONLY.with(Cell::get)
+                    && let Some(s) = panel(hwnd)
+                {
                     create_edits(hwnd, s);
                 }
                 LRESULT(0)
@@ -1079,6 +1103,14 @@ unsafe extern "system" fn proc(
                 if let Some(s) = panel(hwnd) {
                     save_width(&s.profile, s.width_dip);
                     let _ = DeleteObject(s.edit_brush.into());
+                    // Closing from the HTML page (its X or Esc) does not pass through the owner, so
+                    // ask it to give the page its width back.
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(s.owner),
+                        WM_SIDEBAR_RESIZED,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
                 }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 DefWindowProcW(hwnd, message, wparam, lparam)
