@@ -374,6 +374,7 @@ pub(crate) fn shutdown(owner: HWND) {
         }
         let _ = DestroyWindow(layer.window);
     }
+    super::corner_fringe::destroy(owner); // --- omnibox suggest ---
 }
 
 fn ready_host(owner: HWND) -> Option<ChromeHost> {
@@ -930,6 +931,13 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = SetTimer(Some(window), WATCH_TIMER, WATCH_MS, None);
+        // --- omnibox suggest ---
+        if kind == Kind::Suggest {
+            place_fringe(owner, window, bounds, visible_h, dpi);
+        } else {
+            super::corner_fringe::hide(owner);
+        }
+        // --- end omnibox suggest ---
     }
     // --- omnibox suggest ---
     let (animating, tell) = with_layer(owner, |layer| {
@@ -989,6 +997,7 @@ fn hide(owner: HWND) {
     unsafe {
         let _ = KillTimer(Some(window), WATCH_TIMER);
         let focused = GetForegroundWindow() == window;
+        super::corner_fringe::hide(owner); // --- omnibox suggest ---
         let _ = ShowWindow(window, SW_HIDE);
         if focused {
             let _ = SetForegroundWindow(owner);
@@ -1358,6 +1367,9 @@ fn drop_frame(owner: HWND) {
             let _ = DeleteObject(HGDIOBJ(region.0));
         }
     }
+    if let Some(bounds) = with_layer(owner, |layer| layer.bounds) {
+        place_fringe(owner, window, bounds, h, dpi);
+    }
 }
 
 /// The dropdown's bounds: tucked `DROP_OVERLAP` under the pill's bottom edge, exactly as wide as the
@@ -1369,27 +1381,61 @@ fn suggest_bounds(anchor: RECT, height: i32, work: RECT) -> RECT {
     RECT { left, top, right: left + width, bottom: top + height }
 }
 
+/// Radius of the dropdown's bottom corners while `visible` rows of pixels show: the full radius once
+/// the list is tall and wide enough, a smaller one while it unrolls. Pure.
+fn suggest_corner_radius(radius: i32, visible: i32, width: i32) -> i32 {
+    radius.min(visible).min(width / 2).max(0)
+}
+
 /// The dropdown's window region with `visible` rows of pixels showing: square where it meets the
-/// pill, rounded at its current bottom edge. Empty when nothing shows.
+/// pill, rounded at its current bottom edge. Empty when nothing shows. The corners are cut a hair
+/// inside the curve (only pixels it fully covers); `corner_fringe` paints the partly covered pixels
+/// over them, so the visible edge is anti-aliased (V12).
 unsafe fn suggest_region(width: i32, visible: i32, radius: i32) -> HRGN {
     unsafe {
-        if visible <= 0 {
+        if visible <= 0 || width <= 0 {
             return CreateRectRgn(0, 0, 0, 0);
         }
-        // GDI's aliased ellipse runs about a pixel inside the page's antialiased curve, which would
-        // shave the edge off the bottom corners; a slightly fuller corner keeps all of it (the page
-        // paints anything between the two in the edge colour, hover.css).
-        let diameter = (radius * 2 - 2).min(visible * 2).max(0);
-        let region = CreateRoundRectRgn(0, 0, width + 1, visible + 1, diameter, diameter);
-        let top = CreateRectRgn(0, 0, width + 1, (visible - radius).max(visible / 2));
-        if !region.is_invalid() && !top.is_invalid() {
-            let _ = CombineRgn(Some(region), Some(region), Some(top), RGN_OR);
-        }
-        if !top.is_invalid() {
-            let _ = DeleteObject(HGDIOBJ(top.0));
+        let r = suggest_corner_radius(radius, visible, width);
+        let top = visible - r;
+        let region = CreateRectRgn(0, 0, width, top.max(1).min(visible));
+        if r > 0 {
+            let insets = super::corner_fringe::insets_for(r);
+            let mut y = 0;
+            while y < r {
+                let inset = insets[y as usize];
+                let mut end = y + 1;
+                while end < r && insets[end as usize] == inset {
+                    end += 1;
+                }
+                let band = CreateRectRgn(inset, top + y, width - inset, top + end);
+                if !band.is_invalid() {
+                    let _ = CombineRgn(Some(region), Some(region), Some(band), RGN_OR);
+                    let _ = DeleteObject(HGDIOBJ(band.0));
+                }
+                y = end;
+            }
         }
         region
     }
+}
+
+/// Lays the anti-aliasing fringe over the dropdown's bottom corners for the region `visible` pixels
+/// tall that sits at `bounds`, or takes it away when nothing needs it.
+fn place_fringe(owner: HWND, window: HWND, bounds: RECT, visible: i32, dpi: u32) {
+    let width = bounds.right - bounds.left;
+    let r = suggest_corner_radius(scale_px(SUGGEST_RADIUS, dpi), visible, width);
+    let appearance = glass::appearance();
+    let palette = theme::palette(appearance, true);
+    let surface = surface_colour(palette.window, appearance == theme::Appearance::Dark);
+    let (r8, g8, b8) = edge_colour(surface, palette.omnibox_text);
+    super::corner_fringe::show(owner, window, bounds.left, bounds.top + visible, width, r, (r8, g8, b8));
+}
+
+/// The dropdown's edge colour: `--bw-pill-edge`, the text colour at 22% over the surface. Pure.
+fn edge_colour(surface: theme::Rgba, text: theme::Rgba) -> (u8, u8, u8) {
+    let mix = |top: u8, under: u8| (f32::from(top) * 0.22 + f32::from(under) * 0.78).round() as u8;
+    (mix(text.r, surface.r), mix(text.g, surface.g), mix(text.b, surface.b))
 }
 
 /// The toolbar lost the keyboard. A press on the dropdown itself also blurs the omnibox, so the
@@ -1695,6 +1741,23 @@ mod tests {
     }
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+
+    #[test]
+    fn dropdown_corner_radius_shrinks_with_a_short_or_narrow_list() {
+        assert_eq!(suggest_corner_radius(18, 400, 600), 18);
+        assert_eq!(suggest_corner_radius(18, 10, 600), 10);
+        assert_eq!(suggest_corner_radius(18, 400, 20), 10);
+        assert_eq!(suggest_corner_radius(18, 0, 600), 0);
+        assert_eq!(suggest_corner_radius(18, -5, 600), 0);
+    }
+
+    #[test]
+    fn dropdown_edge_is_the_text_colour_at_22_percent_over_the_surface() {
+        let surface = theme::Rgba { r: 40, g: 40, b: 40, a: 255 };
+        let text = theme::Rgba { r: 240, g: 240, b: 240, a: 255 };
+        assert_eq!(edge_colour(surface, text), (84, 84, 84));
+        assert_eq!(edge_colour(surface, surface), (40, 40, 40));
+    }
 
     #[test]
     fn only_a_card_island_or_dropdown_blocks_tooltips() {

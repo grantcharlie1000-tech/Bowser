@@ -1,4 +1,5 @@
 mod card;
+mod corner_fringe;
 mod command_palette;
 pub mod frame;
 pub mod glass;
