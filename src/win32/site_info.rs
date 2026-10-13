@@ -35,7 +35,7 @@ use super::{
 use crate::{
     app::{App, AppRef},
     chrome::layout::Rect,
-    permissions::{self, Decision, Permission},
+    permissions::{self, Decision, PERMISSION_COUNT, Permission},
     site_security::SiteSecurity,
     tabs::TabId,
 };
@@ -46,6 +46,7 @@ const PERMISSION: usize = 7000;
 const CLEAR_COOKIES: usize = 7100;
 const BLOCKER: usize = 7101;
 const RESET_PERMISSIONS: usize = 7102;
+const RESET_ZOOM: usize = 7103;
 /// Rows that are not commands, such as informational lines. Never chosen.
 const INFO: usize = 0;
 
@@ -64,7 +65,9 @@ struct Snapshot {
     /// The origin permission decisions are stored under. `None` for pages that have none.
     origin: Option<String>,
     /// Stored decision per permission, in [`Permission::ALL`] order.
-    decisions: [Option<Decision>; 4],
+    decisions: [Option<Decision>; PERMISSION_COUNT],
+    /// The page zoom in percent; 100 shows no zoom row.
+    zoom: u16,
     /// Cookies sent to the page's address. `None` when the page has no cookies to ask about.
     cookies: Option<Result<usize, String>>,
     blocked: u32,
@@ -94,12 +97,14 @@ const PERMISSION_ROW: u32 = 1;
 const ACT_CLEAR_COOKIES: u32 = 10;
 const ACT_BLOCKER: u32 = 11;
 const ACT_RESET: u32 = 12;
+const ACT_ZOOM_RESET: u32 = 13;
 /// Display order of the permission rows.
-const ROW_ORDER: [Permission; 4] = [
+const ROW_ORDER: [Permission; PERMISSION_COUNT] = [
     Permission::Camera,
     Permission::Microphone,
     Permission::Geolocation,
     Permission::Notifications,
+    Permission::Popups,
 ];
 
 fn permission_index(permission: Permission) -> usize {
@@ -112,6 +117,7 @@ fn permission_key(permission: Permission) -> &'static str {
         Permission::Camera => "camera",
         Permission::Geolocation => "location",
         Permission::Notifications => "notifications",
+        Permission::Popups => "popups",
     }
 }
 
@@ -134,6 +140,7 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
     let blocking = snapshot.blocking;
     let blocked = snapshot.blocked;
     let tracking = snapshot.tracking.unwrap_or("");
+    let zoom = snapshot.zoom;
     let any_stored = decisions.iter().any(Option::is_some);
     let can_clear = matches!(cookies, Some(Ok(count)) if count > 0);
     let mut page = super::html_popup::Page::new("siteinfo", move |out| {
@@ -172,6 +179,7 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
             b.uint("n", u64::from(blocked));
         });
         out.string("tracking", tracking);
+        out.uint("zoom", u64::from(zoom));
         out.bool("reset", has_origin && any_stored);
         out.bool("blockedHere", blocked_here);
     });
@@ -182,6 +190,9 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
         if any_stored {
             page.act(ACT_RESET, 0);
         }
+    }
+    if zoom != crate::site_prefs::ZOOM_DEFAULT {
+        page.act(ACT_ZOOM_RESET, 0);
     }
     if can_clear {
         page.act(ACT_CLEAR_COOKIES, 0);
@@ -198,6 +209,7 @@ fn act_command(snapshot: &Snapshot, id: u32, n: u8) -> Option<usize> {
     match id {
         ACT_CLEAR_COOKIES => Some(CLEAR_COOKIES),
         ACT_RESET => Some(RESET_PERMISSIONS),
+        ACT_ZOOM_RESET => (snapshot.zoom != crate::site_prefs::ZOOM_DEFAULT).then_some(RESET_ZOOM),
         ACT_BLOCKER => (snapshot.blocking.is_some_and(|on| on != (n == 1))).then_some(BLOCKER),
         id if (PERMISSION_ROW..PERMISSION_ROW + Permission::ALL.len() as u32).contains(&id)
             && usize::from(n) < CHOICES.len() =>
@@ -262,6 +274,7 @@ fn gather_light(shown: &Snapshot) -> Snapshot {
         blocked: shown.blocked,
         blocking: shown.blocking,
         tracking: shown.tracking,
+        zoom: shown.zoom,
     }
 }
 // --- end popup surfaces ---
@@ -301,7 +314,7 @@ fn gather(app: &AppRef) -> Snapshot {
         .and_then(|url| permissions::origin_of(url.as_str()));
     let decisions = match (&origin, App::permissions_handle(app)) {
         (Some(origin), Some(store)) => store.borrow().site_decisions(origin),
-        _ => [None; 4],
+        _ => [None; PERMISSION_COUNT],
     };
     let cookies = match (tab, url.as_ref()) {
         (Some(tab), Some(url)) if origin.is_some() => ask(|done| {
@@ -323,6 +336,7 @@ fn gather(app: &AppRef) -> Snapshot {
         blocked: App::active_blocked_count(app),
         blocking: App::blocker_active_for_site(app),
         tracking,
+        zoom: App::active_zoom_percent(app),
     }
 }
 
@@ -428,6 +442,16 @@ fn panel(snapshot: &Snapshot) -> Menu {
         Item::new(INFO, tracking_label, Icon::Shield).glyph("eye").disabled(),
     ));
 
+    if snapshot.zoom != crate::site_prefs::ZOOM_DEFAULT {
+        entries.push(Entry::Item(
+            Item::new(
+                RESET_ZOOM,
+                format!("Reset zoom ({}%)", snapshot.zoom),
+                Icon::Reset,
+            )
+            .glyph("reset"),
+        ));
+    }
     entries.push(Entry::Separator);
     let any_stored = snapshot.decisions.iter().any(Option::is_some);
     entries.push(Entry::Item(
@@ -471,6 +495,7 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
             }
         }
         BLOCKER => App::toggle_blocker(app),
+        RESET_ZOOM => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         RESET_PERMISSIONS => {
             let (Some(origin), Some(store)) =
                 (snapshot.origin.as_ref(), App::permissions_handle(app))
@@ -524,6 +549,7 @@ fn permission_glyph(permission: Permission) -> &'static str {
         Permission::Camera => "camera",
         Permission::Geolocation => "location",
         Permission::Notifications => "bell",
+        Permission::Popups => "external",
     }
 }
 
@@ -533,6 +559,7 @@ fn permission_icon(permission: Permission) -> Icon {
         Permission::Camera => Icon::Camera,
         Permission::Geolocation => Icon::Location,
         Permission::Notifications => Icon::Bell,
+        Permission::Popups => Icon::Grid,
     }
 }
 
@@ -577,7 +604,7 @@ fn pump() -> bool {
 mod tests {
     use super::*;
 
-    fn snapshot(decisions: [Option<Decision>; 4], cookies: Option<Result<usize, String>>, blocking: Option<bool>) -> Snapshot {
+    fn snapshot(decisions: [Option<Decision>; PERMISSION_COUNT], cookies: Option<Result<usize, String>>, blocking: Option<bool>) -> Snapshot {
         Snapshot {
             tab: Some(TabId(1)),
             url: Url::parse("https://en.wikipedia.org/wiki/Main_Page").ok(),
@@ -588,12 +615,13 @@ mod tests {
             blocked: 3,
             blocking,
             tracking: Some("balanced"),
+            zoom: 100,
         }
     }
 
     #[test]
     fn page_actions_map_to_the_stored_decisions_and_never_widen_the_policy() {
-        let shown = snapshot([None; 4], Some(Ok(2)), Some(true));
+        let shown = snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true));
         let camera = PERMISSION_ROW + permission_index(Permission::Camera) as u32;
         // Allow / Block / Default for the camera row map to the same ids the menu used.
         let camera_base = PERMISSION + permission_index(Permission::Camera) * CHOICES.len();
@@ -603,16 +631,26 @@ mod tests {
         assert_eq!(CHOICES[act_command(&shown, camera, 2).unwrap() - camera_base], None, "Default stores nothing: blocked");
         assert_eq!(act_command(&shown, camera, 3), None);
         assert_eq!(act_command(&shown, 99, 0), None);
+        // The popups row is the fifth permission row and maps like the others.
+        let popups = PERMISSION_ROW + permission_index(Permission::Popups) as u32;
+        let popups_base = PERMISSION + permission_index(Permission::Popups) * CHOICES.len();
+        assert_eq!(CHOICES[act_command(&shown, popups, 0).unwrap() - popups_base], Some(Decision::Allow));
+        assert_eq!(CHOICES[act_command(&shown, popups, 2).unwrap() - popups_base], None, "Default stores nothing: blocked");
+        // The zoom reset exists only while zoomed.
+        assert_eq!(act_command(&shown, ACT_ZOOM_RESET, 0), None, "already at 100%");
+        let mut zoomed = snapshot([None; PERMISSION_COUNT], None, None);
+        zoomed.zoom = 125;
+        assert_eq!(act_command(&zoomed, ACT_ZOOM_RESET, 0), Some(RESET_ZOOM));
         // The blocker choice is the wanted state.
         assert_eq!(act_command(&shown, ACT_BLOCKER, 1), None, "already on");
         assert_eq!(act_command(&shown, ACT_BLOCKER, 0), Some(BLOCKER));
-        assert_eq!(act_command(&snapshot([None; 4], None, None), ACT_BLOCKER, 0), None);
+        assert_eq!(act_command(&snapshot([None; PERMISSION_COUNT], None, None), ACT_BLOCKER, 0), None);
     }
 
     #[test]
     fn page_declares_only_the_controls_it_shows() {
         let json = crate::win32::html_popup::Page::debug_json(
-            html_page(&snapshot([Some(Decision::Allow), None, None, Some(Decision::Block)], Some(Ok(0)), Some(true)), true),
+            html_page(&snapshot([Some(Decision::Allow), None, None, Some(Decision::Block), None], Some(Ok(0)), Some(true)), true),
             4,
         );
         assert!(json.starts_with("{\"v\":1,\"t\":\"siteinfo\",\"tok\":4,\"kind\":\"site-info\",\"host\":\"en.wikipedia.org\""), "{json}");
@@ -622,8 +660,11 @@ mod tests {
         assert!(json.contains("\"cookies\":{\"state\":\"count\",\"n\":0,\"clear\":false}"), "{json}");
         assert!(json.contains("\"reset\":true"));
         assert!(json.contains("\"blockedHere\":true"));
+        assert!(json.contains("{\"id\":5,\"k\":\"popups\",\"label\":\"Popups\",\"state\":\"default\"}"), "{json}");
+        assert!(json.contains("\"zoom\":100"), "{json}");
+        assert!(!json.contains("\"id\":13"), "no zoom control at 100%");
         // No http(s) origin: no permission rows at all.
-        let mut internal = snapshot([None; 4], None, None);
+        let mut internal = snapshot([None; PERMISSION_COUNT], None, None);
         internal.origin = None;
         internal.url = None;
         let json = crate::win32::html_popup::Page::debug_json(html_page(&internal, false), 1);
@@ -633,7 +674,9 @@ mod tests {
 
     #[test]
     fn site_info_page_fixture_matches_the_ui_contract() {
-        let page = html_page(&snapshot([None, Some(Decision::Allow), None, None], Some(Ok(5)), Some(true)), false);
+        let mut shown = snapshot([None, Some(Decision::Allow), None, None, Some(Decision::Allow)], Some(Ok(5)), Some(true));
+        shown.zoom = 125;
+        let page = html_page(&shown, false);
         let siteinfo = crate::win32::html_popup::Page::debug_json(page, 7);
         let palette_items = super::super::command_palette::html_items(
             &[(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],

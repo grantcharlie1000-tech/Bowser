@@ -20,6 +20,7 @@ pub mod session;
 pub mod settings;
 pub mod shortcuts;
 pub mod sidebar;
+pub mod site_prefs;
 pub mod site_security;
 pub mod split_view;
 pub mod tab_groups;

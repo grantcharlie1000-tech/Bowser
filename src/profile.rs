@@ -418,6 +418,11 @@ impl Profile {
         self.root.join(crate::permissions::FILE_NAME)
     }
 
+    /// Per-site preferences (page zoom), keyed by origin.
+    pub fn site_prefs_file(&self) -> PathBuf {
+        self.root.join(crate::site_prefs::FILE_NAME)
+    }
+
     /// Copies of unpacked browser extensions installed into this profile, one folder per id.
     pub fn extensions_dir(&self) -> PathBuf {
         self.root.join(EXTENSIONS_DIR_NAME)
@@ -1281,6 +1286,7 @@ mod tests {
                 ("passwords", profile.passwords_file()),
                 ("privacy stats", profile.privacy_stats_file()),
                 ("permissions", profile.permissions_file()),
+                ("site prefs", profile.site_prefs_file()),
                 ("extensions dir", profile.extensions_dir()),
                 ("extensions", profile.extensions_file()),
             ];

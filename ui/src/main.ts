@@ -91,6 +91,7 @@ function startToolbar(root: HTMLElement): void {
   view.reload.addEventListener('click', () => nav(loading ? 'stop' : 'reload'));
   view.site.addEventListener('click', () => open('site'));
   view.split.addEventListener('click', () => open('split'));
+  view.zoom.addEventListener('click', () => open('zoomreset'));
   view.menu.addEventListener('click', () => open('menu'));
 
   input.addEventListener('input', (ev) => {

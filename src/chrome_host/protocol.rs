@@ -54,6 +54,8 @@ pub enum OpenTarget {
     NewTab,
     /// Toggles split view, the same action as the Ctrl+Shift+\ shortcut.
     Split,
+    /// The toolbar's zoom chip: back to 100% for the active page, the same as Ctrl+0.
+    ZoomReset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -806,6 +808,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "site" => OpenTarget::Site,
             "newtab" => OpenTarget::NewTab,
             "split" => OpenTarget::Split,
+            "zoomreset" => OpenTarget::ZoomReset,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -1007,6 +1010,9 @@ pub struct ViewState {
     /// A camera, microphone, location or notification request was denied on the current page
     /// (Bowser never prompts). The toolbar shows a passive indicator in the pill.
     pub permblocked: bool,
+    /// The page zoom of the active tab in percent. Clamped to 25..=500 when serialised; the toolbar
+    /// shows a reset chip while it is not 100.
+    pub zoom: u16,
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1041,6 +1047,8 @@ impl ViewState {
         out.push_str(&json_string(&self.label));
         out.push_str(",\"permblocked\":");
         out.push_str(if self.permblocked { "true" } else { "false" });
+        out.push_str(",\"zoom\":");
+        out.push_str(&self.zoom.clamp(crate::site_prefs::ZOOM_MIN, crate::site_prefs::ZOOM_MAX).to_string());
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1704,6 +1712,7 @@ mod tests {
             security: Security::Secure,
             label: "Secure".to_string(),
             permblocked: false,
+            zoom: 100,
             theme: Vec::new(),
         }
     }
@@ -1901,6 +1910,12 @@ mod tests {
             ok(r#"{"v":1,"t":"open","a":"split"}"#),
             Command::Open(OpenTarget::Split)
         );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"open","a":"zoomreset"}"#),
+            Command::Open(OpenTarget::ZoomReset)
+        );
+        assert!(parse_command(r#"{"v":1,"t":"open","a":"zoom"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"open","a":"zoomreset","pct":100}"#).is_err());
     }
 
     #[test]
@@ -2521,6 +2536,7 @@ mod tests {
             security: Security::Secure,
             label: "Secure".to_string(),
             permblocked: true,
+            zoom: 125,
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -2528,14 +2544,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
@@ -3256,6 +3272,7 @@ mod tests {
             Command::Ready,
             Command::Nav(NavAction::Back),
             Command::Open(OpenTarget::NewTab),
+            Command::Open(OpenTarget::ZoomReset),
             Command::Tab { action: TabAction::Select, id: 2 },
             Command::Tab { action: TabAction::Close, id: 2 },
             Command::Group { action: GroupAction::Toggle, key: 2 },

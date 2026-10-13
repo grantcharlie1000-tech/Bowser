@@ -6002,6 +6002,7 @@ fn html_sync(hwnd: HWND) {
         security: chrome_host::security_of(site),
         label: site.summary().to_string(),
         permblocked: App::active_permission_blocked(&app),
+        zoom: App::active_zoom_percent(&app),
         theme: chrome_host::theme_tokens(palette),
     };
     let json = state.to_json();
@@ -6191,6 +6192,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 focus_omni(hwnd, &app, true);
             }
         }
+        ChromeCommand::Open(OpenTarget::ZoomReset) => {
+            if let Some(app) = app_of(hwnd) {
+                App::zoom_active(&app, crate::site_prefs::ZoomStep::Reset);
+            }
+        }
         ChromeCommand::Open(OpenTarget::Split) => {
             // Same as the native omnibox split button: open the split menu.
             defer_html_command(hwnd, DeferredChromeCommand::SplitMenu);
@@ -6286,6 +6292,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         security: crate::chrome_host::protocol::Security::None,
         label: String::new(),
         permblocked: false,
+        zoom: 100,
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -6668,6 +6675,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         security: chrome_host::security_of(site),
         label: site.summary().to_owned(),
         permblocked: App::active_permission_blocked(&app),
+        zoom: App::active_zoom_percent(&app),
         theme: chrome_host::theme_tokens(palette),
     };
     Some(state.to_json())
@@ -8028,6 +8036,9 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         }
         Command::FillPassword => passwords_panel::offer_fill(hwnd, app),
         Command::OpenPrivacyDashboard => privacy_panel::open(hwnd, app),
+        Command::ZoomIn => App::zoom_active(app, crate::site_prefs::ZoomStep::In),
+        Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),
+        Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         Command::ShowHistory => {
             side_panel::open(hwnd, side_panel::PanelId::History);
             apply_sidebar_bounds(hwnd, app);

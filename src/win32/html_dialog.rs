@@ -3,8 +3,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::{Rc, Weak}, time::{SystemTime, UNIX_EPOCH}};
 use windows::Win32::{Foundation::{HWND, RECT}, UI::WindowsAndMessaging::{DestroyWindow, GetClientRect}};
 use crate::{
-    app::AppRef,
-    chrome_host::{host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View}, protocol::{self, Command, PanelFields, PanelType}},
+    app::{App, AppRef},
+    chrome_host::{host::{Accel, AccelHandler, ChromeEnv, ChromeHost, View}, panels, protocol::{self, Command, PanelFields, PanelType}},
     profile,
     win32::{notes_panel, show_error_message},
 };
@@ -150,23 +150,32 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
         if let Some(tracking) = snapshot.tracking { out.string("tracking", tracking); } else { out.null("tracking"); }
         if let Some(enabled) = snapshot.smart_screen { out.bool("smartScreen", enabled); } else { out.null("smartScreen"); }
         out.bool("blockerSetting", snapshot.blocker_setting); out.bool("sleeping", snapshot.sleeping); out.uint("sleepAfter", snapshot.sleep_after);
-        out.array("permissions", |items| for (origin, permission, decision) in &snapshot.permissions { items.object(|item| {
-            item.string("origin", origin); item.string("permission", permission.label());
-            item.string("decision", match decision { crate::permissions::Decision::Allow => "allow", crate::permissions::Decision::Block => "block" });
-        }); });
+        let denied = App::denied_requests(&app);
+        let sites = {
+            let current = App::active_site(&app).and_then(|(_, url)| crate::permissions::origin_of(url.as_str()));
+            let store = App::permissions_handle(&app);
+            let guard = store.as_ref().map(|store| store.borrow());
+            let empty = crate::permissions::PermissionStore::default();
+            let also: Vec<&str> = denied.iter().map(|attempt| attempt.origin.as_str()).collect();
+            panels::privacy::site_rows(guard.as_deref().unwrap_or(&empty), current.as_deref(), &also)
+        };
+        panels::privacy::write_permissions(out, &sites, &denied, crate::permissions::now_secs());
         if let Some(status) = &snapshot.status { out.string("status", status); } else { out.null("status"); }
     })
 }
 
 fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
+    // Permission dashboard commands are validated in `panels::privacy::map_command`; only a stored
+    // Allow ever grants, and nothing here asks the page or the user for a decision.
+    if let Some(action) = panels::privacy::map_command(&f) {
+        apply_permission_action(&app, action);
+        send_current(runtime);
+        return;
+    }
     let no_extra = f.parent.is_none() && f.before.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none();
     let id = match f.a.as_str() {
         "clear-stats" if empty_fields(&f, false) => Some(8_800),
-        "permission" if no_extra && f.id.is_some() && f.n.is_some_and(|choice| (0..=2).contains(&choice)) => {
-            let index = f.id.unwrap_or_default(); let choice = f.n.unwrap_or_default() as usize;
-            let Some(id) = index.checked_mul(3).and_then(|base| base.checked_add(choice as u64)).and_then(|value| value.checked_add(10_000)) else { return; }; usize::try_from(id).ok()
-        }
         "clear-data" if no_extra && f.id.is_some_and(|kind| kind <= 2) && f.n.is_some_and(|range| (0..=3).contains(&range)) => {
             Some(8_900 + f.id.unwrap_or_default() as usize * 4 + f.n.unwrap_or_default() as usize)
         }
@@ -177,6 +186,22 @@ fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let snapshot = super::privacy_panel::gather(&app, profile.as_ref(), None);
     let _ = super::privacy_panel::apply(owner, &app, &snapshot, id);
     send_current(runtime);
+}
+
+fn apply_permission_action(app: &crate::app::AppRef, action: panels::privacy::Action) {
+    use panels::privacy::Action;
+    if matches!(action, Action::ClearDenied) {
+        App::clear_denied_requests(app);
+        return;
+    }
+    let Some(store) = App::permissions_handle(app) else { return; };
+    let result = match action {
+        Action::Set { origin, kind, decision } => store.borrow_mut().set(&origin, kind, decision),
+        Action::ResetSite(origin) => store.borrow_mut().reset_site(&origin).map(|_| ()),
+        Action::ResetAll => store.borrow_mut().reset_all().map(|_| ()),
+        Action::ClearDenied => Ok(()),
+    };
+    if let Err(error) = result { show_error_message(&format!("Bowser could not save the permission: {error}")); }
 }
 
 // --- popup surfaces (lane PP) ---

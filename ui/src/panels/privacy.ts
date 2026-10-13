@@ -1,9 +1,10 @@
 import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
-import { parsePrivacySnapshot, privacyCommand, type PrivacySnapshot } from './privacy-logic';
-import { enter, iconButton, pageSection, panelHeader, segmented, settingRow, textButton } from './kit';
+import { CHOICES, CHOICE_LABEL, KINDS, KIND_LABEL, deniedText, filterSites, hasStored, parsePrivacySnapshot, privacyCommand, setPermissionCommand, storedCount, type Choice, type Kind, type PrivacySnapshot, type SiteRow } from './privacy-logic';
+import { emptyState, enter, pageSection, panelHeader, searchField, segmented, settingRow, textButton } from './kit';
 
-function emit(a: string, fields: { id?: number; n?: number } = {}): void {
+type Fields = { id?: number; n?: number; text?: string };
+function emit(a: string, fields: Fields = {}): void {
   const command = privacyCommand(a, fields);
   if (command) sendPanel('priv', command as PanelFields);
 }
@@ -16,8 +17,11 @@ const SECURITY: Record<PrivacySnapshot['security'], string> = {
   unknown: 'Unknown',
   none: 'No active site',
 };
-const KINDS = ['Site data', 'Cache', 'History'] as const;
 const RANGES = [['0', 'Last hour'], ['1', 'Last day'], ['2', '7 days'], ['3', 'All time']] as const;
+const CLEAR_KINDS = ['Site data', 'Cache', 'History'] as const;
+const CHOICE_OPTIONS = CHOICES.map((choice) => [choice, CHOICE_LABEL[choice]] as const);
+/** Sites listed before "Show more": a full table is thousands of controls. */
+const SITE_PAGE = 20;
 const onOff = (value: boolean | null, on = 'On', off = 'Off'): string => (value === null ? 'Unavailable' : value ? on : off);
 const plain = (value: number): string => value.toLocaleString('en-GB');
 
@@ -26,6 +30,11 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
   let issue = '';
   const ranges: string[] = ['0', '0', '0'];
   let confirming: number | null = null;
+  let query = '';
+  let shown = SITE_PAGE;
+  let confirmingAll = false;
+  /** Focus key to restore after the next rebuild when the focused control is going away. */
+  let wantFocus: string | null = null;
 
   const header = panelHeader('Privacy dashboard', 'Close privacy dashboard');
   const status = el('p', 'pn-status');
@@ -38,8 +47,93 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
   enter(host);
   root.replaceChildren(host);
 
+  // The search box lives outside the per-snapshot rebuild so typing never loses it.
+  const search = searchField('Search sites');
+  search.input.dataset.focus = 'search';
+  const siteList = el('div', 'pg-sites');
+
+  const paintSites = (): void => {
+    if (!snapshot) { siteList.replaceChildren(); return; }
+    const matches = filterSites(snapshot.sites, query);
+    const nodes: HTMLElement[] = matches.slice(0, shown).map((site) => siteCard(site));
+    if (!snapshot.sites.length) nodes.push(emptyState('shield', 'No sites yet. The current site and any site that asks for a permission appear here.'));
+    else if (!matches.length) nodes.push(emptyState('search', 'No sites match your search.'));
+    if (matches.length > shown) {
+      const more = textButton(`Show ${Math.min(SITE_PAGE, matches.length - shown)} more of ${matches.length - shown}`, () => { shown += SITE_PAGE; paintSites(); }, { subtle: true });
+      more.dataset.focus = 'more';
+      const wrap = el('div', 'pg-more');
+      wrap.append(more);
+      nodes.push(wrap);
+    }
+    siteList.replaceChildren(...nodes);
+  };
+
+  /** One site: its origin, Reset site, and a row per kind with Allow / Block / Default. */
+  const siteCard = (site: SiteRow): HTMLElement => {
+    const card = el('section', 'pg-site');
+    card.setAttribute('aria-label', `Permissions for ${site.origin}`);
+    const head = el('div', 'pg-site-head');
+    const name = el('span', 'pg-site-name');
+    name.textContent = site.origin;
+    name.dir = 'auto';
+    head.append(name);
+    if (site.current) {
+      const tag = el('span', 'pg-site-tag');
+      tag.textContent = 'Current site';
+      head.append(tag);
+    }
+    const reset = textButton('Reset site', () => emit('perm-reset', { text: site.origin }), { subtle: true, aria: `Reset permissions for ${site.origin}` });
+    reset.disabled = !hasStored(site);
+    reset.dataset.focus = `reset:${site.origin}`;
+    head.append(reset);
+    card.append(head);
+    KINDS.forEach((kind: Kind, index) => {
+      const current: Choice = site.kinds[index] ?? 'default';
+      const group = segmented(CHOICE_OPTIONS, current, (choice) => {
+        const command = setPermissionCommand(site.origin, kind, choice);
+        if (command) sendPanel('priv', command as PanelFields);
+      }, `${KIND_LABEL[kind]} for ${site.origin}`);
+      group.querySelectorAll('button').forEach((button, choice) => { button.dataset.focus = `set:${site.origin}:${kind}:${CHOICES[choice]}`; });
+      const row = settingRow(KIND_LABEL[kind], null, group);
+      row.classList.add('pg-kind');
+      card.append(row);
+    });
+    return card;
+  };
+
+  search.input.addEventListener('input', () => { query = search.input.value; shown = SITE_PAGE; paintSites(); });
+
+  /** "Reset all" arms an inline confirmation; nothing is sent until it is confirmed. */
+  const resetAllRow = (data: PrivacySnapshot): HTMLElement => {
+    const total = storedCount(data.sites);
+    if (!confirmingAll || total === 0) {
+      confirmingAll = false;
+      const button = textButton('Reset all', () => { confirmingAll = true; wantFocus = 'reset-all-cancel'; render(); }, { icon: 'reset', aria: 'Reset all site permissions' });
+      button.disabled = total === 0;
+      button.dataset.focus = 'reset-all';
+      return settingRow('Saved choices', total ? `${plain(total)} saved across ${plain(data.sites.filter(hasStored).length)} sites. Sites never get a prompt; anything not allowed is blocked.` : 'Nothing saved. Sites never get a prompt; anything not allowed is blocked.', button);
+    }
+    const box = el('div', 'pg-confirm');
+    box.setAttribute('role', 'alertdialog');
+    box.setAttribute('aria-label', 'Confirm resetting all site permissions');
+    const message = el('p', 'pg-confirm-text');
+    message.textContent = `Reset ${plain(total)} saved ${total === 1 ? 'choice' : 'choices'} for every site? Every site goes back to blocked.`;
+    const actions = el('div', 'pg-confirm-actions');
+    const cancel = textButton('Cancel', () => { confirmingAll = false; wantFocus = 'reset-all'; render(); });
+    cancel.dataset.focus = 'reset-all-cancel';
+    const confirm = textButton('Reset all', () => { confirmingAll = false; wantFocus = 'search'; emit('perm-reset-all'); }, { primary: true, aria: 'Confirm: reset all site permissions' });
+    confirm.dataset.focus = 'reset-all-confirm';
+    actions.append(cancel, confirm);
+    box.append(message, actions);
+    box.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); confirmingAll = false; wantFocus = 'reset-all'; render(); } });
+    return box;
+  };
+
   const render = (): void => {
     const keep = scroll.scrollTop;
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusKey = focused?.dataset.focus;
+    const caret = focused === search.input ? [search.input.selectionStart, search.input.selectionEnd] as const : null;
     status.textContent = snapshot?.status ?? issue;
     status.hidden = status.textContent === '';
     if (!snapshot) {
@@ -59,6 +153,23 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
       settingRow('Tracking prevention', null, snapshot.tracking ?? 'Unavailable'),
     );
     sections.push(site.root);
+
+    // Permissions come first after the page facts: they are the part the user changes.
+    const permissions = pageSection('Site permissions');
+    permissions.body.append(resetAllRow(snapshot));
+    const bar = el('div', 'pg-bar');
+    bar.append(search.root);
+    permissions.body.append(bar, siteList);
+    paintSites();
+    sections.push(permissions.root);
+
+    const denied = pageSection('Recently blocked requests');
+    denied.body.append(settingRow('Last 50 this session', 'Site, kind and time only. Kept in memory and gone when Bowser closes.', textButton('Clear list', () => emit('denied-clear'), { subtle: true, aria: 'Clear the list of recently blocked requests' })));
+    for (const row of snapshot.denied) {
+      denied.body.append(settingRow(row.origin, deniedText(row)));
+    }
+    if (!snapshot.denied.length) denied.body.append(settingRow('Nothing blocked yet', 'Requests from sites for camera, microphone, location, notifications or popups appear here.'));
+    sections.push(denied.root);
 
     const blocked = pageSection('Blocked requests');
     blocked.body.append(
@@ -87,18 +198,8 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     );
     sections.push(protection.root);
 
-    const permissions = pageSection('Site permissions');
-    snapshot.permissions.forEach((item, index) => {
-      const choice = segmented([['allow', 'Allow'], ['block', 'Block']] as const, item.decision as 'allow' | 'block', (value) => emit('permission', { id: index, n: value === 'allow' ? 0 : 1 }), `${item.permission} for ${item.origin}`);
-      const control = el('div', 'pg-pair');
-      control.append(choice, iconButton('reset', `Clear saved choice for ${item.permission} on ${item.origin}`, () => emit('permission', { id: index, n: 2 })));
-      permissions.body.append(settingRow(item.permission, item.origin, control));
-    });
-    if (!snapshot.permissions.length) permissions.body.append(settingRow('No saved choices', 'Sites you allow or block appear here.'));
-    sections.push(permissions.root);
-
     const clear = pageSection('Clear browsing data');
-    KINDS.forEach((kind, kindIndex) => {
+    CLEAR_KINDS.forEach((kind, kindIndex) => {
       const run = textButton('Clear', () => {
         if (confirming !== kindIndex) { confirming = kindIndex; paintRun(); return; }
         confirming = null;
@@ -121,6 +222,16 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
 
     column.replaceChildren(...sections);
     scroll.scrollTop = keep;
+    // A snapshot rebuilds the page; put keyboard focus back on the same control.
+    const key = wantFocus ?? focusKey;
+    wantFocus = null;
+    if (key) {
+      const again = column.querySelector<HTMLElement>(`[data-focus="${CSS.escape(key)}"]`);
+      if (again && !(again as HTMLButtonElement).disabled) {
+        again.focus({ preventScroll: true });
+        if (caret && again instanceof HTMLInputElement) again.setSelectionRange(caret[0], caret[1]);
+      }
+    }
   };
 
   render();

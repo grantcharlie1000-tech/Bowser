@@ -25,7 +25,7 @@ test('foundation Rust fixture messages parse across the bridge', () => {
   assert.deepEqual(parseInbound(fixture.state), {
     t: 'state', scale: 1.25, pillx: 0, pillw: 624, menux: 627,
     solid: true, dark: true, back: false, forward: false, loading: false, split: false, bookmarked: false,
-    progress: 0, security: 'secure', label: 'Secure', permblocked: false, theme: { bg: '#123456', text: '#fff' },
+    progress: 0, security: 'secure', label: 'Secure', permblocked: false, zoom: 100, theme: { bg: '#123456', text: '#fff' },
   });
   assert.deepEqual(parseInbound(fixture.panelshow), { t: 'panelshow', p: 'history' });
   assert.deepEqual(parseInbound(fixture.layout), { t: 'layout', mode: 'vertical' });
