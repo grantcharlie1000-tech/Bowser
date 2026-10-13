@@ -10,7 +10,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'src', 'tabs-logic.ts'), 'utf8');
 const { code } = esbuild.transformSync(source, { loader: 'ts', format: 'esm' });
 const logic = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
-const { beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
+const { ACTIVE_WEIGHT, groupWeight, beforeId, buildEntries, dragScrollDelta, dropIndex, hiddenForTab, pruneFavs, rememberFav, scrollDeltaForWheel, shiftTarget, slotShift } = logic;
 
 const tab = (id, extra = {}) => ({
   id,
@@ -140,4 +140,35 @@ test('stepMoveBefore gives the host the id to the right of the new slot', () => 
   assert.equal(logic.stepMoveBefore(ids, 2, 1), 0);
   assert.equal(logic.stepMoveBefore(ids, 0, -1), null);
   assert.equal(logic.stepMoveBefore(ids, 3, 1), null);
+});
+
+test('groupWeight sums visible members: active 1.5, others 1, hidden none', () => {
+  const t = (id, hidden = false) => ({ item: tab(id), hidden });
+  assert.equal(ACTIVE_WEIGHT, 1.5);
+  assert.equal(groupWeight([t(1), t(2), t(3)], 2), 3.5);
+  assert.equal(groupWeight([t(1), t(2), t(3)], 99), 3);
+  assert.equal(groupWeight([t(1, true), t(2, true), t(3)], 3), 1.5);
+  assert.equal(groupWeight([t(1, true)], 99), 0);
+});
+
+test('a group of eight keeps its active tab visible and heaviest', () => {
+  const items = Array.from({ length: 8 }, (_, i) => tab(i + 1, { g: 4, gl: i === 0, gname: 'Site', gcol: 1, gcollapsed: false }));
+  const [entry] = buildEntries(items, 5);
+  assert.equal(entry.kind, 'group');
+  assert.equal(entry.visible, 8);
+  assert.equal(groupWeight(entry.members, 5), 8.5);
+  // Collapsed: only the active member stays, still weighing 1.5.
+  const collapsed = items.map((it) => (it.gl ? { ...it, gcollapsed: true } : it));
+  const [folded] = buildEntries(collapsed, 5);
+  assert.equal(folded.visible, 1);
+  assert.equal(groupWeight(folded.members, 5), 1.5);
+});
+
+test('tabs.css keeps the strip filled: no tab max-width, active weighs 1.5, groups grow by weight', () => {
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
+  assert.match(css, /\.strip \.tab \{[^}]*flex: 1 1 0;/);
+  assert.match(css, /\.strip \.tab\.active \{ flex-grow: 1\.5; \}/);
+  assert.match(css, /\.strip \.group \{[^}]*flex: var\(--gw, 1\) 1 calc\(/);
+  const tab = /\.strip \.tab \{[^}]*\}/.exec(css)?.[0] ?? '';
+  assert.doesNotMatch(tab, /max-width/);
 });

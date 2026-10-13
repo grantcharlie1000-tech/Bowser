@@ -36,7 +36,9 @@ window.__EXTRA = (() => {
   const sc = {};
   sc.t1 = many(1, 1);
   sc.t2 = many(2, 2);
+  sc.t4 = many(4, 2);
   sc.t5 = many(5, 2);
+  sc.t12 = many(12, 5);
   sc.t25 = many(25, 7);
   sc.groups = { v: 1, t: 'tabs', active: 3, items: [
     T(1, 'Inbox (12) - Mail', { fav: true }),
@@ -55,6 +57,14 @@ window.__EXTRA = (() => {
     T(102, 'Arc browser', { g: 1, fav: true }), T(103, 'Zen browser', { g: 1 }), T(104, 'Vivaldi', { g: 1 }), T(105, 'Orion', { g: 1 }),
     T(106, 'Plain tab'),
   ] };
+  // Eight tabs of one site folded into one group (Rust sends them flat with the same g), active in the middle.
+  const fold = (collapsed) => ({ v: 1, t: 'tabs', active: 305, items: [
+    T(300, 'GitHub - bowser/bowser', { g: 7, gl: true, gname: 'github.com', gcol: 2, gcollapsed: collapsed, fav: true }),
+    ...[1, 2, 3, 4, 5, 6, 7].map((i) => T(300 + i, ['Pull requests', 'Issues', 'Actions', 'Projects', 'Wiki', 'Security', 'Insights'][i - 1] + ' - bowser', { g: 7, fav: i % 2 === 0 })),
+    T(400, 'Inbox (12) - Mail', { fav: true }),
+  ] });
+  sc.fold8 = fold(false);
+  sc.fold8c = fold(true);
   sc.mixed = { v: 1, t: 'tabs', active: 4, items: [
     T(1, 'Pinned mail', { pinned: true, fav: true }), T(2, 'Pinned chat', { pinned: true }), T(3, 'Pinned music', { pinned: true, muted: true, fav: true }),
     T(4, 'Active tab with a rather long title that fades out', { fav: true }),
@@ -85,7 +95,7 @@ writeFileSync(join(site, 'index.html'), html);
 const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const shots = [];
 for (const scheme of ['dark', 'light']) {
-  for (const scn of ['t1', 't2', 't5', 't25', 'groups', 'groups25', 'mixed', 'pinnedscroll']) {
+  for (const scn of ['t1', 't2', 't4', 't5', 't12', 't25', 'fold8', 'fold8c', 'groups', 'groups25', 'mixed', 'pinnedscroll']) {
     for (const w of [500, 900, 1400]) shots.push({ name: `${scn}-${w}-${scheme}`, scn, w, scheme });
   }
   for (const dpr of [1.5, 2]) {

@@ -4,6 +4,22 @@ import type { TabItem } from './protocol';
 export const FAV_CACHE_MAX = 512;
 export const DRAG_EDGE_PX = 24;
 
+/** Share of the row an inactive tab gets; the active tab gets ACTIVE_WEIGHT of it (matches `.tab.active` in tabs.css). */
+export const TAB_WEIGHT = 1;
+export const ACTIVE_WEIGHT = 1.5;
+
+/**
+ * Flex-grow of a group island: the sum of its visible members' weights, so a group's tabs end up
+ * exactly as wide as ungrouped ones (active 1.5x, the rest equal). 0 for a group with no visible tab.
+ */
+export function groupWeight(members: readonly Slot[], active: number): number {
+  let sum = 0;
+  for (const s of members) {
+    if (!s.hidden) sum += s.item.id === active ? ACTIVE_WEIGHT : TAB_WEIGHT;
+  }
+  return sum;
+}
+
 export function hiddenForTab(grouped: boolean, collapsed: boolean, active: boolean): boolean {
   return grouped && collapsed && !active;
 }

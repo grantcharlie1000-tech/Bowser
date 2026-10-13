@@ -81,6 +81,13 @@
 .strip .tab.active::after { opacity: 0; }
 .strip .tab.active:hover::after { opacity: 1; }
 
+/* Light scheme: the shared idle wash is a black 22%, which dulls the glass and drops secondary text
+   below 4.5:1. Inactive tabs get a faint ink wash instead and the active tab a lighter, near-white
+   island (as in the native strip, where the selected tab is the lightest surface). */
+:root[data-scheme="light"] .strip .tab::before { background: color-mix(in srgb, var(--bw-text) 7%, transparent); }
+:root[data-scheme="light"] .strip .tab.active::before { background: color-mix(in srgb, #fff 72%, transparent); }
+:root[data-scheme="light"] .strip .tab:not(.active) { border-color: color-mix(in srgb, var(--bw-text) 12%, transparent); }
+
 /* Applied for one frame while a position animation is set up (and by FLIP re-measuring). */
 .strip.settle .tab { transition: none; }
 
@@ -211,7 +218,10 @@
   display: flex;
   align-items: center;
   gap: var(--bw-space-1);
-  flex: 0 1 auto;
+  /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
+     active one). The basis is the island's own chrome (header chip --go, a gap per child, padding), so
+     what is left over is shared exactly like top-level tabs: a group never leaves the row short. */
+  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1) + var(--bw-space-1) + var(--bw-space-0_5));
   min-width: min-content;
   height: var(--bw-tab-h);
   padding: 0 var(--bw-space-1) 0 var(--bw-space-0_5);
@@ -227,8 +237,6 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--gc, var(--bw-focus)) 60%, transparent);
   pointer-events: none;
 }
-
-.strip .group.collapsed .tab { flex: 0 1 160px; }
 
 /* Group header: coloured dot and the group name. Collapsed groups fill the chip with the colour. */
 .strip .ball {

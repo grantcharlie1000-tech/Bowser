@@ -12,6 +12,7 @@ import {
   buildEntries,
   dropIndex,
   dragScrollDelta,
+  groupWeight,
   hiddenForTab,
   layoutSignature,
   pruneFavs,
@@ -57,6 +58,10 @@ interface GroupNode {
   readonly name: HTMLSpanElement;
   label: string;
   color: string;
+  weight: number;
+  visible: number;
+  /** Observes the header chip so the island's flex-basis can reserve its (content-sized) width. */
+  readonly watch: ResizeObserver;
 }
 
 interface Drag {
@@ -162,10 +167,17 @@ function createGroup(key: number): GroupNode {
   const name = el('span', 'gname');
   name.dir = 'auto';
   ball.append(dot, name);
-  return { shell, ball, name, label: '', color: '' };
+  // The group is one flex item: `--go` (header chip width) lets CSS give its tabs the same share of the
+  // row as ungrouped tabs, `--gw` / `--gn` the summed weight and number of visible tabs.
+  const watch = new ResizeObserver(() => {
+    const w = `${ball.offsetWidth}px`;
+    if (shell.style.getPropertyValue('--go') !== w) shell.style.setProperty('--go', w);
+  });
+  watch.observe(ball);
+  return { shell, ball, name, label: '', color: '', weight: -1, visible: -1, watch };
 }
 
-function syncGroup(g: GroupNode, e: GroupEntry): void {
+function syncGroup(g: GroupNode, e: GroupEntry, active: number): void {
   const name = e.leader.gname;
   const label = name !== undefined && name !== '' ? name : 'Tab group';
   if (g.label !== label) {
@@ -183,6 +195,16 @@ function syncGroup(g: GroupNode, e: GroupEntry): void {
     g.shell.style.setProperty('--gc', color);
   }
   g.shell.classList.toggle('collapsed', e.collapsed);
+
+  const weight = groupWeight(e.members, active);
+  if (g.weight !== weight) {
+    g.weight = weight;
+    g.shell.style.setProperty('--gw', String(weight));
+  }
+  if (g.visible !== e.visible) {
+    g.visible = e.visible;
+    g.shell.style.setProperty('--gn', String(e.visible));
+  }
 }
 
 function setShift(n: TabNode, px: number): void {
@@ -345,6 +367,7 @@ export function startTabs(strip: HTMLElement): void {
     }
     for (const [key, g] of groups) {
       if (!keys.has(key)) {
+        g.watch.disconnect();
         g.shell.remove();
         groups.delete(key);
       }
@@ -364,7 +387,7 @@ export function startTabs(strip: HTMLElement): void {
         g = createGroup(e.key);
         groups.set(e.key, g);
       }
-      syncGroup(g, e);
+      syncGroup(g, e, activeId);
       const nodes: HTMLElement[] = [g.ball];
       for (const slot of e.members) {
         const n = syncTab(slot.item);
