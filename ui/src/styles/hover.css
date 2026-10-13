@@ -351,8 +351,10 @@ body.bw-hover-body {
  * and per-keystroke row updates are instant.
  */
 
-/* Behind the list: Rust's window region is aliased and a touch fuller than the list's rounded
-   corners, so the few pixels between the two take the edge colour and read as edge, not as a notch. */
+/* Behind the list: Rust's window region is cut a hair inside the list's rounded corners (only pixels
+   the curve fully covers); a click-through fringe window (win32/corner_fringe.rs) paints the partly
+   covered pixels over it, so the corners are anti-aliased. This edge-coloured backing only guards
+   the sub-pixel seam between the two. */
 body.bw-hover-body[data-hover-kind="suggest"] {
   background:
     linear-gradient(var(--bw-pill-edge), var(--bw-pill-edge)),

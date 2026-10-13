@@ -15,6 +15,10 @@ test('notes parser accepts bounded notes and tasks with distinct safe ids', () =
   assert.equal(logic.parseNotesSnapshot({ ...value, tasks: [{ ...value.tasks[0], id: 1 }] }), null);
   assert.equal(logic.parseNotesSnapshot({ ...value, extra: true }), null);
   assert.equal(logic.parseNotesSnapshot({ ...value, notes: [{ id: 0, title: 'Bad', body: '' }] }), null);
+  // Ids the host makes are microsecond timestamps, well beyond u32 (this made every new note invalid).
+  const stamped = { notes: [{ id: 1_760_000_000_000_000, title: 'New note', body: '' }], tasks: [{ id: 1_760_000_000_000_001, text: 'New task', complete: false }] };
+  assert.deepEqual(logic.parseNotesSnapshot(stamped), stamped);
+  assert.equal(logic.parseNotesSnapshot({ ...stamped, notes: [{ id: 2 ** 53, title: 'Unsafe', body: '' }] }), null);
 });
 
 test('note and task command builders constrain ids, action and field count', () => {
