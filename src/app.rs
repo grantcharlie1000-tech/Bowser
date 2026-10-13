@@ -1924,10 +1924,11 @@ impl App {
         }
         let placement = {
             let state = app.borrow();
-            let Some(index) = state.tab_model.index_of(id) else {
+            let inputs = state.group_inputs();
+            let Some(index) = inputs.iter().position(|input| input.id == id) else {
                 return true;
             };
-            let keys = tab_groups::group_keys(&state.group_inputs(), &state.group_preferences);
+            let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
             let left = index
                 .checked_sub(1)
                 .and_then(|left| keys.get(left))
@@ -2114,7 +2115,7 @@ impl App {
     pub fn release_unused_site_rules(app: &AppRef) {
         let (hwnd, active, released) = {
             let mut state = app.borrow_mut();
-            let mut live = tab_groups::live_domains(&state.group_inputs());
+            let mut live = tab_groups::live_domains(&state.all_group_inputs());
             live.extend(
                 state
                     .pending
@@ -2139,8 +2140,26 @@ impl App {
         }
     }
 
-    /// Inputs for the group projection, in model order, from the same state the strip reads.
+    /// Inputs for the group projection: the active workspace's tabs, in the order the strip shows
+    /// them. A workspace is its own world, so a tab in another workspace never counts toward a
+    /// group here, never joins one, and never lends an opener edge to one.
     fn group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
+        let mut all: HashMap<TabId, tab_groups::TabGroupInput> = self
+            .all_group_inputs()
+            .into_iter()
+            .map(|input| (input.id, input))
+            .collect();
+        self.workspaces
+            .active()
+            .tabs()
+            .iter()
+            .filter_map(|id| all.remove(id))
+            .collect()
+    }
+
+    /// Inputs for every tab of every workspace, in model order, from the same state the strip
+    /// reads. Only for questions that span workspaces, such as which sites still have a tab open.
+    fn all_group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
         let mut inputs: Vec<_> = self
             .tab_model
             .iter()
@@ -2266,8 +2285,9 @@ impl App {
     /// on any tab of a group therefore marks the whole group.
     pub fn tab_marker(app: &AppRef, id: TabId) -> Option<Marker> {
         let state = app.borrow();
-        let keys = tab_groups::group_keys(&state.group_inputs(), &state.group_preferences);
-        let index = state.tab_model.index_of(id)?;
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        let index = inputs.iter().position(|input| input.id == id)?;
         resolve_marker(
             keys.get(index).and_then(Option::as_ref),
             id,
@@ -2321,9 +2341,9 @@ impl App {
         let inputs = state.group_inputs();
         let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
         let hovered = inputs.iter().position(|input| input.id == id)?;
-        let active = state
-            .tab_model
-            .index_of(state.tab_model.active())
+        let active = inputs
+            .iter()
+            .position(|input| input.id == state.tab_model.active())
             .unwrap_or(0);
         let card_tabs: Vec<CardTab> = inputs
             .iter()
@@ -7232,6 +7252,37 @@ mod tests {
 
         assert_eq!(tab_domain(&app, first), None);
         assert!(!App::tab_is_grouped(&app, second));
+    }
+
+    #[test]
+    fn a_tab_in_another_workspace_never_joins_or_forms_a_group() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let home = app.borrow().workspaces.active_id();
+        let work = App::create_workspace(&app, "Work").unwrap();
+        let other = App::active_tab_id(&app);
+        set_addresses(
+            &app,
+            &[
+                (first, "https://a.example.com/"),
+                (other, "https://b.example.com/"),
+            ],
+        );
+
+        // The two tabs share a site but live in different workspaces, so neither is grouped.
+        assert!(!App::tab_is_grouped(&app, other));
+        assert_eq!(App::tab_group_inputs(&app).len(), 1);
+        assert!(App::switch_workspace(&app, home));
+        assert!(!App::tab_is_grouped(&app, first));
+
+        // A second tab of the site in the same workspace does group, without the other workspace's.
+        assert!(App::switch_workspace(&app, work));
+        let third = App::new_tab(&app);
+        set_addresses(&app, &[(third, "https://c.example.com/")]);
+        assert!(App::tab_is_grouped(&app, other));
+        assert!(App::tab_is_grouped(&app, third));
+        assert!(App::switch_workspace(&app, home));
+        assert!(!App::tab_is_grouped(&app, first));
     }
 
     #[test]
