@@ -1,8 +1,8 @@
-// Pure logic of the anchored composers (New workspace, Add web app, Edit web app): the page
+// Pure logic of the anchored composers (New workspace, Rename workspace, Add web app, Edit web app): the page
 // payload, its copy and the checks run before Rust's own. No DOM and no runtime imports, so
 // test/composer.mjs can load it directly. Rust validates again (src/win32/composer.rs).
 
-export type ComposerMode = 'workspace-new' | 'app-add' | 'app-edit';
+export type ComposerMode = 'workspace-new' | 'workspace-rename' | 'app-add' | 'app-edit';
 export type ComposerField = 'name' | 'url';
 
 /** Fixed width of the composer, inside the menu surface's 200..360 range. */
@@ -46,6 +46,10 @@ export const COMPOSER_COPY: Readonly<Record<ComposerMode, ComposerCopy>> = {
     heading: 'New workspace', confirm: 'Create workspace', confirmGlyph: 'plus',
     nameLabel: 'Workspace name', nameGlyph: 'workspace-add', namePlaceholder: 'Workspace name',
   },
+  'workspace-rename': {
+    heading: 'Rename workspace', confirm: 'Save', confirmGlyph: 'edit',
+    nameLabel: 'Workspace name', nameGlyph: 'workspace-add', namePlaceholder: 'Workspace name',
+  },
   'app-add': {
     heading: 'Add web app', confirm: 'Add web app', confirmGlyph: 'plus',
     nameLabel: 'Web app name', nameGlyph: 'app-tile', namePlaceholder: 'Name',
@@ -60,10 +64,10 @@ export const ADDRESS_LABEL = 'Web app address';
 export const ADDRESS_PLACEHOLDER = 'https://example.com/';
 
 export function hasAddress(mode: ComposerMode): boolean {
-  return mode !== 'workspace-new';
+  return mode !== 'workspace-new' && mode !== 'workspace-rename';
 }
 
-const MODES: readonly string[] = ['workspace-new', 'app-add', 'app-edit'];
+const MODES: readonly string[] = ['workspace-new', 'workspace-rename', 'app-add', 'app-edit'];
 const KEYS = ['v', 't', 'tok', 'kind', 'mode', 'max', 'name', 'url', 'error', 'done'];
 
 /** Strict check of a `composer` message from Rust; anything else is ignored. */

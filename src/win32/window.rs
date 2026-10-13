@@ -4060,7 +4060,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 let set = App::workspaces(app);
                 if !set.all().iter().any(|workspace| workspace.id() == id) { return; }
                 match chosen.id {
-                    1 => if let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save") { let _ = App::rename_workspace(app, id, &value); },
+                    // The anchored composer renames only on confirm; the prompt is the native-chrome fallback.
+                    1 => if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(id.0), None, point)
+                        && let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save")
+                    {
+                        let _ = App::rename_workspace(app, id, &value);
+                    },
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
@@ -4892,19 +4897,21 @@ fn show_workspaces_menu(hwnd: HWND, app: &AppRef) {
     let (built, active) = workspace_menu_snapshot(app);
     menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "workspaces", move |app, chosen| {
         if let Some(chosen) = chosen {
-            run_workspace_action(hwnd, app, chosen.id, &built, active);
+            run_workspace_action(hwnd, app, chosen.id, &built, active, point);
         }
     });
 }
 
 /// Runs a workspace menu command. `built` and `active_at_open` come from
 /// `workspace_menu_snapshot` when the menu was built; a workspace that has gone since is ignored.
+/// `point` is the screen point the menu opened at: the composers open below-left of it.
 fn run_workspace_action(
     hwnd: HWND,
     app: &AppRef,
     command: usize,
     built: &[crate::workspaces::WorkspaceId],
     active_at_open: crate::workspaces::WorkspaceId,
+    point: POINT,
 ) {
     let workspaces = App::workspaces(app);
     if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&command) {
@@ -4920,19 +4927,20 @@ fn run_workspace_action(
     }
     let active = workspaces.active();
     match command {
+        // With HTML chrome both open the anchored composer, which creates or renames only on
+        // confirm; the centred prompt is the native-chrome fallback.
         WORKSPACE_CREATE => {
-            if let Some(name) = super::profile_rename::prompt(hwnd, "", "New workspace", "Create") {
-                if let Err(error) = App::create_workspace(app, &name) {
-                    show_profile_notice(
-                        hwnd,
-                        &format!("Workspace could not be created: {error:?}"),
-                    );
-                }
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceNew, None, point)
+                && let Some(name) = super::profile_rename::prompt(hwnd, "", "New workspace", "Create")
+                && let Err(error) = App::create_workspace(app, &name)
+            {
+                show_profile_notice(hwnd, &format!("Workspace could not be created: {error:?}"));
             }
         }
         WORKSPACE_RENAME => {
-            if let Some(name) =
-                super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(active.id().0), None, point)
+                && let Some(name) =
+                    super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
                 && let Err(error) = App::rename_workspace(app, active.id(), &name)
             {
                 show_profile_notice(hwnd, &format!("Workspace could not be renamed: {error:?}"));
@@ -5204,7 +5212,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
                 || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) =>
             {
-                run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace)
+                run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace, point)
             }
             _ => {}
         }

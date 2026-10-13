@@ -17,11 +17,14 @@ const protocol = await import(`data:text/javascript;base64,${Buffer.from(bundled
 
 // The strings Rust writes (src/win32/composer.rs `the_page_carries_values_the_error_under_its_field_and_done`).
 const workspace = { v: 1, t: 'composer', tok: 4, kind: 'composer:workspace-new', mode: 'workspace-new', max: 40, name: 'Workspace 3' };
+const renameWorkspace = { v: 1, t: 'composer', tok: 7, kind: 'composer:ws-rename:4294967295', mode: 'workspace-rename', max: 40, name: 'Work' };
 const addApp = { v: 1, t: 'composer', tok: 5, kind: 'composer:app-add', mode: 'app-add', max: 40, name: '', url: '' };
 const editApp = { v: 1, t: 'composer', tok: 6, kind: 'composer:app-edit:9', mode: 'app-edit', max: 40, name: 'Mail', url: 'https://mail.example/' };
 
-test('composer payloads: the three modes, an error under its field, and done', () => {
-  for (const msg of [workspace, addApp, editApp]) assert.equal(logic.validComposerPayload(msg), true, msg.kind);
+test('composer payloads: the four modes, an error under its field, and done', () => {
+  for (const msg of [workspace, renameWorkspace, addApp, editApp]) assert.equal(logic.validComposerPayload(msg), true, msg.kind);
+  assert.equal(logic.validComposerPayload({ ...renameWorkspace, done: true }), true);
+  assert.equal(logic.validComposerPayload({ ...renameWorkspace, error: { field: 'name', text: 'A workspace named “Work” already exists.' } }), true);
   assert.equal(logic.validComposerPayload({ ...addApp, error: { field: 'url', text: 'Enter a web address.' } }), true);
   assert.equal(logic.validComposerPayload({ ...editApp, done: true }), true);
   assert.equal(logic.validComposerPayload({ ...workspace, done: true }), true);
@@ -35,6 +38,9 @@ test('composer payloads reject unknown keys, modes, fields and shapes', () => {
   assert.equal(logic.validComposerPayload({ ...workspace, tok: -1 }), false);
   assert.equal(logic.validComposerPayload({ ...workspace, max: 41 }), false);
   assert.equal(logic.validComposerPayload({ ...workspace, url: 'https://x.test/' }), false, 'a workspace has no address');
+  assert.equal(logic.validComposerPayload({ ...renameWorkspace, url: 'https://x.test/' }), false, 'a workspace rename has no address');
+  assert.equal(logic.validComposerPayload({ ...renameWorkspace, error: { field: 'url', text: 'x' } }), false);
+  assert.equal(logic.validComposerPayload({ ...renameWorkspace, kind: 'composer:workspace-rename:4294967295' }), false, 'kind over 32 units');
   assert.equal(logic.validComposerPayload({ ...addApp, url: undefined }), false, 'a web app has one');
   assert.equal(logic.validComposerPayload({ ...workspace, done: false }), false);
   assert.equal(logic.validComposerPayload({ ...workspace, error: { field: 'url', text: 'x' } }), false, 'no address field to flag');
@@ -66,6 +72,12 @@ test('the first failing field is reported in reading order; a workspace has no a
   assert.equal(logic.firstComposerError('app-add', 'Mail', 'https://mail.example/'), null);
   assert.equal(logic.firstComposerError('workspace-new', 'Work', ''), null);
   assert.deepEqual(logic.firstComposerError('workspace-new', '', 'ignored'), { field: 'name', text: 'Enter a name.' });
+  assert.equal(logic.firstComposerError('workspace-rename', 'Work', ''), null);
+  assert.deepEqual(logic.firstComposerError('workspace-rename', '  ', ''), { field: 'name', text: 'Enter a name.' });
+  assert.equal(logic.hasAddress('workspace-new'), false);
+  assert.equal(logic.hasAddress('workspace-rename'), false);
+  assert.equal(logic.hasAddress('app-add'), true);
+  assert.equal(logic.hasAddress('app-edit'), true);
 });
 
 test('Tab and Shift+Tab cycle fields and the confirm row without leaving the composer', () => {
@@ -81,6 +93,10 @@ test('each composer has its heading, verb label and existing glyphs (no new icon
   const copy = logic.COMPOSER_COPY;
   assert.equal(copy['workspace-new'].heading, 'New workspace');
   assert.equal(copy['workspace-new'].confirm, 'Create workspace');
+  assert.deepEqual(copy['workspace-rename'], {
+    heading: 'Rename workspace', confirm: 'Save', confirmGlyph: 'edit',
+    nameLabel: 'Workspace name', nameGlyph: 'workspace-add', namePlaceholder: 'Workspace name',
+  });
   assert.equal(copy['app-add'].heading, 'Add web app');
   assert.equal(copy['app-add'].confirm, 'Add web app');
   assert.equal(copy['app-edit'].heading, 'Edit web app');
