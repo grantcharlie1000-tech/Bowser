@@ -102,10 +102,17 @@ alpha). A click on that transparent shadow room counts as an outside click and c
 | Open another popup (menu, palette, site info) | closes it (the popup takes activation) |
 | Open a page from History or Bookmarks in the current tab | navigates, closes, and gives focus to the page; Ctrl+click / middle opens a new tab and keeps the flyout open |
 
-The toggle needs care because the click that toggles is also the click that deactivates the
-flyout: the deactivation closes it first and records which flyout closed and when; a rail click on
-the same flyout within 400 ms is then read as "close" and does nothing more (the popup host's
-reopen guard, at 400 ms because a rail click is reported on mouse up).
+The toggle needs care because the press that toggles is also the press that deactivates the
+flyout. When the flyout loses activation to a press on the rail, it stays open and the rail click
+that follows decides (same button: close; another flyout button: switch; any other button: close).
+The decision therefore never depends on how long the click takes to reach Rust; if no rail command
+arrives within 1.5 s (the press became a drag) the flyout closes. A deactivation anywhere else
+closes at once and records which flyout closed; a click on that same flyout within 400 ms does not
+reopen it (the popup host's reopen guard).
+
+Hover and click combine like a menu bar: when a hover has just switched to a flyout (under
+700 ms ago), the click the user was already making on that button confirms it instead of closing
+it.
 
 The flyout never steals page scroll: it is its own window, so the wheel over the page still
 scrolls the page; the wheel over the flyout scrolls its list (`overscroll-behavior: contain`).
@@ -113,7 +120,8 @@ scrolls the page; the wheel over the flyout scrolls its list (`overscroll-behavi
 ### Keyboard and focus
 
 - Opening activates the flyout window and puts focus in its search field (History, Bookmarks) or
-  on its first control (Customize). Text input works because the popup is activating.
+  on the surface itself (Customize: Tab then starts at its first control, and no switch shows a
+  focus ring the user did not ask for). Text input works because the popup is activating.
 - Arrow keys move through rows (existing roving focus); Down from the search field enters the list;
   Up from the first row returns to search. Enter opens, Ctrl+Enter opens in a new tab, Delete
   removes a history row.
@@ -155,7 +163,7 @@ monitor (or a DPI change) closes the flyout, and the next open uses the new moni
 | panel → Rust | `{v:1,t:"panel",a:"shown"}` | the page drew the flyout; Rust shows and activates the window (no new family; `panel` already exists) |
 | panel → Rust | `{v:1,t:"panel",a:"dismiss"}` | existing: Esc, close button, or a click in the transparent shadow room |
 | rail → Rust | `{v:1,t:"rail",a:"click",k,r?}` | `r` (optional, the hover-layer rectangle grammar) is the button's rectangle in rail CSS px; it anchors the flyout |
-| rail → Rust | `{v:1,t:"rail",a:"hover",k,r}` | sent only while a flyout is open, after the 120 ms intent delay, for `customize`, `bookmarks`, `history`, `menu` |
+| rail → Rust | `{v:1,t:"rail",a:"hover",k,r}` | after the 120 ms intent delay on `customize`, `bookmarks`, `history`, `menu`. The rail cannot tell which flyout is open (Bookmarks is also marked active when the page is bookmarked), so Rust acts only while a different flyout is open |
 
 Rust validates `k` against the rail model and only acts on `hover` while a flyout is open.
 

@@ -130,3 +130,8 @@
 .fly-surface > .panel-customize > .cust-confirm {
   margin: 0;
 }
+
+/* Chromium's own blue clear glyph in search fields is off-family; Esc clears the search instead. */
+.fly-surface input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
