@@ -26,7 +26,7 @@ export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
-export type RailAction = 'click' | 'menu';
+export type RailAction = 'click' | 'menu' | 'hover';
 export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren';
 export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename';
 export interface PanelFields {
@@ -72,7 +72,7 @@ export type Command =
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' }
   // --- end vertical sidebar ---
-  | { v: 1; t: 'rail'; a: RailAction; k: string }
+  | { v: 1; t: 'rail'; a: RailAction; k: string; r?: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
   | ({ v: 1; t: PanelKind } & PanelFields)
   | { v: 1; t: 'size'; tok: number; w: number; h: number }
@@ -290,6 +290,11 @@ export interface RailFavMsg {
   readonly uri: string;
 }
 export interface PanelShowMsg { readonly t: 'panelshow'; readonly p: PanelToken }
+// --- rail flyouts ---
+/** The panel page is shown as a rail flyout; `caret` is the caret centre in CSS px from the surface top, or -1. */
+export interface FlyoutMsg { readonly t: 'flyout'; readonly caret: number }
+export const MAX_FLYOUT_CARET = 4000;
+// --- end rail flyouts ---
 export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
 // --- vertical sidebar (lane S) ---
 export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
@@ -306,6 +311,7 @@ export type Inbound =
   | RailMsg
   | RailFavMsg
   | PanelShowMsg
+  | FlyoutMsg // --- rail flyouts ---
   | LayoutMsg
   // --- vertical sidebar (lane S) ---
   | WorkspaceMsg
@@ -442,6 +448,15 @@ export function isRectWire(value: string): boolean {
   const match = RECT_RE.exec(value);
   return match !== null && match.slice(1).every(part => Number(part) <= MAX_HOVER_COORD);
 }
+
+// --- rail flyouts ---
+/** A rail button click, menu or flyout hover, with the button's rectangle when it is known. */
+export function sendRail(a: RailAction, k: string, rect?: Parameters<typeof rectWire>[0]): boolean {
+  const r = rect ? rectWire(rect) : null;
+  if (a === 'hover' && r === null) return false;
+  return send(r === null ? { v: 1, t: 'rail', a, k } : { v: 1, t: 'rail', a, k, r });
+}
+// --- end rail flyouts ---
 
 export function sendTip(text: string, rect: Parameters<typeof rectWire>[0]): boolean {
   const capped = capCodePoints(text, MAX_TIP);
@@ -683,6 +698,12 @@ export function parseInbound(data: unknown): Inbound | null {
       if (!hasOnlyKeys(raw, ['v', 't', 'p']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS)) return null;
       return { t: 'panelshow', p: raw.p };
     }
+    // --- rail flyouts ---
+    case 'flyout': {
+      if (!hasOnlyKeys(raw, ['v', 't', 'caret']) || raw.v !== 1 || !isInt(raw.caret, -1, MAX_FLYOUT_CARET)) return null;
+      return { t: 'flyout', caret: raw.caret };
+    }
+    // --- end rail flyouts ---
     case 'layout': {
       if (!hasOnlyKeys(raw, ['v', 't', 'mode']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
       return { t: 'layout', mode: raw.mode };

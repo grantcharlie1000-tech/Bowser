@@ -87,6 +87,9 @@ pub enum RailAction {
     Click,
     /// Right click: Rust shows the native rail context menu at the cursor.
     Menu,
+    /// The pointer rested on a flyout button (History, Bookmarks, Customize, More) for the hover
+    /// intent delay while a flyout is open: Rust switches the open flyout to it.
+    Hover,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,8 +215,9 @@ pub enum Command {
     // --- vertical sidebar (lane S) ---
     Side(SideAction),
     // --- end vertical sidebar ---
-    /// A click or right click on a rail button.
-    Rail { action: RailAction, key: RailKeyWire },
+    /// A click, right click or flyout hover on a rail button. `rect` is the button in rail CSS
+    /// pixels (optional for clicks and menus, required for hover); it anchors a flyout.
+    Rail { action: RailAction, key: RailKeyWire, rect: Option<HoverRect> },
     /// Drag-reorder drop of a workspace or app: before `before`, or at the end of its section when
     /// `None`. `key` is always a `ws:` or `app:` key.
     RailMove { key: RailKeyWire, before: Option<RailKeyWire> },
@@ -756,7 +760,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // --- vertical sidebar (lane S) ---
         "side" => &["a"],
         // --- end vertical sidebar ---
-        "rail" => &["a", "k"],
+        "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
         "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" =>
@@ -841,14 +845,21 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         // --- end vertical sidebar ---
-        "rail" => Command::Rail {
-            action: match str_field(fields, "a")? {
+        "rail" => {
+            let action = match str_field(fields, "a")? {
                 "click" => RailAction::Click,
                 "menu" => RailAction::Menu,
+                "hover" => RailAction::Hover,
                 _ => return Err(ProtocolError::InvalidValue("a")),
-            },
-            key: rail_key_field(fields, "k")?,
-        },
+            };
+            let key = rail_key_field(fields, "k")?;
+            let rect = match field(fields, "r") {
+                None if action == RailAction::Hover => return Err(ProtocolError::MissingField("r")),
+                None => None,
+                Some(_) => Some(rect_field(fields)?),
+            };
+            Command::Rail { action, key, rect }
+        }
         "railmove" => {
             let key = rail_key_field(fields, "k")?;
             if !matches!(key, RailKeyWire::Workspace(_) | RailKeyWire::App(_)) {
@@ -928,6 +939,17 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
 /// Selects the active panel in the reusable panel page. A token uses the same grammar as `a`.
 pub fn panelshow_json(p: &str) -> Option<String> {
     panel_token(p).then(|| format!("{{\"v\":1,\"t\":\"panelshow\",\"p\":{}}}", json_string(p)))
+}
+
+/// Largest caret offset the flyout page accepts (CSS px from the surface top).
+pub const MAX_FLYOUT_CARET: i32 = 4000;
+
+/// Tells the panel page it is shown as a rail flyout: where its caret points (CSS px from the
+/// surface top, `-1` for no caret). Sent before `panelshow` on every open and switch; the page
+/// restarts its enter motion and answers `{t:"panel",a:"shown"}` once it has drawn.
+pub fn flyout_json(caret: i32) -> String {
+    let caret = if (0..=MAX_FLYOUT_CARET).contains(&caret) { caret } else { -1 };
+    format!("{{\"v\":1,\"t\":\"flyout\",\"caret\":{caret}}}")
 }
 
 pub fn layout_json(mode: LayoutMode) -> String {
@@ -1856,6 +1878,9 @@ mod tests {
     fn foundation_message_builders_have_exact_shapes() {
         assert_eq!(panelshow_json("history").as_deref(), Some(r#"{"v":1,"t":"panelshow","p":"history"}"#));
         assert_eq!(panelshow_json("History"), None);
+        assert_eq!(flyout_json(22), r#"{"v":1,"t":"flyout","caret":22}"#);
+        assert_eq!(flyout_json(-1), r#"{"v":1,"t":"flyout","caret":-1}"#);
+        assert_eq!(flyout_json(MAX_FLYOUT_CARET + 1), r#"{"v":1,"t":"flyout","caret":-1}"#);
         assert_eq!(layout_json(LayoutMode::Vertical), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
         // --- vertical sidebar (lane S) ---
@@ -3277,7 +3302,8 @@ mod tests {
             Command::Tab { action: TabAction::Close, id: 2 },
             Command::Group { action: GroupAction::Toggle, key: 2 },
             Command::TabMove { id: 2, before: 0 },
-            Command::Rail { action: RailAction::Click, key: RailKeyWire::Home },
+            Command::Rail { action: RailAction::Click, key: RailKeyWire::Home, rect: None },
+            Command::Rail { action: RailAction::Hover, key: RailKeyWire::History, rect: None },
             Command::RailMove { key: RailKeyWire::Workspace(2), before: None },
         ] {
             assert!(!is_popup_command(&command), "{command:?}");
@@ -3285,6 +3311,7 @@ mod tests {
         assert!(is_popup_command(&Command::Rail {
             action: RailAction::Menu,
             key: RailKeyWire::App(3),
+            rect: None,
         }));
     }
 
@@ -3349,12 +3376,24 @@ mod tests {
     fn parses_rail_click_and_menu() {
         assert_eq!(
             ok(r#"{"v":1,"t":"rail","a":"click","k":"ws:3"}"#),
-            Command::Rail { action: RailAction::Click, key: RailKeyWire::Workspace(3) }
+            Command::Rail { action: RailAction::Click, key: RailKeyWire::Workspace(3), rect: None }
         );
         assert_eq!(
             ok(r#"{"v":1,"t":"rail","a":"menu","k":"app:9"}"#),
-            Command::Rail { action: RailAction::Menu, key: RailKeyWire::App(9) }
+            Command::Rail { action: RailAction::Menu, key: RailKeyWire::App(9), rect: None }
         );
+        let anchored = HoverRect { x: 4, y: 640, w: 28, h: 26 };
+        assert_eq!(
+            ok(r#"{"v":1,"t":"rail","a":"click","k":"history","r":"4,640,28,26"}"#),
+            Command::Rail { action: RailAction::Click, key: RailKeyWire::History, rect: Some(anchored) }
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"rail","a":"hover","k":"bookmarks","r":"4,640,28,26"}"#),
+            Command::Rail { action: RailAction::Hover, key: RailKeyWire::Bookmarks, rect: Some(anchored) }
+        );
+        // A hover always carries its anchor; a malformed rectangle is refused.
+        assert!(matches!(err(r#"{"v":1,"t":"rail","a":"hover","k":"history"}"#), ProtocolError::MissingField("r")));
+        assert!(matches!(err(r#"{"v":1,"t":"rail","a":"click","k":"history","r":"-4,0,1,1"}"#), ProtocolError::InvalidValue("r")));
         for key in ["home", "customize", "addws", "addapp", "bookmarks", "history", "menu"] {
             let raw = format!(r#"{{"v":1,"t":"rail","a":"click","k":"{key}"}}"#);
             assert!(matches!(ok(&raw), Command::Rail { .. }), "{key}");
