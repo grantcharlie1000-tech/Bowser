@@ -3596,8 +3596,24 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
     }
 }
 
+/// Where a rail context menu opens: at the pointer, but never over the rail itself, so the menu
+/// goes rightwards into the window instead of off its left edge. `rail_right` is the client x where
+/// the rail ends. Pure.
+fn rail_menu_anchor(pointer: POINT, rail_right: i32) -> POINT {
+    POINT { x: pointer.x.max(rail_right), y: pointer.y }
+}
+
+/// Whether "Move up" and "Move down" can do anything for the workspace at `index` of `count`. Pure.
+fn workspace_move_enabled(index: Option<usize>, count: usize) -> (bool, bool) {
+    match index {
+        Some(index) => (index > 0, index + 1 < count),
+        None => (false, false),
+    }
+}
+
 fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32) {
-    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
+    // The menu opens to the right of the rail from the pointer, never leftwards over the window edge.
+    let point = screen_point(hwnd, rail_menu_anchor(windows::Win32::Foundation::POINT { x, y }, layout::left_rail_inset(dpi(hwnd))));
     match key {
         RailKey::Workspace(raw_id) => {
             let id = crate::workspaces::WorkspaceId(raw_id as u32);
@@ -3605,16 +3621,17 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             let entries = App::workspace_entries(app);
             let Some((_, name, _, _, _, _)) = entries.iter().find(|(entry_id, ..)| *entry_id == id) else { return; };
             let name = name.clone();
+            let (can_up, can_down) = workspace_move_enabled(set.all().iter().position(|workspace| workspace.id() == id), set.workspace_count());
             let menu_entries = vec![
                 Entry::Item(Item::new(1, "Rename…", Icon::Person).glyph("edit")),
                 Entry::Item(Item::new(2, "Change icon…", Icon::Grid).glyph("workspace")),
                 Entry::Item(Item::new(3, "Change colour…", Icon::Grid).glyph("droplet")),
-                Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up")),
-                Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down")),
+                Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up").disabled_if(!can_up)),
+                Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down").disabled_if(!can_down)),
                 Entry::Item(Item::new(6, "Delete…", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
             ];
             let kind = format!("rail-ws:{raw_id}");
-            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
                 // The workspace may have been deleted while the menu was open.
                 let set = App::workspaces(app);
@@ -3625,7 +3642,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
-                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
+                        menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
                             if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
                         });
                     }
@@ -3633,12 +3650,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                         let choices = ["Blue", "Violet", "Teal", "Amber", "Rose", "Red", "Green", "Slate"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(40 + i, *label, Icon::Grid).profile_badge("", crate::theme::Rgba::hex(WORKSPACE_SWATCHES[i], 0xFF)))).collect();
                         let colours = [crate::workspaces::WorkspaceColour::Blue, crate::workspaces::WorkspaceColour::Violet, crate::workspaces::WorkspaceColour::Teal, crate::workspaces::WorkspaceColour::Amber, crate::workspaces::WorkspaceColour::Rose, crate::workspaces::WorkspaceColour::Red, crate::workspaces::WorkspaceColour::Green, crate::workspaces::WorkspaceColour::Slate];
-                        menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
+                        menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace colour".into() }, "rail-ws-colour", move |app, chosen| {
                             if let Some(colour) = chosen.and_then(|item| colours.get(item.id.saturating_sub(40)).copied()) { let _ = App::workspace_set_colour(app, id, Some(colour)); }
                         });
                     }
-                    4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index.saturating_sub(1)); },
-                    5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) { let _ = App::workspace_move(app, id, index + 1); },
+                    4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).0 { let _ = App::workspace_move(app, id, index - 1); },
+                    5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).1 { let _ = App::workspace_move(app, id, index + 1); },
                     // --- popup surfaces (lane PP) --- confirm in the HTML popup, not a MessageBox
                     6 => if set.workspace_count() > 1 { confirm_rail_workspace_delete(hwnd, point, id, &name); },
                     _ => {}
@@ -3648,7 +3665,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
         RailKey::App(id) => {
             let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
             let kind = format!("rail-app:{id}");
-            menu::show(hwnd, point, menu::Placement::AboveLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
                 // The app may have been removed while the menu was open.
                 if !rail_model_keys(hwnd).contains(&key) { return; }
@@ -4480,7 +4497,7 @@ fn confirm_rail_workspace_delete(hwnd: HWND, point: POINT, id: crate::workspaces
         ],
         footer: "This cannot be undone".to_owned(),
     };
-    menu::show(hwnd, point, menu::Placement::AboveLeft, confirm, "workspace-delete", move |app, chosen| {
+    menu::show(hwnd, point, menu::Placement::BelowLeft, confirm, "workspace-delete", move |app, chosen| {
         if chosen.is_some_and(|chosen| chosen.id == 1)
             && App::workspaces(app).workspace_count() > 1
             && App::workspaces(app).all().iter().any(|workspace| workspace.id() == id)
@@ -8319,6 +8336,24 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn rail_menu_opens_right_of_the_rail_and_keeps_the_pointer_height() {
+        let rail_right = 36;
+        // A click on the rail itself moves the anchor out to the rail's right edge.
+        assert_eq!((rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).x, rail_menu_anchor(POINT { x: 14, y: 220 }, rail_right).y), (36, 220));
+        // A pointer already past the rail stays where it is.
+        assert_eq!(rail_menu_anchor(POINT { x: 90, y: 5 }, rail_right).x, 90);
+    }
+
+    #[test]
+    fn workspace_move_items_are_enabled_only_when_they_can_move() {
+        assert_eq!(workspace_move_enabled(Some(0), 1), (false, false));
+        assert_eq!(workspace_move_enabled(Some(0), 3), (false, true));
+        assert_eq!(workspace_move_enabled(Some(1), 3), (true, true));
+        assert_eq!(workspace_move_enabled(Some(2), 3), (true, false));
+        assert_eq!(workspace_move_enabled(None, 3), (false, false));
+    }
 
     #[test]
     fn progress_finishes_then_fades_before_settling() {
