@@ -3859,18 +3859,10 @@ fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, 
 /// else (keyboard activation) at the rail's right edge level with the button's top.
 fn open_rail_composer(hwnd: HWND, app: &AppRef, key: RailKey, composer: super::composer::Composer) {
     let at = rail_composer_anchor(hwnd, key);
-    if !super::composer::open(hwnd, app, composer.clone(), None, at) {
-        // Native chrome has no popup host: Add web app opens Customize as before, and a new
-        // workspace is named first and created only if the prompt is confirmed.
-        match composer {
-            super::composer::Composer::AppAdd => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
-            _ => {
-                let name = format!("Workspace {}", App::workspace_entries(app).len() + 1);
-                if let Some(name) = super::profile_rename::prompt(hwnd, &name, "New workspace", "Create") {
-                    let _ = App::workspace_create(app, &name);
-                }
-            }
-        }
+    // No centred name dialog. Native chrome has no popup host, so Customize (fields in the dock)
+    // is the only fallback.
+    if !super::composer::open(hwnd, app, composer, None, at) {
+        rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key));
     }
 }
 
@@ -4072,12 +4064,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 let set = App::workspaces(app);
                 if !set.all().iter().any(|workspace| workspace.id() == id) { return; }
                 match chosen.id {
-                    // The anchored composer renames only on confirm; the prompt is the native-chrome fallback.
-                    1 => if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(id.0), None, point)
-                        && let Some(value) = super::profile_rename::prompt(hwnd, &name, "Rename workspace", "Save")
-                    {
-                        let _ = App::rename_workspace(app, id, &value);
-                    },
+                    // The anchored composer renames only on confirm. No centred dialog.
+                    1 => {
+                        if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(id.0), None, point) {
+                            rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
+                        }
+                    }
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
                         let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
@@ -4939,23 +4931,16 @@ fn run_workspace_action(
     }
     let active = workspaces.active();
     match command {
-        // With HTML chrome both open the anchored composer, which creates or renames only on
-        // confirm; the centred prompt is the native-chrome fallback.
+        // Both open the anchored composer and change nothing until confirm. There is no centred
+        // dialog; without the popup host, Customize opens instead.
         WORKSPACE_CREATE => {
-            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceNew, None, point)
-                && let Some(name) = super::profile_rename::prompt(hwnd, "", "New workspace", "Create")
-                && let Err(error) = App::create_workspace(app, &name)
-            {
-                show_profile_notice(hwnd, &format!("Workspace could not be created: {error:?}"));
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceNew, None, point) {
+                rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
             }
         }
         WORKSPACE_RENAME => {
-            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(active.id().0), None, point)
-                && let Some(name) =
-                    super::profile_rename::prompt(hwnd, active.name(), "Rename workspace", "Save")
-                && let Err(error) = App::rename_workspace(app, active.id(), &name)
-            {
-                show_profile_notice(hwnd, &format!("Workspace could not be renamed: {error:?}"));
+            if !super::composer::open(hwnd, app, super::composer::Composer::WorkspaceRename(active.id().0), None, point) {
+                rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
             }
         }
         WORKSPACE_DELETE => {
