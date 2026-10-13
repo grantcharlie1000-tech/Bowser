@@ -56,7 +56,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
       settingRow('Site', null, snapshot.site ?? 'No active site'),
       settingRow('Connection', null, SECURITY[snapshot.security]),
       settingRow('Blocking on this site', null, onOff(snapshot.blocking, 'Active', 'Inactive')),
-      settingRow('Tracking prevention', null, snapshot.tracking ?? 'Unavailable'),
+      settingRow('Tracking prevention', snapshot.tracking !== null && snapshot.tracking !== snapshot.trackingSetting ? `Set to ${snapshot.trackingSetting} in Settings. Applies after a restart.` : null, snapshot.tracking ?? 'Unavailable'),
     );
     sections.push(site.root);
 
@@ -84,6 +84,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
       settingRow('Tracker blocking', null, onOff(snapshot.blockerSetting)),
       settingRow('SmartScreen', null, onOff(snapshot.smartScreen)),
       settingRow('Tab sleeping', null, snapshot.sleeping ? `On, after ${snapshot.sleepAfter} seconds` : 'Off'),
+      settingRow('Efficiency mode', null, snapshot.efficiencyActive ? 'Active' : 'Not active'),
     );
     sections.push(protection.root);
 

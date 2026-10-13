@@ -977,10 +977,14 @@ fn save_form(hwnd: HWND) {
             return;
         }
     };
+    // The GDI form has no controls for these; the file's current values are kept.
+    let current = Settings::load(&path);
     let settings = Settings {
+        efficiency_mode: current.efficiency_mode,
+        tracking_prevention: current.tracking_prevention,
         tab_layout,
         sidebar_width,
-        side_panel_width: Settings::load(&path).side_panel_width,
+        side_panel_width: current.side_panel_width,
         sleep_enabled,
         sleep_after_secs,
         blocker_enabled,

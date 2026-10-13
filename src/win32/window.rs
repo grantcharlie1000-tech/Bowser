@@ -93,7 +93,8 @@ use windows::{
                 WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
                 WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
                 WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NCPAINT, WM_NCRBUTTONUP, WM_PAINT, WM_PASTE,
-                WM_RBUTTONUP, WM_SETFOCUS, WM_SETICON, WM_SETTEXT, WM_SETTINGCHANGE, WM_SIZE,
+                WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETFOCUS, WM_SETICON, WM_SETTEXT,
+                WM_SETTINGCHANGE, WM_SIZE,
                 WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_CAPTION,
                 WS_CHILD, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
                 WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
@@ -1051,6 +1052,22 @@ fn clear_pointer_state(hwnd: HWND) -> bool {
     })
     .unwrap_or(false)
 }
+/// Arms or clears the slow fallback that re-reads the power source. `WM_POWERBROADCAST` is the
+/// primary signal; this only covers a missed broadcast, and runs only while the setting is Auto.
+pub(crate) fn schedule_power_timer(hwnd: HWND, enabled: bool) {
+    unsafe {
+        if enabled {
+            let _ = SetTimer(
+                Some(hwnd),
+                super::WM_POWER_TIMER,
+                crate::efficiency::POWER_FALLBACK_MS,
+                None,
+            );
+        } else {
+            let _ = KillTimer(Some(hwnd), super::WM_POWER_TIMER);
+        }
+    }
+}
 pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
     unsafe {
         match action {
@@ -1290,6 +1307,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
             super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
         }));
         MAIN_WINDOW.with(|m| m.set(hwnd.0 as isize));
+        // First reading of the power source; later changes arrive as power broadcasts.
+        App::refresh_efficiency(&app);
         let foreground_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_FOREGROUND,
@@ -2793,6 +2812,26 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_POWERBROADCAST => {
+                // Battery, AC and Battery Saver changes arrive as a status change; resume from
+                // sleep may have changed the source while no broadcast was delivered.
+                const PBT_APMRESUMESUSPEND: usize = 7;
+                const PBT_APMRESUMEAUTOMATIC: usize = 18;
+                let relevant = wparam.0 == windows::Win32::UI::WindowsAndMessaging::PBT_APMPOWERSTATUSCHANGE as usize
+                    || wparam.0 == PBT_APMRESUMESUSPEND
+                    || wparam.0 == PBT_APMRESUMEAUTOMATIC;
+                if relevant && let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok()) {
+                    App::refresh_efficiency(app);
+                }
+                // TRUE: the broadcast is accepted.
+                LRESULT(1)
+            }
+            WM_TIMER if wparam.0 == super::WM_POWER_TIMER => {
+                if let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok()) {
+                    App::refresh_efficiency(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_IDLE_TRIM_TIMER => {
                 if let Some(app) = app {
                     let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
@@ -2984,6 +3023,7 @@ unsafe extern "system" fn window_proc(
             WM_DESTROY => {
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
+                let _ = KillTimer(Some(hwnd), super::WM_POWER_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);

@@ -31,6 +31,7 @@ use windows::{
 };
 
 use crate::{
+    efficiency::{self, EfficiencyState},
     navigation::{NavigationTarget, SearchProvider, resolve_input},
     performance::{LaunchOptions, PerfLog},
     site_security::{self, LoadState, SiteSecurity},
@@ -171,8 +172,26 @@ fn controller_close_plan(
     actions
 }
 
-fn hidden_tab_suspend_eligible(hidden_for: Duration) -> bool {
-    hidden_for >= Duration::from_secs(30)
+/// Whether a tab hidden for `hidden_for` is due to be suspended. `suspend_after` comes from the
+/// background policy: 30 s normally, shorter while efficiency mode is active.
+fn hidden_tab_suspend_eligible(hidden_for: Duration, suspend_after: Duration) -> bool {
+    hidden_for >= suspend_after
+}
+
+/// The tracking-prevention level to request when the engine is created. A benchmark's explicit
+/// choice wins; other benchmark launches keep the engine default so recorded baselines stay
+/// comparable; an ordinary launch states the user's setting (Balanced unless they chose Strict).
+fn tracking_prevention_request(
+    benchmark_choice: Option<TrackingPreventionLevel>,
+    benchmark_launch: bool,
+    setting: crate::settings::TrackingLevel,
+) -> Option<TrackingPreventionLevel> {
+    benchmark_choice.or_else(|| {
+        (!benchmark_launch).then_some(match setting {
+            crate::settings::TrackingLevel::Balanced => TrackingPreventionLevel::Balanced,
+            crate::settings::TrackingLevel::Strict => TrackingPreventionLevel::Strict,
+        })
+    })
 }
 
 /// Marker a tab shows. A grouped tab uses only its group's entry, so every member agrees; a tab in
@@ -518,6 +537,8 @@ pub struct App {
     pub provider: SearchProvider,
     pub log: Rc<PerfLog>,
     pub minimized: bool,
+    /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
+    pub efficiency: EfficiencyState,
     pub desired_memory_target: MemoryUsageTarget,
     pub effective_memory_target: Option<MemoryUsageTarget>,
     pub memory_target_unsupported_logged: bool,
@@ -1194,6 +1215,7 @@ impl App {
                 {
                     tab.hidden_since = Some(now);
                     tab.suspended = false;
+                    let _ = state.log.record("tab_hidden");
                 }
             }
         }
@@ -1362,6 +1384,7 @@ impl App {
                         if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == hidden) {
                             tab.hidden_since = Some(now);
                             tab.suspended = false;
+                            let _ = state.log.record("tab_hidden");
                         }
                     }
                     ControllerVisibilityAction::Show(shown) => {
@@ -2598,6 +2621,11 @@ impl App {
         )
     }
 
+    /// The tracking-prevention level chosen in Settings, which the next start will apply.
+    pub fn tracking_setting(app: &AppRef) -> &'static str {
+        app.borrow().settings.tracking_prevention.key()
+    }
+
     /// Counts only a request already rejected by the blocker. Called from the existing request
     /// event, so there is no timer or polling path for collection.
     pub fn record_blocked_request(app: &AppRef, site_host: &str) {
@@ -2979,6 +3007,7 @@ impl App {
             provider,
             log,
             minimized: false,
+            efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
             effective_memory_target: None,
             memory_target_unsupported_logged: false,
@@ -3494,12 +3523,14 @@ impl App {
             (
                 s.hwnd,
                 s.user_data_dir.clone(),
-                // Production launches state the default (Balanced) explicitly; benchmark launches
-                // keep the engine default so recorded baselines stay comparable.
-                s.benchmark_tracking_prevention.or(s
-                    .benchmark_url
-                    .is_none()
-                    .then_some(TrackingPreventionLevel::Balanced)),
+                // Production launches state the user's level explicitly (Balanced by default, Strict
+                // on request, read at startup); benchmark launches keep the engine default so
+                // recorded baselines stay comparable.
+                tracking_prevention_request(
+                    s.benchmark_tracking_prevention,
+                    s.benchmark_url.is_some(),
+                    s.settings.tracking_prevention,
+                ),
                 s.blocker.clone(),
             )
         };
@@ -4095,6 +4126,8 @@ impl App {
                 Self::resize_current(app, bounds);
             }
         }
+        // EcoQoS follows the minimised state; it is set only while nobody can see the window.
+        Self::sync_eco_qos(app);
         if let Some(target) = transition.target {
             Self::set_memory_target_current(app, target);
             if target == MemoryUsageTarget::Normal {
@@ -4214,21 +4247,33 @@ impl App {
     /// window is activated again.
     pub fn idle_timer_fired(app: &AppRef, idle_ms: u32, foreground: bool) -> IdleTimerAction {
         let now = Instant::now();
-        let _ = Self::with_engine(app, |engine| engine.suspend_hidden_tabs(30_000));
-        {
+        let suspend_after = Self::background_policy(app).suspend_after;
+        let _ = Self::with_engine(app, |engine| {
+            engine.suspend_hidden_tabs(suspend_after.as_millis() as u64)
+        });
+        let newly_suspended = {
             let mut state = app.borrow_mut();
             let active = state.tab_model.active();
+            let mut count = 0usize;
             for tab in &mut state.tabs {
                 if tab.id != active
                     && tab.controller_created
                     && !tab.suspended
                     && tab.hidden_since.is_some_and(|hidden| {
-                        hidden_tab_suspend_eligible(now.saturating_duration_since(hidden))
+                        hidden_tab_suspend_eligible(
+                            now.saturating_duration_since(hidden),
+                            suspend_after,
+                        )
                     })
                 {
                     tab.suspended = true;
+                    count += 1;
                 }
             }
+            count
+        };
+        for _ in 0..newly_suspended {
+            let _ = app.borrow().log.record("hidden_tab_suspended");
         }
         let forced = app.borrow().benchmark_memory_pressure;
         Self::discard_one_hidden_tab_if(app, || forced || system_memory_pressure());
@@ -4247,6 +4292,87 @@ impl App {
         };
         Self::apply_idle_decision(app, decision);
         Self::combine_idle_and_suspend_timers(app, decision.timer)
+    }
+
+    fn policy_of(state: &App) -> efficiency::BackgroundPolicy {
+        efficiency::background_policy(
+            state.efficiency.active,
+            state.settings.sleep_enabled,
+            state.settings.sleep_after_secs,
+        )
+    }
+
+    /// Delays that currently govern hidden tabs: the normal ones, or the shorter efficient ones.
+    fn background_policy(app: &AppRef) -> efficiency::BackgroundPolicy {
+        Self::policy_of(&app.borrow())
+    }
+
+    /// Reads the power source, decides whether efficiency mode is active and applies the result.
+    /// Called at startup, on `WM_POWERBROADCAST` and from a slow fallback timer. Cheap when nothing
+    /// changed: one `GetSystemPowerStatus` call and a comparison.
+    pub fn refresh_efficiency(app: &AppRef) {
+        let power = efficiency::current_power();
+        let (changed, active, mode, hwnd) = {
+            let mut state = app.borrow_mut();
+            let mode = state.settings.efficiency_mode;
+            let changed = state.efficiency.evaluate(mode, power);
+            (changed, state.efficiency.active, mode, state.hwnd)
+        };
+        win32::schedule_power_timer(hwnd, mode == crate::settings::EfficiencyMode::Auto);
+        if !changed {
+            return;
+        }
+        let _ = app
+            .borrow()
+            .log
+            .record(if active { "efficiency_active" } else { "efficiency_inactive" });
+        if active {
+            let forced = Self::with_engine(app, |engine| {
+                engine.force_background_memory_low();
+                Ok(())
+            });
+            if forced.is_some() {
+                let _ = app.borrow().log.record("efficiency_background_memory_low");
+            }
+        }
+        Self::sync_eco_qos(app);
+        // Shorter (or longer) delays mean the next wake-up moves.
+        Self::schedule_tab_idle_timer(app);
+    }
+
+    /// Whether efficiency mode is in force right now (for the Settings panel).
+    pub fn efficiency_active(app: &AppRef) -> bool {
+        app.borrow().efficiency.active
+    }
+
+    /// Applies a changed `efficiency_mode` setting without a restart.
+    pub fn apply_efficiency_mode(app: &AppRef, mode: crate::settings::EfficiencyMode) {
+        app.borrow_mut().settings.efficiency_mode = mode;
+        Self::refresh_efficiency(app);
+    }
+
+    /// Sets or clears EcoQoS on this process only, to match `ecoqos_wanted`.
+    fn sync_eco_qos(app: &AppRef) {
+        let change = {
+            let state = app.borrow();
+            efficiency::eco_qos_change(
+                state.efficiency.eco_qos,
+                efficiency::ecoqos_wanted(state.efficiency.active, state.minimized),
+            )
+        };
+        let Some(on) = change else {
+            return;
+        };
+        let applied = efficiency::set_process_eco_qos(on);
+        let mut state = app.borrow_mut();
+        if applied {
+            state.efficiency.eco_qos = on;
+        }
+        let _ = state.log.record(match (on, applied) {
+            (true, true) => "ecoqos_applied",
+            (false, true) => "ecoqos_cleared",
+            (_, false) => "ecoqos_failed",
+        });
     }
 
     fn combine_idle_and_suspend_timers(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
@@ -4292,11 +4418,8 @@ impl App {
     /// `None` when tab sleep is off or no tab could ever sleep. This is the only timer tab sleep
     /// adds; there is no polling of its own.
     fn sleep_wait_ms(app: &AppRef) -> Option<u32> {
+        let after = Self::background_policy(app).sleep_after?;
         let state = app.borrow();
-        if !state.settings.sleep_enabled {
-            return None;
-        }
-        let after = Duration::from_secs(state.settings.sleep_after_secs);
         let now = Instant::now();
         let active = state.tab_model.active();
         state
@@ -4365,6 +4488,7 @@ impl App {
     }
 
     fn idle_and_suspend_timer(app: &AppRef, idle: IdleTimerAction) -> IdleTimerAction {
+        let suspend_after = Self::background_policy(app).suspend_after;
         let state = app.borrow();
         if state.minimized {
             return IdleTimerAction::Kill;
@@ -4379,10 +4503,10 @@ impl App {
             .filter_map(|tab| tab.hidden_since)
             .map(|hidden| {
                 let elapsed = now.saturating_duration_since(hidden);
-                if hidden_tab_suspend_eligible(elapsed) {
+                if hidden_tab_suspend_eligible(elapsed, suspend_after) {
                     1
                 } else {
-                    (Duration::from_secs(30) - elapsed).as_millis().max(1) as u32
+                    (suspend_after - elapsed).as_millis().max(1) as u32
                 }
             })
             .min();
@@ -4476,10 +4600,7 @@ impl App {
         let (mut hidden, sleep_after): (Vec<(Instant, TabId)>, Option<Duration>) = {
             let state = app.borrow();
             let active = state.tab_model.active();
-            let sleep_after = state
-                .settings
-                .sleep_enabled
-                .then(|| Duration::from_secs(state.settings.sleep_after_secs));
+            let sleep_after = Self::policy_of(&state).sleep_after;
             let hidden = state
                 .tabs
                 .iter()
@@ -4886,9 +5007,46 @@ mod tests {
 
     #[test]
     fn hidden_controller_suspension_starts_at_thirty_seconds() {
-        assert!(!hidden_tab_suspend_eligible(Duration::from_secs(29)));
-        assert!(hidden_tab_suspend_eligible(Duration::from_secs(30)));
-        assert!(hidden_tab_suspend_eligible(Duration::from_secs(31)));
+        let normal = efficiency::NORMAL_SUSPEND_AFTER;
+        assert!(!hidden_tab_suspend_eligible(Duration::from_secs(29), normal));
+        assert!(hidden_tab_suspend_eligible(Duration::from_secs(30), normal));
+        assert!(hidden_tab_suspend_eligible(Duration::from_secs(31), normal));
+    }
+
+    #[test]
+    fn efficient_suspension_starts_at_ten_seconds() {
+        let efficient = efficiency::EFFICIENT_SUSPEND_AFTER;
+        assert!(!hidden_tab_suspend_eligible(Duration::from_secs(9), efficient));
+        assert!(hidden_tab_suspend_eligible(Duration::from_secs(10), efficient));
+    }
+
+    #[test]
+    fn tracking_prevention_request_follows_the_setting_but_not_benchmarks() {
+        use crate::settings::TrackingLevel::{Balanced, Strict};
+        assert_eq!(
+            tracking_prevention_request(None, false, Balanced),
+            Some(TrackingPreventionLevel::Balanced),
+            "ordinary launches state Balanced explicitly"
+        );
+        assert_eq!(
+            tracking_prevention_request(None, false, Strict),
+            Some(TrackingPreventionLevel::Strict)
+        );
+        assert_eq!(
+            tracking_prevention_request(None, true, Strict),
+            None,
+            "benchmark launches keep the engine default"
+        );
+        assert_eq!(
+            tracking_prevention_request(Some(TrackingPreventionLevel::Balanced), true, Strict),
+            Some(TrackingPreventionLevel::Balanced),
+            "an explicit benchmark level wins"
+        );
+        assert_eq!(
+            crate::settings::Settings::default().tracking_prevention,
+            Balanced,
+            "Strict is never the default"
+        );
     }
 
     #[test]
@@ -5076,6 +5234,84 @@ mod tests {
         app.borrow_mut().settings.sleep_enabled = false;
         App::discard_one_hidden_tab_if(&app, || false);
         assert!(closed_tabs(&calls).is_empty(), "sleep disabled");
+    }
+
+    #[test]
+    fn efficiency_shortens_the_sleep_delay_but_keeps_the_eligibility_rules() {
+        // Hidden for 150 s with a 300 s delay: not due normally, due once efficiency caps it at 120 s.
+        let hidden_150 = |app: &AppRef, id: TabId| {
+            hidden_web_tab(
+                app,
+                id,
+                "https://hidden.example.test/",
+                Instant::now() - Duration::from_secs(150),
+            );
+        };
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        hidden_150(&app, hidden);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "normal delay not reached");
+
+        app.borrow_mut().efficiency.active = true;
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
+
+        // Pinned, audible, loading and sleep-off tabs stay awake even when efficient.
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        hidden_150(&app, hidden);
+        app.borrow_mut().efficiency.active = true;
+        app.borrow_mut().tab_model.set_pinned(hidden, true);
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "pinned");
+
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        hidden_150(&app, hidden);
+        app.borrow_mut().efficiency.active = true;
+        app.borrow_mut().tabs.iter_mut().find(|t| t.id == hidden).unwrap().loading = true;
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "loading");
+
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        hidden_150(&app, hidden);
+        app.borrow_mut().efficiency.active = true;
+        app.borrow_mut().engine = Some(Box::new(TabRecordingEngine {
+            calls: calls.clone(),
+            playing: vec![hidden],
+        }));
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "audible");
+
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        hidden_150(&app, hidden);
+        app.borrow_mut().efficiency.active = true;
+        app.borrow_mut().settings.sleep_enabled = false;
+        App::discard_one_hidden_tab_if(&app, || false);
+        assert!(closed_tabs(&calls).is_empty(), "the user turned sleep off");
+        assert_eq!(App::sleep_wait_ms(&app), None);
+    }
+
+    #[test]
+    fn efficiency_moves_the_suspend_timer_from_thirty_to_ten_seconds() {
+        let (app, hidden, _active, _calls) = sleeping_app(300);
+        {
+            let mut state = app.borrow_mut();
+            let tab = state.tabs.iter_mut().find(|tab| tab.id == hidden).unwrap();
+            tab.hidden_since = Some(Instant::now());
+            tab.suspended = false;
+        }
+        let IdleTimerAction::Arm(normal) =
+            App::idle_and_suspend_timer(&app, IdleTimerAction::Kill)
+        else {
+            panic!("a hidden tab that is not suspended arms the timer");
+        };
+        assert!((29_000..=30_000).contains(&normal), "{normal}");
+        app.borrow_mut().efficiency.active = true;
+        let IdleTimerAction::Arm(efficient) =
+            App::idle_and_suspend_timer(&app, IdleTimerAction::Kill)
+        else {
+            panic!("a hidden tab that is not suspended arms the timer");
+        };
+        assert!((9_000..=10_000).contains(&efficient), "{efficient}");
     }
 
     #[test]
@@ -6330,6 +6566,7 @@ mod tests {
             provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             log: Rc::new(PerfLog::new(None).unwrap()),
             minimized: false,
+            efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
             effective_memory_target: None,
             memory_target_unsupported_logged: false,

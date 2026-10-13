@@ -13,6 +13,8 @@
 //! automatic_tab_grouping=true
 //! tab_layout=horizontal
 //! sidebar_width=260
+//! efficiency_mode=auto
+//! tracking_prevention=balanced
 //! ```
 
 use std::{
@@ -34,7 +36,9 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # blocker_enabled=true\r\n\
     # blocker_allow=example.com,other.org\r\n\
     # search_engine=optimised\r\n\
-    # automatic_tab_grouping=true\r\n";
+    # automatic_tab_grouping=true\r\n\
+    # efficiency_mode=auto\r\n\
+    # tracking_prevention=balanced\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -44,6 +48,61 @@ pub const MAX_SLEEP_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Most `blocker_allow` entries kept; the rest of a longer list is ignored.
 pub const MAX_BLOCKER_ALLOW: usize = 500;
+
+/// `efficiency_mode`: when Bowser trims background work to save power. `Auto` follows the power
+/// source (battery or Battery Saver), `On` and `Off` ignore it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EfficiencyMode {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl EfficiencyMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// `tracking_prevention`: WebView2's tracking-prevention level. Balanced is the default; Strict
+/// blocks more trackers and can break some sites. Applied when the engine starts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TrackingLevel {
+    #[default]
+    Balanced,
+    Strict,
+}
+
+impl TrackingLevel {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::Strict => "strict",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "balanced" => Some(Self::Balanced),
+            "strict" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+}
 
 /// Arrangement of the browser's tab list.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -90,6 +149,10 @@ pub struct Settings {
     /// `automatic_tab_grouping`: whether tabs are grouped by site without being asked (default on).
     /// Read at startup. When off, no new automatic groups form; explicit groups still work.
     pub automatic_tab_grouping: bool,
+    /// `efficiency_mode=auto|on|off` (default auto). Applies immediately.
+    pub efficiency_mode: EfficiencyMode,
+    /// `tracking_prevention=balanced|strict` (default balanced). Applies on the next start.
+    pub tracking_prevention: TrackingLevel,
 }
 
 impl Default for Settings {
@@ -104,6 +167,8 @@ impl Default for Settings {
             blocker_allow: Vec::new(),
             search_engine: None,
             automatic_tab_grouping: true,
+            efficiency_mode: EfficiencyMode::Auto,
+            tracking_prevention: TrackingLevel::Balanced,
         }
     }
 }
@@ -181,6 +246,16 @@ impl Settings {
                 "automatic_tab_grouping" => {
                     if let Some(on) = parse_bool(value) {
                         settings.automatic_tab_grouping = on;
+                    }
+                }
+                "efficiency_mode" => {
+                    if let Some(mode) = EfficiencyMode::parse(value) {
+                        settings.efficiency_mode = mode;
+                    }
+                }
+                "tracking_prevention" => {
+                    if let Some(level) = TrackingLevel::parse(value) {
+                        settings.tracking_prevention = level;
                     }
                 }
                 _ => {}
@@ -261,7 +336,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 9] = [
+    let values: [(&str, Option<String>); 11] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         ("side_panel_width", Some(settings.side_panel_width.to_string())),
@@ -286,8 +361,16 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             "automatic_tab_grouping",
             Some(bool_text(settings.automatic_tab_grouping).to_owned()),
         ),
+        (
+            "efficiency_mode",
+            Some(settings.efficiency_mode.key().to_owned()),
+        ),
+        (
+            "tracking_prevention",
+            Some(settings.tracking_prevention.key().to_owned()),
+        ),
     ];
-    let mut written = [false; 9];
+    let mut written = [false; 11];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -505,6 +588,8 @@ mod tests {
             blocker_allow: vec!["a.com".to_owned(), "b.org".to_owned()],
             automatic_tab_grouping: false,
             search_engine: Some(SearchEngine::DuckDuckGo),
+            efficiency_mode: EfficiencyMode::On,
+            tracking_prevention: TrackingLevel::Strict,
         }
     }
 
@@ -619,6 +704,52 @@ mod tests {
     }
 
     #[test]
+    fn efficiency_mode_defaults_to_auto_and_ignores_bad_values() {
+        assert_eq!(Settings::default().efficiency_mode, EfficiencyMode::Auto);
+        assert_eq!(Settings::parse("efficiency_mode=ON").efficiency_mode, EfficiencyMode::On);
+        assert_eq!(Settings::parse("efficiency_mode=off").efficiency_mode, EfficiencyMode::Off);
+        assert_eq!(Settings::parse("efficiency_mode=Auto").efficiency_mode, EfficiencyMode::Auto);
+        for bad in ["", "true", "battery", "1"] {
+            assert_eq!(
+                Settings::parse(&format!("efficiency_mode={bad}")).efficiency_mode,
+                EfficiencyMode::Auto,
+                "value: {bad:?}"
+            );
+        }
+        // An invalid later line does not erase a valid earlier choice.
+        assert_eq!(
+            Settings::parse("efficiency_mode=off\nefficiency_mode=nope").efficiency_mode,
+            EfficiencyMode::Off
+        );
+    }
+
+    #[test]
+    fn tracking_prevention_defaults_to_balanced_and_strict_is_opt_in() {
+        assert_eq!(Settings::default().tracking_prevention, TrackingLevel::Balanced);
+        assert_eq!(Settings::parse("").tracking_prevention, TrackingLevel::Balanced);
+        assert_eq!(Settings::parse("tracking_prevention=STRICT").tracking_prevention, TrackingLevel::Strict);
+        for bad in ["", "off", "basic", "true"] {
+            assert_eq!(
+                Settings::parse(&format!("tracking_prevention={bad}")).tracking_prevention,
+                TrackingLevel::Balanced,
+                "value: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn efficiency_and_tracking_round_trip_and_the_template_lists_them() {
+        let text = render_updated("efficiency_mode=off\n", &sample());
+        assert_eq!(text.matches("efficiency_mode").count(), 1);
+        assert!(text.contains("efficiency_mode=on\n"));
+        assert!(text.contains("tracking_prevention=strict\n"));
+        assert_eq!(Settings::parse(&text), sample());
+        assert!(TEMPLATE.contains("# efficiency_mode=auto\r\n"));
+        assert!(TEMPLATE.contains("# tracking_prevention=balanced\r\n"));
+        assert_eq!(Settings::parse(TEMPLATE), Settings::default());
+    }
+
+    #[test]
     fn render_into_empty_text_roundtrips() {
         let text = render_updated("", &sample());
         assert_eq!(Settings::parse(&text), sample());
@@ -634,7 +765,7 @@ mod tests {
             "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
              tab_layout=vertical\r\nsidebar_width=300\r\nside_panel_width=340\r\nsleep_after_secs=900\r\n\
              blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
-             automatic_tab_grouping=false\r\n"
+             automatic_tab_grouping=false\r\nefficiency_mode=on\r\ntracking_prevention=strict\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

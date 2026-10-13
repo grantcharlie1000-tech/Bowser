@@ -44,6 +44,9 @@ pub(crate) struct Snapshot {
     pub(crate) security: SiteSecurity,
     pub(crate) blocking: Option<bool>,
     pub(crate) tracking: Option<&'static str>,
+    /// The level Settings will apply on the next start.
+    pub(crate) tracking_setting: &'static str,
+    pub(crate) efficiency_active: bool,
     pub(crate) smart_screen: Option<bool>,
     pub(crate) blocker_setting: bool,
     pub(crate) sleeping: bool,
@@ -120,6 +123,8 @@ pub(crate) fn gather(
         security: App::site_security(app),
         blocking: App::blocker_active_for_site(app),
         tracking,
+        tracking_setting: App::tracking_setting(app),
+        efficiency_active: App::efficiency_active(app),
         smart_screen,
         blocker_setting,
         sleeping,

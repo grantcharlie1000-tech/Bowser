@@ -2070,6 +2070,24 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn force_background_memory_low(&mut self) -> usize {
+        let mut state = self.core.borrow_mut();
+        let visible = state.visible_tabs.clone();
+        let active = state.active_tab;
+        let mut set = 0;
+        for (id, tab) in state.tabs.iter_mut() {
+            if visible.contains(id) || active == Some(*id) {
+                continue;
+            }
+            if matches!(
+                EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low),
+                Ok(MemoryTargetApply::Applied)
+            ) {
+                set += 1;
+            }
+        }
+        set
+    }
     fn suspend_tab(&mut self, tab_id: TabId) -> Result<()> {
         let mut state = self.core.borrow_mut();
         if state.active_tab == Some(tab_id) {

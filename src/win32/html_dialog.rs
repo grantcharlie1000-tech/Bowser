@@ -128,7 +128,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Settings => settings_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Settings => settings_snapshot(runtime), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
 }
 
@@ -148,6 +148,7 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
         out.string("security", match snapshot.security { crate::site_security::SiteSecurity::Secure => "secure", crate::site_security::SiteSecurity::NotSecure => "notsecure", crate::site_security::SiteSecurity::CertificateProblem => "certproblem", crate::site_security::SiteSecurity::Internal => "internal", crate::site_security::SiteSecurity::Unknown => "unknown", crate::site_security::SiteSecurity::NoSite => "none" });
         if let Some(blocking) = snapshot.blocking { out.bool("blocking", blocking); } else { out.null("blocking"); }
         if let Some(tracking) = snapshot.tracking { out.string("tracking", tracking); } else { out.null("tracking"); }
+        out.string("trackingSetting", snapshot.tracking_setting); out.bool("efficiencyActive", snapshot.efficiency_active);
         if let Some(enabled) = snapshot.smart_screen { out.bool("smartScreen", enabled); } else { out.null("smartScreen"); }
         out.bool("blockerSetting", snapshot.blocker_setting); out.bool("sleeping", snapshot.sleeping); out.uint("sleepAfter", snapshot.sleep_after);
         out.array("permissions", |items| for (origin, permission, decision) in &snapshot.permissions { items.object(|item| {
@@ -219,7 +220,8 @@ fn notes_snapshot() -> Option<String> {
     })
 }
 
-fn settings_snapshot() -> Option<String> {
+fn settings_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let efficiency_active = runtime.try_borrow().ok().is_some_and(|state| crate::app::App::efficiency_active(&state.app));
     let profile = profile::active().ok()?;
     let settings = crate::settings::read_strict(&profile.settings_file()).ok()?;
     let fallback = if crate::navigation::SearchProvider::from_config(None, &profile.search_provider_file()).is_default() { "default" } else { "custom" };
@@ -229,6 +231,8 @@ fn settings_snapshot() -> Option<String> {
         out.bool("blockerEnabled", settings.blocker_enabled); out.array("blockerAllow", |items| for site in &settings.blocker_allow { items.string(site); });
         if let Some(engine) = settings.search_engine { out.string("searchEngine", engine.key()); } else { out.null("searchEngine"); }
         out.string("searchFallback", fallback); out.bool("automaticTabGrouping", settings.automatic_tab_grouping);
+        out.string("efficiencyMode", settings.efficiency_mode.key()); out.bool("efficiencyActive", efficiency_active);
+        out.string("trackingPrevention", settings.tracking_prevention.key());
     })
 }
 
@@ -265,12 +269,18 @@ fn handle_settings(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let result = match f.a.as_str() {
         "reset" if empty_fields(&f, false) => {
             if !crate::win32::ask_yes_no_owned(owner, "Reset all settings to their defaults? Comments and other lines in settings.txt are kept.") { return; }
-            crate::settings::save(&profile.settings_file(), &crate::settings::Settings::default()).map(|()| { crate::app::App::apply_tab_layout_settings(&app, crate::settings::TabLayout::Horizontal, crate::settings::DEFAULT_SIDEBAR_WIDTH); })
+            crate::settings::save(&profile.settings_file(), &crate::settings::Settings::default()).map(|()| {
+                crate::app::App::apply_tab_layout_settings(&app, crate::settings::TabLayout::Horizontal, crate::settings::DEFAULT_SIDEBAR_WIDTH);
+                crate::app::App::apply_efficiency_mode(&app, crate::settings::EfficiencyMode::Auto);
+            })
         }
         "save" if f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.text.is_some() => {
             let Ok(mut settings) = crate::settings::read_strict(&profile.settings_file()) else { return; };
             if !apply_settings_text(&mut settings, f.text.as_deref().unwrap_or("")) { return; }
-            crate::settings::save(&profile.settings_file(), &settings).map(|()| crate::app::App::apply_tab_layout_settings(&app, settings.tab_layout, settings.sidebar_width))
+            crate::settings::save(&profile.settings_file(), &settings).map(|()| {
+                crate::app::App::apply_tab_layout_settings(&app, settings.tab_layout, settings.sidebar_width);
+                crate::app::App::apply_efficiency_mode(&app, settings.efficiency_mode);
+            })
         }
         _ => return,
     };
@@ -293,10 +303,12 @@ fn apply_settings_text(settings: &mut crate::settings::Settings, text: &str) -> 
             "blocker_allow" => { let Ok(value) = crate::settings::parse_blocker_allow(value) else { return false; }; settings.blocker_allow = value; }
             "automatic_tab_grouping" => settings.automatic_tab_grouping = match value { "true" => true, "false" => false, _ => return false },
             "search_engine" => { let Some(value) = crate::navigation::SearchEngine::parse(value) else { return false; }; settings.search_engine = Some(value); }
+            "efficiency_mode" => { let Some(value) = crate::settings::EfficiencyMode::parse(value) else { return false; }; settings.efficiency_mode = value; }
+            "tracking_prevention" => { let Some(value) = crate::settings::TrackingLevel::parse(value) else { return false; }; settings.tracking_prevention = value; }
             _ => return false,
         }
     }
-    ["tab_layout", "sidebar_width", "sleep_enabled", "sleep_after_secs", "blocker_enabled", "blocker_allow", "automatic_tab_grouping"].iter().all(|key| seen.contains(key))
+    ["tab_layout", "sidebar_width", "sleep_enabled", "sleep_after_secs", "blocker_enabled", "blocker_allow", "automatic_tab_grouping", "efficiency_mode", "tracking_prevention"].iter().all(|key| seen.contains(key))
 }
 
 fn empty_fields(f: &PanelFields, allow_text: bool) -> bool { f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && (allow_text || f.text.is_none()) }
@@ -309,13 +321,18 @@ mod tests {
     #[test]
     fn settings_payload_updates_only_known_values_and_requires_every_control() {
         let mut settings = crate::settings::Settings::default();
-        let valid = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=false";
+        let valid = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict";
         assert!(apply_settings_text(&mut settings, valid));
         assert_eq!(settings.tab_layout, crate::settings::TabLayout::Vertical);
         assert_eq!(settings.sidebar_width, 300);
         assert!(!settings.sleep_enabled);
         assert!(!settings.automatic_tab_grouping);
+        assert_eq!(settings.efficiency_mode, crate::settings::EfficiencyMode::On);
+        assert_eq!(settings.tracking_prevention, crate::settings::TrackingLevel::Strict);
         assert!(!apply_settings_text(&mut settings, "tab_layout=wrong"));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("efficiency_mode=on", "efficiency_mode=sometimes")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("tracking_prevention=strict", "tracking_prevention=off")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("\nefficiency_mode=on", "")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nunknown=x")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblocker_enabled=false")));
     }

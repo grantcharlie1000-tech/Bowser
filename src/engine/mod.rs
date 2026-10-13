@@ -155,6 +155,12 @@ pub trait EngineAdapter {
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Holds every hidden controller at the low memory target. Hiding a tab already does this, so
+    /// the call only matters when efficiency mode switches on while tabs are already in the
+    /// background. Returns how many tabs were set.
+    fn force_background_memory_low(&mut self) -> usize {
+        0
+    }
     /// Suspends one already hidden controller in response to an explicit user request.
     fn suspend_tab(&mut self, _tab: crate::tabs::TabId) -> windows::core::Result<()> {
         Ok(())

@@ -40,7 +40,9 @@ mod site_info;
 mod smooth;
 mod window;
 
-pub(crate) use window::{schedule_idle_timer, show_pending_address, sync_address_input};
+pub(crate) use window::{
+    schedule_idle_timer, schedule_power_timer, show_pending_address, sync_address_input,
+};
 
 use windows::{
     Win32::{
@@ -132,6 +134,8 @@ pub(crate) const WM_PRIVACY_STATS_TIMER: usize = 7;
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 /// Coalesces split divider moves to one controller bounds update per frame.
 pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
+/// Slow fallback that re-reads the power source for efficiency mode (Auto only).
+pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
 

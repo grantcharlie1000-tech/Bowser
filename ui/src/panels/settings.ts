@@ -1,6 +1,6 @@
 import { sendPanel, type Inbound, type PanelFields } from '../protocol';
 import { el, icon, type IconName } from '../dom';
-import { parseSettingsSnapshot, settingsCommand, type SearchEngine, type SettingsSnapshot } from './settings-logic';
+import { parseSettingsSnapshot, settingsCommand, type EfficiencyMode, type SearchEngine, type SettingsSnapshot, type TrackingPrevention } from './settings-logic';
 import { enter, moveFocus, pageSection, panelHeader, segmented, settingRow, textButton, toggleSwitch } from './kit';
 
 function emit(fields: ReturnType<typeof settingsCommand>): boolean {
@@ -94,7 +94,7 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     return JSON.stringify(snapshot) !== JSON.stringify(draft);
   };
   function paintFooter(): void {
-    message.textContent = issue || note || (snapshot ? 'Search applies immediately. Other changes need a restart.' : 'Loading settings…');
+    message.textContent = issue || note || (snapshot ? 'Search and efficiency apply immediately. Other changes need a restart.' : 'Loading settings…');
     save.disabled = !dirty();
     save.setAttribute('aria-disabled', String(!dirty()));
     reset.replaceChildren(document.createTextNode(resetConfirm ? 'Confirm reset' : 'Reset to defaults'));
@@ -136,7 +136,13 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
     groups.body.append(
       settingRow('Group tabs by site', 'Applies after a restart. Groups you make by hand stay.', toggleSwitch(d.automaticTabGrouping, (on) => { d.automaticTabGrouping = on; touch(); })),
     );
-    tabs.append(layout.root, sleep.root, groups.root);
+    const efficiency = pageSection('Efficiency');
+    const modes = [['auto', 'Auto'], ['on', 'On'], ['off', 'Off']] as const;
+    efficiency.body.append(
+      settingRow('Efficiency mode', `Auto saves power on battery or in Battery Saver: hidden tabs sleep sooner and background tabs use less memory. Applies immediately. ${d.efficiencyActive ? 'Active now.' : 'Not active now.'}`,
+        segmented(modes, d.efficiencyMode, (value) => { d.efficiencyMode = value as EfficiencyMode; touch(); }, 'Efficiency mode')),
+    );
+    tabs.append(layout.root, sleep.root, efficiency.root, groups.root);
 
     const blocking = pageSection('Ad and tracker blocker');
     const allow = el('input', 'bw-input pg-wide');
@@ -153,7 +159,16 @@ export function startSettingsPanel(root: HTMLElement): (message: Inbound) => voi
       settingRow('Allowed sites', 'Comma separated. The blocker skips these.', allow),
     );
 
-    const sections: Record<SectionKey, HTMLElement> = { search: search.root, tabs, privacy: blocking.root };
+    const tracking = pageSection('Tracking prevention');
+    const levels = [['balanced', 'Balanced'], ['strict', 'Strict']] as const;
+    tracking.body.append(
+      settingRow('Tracking prevention level', 'Balanced is the default. Strict blocks more trackers but can break some sites. Takes effect after a restart.',
+        segmented(levels, d.trackingPrevention, (value) => { d.trackingPrevention = value as TrackingPrevention; touch(); }, 'Tracking prevention level')),
+    );
+    const privacy = el('div');
+    privacy.append(blocking.root, tracking.root);
+
+    const sections: Record<SectionKey, HTMLElement> = { search: search.root, tabs, privacy };
     for (const [key] of SECTIONS) {
       const pane = sections[key];
       pane.classList.add('pg-pane');

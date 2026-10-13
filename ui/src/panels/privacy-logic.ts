@@ -3,6 +3,8 @@ export type PrivacySnapshot = {
   stats: { allTime: number; session: number; currentSite: number; topSites: { host: string; count: number }[]; days: { day: string; count: number }[] };
   site: string | null; security: 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
   blocking: boolean | null; tracking: string | null; smartScreen: boolean | null;
+  /** The level Settings will apply on the next start; `tracking` is what the engine reports now. */
+  trackingSetting: 'balanced' | 'strict'; efficiencyActive: boolean;
   blockerSetting: boolean; sleeping: boolean; sleepAfter: number;
   permissions: { origin: string; permission: string; decision: string }[]; status: string | null;
 };
@@ -14,8 +16,8 @@ const security = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', '
 const decisions = ['allow', 'block'];
 /** Exact keys and bounded primitive values are required before any snapshot reaches the DOM. */
 export function parsePrivacySnapshot(value: unknown): PrivacySnapshot | null {
-  const keys = ['profile','guest','stats','site','security','blocking','tracking','smartScreen','blockerSetting','sleeping','sleepAfter','permissions','status'];
-  if (!record(value) || !exact(value, keys) || !str(value.profile) || typeof value.guest !== 'boolean' || !record(value.stats) || !exact(value.stats, ['allTime','session','currentSite','topSites','days']) || !count(value.stats.allTime) || !count(value.stats.session) || !count(value.stats.currentSite) || !Array.isArray(value.stats.topSites) || !Array.isArray(value.stats.days) || value.stats.topSites.length > 5 || value.stats.days.length > 7 || !(value.site === null || str(value.site)) || !security.includes(value.security as string) || !(value.blocking === null || typeof value.blocking === 'boolean') || !(value.tracking === null || str(value.tracking, 64)) || !(value.smartScreen === null || typeof value.smartScreen === 'boolean') || typeof value.blockerSetting !== 'boolean' || typeof value.sleeping !== 'boolean' || !count(value.sleepAfter) || !Array.isArray(value.permissions) || value.permissions.length > 1024 || !(value.status === null || str(value.status, 512))) return null;
+  const keys = ['profile','guest','stats','site','security','blocking','tracking','trackingSetting','efficiencyActive','smartScreen','blockerSetting','sleeping','sleepAfter','permissions','status'];
+  if (!record(value) || !exact(value, keys) || !str(value.profile) || typeof value.guest !== 'boolean' || !record(value.stats) || !exact(value.stats, ['allTime','session','currentSite','topSites','days']) || !count(value.stats.allTime) || !count(value.stats.session) || !count(value.stats.currentSite) || !Array.isArray(value.stats.topSites) || !Array.isArray(value.stats.days) || value.stats.topSites.length > 5 || value.stats.days.length > 7 || !(value.site === null || str(value.site)) || !security.includes(value.security as string) || !(value.blocking === null || typeof value.blocking === 'boolean') || !(value.tracking === null || str(value.tracking, 64)) || (value.trackingSetting !== 'balanced' && value.trackingSetting !== 'strict') || typeof value.efficiencyActive !== 'boolean' || !(value.smartScreen === null || typeof value.smartScreen === 'boolean') || typeof value.blockerSetting !== 'boolean' || typeof value.sleeping !== 'boolean' || !count(value.sleepAfter) || !Array.isArray(value.permissions) || value.permissions.length > 1024 || !(value.status === null || str(value.status, 512))) return null;
   const topSites: PrivacySnapshot['stats']['topSites'] = [];
   for (const raw of value.stats.topSites) { if (!record(raw) || !exact(raw, ['host','count']) || !str(raw.host) || !count(raw.count)) return null; topSites.push({ host: raw.host, count: raw.count }); }
   const days: PrivacySnapshot['stats']['days'] = [];

@@ -2,6 +2,9 @@ import { MAX_TEXT } from '../protocol';
 
 const SEARCH_ENGINES = ['optimised', 'google', 'duckduckgo'] as const;
 export type SearchEngine = typeof SEARCH_ENGINES[number];
+const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
+export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
+export type TrackingPrevention = 'balanced' | 'strict';
 export type SettingsSnapshot = {
   tabLayout: 'horizontal' | 'vertical';
   sidebarWidth: number;
@@ -12,11 +15,15 @@ export type SettingsSnapshot = {
   searchEngine: SearchEngine | null;
   searchFallback: 'default' | 'custom';
   automaticTabGrouping: boolean;
+  efficiencyMode: EfficiencyMode;
+  /** Read-only: whether efficiency mode is in force right now. Never sent back. */
+  efficiencyActive: boolean;
+  trackingPrevention: TrackingPrevention;
 };
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isIntBetween = (value: unknown, min: number, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
-const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'blockerEnabled', 'blockerAllow', 'searchEngine', 'searchFallback', 'automaticTabGrouping'];
+const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'blockerEnabled', 'blockerAllow', 'searchEngine', 'searchFallback', 'automaticTabGrouping', 'efficiencyMode', 'efficiencyActive', 'trackingPrevention'];
 
 /** Rejects partial or extended native snapshots before rendering any setting. */
 export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
@@ -27,6 +34,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!(value.searchEngine === null || (typeof value.searchEngine === 'string' && SEARCH_ENGINES.includes(value.searchEngine as SearchEngine)))) return null;
   if (value.searchFallback !== 'default' && value.searchFallback !== 'custom') return null;
   if (typeof value.automaticTabGrouping !== 'boolean') return null;
+  if (!EFFICIENCY_MODES.includes(value.efficiencyMode as EfficiencyMode) || typeof value.efficiencyActive !== 'boolean') return null;
+  if (value.trackingPrevention !== 'balanced' && value.trackingPrevention !== 'strict') return null;
   if (value.searchEngine !== null && value.searchFallback !== 'default') return null;
   return {
     tabLayout: value.tabLayout,
@@ -38,6 +47,9 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     searchEngine: value.searchEngine as SearchEngine | null,
     searchFallback: value.searchFallback,
     automaticTabGrouping: value.automaticTabGrouping,
+    efficiencyMode: value.efficiencyMode as EfficiencyMode,
+    efficiencyActive: value.efficiencyActive,
+    trackingPrevention: value.trackingPrevention,
   };
 }
 
@@ -56,6 +68,8 @@ export function settingsCommand(action: 'save' | 'reset', value?: unknown): Sett
     `blocker_enabled=${parsed.blockerEnabled}`,
     `blocker_allow=${parsed.blockerAllow.join(',')}`,
     `automatic_tab_grouping=${parsed.automaticTabGrouping}`,
+    `efficiency_mode=${parsed.efficiencyMode}`,
+    `tracking_prevention=${parsed.trackingPrevention}`,
   ];
   if (parsed.searchEngine !== null) lines.push(`search_engine=${parsed.searchEngine}`);
   const text = lines.join('\n');

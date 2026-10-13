@@ -3,6 +3,7 @@ pub mod blocker;
 pub mod bookmarks;
 pub mod chrome;
 pub mod chrome_host;
+pub mod efficiency;
 pub mod engine;
 pub mod extensions;
 pub mod favicon;
