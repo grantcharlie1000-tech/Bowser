@@ -340,6 +340,12 @@ struct WindowChrome {
     html_toolbar_active: bool,
     /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
     html_omnibox_focused: bool,
+    /// The user has typed in the omnibox since it last took focus, so a page load must not move the
+    /// keyboard away from it (V35).
+    omnibox_edited: bool,
+    /// The user deliberately took the omnibox (Ctrl+L, a new tab, a click), as opposed to it merely
+    /// holding the focus it started with.
+    omnibox_claimed: bool,
     /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
     html_last_state: Option<String>,
     html_tabs_last_state: Option<String>,
@@ -476,6 +482,8 @@ impl WindowChrome {
             html_page_ready: false,
             html_toolbar_active: false,
             html_omnibox_focused: false,
+            omnibox_edited: false,
+            omnibox_claimed: false,
             html_last_state: None,
             html_tabs_last_state: None,
             html_rail_last_state: None,
@@ -1773,6 +1781,7 @@ unsafe extern "system" fn window_proc(
                         s.edit_text.push_str(&text);
                         let programmatic = s.programmatic_text_update;
                         if !programmatic {
+                            s.omnibox_edited = true;
                             s.update_completion();
                         }
                         !programmatic
@@ -1810,6 +1819,10 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     let navigation_id = wparam.0 as u64;
                     if App::navigation_progress_message(app, navigation_id, lparam.0) {
+                        // The page has committed: if the user is not using the omnibox, the keyboard goes to it.
+                        if matches!(lparam.0, 1 | 2) {
+                            focus_page_after_commit(hwnd, app);
+                        }
                         if let Some(target) =
                             App::tab_progress_percent(app, App::active_tab_id(app))
                         {
@@ -3589,6 +3602,29 @@ fn workspace_glyph_name(icon: crate::workspaces::WorkspaceIcon) -> &'static str 
         W::Bolt => "workspace-bolt",
         W::Globe => "workspace-globe",
         W::Leaf => "workspace-leaf",
+    }
+}
+
+/// Whether a page that just committed should take the keyboard from the omnibox (V35): only when the
+/// omnibox has it, the user has neither typed in it nor deliberately taken it, and the page is a
+/// real one (a blank or new tab is waiting for the user to type). Pure.
+fn should_focus_page_after_commit(omnibox_focused: bool, edited: bool, claimed: bool, blank_page: bool) -> bool {
+    omnibox_focused && !edited && !claimed && !blank_page
+}
+
+fn focus_page_after_commit(hwnd: HWND, app: &AppRef) {
+    let id = App::active_tab_id(app);
+    let state = with_chrome(hwnd, |s| {
+        (
+            s.html_omnibox_focused || (!s.edit.is_invalid() && unsafe { GetFocus() } == s.edit),
+            s.omnibox_edited,
+            s.omnibox_claimed,
+            s.urls.get(&id).is_none_or(|url| url.is_empty()),
+        )
+    });
+    let Some((focused, edited, claimed, blank)) = state else { return };
+    if should_focus_page_after_commit(focused, edited, claimed, blank) {
+        App::focus_page(app);
     }
 }
 
@@ -6246,6 +6282,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             let _ = with_chrome(hwnd, |s| {
                 s.html_omnibox_focused = on;
                 if !on {
+                    s.omnibox_claimed = false;
+                    s.omnibox_edited = false;
                     // Leaving the omnibox discards typed text, as the native edit does. The next
                     // sync sends the tab's address again.
                     s.html_text_sent = None;
@@ -7349,6 +7387,7 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
         return;
     };
     let suffix = with_chrome(hwnd, |s| {
+        s.omnibox_edited = true;
         // Shorter text means Backspace or Delete, where completion must not reappear.
         s.suppress_completion = text.chars().count() < s.edit_text.chars().count();
         s.edit_text.clear();
@@ -7886,6 +7925,10 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str) {
     }
 }
 fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    let _ = with_chrome(hwnd, |s| {
+        s.omnibox_claimed = true;
+        s.omnibox_edited = false;
+    });
     // While the HTML toolbar is active, its page owns the omnibox and the native input stays hidden.
     if let Some(host) = with_chrome(hwnd, |s| {
         if s.html_toolbar_active { s.html.clone() } else { None }
@@ -8367,6 +8410,17 @@ mod tests {
         assert_eq!(ids, vec![1, 2, 3]);
         // Short enough to stay on one line in a compact menu.
         assert!(IMPORT_OFFER_TITLE.len() <= 32 && IMPORT_OFFER_DETAIL.len() <= 44 && IMPORT_OFFER_FOOTER.len() <= 44);
+    }
+
+    #[test]
+    fn a_committed_page_takes_the_keyboard_only_from_an_untouched_omnibox() {
+        // The omnibox holds the focus it started with and the page is a real one: move to the page.
+        assert!(should_focus_page_after_commit(true, false, false, false));
+        // Typing, a deliberate Ctrl+L / new tab / click, a blank page, or no omnibox focus: leave it.
+        assert!(!should_focus_page_after_commit(true, true, false, false));
+        assert!(!should_focus_page_after_commit(true, false, true, false));
+        assert!(!should_focus_page_after_commit(true, false, false, true));
+        assert!(!should_focus_page_after_commit(false, false, false, false));
     }
 
     #[test]
