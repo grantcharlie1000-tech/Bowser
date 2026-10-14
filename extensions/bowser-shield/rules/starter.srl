@@ -1,0 +1,60 @@
+# Bowser Shield starter list. SRL version 1.
+# Generic third-party ad and tracker URL shapes. Edit or disable this list in Options.
+
+# Host labels naming an ad-serving role.
+block label:adserver
+block label:adserving
+block label:ad-delivery
+block label:addelivery
+block label:ad-serve
+block label:adexchange
+block label:ad-exchange
+block label:adnetwork
+block label:ad-network
+block label:adbanner
+block label:bannerad
+block label:popunder
+block label:interstitial-ad
+
+# Host labels naming a click or impression recorder.
+block label:click-track
+block label:clicktrack
+block label:clickserve
+block label:imptrack
+block label:impression-log
+block label:trackpixel
+block label:pixel-track
+block label:beacon-collect
+
+# Host labels naming a visitor telemetry collector.
+block label:telemetry-collect
+block label:event-collector
+block label:usertrack
+block label:visitor-track
+block label:session-replay
+
+# Path fragments used by ad slots and measurement endpoints.
+block path:/ad-slot/
+block path:/adslots/
+block path:/sponsored-unit/
+block path:/banner-rotate/
+block path:/header-bid/
+block path:/rtb-bid/
+block path:/track/impression
+block path:/track/click
+block path:/collect/beacon
+block path:/pixel.gif kind image
+block path:/track.gif kind image
+block path:/beacon.png kind image
+
+# Cosmetic. Attribute-qualified only; see section 3.5.
+hide css:iframe[src*="/ad-slot/"]
+hide css:iframe[src*="/sponsored-unit/"]
+hide css:div[data-ad-slot]
+hide css:div[data-ad-unit]
+hide css:div[data-ad-placeholder]
+hide css:div[data-advertisement]
+hide css:[data-widget-type="sponsored"]
+hide css:aside[aria-label="Advertisement"]
+hide css:section[aria-label="Advertisement"]
+hide css:img[width="1"][height="1"][src*="/track/"]

@@ -22,6 +22,7 @@ pub mod profile;
 pub mod reader;
 pub mod session;
 pub mod settings;
+pub mod shield;
 pub mod shortcuts;
 pub mod sidebar;
 pub mod site_prefs;

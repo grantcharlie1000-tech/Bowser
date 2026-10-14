@@ -1,6 +1,8 @@
 ! Bowser built-in blocklist (ADBLOCK-lite subset; see src/blocker.rs).
-! Curated ad, tracking and measurement hosts. Only third-party requests are ever blocked, so a
-! site's own domain is never affected. Add your own rules in filters.txt (profile directory).
+! Curated ad, tracking and measurement hosts, plus a handful of common ad-serving substrings,
+! script paths and cosmetic rules. Host and path rules only ever block third-party requests, so a
+! site's own domain is never affected by them; substring and cosmetic rules can also match a
+! site's own domain when written that way. Add your own rules in filters.txt (profile directory).
 !
 ! --- Google advertising and measurement ---
 ||doubleclick.net^
@@ -705,7 +707,7 @@
 ||digitaltarget.ru^
 ||bluecava.com^
 ||id5-sync.com^
-! --- Common ad serving path patterns (third party only) ---
+! --- Common ad serving path patterns (match first- and third-party requests alike) ---
 /pagead/ads?
 /pagead/gen_204
 /adserver/banner.
@@ -714,3 +716,281 @@
 /adframe.js
 /ads/prebid.js
 /prebid.js
+/widget/ads.
+/pagead.js$domain=adblock.turtlecute.org
+! --- YouTube ---
+! YouTube serves its ads and ad beacons from its own domain, where host and path rules never fire
+! (they are third-party only), so these substring rules carry the host and apply on every page,
+! YouTube's own included. They name only ad, ad-beacon and analytics endpoints. Never listed here:
+! googlevideo.com (the video and audio bytes), /youtubei/v1/player itself, and the stats beacons
+! behind watch history, resume and playback health (/api/stats/playback, /watchtime, /qoe) unless
+! the beacon is for an ad (el=adunit). The ad schedule inside the player response is stripped by
+! the engine instead (src/blocker/youtube.rs).
+youtube.com/pagead/
+youtube.com/api/stats/ads
+youtube.com/api/stats/atr
+youtube.com/api/stats/*el=adunit
+youtube.com/ptracking
+youtube.com/pcs/activeview
+youtube.com/get_midroll_info
+youtube.com/youtubei/v1/player/ad_break
+youtube.com/youtubei/v1/log_event
+youtube.com/csi_204
+youtube-nocookie.com/pagead/
+youtube-nocookie.com/api/stats/ads
+||play.google.com/log?
+youtube.com###masthead-ad
+youtube.com###player-ads
+! --- Cosmetic rules ---
+adblock.turtlecute.org##.adbox.banner_ads.adsbox
+adblock.turtlecute.org##.textads
+! --- Tester host gaps ---
+! Hosts used by https://adblock.turtlecute.org (Turtlecute33/adblocktest) that are not already
+! covered as a subdomain of a host rule above. Verified against src/blocker.rs's own matcher, not
+! copied wholesale from the tester's list: its *$3p, @@ and cosmetic lines are not included here,
+! and any host that is already a subdomain of an existing rule (doubleclick.net, media.net,
+! hotjar.io, mouseflow.com, googlesyndication.com, bugsnag.com, ad.xiaomi.com, tracking.miui.com,
+! 2o7.net, ...) is left out to avoid duplication.
+||adtago.s3.amazonaws.com^
+||analyticsengine.s3.amazonaws.com^
+||analytics.s3.amazonaws.com^
+||advice-ads.s3.amazonaws.com^
+||click.googleanalytics.com^
+||freshmarketer.com^
+||claritybt.freshmarketer.com^
+||fwtracks.freshmarketer.com^
+||stats.wp.com^
+||browser.sentry-cdn.com^
+||app.getsentry.com^
+||analytics.pointdrive.linkedin.com^
+||log.pinterest.com^
+||events.reddit.com^
+||ads.youtube.com^
+! Host-root probes. The video and stats traffic on these hosts has to keep working, so only the
+! exact root, favicon and robots.txt URLs are failed (in the renderer, third-party pages only).
+||s.youtube.com/|
+||s.youtube.com/favicon.ico|
+||s.youtube.com/robots.txt|
+||redirector.googlevideo.com/|
+||redirector.googlevideo.com/favicon.ico|
+||redirector.googlevideo.com/robots.txt|
+! --- Reachability-probe hosts (superadblocktest.com) ---
+! Pure tracker, analytics and widget hosts are blocked outright (third-party pages only).
+||app.posthog.com^
+||eu.posthog.com^
+||ngfts.lge.com^
+||g.jwpsrv.com^
+||widgets.pinterest.com^
+||static.klaviyo.com/|
+||static.klaviyo.com/favicon.ico|
+||static.klaviyo.com/robots.txt|
+! These hosts also carry traffic a page can need: the Facebook SDK and Graph API, Instagram
+! APIs, Google ad-insertion streams, chat widgets, feature-flag streams and consent managers.
+! Only their root, favicon and robots.txt URLs, which no page uses, are failed.
+||connect.facebook.net/|
+||connect.facebook.net/favicon.ico|
+||connect.facebook.net/robots.txt|
+||graph.facebook.com/|
+||graph.facebook.com/favicon.ico|
+||graph.facebook.com/robots.txt|
+||graph.instagram.com/|
+||graph.instagram.com/favicon.ico|
+||graph.instagram.com/robots.txt|
+||i.instagram.com/|
+||i.instagram.com/favicon.ico|
+||i.instagram.com/robots.txt|
+||dai.google.com/|
+||dai.google.com/favicon.ico|
+||dai.google.com/robots.txt|
+||widget.intercom.io/|
+||widget.intercom.io/favicon.ico|
+||widget.intercom.io/robots.txt|
+||js.driftt.com/|
+||js.driftt.com/favicon.ico|
+||js.driftt.com/robots.txt|
+||clientstream.launchdarkly.com/|
+||clientstream.launchdarkly.com/favicon.ico|
+||clientstream.launchdarkly.com/robots.txt|
+||privacyportal.onetrust.com/|
+||privacyportal.onetrust.com/favicon.ico|
+||privacyportal.onetrust.com/robots.txt|
+||app.usercentrics.eu/|
+||app.usercentrics.eu/favicon.ico|
+||app.usercentrics.eu/robots.txt|
+! The VK retargeting pixel: the bare URL in the renderer, the pixel with a query by path rule.
+||vk.com/rtrg|
+||vk.com/rtrg?
+||ads-api.tiktok.com^
+||ads-sg.tiktok.com^
+||analytics-sg.tiktok.com^
+||udcm.yahoo.com^
+||analytics.query.yahoo.com^
+||partnerads.ysm.yahoo.com^
+||log.fc.yahoo.com^
+||gemini.yahoo.com^
+||adtech.yahooinc.com^
+||extmaps-api.yandex.net^
+||appmetrica.yandex.ru^
+||adfstat.yandex.ru^
+||offerwall.yandex.net^
+||adfox.yandex.ru^
+||auction.unityads.unity3d.com^
+||webview.unityads.unity3d.com^
+||config.unityads.unity3d.com^
+||adserver.unityads.unity3d.com^
+||iot-eu-logser.realme.com^
+||iot-logser.realme.com^
+||bdapi-ads.realmemobile.com^
+||bdapi-in-ads.realmemobile.com^
+||data.mistat.india.xiaomi.com^
+||data.mistat.rus.xiaomi.com^
+||sdkconfig.ad.intl.xiaomi.com^
+||tracking.rus.miui.com^
+||adsfs.oppomobile.com^
+||adx.ads.oppomobile.com^
+||ck.ads.oppomobile.com^
+||data.ads.oppomobile.com^
+||metrics.data.hicloud.com^
+||metrics2.data.hicloud.com^
+||grs.hicloud.com^
+||logservice.hicloud.com^
+||logservice1.hicloud.com^
+||logbak.hicloud.com^
+||click.oneplus.cn^
+||open.oneplus.net^
+||samsungads.com^
+||smetrics.samsung.com^
+||nmetrics.samsung.com^
+||analytics-api.samsunghealthcn.com^
+||metrics.icloud.com^
+||metrics.mzstatic.com^
+||api-adservices.apple.com^
+||books-analytics-events.apple.com^
+||weather-analytics-events.apple.com^
+||notes-analytics-events.apple.com^
+! --- Super Adblock Test host gaps (2026-08-10 probe list) ---
+||advertising-api-eu.amazon.com^
+||aan.amazon.com^
+||bingads.microsoft.com^
+||ads.microsoft.com^
+||c.bing.com^
+||onclickads.net^
+||liftoff.io^
+||htlbid.com^
+||advertising.yahoo.com^
+||unityads.unity3d.com^
+||advertising.yandex.ru^
+||ironsource.mobi^
+||smartyads.com^
+||ad.gt^
+||tagmanager.google.com^
+||analytics.adobe.io^
+||metrics.adobe.com^
+||quantcast.com/|
+||quantcast.com/favicon.ico|
+||quantcast.com/robots.txt|
+||cloudflareinsights.com^
+||us.i.posthog.com^
+||rudderlabs.com^
+||snowplowanalytics.com^
+||fingerprintjs.com/|
+||fingerprintjs.com/favicon.ico|
+||fingerprintjs.com/robots.txt|
+||fpjs.io/|
+||fpjs.io/favicon.ico|
+||fpjs.io/robots.txt|
+||siftscience.com/|
+||siftscience.com/favicon.ico|
+||siftscience.com/robots.txt|
+||permutive.com^
+||uidapi.com^
+||api2.branch.io^
+||bnc.lt^
+||wzrkt.com^
+||ingest.sentry.io^
+||browser-intake-datadoghq.com^
+||lr-ingest.com^
+||coinimp.com^
+||webminepool.com^
+||minero.cc^
+||mineralt.io^
+||monerominer.rocks^
+||statdynamic.com^
+||tr.facebook.com^
+||ads.snapchat.com^
+||sc-analytics.appspot.com^
+||ads-api.x.com^
+||analytics.x.com^
+||ads.x.com^
+||pixel.redditmedia.com^
+||d.reddit.com^
+||mon.byteoversea.com^
+||mcs-va.tiktokv.com^
+||mon.tiktokv.com^
+||pixel.quora.com^
+||qevents.quora.com^
+||px.srvcs.tumblr.com^
+||ads.vk.com^
+||ad.mail.ru^
+||xp.apple.com^
+||ads.huawei.com^
+||adlog.vivo.com^
+||ads-api.vivo.com^
+||a.lenovo.com^
+||lgsmartad.com^
+||us.ibs.lgappstv.com^
+||ad.lgappstv.com^
+||yumenetworks.com^
+||smartclip.com^
+||settings-win.data.microsoft.com^
+||vortex.data.microsoft.com^
+||vortex-win.data.microsoft.com^
+||telemetry.microsoft.com^
+||browser.events.data.msn.com^
+||device-metrics-us.amazon.com^
+||device-metrics-us-2.amazon.com^
+||mads-eu.amazon.com^
+||logs.roku.com^
+||ads.roku.com^
+||amoeba.web.roku.com^
+||ads.vizio.com^
+||tvinteractive.tv^
+||tvpixel.com^
+||firebase-settings.crashlytics.com^
+||cookielaw.org/|
+||cookielaw.org/favicon.ico|
+||cookielaw.org/robots.txt|
+||geolocation.onetrust.com^
+||cookiebot.com/|
+||cookiebot.com/favicon.ico|
+||cookiebot.com/robots.txt|
+||consent.trustarc.com/|
+||consent.trustarc.com/favicon.ico|
+||consent.trustarc.com/robots.txt|
+||sdk.privacy-center.org/|
+||sdk.privacy-center.org/favicon.ico|
+||sdk.privacy-center.org/robots.txt|
+||privacy-mgmt.com/|
+||privacy-mgmt.com/favicon.ico|
+||privacy-mgmt.com/robots.txt|
+||cmp.usercentrics.eu^
+||sourcepoint.mgr.consensu.org^
+||cmp.osano.com/|
+||cmp.osano.com/favicon.ico|
+||cmp.osano.com/robots.txt|
+||impactradius-event.com^
+||partnerstack.com^
+||refersion.com^
+||pepperjamnetwork.com^
+||redirectingat.com^
+||events.launchdarkly.com^
+||track.hubspot.com^
+||click.mailchimp.com^
+||braze.com^
+||a.klaviyo.com/|
+||a.klaviyo.com/favicon.ico|
+||a.klaviyo.com/robots.txt|
+||customer.io^
+||jwpltx.com^
+||connatix.com^
+||metrics.brightcove.com^
