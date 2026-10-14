@@ -4,7 +4,7 @@ A small experimental x64 Windows browser: one native window, one native address/
 
 ## Stable download
 
-The clickable application is [Bowser.exe](https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.4/Bowser.exe) from the [v0.0.4 release](https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.4). It is a 64-bit Windows 10 or 11 program. Windows needs the installed [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section); current Microsoft Edge already includes it.
+The clickable application is [Bowser.exe](https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.5/Bowser.exe) from the [v0.0.5 release](https://github.com/grantcharlie1000-tech/Bowser/releases/tag/v0.0.5). It is a 64-bit Windows 10 or 11 program. Windows needs the installed [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section); current Microsoft Edge already includes it.
 
 Opening that file starts this exact build. The copy in this repository is `Open-Bowser.cmd`. It does not compile the source tree. It checks `%LOCALAPPDATA%\Programs\Bowser\Bowser.exe` against `stable/release.json`, downloads the release above when the hash does not match, and creates Desktop and Start Menu shortcuts that open the installed file directly. If that file is still in use, the pinned release is written to the next free folder under `%LOCALAPPDATA%\Programs` (`Bowser Stable`, then `Bowser Stable 2`, and so on) and the shortcuts point there. The open window is left running. Close it, then use the Bowser shortcut. Browser profiles stay in `%LOCALAPPDATA%\Bowser`. Replacing the executable keeps that data.
 
