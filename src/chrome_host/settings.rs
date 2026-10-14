@@ -77,7 +77,13 @@ pub struct Snapshot<'a> {
     /// Whether Bowser is the current HKCU http default: `"yes"`, `"no"` or `"unknown"` (detection
     /// failed or is not supported). Read-only: never part of `save`.
     pub default_browser: &'static str,
+    /// The folder downloads are saved to, as shown (the setting, else the Downloads folder).
+    pub download_dir: &'a str,
+    /// "Ask where to save each file before downloading".
+    pub download_ask: bool,
 }
+
+const MAX_DOWNLOAD_DIR_CHARS: usize = 260;
 
 pub fn snapshot_json(s: &Snapshot<'_>) -> String {
     let settings = s.settings;
@@ -134,6 +140,8 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.string("error", capped(s.error, MAX_ERROR_CHARS));
         out.bool("readable", s.readable);
         out.string("defaultBrowser", s.default_browser);
+        out.string("downloadDir", capped(s.download_dir, MAX_DOWNLOAD_DIR_CHARS));
+        out.bool("downloadAsk", s.download_ask);
     })
     .expect("settings is a panel token")
 }
@@ -161,6 +169,10 @@ pub enum Action {
     /// "Make Bowser the default browser": registers Bowser under HKCU, then asks Windows to show
     /// its own defaults UI. Any failure comes back through `ack`/`error`.
     SetDefault,
+    /// "Ask where to save each file": the profile's switch, applied at once.
+    DownloadAsk(bool),
+    /// "Change" the download folder: Bowser shows the native folder picker and keeps the choice.
+    DownloadFolder,
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -183,6 +195,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         },
         "autoupdate" if on_only => Action::AutoUpdate(f.on?),
         "history" if on_only => Action::History(f.on?),
+        "downloadask" if on_only => Action::DownloadAsk(f.on?),
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
@@ -192,6 +205,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "import" if bare => Action::Import,
         "refresh" if bare => Action::Refresh,
         "setdefault" if bare => Action::SetDefault,
+        "downloadfolder" if bare => Action::DownloadFolder,
         _ => return None,
     })
 }
@@ -305,6 +319,12 @@ mod tests {
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nunknown=x")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblocker_enabled=false")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nauto_update=false")), "the update switch is not a profile setting");
+        // The download settings have their own commands (`downloadask`, `downloadfolder`): a save
+        // neither carries nor changes them, and a path from the page is never accepted.
+        assert!(!apply_settings_text(&mut settings, &format!("{valid}\ndownload_dir=C:\\Windows")));
+        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nask_download_location=true")));
+        assert!(apply_settings_text(&mut settings, valid));
+        assert_eq!((settings.download_dir.as_str(), settings.ask_download_location), ("", false));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nsearch_engine=bing")));
         assert!(apply_settings_text(&mut settings, &format!("{valid}\nsearch_engine=google")));
         assert!(!apply_settings_text(&mut settings, &"x".repeat(MAX_SAVE_TEXT + 1)));
@@ -364,6 +384,25 @@ mod tests {
         let mut history = fields("history");
         history.on = Some(true);
         assert_eq!(map_command(&history), Some(Action::History(true)));
+        let mut ask = fields("downloadask");
+        assert_eq!(map_command(&ask), None, "downloadask needs its switch");
+        ask.on = Some(true);
+        assert_eq!(map_command(&ask), Some(Action::DownloadAsk(true)));
+        ask.on = Some(false);
+        assert_eq!(map_command(&ask), Some(Action::DownloadAsk(false)));
+        ask.text = Some("C:\\Windows".into());
+        assert_eq!(map_command(&ask), None, "downloadask carries no text");
+        // The folder is picked by Bowser's own dialog: the command carries nothing, least of all a path.
+        let mut folder = fields("downloadfolder");
+        assert_eq!(map_command(&folder), Some(Action::DownloadFolder));
+        folder.text = Some("C:\\Windows".into());
+        assert_eq!(map_command(&folder), None);
+        folder.text = None;
+        folder.on = Some(true);
+        assert_eq!(map_command(&folder), None);
+        let mut section = fields("section");
+        section.text = Some("downloads".into());
+        assert_eq!(map_command(&section), Some(Action::Section(Some(Section::Downloads))));
 
         for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
@@ -398,6 +437,8 @@ mod tests {
             ack: Ack::Saved,
             error: "",
             default_browser: "yes",
+            download_dir: "C:\\Users\\Work\\Downloads",
+            download_ask: false,
         }
     }
 
@@ -409,7 +450,7 @@ mod tests {
         assert!(json.starts_with(r#"{"v":1,"t":"snap","p":"settings","d":{"tabLayout":"horizontal","sidebarWidth":260,"#), "{json}");
         assert!(json.contains(r#""searchEngine":null,"searchFallback":"default""#), "{json}");
         assert!(json.contains(r#""profile":"Work \"\u003cb>\"""#), "{json}");
-        assert!(json.ends_with(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes"}}"#), "{json}");
+        assert!(json.ends_with(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes","downloadDir":"C:\\Users\\Work\\Downloads","downloadAsk":false}}"#), "{json}");
         let guest = Snapshot { guest: true, ..sample(&settings) };
         assert!(snapshot_json(&guest).contains(r#""historyEnabled":false,"guest":true"#));
         let custom = Snapshot { custom_search: true, ..sample(&settings) };
@@ -428,7 +469,7 @@ mod tests {
         settings.search_engine = Some(crate::navigation::SearchEngine::Optimised);
         let snap = snapshot_json(&sample(&settings));
         let guest_settings = Settings::default();
-        let guest = snapshot_json(&Snapshot { guest: true, profile: "Guest", avatar: "G", update: "unavailable", update_version: "", last_check: "none", check_result: "none", ack: Ack::None, custom_search: true, ..sample(&guest_settings) });
+        let guest = snapshot_json(&Snapshot { guest: true, profile: "Guest", avatar: "G", update: "unavailable", update_version: "", last_check: "none", check_result: "none", ack: Ack::None, custom_search: true, download_dir: "", download_ask: true, ..sample(&guest_settings) });
         let content = format!(
             "{{\"snap\":{snap},\"guest\":{guest},\"go\":{},\"goTop\":{}}}\n",
             go_json(Some(Section::Privacy)),

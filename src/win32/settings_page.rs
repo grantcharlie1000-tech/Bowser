@@ -459,6 +459,9 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
     // The page's own check is "checking" until it reports, whatever the background thread says.
     let update = if checking && update != "ready" { "checking" } else { update };
     let version = crate::updater::Version::current().to_string();
+    // Downloads (docs/design/downloads.md): the folder as it is in force now, so an empty setting
+    // reads as the Downloads folder.
+    let download_dir = App::download_dir_display(app);
     wire::snapshot_json(&wire::Snapshot {
         settings: &settings,
         readable,
@@ -481,6 +484,8 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
             Some(false) => "no",
             None => "unknown",
         },
+        download_dir: &download_dir,
+        download_ask: App::settings(app).ask_download_location,
     })
 }
 
@@ -609,6 +614,19 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
         Action::Refresh => {
             let _ = with(owner, |rt| rt.dirty = true);
+        }
+        Action::DownloadAsk(on) => {
+            App::set_ask_download_location(app, on);
+            answer(owner, Ok(()));
+        }
+        Action::DownloadFolder => {
+            // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
+            // page never names a path. Cancelling changes nothing and says nothing.
+            if App::pick_download_folder(app, owner) {
+                answer(owner, Ok(()));
+            } else {
+                let _ = with(owner, |rt| rt.dirty = true);
+            }
         }
         Action::SetDefault => {
             let Some(exe) = crate::default_browser::current_exe() else {

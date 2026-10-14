@@ -1862,6 +1862,9 @@ fn save_form(hwnd: HWND) {
         pin_new_tab_groups: form.pin_new_tab_groups,
         split_edge_drop: form.split_edge_drop,
         block_youtube_video_ads: form.block_youtube_video_ads,
+        // The GDI form has no controls for the download settings either.
+        download_dir: current.download_dir,
+        ask_download_location: current.ask_download_location,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

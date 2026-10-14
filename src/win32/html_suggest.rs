@@ -4,7 +4,7 @@
 //! only decides what the rows are and what picking each one does. Ranking lives in
 //! `crate::omnibox::suggest`. Everything runs on the UI thread, once per edit.
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, time::SystemTime};
+use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc, time::SystemTime};
 
 use url::Url;
 
@@ -94,6 +94,8 @@ struct BookmarkCache {
     path: PathBuf,
     stamp: Option<(SystemTime, u64)>,
     links: Rc<Vec<(String, String)>>,
+    /// Every bookmarked address, for `is_bookmarked`.
+    urls: Rc<HashSet<String>>,
 }
 
 thread_local! {
@@ -105,42 +107,74 @@ fn stamp_of(path: &std::path::Path) -> Option<(SystemTime, u64)> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
+/// Every bookmarked page in `store` as (address, title). Pure.
+fn links_of(store: &BookmarkStore) -> Vec<(String, String)> {
+    store
+        .items()
+        .iter()
+        .filter_map(|item| match &item.kind {
+            BookmarkKind::Link { url, .. } => Some((url.clone(), item.title.clone())),
+            BookmarkKind::Folder => None,
+        })
+        .collect()
+}
+
+/// The addresses of `links`, one lookup each. Pure.
+fn url_set(links: &[(String, String)]) -> HashSet<String> {
+    links.iter().map(|(url, _)| url.clone()).collect()
+}
+
 /// Every bookmarked page as (address, title). The list is kept until the bookmark file's time or
 /// size changes, so a keystroke costs one `stat`, not a parse. Empty in a guest profile.
 pub(crate) fn bookmarks() -> Rc<Vec<(String, String)>> {
-    let Ok(profile) = crate::profile::active() else { return Rc::default() };
+    refreshed().map(|(links, _)| links).unwrap_or_default()
+}
+
+/// Re-reads the bookmark file if it changed since the cache was filled, and reports whether the set
+/// of bookmarked addresses changed. Called where bookmarks may have been edited (`WM_RAIL_CHANGED`,
+/// which every bookmark editor in the window posts), not per paint. Nothing is read while nothing
+/// is cached: the first lookup reads the file then.
+pub(crate) fn refresh_bookmarks() -> bool {
+    let Some(before) = BOOKMARKS.with(|cell| cell.borrow().as_ref().map(|cache| cache.urls.clone())) else {
+        return false;
+    };
+    match refreshed() {
+        Some((_, after)) => !Rc::ptr_eq(&before, &after) && before != after,
+        None => !before.is_empty(),
+    }
+}
+
+/// The cached links and address set, re-read only when the file's time or size changed. `None` in
+/// a guest profile or without a profile.
+fn refreshed() -> Option<(Rc<Vec<(String, String)>>, Rc<HashSet<String>>)> {
+    let profile = crate::profile::active().ok()?;
     if !crate::productivity::profile_allows_productivity(&profile) {
-        return Rc::default();
+        return None;
     }
     let path = profile.root().join("bookmarks-v2.txt");
     let stamp = stamp_of(&path);
-    BOOKMARKS.with(|cell| {
+    Some(BOOKMARKS.with(|cell| {
         let mut cache = cell.borrow_mut();
         if let Some(hit) = cache.as_ref().filter(|c| c.path == path && c.stamp == stamp && stamp.is_some()) {
-            return hit.links.clone();
+            return (hit.links.clone(), hit.urls.clone());
         }
-        let links: Vec<(String, String)> = BookmarkStore::load(profile.root())
-            .map(|store| {
-                store
-                    .items()
-                    .iter()
-                    .filter_map(|item| match &item.kind {
-                        BookmarkKind::Link { url, .. } => Some((url.clone(), item.title.clone())),
-                        BookmarkKind::Folder => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let links = BookmarkStore::load(profile.root()).map(|store| links_of(&store)).unwrap_or_default();
+        let urls = Rc::new(url_set(&links));
         let links = Rc::new(links);
-        *cache = Some(BookmarkCache { stamp: stamp_of(&path), path, links: links.clone() });
-        links
-    })
+        *cache = Some(BookmarkCache { stamp: stamp_of(&path), path, links: links.clone(), urls: urls.clone() });
+        (links, urls)
+    }))
 }
 
-/// Whether `url` is bookmarked, from the cached list.
+/// Whether `url` is bookmarked: one lookup in the in-memory set. The file is read only the first
+/// time; after that the set follows `refresh_bookmarks` and `bookmarks`, so a paint or a sync never
+/// touches the disk.
 pub(crate) fn is_bookmarked(url: &str) -> bool {
-    let links = bookmarks();
-    links.iter().any(|(existing, _)| existing == url)
+    let cached = BOOKMARKS.with(|cell| cell.borrow().as_ref().map(|cache| cache.urls.clone()));
+    match cached {
+        Some(urls) => urls.contains(url),
+        None => refreshed().is_some_and(|(_, urls)| urls.contains(url)),
+    }
 }
 
 #[cfg(test)]
@@ -180,5 +214,19 @@ mod tests {
         let tabs = vec![(TabId(3), "https://www.example.com/a".to_owned(), String::new())];
         assert_eq!(tab_with_host(&tabs, "https://www.example.com/b"), Some(TabId(3)));
         assert_eq!(tab_with_host(&tabs, "https://other.test/"), None);
+    }
+
+    #[test]
+    fn bookmark_lookups_use_one_set_of_link_addresses() {
+        let mut store = BookmarkStore::new();
+        let folder = store.add_folder(None, "Reading").unwrap();
+        store.add_bookmark(Some(folder), "Rust", "https://www.rust-lang.org/").unwrap();
+        store.add_bookmark(None, "Example", "https://example.com/a").unwrap();
+        let links = links_of(&store);
+        assert_eq!(links.len(), 2, "folders are not links");
+        let urls = url_set(&links);
+        assert!(urls.contains("https://www.rust-lang.org/"));
+        assert!(urls.contains("https://example.com/a"));
+        assert!(!urls.contains("https://example.com/"), "a lookup is exact, as the old scan was");
     }
 }

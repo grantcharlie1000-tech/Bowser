@@ -43,8 +43,10 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
+    path::Path,
     rc::Rc,
-    time::{Duration, Instant},
+    thread::JoinHandle,
+    time::{Duration, Instant, SystemTime},
 };
 use windows::{
     Win32::{
@@ -89,7 +91,8 @@ use windows::{
                 SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
                 TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE,
                 WINEVENT_OUTOFCONTEXT,
-                WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+                WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION,
+                WM_QUERYENDSESSION,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
                 WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
                 WM_MOUSEMOVE, WM_MOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY,
@@ -116,6 +119,19 @@ const WM_RAIL_TOOLTIP_TIMER: usize = 0xB058;
 /// Delay timer for the native new-tab button's HTML tooltip.
 const WM_NEWTAB_TOOLTIP_TIMER: usize = 0xB05A;
 const NEWTAB_TOOLTIP_TEXT: &str = "New tab (Ctrl+T)";
+/// Frame timer of a vertical sidebar width drag: the moves of one frame end in one relayout.
+const WM_SIDEBAR_RESIZE_TIMER: usize = 0xB05B;
+/// Slow check, armed only while a settings, history or split page host is hidden, that closes a
+/// host hidden for `PAGE_IDLE_CLOSE`. The next use creates it again.
+const WM_PAGE_IDLE_TIMER: usize = 0xB05C;
+const PAGE_IDLE_CHECK_MS: u32 = 30_000;
+const PAGE_IDLE_CLOSE: Duration = Duration::from_secs(180);
+/// Posted once after chrome state changed (see `mark_chrome_dirty`). The HTML views and the page
+/// hosts are brought up to date from it; `WM_PAINT` only draws.
+const WM_CHROME_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x84;
+/// Posted the first time a view needs the hover layer (see `ensure_hover_layer`), so it is created
+/// from the window procedure, not inside the WebView2 callback that asked for it.
+const WM_HTML_HOVER_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x85;
 // --- popup host (lane M) ---
 const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
@@ -173,6 +189,10 @@ enum DeferredChromeCommand {
     PopupAct { tok: u32, id: u32, n: u8 },
     /// A composer's submit; its text waits in `html_popup`.
     PopupCompose { tok: u32 },
+    /// The toolbar's download button was clicked (its rectangle waits in `downloads_ui`).
+    DownloadsToggle,
+    /// A row or list action on the open downloads bubble.
+    DownloadsAct { tok: u32, id: u32, n: u8 },
     /// A composer the Customize flyout asked for; the request waits in `composer`.
     ComposerOpen,
     // --- end popup surfaces ---
@@ -290,6 +310,85 @@ impl ProgressTransition {
         *self = Self::default();
     }
 }
+/// The settings and workspace values the native paint reads. Kept here and refreshed by the chrome
+/// sync, so a paint clones neither the settings nor the workspace set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PaintPrefs {
+    rounded_content_frame: bool,
+    show_site_info: bool,
+    show_split: bool,
+    workspace_name: String,
+}
+impl PaintPrefs {
+    fn read(app: &AppRef) -> Self {
+        let settings = App::settings(app);
+        Self {
+            rounded_content_frame: settings.rounded_content_frame,
+            show_site_info: settings.toolbar_buttons.iter().any(|button| button == "site-info"),
+            show_split: settings.toolbar_buttons.iter().any(|button| button == "split"),
+            workspace_name: App::workspaces(app).active().name().to_owned(),
+        }
+    }
+}
+
+/// How long a page host (settings, history, split) has been out of sight. Only a host that has
+/// been shown is timed, so one that is still being created, or never was, is left alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PageIdle {
+    seen: bool,
+    hidden_since: Option<Instant>,
+}
+
+/// Advances `idle` for a host that is `shown` (or not) at `now`. True when the host has been hidden
+/// for `PAGE_IDLE_CLOSE` and should close; its clock then starts over. Pure.
+fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant) -> bool {
+    if shown {
+        *idle = PageIdle { seen: true, hidden_since: None };
+        return false;
+    }
+    if !idle.seen {
+        return false;
+    }
+    let since = *idle.hidden_since.get_or_insert(now);
+    if now.saturating_duration_since(since) >= PAGE_IDLE_CLOSE {
+        *idle = PageIdle::default();
+        return true;
+    }
+    false
+}
+
+/// A web app's rail icon as last read: its cached favicon file and, once the native rail paints,
+/// the bitmap decoded at a size (`None` when it would not decode).
+struct RailAppIcon {
+    png: Option<Rc<Vec<u8>>>,
+    decoded: Option<(u32, Option<Rc<favicon::FaviconBitmap>>)>,
+}
+
+thread_local! {
+    /// Bumped when a web app's favicon changes; the rail's icon cache is dropped on its next build.
+    static RAIL_ICON_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A file's modification time and length, the identity the rail's caches are checked against.
+type FileStamp = (SystemTime, u64);
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// The arguments of the last `relayout` except the size and sidebar width, so a sidebar drag can lay
+/// out again without reading the settings.
+#[derive(Clone)]
+struct RelayoutInputs {
+    active: TabId,
+    maximised: bool,
+    tab_layout: crate::settings::TabLayout,
+    centred_address_bar: bool,
+    font_size: crate::settings::FontSize,
+    ui_font: String,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct HtmlTabsInputs {
     mode: chrome_host::protocol::LayoutMode,
@@ -317,7 +416,22 @@ struct WindowChrome {
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    /// The width a sidebar drag has reached, laid out once per frame and saved to the settings when
+    /// the drag ends, and whether a frame for it is due.
+    sidebar_drag_width: Option<u16>,
+    sidebar_drag_pending: bool,
+    last_relayout: Option<RelayoutInputs>,
     rail_entries: Vec<RailEntryData>,
+    /// `rail_entries` as the painter and hit tests take them, rebuilt with them (see `rail_view_of`),
+    /// so no label is copied per paint or per hit test.
+    rail_view: Vec<RailEntry<'static>>,
+    /// The open panel the last `WM_RAIL_CHANGED` saw, so an unchanged rail is not repainted.
+    rail_open_seen: Option<RailKey>,
+    /// `sidebar.txt` as last read, with the stamp it was read at.
+    sidebar_config: Option<(Option<FileStamp>, crate::sidebar::SidebarConfig)>,
+    /// Web app icons by address, read once each (see `RailAppIcon`), and the epoch they belong to.
+    rail_app_icons: HashMap<String, RailAppIcon>,
+    rail_icon_epoch: u64,
     rail_scroll: i32,
     rail_drag: Option<RailDrag>,
     rail_focus: Option<RailKey>,
@@ -346,6 +460,9 @@ struct WindowChrome {
     /// The time and count of the last press on the omnibox, for double and triple clicks.
     omni_click: Option<(Instant, u8)>,
     history: History,
+    /// The startup read of history.txt, running on a worker until something needs the history
+    /// (see `loaded_history`).
+    history_load: Option<JoinHandle<History>>,
     urls: HashMap<TabId, String>,
     /// Decides when a finished page load becomes a history entry (any way the page was reached).
     visits: crate::productivity::VisitTracker,
@@ -387,6 +504,10 @@ struct WindowChrome {
     omnibox_claimed: bool,
     /// The last `state` JSON posted to the HTML toolbar, so unchanged state is not sent again.
     html_last_state: Option<String>,
+    /// CSS px the toolbar page's download button takes from the pill (`0` or `DL_BUTTON_SLOT`), and the
+    /// last `dlbtn` message the page was sent (docs/design/downloads.md, `downloads_ui`).
+    html_dl_slot: i32,
+    html_dl_last: Option<String>,
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
@@ -442,6 +563,19 @@ struct WindowChrome {
     html_rail_synced_rail_gen: u64,
     html_rail_synced_state_gen: u64,
     // --- end rail flyouts ---
+    /// A `WM_CHROME_SYNC` is queued.
+    chrome_sync_posted: bool,
+    paint_prefs: PaintPrefs,
+    /// Idle clocks of the split, settings and history page hosts.
+    page_idle: [PageIdle; 4],
+    /// The flyout panel's controller was requested (on first use, see `ensure_flyout_panel`), and
+    /// whether it failed for good.
+    flyout_requested: bool,
+    flyout_failed: bool,
+    /// The hover layer was asked for since the toolbar activated (see `ensure_hover_layer`).
+    hover_requested: bool,
+    /// The exit flush ran (`flush_for_exit`), so a close after an ended session does not repeat it.
+    exit_flushed: bool,
 }
 
 /// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
@@ -459,16 +593,6 @@ struct HtmlFavicon {
 }
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
-        let mut history = History::default();
-        if let Ok(profile) = crate::profile::active() {
-            if crate::productivity::profile_allows_productivity(&profile)
-                && profile.history_enabled()
-            {
-                for (_, url, title) in crate::productivity::read_history(&profile.history_file()) {
-                    history.record(&url, &title);
-                }
-            }
-        }
         Self {
             surface: {
                 let mut surface = ChromeSurface::new(width, height, dpi);
@@ -487,7 +611,15 @@ impl WindowChrome {
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            sidebar_drag_width: None,
+            sidebar_drag_pending: false,
+            last_relayout: None,
             rail_entries: Vec::new(),
+            rail_view: Vec::new(),
+            rail_open_seen: None,
+            sidebar_config: None,
+            rail_app_icons: HashMap::new(),
+            rail_icon_epoch: RAIL_ICON_EPOCH.with(|epoch| epoch.get()),
             rail_scroll: 0,
             rail_drag: None,
             rail_focus: None,
@@ -510,7 +642,8 @@ impl WindowChrome {
             programmatic_text_update: false,
             omni_anchor: 0,
             omni_click: None,
-            history,
+            history: History::default(),
+            history_load: None,
             urls: HashMap::with_capacity(8),
             visits: crate::productivity::VisitTracker::default(),
             history_dirty: false,
@@ -537,6 +670,8 @@ impl WindowChrome {
             omnibox_edited: false,
             omnibox_claimed: false,
             html_last_state: None,
+            html_dl_slot: 0,
+            html_dl_last: None,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -567,7 +702,57 @@ impl WindowChrome {
             html_rail_synced_open: None,
             html_rail_synced_rail_gen: 0,
             html_rail_synced_state_gen: 0,
+            chrome_sync_posted: false,
+            paint_prefs: PaintPrefs::default(),
+            page_idle: [PageIdle::default(); 4],
+            flyout_requested: false,
+            flyout_failed: false,
+            hover_requested: false,
+            exit_flushed: false,
         }
+    }
+    /// Starts reading the profile's history on a worker, so the window shows without first parsing
+    /// every stored address. Suggestions and visits take the result through `loaded_history`.
+    fn start_history_load(&mut self) {
+        let Ok(profile) = crate::profile::active() else {
+            return;
+        };
+        if !crate::productivity::profile_allows_productivity(&profile) || !profile.history_enabled() {
+            return;
+        }
+        let path = profile.history_file();
+        let worker = path.clone();
+        match std::thread::Builder::new()
+            .name("history-load".into())
+            .spawn(move || read_suggestion_history(&worker))
+        {
+            Ok(handle) => self.history_load = Some(handle),
+            Err(_) => self.history = read_suggestion_history(&path),
+        }
+    }
+    /// The sidebar width to lay out: the one a drag has reached, else the setting.
+    fn sidebar_width(&self, app: &AppRef) -> u16 {
+        self.sidebar_drag_width.unwrap_or_else(|| App::sidebar_width(app))
+    }
+    /// Lays the chrome out again at sidebar width `width`, with everything else as the last
+    /// `relayout` had it. False when there was no earlier layout to repeat.
+    fn relayout_sidebar(&mut self, width: u16) -> bool {
+        let Some(inputs) = self.last_relayout.clone() else {
+            return false;
+        };
+        self.relayout(
+            self.client.0,
+            self.client.1,
+            self.dpi,
+            inputs.active,
+            inputs.maximised,
+            inputs.tab_layout,
+            width,
+            inputs.centred_address_bar,
+            inputs.font_size,
+            &inputs.ui_font,
+        );
+        true
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
         let now = Instant::now();
@@ -588,19 +773,23 @@ impl WindowChrome {
         } else {
             Vec::new()
         };
-        let mut sidebar_tabs = Vec::with_capacity(ids.len());
+        let mut sidebar_tabs = Vec::with_capacity(if reproject { ids.len() } else { 0 });
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
+        // The previous snapshot by id: one pass, not a search of every old tab for every tab.
+        let previous: HashMap<TabId, &TabSnapshot> = self.tabs.iter().map(|tab| (tab.id, tab)).collect();
         for &id in &ids {
-            let old = self.tabs.iter().find(|t| t.id == id);
-            let title = App::tab_title(app, id).unwrap_or_default();
-            let title = if title.trim().is_empty() {
+            let old = previous.get(&id).copied();
+            let raw_title = App::tab_title(app, id).unwrap_or_default();
+            let title = if raw_title.trim().is_empty() {
                 "New tab".to_owned()
             } else {
-                title
+                raw_title.clone()
             };
             let loading = App::tab_loading(app, id);
-            let pinned = App::tab_pinned(app, id);
-            sidebar_tabs.push((id, title.clone(), pinned, loading));
+            // The sidebar rows are only rebuilt on a reprojection, so only then are they collected.
+            if reproject {
+                sidebar_tabs.push((id, title.clone(), App::tab_pinned(app, id), loading));
+            }
             let key = App::tab_favicon_key(app, id);
             let image = if old.is_some_and(|t| {
                 t.favicon_key == key
@@ -637,7 +826,6 @@ impl WindowChrome {
             let private = App::tab_private(app, id);
             if crate::private::may_persist(crate::private::Store::History, private, false) {
                 let committed = App::tab_committed_url(app, id);
-                let raw_title = App::tab_title(app, id).unwrap_or_default();
                 if let Some((url, visit_title)) = self.visits.observe(
                     id.0,
                     committed.as_ref().map(url::Url::as_str),
@@ -646,7 +834,7 @@ impl WindowChrome {
                     just_finished,
                 ) {
                     if crate::private::may_persist(crate::private::Store::SuggestionHistory, private, false) {
-                        self.history.record(&url, &visit_title);
+                        loaded_history(&mut self.history, &mut self.history_load).record(&url, &visit_title);
                     }
                     if persist_profile_history(url, visit_title) {
                         self.history_dirty = true;
@@ -716,6 +904,7 @@ impl WindowChrome {
         }
         if reproject {
             let settings = App::settings(app);
+            let sidebar_width = self.sidebar_width(app);
             self.relayout(
                 self.client.0,
                 self.client.1,
@@ -723,7 +912,7 @@ impl WindowChrome {
                 App::active_tab_id(app),
                 self.layout.maximised,
                 App::tab_layout(app),
-                App::sidebar_width(app),
+                sidebar_width,
                 settings.centred_address_bar,
                 settings.font_size,
                 &settings.ui_font,
@@ -746,6 +935,14 @@ impl WindowChrome {
     ) {
         self.client = (w, h);
         self.dpi = dpi.max(96);
+        self.last_relayout = Some(RelayoutInputs {
+            active,
+            maximised,
+            tab_layout,
+            centred_address_bar,
+            font_size,
+            ui_font: ui_font.to_owned(),
+        });
         let was_vertical = self.sidebar.is_some();
         let i = self
             .slots
@@ -983,20 +1180,49 @@ impl WindowChrome {
         running || rail_frame.running
     }
     fn update_completion(&mut self) {
+        let history = loaded_history(&mut self.history, &mut self.history_load);
         self.completion =
-            omnibox::inline_completion(&self.history, &self.edit_text, !self.suppress_completion);
+            omnibox::inline_completion(history, &self.edit_text, !self.suppress_completion);
         self.suppress_completion = false
     }
 }
+
+/// The suggestion history from `path`, as the omnibox ranks it. Runs on the history worker.
+fn read_suggestion_history(path: &Path) -> History {
+    let mut history = History::default();
+    for (_, url, title) in crate::productivity::read_history(path) {
+        history.record(&url, &title);
+    }
+    history
+}
+
+/// `history`, after the startup load has been taken into it if it was still pending. Waits for the
+/// worker only if it has not finished, which is the first keystroke or visit right after launch.
+fn loaded_history<'a>(history: &'a mut History, load: &mut Option<JoinHandle<History>>) -> &'a mut History {
+    if let Some(handle) = load.take()
+        && let Ok(loaded) = handle.join()
+    {
+        *history = loaded;
+    }
+    history
+}
 thread_local! {static WINDOWS:RefCell<HashMap<isize,WindowChrome>>=RefCell::new(HashMap::new());}
 
-fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
+/// Rebuilds the rail's buttons and reports whether they changed. `sidebar.txt` is parsed again only
+/// when its stamp changed, the Bookmarks mark is one lookup in the in-memory bookmark set, and each
+/// web app's icon is read once (`rail_app_icons`), so the side panel's `WM_RAIL_CHANGED` per
+/// keystroke costs a `stat`. An unchanged rail keeps its generation, so nothing downstream rebuilds.
+fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) -> bool {
+    rebuild_rail_entries_with(state, app, true)
+}
+
+/// `rebuild_rail_entries`. Without `icons` no web app favicon is read or decoded: the first build,
+/// before the window shows, leaves them to a posted `WM_RAIL_CHANGED`.
+fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool) -> bool {
     use crate::{sidebar::{SidebarConfig, SidebarKind}, workspaces::{WorkspaceColour, WorkspaceIcon}};
 
     let profile = crate::profile::active().ok();
-    let config = profile.as_ref().map_or_else(SidebarConfig::default, |p| {
-        SidebarConfig::load(p.root()).unwrap_or_default()
-    });
+    let config = profile.as_ref().map_or_else(SidebarConfig::default, |p| cached_sidebar_config(state, p.root()));
     let owner = app.borrow().hwnd;
     // --- rail flyouts ---
     match html_panel::active_id(owner) {
@@ -1021,9 +1247,7 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
         _ => {}
     }
     let active_url = App::tab_committed_url(app, App::active_tab_id(app));
-    let bookmark_active = profile.as_ref().zip(active_url.as_ref()).is_some_and(|(profile, url)| {
-        crate::bookmarks::BookmarkStore::load(profile.root()).is_ok_and(|store| store.is_bookmarked(url.as_str()))
-    });
+    let bookmark_active = active_url.as_ref().is_some_and(|url| super::html_suggest::is_bookmarked(url.as_str()));
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
@@ -1061,15 +1285,24 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
         entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
     }
     if shown(SidebarKind::Apps) {
+        // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
+        let native_rail = !chrome_host::html_ui_enabled() || state.html_failed[2];
+        let size = Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
+        let epoch = RAIL_ICON_EPOCH.with(|epoch| epoch.get());
+        if state.rail_icon_epoch != epoch {
+            state.rail_app_icons.clear();
+            state.rail_icon_epoch = epoch;
+        }
+        let live: HashSet<&str> = config.apps.iter().map(|entry| entry.url.as_str()).collect();
+        state.rail_app_icons.retain(|url, _| live.contains(url.as_str()));
         for app_entry in &config.apps {
-            let bytes: Option<Vec<u8>> = profile.as_ref().and_then(|_| {
-                let host = url::Url::parse(&app_entry.url).ok()?.host_str()?.to_owned();
-                favicon::load_favicon_bytes(&host).ok()?
-            });
-            let favicon = bytes.as_deref().and_then(|bytes| {
-                favicon::decode(bytes, Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32).map(Rc::new)
-            });
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon: if favicon.is_some() { RailIcon::AppTile } else { RailIcon::Letter }, label: app_entry.name.clone(), active: false, accent: None, favicon, png: bytes.map(Rc::new) });
+            let (png, favicon) = if icons && profile.is_some() {
+                rail_app_icon(state, &app_entry.url, native_rail.then_some(size))
+            } else {
+                (None, None)
+            };
+            let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png });
         }
         entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
     }
@@ -1082,9 +1315,98 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
         entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
     }
     entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
-    state.rail_entries = entries;
-    state.rail_generation = state.rail_generation.wrapping_add(1);
     state.rail_scroll = state.rail_scroll.max(0);
+    if same_rail(&state.rail_entries, &entries) {
+        return false;
+    }
+    // The painter's view borrows the old entries' favicons, so it goes first.
+    state.rail_view.clear();
+    state.rail_entries = entries;
+    state.rail_view = rail_view_of(&state.rail_entries);
+    state.rail_generation = state.rail_generation.wrapping_add(1);
+    true
+}
+
+/// `sidebar.txt` under `root`, parsed again only when its stamp changed since the last read.
+fn cached_sidebar_config(state: &mut WindowChrome, root: &Path) -> crate::sidebar::SidebarConfig {
+    let stamp = file_stamp(&root.join("sidebar.txt"));
+    if let Some((cached, config)) = &state.sidebar_config
+        && *cached == stamp
+    {
+        return config.clone();
+    }
+    let config = crate::sidebar::SidebarConfig::load(root).unwrap_or_default();
+    state.sidebar_config = Some((stamp, config.clone()));
+    config
+}
+
+/// The rail icon of the web app at `url`: its favicon file's bytes, read once, and, when `decode_at`
+/// asks, the bitmap at that size, decoded once per size.
+fn rail_app_icon(
+    state: &mut WindowChrome,
+    url: &str,
+    decode_at: Option<u32>,
+) -> (Option<Rc<Vec<u8>>>, Option<Rc<favicon::FaviconBitmap>>) {
+    let icon = state.rail_app_icons.entry(url.to_owned()).or_insert_with(|| RailAppIcon {
+        png: url::Url::parse(url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .and_then(|host| favicon::load_favicon_bytes(&host).ok().flatten())
+            .map(Rc::new),
+        decoded: None,
+    });
+    let favicon = decode_at.and_then(|size| {
+        if icon.decoded.as_ref().is_none_or(|(at, _)| *at != size) {
+            let bitmap = icon.png.as_deref().and_then(|png| favicon::decode(png, size)).map(Rc::new);
+            icon.decoded = Some((size, bitmap));
+        }
+        icon.decoded.as_ref().and_then(|(_, bitmap)| bitmap.clone())
+    });
+    (icon.png.clone(), favicon)
+}
+
+/// Whether two rails show the same buttons. Icons compare by identity: the cache hands out the
+/// same `Rc` until an icon changes. Pure.
+fn same_rail(a: &[RailEntryData], b: &[RailEntryData]) -> bool {
+    fn same<T>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.key == b.key
+                && a.icon == b.icon
+                && a.label == b.label
+                && a.active == b.active
+                && a.accent == b.accent
+                && same(&a.favicon, &b.favicon)
+                && same(&a.png, &b.png)
+        })
+}
+
+/// The painter's form of `entries`. Each favicon reference points into an `Rc` that `entries`
+/// holds, whose address does not move with the vector; the caller drops the view before it drops
+/// or replaces `entries` (see `rebuild_rail_entries_with`).
+fn rail_view_of(entries: &[RailEntryData]) -> Vec<RailEntry<'static>> {
+    entries
+        .iter()
+        .map(|entry| {
+            let view = RailEntry {
+                key: entry.key,
+                icon: entry.icon,
+                label: entry.label.clone(),
+                active: entry.active,
+                dot: false,
+                accent: entry.accent,
+                favicon: entry.favicon.as_deref(),
+            };
+            // SAFETY: as documented above, the bitmap outlives every use of the view.
+            unsafe { std::mem::transmute::<RailEntry<'_>, RailEntry<'static>>(view) }
+        })
+        .collect()
 }
 
 fn main_window_style() -> WINDOW_STYLE {
@@ -1093,6 +1415,170 @@ fn main_window_style() -> WINDOW_STYLE {
 
 fn with_chrome<T>(hwnd: HWND, f: impl FnOnce(&mut WindowChrome) -> T) -> Option<T> {
     WINDOWS.with(|a| a.borrow_mut().get_mut(&(hwnd.0 as isize)).map(f))
+}
+
+/// Queues one `WM_CHROME_SYNC` after a change the HTML views or page hosts show: tabs, navigation,
+/// settings, layout, the rail, the omnibox text. Calls before it runs add nothing.
+fn mark_chrome_dirty(hwnd: HWND) {
+    let first = WINDOWS.with(|all| {
+        all.try_borrow_mut().ok().map(|mut all| {
+            all.get_mut(&(hwnd.0 as isize))
+                .is_some_and(|s| !std::mem::replace(&mut s.chrome_sync_posted, true))
+        })
+    });
+    // `None`: the window table is borrowed further up the stack. Post anyway; a sync is idempotent.
+    if first == Some(false) {
+        return;
+    }
+    let posted = unsafe { PostMessageW(Some(hwnd), WM_CHROME_SYNC, WPARAM(0), LPARAM(0)) }.is_ok();
+    if !posted && first == Some(true) {
+        let _ = with_chrome(hwnd, |s| s.chrome_sync_posted = false);
+    }
+}
+
+/// Repaints the whole window after a state change and queues the chrome sync with it.
+fn repaint(hwnd: HWND) {
+    mark_chrome_dirty(hwnd);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Brings the HTML views and the page hosts in line with the window, once per queued change (what
+/// every `WM_PAINT` used to do first). Each step sends nothing its view already has, and the paint
+/// values are refreshed here so a paint reads no settings.
+fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
+    let _ = with_chrome(hwnd, |s| s.chrome_sync_posted = false);
+    sync_html_host_bounds(hwnd);
+    html_sync(hwnd);
+    html_tabs_sync(hwnd);
+    html_rail_sync(hwnd);
+    let Some(app) = app else {
+        return;
+    };
+    // --- split view ---
+    super::split_ui::sync(hwnd, app);
+    super::settings_page::sync(hwnd, app);
+    super::history_page::sync(hwnd, app);
+    super::downloads_page::sync(hwnd, app);
+    // --- end split view ---
+    track_idle_pages(hwnd);
+    let prefs = PaintPrefs::read(app);
+    let changed = with_chrome(hwnd, |s| {
+        let changed = s.paint_prefs != prefs;
+        if changed {
+            s.paint_prefs = prefs;
+        }
+        changed
+    })
+    .unwrap_or(false);
+    if changed {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+}
+
+/// Times the split, settings and history page hosts while they are hidden and closes one hidden for
+/// `PAGE_IDLE_CLOSE`; its next show creates it again. A pointer drag holds the clocks (the split
+/// host's drop card follows drags). The slow timer runs only while a clock does.
+fn track_idle_pages(hwnd: HWND) {
+    let shown = [
+        super::split_ui::picker_pane(hwnd).is_some() || super::split_ui::private_page_shown(hwnd),
+        super::settings_page::shown(hwnd),
+        super::history_page::shown(hwnd),
+        super::downloads_page::shown(hwnd),
+    ];
+    let now = Instant::now();
+    let dragging = unsafe { GetCapture() == hwnd };
+    let Some((close, running)) = with_chrome(hwnd, |s| {
+        let dragging = dragging || s.drag.is_some() || s.vertical_drag.is_some();
+        let mut close = [false; 4];
+        for (index, idle) in s.page_idle.iter_mut().enumerate() {
+            if !dragging {
+                close[index] = page_idle_step(idle, shown[index], now);
+            }
+        }
+        (close, s.page_idle.iter().any(|idle| idle.hidden_since.is_some()))
+    }) else {
+        return;
+    };
+    for (index, close) in close.into_iter().enumerate() {
+        if !close {
+            continue;
+        }
+        match index {
+            0 => super::split_ui::close(hwnd),
+            1 => super::settings_page::close(hwnd),
+            2 => super::history_page::close(hwnd),
+            _ => super::downloads_page::close(hwnd),
+        }
+        perf_event(hwnd, "page_host_idle_closed");
+    }
+    unsafe {
+        if running {
+            let _ = SetTimer(Some(hwnd), WM_PAGE_IDLE_TIMER, PAGE_IDLE_CHECK_MS, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+        }
+    }
+}
+
+/// What a clean exit writes, once per window: the privacy counters when they changed since their
+/// last save (their debounce timer is still pending), queued history visits, and the final session
+/// snapshot, which also removes the running marker. Shared by `WM_CLOSE` and `WM_ENDSESSION`.
+fn flush_for_exit(hwnd: HWND, app: &AppRef) {
+    if with_chrome(hwnd, |s| std::mem::replace(&mut s.exit_flushed, true)).unwrap_or(false) {
+        return;
+    }
+    if unsafe { KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER) }.is_ok() {
+        let _ = App::privacy_stats_save_now(app);
+    }
+    crate::productivity::flush_pending_history();
+    App::session_finish(app);
+}
+
+/// Asks for the hover layer the first time a view needs it (a tooltip, card, island or the omnibox
+/// dropdown), once the HTML toolbar is up. The layer is created from `WM_HTML_HOVER_START`.
+fn ensure_hover_layer(hwnd: HWND) {
+    let ask = with_chrome(hwnd, |s| s.html_toolbar_active && !std::mem::replace(&mut s.hover_requested, true))
+        .unwrap_or(false);
+    if ask && unsafe { PostMessageW(Some(hwnd), WM_HTML_HOVER_START, WPARAM(0), LPARAM(0)) }.is_err() {
+        let _ = with_chrome(hwnd, |s| s.hover_requested = false);
+    }
+}
+
+/// Creates the hover layer. `html_hover::prewarm` keeps a layer that already exists.
+fn start_hover_layer(hwnd: HWND) {
+    let env = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html_env.clone()).flatten()).flatten();
+    if let Some(env) = env {
+        super::html_hover::prewarm(hwnd, env);
+    }
+}
+
+/// Requests the flyout panel's controller the first time a rail flyout is opened, once per window.
+/// True when flyouts are available now (the controller may still be loading; the flyout opens when
+/// its page is ready).
+fn ensure_flyout_panel(hwnd: HWND) -> bool {
+    if html_panel::available(hwnd) {
+        return true;
+    }
+    let Some(app) = app_of(hwnd) else {
+        return false;
+    };
+    let env = with_chrome(hwnd, |s| {
+        if s.flyout_requested || s.flyout_failed {
+            return None;
+        }
+        let env = s.html_env.clone()?;
+        s.flyout_requested = true;
+        Some(env)
+    })
+    .flatten();
+    if let Some(env) = env {
+        html_panel::register(&app, hwnd, env);
+    }
+    html_panel::available(hwnd)
 }
 
 // --- vertical sidebar (lane S) ---
@@ -1447,6 +1933,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         app.borrow_mut().hwnd = hwnd;
         super::panel_webapp::register(&app);
         super::panel_webapp::set_on_icon_changed(Box::new(move || {
+            RAIL_ICON_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
             super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
         }));
         MAIN_WINDOW.with(|m| m.set(hwnd.0 as isize));
@@ -1640,6 +2127,27 @@ unsafe extern "system" fn window_proc(
                 paint_chrome(hwnd, app);
                 LRESULT(0)
             }
+            WM_CHROME_SYNC => {
+                run_chrome_sync(hwnd, app);
+                LRESULT(0)
+            }
+            WM_HTML_HOVER_START => {
+                if chrome_host::html_ui_enabled() {
+                    start_hover_layer(hwnd);
+                }
+                LRESULT(0)
+            }
+            // Logoff, restart or shutdown: never veto it, and when it happens write what a normal
+            // close writes, so the next launch neither reports a crash nor loses the last visits.
+            WM_QUERYENDSESSION => LRESULT(1),
+            WM_ENDSESSION => {
+                if wparam.0 != 0
+                    && let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok())
+                {
+                    flush_for_exit(hwnd, app);
+                }
+                LRESULT(0)
+            }
             WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED | WM_THEMECHANGED => {
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
@@ -1671,7 +2179,7 @@ unsafe extern "system" fn window_proc(
                         refresh_edit_font(hwnd, app);
                     }
                 }
-                let _ = InvalidateRect(Some(hwnd), None, false);
+                repaint(hwnd);
                 LRESULT(0)
             }
             WM_CREATE => {
@@ -1737,11 +2245,15 @@ unsafe extern "system" fn window_proc(
                     .unwrap_or_default();
                     let mut s = WindowChrome::new(r.right, r.bottom, dpi(hwnd), overlay);
                     s.edit = edit;
+                    s.start_history_load();
                     s.refresh(app, true);
-                    rebuild_rail_entries(&mut s, app);
+                    // The web apps' icons are read by the rebuild posted below, after the window shows.
+                    rebuild_rail_entries_with(&mut s, app, false);
+                    s.paint_prefs = PaintPrefs::read(app);
                     WINDOWS.with(|all| {
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
+                    super::post(hwnd, WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
                     let _ = SetFocus(Some(edit));
                     sync_foreground(hwnd, Some(app));
                 }
@@ -1809,7 +2321,7 @@ unsafe extern "system" fn window_proc(
                         },
                     );
                     if !min {
-                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        repaint(hwnd);
                     }
                     // Minimising stops the blink and restoring resumes it when Bowser is also in front.
                     sync_foreground(hwnd, Some(app));
@@ -1890,7 +2402,7 @@ unsafe extern "system" fn window_proc(
                             bottom: viewport.bottom,
                         },
                     );
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                 }
                 LRESULT(0)
             }
@@ -1964,6 +2476,8 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     let navigation_id = wparam.0 as u64;
                     if App::navigation_progress_message(app, navigation_id, lparam.0) {
+                        // Loading, progress and the back and forward buttons are toolbar state.
+                        mark_chrome_dirty(hwnd);
                         // The page has committed: if the user is not using the omnibox, the keyboard goes to it.
                         if matches!(lparam.0, 1 | 2) {
                             focus_page_after_commit(hwnd, app);
@@ -2006,24 +2520,43 @@ unsafe extern "system" fn window_proc(
             super::WM_SPLIT_COMMAND => {
                 if let Some(app) = app {
                     super::split_ui::run_queued(hwnd, app);
+                    mark_chrome_dirty(hwnd);
                 }
                 LRESULT(0)
             }
             super::WM_SPLIT_LINK => {
                 if let Some(app) = app {
                     super::split_ui::run_links(hwnd, app);
+                    mark_chrome_dirty(hwnd);
                 }
                 LRESULT(0)
             }
             super::WM_SETTINGS_COMMAND => {
                 if let Some(app) = app {
                     super::settings_page::run_queued(hwnd, app);
+                    mark_chrome_dirty(hwnd);
                 }
                 LRESULT(0)
             }
             super::WM_HISTORY_PAGE_COMMAND => {
                 if let Some(app) = app {
                     super::history_page::run_queued(hwnd, app);
+                    mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
+            super::WM_DOWNLOADS_PAGE_COMMAND => {
+                if let Some(app) = app {
+                    super::downloads_page::run_queued(hwnd, app);
+                    mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
+            // The downloads list changed (`downloads_ui`): the toolbar button, an open bubble and a shown
+            // downloads page follow.
+            super::WM_DOWNLOADS_CHANGED => {
+                if let Some(app) = app {
+                    super::downloads_ui::changed(hwnd, app, wparam.0);
                 }
                 LRESULT(0)
             }
@@ -2032,7 +2565,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app
                     && App::focus_split_tab(app, TabId(wparam.0 as u32))
                 {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                 }
                 LRESULT(0)
             }
@@ -2108,7 +2641,7 @@ unsafe extern "system" fn window_proc(
                     super::split_ui::tabs_changed(hwnd, app); // --- split view ---
                     if structural {
                         position_edit(hwnd);
-                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        repaint(hwnd);
                         arm_motion(hwnd);
                     } else if let Some(((toolbar, tabs), _)) = refreshed {
                         for strip in [toolbar, tabs] {
@@ -2122,6 +2655,8 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     arm_motion(hwnd);
+                    // Titles, loading, favicons, the active tab: the tab strip and toolbar follow.
+                    mark_chrome_dirty(hwnd);
                     // Debounced crash-recovery snapshot: one timer, armed only when dirty.
                     if persisted && App::session_changed(app) {
                         let _ = SetTimer(
@@ -2137,8 +2672,18 @@ unsafe extern "system" fn window_proc(
             WM_RAIL_CHANGED => {
                 if let Some(app) = app {
                     hide_rail_tooltip(hwnd);
-                    let _ = with_chrome(hwnd, |s| rebuild_rail_entries(s, app));
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    // Every bookmark editor in the window posts this: the toolbar star follows.
+                    let bookmarks_changed = super::html_suggest::refresh_bookmarks();
+                    let rebuilt = with_chrome(hwnd, |s| rebuild_rail_entries(s, app)).unwrap_or(false);
+                    let open = open_rail_panel(hwnd);
+                    let open_changed = with_chrome(hwnd, |s| std::mem::replace(&mut s.rail_open_seen, open) != open)
+                        .unwrap_or(false);
+                    // A side panel keystroke that changed nothing repaints and sends nothing.
+                    if rebuilt || open_changed {
+                        repaint(hwnd);
+                    } else if bookmarks_changed {
+                        mark_chrome_dirty(hwnd);
+                    }
                     html_rail_sync(hwnd); // --- rail flyouts --- (the open flyout marks its button)
                 }
                 LRESULT(0)
@@ -2182,15 +2727,18 @@ unsafe extern "system" fn window_proc(
             } else {
                 let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
-                        if let Some(app) = app {
-                            let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
-                                i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
-                                i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
-                            );
-                            App::set_sidebar_width(app, width as u16);
-                            let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-                            sync_split_ratio(hwnd, App::split_view(app));
-                            apply_sidebar_bounds(hwnd, app);
+                        let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                            i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
+                            i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
+                        ) as u16;
+                        // The move only records the width; the frame timer lays it out once.
+                        let arm = with_chrome(hwnd, |s| {
+                            s.sidebar_drag_width = Some(width);
+                            !std::mem::replace(&mut s.sidebar_drag_pending, true)
+                        })
+                        .unwrap_or(false);
+                        if arm {
+                            let _ = SetTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER, ANIMATION_FRAME_MS, None);
                         }
                     } else {
                         let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
@@ -2208,7 +2756,7 @@ unsafe extern "system" fn window_proc(
                                 App::set_split_ratio(app, ratio);
                             }
                             queue_split_bounds(hwnd, panes);
-                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            repaint(hwnd);
                         } else {
                             let point = frame::point_from_lparam(lparam);
                             let target = with_chrome(hwnd, |s| {
@@ -2301,11 +2849,7 @@ unsafe extern "system" fn window_proc(
                     let delta = -((wparam.0 >> 16) as i16 as i32).signum()
                         * Metrics::new(dpi(hwnd)).px(36);
                     let changed = with_chrome(hwnd, |s| {
-                        let entries = s.rail_entries.iter().map(|entry| RailEntry {
-                            key: entry.key, icon: entry.icon, label: entry.label.clone(), active: entry.active,
-                            dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
-                        }).collect::<Vec<_>>();
-                        let max = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi).max_scroll;
+                        let max = crate::chrome::rail::geometry(s.layout.rail, &s.rail_view, s.rail_scroll, s.dpi).max_scroll;
                         let next = crate::chrome::rail::scroll_by(s.rail_scroll, delta, max);
                         let changed = next != s.rail_scroll;
                         s.rail_scroll = next;
@@ -2351,22 +2895,31 @@ unsafe extern "system" fn window_proc(
             windows::Win32::UI::WindowsAndMessaging::WM_CAPTURECHANGED => {
                 hide_rail_tooltip(hwnd);
                 card::cancel(hwnd);
-                if let Some(app) = app {
-                    App::save_settings(app);
+                // Every released press lands here. Only a sidebar drag that lost the capture before
+                // its button-up has a width to keep; the button-up saves its own.
+                if with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false)
+                    && let Some(app) = app
+                {
+                    finish_sidebar_drag(hwnd, app);
                 }
                 if clear_pointer_state(hwnd) {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                 }
                 LRESULT(0)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CANCELMODE => {
                 hide_rail_tooltip(hwnd);
+                if with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false)
+                    && let Some(app) = app
+                {
+                    finish_sidebar_drag(hwnd, app);
+                }
                 let had_pointer_state = clear_pointer_state(hwnd);
                 if had_pointer_state {
                     if GetCapture() == hwnd {
                         let _ = ReleaseCapture();
                     }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                 }
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
@@ -2399,7 +2952,7 @@ unsafe extern "system" fn window_proc(
                                 } else {
                                     let _ = App::select_tab(app, id);
                                 }
-                                let _ = InvalidateRect(Some(hwnd), None, false);
+                                repaint(hwnd);
                                 arm_motion(hwnd);
                             }
                         }
@@ -2455,7 +3008,7 @@ unsafe extern "system" fn window_proc(
                             if let Some((id, collapsed)) = group {
                                 let _ = App::set_tab_group_collapsed(app, id, !collapsed);
                                 let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-                                let _ = InvalidateRect(Some(hwnd), None, false);
+                                repaint(hwnd);
                             }
                         }
                     }
@@ -2518,7 +3071,7 @@ unsafe extern "system" fn window_proc(
                             site_info::show(hwnd, app, button);
                             set_pressed(hwnd, Hit::None);
                             let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            repaint(hwnd);
                         }
                     }
                     Hit::Viewport => {
@@ -2557,7 +3110,7 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     set_pressed(hwnd, Hit::None);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                     let _ = ReleaseCapture();
                     return LRESULT(0);
                 }
@@ -2574,7 +3127,7 @@ unsafe extern "system" fn window_proc(
                 .unwrap_or(false);
                 if was_sidebar_resize {
                     if let Some(app) = app {
-                        App::save_settings(app);
+                        finish_sidebar_drag(hwnd, app);
                     }
                     let _ = ReleaseCapture();
                     return LRESULT(0);
@@ -2659,7 +3212,7 @@ unsafe extern "system" fn window_proc(
                             let _ = App::drop_tab(app, id, model_to);
                         }
                     }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    repaint(hwnd);
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
                 } else {
@@ -2693,7 +3246,7 @@ unsafe extern "system" fn window_proc(
                                 _ => App::reload(app),
                             }
                             let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            repaint(hwnd);
                         }
                         if was == Hit::Split
                             && let Some(app) = app
@@ -2897,6 +3450,8 @@ unsafe extern "system" fn window_proc(
                     if let Some(app) = app {
                         match wparam.0 as u32 {
                             0x42 => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); return LRESULT(0); }
+                            // bowser://downloads in a tab (docs/design/downloads.md).
+                            0x4A => { super::downloads_page::open(hwnd, app, false); return LRESULT(0); }
                             // bowser://history in a tab (the side panel without the HTML chrome).
                             0x48 => {
                                 if super::history_page::available(hwnd) {
@@ -2962,6 +3517,7 @@ unsafe extern "system" fn window_proc(
                     let _ = ClientToScreen(hwnd, &mut bottom_right);
                     let anchor = RECT { left: top_left.x, top: top_left.y, right: bottom_right.x.max(top_left.x + 1), bottom: bottom_right.y.max(top_left.y + 1) };
                     let _ = with_chrome(hwnd, |s| s.newtab_tooltip_shown = true);
+                    ensure_hover_layer(hwnd);
                     super::html_hover::tip(hwnd, anchor, NEWTAB_TOOLTIP_TEXT, false);
                 }
                 LRESULT(0)
@@ -3071,6 +3627,12 @@ unsafe extern "system" fn window_proc(
                 // TRUE: the broadcast is accepted.
                 LRESULT(1)
             }
+            WM_TIMER if wparam.0 == super::WM_DOWNLOADS_TIMER => {
+                if let Some(app) = app {
+                    super::downloads_ui::timer(hwnd, app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == super::WM_POWER_TIMER => {
                 if let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok()) {
                     App::refresh_efficiency(app);
@@ -3092,6 +3654,17 @@ unsafe extern "system" fn window_proc(
                     let foreground = foreground_is_ours(hwnd);
                     schedule_idle_timer(hwnd, App::idle_timer_fired(app, idle, foreground));
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_SIDEBAR_RESIZE_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+                if let Some(app) = app {
+                    apply_sidebar_drag(hwnd, app);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_PAGE_IDLE_TIMER => {
+                track_idle_pages(hwnd);
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_SIDEBAR_SCROLL_TIMER => {
@@ -3215,6 +3788,8 @@ unsafe extern "system" fn window_proc(
                     with_chrome(hwnd, |s| s.pending_split_bounds.take()).flatten(),
                 ) {
                     App::update_split_bounds(app, bounds);
+                    // The split's page hosts follow the new pane bounds.
+                    mark_chrome_dirty(hwnd);
                 }
                 LRESULT(0)
             }
@@ -3260,16 +3835,16 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
-                let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
                 card::cancel(hwnd);
                 // The chrome hosts live in the engine's environment: close them first.
                 close_html_chrome(hwnd);
                 if let Some(app) = app {
                     App::release_chrome_environment(app);
-                    let _ = App::privacy_stats_save_now(app);
-                    crate::productivity::flush_pending_history();
-                    App::session_finish(app);
+                    // One write per file that changed: the privacy counters only with a save pending.
+                    flush_for_exit(hwnd, app);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
                         s.closing = true;
@@ -3279,6 +3854,7 @@ unsafe extern "system" fn window_proc(
                     if let Some(e) = engine.as_mut() {
                         let _ = e.close();
                     }
+                    App::downloads_shutdown(app);
                     let _ = log.record("shutdown");
                 }
                 let _ = DestroyWindow(hwnd);
@@ -3294,6 +3870,9 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
+                let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 card::cancel(hwnd);
                 if let Some(app) = app {
                     let mut s = app.borrow_mut();
@@ -3327,11 +3906,7 @@ unsafe extern "system" fn window_proc(
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
         if s.layout.rail.contains(x, y) {
-            let entries = s.rail_entries.iter().map(|entry| RailEntry {
-                key: entry.key, icon: entry.icon, label: entry.label.clone(), active: entry.active,
-                dot: false, accent: entry.accent, favicon: entry.favicon.as_deref(),
-            }).collect::<Vec<_>>();
-            let rail = RailView { entries: &entries, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
+            let rail = RailView { entries: &s.rail_view, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
             return layout::hit_test_native(&s.layout, Some(&rail), &s.html_regions(), x, y);
         }
         // The HTML toolbar's and tab row's regions belong to their own WebView2 children, not to
@@ -3706,6 +4281,42 @@ fn adjusted_viewport(hwnd: HWND, viewport: RECT, window_dpi: u32) -> RECT {
     devtools_dock::adjust_viewport(viewport, hwnd)
 }
 
+/// One frame of a sidebar width drag: the chrome is laid out at the width the drag reached and the
+/// page follows, however many mouse moves the frame had. No tab is refreshed and nothing is saved;
+/// the setting is written when the drag ends (`finish_sidebar_drag`).
+fn apply_sidebar_drag(hwnd: HWND, app: &AppRef) {
+    let laid_out = with_chrome(hwnd, |s| {
+        s.sidebar_drag_pending = false;
+        let width = s.sidebar_drag_width;
+        width.is_some_and(|width| s.relayout_sidebar(width))
+    })
+    .unwrap_or(false);
+    if laid_out {
+        sync_html_host_bounds(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+    }
+}
+
+/// Ends a sidebar width drag: the width it reached becomes the setting (one structural refresh
+/// follows) and the settings file is written once. A press that never moved writes nothing.
+fn finish_sidebar_drag(hwnd: HWND, app: &AppRef) {
+    unsafe {
+        let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+    }
+    let width = with_chrome(hwnd, |s| {
+        s.sidebar_drag_pending = false;
+        s.sidebar_drag_width.take()
+    })
+    .flatten();
+    if let Some(width) = width {
+        App::set_sidebar_width(app, width);
+        // The app resized the page from the settings alone; the panels' shares come back here,
+        // as after every drag frame.
+        apply_sidebar_bounds(hwnd, app);
+        App::save_settings(app);
+    }
+}
+
 fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
     let Some(layout) = with_chrome(hwnd, |state| state.layout) else {
         return;
@@ -3725,15 +4336,14 @@ fn apply_sidebar_bounds(hwnd: HWND, app: &AppRef) {
         let bounds = adjusted_viewport(hwnd, viewport, dpi(hwnd));
         App::window_size_changed(app, false, bounds);
     }
-    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    repaint(hwnd);
 }
 
 // --- split view ---
-/// Repaints the window, which re-syncs the split host (`split_ui::sync` runs from the paint).
+/// Repaints the window and queues the chrome sync, which re-syncs the split, settings and history
+/// hosts (`split_ui::sync` and its siblings run from `WM_CHROME_SYNC`).
 pub(super) fn split_ui_invalidate(hwnd: HWND) {
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    repaint(hwnd);
 }
 
 /// The page area (client coordinates) the panes share, or `None` before the first layout.
@@ -3812,6 +4422,10 @@ pub(super) fn html_settings_accelerator(hwnd: HWND, accel: Accel) -> bool {
 
 pub(super) fn html_history_page_accelerator(hwnd: HWND, accel: Accel) -> bool {
     html_accelerator(hwnd, accel, View::HistoryPage)
+}
+
+pub(super) fn html_downloads_page_accelerator(hwnd: HWND, accel: Accel) -> bool {
+    html_accelerator(hwnd, accel, View::DownloadsPage)
 }
 
 /// History as it was before `bowser://history`: the rail flyout in the HTML chrome, else the
@@ -3927,7 +4541,7 @@ fn toggle_flyout(hwnd: HWND, id: side_panel::PanelId, button: RailKey) -> bool {
     {
         return false;
     }
-    if !html_panel::available(hwnd) {
+    if !ensure_flyout_panel(hwnd) {
         return with_chrome(hwnd, |s| s.html_env_waiting).unwrap_or(false);
     }
     let (Some(anchor), Some(context)) = (flyout_anchor(hwnd, button), popup_context(hwnd)) else {
@@ -3987,19 +4601,13 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
     }
 
     let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
-    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+    repaint(hwnd);
 }
 
-fn rail_entries(state: &WindowChrome) -> Vec<RailEntry<'_>> {
-    state.rail_entries.iter().map(|entry| RailEntry {
-        key: entry.key,
-        icon: entry.icon,
-        label: entry.label.clone(),
-        active: entry.active,
-        dot: false,
-        accent: entry.accent,
-        favicon: entry.favicon.as_deref(),
-    }).collect()
+/// The rail's buttons as the painter, hit tests and geometry take them. Built once per rail change
+/// (`rail_view_of`), so nothing is copied here.
+fn rail_entries(state: &WindowChrome) -> &[RailEntry<'_>] {
+    &state.rail_view
 }
 
 fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, RailDropIndicator)> {
@@ -4266,7 +4874,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                             let _ = config.save(profile.root());
                             super::panel_webapp::forget_app(id);
                             let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                            repaint(hwnd);
                         }
                     }
                     _ => {}
@@ -4631,7 +5239,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             }
             _ => {}
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
+        repaint(hwnd);
     });
     // --- end popup host ---
 }
@@ -5196,6 +5804,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const BOOKMARKS_MENU: usize = 5038;
     const TAB_GROUPS_MENU: usize = 5045;
     const ZOOM_MENU: usize = 5046;
+    const DOWNLOADS: usize = 5047;
 
     let profiles = ProfileMenu::load(hwnd);
     let recent: Vec<(String, String)> = App::recently_closed(app)
@@ -5266,6 +5875,12 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         Item::new(HISTORY_MENU, "History", Icon::Info)
             .glyph("history")
             .submenu_with(history_entries),
+    ));
+    // The same path as Ctrl+J: bowser://downloads in a tab (docs/design/downloads.md).
+    entries.push(Entry::Item(
+        Item::new(DOWNLOADS, "Downloads", Icon::Info)
+            .glyph("download")
+            .shortcut("Ctrl+J"),
     ));
     let guest_bookmark = crate::profile::active().is_ok_and(|profile| profile.is_guest());
     entries.push(Entry::Item(
@@ -5436,6 +6051,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             HISTORY => {
                 dispatch(hwnd, app, 0x48, true, false, false);
             }
+            DOWNLOADS => {
+                dispatch(hwnd, app, 0x4A, true, false, false);
+            }
             id if (RECENT_BASE..RECENT_BASE + recent.len()).contains(&id) => {
                 if let Some((_, url)) = recent.get(id - RECENT_BASE) {
                     App::submit(app, url);
@@ -5534,7 +6152,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         }
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    repaint(hwnd);
     });
     // --- end popup host ---
 }
@@ -6624,10 +7242,10 @@ fn html_env_settled(hwnd: HWND) {
             // Requested last, with the visible chrome: the chrome controllers share one renderer,
             // so the hidden popup page is ready about when the toolbar is, instead of a separate
             // (slow, on a loaded machine) start 2 s after it. It stays suspended while hidden.
-            html_popup::prewarm(hwnd, env.clone());
+            html_popup::prewarm(hwnd, env);
             // --- end popup surfaces ---
-            // --- rail flyouts --- (hidden and suspended until a rail flyout opens)
-            html_panel::register(&app, hwnd, env.clone());
+            // The flyout panel and the hover layer are created the first time they are used
+            // (`ensure_flyout_panel`, `ensure_hover_layer`).
         }
         ChromeEnvironment::Unavailable => {
             let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
@@ -6643,11 +7261,7 @@ fn html_env_settled(hwnd: HWND) {
 // --- popup host (lane M) ---
 fn prewarm_html_popup(hwnd: HWND) {
     let env = with_chrome(hwnd, |s| s.html_env.clone()).flatten();
-    // --- hover layer --- (kept on its original schedule: once the toolbar is active)
-    if with_chrome(hwnd, |s| s.html_toolbar_active).unwrap_or(false) {
-        if let Some(env) = env.clone() { super::html_hover::prewarm(hwnd, env); }
-    }
-    // --- end hover layer ---
+    // The hover layer is no longer prewarmed here; it starts on first use (`ensure_hover_layer`).
     if let Some(env) = env { html_popup::prewarm(hwnd, env); }
 }
 // --- popup surfaces (lane PP) ---
@@ -6658,6 +7272,8 @@ pub(super) fn request_popup_prewarm(hwnd: HWND) {
         return;
     }
     unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
+    // A hover layer that failed since is asked for again on its next use.
+    let _ = with_chrome(hwnd, |s| s.hover_requested = false);
     prewarm_html_popup(hwnd);
 }
 // --- end popup surfaces ---
@@ -6666,6 +7282,7 @@ pub(super) fn request_popup_prewarm(hwnd: HWND) {
 /// The flyout's panel controller failed: the flyout closes for good in this window and the rail
 /// opens the docked native panels instead (their factories stay registered from window creation).
 fn html_panel_failed(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| s.flyout_failed = true);
     html_panel::fail(hwnd);
     let _ = unsafe { PostMessageW(Some(hwnd), crate::win32::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0)) };
 }
@@ -6684,6 +7301,8 @@ fn close_html_chrome(hwnd: HWND) {
     super::split_ui::close(hwnd); // --- split view ---
     super::settings_page::close(hwnd);
     super::history_page::close(hwnd);
+    super::downloads_page::close(hwnd);
+    super::downloads_ui::close(hwnd);
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
@@ -6789,6 +7408,7 @@ fn html_refresh(hwnd: HWND) {
         }
         // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
         s.html_last_state = None;
+        s.html_dl_last = None;
         s.html_state_generation[0] = s.html_state_generation[0].wrapping_add(1);
         s.html_text_sent = None;
         s.html_synced_tab = None;
@@ -6848,8 +7468,8 @@ fn html_refresh(hwnd: HWND) {
             }
             let _ = ShowWindow(edit, SW_HIDE);
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
     }
+    repaint(hwnd);
 }
 
 /// The application state behind this window, if it is still alive. The clone is an `Rc` handle, so
@@ -6877,7 +7497,8 @@ fn html_sync(hwnd: HWND) {
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
-    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement(&layout, dpi).unwrap_or_default();
+    let dl_slot = with_chrome(hwnd, |s| s.html_dl_slot).unwrap_or(0);
+    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, dl_slot).unwrap_or_default();
     let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
     let settings = App::settings(&app);
     let state = ViewState {
@@ -6970,6 +7591,54 @@ fn html_broadcast_state(hwnd: HWND, json: &str) {
     }
 }
 
+/// The toolbar's download button (docs/design/downloads.md): reserves its slot beside the pill while
+/// `on` (so the pill's new width is sent first), then sends `json` (the `dlbtn` message) when it
+/// differs from the last one the page got. A page that reloaded has seen none, so it gets this one.
+pub(super) fn html_set_download_button(hwnd: HWND, on: bool, json: &str) {
+    let slot = if on { chrome_host::DL_BUTTON_SLOT } else { 0 };
+    let moved = with_chrome(hwnd, |s| std::mem::replace(&mut s.html_dl_slot, slot) != slot).unwrap_or(false);
+    if moved {
+        html_sync(hwnd);
+    }
+    let Some((host, generation)) = with_chrome(hwnd, |s| {
+        (s.html_page_ready && s.html_dl_last.as_deref() != Some(json))
+            .then(|| s.html.clone())
+            .flatten()
+            .map(|host| (host, s.html_state_generation[0]))
+    })
+    .flatten() else {
+        return;
+    };
+    if host.post_json(json).is_ok() {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[0] == generation {
+                s.html_dl_last = Some(json.to_owned());
+            }
+        });
+    }
+}
+
+/// Whether the HTML toolbar is up (its host exists and its page said `ready`).
+pub(super) fn html_toolbar_active(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |s| s.html_toolbar_active && s.html_page_ready).unwrap_or(false)
+}
+
+/// The screen point the downloads bubble hangs from: under the download button, at its right edge.
+/// `rect` is the button as the page last reported it (toolbar CSS px); without one the slot Rust
+/// reserved beside the menu button stands in. `None` while the toolbar host is not up.
+pub(super) fn downloads_anchor(hwnd: HWND, rect: Option<chrome_host::protocol::HoverRect>) -> Option<windows::Win32::Foundation::POINT> {
+    let (host, dpi, menux) = with_chrome(hwnd, |s| {
+        let (_, _, menux) = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.html_dl_slot)?;
+        Some((s.html.clone()?, s.dpi, menux))
+    })
+    .flatten()?;
+    let screen = host.screen_bounds()?;
+    let rect = rect.unwrap_or(chrome_host::protocol::HoverRect { x: (menux - chrome_host::DL_BUTTON_SLOT).max(0) as u32, y: 3, w: 28, h: 28 });
+    let scale = dpi as f32 / 96.0;
+    let button = super::html_hover::anchor_to_screen(screen, scale, rect);
+    Some(windows::Win32::Foundation::POINT { x: button.right, y: button.bottom + (4.0 * scale).round() as i32 })
+}
+
 /// Falls back to the native toolbar: the HTML region is released, the native address input comes
 /// back and the host is closed. Safe to call more than once.
 fn html_failed(hwnd: HWND) {
@@ -6991,8 +7660,13 @@ fn html_failed(hwnd: HWND) {
         if !edit.is_invalid() {
             let _ = ShowWindow(edit, SW_SHOW);
         }
-        let _ = InvalidateRect(Some(hwnd), None, false);
     }
+    // The downloads list reaches the toolbar's download button from here on; a reloaded page gets the
+    // button's current state again.
+    if let Some(app) = app_of(hwnd) {
+        super::downloads_ui::install(hwnd, &app);
+    }
+    repaint(hwnd);
 }
 
 /// Handles one validated message from the HTML toolbar. Runs on the UI thread, holding no borrow.
@@ -7071,7 +7745,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Focus(on) => {
             // --- omnibox suggest ---
-            if !on {
+            if on {
+                // The dropdown is drawn by the hover layer: have it ready by the first keystroke.
+                ensure_hover_layer(hwnd);
+            } else {
                 super::html_hover::suggest_focus_lost(hwnd);
             }
             // --- end omnibox suggest ---
@@ -7108,6 +7785,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             // Same as the native omnibox split button: open the split menu.
             defer_html_command(hwnd, DeferredChromeCommand::SplitMenu);
         }
+        // The download button: the bubble opens under it (or closes, when it is the one showing).
+        ChromeCommand::DownloadsToggle { rect } => {
+            super::downloads_ui::note_button_rect(hwnd, rect);
+            defer_html_command(hwnd, DeferredChromeCommand::DownloadsToggle);
+        }
         ChromeCommand::Open(OpenTarget::Reader) => {
             // The toolbar button: the same toggle as Ctrl+Alt+R. It opens no menu, so it runs here.
             if let Some(app) = app_of(hwnd) {
@@ -7126,6 +7808,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         | ChromeCommand::PopupPick { .. }
         | ChromeCommand::PopupDismiss { .. }
         | ChromeCommand::PopupAct { .. }
+        | ChromeCommand::DownloadsAct { .. }
         | ChromeCommand::PopupCompose { .. }
         | ChromeCommand::ComposerOpen { .. }
         // --- hover layer ---
@@ -7161,6 +7844,7 @@ fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
     let editing = view == View::Split // --- split view --- (the empty side's search field)
         || view == View::Settings // the settings page's search and site fields
         || view == View::HistoryPage // the history page's search field
+        || view == View::DownloadsPage // the downloads page's search field
         || (view == View::Toolbar && with_chrome(hwnd, |s| s.html_omnibox_focused).unwrap_or(false));
     if view != View::Panel
         && side_panel::should_dismiss_panel_accelerator(
@@ -7399,9 +8083,7 @@ fn html_tabs_refresh(hwnd: HWND) {
     });
     sync_html_host_bounds(hwnd);
     html_tabs_sync(hwnd);
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    repaint(hwnd);
 }
 
 /// The tab strip failed: its row goes back to native paint and its host is closed. The toolbar is
@@ -7427,9 +8109,7 @@ fn html_tabs_failed(hwnd: HWND) {
     if let Some(host) = host {
         host.close();
     }
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    repaint(hwnd);
 }
 
 /// Handles one validated message from the HTML tab strip. Runs on the UI thread, holding no borrow.
@@ -7494,7 +8174,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::Hover | View::Split | View::Settings | View::HistoryPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -7540,6 +8220,7 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
 /// the sending view's CSS pixels to screen pixels with that view's own host bounds; tab ids and group
 /// keys are checked against the live model (a ball counts only for a domain island).
 fn html_hover_command(hwnd: HWND, view: View, command: ChromeCommand) {
+    ensure_hover_layer(hwnd);
     let Some((host, dpi)) = with_chrome(hwnd, |s| {
         let host = match view {
             View::Toolbar => s.html.clone(),
@@ -7602,6 +8283,11 @@ pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::PopupCompose { tok, name, url } => {
             if html_popup::stash_compose(hwnd, tok, name, url) {
                 defer_html_command(hwnd, DeferredChromeCommand::PopupCompose { tok });
+            }
+        }
+        ChromeCommand::DownloadsAct { tok, id, n } => {
+            if super::downloads_ui::valid_act(hwnd, tok) {
+                defer_html_command(hwnd, DeferredChromeCommand::DownloadsAct { tok, id, n });
             }
         }
         // --- end popup surfaces ---
@@ -7737,6 +8423,8 @@ fn run_deferred_html_command(hwnd: HWND) {
         }
         DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
         DeferredChromeCommand::PopupCompose { tok } => html_popup::run_compose(hwnd, tok, &app),
+        DeferredChromeCommand::DownloadsToggle => super::downloads_ui::toggle(hwnd, &app),
+        DeferredChromeCommand::DownloadsAct { tok, id, n } => super::downloads_ui::run_act(hwnd, &app, tok, id, n),
         DeferredChromeCommand::ComposerOpen => {
             if let Some(request) = super::composer::take(hwnd) {
                 // The flyout closes first so the composer takes the page's focus, not the flyout's.
@@ -7746,9 +8434,13 @@ fn run_deferred_html_command(hwnd: HWND) {
         }
         // --- end popup host ---
     }
+    // A menu may have edited bookmarks (an import, a bookmark item): one `stat` keeps the toolbar
+    // star's set current.
+    let _ = super::html_suggest::refresh_bookmarks();
     html_sync(hwnd);
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
+    mark_chrome_dirty(hwnd);
 }
 
 /// The client point under the cursor. Native menus take client points.
@@ -7986,15 +8678,18 @@ fn html_tabs_sync(hwnd: HWND) {
     let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
         inputs.iter().map(|input| input.id).zip(keys).collect();
     let with_png = html_tabs_favicons(hwnd, &app, &ids);
-    let rows: Vec<chrome_host::TabRow> = snapshot
-        .into_iter()
-        .map(|(id, title, loading, marker)| chrome_host::TabRow {
+    // The pinned, muted and private flags were read once for the comparison above; App finds each
+    // tab by a scan, so reading them again per row would scan every tab for every tab once more.
+    let rows: Vec<chrome_host::TabRow> = current_inputs
+        .snapshot
+        .iter()
+        .map(|&(id, ref title, loading, marker, pinned, muted, private)| chrome_host::TabRow {
             id,
-            title,
+            title: title.clone(),
             loading,
-            pinned: App::tab_pinned(&app, id),
-            muted: App::tab_muted(&app, id),
-            private: App::tab_private(&app, id),
+            pinned,
+            muted,
+            private,
             marker,
             group: group_of
                 .get(&id)
@@ -8174,9 +8869,7 @@ fn html_rail_refresh(hwnd: HWND) {
     sync_html_host_bounds(hwnd);
     hide_rail_tooltip(hwnd);
     html_rail_sync(hwnd);
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    repaint(hwnd);
 }
 
 /// The HTML rail failed: its area goes back to native paint and hit tests and its host is closed.
@@ -8198,9 +8891,9 @@ fn html_rail_failed(hwnd: HWND) {
         host.close();
     }
     hide_rail_tooltip(hwnd);
-    unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, false);
-    }
+    // The native rail paints again, and only it paints the web apps' decoded icons.
+    super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+    repaint(hwnd);
 }
 
 /// Handles one validated message from the HTML rail. Runs on the UI thread, holding no borrow.
@@ -8420,7 +9113,8 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
         App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
     let bookmarks = suggest::bookmarks();
     let Some(mut rows) = with_chrome(hwnd, |s| {
-        suggest::rows(&s.history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, &bookmarks)
+        let history = loaded_history(&mut s.history, &mut s.history_load);
+        suggest::rows(history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, &bookmarks)
     }) else {
         return;
     };
@@ -8437,7 +9131,7 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
         let omnibox = s.layout.omnibox;
-        let pill = chrome_host::toolbar_pill_rect(&s.layout, s.dpi).unwrap_or(RECT {
+        let pill = chrome_host::toolbar_pill_rect_with_slot(&s.layout, s.dpi, s.html_dl_slot).unwrap_or(RECT {
             left: omnibox.left,
             top: omnibox.top,
             right: omnibox.right,
@@ -8446,7 +9140,7 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
         let mut origin = windows::Win32::Foundation::POINT { x: pill.left, y: pill.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
         let (w, h) = (pill.right - pill.left, pill.bottom - pill.top);
-        let css = chrome_host::toolbar_css_placement(&s.layout, s.dpi)
+        let css = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.html_dl_slot)
             .map_or_else(|| chrome_host::css_px_from_physical(w, s.dpi), |(_, pill_w, _)| pill_w);
         (RECT { left: origin.x, top: origin.y, right: origin.x + w, bottom: origin.y + h }, css.max(1) as u32)
     }) else {
@@ -8618,20 +9312,11 @@ fn position_edit(hwnd: HWND) {
         );
     }
 }
+/// Draws the native chrome. Nothing else: the HTML views and page hosts are synced from
+/// `WM_CHROME_SYNC` (see `mark_chrome_dirty`), so an animation frame reads no files and sends no
+/// state.
 fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     static PAINT_LOG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // The HTML chrome views have no paint of their own here; this is where their state is refreshed.
-    sync_html_host_bounds(hwnd);
-    html_sync(hwnd);
-    html_tabs_sync(hwnd);
-    html_rail_sync(hwnd);
-    // --- split view ---
-    if let Some(app) = app {
-        super::split_ui::sync(hwnd, app);
-        super::settings_page::sync(hwnd, app);
-        super::history_page::sync(hwnd, app);
-    }
-    // --- end split view ---
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
@@ -8644,16 +9329,18 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 || App::active_tab_has_controller(app)
                 || super::split_ui::private_page_shown(hwnd)
                 || super::settings_page::shown(hwnd)
-                || super::history_page::shown(hwnd);
+                || super::history_page::shown(hwnd)
+                || super::downloads_page::shown(hwnd);
             // --- split view ---
             // The side whose tab has no page, unless the HTML "choose a tab" surface covers it,
             // and a tab drag target the HTML card cannot show yet.
             let picker_pane = super::split_ui::picker_pane(hwnd);
             let settings_pane = super::settings_page::pane(hwnd, app);
             let history_pane = super::history_page::pane(hwnd, app);
+            let downloads_pane = super::downloads_page::pane(hwnd, app);
             let split_unfilled = split_view.map(|split| {
                 [crate::split_view::Pane::Left, crate::split_view::Pane::Right]
-                    .map(|pane| (!App::tab_has_controller(app, split.tab(pane)) && picker_pane != Some(pane) && settings_pane != Some(pane) && history_pane != Some(pane)).then_some(pane))
+                    .map(|pane| (!App::tab_has_controller(app, split.tab(pane)) && picker_pane != Some(pane) && settings_pane != Some(pane) && history_pane != Some(pane) && downloads_pane != Some(pane)).then_some(pane))
             });
             let split_drop_fallback = super::split_ui::drop_fallback(hwnd);
             // --- end split view ---
@@ -8661,7 +9348,6 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let can_back = App::tab_can_go_back(app, active);
             let can_forward = App::tab_can_go_forward(app, active);
             let site = App::site_security(app);
-            let workspace_name = App::workspaces(app).active().name().to_owned();
             let focus = GetFocus() == app.borrow().edit;
             let now = Instant::now();
             let (mut a, mut b) = (0u32, 0u32);
@@ -8724,19 +9410,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let l = &s.layout;
                 let p = s.palette;
                 let views = &s.views;
-                let rail_entries = s.rail_entries.iter().map(|entry| RailEntry {
-                    key: entry.key,
-                    icon: entry.icon,
-                    label: entry.label.clone(),
-                    active: entry.active,
-                    dot: false,
-                    accent: entry.accent,
-                    favicon: entry.favicon.as_deref(),
-                }).collect::<Vec<_>>();
                 let mut rail_fades = Vec::new();
                 s.motion.rail_fades(now, &mut rail_fades);
                 let open_panel = open_rail_panel(hwnd);
-                let rail = RailView { entries: &rail_entries, fades: &rail_fades, open_panel, scroll: s.rail_scroll, drop_indicator: s.rail_drag.and_then(|drag| drag.target.map(|(_, indicator)| indicator)), focused: s.rail_keyboard_focus.then_some(s.rail_focus).flatten(), tooltip: s.rail_tooltip_visible.then_some(s.rail_tooltip_key).flatten() };
+                let rail = RailView { entries: &s.rail_view, fades: &rail_fades, open_panel, scroll: s.rail_scroll, drop_indicator: s.rail_drag.and_then(|drag| drag.target.map(|(_, indicator)| indicator)), focused: s.rail_keyboard_focus.then_some(s.rail_focus).flatten(), tooltip: s.rail_tooltip_visible.then_some(s.rail_tooltip_key).flatten() };
                 if progress_target.is_none() {
                     s.progress.clear();
                 }
@@ -8778,15 +9455,9 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     departures: s.motion.departures(),
                     rail: Some(rail),
                     icon_motion: Some(&s.motion),
-                    content_rounded: App::settings(app).rounded_content_frame,
-                    show_site_info: App::settings(app)
-                        .toolbar_buttons
-                        .iter()
-                        .any(|button| button == "site-info"),
-                    show_split: App::settings(app)
-                        .toolbar_buttons
-                        .iter()
-                        .any(|button| button == "split"),
+                    content_rounded: s.paint_prefs.rounded_content_frame,
+                    show_site_info: s.paint_prefs.show_site_info,
+                    show_split: s.paint_prefs.show_split,
                 };
                 let sidebar_viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
                 let sidebar_viewport = Rect::new(
@@ -8852,7 +9523,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     s.surface.paint_vertical_sidebar(
                         &sidebar,
                         &s.sidebar_rows,
-                        &workspace_name,
+                        &s.paint_prefs.workspace_name,
                         active,
                         s.sidebar_scroll,
                         s.sidebar_hover_row,
@@ -8963,6 +9634,7 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
         let _ = with_chrome(hwnd, |s| {
             s.urls.insert(id, shown);
         });
+        mark_chrome_dirty(hwnd);
     }
 }
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
@@ -9020,6 +9692,7 @@ pub(crate) fn show_pending_address(hwnd: HWND, edit: HWND, id: TabId, url: &url:
         }
     }
     invalidate_omni(hwnd);
+    mark_chrome_dirty(hwnd);
 }
 /// Shows a navigation's address in the omnibox. While the field has focus the user owns its text and
 /// selection, so the address is only remembered and appears once focus leaves.
@@ -9029,6 +9702,7 @@ pub(crate) fn sync_address_input(hwnd: HWND, edit: HWND, id: TabId, url: &url::U
         return super::set_input_text(edit, &shown);
     }
     let _ = with_chrome(hwnd, |s| s.urls.insert(id, shown));
+    mark_chrome_dirty(hwnd);
     true
 }
 /// The text index under a client-space `x`, from the chrome's own metrics so it matches what is painted.
@@ -9246,13 +9920,15 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         // bowser://history in a tab; the flyout or the docked panel without the HTML chrome.
         Command::ShowHistory => super::history_page::open(hwnd, app, false),
+        // bowser://downloads in a tab (Ctrl+J, the main menu).
+        Command::ShowDownloads => super::downloads_page::open(hwnd, app, false),
         Command::ToggleReader => run_reader(hwnd, app, crate::reader::Mode::Reader),
         Command::OpenDevTools => App::open_dev_tools(app),
         Command::CopyLink => copy_active_tab_link(hwnd, app),
         Command::ToggleSidebar => toggle_sidebar(hwnd, app),
     }
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
-    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    repaint(hwnd);
     arm_motion(hwnd);
     true
 }
@@ -9305,6 +9981,7 @@ unsafe extern "system" fn edit_subclass(
                 s.edit_text.clone_from(&display);
             });
             invalidate_omni(main);
+            mark_chrome_dirty(main);
             return result;
         }
         if msg == WM_SETFOCUS {
@@ -9659,6 +10336,82 @@ mod tests {
         s.rail_generation = 43;
         let gen_changed = s.html_rail_synced_rail_gen == s.rail_generation;
         assert!(!gen_changed, "changed rail generation must invalidate cache and trigger rebuild");
+    }
+
+    #[test]
+    fn a_hidden_page_host_closes_only_after_it_was_shown_and_then_stayed_hidden() {
+        let start = Instant::now();
+        let mut idle = PageIdle::default();
+        // Never shown (still being created, or never used): never closed.
+        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 2));
+        assert!(!page_idle_step(&mut idle, true, start));
+        assert!(!page_idle_step(&mut idle, false, start));
+        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE - Duration::from_secs(1)));
+        // Shown again in between: the clock starts over.
+        let back = start + PAGE_IDLE_CLOSE;
+        assert!(!page_idle_step(&mut idle, true, back));
+        assert!(!page_idle_step(&mut idle, false, back));
+        assert!(page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE));
+        // Closed: nothing is timed again until the recreated host has been shown.
+        assert_eq!(idle, PageIdle::default());
+        assert!(!page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE * 3));
+    }
+
+    #[test]
+    fn an_unchanged_rail_is_recognised_and_its_painter_view_follows_the_entries() {
+        let entry = |key, label: &str| RailEntryData {
+            key,
+            icon: RailIcon::Letter,
+            label: label.into(),
+            active: false,
+            accent: None,
+            favicon: None,
+            png: None,
+        };
+        let mut rail = vec![entry(RailKey::Customize, "Customize"), entry(RailKey::App(1), "Mail")];
+        rail[1].png = Some(Rc::new(vec![1u8, 2, 3]));
+        assert!(same_rail(&rail, &rail.clone()), "a rebuild from the same config and cached icons");
+        let mut renamed = rail.clone();
+        renamed[1].label = "Post".into();
+        assert!(!same_rail(&rail, &renamed));
+        let mut reread = rail.clone();
+        reread[1].png = Some(Rc::new(vec![1u8, 2, 3]));
+        assert!(!same_rail(&rail, &reread), "a re-read icon is new to the HTML rail");
+        assert!(!same_rail(&rail, &rail[..1]));
+        let bitmap = Rc::new(favicon::FaviconBitmap { width: 1, height: 1, bgra_premultiplied: vec![0; 4] });
+        rail[1].favicon = Some(bitmap.clone());
+        let view = rail_view_of(&rail);
+        assert_eq!(view.iter().map(|entry| entry.label.as_str()).collect::<Vec<_>>(), ["Customize", "Mail"]);
+        assert!(view[1].favicon.is_some_and(|favicon| std::ptr::eq(favicon, &*bitmap)));
+        assert!(view[0].favicon.is_none());
+    }
+
+    #[test]
+    fn the_history_read_on_the_worker_is_taken_on_first_use() {
+        let mut history = History::default();
+        let mut load = Some(std::thread::spawn(|| {
+            let mut loaded = History::default();
+            loaded.record("https://example.com/", "Example");
+            loaded
+        }));
+        assert_eq!(loaded_history(&mut history, &mut load).len(), 1);
+        assert!(load.is_none(), "the worker is joined once");
+        // A visit recorded later lands in the loaded history.
+        loaded_history(&mut history, &mut load).record("https://example.org/", "Org");
+        assert_eq!(loaded_history(&mut history, &mut load).len(), 2);
+    }
+
+    #[test]
+    fn a_sidebar_drag_frame_lays_out_again_with_only_the_width_changed() {
+        let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
+        assert!(!s.relayout_sidebar(300), "nothing to repeat before the first layout");
+        s.relayout(1200, 700, 96, TabId(0), false, crate::settings::TabLayout::Vertical, 200, true, crate::settings::FontSize::Medium, "");
+        let narrow = s.sidebar.expect("a vertical layout has a sidebar").sidebar;
+        let top = s.layout.viewport.top;
+        assert!(s.relayout_sidebar(320));
+        let wide = s.sidebar.expect("still vertical").sidebar;
+        assert!(wide.width() > narrow.width(), "{narrow:?} -> {wide:?}");
+        assert_eq!((s.client, s.layout.viewport.top), ((1200, 700), top), "nothing else moved");
     }
 
     #[test]

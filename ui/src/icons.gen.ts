@@ -5,6 +5,7 @@ export type IconShape = readonly [tag: 'path' | 'circle' | 'rect' | 'ellipse' | 
 
 const SHAPES = {
   "app-tile": [["rect",{"height":"7","rx":"2","width":"7","x":"3.5","y":"3.5"}],["rect",{"height":"7","rx":"2","width":"7","x":"13.5","y":"3.5"}],["rect",{"height":"7","rx":"2","width":"7","x":"3.5","y":"13.5"}],["path",{"d":"M17 13.5V20.5M13.5 17H20.5"}]],
+  "archive": [["rect",{"height":"4.5","rx":"1.25","width":"17","x":"3.5","y":"4.5"}],["path",{"d":"M5 9v8.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 12.75h4"}]],
   "back": [["path",{"d":"M20 12H4m6-6-6 6 6 6"}]],
   "bell": [["path",{"d":"m5 17 1.5-2v-5a5.5 5.5 0 0 1 11 0v5l1.5 2H5ZM10 20l1 1h2l1-1"}]],
   "bookmark": [["path",{"d":"M6 5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v15.5l-6-4.5-6 4.5z"}]],
@@ -31,7 +32,11 @@ const SHAPES = {
   "enter": [["path",{"d":"M19 5v6.5a3 3 0 0 1-3 3H5.5"}],["path",{"d":"M9.5 10.5l-4 4 4 4"}]],
   "external": [["path",{"d":"M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"}]],
   "eye": [["path",{"d":"M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"}],["circle",{"cx":"12","cy":"12","r":"3"}]],
+  "file": [["path",{"d":"M13.5 3h-6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"}],["path",{"d":"M13.5 3v4a1 1 0 0 0 1 1h4"}]],
+  "file-text": [["path",{"d":"M13.5 3h-6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"}],["path",{"d":"M13.5 3v4a1 1 0 0 0 1 1h4M9 12.5h6M9 16h4"}]],
   "folder": [["path",{"d":"M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"}]],
+  "folder-download": [["path",{"d":"M3.5 7a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"}],["path",{"d":"M12 10.5v5.5M9.5 13.75L12 16.25l2.5-2.5"}]],
+  "folder-open": [["path",{"d":"M5.5 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4l2 2.5h5.5a2 2 0 0 1 2 2V11"}],["path",{"d":"M5.5 19h12.1a1.5 1.5 0 0 0 1.43-1.04l1.8-5.66A1 1 0 0 0 19.88 11H8.4a1.5 1.5 0 0 0-1.43 1.04L5.1 17.9"}]],
   "forward": [["path",{"d":"M4 12h16m-6-6 6 6-6 6"}]],
   "gear": [["path",{"d":"M8.82 6.22Q9.63 5.84 9.61 4.94L9.58 3.62Q9.57 2.92 10.25 2.76A9.4 9.4 0 0 1 13.75 2.76Q14.43 2.92 14.42 3.62L14.39 4.94Q14.37 5.84 15.18 6.22A6.6 6.6 0 0 1 15.42 6.35Q16.15 6.87 16.92 6.4L18.05 5.72Q18.65 5.35 19.12 5.87A9.4 9.4 0 0 1 20.87 8.9Q21.08 9.57 20.47 9.9L19.31 10.54Q18.52 10.97 18.6 11.86A6.6 6.6 0 0 1 18.6 12.14Q18.52 13.03 19.31 13.46L20.47 14.1Q21.08 14.43 20.87 15.1A9.4 9.4 0 0 1 19.12 18.13Q18.65 18.65 18.05 18.28L16.92 17.6Q16.15 17.13 15.42 17.65A6.6 6.6 0 0 1 15.18 17.78Q14.37 18.16 14.39 19.06L14.42 20.38Q14.43 21.08 13.75 21.24A9.4 9.4 0 0 1 10.25 21.24Q9.57 21.08 9.58 20.38L9.61 19.06Q9.63 18.16 8.82 17.78A6.6 6.6 0 0 1 8.58 17.65Q7.85 17.13 7.08 17.6L5.95 18.28Q5.35 18.65 4.88 18.13A9.4 9.4 0 0 1 3.13 15.1Q2.92 14.43 3.53 14.1L4.69 13.46Q5.48 13.03 5.4 12.14A6.6 6.6 0 0 1 5.4 11.86Q5.48 10.97 4.69 10.54L3.53 9.9Q2.92 9.57 3.13 8.9A9.4 9.4 0 0 1 4.88 5.87Q5.35 5.35 5.95 5.72L7.08 6.4Q7.85 6.87 8.58 6.35A6.6 6.6 0 0 1 8.82 6.22Z"}],["circle",{"cx":"12","cy":"12","r":"2.75"}]],
   "glasses": [["path",{"d":"M2.5 9.5h7.5v.75a3.75 3.75 0 0 1-7.5 0z","fill":"currentColor","stroke":"none"}],["path",{"d":"M14 9.5h7.5v.75a3.75 3.75 0 0 1-7.5 0z","fill":"currentColor","stroke":"none"}],["path",{"d":"M10 10.5c1.25-.75 2.75-.75 4 0"}]],
@@ -40,6 +45,7 @@ const SHAPES = {
   "grip": [["circle",{"cx":"9","cy":"6","fill":"currentColor","r":"1.4","stroke":"none"}],["circle",{"cx":"9","cy":"12","fill":"currentColor","r":"1.4","stroke":"none"}],["circle",{"cx":"9","cy":"18","fill":"currentColor","r":"1.4","stroke":"none"}],["circle",{"cx":"15","cy":"6","fill":"currentColor","r":"1.4","stroke":"none"}],["circle",{"cx":"15","cy":"12","fill":"currentColor","r":"1.4","stroke":"none"}],["circle",{"cx":"15","cy":"18","fill":"currentColor","r":"1.4","stroke":"none"}]],
   "heart": [["path",{"d":"M12 20.5C6 16 3 13 3 9.3C3 6.5 5 4.5 7.5 4.5C9.4 4.5 11 5.5 12 7.2C13 5.5 14.6 4.5 16.5 4.5C19 4.5 21 6.5 21 9.3C21 13 18 16 12 20.5Z"}]],
   "home": [["path",{"d":"M3 11.5L12 3.5L21 11.5"}],["path",{"d":"M5 10V18.5Q5 20.5 7 20.5H17Q19 20.5 19 18.5V10"}],["path",{"d":"M10 20.5V16Q10 14.5 11.5 14.5H12.5Q14 14.5 14 16V20.5"}]],
+  "image": [["rect",{"height":"15","rx":"2","width":"17","x":"3.5","y":"4.5"}],["circle",{"cx":"9","cy":"9.5","r":"1.5"}],["path",{"d":"M20.5 15l-3.3-3.3a1.4 1.4 0 0 0-2 0L7.5 19.5"}]],
   "info": [["circle",{"cx":"12","cy":"12","r":"9"}],["circle",{"cx":"12","cy":"7","fill":"currentColor","r":"1","stroke":"none"}],["path",{"d":"M12 11v6"}]],
   "key": [["circle",{"cx":"7.5","cy":"11","r":"4"}],["path",{"d":"M11.5 11H21v3M17 11v3"}]],
   "link": [["path",{"d":"M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"}]],
@@ -52,9 +58,12 @@ const SHAPES = {
   "more-vertical": [["circle",{"cx":"12","cy":"5.5","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"12","cy":"12","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"12","cy":"18.5","fill":"currentColor","r":"1.6","stroke":"none"}]],
   "mute": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M16 9.5l5 5M21 9.5l-5 5"}]],
   "notes": [["rect",{"height":"18","rx":"2","width":"14","x":"5","y":"3"}],["path",{"d":"M9 8h6M9 12h6M9 16h3"}]],
+  "package": [["path",{"d":"M12 3.25l7.5 4.2v9.1L12 20.75l-7.5-4.2v-9.1z"}],["path",{"d":"M4.75 7.6L12 11.75l7.25-4.15M12 11.75v8.75"}]],
+  "pause": [["path",{"d":"M8.75 5.75v12.5M15.25 5.75v12.5"}]],
   "person": [["circle",{"cx":"12","cy":"7","r":"3.5"}],["path",{"d":"M4.5 20v-2a7.5 7.5 0 0 1 15 0v2"}]],
   "pin": [["path",{"d":"M9 3.5h6M10 3.5v6l-3 4h10l-3-4v-6M12 13.5v7"}]],
   "pip": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["rect",{"height":"5","rx":"1","width":"6","x":"12","y":"11"}]],
+  "play": [["path",{"d":"M7.5 5.7v12.6a1.2 1.2 0 0 0 1.8 1.03l10.3-6.3a1.2 1.2 0 0 0 0-2.06L9.3 4.67A1.2 1.2 0 0 0 7.5 5.7z"}]],
   "plus": [["path",{"d":"M12 4v16M4 12h16"}]],
   "print": [["path",{"d":"M7 9V4h10v5M7 17H5.5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H17"}],["rect",{"height":"6","rx":"1","width":"10","x":"7","y":"14"}]],
   "private": [["path",{"d":"M2.75 11.5c1 .9 2.4 1.25 4 1.25h10.5c1.6 0 3-.35 4-1.25"}],["path",{"d":"M6.75 12.75V10a5.25 5.25 0 0 1 10.5 0v2.75"}],["path",{"d":"M3.75 16.75h6.5V17a3.25 3.25 0 0 1-6.5 0z","fill":"currentColor"}],["path",{"d":"M13.75 16.75h6.5V17a3.25 3.25 0 0 1-6.5 0z","fill":"currentColor"}],["path",{"d":"M10.25 17.5c1.1-.6 2.4-.6 3.5 0"}]],
@@ -76,6 +85,7 @@ const SHAPES = {
   "trash": [["path",{"d":"M4 6.5h16M9.5 6.5v-2h5v2M6 6.5l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5l1-12.5M10 10.5v6M14 10.5v6"}]],
   "unlock": [["rect",{"height":"11","rx":"2","width":"16","x":"4","y":"10"}],["path",{"d":"M7 10V7.5a5 5 0 0 1 7.5-4.33"}]],
   "unsplit": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"M12 5v4M12 15v4M9.5 12h-3M8 10.5 6.5 12 8 13.5M14.5 12h3M16 10.5l1.5 1.5-1.5 1.5"}]],
+  "video": [["rect",{"height":"14","rx":"2","width":"17","x":"3.5","y":"5"}],["path",{"d":"M10.25 9.4v5.2a.7.7 0 0 0 1.06.6l4.2-2.6a.7.7 0 0 0 0-1.2l-4.2-2.6a.7.7 0 0 0-1.06.6z"}]],
   "volume": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"}]],
   "warning": [["path",{"d":"M12 3 21 20H3zM12 9v5"}],["circle",{"cx":"12","cy":"17.5","fill":"currentColor","r":"1","stroke":"none"}]],
   "window": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"M3 9h18M12 11.5v5M9.5 14h5"}]],
@@ -127,4 +137,4 @@ export type IconName = DrawnIconName | keyof typeof ALIASES;
 
 export const ICON_SHAPES: Readonly<Record<DrawnIconName, readonly IconShape[]>> = SHAPES;
 export const ICON_ALIASES: Readonly<Record<keyof typeof ALIASES, DrawnIconName>> = ALIASES;
-export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","cast","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","find","folder","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","info","key","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","private","profile","puzzle","reader","refresh","reload","reset","save","search","settings","share","shield","sidebar","sidebar-toggle","split","split-left","split-right","split-view","star","stop","swap","tab-close","tab-group","tab-switch","trash","unlock","unsplit","volume","warning","window","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];
+export const ICON_NAMES: readonly IconName[] = ["app-tile","archive","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","cast","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","file","file-text","find","folder","folder-download","folder-open","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","image","info","key","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","package","palette","pause","pencil","person","picture-in-picture","pin","pip","play","plus","print","private","profile","puzzle","reader","refresh","reload","reset","save","search","settings","share","shield","sidebar","sidebar-toggle","split","split-left","split-right","split-view","star","stop","swap","tab-close","tab-group","tab-switch","trash","unlock","unsplit","video","volume","warning","window","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];

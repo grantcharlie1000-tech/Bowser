@@ -445,6 +445,9 @@ struct TabBlockState {
     fetch_listener: Cell<bool>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
     network_enabled: Cell<bool>,
+    /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
+    /// CSS still has one to remove.
+    cosmetic_installed: Cell<bool>,
 }
 
 /// Escapes `value` for embedding as a double-quoted JavaScript or JSON string literal. Defence in
@@ -575,42 +578,44 @@ fn call_devtools(webview: &ICoreWebView2, method: &str, params: &str) {
 const NETWORK_ENABLE_PARAMS: &str =
     r#"{"maxTotalBufferSize":1024,"maxResourceBufferSize":1024,"maxPostDataSize":0}"#;
 
-/// Sends `urlPatterns`. If that call is rejected, sends the legacy `urls` list instead.
-fn push_blocked_urls(webview: &ICoreWebView2, patterns: &[String]) {
-    let legacy = blocked_urls_legacy_params(patterns);
-    let queued_legacy = legacy.clone();
+/// Sends `urlPatterns`. If that call is rejected, sends the legacy `urls` list instead. Current
+/// Edge accepts `urlPatterns`, so the legacy JSON is built only after a rejection.
+fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
     let target = webview.clone();
+    let rejected = Rc::clone(&patterns);
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
         if error.is_err() || devtools_protocol_error(&result) {
+            let legacy = blocked_urls_legacy_params(&rejected);
             call_devtools(&target, "Network.setBlockedURLs", &legacy);
         }
         Ok(())
     }));
     let method = HSTRING::from("Network.setBlockedURLs");
-    let params = HSTRING::from(blocked_urls_params(patterns));
+    let params = HSTRING::from(blocked_urls_params(&patterns));
     let queued = unsafe {
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
     if queued.is_err() {
-        call_devtools(webview, "Network.setBlockedURLs", &queued_legacy);
+        call_devtools(webview, "Network.setBlockedURLs", &blocked_urls_legacy_params(&patterns));
     }
 }
 
 /// Enables the Network domain once, then installs the blocked-URL list. A failed enable still
-/// installs the list: the 403 in WebResourceRequested remains the fallback when DevTools misses.
+/// sends the list, in case the domain was already on.
 fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>, patterns: Vec<String>) {
+    let patterns: Rc<[String]> = patterns.into();
     if block.network_enabled.get() {
-        push_blocked_urls(webview, &patterns);
+        push_blocked_urls(webview, patterns);
         return;
     }
     let target = webview.clone();
     let armed = Rc::clone(block);
-    let fallback = patterns.clone();
+    let queued_patterns = Rc::clone(&patterns);
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
         if error.is_ok() && !devtools_protocol_error(&result) {
             armed.network_enabled.set(true);
         }
-        push_blocked_urls(&target, &patterns);
+        push_blocked_urls(&target, Rc::clone(&queued_patterns));
         Ok(())
     }));
     let method = HSTRING::from("Network.enable");
@@ -619,7 +624,7 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
     if queued.is_err() {
-        push_blocked_urls(webview, &fallback);
+        push_blocked_urls(webview, patterns);
     }
 }
 
@@ -966,7 +971,8 @@ fn refresh_blocked_urls(
     let top_host = page_host.unwrap_or(&stored_host);
     let state = blocker.borrow();
     let blocking = state.is_blocking(top_host, private);
-    let responses = state.response_patterns(private);
+    // Only a YouTube page pauses player responses; anywhere else Fetch.enable pauses nothing.
+    let responses = state.response_patterns(top_host, private);
     let signature = (
         crate::blocker::registrable_domain(top_host).to_owned(),
         blocking,
@@ -982,11 +988,22 @@ fn refresh_blocked_urls(
     };
     drop(state);
     *block.doc_filter.borrow_mut() = Some(signature);
-    // Host rules fail in the renderer once Network.enable has landed. The 403 below still
-    // answers anything that reaches WebResourceRequested, including path rules.
+    // Host rules and plain path rules fail in the renderer once Network.enable has landed. The
+    // 403 below answers what only the in-process matcher can decide (`request_filters`).
     enable_network_then_block(webview, block, patterns);
     if block.fetch_listener.get() {
         call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
+    }
+}
+
+/// The cosmetic script for a new document: install `css`, or remove the style when the page has
+/// none and an earlier document on the tab `installed` one. `None` when there is nothing to do,
+/// so a page with no cosmetic CSS after a page with none runs no script at all.
+fn cosmetic_script(css: Option<&str>, installed: bool) -> Option<String> {
+    match css {
+        Some(css) => Some(cosmetic_install_script(css)),
+        None if installed => Some(COSMETIC_REMOVE_SCRIPT.to_owned()),
+        None => None,
     }
 }
 
@@ -1010,9 +1027,9 @@ fn apply_cosmetic_css(
         state.cosmetic_css_for_host(&top_host)
     };
     drop(state);
-    let script = match css {
-        Some(css) => cosmetic_install_script(&css),
-        None => COSMETIC_REMOVE_SCRIPT.to_owned(),
+    let installed = block.cosmetic_installed.replace(css.is_some());
+    let Some(script) = cosmetic_script(css.as_deref(), installed) else {
+        return;
     };
     // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
     // `engine_never_blocks_on_a_webview2_completion`).
@@ -1024,6 +1041,30 @@ fn apply_cosmetic_css(
 thread_local! {
     /// Reused UTF-8 copy of the request URL so matching does not allocate per request.
     static REQUEST_URL: RefCell<String> = RefCell::new(String::with_capacity(512));
+}
+
+/// The `WebResourceRequested` filters a tab installs on `ICoreWebView2_22`, as (URI, request
+/// source kinds), from the blocker's `request_filters`. A page's own requests use those narrow
+/// filters: host rules and plain path rules already fail in DevTools `setBlockedURLs`, so the
+/// other requests never wait on the UI thread. Shared and service worker requests keep `*`: the
+/// tab's DevTools session does not block for them, so the in-process matcher still sees them all.
+/// A `*` from the blocker (a rule that can match any URL) keeps every request, as before.
+fn request_filter_uris(
+    filters: Vec<String>,
+) -> Vec<(String, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS)> {
+    if filters.iter().any(|filter| filter == "*") {
+        return vec![("*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)];
+    }
+    let mut uris: Vec<_> = filters
+        .into_iter()
+        .map(|filter| (filter, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT))
+        .collect();
+    uris.push((
+        "*".to_owned(),
+        COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
+            | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER,
+    ));
+    uris
 }
 
 const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
@@ -2760,10 +2801,13 @@ impl EngineAdapter for WebView2Engine {
             state.tabs.remove(&tab_id)
         };
         // Controller teardown can raise events, so it runs without the core borrow.
-        if let Some(mut tab) = removed {
-            EngineAdapter::close(&mut tab)?;
-        }
-        Ok(())
+        let closed = match removed {
+            Some(mut tab) => EngineAdapter::close(&mut tab),
+            None => Ok(()),
+        };
+        // Downloads cannot outlive their webview: they are cancelled and listed as interrupted.
+        super::download::interrupt_owner(super::download::tab_owner(tab_id.0));
+        closed
     }
     fn tab_playing_audio(&self, tab_id: TabId) -> bool {
         let webview = {
@@ -2806,6 +2850,11 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
+        // A download dies with its webview, so a tab that is downloading stays awake.
+        if super::download::owner_downloading(super::download::tab_owner(tab_id.0)) {
+            done(true);
+            return;
+        }
         let (webview, is_suspended) = {
             let state = self.core.borrow();
             (
@@ -2924,6 +2973,7 @@ impl EngineAdapter for WebView2Engine {
         for mut tab in tabs {
             let _ = EngineAdapter::close(&mut tab);
         }
+        super::download::interrupt_all();
         self.core.borrow_mut().environment = None;
         Ok(())
     }
@@ -3630,15 +3680,23 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
-        let policy_event = events.policy_event.clone();
+        // Downloads from a normal tab save to the download folder and are tracked; a private tab's
+        // are always cancelled (engine/download.rs, `Source::private`).
+        let download_hooks = super::download::DownloadHooks {
+            event: events.download_event.clone(),
+            plan: events.download_plan.clone(),
+            policy: events.policy_event.clone(),
+        };
+        let download_source = super::download::Source {
+            owner: super::download::tab_owner(tab_id.0),
+            parent,
+            private,
+        };
         let webview4: ICoreWebView2_4 = webview.cast()?;
         webview4.add_DownloadStarting(
             &DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
-                    let _ = args.SetCancel(true);
-                }
-                if let Some(log) = policy_event.as_ref() {
-                    log("download_cancelled");
+                    super::download::handle_starting(&args, &download_source, &download_hooks);
                 }
                 Ok(())
             })),
@@ -3844,6 +3902,8 @@ unsafe fn configure_controller(
             // Installed now, with the tab's still-empty top host, so every listed host is blocked
             // at the network layer before the first navigation commits.
             refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
+            // The rules do not change after load, so neither do the request filters.
+            let request_filters = blocker.borrow().request_filters();
             let response_environment = environment.clone();
             let request_tab = block_tab.clone();
             webview.add_WebResourceRequested(
@@ -3878,9 +3938,10 @@ unsafe fn configure_controller(
                         (hit, site_host)
                     });
                     drop(guard);
-                    // Host rules are normally failed in the renderer by setBlockedURLs, so they
-                    // never get here. This 403 is the fallback for a miss, and the only answer
-                    // for a path or substring rule, which the host pattern list does not cover.
+                    // Host rules and plain path rules are failed in the renderer by
+                    // setBlockedURLs. Only requests the filters below let through get here: the
+                    // substring rules, path rules whose case, `?` or `^` a URL pattern would get
+                    // wrong, and worker requests. This 403 is the answer for those.
                     if hit != crate::blocker::BlockHit::None {
                         let response = response_environment.CreateWebResourceResponse(
                             None::<&IStream>,
@@ -3905,20 +3966,27 @@ unsafe fn configure_controller(
             // Subresource contexts only: never Document (main frames and iframes), never Stylesheet
             // or Font, which could break page layout for little privacy gain. The context list
             // is what excludes documents; the source-kind filter adds requests made by workers,
-            // which the older call does not see.
+            // which the older call does not see. The URIs are narrow (`request_filter_uris`): no
+            // filter at all means no page request is routed through the UI thread.
             match webview.cast::<ICoreWebView2_22>() {
                 Ok(webview22) => {
-                    for context in BLOCKABLE_CONTEXTS {
-                        webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
-                            w!("*"),
-                            context,
-                            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-                        )?;
+                    for (uri, kinds) in request_filter_uris(request_filters) {
+                        let uri = HSTRING::from(uri);
+                        for context in BLOCKABLE_CONTEXTS {
+                            webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                                PCWSTR(uri.as_ptr()),
+                                context,
+                                kinds,
+                            )?;
+                        }
                     }
                 }
                 Err(_) => {
-                    for context in BLOCKABLE_CONTEXTS {
-                        webview.AddWebResourceRequestedFilter(w!("*"), context)?;
+                    for uri in request_filters {
+                        let uri = HSTRING::from(uri);
+                        for context in BLOCKABLE_CONTEXTS {
+                            webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context)?;
+                        }
                     }
                 }
             }
@@ -4410,6 +4478,9 @@ mod tests {
             // No sign-in capture channel, and never mistaken for the extensions' profile.
             "Store::SignInCapture, private, false",
             ".filter(|_| !private)",
+            // Downloads: private tabs are cancelled inside the shared handler, which gets the flag.
+            "super::download::handle_starting(&args, &download_source, &download_hooks)",
+            "owner: super::download::tab_owner(tab_id.0),",
             // Fails closed without a private blocker.
             "state.private_blocker.is_none()",
         ] {
@@ -4759,6 +4830,64 @@ mod tests {
     fn cosmetic_remove_script_targets_the_same_element_id() {
         assert!(COSMETIC_REMOVE_SCRIPT.contains("bowser-cosmetic"));
         assert!(COSMETIC_REMOVE_SCRIPT.contains(".remove()"));
+    }
+
+    #[test]
+    fn a_page_without_cosmetic_css_runs_a_script_only_to_remove_an_earlier_style() {
+        let css = ".adbox{display:none!important}";
+        assert_eq!(cosmetic_script(Some(css), false), Some(cosmetic_install_script(css)));
+        assert_eq!(cosmetic_script(Some(css), true), Some(cosmetic_install_script(css)));
+        assert_eq!(cosmetic_script(None, true).as_deref(), Some(COSMETIC_REMOVE_SCRIPT));
+        assert_eq!(cosmetic_script(None, false), None);
+    }
+
+    #[test]
+    fn page_requests_reach_the_matcher_only_through_narrow_filters() {
+        let workers = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
+            | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER;
+        // No leftover rule: no page filter at all, only the worker requests.
+        assert_eq!(request_filter_uris(Vec::new()), vec![("*".to_owned(), workers)]);
+        // Leftover rules: their filters for the page, `*` for workers only.
+        assert_eq!(
+            request_filter_uris(vec!["*://*google.com/??????/*".to_owned()]),
+            vec![
+                (
+                    "*://*google.com/??????/*".to_owned(),
+                    COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT
+                ),
+                ("*".to_owned(), workers),
+            ]
+        );
+        // A rule that can match anything keeps every request, as before.
+        assert_eq!(
+            request_filter_uris(vec!["*".to_owned()]),
+            vec![("*".to_owned(), COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)]
+        );
+        // The built-in list needs no page-wide `*`.
+        let builtin = crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[]);
+        let uris = request_filter_uris(builtin.request_filters());
+        assert!(
+            uris.iter()
+                .filter(|(_, kinds)| kinds.contains(COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_DOCUMENT))
+                .all(|(uri, _)| uri != "*")
+        );
+    }
+
+    #[test]
+    fn the_request_filters_and_lazy_legacy_list_stay_wired_into_the_engine() {
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        for needle in [
+            "blocker.borrow().request_filters()",
+            "request_filter_uris(request_filters)",
+            "let legacy = blocked_urls_legacy_params(&rejected);",
+            "state.response_patterns(top_host, private)",
+            "cosmetic_script(css.as_deref(), installed)",
+        ] {
+            assert!(production.contains(needle), "missing in the engine: {needle}");
+        }
+        assert!(!production.contains(concat!("AddWebResourceRequestedFilter(w!(", "\"*\")")));
+        assert!(!production.contains(concat!("let queued_legacy", " =")));
     }
 
     #[test]

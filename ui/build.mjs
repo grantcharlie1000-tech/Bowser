@@ -1,4 +1,6 @@
-// Builds dist/: src/main.ts -> dist/app.js (esbuild), src/styles/app.css -> dist/app.css
+// Builds dist/: src/main.ts -> dist/app.js (esbuild), the settings and history pages ->
+// dist/settings-page.js and dist/history-page.js (ES modules app.js imports only when that view
+// opens, so every other view loads less script), src/styles/app.css -> dist/app.css
 // (Tailwind CSS v4 through PostCSS, minified), and copies src/index.html. The output is static and
 // depends only on src/, so the same sources always give byte-identical dist files.
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -23,6 +25,21 @@ await esbuild.build({
   target: 'chrome110',
   legalComments: 'none',
   outfile: join(distDir, 'app.js'),
+  logLevel: 'info',
+});
+
+// Each page is self-contained: what it shares with app.js is bundled again rather than split into
+// chunks, so assets.rs serves a fixed set of files. Every file here must be listed in assets.rs.
+await esbuild.build({
+  entryPoints: [join(srcDir, 'settings-page.ts'), join(srcDir, 'history-page.ts')],
+  bundle: true,
+  minify: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'chrome110',
+  legalComments: 'none',
+  outdir: distDir,
+  entryNames: '[name]',
   logLevel: 'info',
 });
 

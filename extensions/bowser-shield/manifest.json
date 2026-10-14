@@ -13,6 +13,7 @@
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
+    "scripting",
     "storage"
   ],
   "host_permissions": [
@@ -39,7 +40,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["lib/shield-core.js", "content/panel-css.js", "ui/panel.js", "content/shield-content.js"],
+      "js": ["lib/shield-core.js", "lib/shield-chord.js", "content/shield-content.js"],
       "run_at": "document_start",
       "all_frames": true
     }

@@ -36,7 +36,7 @@ changes.
 ## URL scheme (`src/internal_page.rs`, pure, unit tested)
 
 `bowser://settings` and `bowser://settings/<section>`, section one of `profile`, `appearance`,
-`privacy`, `performance`, `search`, `media`, `updates`, `about`. Scheme, host and section are
+`privacy`, `performance`, `search`, `downloads`, `media`, `updates`, `about`. Scheme, host and section are
 case-insensitive; one trailing slash is allowed; query and fragment are dropped. User info, a port
 or a deeper path are rejected. An unknown section opens the page at the top
 (`bowser://settings`). Any other `bowser://` host is not a page: the omnibox reports it as today.
@@ -79,7 +79,7 @@ start URL, so a fragment navigation would cut it off.
    popups open only http/https tabs, and a tab's address comes from the engine only as http/https.
    Only Bowser's own entry points create an internal tab.
 
-Commands: `save` (text), `reset`, `openfile`, `autoupdate` (on), `history` (on), `section` (text),
+Commands: `save` (text), `reset`, `openfile`, `autoupdate` (on), `history` (on), `downloadask` (on), `downloadfolder`, `section` (text),
 `checkupdates`, `restartupdate`, `privacy`, `profiles`, `import`, `refresh`, `setdefault`. (The
 chrome sources never name the password store, `chrome_host/guard.rs`, so the page has no Passwords
 row; it stays in the main menu.) The snapshot
@@ -159,6 +159,7 @@ Sections (only settings Bowser really has):
 | `privacy` | Privacy and security | Block ads and trackers, Block YouTube video ads, Allowed sites (chip list), Tracking prevention, Save browsing history, Privacy dashboard (embedded: site permissions, statistics, clear browsing data) |
 | `performance` | Performance | Efficiency mode (with "active now"), Sleep hidden tabs, Sleep after |
 | `search` | Search engine | Optimised, Google, DuckDuckGo (radio cards), custom provider note |
+| `downloads` | Downloads | Location (the folder in force, Change opens the native folder picker), Ask where to save each file before downloading (switch); neither is part of `save` (docs/design/downloads.md) |
 | `media` | Media | the on-device media support check (runs when the section is first shown) |
 | `updates` | Updates | Update automatically, status card with Check for updates or Restart to update |
 | `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched), Default browser (status, "Make Bowser the default browser") |

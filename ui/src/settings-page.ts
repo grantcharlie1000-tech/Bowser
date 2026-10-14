@@ -23,7 +23,7 @@ import {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', privacy: 'shield', performance: 'workspace-bolt',
-  search: 'search', media: 'volume', updates: 'download', about: 'info',
+  search: 'search', downloads: 'folder-download', media: 'volume', updates: 'download', about: 'info',
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -683,6 +683,22 @@ export function startSettingsPage(root: HTMLElement): void {
   customNote.textContent = 'Searches use the custom provider in search-provider.txt until you choose an engine here.';
   engineRow.root.append(customNote);
 
+  // Downloads (docs/design/downloads.md "Settings"): both controls are their own commands, never
+  // part of `save`; Rust shows the native folder picker and answers with the next snapshot.
+  const downloadsCard = card('downloads');
+  // Not counted as pending: a cancelled picker answers with nothing, and the path is read straight
+  // from each snapshot, never from the draft.
+  const downloadChange = textButton('Change', () => { cmd({ a: 'downloadfolder' }); }, { icon: 'folder' });
+  downloadChange.setAttribute('aria-label', 'Change download location');
+  const downloadDirRow = row(downloadsCard, 'downloadDir', downloadChange);
+  const downloadPath = el('span', 'sp-desc sp-path');
+  downloadPath.id = 'sp-d-downloadDir';
+  downloadPath.dir = 'ltr';
+  downloadDirRow.label.after(downloadPath);
+  downloadChange.setAttribute('aria-describedby', downloadPath.id);
+  const downloadAsk = switchControl((on) => { if (cmd({ a: 'downloadask', on })) pending += 1; });
+  row(downloadsCard, 'downloadAsk', downloadAsk.root);
+
   // Media
   const mediaCard = card('media');
   const mediaStatus = el('span', 'sp-media-status');
@@ -866,6 +882,8 @@ export function startSettingsPage(root: HTMLElement): void {
     sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
     engine.set(d.searchEngine ?? (s.searchFallback === 'custom' ? null : 'optimised'));
     customNote.hidden = !(d.searchEngine === null && s.searchFallback === 'custom');
+    downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Your Downloads folder';
+    downloadAsk.set(s.downloadAsk);
     autoUpdate.set(s.autoUpdate);
     autoUpdate.disable(s.update === 'unavailable');
     const view = updateView(s);
@@ -890,6 +908,8 @@ export function startSettingsPage(root: HTMLElement): void {
       rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
     ]) control.disable(!s.readable);
+    downloadAsk.disable(!s.readable);
+    downloadChange.disabled = !s.readable;
     width.disabled = !s.readable;
     allowInput.disabled = !s.readable;
     addButton.disabled = !s.readable;

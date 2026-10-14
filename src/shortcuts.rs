@@ -49,6 +49,8 @@ pub enum Command {
     AddBookmark,
     /// Ctrl+H opens the History side panel.
     ShowHistory,
+    /// Ctrl+J opens bowser://downloads in a tab (the bubble is the toolbar button's).
+    ShowDownloads,
     /// Ctrl+Plus (and Ctrl+=, Ctrl+Numpad Plus) zooms the page in one step.
     ZoomIn,
     /// Ctrl+Minus (and Ctrl+Numpad Minus) zooms the page out one step.
@@ -124,6 +126,7 @@ const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
 const VK_H: u32 = 0x48;
 const VK_I: u32 = 0x49;
+const VK_J: u32 = 0x4A;
 const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
 const VK_M: u32 = 0x4D;
@@ -190,6 +193,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
         (VK_H, true, false, false) => Some(Command::ShowHistory),
+        (VK_J, true, false, false) => Some(Command::ShowDownloads),
         // Ctrl+= and Ctrl+Shift+= (Ctrl+Plus on most layouts) both zoom in, as in Chrome.
         (VK_OEM_PLUS, true, _, false) | (VK_ADD, true, false, false) => Some(Command::ZoomIn),
         (VK_OEM_MINUS, true, false, false) | (VK_SUBTRACT, true, false, false) => {
@@ -265,6 +269,7 @@ mod tests {
             (VK_RIGHT, true, true, false, Command::FocusSplitRight),
             (VK_W, true, true, false, Command::CloseSplitPane),
             (VK_H, true, false, false, Command::ShowHistory),
+            (VK_J, true, false, false, Command::ShowDownloads),
             (VK_OEM_PLUS, true, false, false, Command::ZoomIn),
             (VK_OEM_PLUS, true, true, false, Command::ZoomIn),
             (VK_ADD, true, false, false, Command::ZoomIn),
@@ -352,7 +357,9 @@ mod tests {
             (VK_R, false, false, true), // Alt+R alone
             (VK_R, true, true, true),   // Ctrl+Shift+Alt+R
             (0x58, true, true, false), // Ctrl+Shift+X is not bound.
-            (0x4A, true, false, false), // Ctrl+J: downloads are cancelled by policy, no manager.
+            (VK_J, true, true, false),  // Ctrl+Shift+J is not bound.
+            (VK_J, false, false, false),
+            (VK_J, true, false, true),  // Ctrl+Alt+J
             (0x79, false, true, false), // Shift+F10 is the page's native context menu.
         ] {
             assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");

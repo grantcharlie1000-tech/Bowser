@@ -35,11 +35,15 @@
 //! * sites on the allow list (settings `blocker_allow=a.com,b.org` plus the persisted runtime
 //!   toggle in `blocker-sites.txt`) are never blocked.
 //!
-//! Three more decisions live alongside the matcher and are consumed only by the WebView2 hook:
-//! * [`blocked_url_patterns`] turns the stored host rules into DevTools
-//!   `Network.setBlockedURLs` patterns, so a listed host fails at the network layer (a real
+//! Four more decisions live alongside the matcher and are consumed only by the WebView2 hook:
+//! * [`BlockerState::blocked_url_patterns`] turns every rule a DevTools URL pattern can express
+//!   (host rules, `||host/path|` rules and plain `||host/path` prefix rules) into
+//!   `Network.setBlockedURLs` patterns, so those requests fail at the network layer (a real
 //!   connection failure) instead of getting an HTTP response a page's own reachability probe
-//!   would see as "not blocked";
+//!   would see as "not blocked", and never wait on the UI thread;
+//! * [`Blocker::request_filters`] narrows the WebView2 `WebResourceRequested` filters to the
+//!   requests only the in-process matcher can decide (substring rules, and path rules whose case,
+//!   `?` or `^` a URL pattern would get wrong), so other requests are never routed through it;
 //! * [`Blocker::cosmetic_css_for_host`] turns the `##` rules for a page into a CSS string the
 //!   hook injects as a `<style>` element;
 //! * [`BlockerState::player_ads_rewrite`] picks the YouTube player responses whose ad schedule
@@ -51,7 +55,8 @@ pub mod youtube;
 
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    cell::{OnceCell, RefCell},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -407,9 +412,42 @@ fn host_suffixes(host: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// Most hosts [`registrable_domain`] remembers before it starts over.
+const REGISTRABLE_DOMAIN_CACHE: usize = 256;
+
+thread_local! {
+    /// Host -> byte offset of its registrable domain. A page's subresources come from a handful
+    /// of hosts, so the public-suffix walk runs once per host instead of once per request.
+    static REGISTRABLE_DOMAINS: RefCell<HashMap<Box<str>, usize>> = RefCell::new(HashMap::new());
+}
+
 /// The registrable domain (eTLD+1) of a lowercase host, or the host itself when it has none
-/// (IP addresses, `localhost`, bare suffixes).
+/// (IP addresses, `localhost`, bare suffixes). Results are cached per thread in a small table
+/// that is cleared when it fills; the answer is always [`registrable_domain_uncached`]'s.
 pub fn registrable_domain(host: &str) -> &str {
+    if host.len() > 253 {
+        return registrable_domain_uncached(host);
+    }
+    let start = REGISTRABLE_DOMAINS.try_with(|cache| {
+        if let Some(&start) = cache.borrow().get(host) {
+            return start;
+        }
+        let start = host.len() - registrable_domain_uncached(host).len();
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= REGISTRABLE_DOMAIN_CACHE {
+            cache.clear();
+        }
+        cache.insert(host.into(), start);
+        start
+    });
+    match start {
+        Ok(start) => &host[start..],
+        Err(_) => registrable_domain_uncached(host),
+    }
+}
+
+/// [`registrable_domain`] without the cache. The result is always a suffix of `host`.
+fn registrable_domain_uncached(host: &str) -> &str {
     psl::domain(host.as_bytes())
         .and_then(|domain| std::str::from_utf8(domain.as_bytes()).ok())
         .filter(|domain| host.ends_with(domain))
@@ -437,10 +475,79 @@ pub fn blocked_url_patterns<'a>(
     let mut patterns: Vec<String> = hosts
         .into_iter()
         .filter(|host| !same_site(host, page_host))
-        .flat_map(|host| [format!("*://{host}/*"), format!("*://*.{host}/*")])
+        .flat_map(host_url_patterns)
         .collect();
     patterns.sort_unstable();
     patterns
+}
+
+/// A host rule's two DevTools patterns: the bare host and its subdomains.
+fn host_url_patterns(host: &str) -> [String; 2] {
+    [format!("*://{host}/*"), format!("*://*.{host}/*")]
+}
+
+/// A `||host/path|` rule's two DevTools patterns (see [`exact_url_patterns`]).
+fn exact_rule_url_patterns(host: &str, path: &str) -> [String; 2] {
+    [format!("*://{host}{path}?#"), format!("*://*.{host}{path}?#")]
+}
+
+/// The DevTools pattern path for a `||host/path` prefix rule, when there is one that matches
+/// only URLs the rule matches: a path of plain characters and `*`, starting with `/`, with no dot
+/// segment a URL pattern could fold away. `^` (separator or end), `?` (the query) and URL-pattern
+/// syntax have no such path, so those rules stay with the in-process matcher alone.
+///
+/// The DevTools pattern is a subset and not always the same set: it compares case-sensitively
+/// (the rule is lowercase), and its `*` stays inside the path while the rule's can run into the
+/// query. [`path_rule_is_exact_in_devtools`] says when the two are the same.
+fn devtools_rule_path(pattern: &str) -> Option<&str> {
+    let plain = pattern.starts_with('/')
+        && !pattern.contains("**")
+        && pattern.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'~' | b'%' | b'*')
+        })
+        && !pattern
+            .trim_end_matches('*')
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."));
+    plain.then(|| pattern.trim_end_matches('*'))
+}
+
+/// True when a prefix rule's DevTools pattern matches exactly the URLs the rule does, so the rule
+/// needs no WebView2 request filter: no letter whose case DevTools would compare, and no `*`
+/// before the implicit trailing one.
+fn path_rule_is_exact_in_devtools(pattern: &str) -> bool {
+    devtools_rule_path(pattern).is_some_and(|path| {
+        !path.contains('*') && !path.bytes().any(|b| b.is_ascii_alphabetic())
+    })
+}
+
+/// A `||host/path` prefix rule's two DevTools patterns, when it has a [`devtools_rule_path`]. The
+/// query and fragment stay open, as the rule's implicit trailing wildcard leaves them.
+fn path_rule_url_patterns(host: &str, pattern: &str) -> Option<[String; 2]> {
+    let path = devtools_rule_path(pattern)?;
+    Some([format!("*://{host}{path}*"), format!("*://*.{host}{path}*")])
+}
+
+/// Most WebView2 request filters [`Blocker::request_filters`] returns before it asks for `*`
+/// instead. Each filter is one `AddWebResourceRequestedFilter` call per resource context.
+pub const MAX_REQUEST_FILTERS: usize = 256;
+
+/// Turns rule text (lowercase, `*` and `^` wildcards) into WebView2 filter text that matches at
+/// least every URL text the rule matches. WebView2 filters are globs over the whole URI (`*` any
+/// run, `?` one character, `\` escapes); whether they compare case-insensitively is not
+/// documented, so every letter becomes `?` and a URL in any case still reaches the matcher. `^`
+/// becomes `*`, and a literal `?` is escaped. The matcher still makes the decision.
+fn request_filter_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 4);
+    for byte in text.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'\\' => out.push('?'),
+            b'*' | b'^' => out.push('*'),
+            b'?' => out.push_str("\\?"),
+            other => out.push(other as char),
+        }
+    }
+    out
 }
 
 /// DevTools patterns for `||host/path|` rules: that one URL on the host and on its subdomains.
@@ -458,8 +565,74 @@ pub fn exact_url_patterns<'a>(
     }
     urls.into_iter()
         .filter(|(host, _)| !same_site(host, page_host))
-        .flat_map(|(host, path)| [format!("*://{host}{path}?#"), format!("*://*.{host}{path}?#")])
+        .flat_map(|(host, path)| exact_rule_url_patterns(host, path))
         .collect()
+}
+
+/// Every DevTools pattern the rules produce, built once in the order a page's list is sent in
+/// (host patterns, then `||host/path|` patterns, then prefix-rule patterns, each sorted), each
+/// tagged with the registrable domain of its rule host. A page's list is this one minus the
+/// patterns of its own site, so a site change filters instead of formatting every pattern again.
+struct DevtoolsPatterns {
+    /// (index into `sites`, pattern)
+    patterns: Vec<(u32, Box<str>)>,
+    sites: HashMap<Box<str>, u32>,
+}
+
+impl DevtoolsPatterns {
+    fn new(matcher: &Blocker) -> Self {
+        let mut sites: HashMap<Box<str>, u32> = HashMap::new();
+        let mut site_of = |host: &str| -> u32 {
+            let site = registrable_domain(host);
+            if let Some(&id) = sites.get(site) {
+                return id;
+            }
+            let id = sites.len() as u32;
+            sites.insert(site.into(), id);
+            id
+        };
+        let mut patterns: Vec<(u32, Box<str>)> = Vec::new();
+        let groups: [Vec<(&str, String)>; 3] = [
+            matcher
+                .hosts()
+                .flat_map(|host| host_url_patterns(host).map(|pattern| (host, pattern)))
+                .collect(),
+            matcher
+                .exact_urls()
+                .flat_map(|(host, path)| {
+                    exact_rule_url_patterns(host, path).map(|pattern| (host, pattern))
+                })
+                .collect(),
+            matcher
+                .path_rules()
+                .filter_map(|(host, rule)| {
+                    path_rule_url_patterns(host, rule).map(|pair| pair.map(|pattern| (host, pattern)))
+                })
+                .flatten()
+                .collect(),
+        ];
+        for mut group in groups {
+            group.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+            group.dedup_by(|a, b| a.1 == b.1);
+            patterns.extend(
+                group
+                    .into_iter()
+                    .map(|(host, pattern)| (site_of(host), pattern.into_boxed_str())),
+            );
+        }
+        Self { patterns, sites }
+    }
+
+    /// The patterns for a document on `page_host` (lowercase, as a URL host is): every pattern
+    /// whose rule host is not on the page's registrable domain. Same exemption as [`same_site`].
+    fn for_page(&self, page_host: &str) -> Vec<String> {
+        let own = self.sites.get(registrable_domain(page_host)).copied();
+        self.patterns
+            .iter()
+            .filter(|(site, _)| Some(*site) != own)
+            .map(|(_, pattern)| pattern.to_string())
+            .collect()
+    }
 }
 
 struct SubstringRule {
@@ -579,6 +752,49 @@ impl Blocker {
             .flat_map(|(host, paths)| paths.iter().map(move |path| (host.as_ref(), path.as_ref())))
     }
 
+    /// Every `||host/path` prefix rule as (host, path pattern).
+    fn path_rules(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.paths
+            .iter()
+            .flat_map(|(host, rules)| rules.iter().map(move |rule| (host.as_ref(), rule.as_ref())))
+    }
+
+    /// WebView2 `WebResourceRequested` filter URIs for the requests the in-process matcher still
+    /// has to see: the rules DevTools `Network.setBlockedURLs` cannot enforce exactly. Host rules
+    /// and plain lowercase `||host/path` rules are not here; they fail in the network stack.
+    ///
+    /// * a substring rule: `*text*`, since it can match on any host;
+    /// * a prefix rule DevTools cannot match exactly (a letter whose case DevTools would compare,
+    ///   `^`, `?`, or a `*` that may cross into the query): `*://*host` plus the path, then `*`;
+    /// * a `||host/path|` rule with a letter in its path: `*://*host` plus the path, nothing after.
+    ///
+    /// Letters become `?` (see [`request_filter_text`]), so a filter never depends on how
+    /// WebView2 compares case. Filters may let through more requests than their rule blocks; the
+    /// matcher decides those. Empty means no request needs the matcher; `["*"]` means one rule
+    /// can match any URL, or there would be more than [`MAX_REQUEST_FILTERS`]. Sorted.
+    pub fn request_filters(&self) -> Vec<String> {
+        let mut filters = BTreeSet::new();
+        for rule in &self.substrings {
+            filters.insert(format!("*{}*", request_filter_text(&rule.pattern)));
+        }
+        for (host, pattern) in self.path_rules() {
+            if !path_rule_is_exact_in_devtools(pattern) {
+                filters.insert(format!("*://*{host}{}*", request_filter_text(pattern)));
+            }
+        }
+        for (host, path) in self.exact_urls() {
+            if path.bytes().any(|b| b.is_ascii_alphabetic()) {
+                filters.insert(format!("*://*{host}{}", request_filter_text(path)));
+            }
+        }
+        if filters.len() > MAX_REQUEST_FILTERS
+            || filters.iter().any(|filter| filter.bytes().all(|b| b == b'*'))
+        {
+            return vec!["*".to_owned()];
+        }
+        filters.into_iter().collect()
+    }
+
     /// True when `host` or one of its parent domains is a host rule.
     fn host_listed(&self, host: &str) -> bool {
         host_suffixes(host).any(|suffix| self.hosts.contains(suffix))
@@ -650,7 +866,9 @@ impl Blocker {
 ///
 /// A host rule has to fail in the network stack. An HTTP response, including 403, still
 /// resolves a page's `no-cors` fetch, and reachability probes count that as "not blocked".
-/// Path and substring rules are not in the host pattern list, so the hook answers those itself.
+/// A request DevTools did not fail (a substring rule, a path rule's case or query variant, a
+/// worker's request) reaches the hook only through [`Blocker::request_filters`], and the hook
+/// answers it itself.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockHit {
     None,
@@ -666,6 +884,8 @@ pub struct BlockerState {
     config_allow: HashSet<String>,
     user_allow: HashSet<String>,
     sites_path: Option<PathBuf>,
+    /// Built on first use: the rules do not change after load.
+    devtools: OnceCell<DevtoolsPatterns>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -691,6 +911,7 @@ impl BlockerState {
                 .collect(),
             user_allow: HashSet::new(),
             sites_path: None,
+            devtools: OnceCell::new(),
         }
     }
 
@@ -809,32 +1030,55 @@ impl BlockerState {
         self.devtools_patterns(page_host, self.is_blocking(page_host, true))
     }
 
-    /// Host patterns, then the exact-URL patterns, each sorted.
+    /// Host patterns, then the exact-URL patterns, then the prefix-rule patterns, each sorted,
+    /// minus those for `page_host`'s own site. The full list is built once (see
+    /// [`DevtoolsPatterns`]); each call only filters it.
     fn devtools_patterns(&self, page_host: &str, blocking: bool) -> Vec<String> {
-        let mut patterns = blocked_url_patterns(self.matcher.hosts(), page_host, blocking);
-        let mut exact = exact_url_patterns(self.matcher.exact_urls(), page_host, blocking);
-        exact.sort_unstable();
-        patterns.append(&mut exact);
-        patterns
+        if !blocking {
+            return Vec::new();
+        }
+        self.devtools
+            .get_or_init(|| DevtoolsPatterns::new(&self.matcher))
+            .for_page(page_host)
     }
 
-    /// DevTools Response-stage patterns for the YouTube player responses, whenever the blocker is
-    /// switched on for the tab at all and the `block_youtube_video_ads` option is on. They do not
-    /// follow the current page's site exception, so the first watch page opened from an excepted
-    /// site still pauses; each paused response is then decided by [`Self::player_ads_rewrite`].
+    /// WebView2 request filters for the rules DevTools cannot enforce; see
+    /// [`Blocker::request_filters`]. The same for every page, so a tab installs them once.
+    pub fn request_filters(&self) -> Vec<String> {
+        self.matcher.request_filters()
+    }
+
+    /// DevTools Response-stage patterns for the YouTube player responses, for a document on
+    /// `page_host`: only when that is YouTube (`youtube.com` / `youtube-nocookie.com` or a
+    /// subdomain), the blocker is switched on for the tab at all and the `block_youtube_video_ads`
+    /// option is on. They do not follow the current page's site exception, so the first watch page
+    /// opened from an excepted site still pauses; each paused response is then decided by
+    /// [`Self::player_ads_rewrite`]. Any other site pauses nothing, so its responses never wait.
     ///
-    /// The option is read fresh from the active profile's `settings.txt` so toggling it off takes
-    /// effect without a restart: a navigation with the option off enables no Response-stage pause.
-    pub fn response_patterns(&self, private: bool) -> &'static [youtube::ResponsePattern] {
-        self.response_patterns_gated(private, youtube_video_ads_enabled())
+    /// The option is read from the active profile's `settings.txt` (reread only when the file
+    /// changes) so toggling it off takes effect without a restart: a navigation with the option off
+    /// enables no Response-stage pause. A non-YouTube page does not look at the file at all.
+    pub fn response_patterns(
+        &self,
+        page_host: &str,
+        private: bool,
+    ) -> &'static [youtube::ResponsePattern] {
+        if !youtube::is_youtube_host(page_host) {
+            return &[];
+        }
+        self.response_patterns_gated(page_host, private, youtube_video_ads_enabled())
     }
 
     fn response_patterns_gated(
         &self,
+        page_host: &str,
         private: bool,
         video_ads_on: bool,
     ) -> &'static [youtube::ResponsePattern] {
-        if video_ads_on && crate::private::blocker_applies(private, self.enabled, false) {
+        if video_ads_on
+            && youtube::is_youtube_host(page_host)
+            && crate::private::blocker_applies(private, self.enabled, false)
+        {
             &youtube::RESPONSE_PATTERNS
         } else {
             &[]
@@ -1944,7 +2188,7 @@ mod tests {
             None
         );
         assert_eq!(
-            s.response_patterns_gated(false, true).len(),
+            s.response_patterns_gated(YOUTUBE, false, true).len(),
             youtube::RESPONSE_PATTERNS.len()
         );
 
@@ -1961,7 +2205,7 @@ mod tests {
             None
         );
         assert!(
-            !s.response_patterns_gated(false, true).is_empty(),
+            !s.response_patterns_gated(YOUTUBE, false, true).is_empty(),
             "each response is decided on its own"
         );
         assert!(s.should_block_private(beacon, YOUTUBE));
@@ -1981,8 +2225,8 @@ mod tests {
             s.player_ads_rewrite_gated(YOUTUBE_PLAYER, "news.example", false, true),
             None
         );
-        assert!(s.response_patterns_gated(false, true).is_empty());
-        assert!(!s.response_patterns_gated(true, true).is_empty());
+        assert!(s.response_patterns_gated(YOUTUBE, false, true).is_empty());
+        assert!(!s.response_patterns_gated(YOUTUBE, true, true).is_empty());
         assert!(s.should_block_private(beacon, "news.example"));
 
         // blocker_allow in settings exempts a normal tab the same way.
@@ -2012,13 +2256,13 @@ mod tests {
             s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", true, true),
             Some(youtube::PlayerPayload::WatchPage)
         );
-        assert!(!s.response_patterns_gated(false, true).is_empty());
+        assert!(!s.response_patterns_gated(YOUTUBE, false, true).is_empty());
 
         // Off: no Response-stage pause for either tab kind, and no response is ever rewritten,
         // even in a private tab where the blocker otherwise always applies. The video and audio
         // on googlevideo.com are untouched here regardless, as always.
-        assert!(s.response_patterns_gated(false, false).is_empty());
-        assert!(s.response_patterns_gated(true, false).is_empty());
+        assert!(s.response_patterns_gated(YOUTUBE, false, false).is_empty());
+        assert!(s.response_patterns_gated(YOUTUBE, true, false).is_empty());
         for private in [false, true] {
             assert_eq!(
                 s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, private, false),
@@ -2038,5 +2282,297 @@ mod tests {
         assert!(s.should_block(&url, "news.example"));
         let far = format!("https://site.test/{}/banner-ad/x.gif", "p".repeat(3000));
         assert!(!s.should_block(&far, "news.example"));
+    }
+
+    /// `*` any run; with `one_char`, also `?` one character and `\` escaping the next one: the
+    /// WebView2 filter glob. Without it, the URL-pattern wildcard inside one component.
+    fn wildcard(pattern: &[u8], text: &[u8], one_char: bool) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some((b'*', rest)) => (0..=text.len()).any(|skip| wildcard(rest, &text[skip..], one_char)),
+            Some((b'?', rest)) if one_char => !text.is_empty() && wildcard(rest, &text[1..], one_char),
+            Some((b'\\', rest)) if one_char && !rest.is_empty() => {
+                text.first() == rest.first() && wildcard(&rest[1..], &text[1..], one_char)
+            }
+            Some((byte, rest)) => text.first() == Some(byte) && wildcard(rest, &text[1..], one_char),
+        }
+    }
+
+    /// Whether a WebView2 request filter sees `url`. Compared case-sensitively, the stricter of
+    /// the two possible readings: a case-insensitive WebView2 only sees more.
+    fn filter_sees(filter: &str, url: &url::Url) -> bool {
+        wildcard(filter.as_bytes(), url.as_str().as_bytes(), true)
+    }
+
+    /// Whether a `Network.setBlockedURLs` pattern of the shapes the blocker builds
+    /// (`*://host/path`, optionally `?search` and `#hash`) blocks `url`: URL-pattern semantics, so
+    /// case-sensitive, the port must be the default, and an absent search or hash is a wildcard.
+    fn devtools_blocks(pattern: &str, url: &url::Url) -> bool {
+        let rest = pattern.strip_prefix("*://").expect("scheme wildcard");
+        let slash = rest.find('/').expect("path");
+        let (host, rest) = rest.split_at(slash);
+        let (path, search) = match rest.split_once('?') {
+            Some((path, search)) => (path, Some(search.split('#').next().unwrap_or(""))),
+            None => (rest, None),
+        };
+        matches!(url.scheme(), "http" | "https")
+            && url.port().is_none()
+            && wildcard(host.as_bytes(), url.host_str().unwrap_or("").as_bytes(), false)
+            && wildcard(path.as_bytes(), url.path().as_bytes(), false)
+            && search.is_none_or(|search| url.query().unwrap_or("") == search)
+    }
+
+    /// The decision after the change, for a script request from a page on `page_host`: failed
+    /// by a DevTools pattern for that page, or seen by a request filter and blocked by the matcher.
+    fn new_decision(s: &BlockerState, filters: &[String], url: &str, page_host: &str) -> bool {
+        let parsed = url::Url::parse(url).expect("test URL");
+        s.blocked_url_patterns(page_host)
+            .iter()
+            .any(|pattern| devtools_blocks(pattern, &parsed))
+            || (filters.iter().any(|filter| filter_sees(filter, &parsed))
+                && s.should_block(parsed.as_str(), page_host))
+    }
+
+    const DECISION_LIST: &str = "||doubleclick.net^\n\
+        ||google.com/pagead/\n\
+        ||connect.facebook.net/*/fbevents.js\n\
+        ||facebook.com/tr?\n\
+        ||ads.example/123/\n\
+        ||redirector.example.net/robots.txt|\n\
+        ||redirector.example.net/|\n\
+        /banner-ad/\n\
+        /tracker.js$third-party\n";
+
+    #[test]
+    fn network_blocklist_and_request_filters_keep_every_old_decision() {
+        let s = state(DECISION_LIST, &[]);
+        let filters = s.request_filters();
+        assert_ne!(filters, vec!["*".to_owned()]);
+        // (url, page host, old decision: the matcher on every request, as with the `*` filter)
+        let table = [
+            // Host rule, and its first-party exemption.
+            ("https://ad.doubleclick.net/x.js", "news.example", true),
+            ("https://ad.doubleclick.net/x.js", "doubleclick.net", false),
+            ("https://doubleclick.net.evil.example/x.js", "news.example", false),
+            ("https://news.example/a?ref=doubleclick.net", "news.example", false),
+            // Path rule: query string, case difference, first-party exemption.
+            ("https://www.google.com/pagead/ads?x=1", "news.example", true),
+            ("https://www.google.com/pagead/", "news.example", true),
+            ("https://www.google.com/PageAd/ads", "news.example", true),
+            ("https://www.google.com/pagead/ads", "www.google.com", false),
+            ("https://www.google.com/search?q=/pagead/", "news.example", false),
+            ("https://connect.facebook.net/en_US/fbevents.js", "news.example", true),
+            ("https://connect.facebook.net/?a=/fbevents.js", "news.example", true),
+            ("https://connect.facebook.net/en_US/sdk.js", "news.example", false),
+            ("https://www.facebook.com/tr?id=1", "news.example", true),
+            ("https://www.facebook.com/TR?id=1", "news.example", true),
+            ("https://www.facebook.com/tr/?id=1", "news.example", false),
+            ("https://www.facebook.com/tr?id=1", "facebook.com", false),
+            ("https://ads.example/123/x.js", "news.example", true),
+            ("https://ads.example/123/x.js?y=1", "news.example", true),
+            ("https://ads.example/1234", "news.example", false),
+            ("https://ads.example/123/x.js", "ads.example", false),
+            // `||host/path|`: that URL in any case, nothing longer.
+            ("https://redirector.example.net/robots.txt", "news.example", true),
+            ("https://redirector.example.net/ROBOTS.TXT", "news.example", true),
+            ("https://redirector.example.net/robots.txt?x", "news.example", false),
+            ("https://redirector.example.net/", "news.example", true),
+            ("https://redirector.example.net/?x=1", "news.example", false),
+            ("https://redirector.example.net/robots.txt", "example.net", false),
+            // Substring rules apply first-party too, unless `$third-party`.
+            ("https://cdn.site.test/banner-ad/x.gif", "site.test", true),
+            ("https://cdn.site.test/Banner-Ad/x.gif", "news.example", true),
+            ("https://cdn.site.test/banner/x.gif", "news.example", false),
+            ("https://cdn.other.test/tracker.js", "other.test", false),
+            ("https://cdn.other.test/tracker.js", "news.example", true),
+            ("https://cdn.other.test/TRACKER.JS?v=2", "news.example", true),
+        ];
+        for (url, page, old) in table {
+            assert_eq!(s.should_block(url, page), old, "old decision: {url} on {page}");
+            assert_eq!(new_decision(&s, &filters, url, page), old, "new decision: {url} on {page}");
+        }
+    }
+
+    #[test]
+    fn the_builtin_list_keeps_its_decisions_with_the_narrow_filters() {
+        let s = builtin();
+        let filters = s.request_filters();
+        assert!(!filters.is_empty());
+        assert!(filters.len() <= MAX_REQUEST_FILTERS);
+        assert!(!filters.iter().any(|filter| filter == "*"));
+        for (url, page) in [
+            ("https://www.google.com/pagead/conversion.js", "news.example"),
+            ("https://www.google.com/PAGEAD/conversion.js", "news.example"),
+            ("https://www.google.com/search?q=x", "news.example"),
+            ("https://www.youtube.com/api/stats/ads?ver=2", "www.youtube.com"),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "www.youtube.com"),
+            ("https://www.youtube.com/youtubei/v1/player?key=x", "www.youtube.com"),
+            ("https://www.youtube.com/pagead/viewthroughconversion", "news.example"),
+            ("https://rr1---sn-a.googlevideo.com/videoplayback?itag=18", "www.youtube.com"),
+            ("https://connect.facebook.net/en_US/fbevents.js", "news.example"),
+            ("https://connect.facebook.net/favicon.ico", "news.example"),
+            ("https://connect.facebook.net/FAVICON.ICO", "news.example"),
+            ("https://www.facebook.com/tr?id=1&ev=PageView", "news.example"),
+            ("https://play.google.com/log?format=json", "news.example"),
+            ("https://adblock.turtlecute.org/js/pagead.js", "adblock.turtlecute.org"),
+            ("https://cdn.site.test/ads/prebid.js", "site.test"),
+            ("https://cdn.site.test/static/app.js", "site.test"),
+            ("https://example.com/", "news.example"),
+        ] {
+            assert_eq!(
+                new_decision(&s, &filters, url, page),
+                s.should_block(url, page),
+                "{url} on {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_filters_cover_only_the_rules_devtools_cannot_enforce() {
+        // Host rules and letter-free plain paths fail in the network stack: no filter at all.
+        assert!(state("||doubleclick.net^\n||ads.example/123/\n||ads.example/|\n", &[])
+            .request_filters()
+            .is_empty());
+        // A letter, `?` or `^`, or a substring rule, keeps a narrow filter for that rule only.
+        assert_eq!(
+            state("||google.com/pagead/\n", &[]).request_filters(),
+            vec!["*://*google.com/??????/*".to_owned()]
+        );
+        assert_eq!(
+            state("||facebook.com/tr?\n", &[]).request_filters(),
+            vec!["*://*facebook.com/??\\?*".to_owned()]
+        );
+        assert_eq!(
+            state("||ads.example/123^\n", &[]).request_filters(),
+            vec!["*://*ads.example/123**".to_owned()]
+        );
+        assert_eq!(
+            state("||s.example.net/robots.txt|\n", &[]).request_filters(),
+            vec!["*://*s.example.net/??????.???".to_owned()]
+        );
+        assert_eq!(
+            state("/banner-ad/*.gif\n", &[]).request_filters(),
+            vec!["*/??????-??/*.???*".to_owned()]
+        );
+        // `*` only when a rule can match any URL, or there are too many filters to install.
+        assert_eq!(state("******\n", &[]).request_filters(), vec!["*".to_owned()]);
+        let many: String = (0..=MAX_REQUEST_FILTERS)
+            .map(|index| format!("||h{index}.example/x{index}/\n"))
+            .collect();
+        assert_eq!(state(&many, &[]).request_filters(), vec!["*".to_owned()]);
+    }
+
+    #[test]
+    fn prefix_rules_reach_the_network_blocklist_only_as_exact_or_narrower_patterns() {
+        let s = state(
+            "||google.com/pagead/\n||connect.facebook.net/*/fbevents.js\n\
+             ||facebook.com/tr?\n||ads.example/123^\n||ads.example/a/../b\n",
+            &[],
+        );
+        let patterns = s.blocked_url_patterns("news.example");
+        for pattern in [
+            "*://google.com/pagead/*",
+            "*://*.google.com/pagead/*",
+            "*://connect.facebook.net/*/fbevents.js*",
+            "*://*.connect.facebook.net/*/fbevents.js*",
+        ] {
+            assert!(patterns.contains(&pattern.to_owned()), "{pattern}");
+        }
+        // `?`, `^` and dot segments have no faithful URL pattern.
+        assert!(!patterns.iter().any(|p| p.contains("facebook.com/tr")));
+        assert!(!patterns.iter().any(|p| p.contains("ads.example")));
+        // Third-party only, like every host rule.
+        let on_google = s.blocked_url_patterns("www.google.com");
+        assert!(!on_google.iter().any(|p| p.contains("google.com/")));
+        assert!(on_google.iter().any(|p| p.contains("facebook")));
+        let mut off = state("||google.com/pagead/\n", &[]);
+        off.enabled = false;
+        assert!(off.blocked_url_patterns("news.example").is_empty());
+        assert!(!off.blocked_url_patterns_private("news.example").is_empty());
+    }
+
+    #[test]
+    fn the_precomputed_network_blocklist_matches_a_fresh_build_for_every_page() {
+        let s = builtin();
+        for page in [
+            "",
+            "news.example",
+            "www.youtube.com",
+            "ad.doubleclick.net",
+            "www.google.com",
+            "connect.facebook.net",
+            "localhost",
+            "127.0.0.1",
+        ] {
+            let mut fresh = blocked_url_patterns(s.matcher.hosts(), page, true);
+            let mut exact = exact_url_patterns(s.matcher.exact_urls(), page, true);
+            exact.sort_unstable();
+            fresh.append(&mut exact);
+            let mut prefix: Vec<String> = s
+                .matcher
+                .path_rules()
+                .filter(|(host, _)| !same_site(host, page))
+                .filter_map(|(host, rule)| path_rule_url_patterns(host, rule))
+                .flatten()
+                .collect();
+            prefix.sort_unstable();
+            prefix.dedup();
+            fresh.append(&mut prefix);
+            // Twice: the second call filters the cached list again.
+            assert_eq!(s.blocked_url_patterns(page), fresh, "{page}");
+            assert_eq!(s.blocked_url_patterns(page), fresh, "{page}");
+        }
+    }
+
+    #[test]
+    fn the_registrable_domain_cache_never_changes_the_answer() {
+        let hosts = [
+            "",
+            "localhost",
+            "127.0.0.1",
+            "example.com",
+            "www.example.com",
+            "a.b.example.co.uk",
+            "example.co.uk",
+            "co.uk",
+            "user.github.io",
+            "x.user.github.io",
+            "news.example",
+        ];
+        for _ in 0..2 {
+            for host in hosts {
+                assert_eq!(registrable_domain(host), registrable_domain_uncached(host), "{host}");
+            }
+        }
+        // Filling the cache past its size clears it; answers stay the same.
+        for index in 0..REGISTRABLE_DOMAIN_CACHE * 2 {
+            let host = format!("h{index}.example.co.uk");
+            assert_eq!(registrable_domain(&host), "example.co.uk");
+        }
+        REGISTRABLE_DOMAINS.with(|cache| assert!(cache.borrow().len() <= REGISTRABLE_DOMAIN_CACHE));
+        for host in hosts {
+            assert_eq!(registrable_domain(host), registrable_domain_uncached(host), "{host}");
+        }
+        assert!(same_site("ads.example.co.uk", "www.example.co.uk"));
+        assert!(!same_site("example.co.uk", "other.co.uk"));
+    }
+
+    #[test]
+    fn youtube_player_responses_pause_only_on_youtube_pages() {
+        let s = builtin();
+        for page in ["www.youtube.com", "youtube.com", "m.youtube.com", "www.youtube-nocookie.com"] {
+            assert_eq!(
+                s.response_patterns_gated(page, false, true).len(),
+                youtube::RESPONSE_PATTERNS.len(),
+                "{page}"
+            );
+        }
+        for page in ["", "news.example", "notyoutube.com", "youtube.com.evil.example"] {
+            assert!(s.response_patterns_gated(page, false, true).is_empty(), "{page}");
+            assert!(s.response_patterns_gated(page, true, true).is_empty(), "{page}");
+            // The public call answers without reading the settings file for these pages.
+            assert!(s.response_patterns(page, false).is_empty(), "{page}");
+            assert!(s.response_patterns(page, true).is_empty(), "{page}");
+        }
     }
 }

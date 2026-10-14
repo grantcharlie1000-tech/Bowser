@@ -12,7 +12,7 @@ use std::{
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -309,6 +309,10 @@ impl Profile {
     pub fn history_file(&self) -> PathBuf {
         self.root.join("history.txt")
     }
+    /// Downloads list (`downloads.txt`, see `crate::downloads`).
+    pub fn downloads_file(&self) -> PathBuf {
+        self.root.join("downloads.txt")
+    }
     pub fn bookmarks_file(&self) -> PathBuf {
         self.root.join("bookmarks.txt")
     }
@@ -336,15 +340,34 @@ impl Profile {
         self.root.join("history-enabled.txt")
     }
 
-    /// History is opt-out; absent or malformed preference keeps the default enabled.
+    /// History is opt-out; absent or malformed preference keeps the default enabled. Read from disk
+    /// once per process and profile (this runs on every navigation); [`Self::set_history_enabled`]
+    /// is the only writer and drops the remembered value.
     pub fn history_enabled(&self) -> bool {
-        fs::read_to_string(self.history_enabled_file())
+        let file = self.history_enabled_file();
+        let mut cache = HISTORY_ENABLED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, enabled)) = cache.iter().find(|(path, _)| *path == file) {
+            return *enabled;
+        }
+        let enabled = fs::read_to_string(&file)
             .ok()
-            .is_none_or(|value| value.trim() != "0")
+            .is_none_or(|value| value.trim() != "0");
+        if cache.len() >= HISTORY_ENABLED_FILES {
+            cache.remove(0);
+        }
+        cache.push((file, enabled));
+        enabled
     }
 
     pub fn set_history_enabled(&self, enabled: bool) -> io::Result<()> {
-        fs::write(self.history_enabled_file(), if enabled { "1\n" } else { "0\n" })
+        let file = self.history_enabled_file();
+        let written = fs::write(&file, if enabled { "1\n" } else { "0\n" });
+        // Whatever the write did, the file is now the truth: the next read looks at it again.
+        HISTORY_ENABLED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(path, _)| *path != file);
+        written
     }
 
     pub fn is_default(&self) -> bool {
@@ -453,6 +476,11 @@ impl Profile {
 }
 
 static DATA_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// The history preference of each profile read so far, by file. A process runs one profile; the
+/// bound only keeps tests with many throwaway profiles from growing it.
+static HISTORY_ENABLED: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+const HISTORY_ENABLED_FILES: usize = 32;
 
 /// Installs the process-wide app-data root (`--data-dir`, `BOWSER_DATA_DIR`, or a benchmark's
 /// throwaway directory). Must be called once, before anything reads or writes persistent state.
@@ -693,20 +721,23 @@ pub fn remember_last_profile(app_data: &Path, name: &str) -> Result<(), ProfileE
         return Err(ProfileError::OutsideProfiles);
     }
     if name.eq_ignore_ascii_case(DEFAULT_NAME) {
-        fs::write(
-            app_data.join(LAST_PROFILE_FILE_NAME),
-            format!("{DEFAULT_NAME}\n"),
-        )
-        .map_err(|_| ProfileError::Io)?;
-        return Ok(());
+        return write_last_profile(app_data, &format!("{DEFAULT_NAME}\n"));
     }
     validate_name(name)?;
     let profile = Profile::named(app_data, name)?;
     if !is_plain_dir(profile.root()) {
         return Err(ProfileError::NotFound);
     }
-    fs::write(app_data.join(LAST_PROFILE_FILE_NAME), format!("{name}\n"))
-        .map_err(|_| ProfileError::Io)
+    write_last_profile(app_data, &format!("{name}\n"))
+}
+
+/// Writes `last-profile.txt` unless it already holds exactly `text` (every launch remembers).
+fn write_last_profile(app_data: &Path, text: &str) -> Result<(), ProfileError> {
+    let path = app_data.join(LAST_PROFILE_FILE_NAME);
+    if fs::read_to_string(&path).is_ok_and(|current| current == text) {
+        return Ok(());
+    }
+    fs::write(path, text).map_err(|_| ProfileError::Io)
 }
 
 /// Explicit flags always win. Persisted selection is limited to normal interactive launches;
@@ -746,9 +777,13 @@ pub fn sweep_stale_guests(app_data: &Path) -> Result<(), ProfileError> {
     if !is_plain_dir(&guests) {
         return Err(ProfileError::OutsideProfiles);
     }
+    let mut entries = fs::read_dir(&guests).map_err(|_| ProfileError::Io)?.flatten().peekable();
+    // The usual launch: the folder is there but holds no guest, so there is nothing to resolve.
+    if entries.peek().is_none() {
+        return Ok(());
+    }
     let canonical_guests = fs::canonicalize(&guests).map_err(|_| ProfileError::Io)?;
-    let entries = fs::read_dir(&guests).map_err(|_| ProfileError::Io)?;
-    for entry in entries.flatten() {
+    for entry in entries {
         let path = entry.path();
         if !is_plain_dir(&path) {
             continue;
@@ -1269,6 +1304,49 @@ mod tests {
     }
 
     #[test]
+    fn guest_sweep_ignores_an_empty_guest_folder_and_a_missing_one() {
+        let app = temp_root("guest-sweep-empty");
+        sweep_stale_guests(&app).unwrap();
+        fs::create_dir_all(app.join(GUEST_DIR_NAME)).unwrap();
+        sweep_stale_guests(&app).unwrap();
+        assert!(app.join(GUEST_DIR_NAME).is_dir());
+        let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn remembering_the_same_profile_does_not_rewrite_the_file() {
+        let app = temp_root("last-profile-same");
+        let work = create_named(&app, "Work").unwrap();
+        remember_last_profile(&app, "Work").unwrap();
+        let file = app.join(LAST_PROFILE_FILE_NAME);
+        let aged = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        fs::File::options().write(true).open(&file).unwrap().set_modified(aged).unwrap();
+        remember_last_profile(&app, "Work").unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), aged);
+        remember_last_profile(&app, "default").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "default\n");
+        remember_last_profile(&app, "default").unwrap();
+        assert_eq!(startup_profile(&app, None, true).unwrap(), Profile::default_in(&app));
+        let _ = work;
+        let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn history_preference_is_read_once_and_follows_the_setter() {
+        let app = temp_root("history-pref");
+        let profile = Profile::default_in(&app);
+        assert!(profile.history_enabled(), "a missing file means history on");
+        fs::write(profile.history_enabled_file(), "0\n").unwrap();
+        assert!(profile.history_enabled(), "the answer is remembered, not reread");
+        profile.set_history_enabled(false).unwrap();
+        assert!(!profile.history_enabled());
+        profile.set_history_enabled(true).unwrap();
+        assert!(profile.history_enabled());
+        assert_eq!(fs::read_to_string(profile.history_enabled_file()).unwrap(), "1\n");
+        let _ = fs::remove_dir_all(&app);
+    }
+
+    #[test]
     fn last_profile_selection_falls_back_and_explicit_profile_wins() {
         let app = temp_root("last-profile");
         assert!(remember_last_profile(&app, "Work").is_err());
@@ -1322,6 +1400,7 @@ mod tests {
                 ("saved sessions", profile.saved_sessions_file()),
                 ("history", profile.history_file()),
                 ("history enabled", profile.history_enabled_file()),
+                ("downloads", profile.downloads_file()),
                 ("bookmarks", profile.bookmarks_file()),
                 ("bookmarks v2", profile.bookmarks_v2_file()),
                 ("sidebar", profile.sidebar_file()),

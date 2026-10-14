@@ -65,7 +65,9 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # ctrl_s_vertical_tabs=false\r\n\
     # pin_new_tab_groups=false\r\n\
     # split_edge_drop=true\r\n\
-    # block_youtube_video_ads=true\r\n";
+    # block_youtube_video_ads=true\r\n\
+    # download_dir=\r\n\
+    # ask_download_location=false\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -248,6 +250,24 @@ fn default_toolbar_buttons() -> Vec<String> {
 pub fn parse_ui_font(value: &str) -> Option<String> {
     (value.chars().count() <= MAX_UI_FONT_CHARS && !value.chars().any(char::is_control))
         .then(|| value.to_owned())
+}
+
+/// Longest `download_dir` kept, in characters (Windows' MAX_PATH).
+pub const MAX_DOWNLOAD_DIR_CHARS: usize = 260;
+
+/// Parses a `download_dir` value: empty (the Downloads folder) or an absolute path of at most
+/// [`MAX_DOWNLOAD_DIR_CHARS`] characters with no control characters or characters Windows rejects in
+/// a path. `None` (keep the previous value) otherwise. Whether the folder exists is decided when a
+/// download starts.
+pub fn parse_download_dir(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    let valid = value.chars().count() <= MAX_DOWNLOAD_DIR_CHARS
+        && !value.chars().any(|c| c.is_control() || "<>\"|?*".contains(c))
+        && Path::new(value).is_absolute();
+    valid.then(|| value.to_owned())
 }
 
 pub const MIN_DEFAULT_ZOOM: u16 = DEFAULT_ZOOM_MIN;
@@ -441,6 +461,11 @@ pub struct Settings {
     pub split_edge_drop: bool,
     /// `block_youtube_video_ads` (default true). Read by the blocker; this module only stores it.
     pub block_youtube_video_ads: bool,
+    /// `download_dir` (default empty: the Downloads known folder): an absolute folder downloads are
+    /// saved to. Applies immediately; a folder that cannot be used falls back to the default.
+    pub download_dir: String,
+    /// `ask_download_location` (default false): show a Save dialog for each download first.
+    pub ask_download_location: bool,
 }
 
 impl Default for Settings {
@@ -484,6 +509,8 @@ impl Default for Settings {
             pin_new_tab_groups: false,
             split_edge_drop: true,
             block_youtube_video_ads: true,
+            download_dir: String::new(),
+            ask_download_location: false,
         }
     }
 }
@@ -715,6 +742,16 @@ impl Settings {
                         settings.block_youtube_video_ads = on;
                     }
                 }
+                "download_dir" => {
+                    if let Some(dir) = parse_download_dir(value) {
+                        settings.download_dir = dir;
+                    }
+                }
+                "ask_download_location" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.ask_download_location = on;
+                    }
+                }
                 _ => {}
             }
         }
@@ -806,7 +843,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 38] = [
+    let values: [(&str, Option<String>); 40] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         (
@@ -869,8 +906,10 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("pin_new_tab_groups", Some(bool_text(settings.pin_new_tab_groups).to_owned())),
         ("split_edge_drop", Some(bool_text(settings.split_edge_drop).to_owned())),
         ("block_youtube_video_ads", Some(bool_text(settings.block_youtube_video_ads).to_owned())),
+        ("download_dir", Some(settings.download_dir.clone())),
+        ("ask_download_location", Some(bool_text(settings.ask_download_location).to_owned())),
     ];
-    let mut written = [false; 38];
+    let mut written = [false; 40];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -1168,6 +1207,8 @@ mod tests {
             pin_new_tab_groups: true,
             split_edge_drop: false,
             block_youtube_video_ads: false,
+            download_dir: r"D:\Downloads\Bowser".to_owned(),
+            ask_download_location: true,
         }
     }
 
@@ -1316,6 +1357,26 @@ mod tests {
     }
 
     #[test]
+    fn download_settings_round_trip_and_reject_unusable_folders() {
+        let defaults = Settings::default();
+        assert_eq!((defaults.download_dir.as_str(), defaults.ask_download_location), ("", false));
+        let parsed = Settings::parse("download_dir = D:/Stuff/Saved \r\nask_download_location=yes\n");
+        assert_eq!((parsed.download_dir.as_str(), parsed.ask_download_location), ("D:/Stuff/Saved", true));
+        let text = render_updated("", &parsed);
+        assert!(text.contains("download_dir=D:/Stuff/Saved\n") && text.contains("ask_download_location=true\n"));
+        assert_eq!(Settings::parse(&text), parsed);
+        // An empty value goes back to the default folder; a bad later value keeps the good earlier one.
+        assert_eq!(Settings::parse("download_dir=D:/a\ndownload_dir=\n").download_dir, "");
+        assert_eq!(Settings::parse("download_dir=D:/a\ndownload_dir=relative/x\n").download_dir, "D:/a");
+        let too_long = format!("D:/{}", "x".repeat(300));
+        for bad in ["relative/dir", "downloads", "D:/a<b", "D:/a|b", "D:/a?b", "D:/a\tb", too_long.as_str()] {
+            assert_eq!(parse_download_dir(bad), None, "{bad:?}");
+        }
+        assert!(TEMPLATE.contains("# download_dir=\r\n") && TEMPLATE.contains("# ask_download_location=false\r\n"));
+        assert_eq!(Settings::parse(TEMPLATE), Settings::default());
+    }
+
+    #[test]
     fn efficiency_and_tracking_round_trip_and_the_template_lists_them() {
         let text = render_updated("efficiency_mode=off\n", &sample());
         assert_eq!(text.matches("efficiency_mode").count(), 1);
@@ -1351,7 +1412,8 @@ mod tests {
              tab_preview_images=false\r\ntab_preview_memory=false\r\nfont_size=large\r\nui_font=Consolas\r\n\
              default_zoom=125\r\nshow_zoom_indicator=false\r\nnew_tab_beside_active=false\r\nctrl_tab_mru=false\r\n\
              shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
-             pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n"
+             pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n\
+             download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

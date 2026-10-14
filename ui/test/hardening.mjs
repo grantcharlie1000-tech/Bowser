@@ -2,7 +2,7 @@
 // the strict colour and tab-count limits of the bridge (mirrors protocol.rs tests).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -10,6 +10,13 @@ import { RULES, findViolations } from '../lint-rules.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
+// Every script build.mjs writes: app.js (classic, every view) and the pages it imports on demand.
+const BUNDLES = ['app.js', 'settings-page.js', 'history-page.js'];
+// Text only each page's own code holds, so its absence shows the page left app.js.
+const PAGE_MARKERS = {
+  'settings-page': ['sp-search-input', 'Settings sections'],
+  'history-page': ['hp-search-input', 'hp-empty-title'],
+};
 // protocol.ts imports the rail grammar from rail-logic.ts, so it is bundled rather than transpiled alone.
 const bundled = esbuild.buildSync({
   entryPoints: [join(uiRoot, 'src', 'protocol.ts')],
@@ -45,10 +52,34 @@ test('violations carry 1-based line numbers and clean code passes', () => {
   assert.deepEqual(findViolations("el.textContent = 'hi'; el.setAttribute('x', y);"), []);
 });
 
-test('the built bundle contains no banned sink', () => {
-  const bundle = join(uiRoot, 'dist', 'app.js');
-  assert.ok(existsSync(bundle), 'run npm run build first');
-  assert.deepEqual(findViolations(readFileSync(bundle, 'utf8')), []);
+test('the built bundles contain no banned sink', () => {
+  for (const name of BUNDLES) {
+    const bundle = join(uiRoot, 'dist', name);
+    assert.ok(existsSync(bundle), `${name}: run npm run build first`);
+    assert.deepEqual(findViolations(readFileSync(bundle, 'utf8')), [], name);
+  }
+});
+
+test('every built script is served by assets.rs and nothing else is', () => {
+  const built = readdirSync(join(uiRoot, 'dist')).filter((name) => name.endsWith('.js')).sort();
+  assert.deepEqual(built, [...BUNDLES].sort());
+  const assets = readFileSync(join(uiRoot, '..', 'src', 'chrome_host', 'assets.rs'), 'utf8');
+  const served = [...assets.matchAll(/^\s*"([a-z-]+\.js)" => Some\(Asset \{/gm)].map((m) => m[1]).sort();
+  assert.deepEqual(served, built);
+});
+
+test('the settings and history pages are not in app.js: it imports them only for their view', () => {
+  const app = readFileSync(join(uiRoot, 'dist', 'app.js'), 'utf8');
+  assert.match(app, /^("use strict";)?\(\(\)=>\{/, 'app.js stays a classic IIFE script');
+  for (const [page, markers] of Object.entries(PAGE_MARKERS)) {
+    const own = readFileSync(join(uiRoot, 'dist', `${page}.js`), 'utf8');
+    assert.ok(app.includes(`"./${page}.js"`), `app.js names ./${page}.js`);
+    assert.match(own, /\bexport\s*\{/, `${page}.js is a module`);
+    for (const marker of markers) {
+      assert.ok(own.includes(marker), `${page}.js holds ${JSON.stringify(marker)}`);
+      assert.ok(!app.includes(marker), `app.js holds ${page} text ${JSON.stringify(marker)}`);
+    }
+  }
 });
 
 test('the page meta CSP matches the header Rust serves, minus directives meta cannot carry', () => {
@@ -171,6 +202,6 @@ test('a full toolbar state message is accepted for all chrome views', () => {
   assert.equal(parseInbound({ ...sample, unexpected: true }), null);
   for (const file of ['main.ts', 'tabs.ts', 'rail.ts']) {
     const source = readFileSync(join(uiRoot, 'src', file), 'utf8');
-    assert.match(source, /case 'state':[\s\S]*?applyTheme\(msg\.theme, msg\.solid, msg\.dark\)/, file);
+    assert.match(source, /case 'state':[\s\S]*?applyTheme\(msg\.theme, msg\.solid, msg\.dark[,)]/, file);
   }
 });

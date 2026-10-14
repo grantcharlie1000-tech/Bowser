@@ -367,8 +367,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 8);
-  assert.equal(app.querySelectorAll('section').length, 8);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 9);
+  assert.equal(app.querySelectorAll('section').length, 9);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard is one block standing for the `dashboard` row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash').map((row) => row.dataset.row);
@@ -379,6 +379,27 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.equal(app.querySelector('[role="status"]')?.getAttribute('aria-live'), 'polite');
   assert.equal(app.querySelector('.sp-avatar').textContent, 'W');
   assert.equal(app.querySelector('.sp-tile[aria-checked="true"]')?.querySelector('.sp-tile-name').textContent, 'Toolbar above tabs');
+});
+
+test('Downloads: the location and Change, the ask switch, each its own command', () => {
+  const row = app.querySelector('.sp-row[data-row="downloadDir"]');
+  assert.equal(row.querySelector('.sp-path').textContent, 'C:\\Users\\Work\\Downloads');
+  assert.equal(row.querySelector('.sp-path').dir, 'ltr');
+  const ask = app.querySelector('.sp-row[data-row="downloadAsk"]').querySelector('[role="switch"]');
+  assert.equal(ask.getAttribute('aria-checked'), 'false');
+  sent.length = 0;
+  row.querySelector('.bw-button').click();
+  ask.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'downloadfolder' }, { v: 1, t: 'set', a: 'downloadask', on: true }]);
+  assert.ok(!sent.some((m) => m.a === 'save'), 'never part of save');
+  assert.doesNotMatch(logic.saveText(logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d))), /download/);
+  deliver(fixture.snap);
+  const s = logic.parseSettingsSnapshot(fixture.guest.d);
+  assert.equal(s.downloadDir, '');
+  assert.equal(s.downloadAsk, true);
+  for (const bad of [{ downloadDir: 7 }, { downloadDir: 'C:\\x\n' }, { downloadDir: 'x'.repeat(521) }, { downloadAsk: 'no' }]) {
+    assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, ...bad }), null, JSON.stringify(bad));
+  }
 });
 
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {

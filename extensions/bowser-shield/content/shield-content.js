@@ -1,17 +1,21 @@
 // Bowser Shield content script. Runs at document_start in every http(s) frame, after
-// lib/shield-core.js, content/panel-css.js and ui/panel.js (the manifest lists them in that order).
+// lib/shield-core.js and lib/shield-chord.js (the manifest lists them in that order).
 //
 // It hides ad slots with CSS in both modes, strips blocked URLs out of the DOM in dom mode only,
 // and hosts the in-page panel on a keyboard chord. The chord and the panel work on every page,
 // including sites that are never filtered and while the shield is off, so the shield can always be
 // turned back on from the page.
+//
+// The panel (ui/panel.js and its stylesheet, about 34 KB) is not part of this script. The first
+// chord press in the top frame asks the service worker to inject them into this same isolated world
+// (ensurePanel); every frame carries only the chord helpers.
 
 (function () {
   "use strict";
 
   var Core = self.ShieldCore;
-  var Panel = self.ShieldPanel;
-  if (!Core || !Panel) return;
+  var Chord = self.ShieldChord;
+  if (!Core || !Chord) return;
 
   var STYLE_ID = "bowser-shield";
   var DEFAULT_CHORD = "Alt+Shift+S";
@@ -43,8 +47,9 @@
   var matcher = null;
   var scrubHost = "";
   var sweepHooked = false;
-  var chord = Panel.parseChord(DEFAULT_CHORD);
+  var chord = Chord.parseChord(DEFAULT_CHORD);
   var overlay = null;
+  var panelLoading = false;
   var generation = 0;
   var refreshTimer = null;
   var badReported = 0;
@@ -342,7 +347,7 @@
     if (gen !== generation) return;
     var ctx = results[0];
     var stored = results[1];
-    chord = Panel.parseChord(stored["shield.panelChord"]) || Panel.parseChord(DEFAULT_CHORD);
+    chord = Chord.parseChord(stored["shield.panelChord"]) || Chord.parseChord(DEFAULT_CHORD);
 
     var enabled, siteHost, mode, filtered;
     var declineSiteRules = false;
@@ -413,6 +418,21 @@
     return el;
   }
 
+  // Resolves with the panel renderer once it is in this frame. Asks the service worker to inject
+  // content/panel-css.js and ui/panel.js the first time; resolves null when it cannot (no worker, or
+  // no scripting API in this runtime), in which case the chord does nothing.
+  function ensurePanel() {
+    if (self.ShieldPanel && self.SHIELD_PANEL_CSS !== undefined) return Promise.resolve(self.ShieldPanel);
+    return ask({ type: "loadPanel" }).then(
+      function (reply) {
+        return reply && reply.ok && self.ShieldPanel && self.SHIELD_PANEL_CSS !== undefined ? self.ShieldPanel : null;
+      },
+      function () {
+        return null;
+      }
+    );
+  }
+
   // Constructable stylesheets are not subject to the page's CSP; a <style> element is the fallback.
   function adoptCss(root) {
     var css = self.SHIELD_PANEL_CSS || "";
@@ -448,7 +468,16 @@
       closePanel();
       return;
     }
+    if (panelLoading) return;
     var previous = document.activeElement;
+    panelLoading = true;
+    ensurePanel().then(function (Panel) {
+      panelLoading = false;
+      if (Panel && !overlay) showPanel(Panel, previous);
+    });
+  }
+
+  function showPanel(Panel, previous) {
     var host = document.createElement("div");
     // No attribute for a page to select, and important priority so a page stylesheet cannot hide it.
     for (var name in HOST_LAYOUT) host.style.setProperty(name, HOST_LAYOUT[name], "important");
@@ -475,8 +504,8 @@
       closePanel();
       return;
     }
-    if (!Panel.matchChord(chord, e)) return;
-    if (Panel.isEditable(deepActive())) return;
+    if (!Chord.matchChord(chord, e)) return;
+    if (Chord.isEditable(deepActive())) return;
     e.preventDefault();
     e.stopPropagation();
     if (isTop) openPanel();
@@ -495,16 +524,21 @@
   // On window, not document: a page listener on window in the capture phase runs before one on
   // document, and could stop the chord before it arrives.
   window.addEventListener("keydown", onKey, true);
-  window.addEventListener("pointerdown", onOutside, true);
+  // Only the top frame ever shows the overlay, so only it listens for clicks outside and for the
+  // worker's request to open it (a chord pressed in a subframe is forwarded to the top frame).
+  if (isTop) {
+    window.addEventListener("pointerdown", onOutside, true);
+    chrome.runtime.onMessage.addListener(function (message) {
+      if (message && message.type === "togglePanel") openPanel();
+    });
+  }
 
-  chrome.runtime.onMessage.addListener(function (message) {
-    if (message && message.type === "togglePanel" && isTop) openPanel();
-  });
-
+  // Only the settings this script reads trigger a refresh; the worker's own bookkeeping (the compiled
+  // list, counters) must not make every frame ask it for context again.
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area !== "local") return;
     for (var key in changes) {
-      if (key.indexOf("shield.") === 0) {
+      if (STORAGE_KEYS.indexOf(key) >= 0) {
         scheduleRefresh();
         return;
       }

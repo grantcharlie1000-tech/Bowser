@@ -20,7 +20,7 @@ use windows::{
             Input::KeyboardAndMouse::{GetFocus, SetFocus},
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, HWND_TOP,
-                IsWindow, RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow, SetWindowPos,
+                IsWindow, RegisterClassW, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SetForegroundWindow, SetWindowPos,
                 SWP_NOACTIVATE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY,
                 WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
@@ -61,6 +61,9 @@ const TOP_CENTER_PERCENT: i32 = 12;
 pub(crate) enum Placement {
     AboveLeft,
     BelowLeft,
+    /// Below the anchor with the popup's right edge at the anchor (the downloads bubble under its
+    /// toolbar button), flipping above it when there is no room below.
+    BelowRight,
 }
 
 pub(crate) type ResultCallback = Box<dyn FnOnce(&AppRef, Option<Chosen>)>;
@@ -199,6 +202,10 @@ struct Popup {
     /// Card rectangles from the last `size`, so a later frame can move the clip without moving the window.
     cards: Option<MenuCards>,
     context: Option<MenuContext>,
+    /// Shown without taking the keyboard (the downloads bubble opened by a download starting): the
+    /// window is shown with `SW_SHOWNOACTIVATE` and neither it nor its page is focused. Clicking into
+    /// it activates it like any popup, and from then on it closes when it loses activation.
+    passive: bool,
 }
 
 thread_local! { static POPUPS: RefCell<HashMap<isize, Popup>> = RefCell::new(HashMap::new()); }
@@ -392,6 +399,7 @@ fn adopt_ready(owner: HWND) {
                     bounds: RECT::default(),
                     cards: None,
                     context: None,
+                    passive: false,
                 },
             );
         });
@@ -429,6 +437,7 @@ pub(crate) fn show_menu(
         on_result,
         None,
         None,
+        false,
     )
 }
 
@@ -447,8 +456,54 @@ pub(crate) fn show_page(
     on_act: Option<ActHandler>,
 ) -> Result<(), ShowRefused> {
     let on_compose = page.compose.take();
-    open(owner, at, kind, context, |token| page_json(token, kind, page), on_result, on_act, on_compose)
+    open(owner, at, kind, context, |token| page_json(token, kind, page), on_result, on_act, on_compose, false)
 }
+
+// --- downloads (docs/design/downloads.md) ---
+/// Posts the downloads bubble. `build` receives the popup token and returns the whole message
+/// (`{v:1,t:"downloads",tok,...}`, which has no `kind` key, so it does not go through [`Page`]); it is
+/// refused when it is over [`MAX_PAGE_BYTES`]. The bubble accepts no `pick` and no `act`: its row
+/// actions are `dlact` messages that `downloads_ui` checks against the live list. `passive`: show
+/// it without taking the keyboard (opened by a download starting, not by the user).
+pub(crate) fn show_downloads(
+    owner: HWND,
+    at: Anchor,
+    context: Option<MenuContext>,
+    passive: bool,
+    build: impl FnOnce(u32) -> String,
+    on_result: ResultCallback,
+) -> Result<(), ShowRefused> {
+    open(
+        owner,
+        at,
+        "downloads",
+        context,
+        |token| {
+            let json = build(token);
+            (json.len() <= MAX_PAGE_BYTES).then_some((json, HashSet::new(), HashMap::new()))
+        },
+        on_result,
+        None,
+        None,
+        passive,
+    )
+}
+
+/// Posts a fresh message to the open page under the same token (the bubble's live progress). False
+/// when `token` is not the open page, or the message is too large or was refused.
+pub(crate) fn repost(owner: HWND, token: u32, json: &str) -> bool {
+    if json.len() > MAX_PAGE_BYTES {
+        return false;
+    }
+    let host = POPUPS.with(|p| {
+        p.borrow()
+            .get(&(owner.0 as isize))
+            .filter(|p| popup_token_matches(p.dismiss.is_active(), p.token, token))
+            .map(|p| p.host.clone())
+    });
+    host.is_some_and(|host| host.post_json(json).is_ok())
+}
+// --- end downloads ---
 
 /// Whether a popup page could be shown now (host adopted and page ready). Callers that build an
 /// expensive page check this first; it also starts creating the host when it does not exist yet.
@@ -473,6 +528,7 @@ fn open(
     on_result: ResultCallback,
     on_act: Option<ActHandler>,
     on_compose: Option<ComposeHandler>,
+    passive: bool,
 ) -> Result<(), ShowRefused> {
     if !chrome_host::html_ui_enabled() || kind.is_empty() || kind.len() > 32 {
         return Err(ShowRefused::Unavailable(on_result));
@@ -513,6 +569,7 @@ fn open(
         popup.pending_compose = None;
         popup.at = at;
         popup.shown = false;
+        popup.passive = passive;
         popup.context = context;
         (popup.dpi, popup.work) = monitor_data(at.monitor_point());
         popup.callback = on_result.take();
@@ -622,6 +679,7 @@ fn close_now(owner: HWND) {
             popup.pending_compose = None;
             popup.acts.clear();
             popup.shown = false;
+            popup.passive = false;
             (
                 popup.window,
                 popup.host.clone(),
@@ -683,6 +741,7 @@ fn popup_command(owner: HWND, command: Command) {
         | Command::PopupPick { .. }
         | Command::PopupDismiss { .. }
         | Command::PopupAct { .. }
+        | Command::DownloadsAct { .. }
         | Command::PopupCompose { .. }) => crate::win32::window::html_popup_command(owner, command),
         _ => {}
     }
@@ -858,7 +917,7 @@ pub(crate) fn run_result(owner: HWND, token: u32, id: Option<u32>, app: &AppRef)
 
 pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<MenuCards>) {
     let key = owner.0 as isize;
-    let Some((window, host, at, dpi, work, shown, previous, previous_cards)) = POPUPS.with(|p| {
+    let Some((window, host, at, dpi, work, shown, previous, previous_cards, passive)) = POPUPS.with(|p| {
         p.borrow().get(&key).and_then(|popup| {
             (popup.dismiss.is_active() && popup.token == token).then(|| {
                 (
@@ -870,6 +929,7 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<
                     popup.shown,
                     popup.bounds,
                     popup.cards,
+                    popup.passive,
                 )
             })
         })
@@ -910,12 +970,18 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<
             bounds.top,
             width,
             height,
-            if shown { SWP_NOACTIVATE } else { Default::default() },
+            if shown || passive { SWP_NOACTIVATE } else { Default::default() },
         );
         let _ = host.set_bounds(RECT { left: 0, top: 0, right: width, bottom: height });
         // A page that grows or shrinks while open (palette results, site info rows) is only
         // re-bounded: focus stays where the user is typing.
         if shown {
+            return;
+        }
+        // A passive popup (the downloads bubble a download start opened) appears over the page
+        // without taking the keyboard from it.
+        if passive {
+            let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
             return;
         }
         let _ = ShowWindow(window, SW_SHOW);
@@ -1201,6 +1267,7 @@ fn popup_bounds(
     let origin = match placement {
         Placement::AboveLeft => menu::place(anchor, width, height, work),
         Placement::BelowLeft => menu::place_below(anchor, width, height, work),
+        Placement::BelowRight => menu::place_below(POINT { x: anchor.x - width, y: anchor.y }, width, height, work),
     };
     RECT {
         left: origin.x,
@@ -1365,6 +1432,27 @@ mod tests {
             (anchored.left, anchored.top, anchored.right, anchored.bottom),
             (100, 50, 400, 250)
         );
+    }
+
+    #[test]
+    fn the_downloads_bubble_hangs_right_aligned_under_its_button_and_stays_on_screen() {
+        let work = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+        let key = |r: RECT| (r.left, r.top, r.right, r.bottom);
+        // 360 CSS px wide at 96 dpi, its right edge at the button's right edge, just under the button.
+        let under = popup_bounds(POINT { x: 900, y: 40 }, 360, 200, 96, work, Placement::BelowRight);
+        assert_eq!(key(under), (540, 40, 900, 240));
+        // At 150% the same CSS size is 540 device pixels wide and the right edge still lines up.
+        let scaled = popup_bounds(POINT { x: 900, y: 40 }, 360, 200, 144, work, Placement::BelowRight);
+        assert_eq!((scaled.right, scaled.right - scaled.left, scaled.top), (900, 540, 40));
+        // A button near the left edge (a narrow window): the bubble is clamped into the work area.
+        let narrow = popup_bounds(POINT { x: 200, y: 40 }, 360, 200, 96, work, Placement::BelowRight);
+        assert_eq!((narrow.left, narrow.right), (0, 360));
+        // No room below the button: it flips above it, still right-aligned.
+        let flipped = popup_bounds(POINT { x: 900, y: 600 }, 360, 200, 96, work, Placement::BelowRight);
+        assert_eq!(key(flipped), (540, 400, 900, 600));
+        // The left-aligned placement the menus use is unchanged by the new variant.
+        let left = popup_bounds(POINT { x: 100, y: 40 }, 360, 200, 96, work, Placement::BelowLeft);
+        assert_eq!((left.left, left.right), (100, 460));
     }
 
     #[test]

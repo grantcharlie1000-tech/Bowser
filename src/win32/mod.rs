@@ -40,6 +40,8 @@ pub(crate) mod privacy_panel;
 mod profile_rename;
 mod settings_page;
 mod history_page; // bowser://history (docs/design/history-page.md)
+mod downloads_page; // bowser://downloads (docs/design/downloads.md)
+mod downloads_ui; // the toolbar download button and the bubble (docs/design/downloads.md)
 mod settings_panel;
 pub mod side_panel;
 mod site_info;
@@ -140,6 +142,13 @@ pub(crate) const WM_SPLIT_LINK: u32 = windows::Win32::UI::WindowsAndMessaging::W
 pub(crate) const WM_SETTINGS_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C1;
 /// The history page's HTML host queued a command (`history_page::run_queued` runs it).
 pub(crate) const WM_HISTORY_PAGE_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C2;
+/// The downloads page's HTML host queued a command (`downloads_page::run_queued` runs it).
+pub(crate) const WM_DOWNLOADS_PAGE_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C3;
+/// The downloads list changed (posted from `App`'s downloads observer); `WPARAM` is 0 for a progress
+/// tick and 1 for any other change (`downloads_ui::changed` throttles the first, never the second).
+pub(crate) const WM_DOWNLOADS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C4;
+/// Trailing flush of a throttled progress update (`downloads_ui`).
+pub(crate) const WM_DOWNLOADS_TIMER: usize = 0xB070;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
@@ -199,6 +208,24 @@ pub(crate) fn history_page_focus(hwnd: HWND) {
     history_page::focus(hwnd);
 }
 // --- end history page ---
+
+// --- downloads (docs/design/downloads.md) ---
+/// Opens `bowser://downloads` in window `hwnd` (a no-op without the HTML chrome, where downloads
+/// still save and Explorer shows them). `reuse_blank`: a blank normal shown tab becomes the page.
+pub(crate) fn open_downloads_page(hwnd: HWND, app: &crate::app::AppRef, reuse_blank: bool) {
+    downloads_page::open(hwnd, app, reuse_blank);
+}
+
+/// Reload on a downloads tab: the page reads the list again.
+pub(crate) fn downloads_page_refresh(hwnd: HWND) {
+    downloads_page::refresh(hwnd);
+}
+
+/// Gives the keyboard to the downloads page.
+pub(crate) fn downloads_page_focus(hwnd: HWND) {
+    downloads_page::focus(hwnd);
+}
+// --- end downloads ---
 
 // --- split view ---
 /// Opens `url` beside the shown tab once the window procedure runs (link context menu).

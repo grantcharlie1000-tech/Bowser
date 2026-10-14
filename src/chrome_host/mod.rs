@@ -11,6 +11,7 @@ pub mod json;
 pub mod protocol;
 pub mod settings;
 pub mod history_page; // bowser://history (docs/design/history-page.md)
+pub mod downloads_page; // bowser://downloads (docs/design/downloads.md)
 // --- split view ---
 pub mod split;
 // --- end split view ---
@@ -161,12 +162,23 @@ pub fn css_px_from_physical(physical: i32, dpi: u32) -> i32 {
     ((i64::from(physical.max(0)) * 96 + dpi / 2) / dpi) as i32
 }
 
+/// CSS px the toolbar reserves for the download button while it shows (docs/design/downloads.md): the
+/// 28 px button and a 4 px gap. The pill gives up exactly this much width, so the page's actions group
+/// moves left by the same amount and the menu button never moves. The toolbar page agrees (`.has-dl`).
+pub const DL_BUTTON_SLOT: i32 = 32;
+
 /// Pill x, pill width and menu x in CSS px relative to the HTML toolbar host's left edge.
 pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32)> {
+    toolbar_css_placement_with_slot(layout, dpi, 0)
+}
+
+/// [`toolbar_css_placement`] with `slot` CSS px taken from the pill's right end for the download
+/// button (`0` or [`DL_BUTTON_SLOT`]). The pill keeps at least one pixel.
+pub fn toolbar_css_placement_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Option<(i32, i32, i32)> {
     let bounds = toolbar_bounds(layout)?;
     Some((
         css_px_from_physical(layout.omnibox.left - bounds.left, dpi),
-        css_px_from_physical(layout.omnibox.width(), dpi),
+        (css_px_from_physical(layout.omnibox.width(), dpi) - slot.max(0)).max(1),
         css_px_from_physical(layout.main_menu_button.left - bounds.left, dpi),
     ))
 }
@@ -177,9 +189,14 @@ pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32
 /// rectangle rather than to `layout.omnibox`, which can sit a pixel away from the painted pill once
 /// the placement has been rounded to CSS pixels (125% and 175%).
 pub fn toolbar_pill_rect(layout: &Layout, dpi: u32) -> Option<RECT> {
+    toolbar_pill_rect_with_slot(layout, dpi, 0)
+}
+
+/// [`toolbar_pill_rect`] for a toolbar whose pill gave `slot` CSS px to the download button.
+pub fn toolbar_pill_rect_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Option<RECT> {
     use crate::chrome::layout::Metrics;
     let bounds = toolbar_bounds(layout)?;
-    let (x, w, _) = toolbar_css_placement(layout, dpi)?;
+    let (x, w, _) = toolbar_css_placement_with_slot(layout, dpi, slot)?;
     let scale = f64::from(Metrics::new(dpi).dpi()) / 96.0;
     let snap = |css: i32| (f64::from(css) * scale).round() as i32;
     let top = (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2;
@@ -559,6 +576,29 @@ mod tests {
             assert_eq!(pill_w, css_px_from_physical(layout.omnibox.width(), dpi));
             assert_eq!(menu_x, css_px_from_physical(layout.main_menu_button.left - bounds.left, dpi));
         }
+    }
+
+    #[test]
+    fn the_download_button_slot_comes_out_of_the_pill_and_nothing_else() {
+        assert_eq!(DL_BUTTON_SLOT, 32);
+        for dpi in [96, 120, 144, 192] {
+            for width in [760, 1100, 1600] {
+                let layout = compute_in_frame(width, 800, dpi, 3, 0, false);
+                let (x, w, menu) = toolbar_css_placement(&layout, dpi).expect("placement");
+                assert_eq!(toolbar_css_placement_with_slot(&layout, dpi, 0), Some((x, w, menu)));
+                let (sx, sw, smenu) = toolbar_css_placement_with_slot(&layout, dpi, DL_BUTTON_SLOT).expect("slotted");
+                assert_eq!((sx, smenu), (x, menu), "only the pill's width changes dpi={dpi} width={width}");
+                assert_eq!(sw, (w - DL_BUTTON_SLOT).max(1), "dpi={dpi} width={width}");
+                // The dropdown under the omnibox follows the narrower pill, left edge unchanged.
+                let pill = toolbar_pill_rect(&layout, dpi).expect("pill");
+                let narrow = toolbar_pill_rect_with_slot(&layout, dpi, DL_BUTTON_SLOT).expect("narrow pill");
+                assert_eq!((narrow.left, narrow.top, narrow.bottom), (pill.left, pill.top, pill.bottom));
+                assert!(narrow.right < pill.right, "dpi={dpi} width={width}");
+            }
+        }
+        // A toolbar with no room never reaches a zero or negative pill.
+        let layout = compute_in_frame(760, 800, 96, 3, 0, false);
+        assert_eq!(toolbar_css_placement_with_slot(&layout, 96, 100_000).map(|(_, w, _)| w), Some(1));
     }
 
     #[test]

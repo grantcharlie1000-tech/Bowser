@@ -29,7 +29,7 @@ From `docs/extensions.md` and the module comment in `src/extensions.rs`:
   WebView2 does whatever WebView2 does.
 - The `ms-browser-extension` scheme stays blocked for user-initiated navigation.
 
-Bowser Shield ships 21 files, roughly 120 KiB, two folder levels deep, three permission strings,
+Bowser Shield ships 22 files, roughly 120 KiB, two folder levels deep, four permission strings,
 two host permissions and two content-script match patterns. Every cap has a wide margin.
 
 The blocked scheme and the missing browser chrome both change the UI design. See section 7.
@@ -44,6 +44,9 @@ extensions/bowser-shield/
     shield-core.js             the pure engine: SRL lexer, parser, compiler, matcher.
                                No chrome.* calls, no DOM, no timers. Loadable three ways
                                (section 1.1) so the Node tests exercise the shipped file.
+    shield-chord.js            the keyboard chord helpers (parse, match, editable-focus check),
+                               a few lines carried by every frame's content script; the panel
+                               and the Node tests take them from here. No chrome.* calls.
     shield-dnr.js              pure translation of a compiled list into declarativeNetRequest
                                rules: id bands, priorities, cap handling. No chrome.* calls.
   rules/
@@ -55,17 +58,21 @@ extensions/bowser-shield/
                                sync, owns counters, answers content-script and UI messages
   content/
     panel-css.js               the overlay panel stylesheet as a JS string constant
-                               (avoids needing web_accessible_resources)
+                               (avoids needing web_accessible_resources); injected into the top
+                               frame with ui/panel.js on the first chord press, not in the
+                               content script list
     shield-content.js          document_start: cosmetic CSS, DOM scrubber in dom mode,
                                overlay panel host, keyboard chord
   ui/
     panel.js                   one renderer for the panel, used by the popup, the options
                                page and the in-page overlay. Takes a root node, a state
-                               object and a send() function; renders and wires events
+                               object and a send() function; renders and wires events.
+                               The overlay gets it by injection (section 7.1), not from the
+                               manifest's content script list
     popup.html
-    popup.js                   loads shield-core + panel.js, fetches state, renders summary view
+    popup.js                   loads shield-core + shield-chord + panel.js, fetches state, renders summary view
     options.html
-    options.js                 loads shield-core + panel.js, renders the full editor view
+    options.js                 loads shield-core + shield-chord + panel.js, renders the full editor view
     ui.css                     shared styles for popup.html and options.html
   icons/
     icon-16.png
@@ -81,7 +88,7 @@ extensions/bowser-shield/
       dnr.json                 table-driven translation cases
 ```
 
-21 files, maximum depth 2.
+22 files, maximum depth 2.
 
 ### 1.1 How `shield-core.js` is loaded three ways
 
@@ -120,6 +127,7 @@ subset includes them. `importScripts` is the oldest, dullest path.
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
+    "scripting",
     "storage"
   ],
   "host_permissions": [
@@ -146,7 +154,7 @@ subset includes them. `importScripts` is the oldest, dullest path.
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["lib/shield-core.js", "content/panel-css.js", "content/shield-content.js"],
+      "js": ["lib/shield-core.js", "lib/shield-chord.js", "content/shield-content.js"],
       "run_at": "document_start",
       "all_frames": true
     }
@@ -165,7 +173,7 @@ subset includes them. `importScripts` is the oldest, dullest path.
 
 ### 2.1 Why each permission
 
-Bowser shows these three strings to the user at install. Each has to earn its place.
+Bowser shows these four strings to the user at install. Each has to earn its place.
 
 - **`declarativeNetRequest`** — the only Manifest V3 way to actually stop a request. It grants
   blocking and upgrading without any host permission, which is why the host permissions below are
@@ -179,12 +187,17 @@ Bowser shows these three strings to the user at install. Each has to earn its pl
   "unavailable" (section 8.4).
 - **`storage`** — `chrome.storage.local` holds the user's rule text, site exceptions and settings.
   No `unlimitedStorage`: the format caps the list at 256 KiB, far under the local quota.
+- **`scripting`** — `chrome.scripting.executeScript` puts `content/panel-css.js` and `ui/panel.js`
+  (about 34 KiB) into the top frame the first time the keyboard chord opens the overlay (section
+  7.1). Without it the two files would have to ride in the content script list and load into every
+  frame of every page, or be exposed as `web_accessible_resources`. It is used for those two fixed
+  files only; no code is built at run time. If the runtime lacks the API the chord opens nothing; the
+  popup and options pages are unaffected.
 
 Permissions deliberately **not** requested:
 
 - `webRequest` / `webRequestBlocking` — removed from MV3 for blocking, and it would hand the
   extension the contents of every request.
-- `scripting` — the content script injects its own `<style>` element; `insertCSS` is not needed.
 - `tabs` — `chrome.tabs.query` works without it, and the tab `url` comes from the host permissions
   below. Asking for `tabs` as well would be redundant noise in Bowser's install dialog.
 - `alarms`, `notifications`, `cookies`, `webNavigation` — nothing in this design needs them.
@@ -886,6 +899,12 @@ So the panel is implemented **once** in `ui/panel.js` and hosted **three** ways:
    and ignored while focus is in an editable element). On trigger it attaches a closed shadow root
    to a fresh `<div>` on `document.documentElement`, injects `PANEL_CSS` from
    `content/panel-css.js`, and renders the same panel into it. Escape or a click outside closes it.
+   The panel code is not in the content script list. The first time the chord is pressed in the top
+   frame, the content script sends `loadPanel` and the service worker runs
+   `chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, files: ["content/panel-css.js",
+   "ui/panel.js"] })`, which lands in the content script's own isolated world. A chord pressed in a
+   subframe is forwarded to the top frame (`chord` then `togglePanel`), which does the same. Every
+   frame carries only the chord helpers (`lib/shield-chord.js`).
    The chord is configurable; the options view shows it.
 
 A closed shadow root with its own stylesheet means page CSS cannot reach the panel and the panel's

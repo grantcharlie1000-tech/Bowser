@@ -501,6 +501,64 @@ static PENDING_HISTORY: Mutex<Vec<(PathBuf, Vec<HistoryEntry>)>> = Mutex::new(Ve
 /// never interleave.
 static HISTORY_IO: Mutex<()> = Mutex::new(());
 
+/// The parsed history this process last read or wrote, per file, so a write does not reread and
+/// reparse the file. Only trusted while the file still has the size and modification time recorded
+/// with it, so an edit from outside is picked up. Take it inside [`HISTORY_IO`].
+static HISTORY_CACHE: Mutex<Vec<HistoryCache>> = Mutex::new(Vec::new());
+/// Files with a cached parse; a process has one history, tests have a few.
+const HISTORY_CACHE_FILES: usize = 16;
+
+/// Size and modification time of a file, `None` when it does not exist.
+type FileStamp = Option<(u64, std::time::SystemTime)>;
+
+struct HistoryCache {
+    path: PathBuf,
+    stamp: FileStamp,
+    entries: Vec<HistoryEntry>,
+}
+
+/// `None` when the file's state cannot be told apart cheaply (never cached).
+fn history_stamp(path: &Path) -> Option<FileStamp> {
+    match fs::metadata(path) {
+        Ok(meta) => meta.modified().ok().map(|modified| Some((meta.len(), modified))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
+fn remember_history(path: &Path, entries: &[HistoryEntry]) {
+    let mut cache = lock_history(&HISTORY_CACHE);
+    cache.retain(|cached| cached.path != path);
+    let Some(stamp) = history_stamp(path) else {
+        return;
+    };
+    if cache.len() >= HISTORY_CACHE_FILES {
+        cache.remove(0);
+    }
+    cache.push(HistoryCache {
+        path: path.to_path_buf(),
+        stamp,
+        entries: entries.to_vec(),
+    });
+}
+
+fn forget_history(path: &Path) {
+    lock_history(&HISTORY_CACHE).retain(|cached| cached.path != path);
+}
+
+/// The parsed history of `path` and whether it came from memory. Hold [`HISTORY_IO`].
+fn load_history(path: &Path) -> std::io::Result<(Vec<HistoryEntry>, bool)> {
+    if let Some(stamp) = history_stamp(path) {
+        let cache = lock_history(&HISTORY_CACHE);
+        if let Some(cached) = cache.iter().find(|cached| cached.path == path && cached.stamp == stamp) {
+            return Ok((cached.entries.clone(), true));
+        }
+    }
+    let entries = read_history_file(path)?;
+    remember_history(path, &entries);
+    Ok((entries, false))
+}
+
 fn lock_history<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -515,6 +573,11 @@ fn queue_history_visit(path: &Path, visit: HistoryEntry) {
                 &mut pending.last_mut().expect("just pushed").1
             }
         };
+        // A revisit moves to the end, same as the file merge. Removing it first means the cap
+        // does not drop a unique visit to make room for a second copy of this one.
+        if let Some(index) = queue.iter().position(|(_, url, _)| url == &visit.1) {
+            queue.remove(index);
+        }
         queue.push(visit);
         if queue.len() > MAX_HISTORY {
             queue.drain(..queue.len() - MAX_HISTORY);
@@ -572,7 +635,7 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
     // A file that exists but cannot be read must never be replaced by the queued entries.
-    let result = read_history_file(path).and_then(|mut entries| {
+    let result = load_history(path).and_then(|(mut entries, _)| {
         for (timestamp, url, title) in &visits {
             entries.retain(|(_, existing, _)| existing != url);
             entries.push((*timestamp, url.clone(), title.clone()));
@@ -604,7 +667,7 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
 /// Entries for a read-modify-write: queued visits are flushed first. Hold [`HISTORY_IO`].
 fn read_history_for_update(path: &Path) -> std::io::Result<Vec<HistoryEntry>> {
     let _ = flush_history_locked(path);
-    read_history_file(path)
+    load_history(path).map(|(entries, _)| entries)
 }
 
 /// What a tab's page load should add to history, so a visit is recorded whichever way the page
@@ -878,6 +941,7 @@ pub fn clear_history(path: &Path) -> std::io::Result<()> {
     let _io = lock_history(&HISTORY_IO);
     // Visits still queued were made before the clear.
     lock_history(&PENDING_HISTORY).retain(|(queued, _)| queued != path);
+    forget_history(path);
     atomic_write(path, b"")
 }
 pub fn search_history(path: &Path, query: &str, limit: usize) -> Vec<HistoryEntry> {
@@ -928,13 +992,20 @@ pub fn group_history_by_day(entries: &[HistoryEntry], now: u64) -> Vec<HistoryDa
         })
         .collect()
 }
+/// Replaces the file with `entries` (at most the newest `MAX_HISTORY` are kept in order) and flushes
+/// once. The rename is not written through: a crash may lose this write but leaves the previous
+/// file whole, so earlier entries survive.
 fn write_history(path: &Path, entries: &[HistoryEntry]) -> std::io::Result<()> {
+    let entries = &entries[..entries.len().min(MAX_HISTORY)];
     let text = entries
         .iter()
-        .take(MAX_HISTORY)
         .map(|(t, u, title)| format!("{t}\t{}\t{}\n", escape(u), escape(title)))
         .collect::<String>();
-    atomic_write(path, text.as_bytes())
+    // The file may be half-replaced if this fails, so the parse in memory is dropped.
+    forget_history(path);
+    atomic_write_with(path, text.as_bytes(), false)?;
+    remember_history(path, entries);
+    Ok(())
 }
 fn civil_from_days(days: i64) -> String {
     let z = days + 719468;
@@ -996,7 +1067,13 @@ fn read_bounded(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    atomic_write_with(path, bytes, true)
+}
+
+/// [`atomic_write`]; `write_through` also flushes the rename itself, a second flush for files where
+/// losing the latest write to a crash is acceptable but tearing is not.
+fn atomic_write_with(path: &Path, bytes: &[u8], write_through: bool) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let temp = path.with_extension("tmp");
@@ -1012,16 +1089,22 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         };
         let from: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
         let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let flags = if write_through {
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+        } else {
+            MOVEFILE_REPLACE_EXISTING
+        };
         unsafe {
             MoveFileExW(
                 windows::core::PCWSTR(from.as_ptr()),
                 windows::core::PCWSTR(to.as_ptr()),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                flags,
             )?;
         }
     }
     #[cfg(not(windows))]
     {
+        let _ = write_through;
         fs::rename(&temp, path)?;
     }
     Ok(())
@@ -1352,6 +1435,52 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 2, "escaped newlines must not add lines");
         assert!(!root.join("history.tmp").exists(), "the temp file is renamed away");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_writes_reuse_the_parse_and_survive_outside_edits() {
+        let root = history_temp("cache");
+        let path = root.join("history.txt");
+        let _io = lock_history(&HISTORY_IO);
+        fs::write(&path, "1\thttps://a.test/\tA\n").unwrap();
+        assert!(!load_history(&path).unwrap().1, "first read parses the file");
+        assert!(load_history(&path).unwrap().1, "an unchanged file is not reparsed");
+        // A visit merged and written by this process leaves the memory copy valid.
+        add_history_entry_at(&path, 2, "https://b.test/", "B").unwrap();
+        drop(_io);
+        flush_pending_history();
+        let _io = lock_history(&HISTORY_IO);
+        let (entries, cached) = load_history(&path).unwrap();
+        assert!(cached);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
+        // An edit from outside is picked up, never overwritten by a stale parse.
+        fs::write(&path, "1\thttps://a.test/\tA\n2\thttps://b.test/\tB\n3\thttps://c.test/\tC\n").unwrap();
+        let (entries, cached) = load_history(&path).unwrap();
+        assert!(!cached);
+        assert_eq!(entries.len(), 3);
+        drop(_io);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_write_dedupes_caps_and_leaves_no_temp_file() {
+        let root = history_temp("cap");
+        let path = root.join("history.txt");
+        for i in 0..MAX_HISTORY + 5 {
+            add_history_entry_at(&path, 1_700_000_000 + i as u64, &format!("https://example.com/{i}"), "T").unwrap();
+        }
+        // A revisit moves the entry to the end instead of adding a line.
+        add_history_entry_at(&path, 1_800_000_000, "https://example.com/10", "Again").unwrap();
+        flush_pending_history();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), MAX_HISTORY);
+        let last = text.lines().last().unwrap();
+        assert!(last.starts_with("1800000000\thttps://example.com/10\tAgain"));
+        assert!(!text.contains("https://example.com/0\t"), "the oldest entries are dropped at the cap");
+        assert_eq!(text.matches("https://example.com/10\t").count(), 1);
+        assert!(!root.join("history.tmp").exists());
         let _ = fs::remove_dir_all(root);
     }
 

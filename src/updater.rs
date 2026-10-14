@@ -1550,12 +1550,14 @@ pub fn parse_github_pin(text: &str) -> Result<GithubPin, UpdateError> {
     })
 }
 
-/// Decides whether `running_sha` should be replaced by `pin`. The pin cannot name another
-/// repository or asset, and it cannot move the browser to an older version.
+/// Decides whether the running build should be replaced by `pin`. The pin cannot name another
+/// repository or asset, and it cannot move the browser to an older version. `running_sha` hashes
+/// the running executable; it is called only when everything cheaper has passed and the digests
+/// really have to be compared.
 pub fn decide_github_pin(
     pin: &GithubPin,
     running_version: Version,
-    running_sha: &[u8; 32],
+    running_sha: impl FnOnce() -> Result<[u8; 32], UpdateError>,
     rejected: &HashSet<[u8; 32]>,
 ) -> Result<PinDecision, UpdateError> {
     if pin.repository != GITHUB_REPOSITORY || pin.asset != GITHUB_ASSET {
@@ -1576,7 +1578,7 @@ pub fn decide_github_pin(
     if rejected.contains(&pin.sha256) {
         return Err(UpdateError::Rejected);
     }
-    if running_sha == &pin.sha256 {
+    if running_sha()? == pin.sha256 {
         return Ok(PinDecision::UpToDate);
     }
     let url = validate_https_url(&format!(
@@ -1660,12 +1662,10 @@ fn write_pending_replacing_build(layout: &Layout, manifest: &Manifest) -> Result
     )
 }
 
-fn stage_github_pin(
-    layout: &Layout,
-    current: Version,
-    running_sha: &[u8; 32],
-    gate: Option<&Path>,
-) -> Result<CheckOutcome, UpdateError> {
+/// Fetches the pin and stages the build it names when that differs from the running one. The
+/// running executable is hashed only after the pin was fetched and parsed, so a failed fetch costs
+/// no hashing.
+fn stage_github_pin(layout: &Layout, current: Version, gate: Option<&Path>) -> Result<CheckOutcome, UpdateError> {
     fs::create_dir_all(&layout.updates)?;
     let pin_url = validate_https_url(GITHUB_PIN_URL)?;
     let mut text = Vec::new();
@@ -1675,6 +1675,7 @@ fn stage_github_pin(
     })?;
     let text = String::from_utf8(text).map_err(|_| UpdateError::Malformed("not UTF-8"))?;
     let pin = parse_github_pin(&text)?;
+    let running_sha = || sha256_file(&layout.exe).map(|(digest, _)| digest);
     let url = match decide_github_pin(&pin, current, running_sha, &read_rejected_shas(layout))? {
         PinDecision::UpToDate => return Ok(CheckOutcome::UpToDate),
         PinDecision::Replace(url) => url,
@@ -1849,14 +1850,7 @@ fn run_check(root: &Path, layout: &Layout, forced: bool) -> Option<Result<CheckO
     let gate = (!forced).then_some(root);
     let outcome = match &config {
         Some(config) => check_and_stage(config, layout, Version::current(), gate),
-        None => match sha256_file(&layout.exe) {
-            Ok((running_sha, _)) => stage_github_pin(layout, Version::current(), &running_sha, gate),
-            // Not stamped, so the next launch tries again rather than waiting out the interval.
-            Err(error) => {
-                let _ = write_atomic(&layout.status_file(), &format!("{STATUS_FAILED}: {error}"));
-                return Some(Err(error));
-            }
-        },
+        None => stage_github_pin(layout, Version::current(), gate),
     };
     let _ = write_atomic(&stamp, &now_secs().to_string());
     let summary = match &outcome {
@@ -2602,32 +2596,66 @@ mod tests {
         let parsed = parse_github_pin(&pin).unwrap();
         let running = [0u8; 32];
         assert!(matches!(
-            decide_github_pin(&parsed, CURRENT, &running, &HashSet::new()).unwrap(),
+            decide_github_pin(&parsed, CURRENT, || Ok(running), &HashSet::new()).unwrap(),
             PinDecision::Replace(_)
         ));
         assert_eq!(
-            decide_github_pin(&parsed, CURRENT, &parsed.sha256, &HashSet::new()).unwrap(),
+            decide_github_pin(&parsed, CURRENT, || Ok(parsed.sha256), &HashSet::new()).unwrap(),
             PinDecision::UpToDate
         );
         let mut rejected = HashSet::new();
         rejected.insert(parsed.sha256);
         assert!(matches!(
-            decide_github_pin(&parsed, CURRENT, &running, &rejected),
+            decide_github_pin(&parsed, CURRENT, || Ok(running), &rejected),
             Err(UpdateError::Rejected)
         ));
         let other = parse_github_pin(&pin.replace(GITHUB_REPOSITORY, "evil/Bowser")).unwrap();
-        assert!(decide_github_pin(&other, CURRENT, &running, &HashSet::new()).is_err());
+        assert!(decide_github_pin(&other, CURRENT, || Ok(running), &HashSet::new()).is_err());
         let older = parse_github_pin(&pin.replace("\"version\":\"0.0.1\"", "\"version\":\"0.0.0\"")).unwrap();
         assert!(matches!(
-            decide_github_pin(&older, CURRENT, &running, &HashSet::new()),
+            decide_github_pin(&older, CURRENT, || Ok(running), &HashSet::new()),
             Err(UpdateError::NotNewer)
         ));
         let from = format!("\"revision\":{PIN_REVISION}");
         let stale = parse_github_pin(&pin.replace(&from, "\"revision\":1")).unwrap();
         assert!(matches!(
-            decide_github_pin(&stale, CURRENT, &running, &HashSet::new()),
+            decide_github_pin(&stale, CURRENT, || Ok(running), &HashSet::new()),
             Err(UpdateError::NotNewer)
         ));
+    }
+
+    #[test]
+    fn the_running_build_is_hashed_only_when_a_comparison_is_needed() {
+        let sha = "ab".repeat(32);
+        let pin = format!(
+            r#"{{"version":"0.0.1","revision":{PIN_REVISION},"commit":"abc","tag":"v0.0.1","repository":"{GITHUB_REPOSITORY}","asset":"{GITHUB_ASSET}","sha256":"{sha}","bytes":100}}"#
+        );
+        let parsed = parse_github_pin(&pin).unwrap();
+        let hashed = std::cell::Cell::new(0);
+        let running = |digest: [u8; 32]| {
+            let hashed = &hashed;
+            move || {
+                hashed.set(hashed.get() + 1);
+                Ok(digest)
+            }
+        };
+        // A pin that is refused outright never reaches the hash.
+        let mut rejected = HashSet::new();
+        rejected.insert(parsed.sha256);
+        assert!(decide_github_pin(&parsed, CURRENT, running([0; 32]), &rejected).is_err());
+        let other = parse_github_pin(&pin.replace(GITHUB_REPOSITORY, "evil/Bowser")).unwrap();
+        assert!(decide_github_pin(&other, CURRENT, running([0; 32]), &HashSet::new()).is_err());
+        let older = parse_github_pin(&pin.replace("\"version\":\"0.0.1\"", "\"version\":\"0.0.0\"")).unwrap();
+        assert!(decide_github_pin(&older, CURRENT, running([0; 32]), &HashSet::new()).is_err());
+        assert_eq!(hashed.get(), 0);
+        // A real comparison hashes once, and a failed hash is the check's error.
+        assert!(matches!(
+            decide_github_pin(&parsed, CURRENT, running([0; 32]), &HashSet::new()),
+            Ok(PinDecision::Replace(_))
+        ));
+        assert_eq!(hashed.get(), 1);
+        let failing = || Err(UpdateError::Io("cannot read".into()));
+        assert!(decide_github_pin(&parsed, CURRENT, failing, &HashSet::new()).is_err());
     }
 
     #[test]

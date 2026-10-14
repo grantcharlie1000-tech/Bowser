@@ -18,6 +18,8 @@ pub const NOTES_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog
 pub const SETTINGS_START_URL: &str = "bowser-ui://app/index.html?view=settings";
 /// The history page over a `bowser://history` tab (docs/design/history-page.md).
 pub const HISTORY_PAGE_START_URL: &str = "bowser-ui://app/index.html?view=history";
+/// The downloads page over a `bowser://downloads` tab (docs/design/downloads.md).
+pub const DOWNLOADS_PAGE_START_URL: &str = "bowser-ui://app/index.html?view=downloads";
 pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=privacy";
 pub const RENAME_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=rename";
 /// Start URL of the no-activate hover layer (tooltips, tab hover card, island menu).
@@ -67,6 +69,15 @@ pub fn lookup(path: &str) -> Option<Asset> {
             bytes: include_bytes!("../../ui/dist/app.css"),
             mime: CSS,
         }),
+        // ES modules app.js imports only when the settings or history view opens (ui/build.mjs).
+        "settings-page.js" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/settings-page.js"),
+            mime: JS,
+        }),
+        "history-page.js" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/history-page.js"),
+            mime: JS,
+        }),
         _ => None,
     }
 }
@@ -108,6 +119,23 @@ mod tests {
     }
 
     #[test]
+    fn page_modules_are_scripts_apart_from_app_js() {
+        let settings = lookup("/settings-page.js").expect("settings-page.js");
+        assert_eq!(settings.mime, JS);
+        assert_eq!(settings.bytes, include_bytes!("../../ui/dist/settings-page.js"));
+        assert_eq!(lookup("settings-page.js?v=2"), Some(settings));
+
+        let history = lookup("/history-page.js").expect("history-page.js");
+        assert_eq!(history.mime, JS);
+        assert_eq!(history.bytes, include_bytes!("../../ui/dist/history-page.js"));
+        assert_eq!(lookup("history-page.js#x"), Some(history));
+
+        let app = lookup("/app.js").expect("app.js");
+        assert_ne!(settings.bytes, app.bytes);
+        assert_ne!(history.bytes, app.bytes);
+    }
+
+    #[test]
     fn query_and_fragment_are_ignored() {
         assert_eq!(lookup("/index.html?x=1#frag"), lookup("/index.html"));
         assert_eq!(lookup("/app.js?v=2"), lookup("/app.js"));
@@ -126,6 +154,12 @@ mod tests {
             "//index.html",
             "/ui/dist/app.js",
             "/app.js ",
+            "/settings-page.js/",
+            "/SETTINGS-PAGE.JS",
+            "/history-page",
+            "/history-page.js.map",
+            "/ui/dist/settings-page.js",
+            "/settings-page.ts",
         ] {
             assert_eq!(lookup(path), None, "{path:?}");
         }
@@ -146,6 +180,11 @@ mod tests {
             "\\app.js",
             "/..\\app.js",
             "/app.js\\..",
+            "/../settings-page.js",
+            "/a/../history-page.js",
+            "/settings-page.js/..",
+            "/history-page.js?../x",
+            "/..\\settings-page.js",
         ] {
             assert_eq!(lookup(path), None, "{path:?}");
         }
@@ -174,7 +213,7 @@ mod tests {
     #[test]
     fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_START_URL, HISTORY_PAGE_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");
