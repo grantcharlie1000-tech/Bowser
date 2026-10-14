@@ -54,6 +54,7 @@ Any message with more than six keys is rejected as soon as the seventh key start
 | `setText` | `text` string, `select` bool (Rust-set omnibox text, e.g. on tab switch or Ctrl+L). Sent when the active tab changes even while the omnibox is focused (a blank new tab sends `""` with `select: true`); within the same tab, only while the omnibox is unfocused, so typing is never overwritten |
 | `focusOmnibox` | `select` bool |
 | `completion` | `seq` int, `suffix` string (inline completion for edit `seq`; JS ignores stale seq or if value no longer matches) |
+| `menuOpen` | `on` bool (the main menu is open: sent when it opens and again when it closes, from the native pressed state `Hit::MainMenu`; the toolbar's three-dot menu button sets `aria-expanded`, keeps the pressed bubble and spreads its outer dots) |
 
 `theme` is the only nested value and is Rust->JS only (Rust is trusted).
 
@@ -153,14 +154,16 @@ URLs equal its own start URL exactly. The stubs apply `state` theme colours, sen
 an empty container for later tasks.
 
 Panel and dialog commands remain flat JS -> Rust objects with `v:1`. The families are `panel`,
-`hist`, `bm`, `cust`, `notes`, `set`, and `priv`, all shaped as
+`hist`, `bm`, `cust`, `notes`, `set`, `priv`, `ren` and `hpage`, all shaped as
 `{v:1,t:"hist",a:"open",id?:number,parent?:number,before?:number,n?:number,on?:boolean,text?:string,url?:string}`.
 `a` is a required 1–24 character lower-case ASCII token. `id`, `parent` and `before` are unsigned
 integers at most 2^53−1; `n` is signed i32; `text` and `url` are at most 2048 Unicode characters.
 The allowed field names are exactly `a,id,parent,before,n,on,text,url`. Any four of those names may
 appear, including `a`: `MAX_FIELDS` remains six keys total, counting `v` and `t`; the seventh key
-is rejected before duplicate-key inspection. The panel host accepts `panel/hist/bm/cust`; the
-dialog host accepts `panel/notes/set/priv`.
+is rejected before duplicate-key inspection. The panel host accepts `panel/hist/bm/cust`; each
+dialog host accepts `panel` and its own family (`notes`, `priv`, `ren`); only the settings page
+(`View::Settings`, below) accepts `set`, and only the history page (`View::HistoryPage`, below)
+accepts `hpage`.
 
 The popup host alone accepts `{v:1,t:"size",tok,w,h}` (`tok` unsigned u32; `w` and `h` whole CSS
 pixels from 1 to 4000), `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
@@ -407,3 +410,39 @@ confirmation the flyout asked for is up, its deactivation is ignored. Opening a 
 tab closes the flyout and focuses the page; opening one in a new tab keeps it open. The panel
 state's `solid` is `false`: the page paints its own opaque surface.
 
+## Settings page (`?view=settings`, `View::Settings`)
+
+`bowser://settings[/section]` is a tab with no content WebView2; `src/win32/settings_page.rs` shows
+this host over the tab's page area (docs/design/settings-page.md). Exact start URL
+`bowser-ui://app/index.html?view=settings`; the page never navigates, so the exact source check
+holds for its whole life. It accepts `ready` and the `set` family only (no `panel` dismiss).
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> page | `state` | the split host's state: opaque window colour, `solid: true` |
+| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | 25 keys, all required (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
+| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance privacy performance search media updates about`; sent when Bowser moves the tab, never as an echo |
+| page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`) |
+| page -> Rust | `{v:1,t:"set",a:"autoupdate"\|"history",on}` | install-wide update switch; the profile's history switch (never for a guest) |
+| page -> Rust | `{v:1,t:"set",a:"section",text}` | the page moved to a section; the tab's address follows |
+| page -> Rust | `{v:1,t:"set",a}` with `a` one of `reset openfile checkupdates restartupdate privacy profiles import refresh` | no other field |
+
+Commands are queued and run from `WM_SETTINGS_COMMAND`, only while a settings tab is shown; each
+change is answered by the next snapshot's `ack` (`saved`/`failed`, with `error`).
+
+## History page (`?view=history`, `View::HistoryPage`)
+
+`bowser://history` is a tab with no content WebView2; `src/win32/history_page.rs` shows this host
+over the tab's page area (docs/design/history-page.md). Exact start URL
+`bowser-ui://app/index.html?view=history`; the page never navigates. It accepts `ready` and the
+`hpage` family only (not the rail panel's `hist`, not `panel`).
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> page | `state` | the split host's state: opaque window colour, `solid: true` |
+| Rust -> page | `{v:1,t:"snap",p:"historypage",d:{state,query,rows,more,undo,ack,favs}}` | exactly these 7 keys (`history-page-logic.ts` `parseHistorySnapshot`, `chrome_host/history_page.rs`). `state`: `on off guest error` (rows only when `on`); `rows`: day headers `{label,date,count}` (`label` `Today`, `Yesterday` or `YYYY-MM-DD`; `date` the group's local `YYYY-MM-DD`) each followed by its `count` entries `{id,title,host,url,clock}` (`id` 1..2^32-1, unique; `url` http(s) only, at most 200 characters; `title` at most 120; `clock` `HH:MM`); `more`: older rows were left out to keep the message under 240 KiB; `undo`: the last removal can be undone; `ack`: `none removed restored failed`, sent once; `favs`: host -> PNG data URI (at most 96 hosts, 128 KiB) |
+| page -> Rust | `{v:1,t:"hpage",a:"search",text}` | at most 256 characters, no control characters; `""` shows everything (debounced by the page) |
+| page -> Rust | `{v:1,t:"hpage",a:"open"\|"newtab"\|"remove",id}` | `id` resolved against the live list for the current search; a stale or ambiguous id does nothing (the page gets a fresh snapshot) |
+| page -> Rust | `{v:1,t:"hpage",a}` with `a` one of `undo privacy settings refresh` | no other field: put the last removal back, the Privacy dashboard, Settings at Privacy and security, a fresh snapshot |
+
+Commands are queued and run from `WM_HISTORY_PAGE_COMMAND`, only while a history tab is shown.

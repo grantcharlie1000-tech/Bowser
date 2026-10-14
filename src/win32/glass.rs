@@ -483,11 +483,11 @@ mod tests {
 
     #[test]
     fn caption_buttons_are_right_aligned_and_dpi_scaled() {
-        // Caption hit height includes 6 px headroom plus the 34 px toolbar strip.
+        // Caption hit height is the 30 px toolbar strip; there is no headroom above it.
         let one = CaptionButtons::for_client_width(1000, 96);
         assert_eq!(
             (one.min.left, one.close.right, one.close.bottom),
-            (862, 1000, 40)
+            (862, 1000, 30)
         );
         let fractional = CaptionButtons::for_client_width(1000, 120);
         assert_eq!(
@@ -496,12 +496,12 @@ mod tests {
                 fractional.close.right,
                 fractional.close.bottom
             ),
-            (826, 1000, 51)
+            (826, 1000, 38)
         );
         let two = CaptionButtons::for_client_width(2000, 192);
         assert_eq!(
             (two.min.left, two.close.right, two.close.bottom),
-            (1724, 2000, 80)
+            (1724, 2000, 60)
         );
     }
 

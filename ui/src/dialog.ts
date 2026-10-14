@@ -5,7 +5,7 @@ import { panels } from './panels';
 import { startRenameDialog } from './rename';
 
 const isPanelToken = (value: string | null): value is PanelToken =>
-  value === 'notes' || value === 'settings' || value === 'privacy' || value === 'rename';
+  value === 'notes' || value === 'privacy' || value === 'rename';
 
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');

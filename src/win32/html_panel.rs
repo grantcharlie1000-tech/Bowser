@@ -411,6 +411,20 @@ fn reveal(runtime: &Rc<RefCell<Runtime>>) {
     let _ = host.focus();
 }
 
+/// A visit was just recorded: an open History flyout refreshes its list (only the snapshot is
+/// posted, so focus, the search text and the flyout's placement are left alone).
+pub(crate) fn history_changed(owner: HWND) {
+    let Some(runtime) = runtime(owner) else { return; };
+    let (host, query, path) = {
+        let Ok(state) = runtime.try_borrow() else { return; };
+        if state.closed || !state.ready || !state.open || state.panel != PanelId::History { return; }
+        (state.host.clone(), state.query.clone(), current_history_file())
+    };
+    let Some(host) = host else { return; };
+    let entries = path.as_deref().map(|path| productivity::search_history(path, &query, LIMIT)).unwrap_or_default();
+    let _ = post(&runtime, &host, &chrome_host::panels::history::snapshot(&entries, &query, history_now_secs(), history_local_offset()));
+}
+
 fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let (host, owner, open, panel, query, path, profile_dir, app) = {
         let Ok(state) = runtime.try_borrow() else { return; };

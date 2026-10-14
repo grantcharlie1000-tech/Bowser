@@ -131,8 +131,10 @@ pub fn should_prewarm(has_engine: bool, initializing: bool, closing: bool, text:
         && text.chars().any(|character| !character.is_whitespace())
 }
 
+/// Whether a tab with this address needs a content WebView2. Internal pages (`bowser://`) never
+/// do: Bowser draws them itself (docs/design/settings-page.md).
 pub fn tab_needs_controller(url: Option<&url::Url>) -> bool {
-    url.is_some()
+    url.is_some_and(|url| !crate::internal_page::is_internal(url))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1107,17 +1109,6 @@ impl App {
         }
     }
 
-    pub fn toggle_tab_layout(app: &AppRef) -> crate::settings::TabLayout {
-        let layout = match Self::tab_layout(app) {
-            crate::settings::TabLayout::Horizontal => crate::settings::TabLayout::Vertical,
-            crate::settings::TabLayout::Vertical => crate::settings::TabLayout::Horizontal,
-        };
-        let saved_width = app.borrow().settings.sidebar_width;
-        Self::apply_tab_layout_settings(app, layout, saved_width);
-        Self::save_settings(app);
-        layout
-    }
-
     pub fn apply_tab_layout_settings(app: &AppRef, layout: crate::settings::TabLayout, width: u16) {
         let hwnd = {
             let mut state = app.borrow_mut();
@@ -1287,6 +1278,21 @@ impl App {
     /// profile and nothing it does is persisted (see `crate::private`).
     pub fn new_private_tab(app: &AppRef) -> TabId {
         Self::new_tab_in_mode(app, true)
+    }
+
+    /// The private tabs of this window, in every workspace.
+    pub fn private_tab_ids(app: &AppRef) -> Vec<TabId> {
+        app.borrow().tabs.iter().filter(|tab| tab.private).map(|tab| tab.id).collect()
+    }
+
+    /// "Close all private tabs" (main menu, tab menu, command palette, private landing): closes
+    /// every private tab of this window and leaves normal tabs alone. Closing the last tab still
+    /// leaves a fresh normal tab, as `close_tab` always does. Returns how many closed.
+    pub fn close_private_tabs(app: &AppRef) -> usize {
+        Self::private_tab_ids(app)
+            .into_iter()
+            .filter(|id| Self::close_tab(app, *id))
+            .count()
     }
 
     fn new_tab_in_mode(app: &AppRef, private: bool) -> TabId {
@@ -1786,7 +1792,10 @@ impl App {
             .tabs()
             .iter()
             .filter_map(|id| state.tabs.iter().find(|tab| tab.id == *id))
-            .filter_map(|tab| tab.url.as_ref().map(|url| (tab.id, url.as_str().to_owned(), tab.title.clone())))
+            .filter_map(|tab| tab.url.as_ref().map(|url| (tab.id, url, tab.title.clone())))
+            // An internal page is not a site: it is never offered as a "Switch to tab" row.
+            .filter(|(_, url, _)| !crate::internal_page::is_internal(url))
+            .map(|(id, url, title)| (id, url.as_str().to_owned(), title))
             .collect()
     }
 
@@ -2485,6 +2494,142 @@ impl App {
             .is_some_and(|tab| !tab.controller_created && tab.url.is_none())
     }
 
+    // --- internal pages (docs/design/settings-page.md) ---
+    /// The internal page tab `id` shows, if any.
+    pub fn internal_page(app: &AppRef, id: TabId) -> Option<crate::internal_page::InternalPage> {
+        app.borrow()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .and_then(|tab| tab.url.as_ref())
+            .and_then(crate::internal_page::parse)
+    }
+
+    /// Opens `page`: selects a tab already showing it, else turns the shown blank normal tab into
+    /// it (when `reuse_blank`), else opens it in a new tab. A settings tab is never private.
+    pub fn open_internal_page(app: &AppRef, page: crate::internal_page::InternalPage, reuse_blank: bool) -> TabId {
+        use crate::internal_page::OpenPlan;
+        let (tabs, current) = {
+            let state = app.borrow();
+            let active = state.tab_model.active();
+            let tabs: Vec<(TabId, bool)> = state
+                .tab_model
+                .iter()
+                .map(|model| {
+                    // Only a tab on this same page is reused (a settings tab is not a history tab).
+                    let same = state
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == model.id)
+                        .and_then(|tab| tab.url.as_ref())
+                        .and_then(crate::internal_page::parse)
+                        .is_some_and(|shown| shown.same_page(page));
+                    (model.id, same)
+                })
+                .collect();
+            let tab = state.tabs.iter().find(|tab| tab.id == active);
+            let blank = tab.is_some_and(|tab| !tab.controller_created && tab.url.is_none());
+            let private = tab.is_some_and(|tab| tab.private);
+            (tabs, (active, blank, private))
+        };
+        let id = match crate::internal_page::open_plan(&tabs, current, reuse_blank) {
+            OpenPlan::Existing(id) => {
+                let _ = Self::select_tab(app, id);
+                id
+            }
+            OpenPlan::Current(id) => id,
+            OpenPlan::NewTab => Self::new_tab(app),
+        };
+        Self::show_internal_page(app, id, page);
+        id
+    }
+
+    /// Puts tab `id` on `page`: address, title and favicon, and no engine page. Only for a tab
+    /// without a content controller (a new, blank, discarded or settings tab).
+    fn show_internal_page(app: &AppRef, id: TabId, page: crate::internal_page::InternalPage) {
+        let url = page.url();
+        let (hwnd, edit, active) = {
+            let mut state = app.borrow_mut();
+            let active = state.tab_model.active() == id;
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            if tab.private || tab.controller_created {
+                return;
+            }
+            tab.url = Some(url.clone());
+            tab.title = page.title().to_owned();
+            tab.favicon = Some(page.favicon().to_vec());
+            tab.favicon_key = Some(crate::favicon::key_for(page.favicon()));
+            tab.loading = false;
+            tab.page_usable = false;
+            tab.discarded = false;
+            tab.can_back = false;
+            tab.can_forward = false;
+            tab.load = LoadState::Loaded;
+            tab.blocked = 0;
+            tab.permission_blocked = false;
+            state.tab_model.set_url(id, Some(url.as_str()));
+            state.tab_model.set_title(id, page.title());
+            if active {
+                state.navigation_progress.reset();
+                state.page_loaded = false;
+            }
+            (state.hwnd, state.edit, active)
+        };
+        if active {
+            win32::sync_address_input(hwnd, edit, id, &url);
+            Self::sync_window_title(app);
+        }
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// The settings page moved to another section: the tab's address follows (no title change).
+    pub fn set_internal_section(app: &AppRef, id: TabId, page: crate::internal_page::InternalPage) {
+        let url = page.url();
+        let (hwnd, edit, active) = {
+            let mut state = app.borrow_mut();
+            let active = state.tab_model.active() == id;
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
+                return;
+            };
+            if !tab.url.as_ref().and_then(crate::internal_page::parse).is_some_and(|old| old.same_page(page)) || tab.url.as_ref() == Some(&url) {
+                return;
+            }
+            tab.url = Some(url.clone());
+            state.tab_model.set_url(id, Some(url.as_str()));
+            (state.hwnd, state.edit, active)
+        };
+        if active {
+            win32::sync_address_input(hwnd, edit, id, &url);
+        }
+        Self::post_tab_changed_kind(hwnd, id, false, true);
+    }
+
+    /// Settings saved on the settings page: sleeping tabs follow without a restart.
+    pub fn apply_sleep_settings(app: &AppRef, enabled: bool, after_secs: u64) {
+        {
+            let mut state = app.borrow_mut();
+            state.settings.sleep_enabled = enabled;
+            state.settings.sleep_after_secs = after_secs.clamp(
+                crate::settings::MIN_SLEEP_AFTER_SECS,
+                crate::settings::MAX_SLEEP_AFTER_SECS,
+            );
+        }
+        Self::schedule_tab_idle_timer(app);
+    }
+
+    /// A tab leaving an internal page for a web address loses the page's title and favicon.
+    fn leave_internal_page(tab: &mut AppTab, tab_model: &mut crate::tabs::TabList) {
+        if tab.url.as_ref().is_some_and(crate::internal_page::is_internal) {
+            tab.title.clear();
+            tab.favicon = None;
+            tab.favicon_key = None;
+            tab_model.set_title(tab.id, "");
+        }
+    }
+    // --- end internal pages ---
+
     /// Re-applies the shown split's panes once after a side's controller became ready.
     pub fn refresh_split_panes(app: &AppRef) {
         let refresh = std::mem::take(&mut app.borrow_mut().split_refresh);
@@ -2861,6 +3006,16 @@ impl App {
     }
 
     pub fn reload(app: &AppRef) {
+        // An internal page has no engine page: reloading it re-reads what it shows.
+        if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
+            let hwnd = app.borrow().hwnd;
+            if page.is_history() {
+                win32::history_page_refresh(hwnd);
+            } else {
+                win32::settings_page_refresh(hwnd);
+            }
+            return;
+        }
         if let Some(Err(error)) = Self::with_engine(app, |engine| engine.reload()) {
             win32::show_error_message(&format!("Reload failed: {error}"));
         }
@@ -2878,6 +3033,9 @@ impl App {
     }
 
     pub fn stop(app: &AppRef) {
+        if Self::internal_page(app, Self::active_tab_id(app)).is_some() {
+            return;
+        }
         if let Some(Err(error)) = Self::with_engine(app, |engine| engine.stop()) {
             win32::show_error_message(&format!("Stopping navigation failed: {error}"));
         }
@@ -2885,6 +3043,15 @@ impl App {
 
     /// Moves keyboard focus into the active page. Used after the HTML toolbar submits or escapes.
     pub fn focus_page(app: &AppRef) {
+        if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
+            let hwnd = app.borrow().hwnd;
+            if page.is_history() {
+                win32::history_page_focus(hwnd);
+            } else {
+                win32::settings_page_focus(hwnd);
+            }
+            return;
+        }
         let _ = Self::with_engine(app, |engine| engine.focus_page());
     }
 
@@ -4027,6 +4194,11 @@ impl App {
                     tab.url = Some(url.clone());
                     tab.title.clone_from(&saved.title);
                     tab.discarded = true;
+                    // A restored settings or history tab shows its icon before it is first selected.
+                    if let Some(page) = crate::internal_page::parse(&url) {
+                        tab.favicon = Some(page.favicon().to_vec());
+                        tab.favicon_key = Some(crate::favicon::key_for(page.favicon()));
+                    }
                 }
                 restored_ids.push(Some(id));
                 // The saved active tab wins; otherwise the first tab that restored.
@@ -4239,6 +4411,17 @@ impl App {
     }
 
     pub fn submit(app: &AppRef, input: &str) {
+        // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
+        // hosts fall through and are reported as an unsupported address, as before.
+        if let Some(page) = crate::internal_page::parse_input(input) {
+            let hwnd = app.borrow().hwnd;
+            if page.is_history() {
+                win32::open_history_page(hwnd, app, true);
+            } else {
+                win32::open_settings_page(hwnd, app, page.section(), true);
+            }
+            return;
+        }
         let target = {
             let mut state = app.borrow_mut();
             state.refresh_search_provider();
@@ -4272,6 +4455,13 @@ impl App {
     }
 
     fn submit_url(app: &AppRef, url: url::Url, allowed_file: Option<url::Url>) {
+        // An internal address (a restored settings tab; the engine never produces one) never
+        // reaches the engine: the shown tab becomes the page, or the page opens beside it.
+        if crate::internal_page::is_internal(&url) {
+            let active = app.borrow().tab_model.active();
+            Self::navigate_internal(app, active, &url);
+            return;
+        }
         // The address bar shows the target now, not after the engine starts and the page commits.
         let (hwnd, edit, active) = {
             let state = app.borrow();
@@ -4284,7 +4474,9 @@ impl App {
             if state.engine.is_some() {
                 let active_tab = state.tab_model.active();
                 state.begin_navigation_grouping(active_tab);
-                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active_tab) {
+                let App { tabs, tab_model, .. } = &mut *state;
+                if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == active_tab) {
+                    Self::leave_internal_page(tab, tab_model);
                     tab.url = Some(url.clone());
                     tab.controller_created = tab_needs_controller(Some(&url));
                     tab.page_usable = false;
@@ -5025,13 +5217,19 @@ impl App {
             // The engine would otherwise create a controller for an id the window already closed.
             return;
         }
+        if crate::internal_page::is_internal(url) {
+            Self::navigate_internal(app, tab_id, url);
+            return;
+        }
         let (mut engine, closing) = {
             let mut state = app.borrow_mut();
             let is_background = state.tab_model.active() != tab_id;
             if state.engine.is_some() {
                 state.begin_navigation_grouping(tab_id);
             }
-            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let App { tabs, tab_model, .. } = &mut *state;
+            if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                Self::leave_internal_page(tab, tab_model);
                 tab.url = Some(url.clone());
                 tab.controller_created = tab_needs_controller(Some(url));
                 tab.page_usable = false;
@@ -5069,6 +5267,45 @@ impl App {
             win32::show_error_message(&format!("Navigation failed: {error}"));
         }
         Self::schedule_tab_idle_timer(app);
+    }
+
+    /// `url` is internal. A settings address shows the page in `tab_id` when that tab has no
+    /// content page (restored, discarded, new), otherwise opens it like the menu does; anything
+    /// else on the internal scheme is refused, as an unsupported address always was.
+    fn navigate_internal(app: &AppRef, tab_id: TabId, url: &url::Url) {
+        let Some(page) = crate::internal_page::parse(url) else {
+            win32::show_error_message(&format!("Bowser has no page at {}.", url.as_str()));
+            return;
+        };
+        let (has_page, private, active) = {
+            let state = app.borrow();
+            let tab = state.tabs.iter().find(|tab| tab.id == tab_id);
+            (
+                tab.is_some_and(|tab| tab.controller_created),
+                tab.is_some_and(|tab| tab.private),
+                state.tab_model.active() == tab_id,
+            )
+        };
+        if has_page || private {
+            if active {
+                let hwnd = app.borrow().hwnd;
+                if page.is_history() {
+                    win32::open_history_page(hwnd, app, false);
+                } else {
+                    win32::open_settings_page(hwnd, app, page.section(), false);
+                }
+            }
+            return;
+        }
+        Self::show_internal_page(app, tab_id, page);
+        if active {
+            let hwnd = app.borrow().hwnd;
+            if page.is_history() {
+                win32::history_page_focus(hwnd);
+            } else {
+                win32::settings_page_go(hwnd, page.section());
+            }
+        }
     }
 
     pub fn resize_current(app: &AppRef, bounds: windows::Win32::Foundation::RECT) {
@@ -5882,9 +6119,11 @@ fn chrome_viewport_bounds(
     side_panel_width: i32,
 ) -> windows::Win32::Foundation::RECT {
     let mut viewport = match tab_layout {
-        crate::settings::TabLayout::Horizontal => {
+        crate::settings::TabLayout::ToolbarTop
+        | crate::settings::TabLayout::TabsTop
+        | crate::settings::TabLayout::SingleRow => {
             let inset = crate::chrome::layout::left_rail_inset(dpi);
-            crate::chrome::layout::content_rect(width.max(0) - inset, height, dpi, maximised)
+            crate::chrome::layout::content_rect(tab_layout, width.max(0) - inset, height, dpi, maximised)
                 .shifted_right(inset)
         }
         crate::settings::TabLayout::Vertical => {
@@ -7764,6 +8003,37 @@ mod tests {
     }
 
     #[test]
+    fn close_all_private_tabs_closes_only_the_private_ones() {
+        let app = app_with_pending(rect(800, 600));
+        let normal = App::active_tab_id(&app);
+        let first = App::new_private_tab(&app);
+        let other = App::new_tab(&app);
+        let second = App::new_private_tab(&app);
+        assert_eq!(App::private_tab_ids(&app), vec![first, second]);
+        assert_eq!(App::close_private_tabs(&app), 2);
+        assert!(App::private_tab_ids(&app).is_empty());
+        let left = App::tab_ids(&app);
+        assert!(left.contains(&normal) && left.contains(&other), "normal tabs stay: {left:?}");
+        assert!(!left.contains(&first) && !left.contains(&second));
+        // Nothing private left: a second run closes nothing.
+        assert_eq!(App::close_private_tabs(&app), 0);
+    }
+
+    #[test]
+    fn close_all_private_tabs_in_a_private_only_window_leaves_a_normal_tab() {
+        let app = app_with_pending(rect(800, 600));
+        let only = App::active_tab_id(&app);
+        let private = App::new_private_tab(&app);
+        assert!(App::close_tab(&app, only));
+        assert_eq!(App::tab_ids(&app), vec![private]);
+        assert_eq!(App::close_private_tabs(&app), 1);
+        let fresh = App::active_tab_id(&app);
+        assert_ne!(fresh, private);
+        assert!(!App::tab_private(&app, fresh));
+        assert!(App::private_tab_ids(&app).is_empty());
+    }
+
+    #[test]
     fn private_tabs_are_left_out_of_session_snapshots_and_never_join_groups() {
         let app = app_with_pending(rect(800, 600));
         let first = App::active_tab_id(&app);
@@ -8524,7 +8794,7 @@ mod tests {
             144,
             3,
             true,
-            crate::settings::TabLayout::Horizontal,
+            crate::settings::TabLayout::ToolbarTop,
             crate::settings::DEFAULT_SIDEBAR_WIDTH,
             0,
         );
@@ -8563,10 +8833,30 @@ mod tests {
     }
 
     #[test]
-    fn webview_bounds_reserve_rail_sidebar_and_panel_in_both_tab_layouts() {
+    fn webview_bounds_start_where_each_layouts_chrome_ends() {
+        use crate::settings::TabLayout;
+        for dpi in [96, 120, 144, 192] {
+            for tab_layout in TabLayout::ALL {
+                let bounds = chrome_viewport_bounds(1600, 1000, dpi, 3, true, tab_layout, 260, 0);
+                assert_eq!(bounds.top, crate::chrome::layout::chrome_height(tab_layout, dpi), "dpi={dpi}, layout={tab_layout:?}");
+                if !tab_layout.is_vertical() {
+                    let viewport = crate::chrome::layout::compute_in_frame_for(tab_layout, 1600, 1000, dpi, 3, 0, true).viewport;
+                    assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (viewport.left, viewport.top, viewport.right, viewport.bottom), "dpi={dpi}, layout={tab_layout:?}");
+                }
+            }
+            // Single row and the sidebar layout give the page the 30 px a tab row would have taken.
+            let top = |layout| chrome_viewport_bounds(1600, 1000, dpi, 3, true, layout, 260, 0).top;
+            assert!(top(TabLayout::SingleRow) < top(TabLayout::ToolbarTop), "dpi={dpi}");
+            assert_eq!(top(TabLayout::Vertical), top(TabLayout::SingleRow), "dpi={dpi}");
+            assert_eq!(top(TabLayout::TabsTop), top(TabLayout::ToolbarTop), "dpi={dpi}");
+        }
+    }
+
+    #[test]
+    fn webview_bounds_reserve_rail_sidebar_and_panel_in_every_tab_layout() {
         for dpi in [96, 120, 144, 192] {
             let inset = crate::chrome::layout::left_rail_inset(dpi);
-            for tab_layout in [crate::settings::TabLayout::Horizontal, crate::settings::TabLayout::Vertical] {
+            for tab_layout in crate::settings::TabLayout::ALL {
                 let base = chrome_viewport_bounds(1800, 1000, dpi, 4, true, tab_layout, 260, 0);
                 let with_panel = chrome_viewport_bounds(1800, 1000, dpi, 4, true, tab_layout, 260, 320);
                 assert!(base.left >= inset, "rail must be reserved, dpi={dpi}, layout={tab_layout:?}");

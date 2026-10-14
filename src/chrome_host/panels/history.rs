@@ -73,8 +73,9 @@ pub(crate) fn snapshot_with(
 }
 
 /// Stable 32-bit id for one stored visit. Commands still resolve it against the live model and
-/// reject collisions, so a stale or ambiguous id cannot target another entry.
-fn entry_id(line: &Line) -> u32 {
+/// reject collisions, so a stale or ambiguous id cannot target another entry. The history page
+/// (`chrome_host::history_page`) uses the same ids.
+pub(crate) fn entry_id(line: &Line) -> u32 {
     let mut hash = 0x811c_9dc5u32;
     for byte in line.timestamp.to_le_bytes().into_iter().chain(line.url.bytes()) {
         hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);

@@ -1,6 +1,7 @@
 //! Pure vertical sidebar geometry, in physical pixels.
 
 use crate::chrome::layout::{self, Metrics, Rect};
+use crate::settings::TabLayout;
 
 pub const MIN_WIDTH: i32 = 180;
 /// Width of the collapsed, icons-only sidebar strip.
@@ -44,7 +45,8 @@ impl SidebarLayout {
         let width = width.max(0);
         let height = height.max(0);
         let m = Metrics::new(dpi);
-        let content = layout::content_rect(width, height, dpi, maximised);
+        // The sidebar replaces the tab row, so the page starts right under the toolbar.
+        let content = layout::content_rect(TabLayout::Vertical, width, height, dpi, maximised);
         let available_width = content.right.saturating_sub(1).max(0);
         // A request at or below the collapsed width is honoured; anything else keeps MIN_WIDTH.
         let floor = if requested_width <= COLLAPSED_WIDTH { COLLAPSED_WIDTH } else { MIN_WIDTH };
@@ -55,7 +57,7 @@ impl SidebarLayout {
         let sidebar = Rect::new(0, top_margin, side_width, height);
         let header_height = m.px(HEADER_HEIGHT).min(height);
         let header = Rect::new(0, top_margin, side_width, top_margin.saturating_add(header_height).min(height));
-        let row_top = (content.top + header_height).min(height);
+        let row_top = header.bottom;
         let rows = Rect::new(0, row_top, side_width, content.bottom.max(row_top));
         let row_height = m.px(TAB_ROW_HEIGHT).max(1);
         let max_scroll = 0;
@@ -217,7 +219,7 @@ mod tests {
         let layout = SidebarLayout::compute(900, 700, 96, 260, false);
         assert_eq!(
             layout.viewport.top,
-            crate::chrome::layout::content_rect(900, 700, 96, false).top
+            crate::chrome::layout::content_rect(TabLayout::Vertical, 900, 700, 96, false).top
         );
         assert_eq!(layout.viewport.right, 896);
     }

@@ -332,104 +332,127 @@ body.bw-hover-body {
 
 /* ----- omnibox suggestions ----- */
 /*
- * The dropdown is the omnibox pill grown downward: one surface with it. Rust places the popup
- * exactly as wide as the painted pill and tucks it one device pixel under the pill's bottom edge;
- * while it shows, the toolbar squares the pill's bottom corners and opens its bottom edge
- * (toolbar.css .pill.is-open), so the pill's side borders run straight into these. Same material
- * on both: the overlay tint over the opaque window colour (--bw-window-opaque), as in menu.css.
- * Outlined with --bw-pill-edge, the pill's own edge; only the bottom corners are rounded, with the
- * pill's own radius (--bw-r-omnibox), so both ends of the open surface share one curvature.
- * Rows follow the palette's list vocabulary at menu density: 32px, 4px radius, 16px lead, 12px
- * gap, Body title with a Caption address, --bw-hover under the pointer and --bw-island for the
- * keyboard selection.
+ * The dropdown is the omnibox pill grown downward: one surface with it (docs/design/omnibox.md).
+ * Rust places the popup exactly as wide as the painted pill and tucks it one device pixel under the
+ * pill's bottom edge; while it shows, the toolbar squares the pill's bottom corners and opens its
+ * bottom edge (toolbar.css .pill.is-open). Same material on both, --bw-omni-material (the themed
+ * fill over the opaque window colour), and no outline on either: the list is separated from the
+ * page by its fill and by a soft shadow Rust paints under the popup (win32/corner_fringe.rs). Only
+ * the bottom corners are rounded, with the pill's own radius, so both ends of the open surface share
+ * one curvature.
+ * Rows: 32px, 13px title then a 12px address on one baseline, a 16px lead (favicon or the kind's
+ * glyph) centred under the pill's site button, the title starting at the pill's text x. Every row's
+ * highlight is concentric with the rounded bottom (--bw-r-omni-row), so one indicator shape fits
+ * every row: the keyboard selection is a single layer (.bw-suggest-sel) that slides between rows.
  * Motion: the surface itself never moves (a transform would pull its edges off the pill's). Rust
  * unrolls the window region from the pill (167ms strong ease-out, 100ms back on close); on the
- * first appearance only, the rows settle in under it (.is-entering, hover.ts). Keyboard selection
- * and per-keystroke row updates are instant.
+ * first appearance only, the rows settle in under it with a 10ms stagger (.is-entering, hover.ts).
+ * Per-keystroke row updates are instant; the selection slides in 83ms, front-loaded, so a held
+ * arrow key never trails. Reduced motion: rows fade in place, the selection jumps.
  */
 
 /* Behind the list: Rust's window region is cut a hair inside the list's rounded corners (only pixels
-   the curve fully covers); a click-through fringe window (win32/corner_fringe.rs) paints the partly
-   covered pixels over it, so the corners are anti-aliased. This edge-coloured backing only guards
-   the sub-pixel seam between the two. */
+   the curve fully covers); a click-through backdrop window (win32/corner_fringe.rs) paints the partly
+   covered pixels and the shadow under it, so the corners are anti-aliased. The page's own backing is
+   the list's material, so the sub-pixel seam between the two never shows another colour. */
 body.bw-hover-body[data-hover-kind="suggest"] {
-  background:
-    linear-gradient(var(--bw-pill-edge), var(--bw-pill-edge)),
-    linear-gradient(var(--bw-overlay), var(--bw-overlay)),
-    var(--bw-window-opaque);
+  background: var(--bw-omni-material);
 }
 
 .bw-suggest {
   position: relative;
+  /* The selection indicator paints under the rows (z-index -1) but above this surface. */
+  isolation: isolate;
+  /* Narrow lists drop the address column (below); the width is always set from outside. */
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   padding: var(--bw-space-1);
-  /* The pill's own ring continues down the sides and along the bottom: 1px accent border here, the
-     second accent pixel and the contrast line in ::after (toolbar.css .pill::after), so the open
-     surface reads as the focused pill grown downwards. The popup is clipped to its region, so it
-     has no shadow. */
-  border: 1px solid var(--bw-focus);
+  /* No outline, like the pill above it while open: the 1px border stays so the rows keep their
+     5px inset (the concentric radius depends on it), but it is transparent and the fill runs under
+     it. The popup is clipped to its region; its shadow is painted natively, outside it. */
+  border: 1px solid transparent;
   border-top: 0;
   /* The pill's own curvature at the bottom, so the open surface is rounded alike at both ends. */
   border-radius: 0 0 var(--bw-r-omnibox) var(--bw-r-omnibox);
-  /* The pill's fill over the opaque window colour: the same material as the pill above it, and
-     opaque so the page never shows through. */
-  background: linear-gradient(var(--bw-fill), var(--bw-fill)), var(--bw-window-opaque);
+  /* The same material as the focused pill above it, opaque so the page never shows through. */
+  background: var(--bw-omni-material);
   color: var(--bw-text);
-  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  font: var(--bw-text-omni) / var(--bw-leading-body) var(--bw-font);
 }
 
-.bw-suggest::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow:
-    inset 0 0 0 1px var(--bw-focus),
-    inset 0 0 0 2px var(--bw-focus-inner);
-  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000), linear-gradient(#000, #000);
-  mask-size: 100% calc(100% - 2px), 2px 100%, 2px 100%;
-  mask-position: 0 100%, 0 0, 100% 0;
-  mask-repeat: no-repeat;
-  pointer-events: none;
-}
-
-/* First appearance: rows drop 6px into place and fade in while the region unrolls. */
+/* First appearance: rows drop 4px into place and fade in while the region unrolls, 10ms apart. The
+   selection indicator comes with the first row (a new list always selects it). `translate` rather
+   than `transform`, so the indicator's own transform (its row) is left alone. */
 @keyframes bw-suggest-rows-in {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    translate: 0 -4px;
   }
 }
 
-.bw-suggest.is-entering .bw-suggest-row {
+.bw-suggest.is-entering :is(.bw-suggest-row, .bw-suggest-sel) {
   animation: bw-suggest-rows-in var(--bw-dur-base) var(--bw-ease-out) both;
 }
 
+.bw-suggest.is-entering .bw-suggest-row:nth-child(2) { animation-delay: 10ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(3) { animation-delay: 20ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(4) { animation-delay: 30ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(5) { animation-delay: 40ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(6) { animation-delay: 50ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(7) { animation-delay: 60ms; }
+.bw-suggest.is-entering .bw-suggest-row:nth-child(8) { animation-delay: 70ms; }
+
 @media (prefers-reduced-motion: reduce) {
-  .bw-suggest.is-entering .bw-suggest-row {
+  .bw-suggest.is-entering :is(.bw-suggest-row, .bw-suggest-sel) {
     animation: bw-fade-in var(--bw-dur-fast) var(--bw-ease-fade) both;
+    animation-delay: 0ms;
   }
 }
 
 .bw-suggest-row {
   display: flex;
   align-items: center;
-  gap: var(--bw-space-3);
+  gap: var(--bw-space-2);
   min-width: 0;
-  min-height: 32px;
-  padding: 0 var(--bw-space-2);
-  border-radius: var(--bw-r-control);
+  /* Exactly 32px (single-line rows), so the indicator can step by its own height. */
+  height: 32px;
+  flex: none;
+  padding: 0 var(--bw-space-2) 0 var(--bw-space-1_5);
+  border-radius: var(--bw-r-omni-row);
   cursor: default;
 }
 
 .bw-suggest-row:hover {
-  background: var(--bw-hover);
+  background: var(--bw-omni-row-hover);
 }
 
-.bw-suggest-row[aria-selected="true"] {
-  background: var(--bw-island);
+/* The keyboard selection: one layer under the rows, moved with transform to row --suggest-sel (set
+   by hover.ts). It does not move on the list's first frame or when the rows are replaced; once the
+   selection moves (.is-tracking) it slides, 83ms with the strong ease-out, so most of the way is
+   covered in the first frame. */
+.bw-suggest-sel {
+  position: absolute;
+  z-index: -1;
+  top: var(--bw-space-1);
+  right: var(--bw-space-1);
+  left: var(--bw-space-1);
+  height: 32px;
+  border-radius: var(--bw-r-omni-row);
+  background: var(--bw-omni-row-selected);
+  transform: translateY(calc(var(--suggest-sel, 0) * 100%));
+  pointer-events: none;
+}
+
+.bw-suggest.is-tracking .bw-suggest-sel {
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-suggest.is-tracking .bw-suggest-sel {
+    transition: none;
+  }
 }
 
 .bw-suggest-lead {
@@ -452,7 +475,7 @@ body.bw-hover-body[data-hover-kind="suggest"] {
 }
 
 .bw-suggest-fav {
-  border-radius: 2px;
+  border-radius: 3px;
   object-fit: contain;
 }
 
@@ -485,26 +508,78 @@ body.bw-hover-body[data-hover-kind="suggest"] {
   line-height: var(--bw-leading-caption);
 }
 
-/* The typed text inside a row: weight, not colour, so it reads the same on every row state. */
+/* A narrow pill (a small window, a split toolbar): the titles get the row. A row whose title is its
+   address keeps it, as its title. */
+@container (max-width: 440px) {
+  .bw-suggest-url {
+    display: none;
+  }
+
+  .bw-suggest-title:not(:last-child) {
+    max-width: none;
+  }
+}
+
+/* A bookmarked page whose favicon took the lead slot: the bookmark glyph rides after the title, so a
+   bookmark still reads as one at a glance. Labelled, so the row's name says it too. */
+.bw-suggest-mark {
+  flex: none;
+  align-self: center;
+  width: 12px;
+  height: 12px;
+  margin-inline-start: calc(-1 * var(--bw-space-1));
+  color: var(--bw-text-2);
+}
+
+/* The typed text inside a row: weight in the title, colour in the address, so it reads the same on
+   every row state without shouting. */
 .bw-suggest-match {
   background: none;
   color: var(--bw-text);
+}
+
+.bw-suggest-title .bw-suggest-match {
   font-weight: var(--bw-weight-strong);
 }
 
 /* What picking the row does when it is not "go to this page" (open tab: switch to it). */
 .bw-suggest-action {
+  display: inline-flex;
   flex: none;
-  margin-inline-start: auto;
-  padding-inline-start: var(--bw-space-3);
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--bw-space-2);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-omni-chip);
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
+  line-height: 1;
   white-space: nowrap;
 }
 
-.bw-suggest-row[aria-selected="true"] .bw-suggest-action {
+/* The Enter key on the selected row: a quiet keycap. Every row keeps its box (visibility only), so
+   nothing in a row moves as the selection passes through it. */
+.bw-suggest-key {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 var(--bw-space-1);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-omni-chip);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: 1;
+  visibility: hidden;
+}
+
+.bw-suggest-row[aria-selected="true"] :is(.bw-suggest-action, .bw-suggest-key) {
   color: var(--bw-text);
+}
+
+.bw-suggest-row[aria-selected="true"] .bw-suggest-key {
+  visibility: visible;
 }
 
 @media (forced-colors: active) {

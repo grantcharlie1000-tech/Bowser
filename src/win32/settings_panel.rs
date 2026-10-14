@@ -1,6 +1,11 @@
 //! The Settings window: a native, owned panel for the settings in the active profile's
 //! `settings.txt`.
 //!
+//! Only the fallback: a window with the HTML chrome opens `bowser://settings` in a tab instead
+//! (`settings_page.rs`, docs/design/settings-page.md). This window is used when the chrome runs
+//! natively (HTML chrome off, no chrome environment, or the chrome failed), because only the
+//! trusted chrome host may draw the settings page.
+//!
 //! Inputs are real Win32 children, so Tab, Space and screen readers work as usual. Checkboxes and
 //! buttons are owner-drawn in the solid palette, with a teal focus ring. Cards, headings and status
 //! text are painted by the window itself. `WS_CLIPCHILDREN` keeps the two layers from overdrawing.
@@ -65,9 +70,9 @@ const SLEEP_HELP: &str = "Hidden tabs are discarded to free memory once they hav
 const SLEEP_LABEL: &str = "Sleep after (seconds)";
 const SLEEP_UNIT: &str = "30 to 604800 seconds (7 days)";
 const BLOCKER_HEADING: &str = "Ad and tracker blocker";
-const LAYOUT_HEADING: &str = "Tab layout";
+const LAYOUT_HEADING: &str = "Browser layout";
 const LAYOUT_HELP: &str =
-    "Choose a horizontal strip or vertical sidebar. Sidebar width is measured in logical pixels.";
+    "Click to step through the layouts: toolbar above tabs, tabs above toolbar, single row or vertical sidebar. Sidebar width is measured in logical pixels.";
 const BLOCKER_TOGGLE: &str = "Block ads and trackers";
 const BLOCKER_HELP: &str =
     "Blocks known ad and tracking requests on every site except the ones listed below.";
@@ -100,8 +105,6 @@ thread_local! {
     /// The open window, so reopening the menu item focuses it rather than stacking another.
     static OPEN: Cell<isize> = const { Cell::new(0) };
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
-    /// Set by `open` around `CreateWindowExW` so `WM_CREATE` skips the native controls.
-    static HTML_ONLY: Cell<bool> = const { Cell::new(false) };
     /// The panel pointer that `WM_NCCREATE` took ownership of, or 0. Lets `open` tell whether a
     /// failed `CreateWindowExW` already freed the panel through `WM_NCDESTROY`.
     static ADOPTED: Cell<usize> = const { Cell::new(0) };
@@ -179,9 +182,6 @@ struct Panel {
     focus: i32,
     status: String,
     status_error: bool,
-    /// The HTML Settings page is the only content: no native controls exist and the window paints
-    /// only its backing fill (V3).
-    html_only: bool,
 }
 
 /// Logical positions. Every rectangle is scaled from these values with the window's DPI.
@@ -375,10 +375,6 @@ unsafe fn paint(hwnd: HWND) {
             let res = &panel.res;
             FillRect(dc, &client, res.window);
             FrameRect(dc, &client, res.border);
-            if panel.html_only {
-                let _ = EndPaint(hwnd, &ps);
-                return;
-            }
             SetBkMode(dc, TRANSPARENT);
 
             round_rect(
@@ -823,17 +819,28 @@ fn populate(hwnd: HWND, settings: &Settings) {
 }
 
 fn refresh_layout_text(hwnd: HWND) {
-    let (text, width) = state(hwnd).map_or(("Horizontal tabs", 260), |panel| {
-        (
-            match panel.tab_layout {
-                settings::TabLayout::Horizontal => "Horizontal tabs",
-                settings::TabLayout::Vertical => "Vertical tabs",
-            },
-            panel.sidebar_width,
-        )
+    let (text, width) = state(hwnd).map_or((layout_label(settings::TabLayout::default()), 260), |panel| {
+        (layout_label(panel.tab_layout), panel.sidebar_width)
     });
     set_text(hwnd, ID_TAB_LAYOUT, text);
     set_text(hwnd, ID_SIDEBAR_WIDTH, &width.to_string());
+}
+
+/// The Browser layout button's text. Clicking it steps to the next layout.
+fn layout_label(layout: settings::TabLayout) -> &'static str {
+    match layout {
+        settings::TabLayout::ToolbarTop => "Toolbar above tabs",
+        settings::TabLayout::TabsTop => "Tabs above toolbar",
+        settings::TabLayout::SingleRow => "Single row",
+        settings::TabLayout::Vertical => "Vertical",
+    }
+}
+
+/// The layout after `layout` in the settings order, wrapping round.
+fn next_layout(layout: settings::TabLayout) -> settings::TabLayout {
+    let all = settings::TabLayout::ALL;
+    let index = all.iter().position(|candidate| *candidate == layout).unwrap_or(0);
+    all[(index + 1) % all.len()]
 }
 
 fn search_text(panel: &Panel) -> &'static str {
@@ -949,7 +956,7 @@ fn save_form(hwnd: HWND) {
     };
     let (sleep_enabled, blocker_enabled, search_engine, automatic_tab_grouping, tab_layout) =
         state(hwnd).map_or(
-            (true, true, None, true, settings::TabLayout::Horizontal),
+            (true, true, None, true, settings::TabLayout::default()),
             |panel| {
                 (
                     panel.sleep_enabled,
@@ -1130,10 +1137,7 @@ fn command(hwnd: HWND, wparam: WPARAM) {
         (ID_SEARCH_ENGINE, BN_CLICKED) => choose_search_engine(hwnd),
         (ID_TAB_LAYOUT, BN_CLICKED) => {
             if let Some(panel) = state(hwnd) {
-                panel.tab_layout = match panel.tab_layout {
-                    settings::TabLayout::Horizontal => settings::TabLayout::Vertical,
-                    settings::TabLayout::Vertical => settings::TabLayout::Horizontal,
-                };
+                panel.tab_layout = next_layout(panel.tab_layout);
             }
             refresh_layout_text(hwnd);
             invalidate_child(hwnd, ID_TAB_LAYOUT);
@@ -1185,18 +1189,12 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             CLASS_REGISTERED.with(|registered| registered.set(true));
         }
 
-        let html_only = super::html_dialog::html_only(owner);
         let dpi = dpi_of(owner);
-        // The HTML page scrolls, so it takes a normal dialog height and shrinks to fit a short
-        // screen; the native layout is fixed, so it keeps its size and is only moved on screen.
-        let (width, height) = if html_only {
-            (scaled(super::html_dialog::SETTINGS_WIDTH, dpi), scaled(super::html_dialog::SETTINGS_HEIGHT, dpi))
-        } else {
-            (scaled(CLIENT_WIDTH, dpi), scaled(CLIENT_HEIGHT, dpi))
-        };
+        // The native layout is fixed, so the window keeps its size and is only moved on screen.
+        let (width, height) = (scaled(CLIENT_WIDTH, dpi), scaled(CLIENT_HEIGHT, dpi));
         let mut owner_rect = RECT::default();
         let _ = GetWindowRect(owner, &mut owner_rect);
-        let placed = super::html_dialog::dialog_rect(owner_rect, super::html_dialog::work_area_of(owner), width, height, html_only);
+        let placed = super::html_dialog::dialog_rect(owner_rect, super::html_dialog::work_area_of(owner), width, height, false);
         let (x, y, width, height) = (placed.left, placed.top, placed.right - placed.left, placed.bottom - placed.top);
 
         let palette = palette();
@@ -1226,10 +1224,8 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             focus: 0,
             status: IDLE_STATUS.to_owned(),
             status_error: false,
-            html_only,
         }));
         ADOPTED.with(|adopted| adopted.set(0));
-        HTML_ONLY.with(|flag| flag.set(html_only));
         let window = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             CLASS_NAME,
@@ -1244,7 +1240,6 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             Some(instance),
             Some(panel.cast()),
         );
-        HTML_ONLY.with(|flag| flag.set(false));
         let adopted = ADOPTED.with(|adopted| adopted.replace(0));
         let window = match window {
             Ok(window) => window,
@@ -1258,13 +1253,6 @@ pub(crate) fn open(owner: HWND, app: &crate::app::AppRef) -> windows::core::Resu
             }
         };
         OPEN.with(|open| open.set(window.0 as isize));
-        super::window::attach_html_dialog(owner, window, super::html_dialog::Kind::Settings);
-
-        if html_only {
-            let _ = ShowWindow(window, SW_SHOW);
-            let _ = SetForegroundWindow(window);
-            return Ok(());
-        }
         match loaded {
             Ok(settings) => populate(window, &settings),
             Err(error) => {
@@ -1337,7 +1325,6 @@ unsafe extern "system" fn settings_proc(
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
-            WM_CREATE if HTML_ONLY.with(Cell::get) => LRESULT(0),
             WM_CREATE => match create_children(hwnd) {
                 Ok(()) => LRESULT(0),
                 Err(_) => LRESULT(-1),
@@ -1369,7 +1356,6 @@ unsafe extern "system" fn settings_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
-                super::html_dialog::close(hwnd);
                 OPEN.with(|open| {
                     if open.get() == hwnd.0 as isize {
                         open.set(0);

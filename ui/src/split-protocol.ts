@@ -1,7 +1,8 @@
 // Split view wire contract (docs/html-chrome-protocol.md, "Split view"). Pure and self-contained so
 // protocol.ts can import it without a cycle and test/split.mjs can load it directly.
 //
-// Rust -> JS: `pair` (tab strip and toolbar), `splitpick` / `splitdrop` / `splithide` (split view).
+// Rust -> JS: `pair` (tab strip and toolbar), `splitpick` / `splitdrop` / `splithide` (split view),
+// `privatepage` (the same host's private landing over a blank private tab, docs/design/private-tabs.md).
 // JS -> Rust: `{v:1,t:"split",a,...}` with exactly the fields each action takes.
 
 export type SplitSide = 'l' | 'r';
@@ -36,7 +37,9 @@ export interface SplitPickMsg {
 }
 export interface SplitDropMsg { readonly t: 'splitdrop'; readonly side: SplitSide; readonly title: string }
 export interface SplitHideMsg { readonly t: 'splithide' }
-export type SplitInbound = PairMsg | SplitPickMsg | SplitDropMsg | SplitHideMsg;
+/** The private landing over blank private tab `id` (wire id); `n` private tabs are open (>= 1). */
+export interface PrivatePageMsg { readonly t: 'privatepage'; readonly id: number; readonly n: number }
+export type SplitInbound = PairMsg | SplitPickMsg | SplitDropMsg | SplitHideMsg | PrivatePageMsg;
 
 export type SplitCommand =
   | { v: 1; t: 'split'; a: 'pick'; id: number }
@@ -44,6 +47,7 @@ export type SplitCommand =
   | { v: 1; t: 'split'; a: 'go'; text: string }
   | { v: 1; t: 'split'; a: 'close' }
   | { v: 1; t: 'split'; a: 'focus' }
+  | { v: 1; t: 'split'; a: 'closeprivate' }
   | { v: 1; t: 'split'; a: 'over'; id: number; x: number; y: number }
   | { v: 1; t: 'split'; a: 'drop'; id: number }
   | { v: 1; t: 'split'; a: 'end'; id: number };
@@ -52,6 +56,8 @@ export type SplitCommand =
 export const MAX_PICK_TABS = 100;
 export const MAX_PICK_CLOSED = 8;
 export const MAX_SPLIT_COORD = 16384;
+/** Most private tabs a `privatepage` may report (shared with `src/chrome_host/split.rs`). */
+export const MAX_PRIVATE_TABS = 10000;
 const MAX_ID = 0xffffffff;
 const MAX_TITLE = 512;
 const MAX_HOST = 253;
@@ -126,6 +132,12 @@ export function parseSplitInbound(raw: Record<string, unknown>): SplitInbound | 
     }
     case 'splithide':
       return exactKeys(raw, ['v', 't']) ? { t: 'splithide' } : null;
+    case 'privatepage': {
+      if (!exactKeys(raw, ['v', 't', 'id', 'n'])) return null;
+      const { id, n } = raw;
+      if (!isInt(id, 1, MAX_ID) || !isInt(n, 1, MAX_PRIVATE_TABS)) return null;
+      return { t: 'privatepage', id, n };
+    }
     default:
       return null;
   }
@@ -146,6 +158,7 @@ export function validSplitCommand(cmd: SplitCommand): boolean {
       return exactKeys(cmd, ['v', 't', 'a', 'text']) && isStr(cmd.text, MAX_TEXT) && cmd.text.trim() !== '';
     case 'close':
     case 'focus':
+    case 'closeprivate':
       return exactKeys(cmd, ['v', 't', 'a']);
     case 'over':
       return exactKeys(cmd, ['v', 't', 'a', 'id', 'x', 'y']) && isInt(cmd.id, 1, MAX_ID) && isInt(cmd.x, 0, MAX_SPLIT_COORD) && isInt(cmd.y, 0, MAX_SPLIT_COORD);

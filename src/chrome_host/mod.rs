@@ -9,6 +9,8 @@ mod guard;
 pub mod host;
 pub mod json;
 pub mod protocol;
+pub mod settings;
+pub mod history_page; // bowser://history (docs/design/history-page.md)
 // --- split view ---
 pub mod split;
 // --- end split view ---
@@ -190,22 +192,28 @@ pub fn toolbar_pill_rect(layout: &Layout, dpi: u32) -> Option<RECT> {
 }
 
 /// Client-relative physical pixels of the HTML tab strip: the tab row, including its rail-shifted
-/// left edge. While the native overflow chevron is showing, the strip stops one island gap before
-/// it, so the last tab is not painted under the button. `None` when the row is empty (vertical
-/// sidebar mode has no tab row) or the chevron leaves no room.
+/// left edge. The strip stops one island gap before the native overflow chevron while it is showing
+/// (so the last tab is not painted under the button), and before "+" when that sits in the row.
+/// `None` when the row is empty (vertical sidebar mode has no tab row) or the chevron leaves no
+/// room.
 pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
     use crate::chrome::layout::Metrics;
     let row = layout.tab_row;
     if row.is_empty() {
         return None;
     }
+    let gap = layout.metrics.px(Metrics::ISLAND_GAP);
+    let mut right = row.right;
+    // `ToolbarTop` keeps "+" inside the full-width row, at its right end. The other layouts end the
+    // row before it, so there it is not inside the row and changes nothing.
+    let plus = layout.new_tab_button;
+    if !plus.is_empty() && row.contains_rect(plus) {
+        right = (plus.left - gap).max(row.left);
+    }
     let button = layout.tab_menu_button;
-    let right = if button.is_empty() {
-        row.right
-    } else {
-        let gap = layout.metrics.px(Metrics::ISLAND_GAP);
-        (button.left - gap).max(row.left).min(row.right)
-    };
+    if !button.is_empty() {
+        right = right.min((button.left - gap).max(row.left));
+    }
     if right <= row.left {
         return None;
     }
@@ -564,7 +572,11 @@ mod tests {
                 let snap = |css: i32| (f64::from(css) * f64::from(dpi) / 96.0).round() as i32;
                 assert_eq!(pill.left, bounds.left + snap(x), "dpi={dpi} width={width}");
                 assert_eq!(pill.right, bounds.left + snap(x + w), "dpi={dpi} width={width}");
-                assert_eq!(pill.bottom - bounds.top, snap(30), "the 26px pill is centred in the 34px row");
+                assert_eq!(
+                    pill.bottom - bounds.top,
+                    snap((Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2 + Metrics::OMNIBOX_HEIGHT),
+                    "the 26px pill is centred in the toolbar row"
+                );
                 for (painted, laid_out) in [
                     (pill.left, layout.omnibox.left),
                     (pill.right, layout.omnibox.right),
@@ -687,13 +699,21 @@ mod tests {
     }
 
     #[test]
-    fn tab_row_bounds_is_the_full_tab_row() {
+    fn tab_row_bounds_is_the_tab_row_up_to_the_new_tab_button() {
         let mut layout = compute_in_frame(1200, 700, 96, 3, 0, false);
         let bounds = tab_row_bounds(&layout).expect("horizontal layout has a tab row");
         assert_eq!(bounds.left, layout.tab_row.left);
         assert_eq!(bounds.top, layout.tab_row.top);
-        assert_eq!(bounds.right, layout.tab_row.right);
         assert_eq!(bounds.bottom, layout.tab_row.bottom);
+        // "+" sits at the right end of the full-width row, so the strip stops one gap before it.
+        let gap = layout.metrics.px(crate::chrome::layout::Metrics::ISLAND_GAP);
+        assert!(layout.tab_row.contains_rect(layout.new_tab_button));
+        assert_eq!(bounds.right, layout.new_tab_button.left - gap);
+        assert_eq!(bounds.right, layout.tab_zone.right);
+        // Without a "+" in the row (it dropped out) the strip runs to the end of the row.
+        layout.new_tab_button = Rect::default();
+        assert_eq!(tab_row_bounds(&layout).map(|bounds| bounds.right), Some(layout.tab_row.right));
+        layout = compute_in_frame(1200, 700, 96, 3, 0, false);
         // Three tabs do not overflow, so no chevron takes a slot.
         assert!(layout.tab_menu_button.is_empty());
         // The rail-shifted left edge is kept as laid out.

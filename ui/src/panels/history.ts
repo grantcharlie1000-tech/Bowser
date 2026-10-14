@@ -1,6 +1,6 @@
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
-import { historyOpenCommand } from './history-logic';
+import { historyClickOpensNewTab, historyOpenCommand } from './history-logic';
 import { emptyState, enter, faviconTile, iconButton, isFavUri, moveFocus, panelHeader, searchField, sectionHeader, textButton } from './kit';
 
 type Entry = { id: number; title: string; host: string; clock: string };
@@ -97,7 +97,8 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       );
       trail.append(meta, actions);
       item.append(faviconTile(row.host || name, favs[row.host]), title, trail);
-      item.addEventListener('click', () => { select(row.id); openRow(row.id, false); });
+      item.addEventListener('click', (event) => { select(row.id); openRow(row.id, historyClickOpensNewTab(event)); });
+      item.addEventListener('auxclick', (event) => { if (historyClickOpensNewTab(event)) { event.preventDefault(); select(row.id); openRow(row.id, true); } });
       nodes.push(item);
     }
     const searching = search.input.value.trim() !== '';

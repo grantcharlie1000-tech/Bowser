@@ -1,0 +1,369 @@
+/*
+ * Surface: PRIVATE (the private landing in ?view=split over a blank private tab, plus the private
+ * mark's shared motion used by the toolbar chip and the tab strip). Owner: private tabs.
+ * Built by ui/src/private-page.ts; words in ui/src/private-logic.ts. Spec: docs/design/private-tabs.md.
+ *
+ * Colour: only the private violet (--bw-private, tokens.css) on top of the theme's own window,
+ * text and island tokens, so the page follows light/dark and glass/solid like every surface.
+ * Motion: transform and opacity only, every animation finite (the longest chain ends ~1.6s after the
+ * page appears, plus one 0.9s glint at ~7s), and none of it under reduced motion.
+ */
+
+/* ---- Shared private motion (toolbar chip, new private tab in the strip) ---- */
+@keyframes bw-private-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+
+  60% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+
+  to {
+    transform: scale(1);
+  }
+}
+
+/* The shades drop 3 grid units onto the face (SVG children: px are viewBox units). */
+@keyframes bw-private-shades {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* The toolbar chip pops each time it appears, and the shades (shapes 3-5 of the mark, see
+   MARK_PARTS in private-logic.ts) settle onto its face. */
+.tb-private {
+  animation: bw-private-pop 240ms var(--bw-ease-out) both;
+}
+
+.tb-private > svg > :nth-child(n + 3) {
+  animation: bw-private-shades 240ms var(--bw-ease-out) 40ms both;
+}
+
+/* A private tab entering the strip: its mark's shades settle once, inside the 16px icon slot. */
+.strip .tab.bw-enter[data-private="true"] .priv-glyph svg > :nth-child(n + 3) {
+  animation: bw-private-shades 240ms var(--bw-ease-out) 60ms both;
+}
+
+/* ---- Landing host ---- */
+#app.split-view.is-private {
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* A faint violet dawn from the top edge over the opaque window colour. */
+  background:
+    radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--bw-private) 14%, transparent), transparent 70%),
+    var(--bw-window-opaque);
+  scrollbar-width: thin;
+}
+
+:root[data-scheme="light"] #app.split-view.is-private {
+  background:
+    radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--bw-private) 9%, transparent), transparent 70%),
+    var(--bw-window-opaque);
+}
+
+.pm-page {
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  padding: clamp(var(--bw-space-6), 7vh, 64px) var(--bw-space-6) var(--bw-space-6);
+}
+
+.pm-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+  width: min(760px, 100%);
+}
+
+/* ---- Hero: mark, eyebrow chip, title, lead ---- */
+.pm-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-2);
+  text-align: center;
+}
+
+.pm-halo {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 112px;
+  margin-bottom: var(--bw-space-1);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--bw-private-soft), transparent);
+  color: var(--bw-private);
+}
+
+.pm-mark {
+  --bw-icon-stroke: 3.25px; /* about one grid unit at 80px */
+}
+
+/* The mark's shapes sit in groups, so the family's direct-child rule does not reach them. */
+.pm-mark :is(path, line) {
+  vector-effect: non-scaling-stroke;
+}
+
+.pm-hat,
+.pm-shades {
+  transform-box: view-box;
+  transform-origin: 12px 14px;
+}
+
+.pm-glint {
+  opacity: 0;
+  stroke: var(--bw-on-glyph);
+}
+
+.pm-glint > :first-child { stroke-width: 5px; }
+.pm-glint > :last-child { stroke-width: 2.5px; }
+
+.pm-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  height: var(--bw-icon-box);
+  padding: 0 var(--bw-space-2) 0 var(--bw-space-1_5);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-private-soft);
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+  line-height: 1;
+  font-weight: var(--bw-weight-strong);
+}
+
+.pm-eyebrow > svg {
+  color: var(--bw-private);
+}
+
+.pm-title {
+  margin: var(--bw-space-1) 0 0;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: var(--bw-weight-strong);
+  letter-spacing: -0.01em;
+}
+
+.pm-lead {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--bw-text-2);
+}
+
+/* ---- Two cards: what Bowser won't keep, and who can still see ---- */
+.pm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-2);
+}
+
+.pm-card {
+  padding: var(--bw-space-4);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-island);
+}
+
+:root[data-scheme="light"] .pm-card {
+  background: var(--bw-island-active);
+}
+
+.pm-card.is-kept {
+  border-color: color-mix(in srgb, var(--bw-private) 30%, var(--bw-hairline));
+}
+
+.pm-card-title {
+  margin: 0 0 var(--bw-space-3);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.pm-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pm-row {
+  display: flex;
+  gap: var(--bw-space-3);
+  align-items: flex-start;
+}
+
+.pm-row-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--bw-r-row);
+  background: var(--bw-fill);
+  color: var(--bw-text-2);
+}
+
+:root[data-scheme="light"] .pm-row-icon {
+  background: color-mix(in srgb, var(--bw-text) 6%, transparent);
+}
+
+.pm-card.is-kept .pm-row-icon {
+  background: var(--bw-private-soft);
+  color: var(--bw-private);
+}
+
+.pm-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pm-row-label {
+  font-weight: var(--bw-weight-strong);
+}
+
+.pm-row-body {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.pm-note {
+  max-width: 72ch;
+  margin: 0 auto;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-align: center;
+}
+
+/* ---- Actions under the lead: the one button and the count ---- */
+.pm-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-2);
+}
+
+.pm-count {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+}
+
+.pm-close {
+  border-color: var(--bw-private-edge);
+}
+
+.pm-close > svg {
+  color: var(--bw-private);
+}
+
+/* ---- Entrance (only for a tab whose landing has not been shown yet: .is-entering) ---- */
+@keyframes pm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes pm-hat {
+  from {
+    opacity: 0;
+    transform: translateY(2px) scale(0.92);
+  }
+}
+
+/* Sunglasses go on: down from the crown, a hair past the eyes, back. */
+@keyframes pm-shades {
+  0% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+
+  45% {
+    opacity: 1;
+  }
+
+  75% {
+    transform: translateY(0.6px);
+  }
+
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* A sheen crossing both lenses, left to right (clipped to the lens shapes). */
+@keyframes pm-glint {
+  0% {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+
+  20% {
+    opacity: 0.85;
+  }
+
+  80% {
+    opacity: 0.85;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(15px);
+  }
+}
+
+.pm-page.is-entering .pm-halo {
+  animation: bw-fade-in var(--bw-dur-slow) var(--bw-ease-fade) both;
+}
+
+.pm-page.is-entering .pm-hat {
+  animation: pm-hat 320ms var(--bw-ease-out) both;
+}
+
+.pm-page.is-entering .pm-shades {
+  animation: pm-shades 560ms cubic-bezier(0.3, 0, 0.2, 1) 180ms both;
+}
+
+/* fill-mode none: between and after the two runs the base opacity (0) applies, so neither run's
+   fill can hide the other. */
+.pm-page.is-entering .pm-glint {
+  animation:
+    pm-glint 900ms var(--bw-ease-move) 760ms,
+    pm-glint 900ms var(--bw-ease-move) 7200ms;
+}
+
+.pm-page.is-entering :is(.pm-eyebrow, .pm-title, .pm-lead, .pm-footer) {
+  animation: pm-rise var(--bw-dur-slow) var(--bw-ease-out) 120ms both;
+}
+
+.pm-page.is-entering :is(.pm-cards, .pm-note) {
+  animation: pm-rise var(--bw-dur-slow) var(--bw-ease-out) 220ms both;
+}
+
+/* Reduced motion: nothing moves or glints; the page and the chip just appear (short fade). */
+@media (prefers-reduced-motion: reduce) {
+  .tb-private,
+  .pm-page.is-entering .pm-halo {
+    animation: bw-fade-in var(--bw-dur-fast) var(--bw-ease-fade) both;
+  }
+
+  .tb-private > svg > :nth-child(n + 3),
+  .strip .tab.bw-enter[data-private="true"] .priv-glyph svg > :nth-child(n + 3),
+  .pm-page.is-entering :is(.pm-hat, .pm-shades, .pm-glint, .pm-eyebrow, .pm-title, .pm-lead, .pm-cards, .pm-note, .pm-footer) {
+    animation: none;
+  }
+}

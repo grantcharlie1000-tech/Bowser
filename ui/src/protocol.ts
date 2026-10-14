@@ -4,7 +4,7 @@ import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail
 import { validZoom } from './zoom-logic';
 // --- split view ---
 import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
-export type { PairMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
+export type { PairMsg, PrivatePageMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
 // --- end split view ---
 
 export const PROTOCOL_VERSION = 1;
@@ -33,8 +33,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -247,6 +247,11 @@ export interface SuggestOpenMsg {
   readonly on: boolean;
 }
 // --- end omnibox suggest ---
+/** Whether the main menu is open (toolbar only): the menu button shows it while it is up. */
+export interface MenuOpenMsg {
+  readonly t: 'menuOpen';
+  readonly on: boolean;
+}
 export interface CompletionMsg {
   readonly t: 'completion';
   readonly seq: number;
@@ -316,6 +321,13 @@ export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | '
 // --- vertical sidebar (lane S) ---
 export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
 // --- end vertical sidebar ---
+// --- settings page (docs/design/settings-page.md) ---
+/** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'media', 'updates', 'about'] as const;
+export type SettingsSection = typeof SETTINGS_SECTIONS[number];
+/** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
+export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
+// --- end settings page ---
 export type SnapshotValue = string | number | boolean | null | readonly SnapshotValue[] | { readonly [key: string]: SnapshotValue };
 export interface SnapshotMsg { readonly t: 'snap'; readonly p: PanelToken; readonly d: { readonly [key: string]: SnapshotValue } }
 export type Inbound =
@@ -342,9 +354,11 @@ export type Inbound =
   | SuggestSelMsg
   | SuggestOpenMsg
   // --- end omnibox suggest ---
+  | MenuOpenMsg
   // --- split view ---
   | SplitInbound
   // --- end split view ---
+  | SettingsGoMsg // --- settings page ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -397,7 +411,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -792,13 +806,23 @@ export function parseInbound(data: unknown): Inbound | null {
       if (!hasOnlyKeys(raw, ['v', 't', 'on']) || raw.v !== 1 || !isBool(raw.on)) return null;
       return { t: 'suggestOpen', on: raw.on };
     // --- end omnibox suggest ---
+    case 'menuOpen':
+      if (!hasOnlyKeys(raw, ['v', 't', 'on']) || raw.v !== 1 || !isBool(raw.on)) return null;
+      return { t: 'menuOpen', on: raw.on };
     // --- split view ---
     case 'pair':
     case 'splitpick':
     case 'splitdrop':
     case 'splithide':
+    case 'privatepage':
       return parseSplitInbound(raw);
     // --- end split view ---
+    // --- settings page ---
+    case 'settingsgo': {
+      if (!hasOnlyKeys(raw, ['v', 't', 's']) || raw.v !== 1 || !(raw.s === '' || isOneOf(raw.s, SETTINGS_SECTIONS))) return null;
+      return { t: 'settingsgo', s: raw.s };
+    }
+    // --- end settings page ---
     case 'snap': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p', 'd']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS) || !isRecord(raw.d)) return null;
       const budget = { keys: 0 };

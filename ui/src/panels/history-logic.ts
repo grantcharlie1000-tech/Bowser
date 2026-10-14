@@ -17,3 +17,8 @@ export function historyOpenCommand(id: number, newTab: boolean): { v: 1; t: 'his
   if (!Number.isSafeInteger(id) || id <= 0 || id > 0xffffffff) return null;
   return { v: 1, t: 'hist', a: newTab ? 'newtab' : 'open', id };
 }
+
+/** Ctrl or Cmd click, and a middle click, open a history entry in a new tab. */
+export function historyClickOpensNewTab(event: { ctrlKey: boolean; metaKey: boolean; button: number }): boolean {
+  return event.ctrlKey || event.metaKey || event.button === 1;
+}

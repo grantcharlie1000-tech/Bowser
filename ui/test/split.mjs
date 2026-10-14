@@ -32,6 +32,7 @@ test('Rust split fixture messages parse across the bridge', () => {
   assert.deepEqual(pick.closed, [{ n: 0, title: 'Old page 😀', host: 'old.example' }]);
   assert.deepEqual(parseInbound(fixture.drop), { t: 'splitdrop', side: 'l', title: 'Example' });
   assert.deepEqual(parseInbound(fixture.hide), { t: 'splithide' });
+  assert.deepEqual(parseInbound(fixture.private), { t: 'privatepage', id: 4, n: 2 });
 });
 
 test('malformed split messages are rejected', () => {
@@ -53,6 +54,12 @@ test('malformed split messages are rejected', () => {
     { v: 1, t: 'splitpick', side: 'r', tabs: [{ id: 1, title: 'x'.repeat(513), host: 'h', fav: '', private: false }], closed: [] },
     { v: 1, t: 'splitdrop', side: 'l' },
     { v: 1, t: 'splithide', x: 1 },
+    { v: 1, t: 'privatepage', id: 4 },
+    { v: 1, t: 'privatepage', id: 0, n: 1 },
+    { v: 1, t: 'privatepage', id: 4, n: 0 },
+    { v: 1, t: 'privatepage', id: 4, n: 10001 },
+    { v: 1, t: 'privatepage', id: 4, n: 1.5 },
+    { v: 1, t: 'privatepage', id: 4, n: 1, title: 'x' },
   ];
   for (const raw of bad) assert.equal(parseInbound(raw), null, JSON.stringify(raw).slice(0, 120));
   assert.equal(parseSplitInbound({ v: 1, t: 'nope' }), null);
@@ -65,6 +72,7 @@ test('outbound split commands carry exactly their fields and stay in range', () 
     { v: 1, t: 'split', a: 'go', text: 'example.com' },
     { v: 1, t: 'split', a: 'close' },
     { v: 1, t: 'split', a: 'focus' },
+    { v: 1, t: 'split', a: 'closeprivate' },
     { v: 1, t: 'split', a: 'over', id: 2, x: 0, y: 16384 },
     { v: 1, t: 'split', a: 'drop', id: 2 },
     { v: 1, t: 'split', a: 'end', id: 2 },
@@ -78,6 +86,7 @@ test('outbound split commands carry exactly their fields and stay in range', () 
     { v: 1, t: 'split', a: 'go', text: '  ' },
     { v: 1, t: 'split', a: 'go', text: 'x'.repeat(2049) },
     { v: 1, t: 'split', a: 'close', id: 1 },
+    { v: 1, t: 'split', a: 'closeprivate', n: 1 },
     { v: 1, t: 'split', a: 'over', id: 2, x: 16385, y: 0 },
     { v: 1, t: 'split', a: 'over', id: 2, x: -1, y: 0 },
     { v: 1, t: 'split', a: 'swap' },

@@ -170,6 +170,10 @@ pub struct ChromeSurface {
     /// The HTML chrome draws the left rail. Its pill, buttons, tooltips and fades are not painted
     /// here, and its region is left transparent. Native panels still open beside it.
     html_rail: bool,
+    /// The HTML chrome is expected but its page is not up yet (`[toolbar, tabs, rail]`): the native
+    /// look of that region is not painted, so the window never shows a different design for the few
+    /// seconds the chrome takes to load. The window colour, captions and "+" are still drawn.
+    html_pending: [bool; 3],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,6 +253,7 @@ impl ChromeSurface {
             html_toolbar: false,
             html_tabs: false,
             html_rail: false,
+            html_pending: [crate::chrome_host::html_ui_enabled(); 3],
         }
     }
 
@@ -342,6 +347,12 @@ impl ChromeSurface {
         self.html_rail = on;
     }
 
+    /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page: nothing is
+    /// painted natively there until the page is up or has failed.
+    pub fn set_html_pending(&mut self, index: usize, pending: bool) {
+        self.html_pending[index] = pending;
+    }
+
     /// Paints a themed viewport-half target while a tab is being dragged into split view (the
     /// native chrome's drop target, and the HTML chrome's fallback before its card is ready): the
     /// half the new pane will take, inset by the page gap, with an accent wash and edge.
@@ -397,6 +408,12 @@ impl ChromeSurface {
         }
         let m = Metrics::new(self.dpi);
         // --- vertical sidebar (lane S) ---
+        // Waiting for the HTML sidebar: the plain window colour, not the native list.
+        if self.html_pending[1] {
+            self.fill_rect(layout.sidebar, palette.window, dirty);
+            self.fill_rect(layout.handle, palette.hairline, dirty);
+            return;
+        }
         if html_sidebar {
             self.fill_rect(layout.handle, palette.hairline, dirty);
             return;
@@ -553,7 +570,7 @@ impl ChromeSurface {
                     0,
                     0,
                     self.width,
-                    layout::chrome_height(view.layout.metrics.dpi()),
+                    layout::chrome_height(view.layout.variant, view.layout.metrics.dpi()),
                 ),
                 view.palette.window,
                 dirty,
@@ -569,21 +586,21 @@ impl ChromeSurface {
         }
         if self.html_rail {
             self.clear_html_region(crate::chrome_host::rail_bounds(view.layout).map(Rect::from), dirty);
-        } else {
+        } else if !self.html_pending[2] {
             self.paint_left_rail(view, dirty);
         }
-        if !self.html_tabs {
+        if !self.html_tabs && !self.html_pending[1] {
             self.paint_departures(view, dirty);
             self.paint_tabs(view, dirty);
         }
         self.paint_tab_menu(view, dirty);
         self.paint_new_tab(view, dirty);
-        if !self.html_toolbar {
+        if !self.html_toolbar && !self.html_pending[0] {
             self.paint_main_menu(view, dirty);
             self.paint_nav(view, dirty);
         }
         self.paint_caption(view, dirty);
-        if !self.html_toolbar {
+        if !self.html_toolbar && !self.html_pending[0] {
             self.paint_omnibox(view, dirty);
         }
         self.paint_page_boundary(view, dirty);
@@ -1586,7 +1603,7 @@ impl ChromeSurface {
         self.line_f(x, y + 4.0 * scale, x + 7.0 * scale, y - 3.0 * scale, 1.5 * scale, c, dirty);
     }
 
-    /// A three-line menu glyph in a bubble right of the address pill; the main menu opens from
+    /// A three-dot menu glyph in a bubble right of the address pill; the main menu opens from
     /// here. The bubble has the back / forward pill's fill and outline.
     fn paint_main_menu(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let rect = view.layout.main_menu_button;
@@ -1613,13 +1630,9 @@ impl ChromeSurface {
         );
         let frame = view.icon_frame(Hit::MainMenu);
         let colour = mix(view.palette.caption_glyph, view.palette.progress_fill, frame.press);
-        let cx = (rect.left + rect.right) as f32 * 0.5;
-        let cy = (rect.top + rect.bottom) as f32 * 0.5;
-        let amount = frame.scale();
-        for (left, right, y) in main_menu_bars(rect, m) {
-            self.line_f(cx + (left - cx) * amount, cy + (y - cy) * amount,
-                cx + (right - cx) * amount, cy + (y - cy) * amount,
-                NAV_STROKE, colour, dirty);
+        let diameter = main_menu_dot_diameter(m);
+        for (x, y) in main_menu_dots(rect, m, frame) {
+            self.line_f(x, y, x, y, diameter, colour, dirty);
         }
     }
 
@@ -2349,21 +2362,35 @@ fn center(rect: Rect) -> (i32, i32) {
     ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
 }
 
-/// Stroke width of the toolbar glyphs: back, forward, reload and the main menu.
-const NAV_STROKE: f32 = 1.5;
+/// Diameter of the main menu glyph's dots: 4 logical px, as the HTML toolbar's `menu-dots`.
+fn main_menu_dot_diameter(m: Metrics) -> f32 {
+    m.px(4) as f32
+}
 
-/// The main menu glyph's three bars as `(left, right, y)` stroke centrelines, top to bottom.
+/// Centre to snap a dot of `diameter` near `centre` to: a whole pixel for an even diameter and a
+/// pixel centre for an odd one, so the disc's edge falls on pixel boundaries.
+fn snap_dot_centre(centre: f32, diameter: f32) -> f32 {
+    (centre - diameter / 2.0).round() + diameter / 2.0
+}
+
+/// The main menu glyph's three dot centres, left to right.
 ///
-/// Each bar sits on a pixel-row centre so it rasterises as one solid row rather than two
-/// half-covered ones, and the bars share an integer pitch so all three look identical. The glyph
-/// is centred horizontally; on an even-height button the middle bar takes the row just above the
-/// centre line.
-fn main_menu_bars(rect: Rect, m: Metrics) -> [(f32, f32, f32); 3] {
-    let cx = (rect.left + rect.right) as f32 / 2.0;
-    let middle = ((rect.top + rect.bottom) as f32 / 2.0 + 0.5).floor() - 0.5;
-    let half = m.px(6) as f32;
-    let pitch = m.px(4) as f32;
-    [-1.0, 0.0, 1.0].map(|step| (cx - half, cx + half, middle + step * pitch))
+/// At rest the dots are `main_menu_dot_diameter` across on an integer pitch of 8 logical px, the
+/// middle one snapped to the bubble's centre, so all three rasterise identically and crisp. Motion
+/// mirrors the HTML toolbar: while the bubble is pressed (the menu is open) the outer dots spread
+/// one logical px, and as the hover fades in the dots hop in turn and land back on the grid, so a
+/// settled hover is the rest glyph.
+fn main_menu_dots(rect: Rect, m: Metrics, frame: IconFrame) -> [(f32, f32); 3] {
+    let diameter = main_menu_dot_diameter(m);
+    let cx = snap_dot_centre((rect.left + rect.right) as f32 / 2.0, diameter);
+    let cy = snap_dot_centre((rect.top + rect.bottom) as f32 / 2.0, diameter);
+    let pitch = m.px(8) as f32 + m.px(1) as f32 * frame.press.clamp(0.0, 1.0);
+    let lift = 1.5 * m.dpi() as f32 / 96.0;
+    [0usize, 1, 2].map(|i| {
+        let phase = ((frame.hover - 0.2 * i as f32) / 0.6).clamp(0.0, 1.0);
+        let hop = lift * (std::f32::consts::PI * phase).sin();
+        (cx + (i as f32 - 1.0) * pitch, cy - hop)
+    })
 }
 
 /// Source-over in premultiplied BGRA. `coverage` modulates the source alpha.
@@ -3234,6 +3261,40 @@ mod tests {
         assert_eq!(surface.pixels(), once);
     }
     #[test]
+    fn a_region_waiting_for_its_html_page_paints_no_native_look() {
+        let layout = crate::chrome::layout::compute(800, 120, 96, 1, false);
+        let tabs = [TabView {
+            title: "Tab",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+            group_colour: None,
+            group_frame: None,
+        }];
+        let view = test_view(&layout, &tabs, palette(Appearance::Dark, false), omnibox("example.com", (0, 0), ""));
+        let region = |s: &ChromeSurface, r: Rect| -> Vec<u8> {
+            (r.top..r.bottom)
+                .flat_map(|y| (r.left..r.right).flat_map(move |x| (0..4).map(move |c| (y, x, c))))
+                .map(|(y, x, c)| s.pixels()[y as usize * s.stride() + x as usize * 4 + c])
+                .collect()
+        };
+        let mut native = ChromeSurface::new(800, 120, 96);
+        native.set_html_pending(0, false);
+        native.paint(&view, Rect::new(0, 0, 800, native.height()));
+        let mut waiting = ChromeSurface::new(800, 120, 96);
+        waiting.set_html_pending(0, true);
+        waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
+        for r in [layout.back_button, layout.omnibox, layout.main_menu_button] {
+            let blank = region(&waiting, r);
+            assert!(blank.chunks(4).all(|px| px == &blank[..4]), "{r:?} is one flat colour while waiting");
+            assert_ne!(region(&native, r), blank, "{r:?} is drawn natively once nothing is awaited");
+        }
+    }
+
+    #[test]
     fn empty_and_huge_text_measurement_is_bounded() {
         let mut s = ChromeSurface::new(320, 100, 96);
         assert_eq!(s.caret_x("", 0), 0);
@@ -4057,7 +4118,7 @@ mod tests {
             &test_view(&layout, &tabs, solid, omnibox("", (0, 0), "")),
             dirty,
         );
-        let chrome = layout::chrome_height(layout.metrics.dpi());
+        let chrome = layout::chrome_height(layout.variant, layout.metrics.dpi());
         for y in 0..chrome {
             for x in 0..surface.width() {
                 assert_eq!(alpha_at(&surface, x, y), 255, "solid pixel ({x},{y})");
@@ -4365,46 +4426,89 @@ mod tests {
     }
 
     #[test]
-    fn main_menu_bars_are_pixel_aligned_centred_and_inside_the_bubble() {
+    fn main_menu_dots_are_pixel_aligned_centred_and_inside_the_bubble() {
         for dpi in [96u32, 120, 144, 168, 192, 288] {
             let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
             let rect = layout.main_menu_button;
+            let m = layout.metrics;
             assert!(!rect.is_empty(), "dpi {dpi}");
-            let bars = main_menu_bars(rect, layout.metrics);
+            let d = main_menu_dot_diameter(m);
+            let dots = main_menu_dots(rect, m, IconFrame::default());
+            // A settled hover is the rest glyph.
+            let hovered = IconFrame { hover: 1.0, ..IconFrame::default() };
+            assert_eq!(main_menu_dots(rect, m, hovered), dots, "dpi {dpi}");
             let centre_x = (rect.left + rect.right) as f32 / 2.0;
             let centre_y = (rect.top + rect.bottom) as f32 / 2.0;
-            let pitch = bars[1].2 - bars[0].2;
-            assert_eq!(pitch, bars[2].2 - bars[1].2, "equal spacing at dpi {dpi}");
+            let pitch = dots[1].0 - dots[0].0;
+            assert_eq!(pitch, dots[2].0 - dots[1].0, "equal spacing at dpi {dpi}");
             assert_eq!(pitch.fract(), 0.0, "integer pitch at dpi {dpi}");
-            assert!(pitch >= NAV_STROKE + 2.0, "bars stay distinct at dpi {dpi}");
-            assert!(
-                (bars[1].2 - centre_y).abs() <= 0.5,
-                "middle bar centred at dpi {dpi}"
-            );
-            for (left, right, y) in bars {
-                assert_eq!(y.fract(), 0.5, "bar on a pixel-row centre at dpi {dpi}");
-                assert_eq!((left + right) / 2.0, centre_x, "centred at dpi {dpi}");
-                assert_eq!(
-                    right - left,
-                    bars[0].1 - bars[0].0,
-                    "equal bars at dpi {dpi}"
-                );
-                // Stroke and round caps keep clear of the outline.
-                let reach = NAV_STROKE / 2.0 + 2.0;
-                assert!(left - reach >= rect.left as f32, "dpi {dpi}");
-                assert!(right + reach <= rect.right as f32, "dpi {dpi}");
-                assert!(y - reach >= rect.top as f32, "dpi {dpi}");
-                assert!(y + reach <= rect.bottom as f32, "dpi {dpi}");
+            assert_eq!(pitch, m.px(8) as f32, "8 logical px centres at dpi {dpi}");
+            assert_eq!(d, m.px(4) as f32, "4 logical px dots at dpi {dpi}");
+            assert!(pitch - d >= d * 0.75, "dots stay distinct at dpi {dpi}");
+            assert!((dots[1].0 - centre_x).abs() <= 0.5, "middle dot centred at dpi {dpi}");
+            for (x, y) in dots {
+                assert_eq!(y, dots[0].1, "one row at dpi {dpi}");
+                assert!((y - centre_y).abs() <= 0.5, "vertically centred at dpi {dpi}");
+                // Disc edges on pixel boundaries, so every dot rasterises the same crisp shape.
+                assert_eq!((x - d / 2.0).fract(), 0.0, "x edge on the grid at dpi {dpi}");
+                assert_eq!((y - d / 2.0).fract(), 0.0, "y edge on the grid at dpi {dpi}");
             }
-            // The glyph is wider than tall, like the arrows beside it.
-            assert!(bars[0].1 - bars[0].0 > bars[2].2 - bars[0].2, "dpi {dpi}");
+            // The glyph spans 20 logical px, filling the icon box the three bars did.
+            assert_eq!(dots[2].0 - dots[0].0 + d, (2 * m.px(8) + m.px(4)) as f32, "dpi {dpi}");
         }
     }
 
     #[test]
-    fn main_menu_paints_three_identical_solid_bars() {
+    fn main_menu_dots_stay_inside_the_bubble_while_they_hop_and_spread() {
+        for dpi in [96u32, 120, 144, 168, 192, 288] {
+            let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
+            let (rect, m) = (layout.main_menu_button, layout.metrics);
+            let d = main_menu_dot_diameter(m);
+            let margin = 2.0 * dpi as f32 / 96.0;
+            for press in [0.0f32, 0.5, 1.0] {
+                for step in 0..=20 {
+                    let frame = IconFrame { hover: step as f32 / 20.0, press, ..IconFrame::default() };
+                    for (x, y) in main_menu_dots(rect, m, frame) {
+                        assert!(x - d / 2.0 - margin >= rect.left as f32, "dpi {dpi} {frame:?}");
+                        assert!(x + d / 2.0 + margin <= rect.right as f32, "dpi {dpi} {frame:?}");
+                        assert!(y - d / 2.0 - margin >= rect.top as f32, "dpi {dpi} {frame:?}");
+                        assert!(y + d / 2.0 + margin <= rect.bottom as f32, "dpi {dpi} {frame:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn main_menu_dots_spread_while_open_and_ripple_on_hover() {
+        let layout = crate::chrome::layout::compute(1024, 700, 144, 1, false);
+        let (rect, m) = (layout.main_menu_button, layout.metrics);
+        let rest = main_menu_dots(rect, m, IconFrame::default());
+        // Pressed (the menu is open): the outer dots move one logical px out, still on the grid.
+        let open = main_menu_dots(rect, m, IconFrame { press: 1.0, ..IconFrame::default() });
+        assert_eq!(open[1], rest[1]);
+        assert_eq!(open[0].0, rest[0].0 - m.px(1) as f32);
+        assert_eq!(open[2].0, rest[2].0 + m.px(1) as f32);
+        assert!(open.iter().all(|&(_, y)| y == rest[0].1));
+        // Early in the hover fade the first dot is up and the last has not left yet; later the
+        // last one is up while the first has landed. No dot lifts more than 1.5 logical px.
+        let early = main_menu_dots(rect, m, IconFrame { hover: 0.25, ..IconFrame::default() });
+        assert!(early[0].1 < rest[0].1 && early[2].1 == rest[2].1, "{early:?}");
+        let late = main_menu_dots(rect, m, IconFrame { hover: 0.85, ..IconFrame::default() });
+        assert!(late[2].1 < rest[2].1 && late[0].1 == rest[0].1, "{late:?}");
+        for step in 0..=20 {
+            let dots = main_menu_dots(rect, m, IconFrame { hover: step as f32 / 20.0, ..IconFrame::default() });
+            for (dot, base) in dots.iter().zip(rest) {
+                assert_eq!(dot.0, base.0, "a hop never moves sideways");
+                assert!(base.1 - dot.1 <= 1.5 * 1.5 + 1e-4 && dot.1 <= base.1, "{dots:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn main_menu_paints_three_identical_solid_dots() {
         let pal = palette(Appearance::Dark, true);
-        for dpi in [96u32, 144] {
+        for dpi in [96u32, 120, 144, 192] {
             let layout = crate::chrome::layout::compute(1024, 700, dpi, 1, false);
             let tabs = [TabView {
                 title: "Tab",
@@ -4426,19 +4530,23 @@ mod tests {
                 let i = y as usize * stride + x as usize * 4;
                 [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
             };
-            let bars = main_menu_bars(layout.main_menu_button, layout.metrics);
-            // Sample a quarter of the way along, clear of the centre column and the caps.
-            let x = ((bars[0].0 * 3.0 + bars[0].1) / 4.0) as i32;
-            let rows = bars.map(|(_, _, y)| y.floor() as i32);
-            let ink = at(x, rows[0]);
-            assert_eq!(at(x, rows[1]), ink, "dpi {dpi}");
-            assert_eq!(at(x, rows[2]), ink, "dpi {dpi}");
-            let gap = (rows[0] + rows[1]) / 2;
-            assert_ne!(
-                at(x, gap),
-                ink,
-                "gap between bars is unpainted at dpi {dpi}"
-            );
+            let d = main_menu_dot_diameter(layout.metrics);
+            let dots = main_menu_dots(layout.main_menu_button, layout.metrics, IconFrame::default());
+            let pitch = (dots[1].0 - dots[0].0) as i32;
+            // Each dot's block (one pixel of margin round the disc) is the same pixels, shifted.
+            let reach = (d / 2.0) as i32 + 1;
+            let (x0, y0) = (dots[0].0.floor() as i32, dots[0].1.floor() as i32);
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    let first = at(x0 + dx, y0 + dy);
+                    assert_eq!(at(x0 + pitch + dx, y0 + dy), first, "dpi {dpi} ({dx}, {dy})");
+                    assert_eq!(at(x0 + 2 * pitch + dx, y0 + dy), first, "dpi {dpi} ({dx}, {dy})");
+                }
+            }
+            // Solid ink at the centre, and nothing between the dots or above them.
+            let ink = at(x0, y0);
+            assert_ne!(at(x0 + pitch / 2, y0), ink, "gap between dots is unpainted at dpi {dpi}");
+            assert_ne!(at(x0, y0 - reach), ink, "nothing above a dot at dpi {dpi}");
         }
     }
 
@@ -4470,8 +4578,8 @@ mod tests {
                     let menu = layout.main_menu_button;
                     let nav = layout.forward_button;
                     let crops = [
-                        Rect::new(nav.left - 4, menu.top - 4, nav.right + 4, menu.bottom + 4),
-                        Rect::new(menu.left - 4, menu.top - 4, menu.right + 4, menu.bottom + 4),
+                        Rect::new(nav.left - 4, (menu.top - 4).max(0), nav.right + 4, menu.bottom + 4),
+                        Rect::new(menu.left - 4, (menu.top - 4).max(0), menu.right + 4, menu.bottom + 4),
                     ];
                     let scale = 6usize;
                     let states = [

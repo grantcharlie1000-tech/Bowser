@@ -235,16 +235,11 @@ mod tests {
 
     #[test]
     fn top_grip_does_not_overlap_the_tab_islands() {
-        // The toolbar inset keeps the top resize grip above the tab islands.
-        assert_eq!(hit(100, 1, ChromeHit::Interactive), FrameHit::Top);
-        for y in 2..Metrics::TOP_MARGIN {
-            assert_eq!(
-                hit(100, y, ChromeHit::Interactive),
-                FrameHit::Caption,
-                "the headroom remains draggable at y {y}"
-            );
+        // The top resize grip is the island margin; it sits above the toolbar and the tab islands.
+        for y in 0..Metrics::ISLAND_MARGIN {
+            assert_eq!(hit(100, y, ChromeHit::Interactive), FrameHit::Top, "grip at y {y}");
         }
-        for y in Metrics::TOP_MARGIN..40 {
+        for y in Metrics::ISLAND_MARGIN..40 {
             assert_eq!(
                 hit(100, y, ChromeHit::Interactive),
                 FrameHit::Client,
@@ -254,6 +249,7 @@ mod tests {
         let m = Metrics::new(120);
         let island_top = m.px(Metrics::TOP_MARGIN)
             + m.px(Metrics::STRIP_HEIGHT)
+            + m.px(Metrics::STRIP_GAP)
             + m.px(Metrics::TAB_ROW_HEIGHT - Metrics::ISLAND_HEIGHT) / 2;
         assert_eq!(
             frame_hit_test(p(100, island_top), SIZE, 120, false, ChromeHit::Interactive),
@@ -268,11 +264,15 @@ mod tests {
         assert_eq!(hit(400, 20, ChromeHit::Interactive), FrameHit::Client);
         assert_eq!(hit(790, 20, ChromeHit::None), FrameHit::Close);
         let strip = caption_strip_height(96);
-        assert_eq!(strip, 40, "the caption hit strip includes 6 px of headroom");
+        assert_eq!(
+            strip,
+            Metrics::TOP_MARGIN + Metrics::STRIP_HEIGHT,
+            "the caption hit strip is the toolbar row; there is no headroom above it"
+        );
         assert_eq!(
             hit(730, strip - 1, ChromeHit::None),
             FrameHit::Maximize,
-            "the caption hit target covers the headroom and toolbar row"
+            "the caption hit target covers the toolbar row"
         );
         assert_eq!(hit(730, strip, ChromeHit::None), FrameHit::Client);
     }
@@ -313,6 +313,11 @@ mod tests {
             frame_hit_test(p(200, 80), (1600, 900), 192, true, ChromeHit::None),
             FrameHit::Client
         );
-        assert_eq!(caption_strip_height(120), 51, "headroom plus strip scale at 125%");
+        assert_eq!(
+            caption_strip_height(120),
+            Metrics::new(120).px(Metrics::TOP_MARGIN) + Metrics::new(120).px(Metrics::STRIP_HEIGHT),
+            "headroom plus strip scale at 125%"
+        );
+        assert_eq!(caption_strip_height(120), 38, "37.5 rounds up");
     }
 }

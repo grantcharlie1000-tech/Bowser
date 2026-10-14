@@ -13,12 +13,14 @@ import {
   type SuggestMsg,
 } from './protocol';
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
-import { applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
+import { applyMenuOpen, applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+import { startSettingsPage } from './settings-page';
+import { startHistoryPage } from './history-page';
 // --- split view ---
 import { startSplit } from './split';
 import { syncSplitButton } from './split-chrome';
@@ -162,21 +164,35 @@ function startToolbar(root: HTMLElement): void {
     view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value));
   };
 
-  // A click that focuses the omnibox selects the whole address, as in every browser.
+  // A click on the address selects all of it while it is still the untouched address, as in every
+  // browser. The toolbar view keeps `document.activeElement` and `hasFocus()` after the keyboard has
+  // gone to the page, so "was the input already focused?" cannot tell a first click from a later one
+  // (measured in the real window). What can is whether the user has edited the text since the host
+  // last set it: once they type, a click places the caret.
   let selectOnUp = false;
+  let pointerIsDown = false;
+  let edited = false;
+  input.addEventListener('input', () => {
+    edited = true;
+  });
   input.addEventListener('pointerdown', () => {
-    selectOnUp = document.activeElement !== input;
+    pointerIsDown = true;
+    selectOnUp = !edited || document.activeElement !== input || !document.hasFocus();
   });
   input.addEventListener('pointerup', () => {
+    pointerIsDown = false;
     if (selectOnUp && input.selectionStart === input.selectionEnd) input.select();
     selectOnUp = false;
   });
 
   input.addEventListener('focus', () => {
     view.pill.classList.remove('is-display');
+    // A press that is still down is what moved the focus here: select now as well as on release.
+    if (pointerIsDown && input.selectionStart === input.selectionEnd) input.select();
     send({ v: 1, t: 'focus', on: true });
   });
   input.addEventListener('blur', () => {
+    edited = false;
     list = null; // --- omnibox suggest ---
     showDisplay();
     send({ v: 1, t: 'focus', on: false });
@@ -208,6 +224,7 @@ function startToolbar(root: HTMLElement): void {
         lastInputType = '';
         list = null; // --- omnibox suggest ---
         input.value = msg.text;
+        edited = false;
         if (msg.select) input.select();
         showDisplay();
         syncSiteIcon(view);
@@ -232,6 +249,9 @@ function startToolbar(root: HTMLElement): void {
         view.pill.classList.toggle('is-open', msg.on);
         break;
       // --- end omnibox suggest ---
+      case 'menuOpen':
+        applyMenuOpen(view.menu, msg.on);
+        break;
       // --- split view ---
       case 'pair':
         syncSplitButton(view.split, msg);
@@ -285,6 +305,8 @@ function start(): void {
   else if (view === 'dialog') startDialog(root);
   else if (view === 'hover') startHover(root); // --- hover layer ---
   else if (view === 'split') startSplit(root); // --- split view ---
+  else if (view === 'settings') startSettingsPage(root); // bowser://settings (docs/design/settings-page.md)
+  else if (view === 'history') startHistoryPage(root); // bowser://history (docs/design/history-page.md)
   else {
     startToolbar(root);
     installTooltips(root); // --- hover layer ---

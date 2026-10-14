@@ -2,7 +2,7 @@
 
 ## Reader view
 
-**Entry points.** Ctrl+Alt+R, the book button in the address pill (HTML chrome only; it appears when the page looks like an article and stays pressed while reader view is on), **Reader view** and **Hide distractions** in the main menu, and the same two commands in the command palette. **Leaving:** Ctrl+Alt+R again, the pressed toolbar button, Esc, or any navigation (including a reload and a same-document address change).
+**Entry points.** Ctrl+Alt+R, the reader button in the address pill (glyph `reader`: a capital A beside text lines; HTML chrome only; it appears when the page looks like an article and stays pressed while reader view is on), **Reader view** and **Hide distractions** in the main menu, and the same two commands in the command palette. **Leaving:** Ctrl+Alt+R again, the pressed toolbar button, Esc, or any navigation (including a reload and a same-document address change).
 
 **Design.** Reader view is a restyle of the live document, not a new page: the script marks the article block and its ancestors, hides everything that is not on that path, neutralises layout on the ancestors (so a grid or flex page lays the article out as one column), and applies one constructed stylesheet. There is no navigation, no network request and no history entry, and leaving puts every attribute, element, style and scroll position back (the fixtures check `outerHTML` before and after). Replacing the body (the alternative) was rejected because it is not reversible without a reload.
 

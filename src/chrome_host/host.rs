@@ -37,7 +37,7 @@ use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
         PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, RESPONSE_HEADERS, SCHEME,
-        SETTINGS_DIALOG_START_URL, START_URL, TABS_START_URL,
+        SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL,
     },
     protocol::{
         Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
@@ -110,7 +110,6 @@ fn is_editing_chord(accel: Accel) -> bool {
         // Ctrl+Shift+Delete opens the Privacy dashboard even from the field.
         VK_DELETE if accel.ctrl && accel.shift => false,
         VK_LEFT | VK_RIGHT | VK_HOME | VK_END | VK_BACK | VK_DELETE => accel.ctrl || accel.shift,
-        // Ctrl+Shift+V is the tab layout toggle, never a plain-text paste.
         VK_V => accel.ctrl && !accel.shift,
         VK_A | VK_C | VK_X | VK_Z => accel.ctrl,
         VK_Y => accel.ctrl && !accel.shift,
@@ -165,7 +164,6 @@ pub enum View {
     Popup,
     Dialog,
     DialogNotes,
-    DialogSettings,
     DialogPrivacy,
     DialogRename,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
@@ -174,6 +172,12 @@ pub enum View {
     /// The split view's empty side ("choose a tab") and the tab drop-zone preview.
     Split,
     // --- end split view ---
+    /// The settings page shown over a `bowser://settings` tab (docs/design/settings-page.md). The
+    /// only view whose commands change settings.
+    Settings,
+    /// The history page shown over a `bowser://history` tab (docs/design/history-page.md). Sends
+    /// only the `hpage` family.
+    HistoryPage,
 }
 
 impl View {
@@ -186,11 +190,12 @@ impl View {
             Self::Popup => POPUP_START_URL,
             Self::Dialog => DIALOG_START_URL,
             Self::DialogNotes => NOTES_DIALOG_START_URL,
-            Self::DialogSettings => SETTINGS_DIALOG_START_URL,
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
             Self::DialogRename => RENAME_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
+            Self::Settings => SETTINGS_START_URL,
+            Self::HistoryPage => HISTORY_PAGE_START_URL,
         }
     }
 }
@@ -1010,13 +1015,16 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
-        View::DialogSettings => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Settings, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
-        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus)),
+        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate)),
         // --- end split view ---
+        // No `panel` family (dismiss): the page is a tab, closed like one.
+        View::Settings => matches!(command, Command::Panel { kind: PanelType::Settings, .. }),
+        // Likewise a tab: only its own family, never the rail panel's `hist` or `panel`.
+        View::HistoryPage => matches!(command, Command::Panel { kind: PanelType::HistoryPage, .. }),
     }
 }
 
@@ -1163,11 +1171,11 @@ mod tests {
         assert_eq!(View::Popup.start_url(), "bowser-ui://app/index.html?view=popup");
         assert_eq!(View::Dialog.start_url(), "bowser-ui://app/index.html?view=dialog");
         assert_eq!(View::DialogNotes.start_url(), "bowser-ui://app/index.html?view=dialog&p=notes");
-        assert_eq!(View::DialogSettings.start_url(), "bowser-ui://app/index.html?view=dialog&p=settings");
+        assert_eq!(View::Settings.start_url(), "bowser-ui://app/index.html?view=settings");
         assert_eq!(View::DialogPrivacy.start_url(), "bowser-ui://app/index.html?view=dialog&p=privacy");
         assert_eq!(View::DialogRename.start_url(), "bowser-ui://app/index.html?view=dialog&p=rename");
         assert_eq!(View::Hover.start_url(), "bowser-ui://app/index.html?view=hover");
-        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy, View::DialogRename, View::Hover];
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::HistoryPage];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
@@ -1175,6 +1183,125 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn the_settings_page_is_trusted_only_from_its_exact_url_and_only_for_settings_commands() {
+        let url = View::Settings.start_url();
+        assert!(is_trusted_message(View::Settings, url, url));
+        for other in [
+            "bowser-ui://app/index.html?view=settings#privacy",
+            "bowser-ui://app/index.html?view=settings&p=x",
+            "bowser-ui://app/index.html?view=dialog&p=settings",
+            "bowser-ui://APP/index.html?view=settings",
+            "bowser-ui://app/index.html?view=Settings",
+            "https://evil.example/index.html?view=settings",
+            "bowser://settings",
+            START_URL,
+            "",
+        ] {
+            assert!(!is_start_url(View::Settings, other), "{other}");
+            assert!(!is_trusted_message(View::Settings, other, url), "sender {other}");
+            assert!(!is_trusted_message(View::Settings, url, other), "message {other}");
+        }
+        let save = parse_command(r#"{"v":1,"t":"set","a":"save","text":"x"}"#).unwrap();
+        let section = parse_command(r#"{"v":1,"t":"set","a":"section","text":"privacy"}"#).unwrap();
+        for command in [&save, &section] {
+            assert!(view_accepts_command(View::Settings, command));
+            for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogPrivacy, View::DialogRename, View::Hover, View::Split] {
+                assert!(!view_accepts_command(view, command), "{view:?}");
+            }
+        }
+        for foreign in [
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"priv","a":"clear-stats"}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1}"#,
+            r#"{"v":1,"t":"notes","a":"add-note"}"#,
+            r#"{"v":1,"t":"nav","a":"back"}"#,
+            r#"{"v":1,"t":"open","a":"menu"}"#,
+            r#"{"v":1,"t":"pick","tok":1,"id":2}"#,
+        ] {
+            let command = parse_command(foreign).unwrap();
+            assert!(!view_accepts_command(View::Settings, &command), "{foreign}");
+        }
+        assert!(view_accepts_command(View::Settings, &Command::Ready));
+    }
+
+    // --- history page (docs/design/history-page.md) ---
+    #[test]
+    fn the_history_page_is_trusted_only_from_its_exact_url_and_only_for_its_own_commands() {
+        let url = View::HistoryPage.start_url();
+        assert_eq!(url, "bowser-ui://app/index.html?view=history");
+        assert!(is_trusted_message(View::HistoryPage, url, url));
+        for other in [
+            "bowser-ui://app/index.html?view=history#today",
+            "bowser-ui://app/index.html?view=history&q=x",
+            "bowser-ui://app/index.html?view=History",
+            "bowser-ui://APP/index.html?view=history",
+            "bowser-ui://app/index.html?view=panel",
+            "https://evil.example/index.html?view=history",
+            "bowser://history",
+            View::Settings.start_url(),
+            View::Panel.start_url(),
+            START_URL,
+            "",
+        ] {
+            assert!(!is_start_url(View::HistoryPage, other), "{other}");
+            assert!(!is_trusted_message(View::HistoryPage, other, url), "sender {other}");
+            assert!(!is_trusted_message(View::HistoryPage, url, other), "message {other}");
+        }
+        let all = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::Split];
+        for view in all {
+            assert!(!is_start_url(view, url), "{view:?} accepted the history page URL");
+        }
+        let open = parse_command(r#"{"v":1,"t":"hpage","a":"open","id":7}"#).unwrap();
+        let search = parse_command(r#"{"v":1,"t":"hpage","a":"search","text":"rust"}"#).unwrap();
+        let remove = parse_command(r#"{"v":1,"t":"hpage","a":"remove","id":7}"#).unwrap();
+        for command in [&open, &search, &remove] {
+            assert!(view_accepts_command(View::HistoryPage, command));
+            for view in all {
+                assert!(!view_accepts_command(view, command), "{view:?}");
+            }
+        }
+        for foreign in [
+            r#"{"v":1,"t":"hist","a":"open","id":1}"#,
+            r#"{"v":1,"t":"hist","a":"clear","n":2}"#,
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"set","a":"history","on":true}"#,
+            r#"{"v":1,"t":"set","a":"privacy"}"#,
+            r#"{"v":1,"t":"priv","a":"clear-stats"}"#,
+            r#"{"v":1,"t":"bm","a":"open","id":1}"#,
+            r#"{"v":1,"t":"nav","a":"back"}"#,
+            r#"{"v":1,"t":"submit","text":"https://example.com/"}"#,
+            r#"{"v":1,"t":"tab","a":"close","id":1}"#,
+            r#"{"v":1,"t":"pick","tok":1,"id":2}"#,
+        ] {
+            let command = parse_command(foreign).unwrap();
+            assert!(!view_accepts_command(View::HistoryPage, &command), "{foreign}");
+        }
+        assert!(view_accepts_command(View::HistoryPage, &Command::Ready));
+    }
+
+    #[test]
+    fn history_page_commands_parse_strictly_and_share_the_bridge_rate_limit() {
+        for bad in [
+            r#"{"v":1,"t":"hpage"}"#,
+            r#"{"v":1,"t":"hpage","a":"Open","id":1}"#,
+            r#"{"v":1,"t":"hpage","a":"open","id":-1}"#,
+            r#"{"v":1,"t":"hpage","a":"open","id":"1"}"#,
+            r#"{"v":1,"t":"hpage","a":"open","id":1,"extra":1}"#,
+            r#"{"v":1,"t":"hpage","a":"search","text":5}"#,
+            r#"{"v":2,"t":"hpage","a":"refresh"}"#,
+            r#"{"v":1,"t":"HPAGE","a":"refresh"}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        // One bucket per host: a page flooding its bridge is cut off after the burst.
+        let mut bucket = TokenBucket::new(MESSAGE_BURST, MESSAGE_RATE_PER_SEC);
+        let now = Instant::now();
+        let passed = (0..MESSAGE_BURST * 2).filter(|_| bucket.take(now)).count();
+        assert_eq!(passed, MESSAGE_BURST as usize);
+    }
+    // --- end history page ---
 
     // --- omnibox suggest ---
     #[test]
@@ -1196,7 +1323,7 @@ mod tests {
 
     #[test]
     fn new_views_reject_nearby_urls_and_foreign_command_families() {
-        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy, View::DialogRename] {
+        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::HistoryPage] {
             let url = view.start_url();
             assert!(is_trusted_message(view, url, url));
             assert!(!is_start_url(view, &format!("{url}&x=1")));
@@ -1221,7 +1348,7 @@ mod tests {
         assert!(view_accepts_command(View::Panel, &panel));
         assert!(!view_accepts_command(View::Dialog, &panel));
         let dialog = parse_command(r#"{"v":1,"t":"set","a":"open"}"#).unwrap();
-        assert!(view_accepts_command(View::DialogSettings, &dialog));
+        assert!(view_accepts_command(View::Settings, &dialog));
         assert!(!view_accepts_command(View::DialogNotes, &dialog));
         assert!(!view_accepts_command(View::Panel, &dialog));
         let notes = parse_command(r#"{"v":1,"t":"notes","a":"add-note"}"#).unwrap();
@@ -1229,7 +1356,7 @@ mod tests {
         assert!(!view_accepts_command(View::DialogPrivacy, &notes));
         let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
         assert!(view_accepts_command(View::DialogPrivacy, &privacy));
-        assert!(!view_accepts_command(View::DialogSettings, &privacy));
+        assert!(!view_accepts_command(View::Settings, &privacy));
         assert!(!view_accepts_command(View::Popup, &panel));
         assert!(view_accepts_command(View::Popup, &popup));
         assert!(!view_accepts_command(View::Panel, &popup));
@@ -1253,7 +1380,7 @@ mod tests {
         assert!(!view_accepts_command(View::Popup, &open_composer));
         let rename = parse_command(r#"{"v":1,"t":"ren","a":"save","text":"Work"}"#).unwrap();
         assert!(view_accepts_command(View::DialogRename, &rename));
-        for view in [View::Popup, View::Panel, View::Dialog, View::DialogNotes, View::DialogSettings, View::DialogPrivacy] {
+        for view in [View::Popup, View::Panel, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy] {
             assert!(!view_accepts_command(view, &rename), "{view:?}");
         }
         let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
@@ -1468,10 +1595,7 @@ mod tests {
 
     #[test]
     fn omnibox_editing_does_not_swallow_ctrl_shift_v_or_ctrl_shift_delete() {
-        assert_eq!(
-            accel_command(key(0x56, true, true, false), true),
-            Some(Shortcut::ToggleTabLayout)
-        );
+        assert_eq!(accel_command(key(0x56, true, true, false), true), None);
         assert_eq!(
             accel_command(key(0x2E, true, true, false), true),
             Some(Shortcut::OpenPrivacyDashboard)

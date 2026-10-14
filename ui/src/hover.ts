@@ -18,7 +18,7 @@ import {
   type HoverRowMsg,
   type SuggestMsg,
 } from './protocol';
-import { suggestAction, suggestEmphasis, suggestGlyph, suggestNeedle } from './suggest-logic'; // --- omnibox suggest ---
+import { suggestAction, suggestBadge, suggestEmphasis, suggestGlyph, suggestNeedle } from './suggest-logic'; // --- omnibox suggest ---
 import { applyTheme } from './view';
 
 type Act = (fields: HoverActFields) => void;
@@ -139,11 +139,21 @@ function matchedText(className: string, text: string, needle: string): HTMLEleme
   return span;
 }
 
+/** Moves the dropdown's selection to row `sel`: the row's state and the indicator layer under it. */
+function selectSuggestRow(list: HTMLElement, sel: number): void {
+  list.querySelectorAll('.bw-suggest-row').forEach((row, index) => {
+    row.setAttribute('aria-selected', String(index === sel));
+  });
+  list.style.setProperty('--suggest-sel', String(sel));
+}
+
 /**
  * The omnibox dropdown: one row per suggestion. Rows never take focus; the toolbar keeps the
  * keyboard. Markup: .bw-suggest[role=listbox] > .bw-suggest-row[role=option][aria-selected]
  * [data-kind] > .bw-suggest-lead (favicon or glyph), .bw-suggest-text > .bw-suggest-title +
- * .bw-suggest-url (each may hold one mark.bw-suggest-match), .bw-suggest-action.
+ * svg.bw-suggest-mark (a bookmark with a favicon) + .bw-suggest-url (title and address may each hold
+ * one mark.bw-suggest-match), .bw-suggest-action, .bw-suggest-key; then one .bw-suggest-sel, the
+ * selection indicator, after the rows.
  */
 function renderSuggest(msg: SuggestMsg): HTMLElement {
   const list = el('div', 'bw-suggest');
@@ -155,13 +165,14 @@ function renderSuggest(msg: SuggestMsg): HTMLElement {
     const row = el('div', 'bw-suggest-row');
     row.setAttribute('role', 'option');
     row.dataset.kind = item.k;
-    row.setAttribute('aria-selected', String(index === msg.sel));
     const lead = el('span', 'bw-suggest-lead');
     lead.setAttribute('aria-hidden', 'true');
     lead.append(item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : icon(suggestGlyph(item.k)));
     const title = item.title !== '' ? item.title : item.text;
     const text = el('span', 'bw-suggest-text');
     text.append(matchedText('bw-suggest-title', title, needle));
+    const badge = suggestBadge(item.k, item.fav !== '');
+    if (badge) text.append(icon(badge.icon, { size: 12, fine: true, label: badge.label, className: 'bw-suggest-mark' }));
     if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
     row.append(lead, text);
     const action = suggestAction(item.k);
@@ -170,11 +181,20 @@ function renderSuggest(msg: SuggestMsg): HTMLElement {
       tag.textContent = action;
       row.append(tag);
     }
+    // The Enter keycap, shown on the selected row only (decorative: the row is aria-selected).
+    const key = el('span', 'bw-suggest-key');
+    key.setAttribute('aria-hidden', 'true');
+    key.append(icon('enter', { size: 12, fine: true }));
+    row.append(key);
     // A press must not move the keyboard away from the omnibox.
     row.addEventListener('pointerdown', (ev) => { ev.preventDefault(); });
     row.addEventListener('click', () => { sendSuggestPick(msg.seq, index); });
     list.append(row);
   });
+  const indicator = el('span', 'bw-suggest-sel');
+  indicator.setAttribute('aria-hidden', 'true');
+  list.append(indicator);
+  selectSuggestRow(list, msg.sel);
   return list;
 }
 // --- end omnibox suggest ---
@@ -338,8 +358,11 @@ export function startHover(root: HTMLElement): void {
         break;
       case 'suggestSel': {
         if (msg.seq !== suggestSeq) break;
-        const rows = root.querySelectorAll('.bw-suggest-row');
-        rows.forEach((row, index) => { row.setAttribute('aria-selected', String(index === msg.sel)); });
+        const list = root.querySelector<HTMLElement>('.bw-suggest');
+        if (!list) break;
+        // From the first move on, the indicator slides (83ms); a fresh list places it at once.
+        list.classList.add('is-tracking');
+        selectSuggestRow(list, msg.sel);
         break;
       }
       // --- end omnibox suggest ---

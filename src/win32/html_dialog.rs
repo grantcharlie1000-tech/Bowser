@@ -25,11 +25,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Settings, Privacy, Rename }
+pub(crate) enum Kind { Notes, Privacy, Rename }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Settings => View::DialogSettings, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Settings => "settings", Self::Privacy => "privacy", Self::Rename => "rename" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Settings => "Settings", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -43,15 +43,13 @@ thread_local! {
 }
 
 const DIALOG_CLASS: PCWSTR = w!("BowserHtmlDialog");
-/// Logical (96 DPI) sizes of the dialogs that own a window.
-pub(crate) const SETTINGS_WIDTH: i32 = 640;
-pub(crate) const SETTINGS_HEIGHT: i32 = 720;
+/// Logical (96 DPI) size of the Privacy dashboard window.
 const PRIVACY_WIDTH: i32 = 640;
 const PRIVACY_HEIGHT: i32 = 760;
 /// The Notes window keeps its native resize strip on the left edge, so the page starts after it.
 const NOTES_RESIZE_STRIP_DIP: i32 = 9;
 
-/// Whether Settings, Notes and Privacy show the HTML page as their only content: the HTML chrome is
+/// Whether Notes and Privacy show the HTML page as their only content: the HTML chrome is
 /// on, its environment exists and no dialog host has failed yet. Otherwise the native window runs.
 pub(crate) fn html_only(owner: HWND) -> bool {
     crate::chrome_host::html_ui_enabled() && !FAILED.with(Cell::get) && super::window::html_environment(owner).is_some()
@@ -265,7 +263,6 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             unsafe { let _ = DestroyWindow(parent); }
         }
         Command::Panel { kind: PanelType::Notes, f } if runtime.borrow().kind == Kind::Notes => handle_notes(runtime, f),
-        Command::Panel { kind: PanelType::Settings, f } if runtime.borrow().kind == Kind::Settings => handle_settings(runtime, f),
         Command::Panel { kind: PanelType::Privacy, f } if runtime.borrow().kind == Kind::Privacy => handle_privacy(runtime, f),
         _ => {}
     }
@@ -276,7 +273,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Settings => settings_snapshot(runtime), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
 }
 
@@ -397,23 +394,6 @@ fn notes_snapshot() -> Option<String> {
     })
 }
 
-fn settings_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
-    let efficiency_active = runtime.try_borrow().ok().is_some_and(|state| crate::app::App::efficiency_active(&state.app));
-    let profile = profile::active().ok()?;
-    let settings = crate::settings::read_strict(&profile.settings_file()).ok()?;
-    let fallback = if crate::navigation::SearchProvider::from_config(None, &profile.search_provider_file()).is_default() { "default" } else { "custom" };
-    protocol::snap_json("settings", |out| {
-        out.string("tabLayout", match settings.tab_layout { crate::settings::TabLayout::Horizontal => "horizontal", crate::settings::TabLayout::Vertical => "vertical" }); out.uint("sidebarWidth", u64::from(settings.sidebar_width));
-        out.bool("sleepEnabled", settings.sleep_enabled); out.uint("sleepAfterSecs", settings.sleep_after_secs);
-        out.bool("blockerEnabled", settings.blocker_enabled); out.array("blockerAllow", |items| for site in &settings.blocker_allow { items.string(site); });
-        if let Some(engine) = settings.search_engine { out.string("searchEngine", engine.key()); } else { out.null("searchEngine"); }
-        out.string("searchFallback", fallback); out.bool("automaticTabGrouping", settings.automatic_tab_grouping);
-        out.string("efficiencyMode", settings.efficiency_mode.key()); out.bool("efficiencyActive", efficiency_active);
-        out.string("trackingPrevention", settings.tracking_prevention.key());
-        out.bool("autoUpdate", crate::updater::auto_update_enabled());
-    })
-}
-
 fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let Ok(profile) = profile::active() else { return; };
     let mut notes = notes_panel::html_notes(&profile);
@@ -439,64 +419,6 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     };
     if let Err(error) = result { show_error_message(&format!("Notes could not be saved: {error}")); }
     send_current(runtime);
-}
-
-fn handle_settings(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
-    let app = match runtime.try_borrow() { Ok(state) => state.app.clone(), Err(_) => return };
-    let Ok(profile) = profile::active() else { return; };
-    let result = match f.a.as_str() {
-        "openfile" if empty_fields(&f, false) => {
-            if let Err(message) = super::settings_panel::launch_settings_file(&profile.settings_file()) { show_error_message(&message); }
-            return;
-        }
-        // Install-wide and applied at once, so it is not part of Save. No snapshot follows: one
-        // would replace the page's unsaved edits.
-        "autoupdate" if f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.text.is_none() && f.url.is_none() && f.on.is_some() => {
-            if let Err(error) = crate::updater::set_auto_update(f.on.unwrap_or(true)) { show_error_message(&format!("Automatic updates could not be changed: {error}")); send_current(runtime); }
-            return;
-        }
-        // The page asks for its own confirmation before sending this, so there is no second prompt.
-        "reset" if empty_fields(&f, false) => {
-            crate::settings::save(&profile.settings_file(), &crate::settings::Settings::default()).map(|()| {
-                crate::app::App::apply_tab_layout_settings(&app, crate::settings::TabLayout::Horizontal, crate::settings::DEFAULT_SIDEBAR_WIDTH);
-                crate::app::App::apply_efficiency_mode(&app, crate::settings::EfficiencyMode::Auto);
-            })
-        }
-        "save" if f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.text.is_some() => {
-            let Ok(mut settings) = crate::settings::read_strict(&profile.settings_file()) else { return; };
-            if !apply_settings_text(&mut settings, f.text.as_deref().unwrap_or("")) { return; }
-            crate::settings::save(&profile.settings_file(), &settings).map(|()| {
-                crate::app::App::apply_tab_layout_settings(&app, settings.tab_layout, settings.sidebar_width);
-                crate::app::App::apply_efficiency_mode(&app, settings.efficiency_mode);
-            })
-        }
-        _ => return,
-    };
-    if let Err(error) = result { show_error_message(&format!("Settings could not be saved: {error}. Nothing was saved.")); }
-    send_current(runtime);
-}
-
-fn apply_settings_text(settings: &mut crate::settings::Settings, text: &str) -> bool {
-    if text.len() > 2048 { return false; }
-    let mut seen = std::collections::HashSet::new();
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else { return false; };
-        if !seen.insert(key) { return false; }
-        match key {
-            "tab_layout" => settings.tab_layout = match value { "horizontal" => crate::settings::TabLayout::Horizontal, "vertical" => crate::settings::TabLayout::Vertical, _ => return false },
-            "sidebar_width" => { let Ok(width) = value.parse::<u16>() else { return false; }; if !(crate::settings::MIN_SIDEBAR_WIDTH..=crate::settings::MAX_SIDEBAR_WIDTH).contains(&width) { return false; } settings.sidebar_width = width; }
-            "sleep_enabled" => settings.sleep_enabled = match value { "true" => true, "false" => false, _ => return false },
-            "sleep_after_secs" => { let Ok(value) = crate::settings::parse_sleep_after_secs(value) else { return false; }; settings.sleep_after_secs = value; }
-            "blocker_enabled" => settings.blocker_enabled = match value { "true" => true, "false" => false, _ => return false },
-            "blocker_allow" => { let Ok(value) = crate::settings::parse_blocker_allow(value) else { return false; }; settings.blocker_allow = value; }
-            "automatic_tab_grouping" => settings.automatic_tab_grouping = match value { "true" => true, "false" => false, _ => return false },
-            "search_engine" => { let Some(value) = crate::navigation::SearchEngine::parse(value) else { return false; }; settings.search_engine = Some(value); }
-            "efficiency_mode" => { let Some(value) = crate::settings::EfficiencyMode::parse(value) else { return false; }; settings.efficiency_mode = value; }
-            "tracking_prevention" => { let Some(value) = crate::settings::TrackingLevel::parse(value) else { return false; }; settings.tracking_prevention = value; }
-            _ => return false,
-        }
-    }
-    ["tab_layout", "sidebar_width", "sleep_enabled", "sleep_after_secs", "blocker_enabled", "blocker_allow", "automatic_tab_grouping", "efficiency_mode", "tracking_prevention"].iter().all(|key| seen.contains(key))
 }
 
 fn empty_fields(f: &PanelFields, allow_text: bool) -> bool { f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && (allow_text || f.text.is_none()) }
@@ -534,29 +456,9 @@ mod tests {
         let client = rect(0, 0, 340, 700);
         assert_eq!(host_bounds(Kind::Notes, client, 96), rect(9, 0, 340, 700));
         assert_eq!(host_bounds(Kind::Notes, client, 192), rect(18, 0, 340, 700));
-        assert_eq!(host_bounds(Kind::Settings, client, 192), client);
+        assert_eq!(host_bounds(Kind::Rename, client, 192), client);
         assert_eq!(host_bounds(Kind::Privacy, client, 96), client);
         // A window narrower than the strip never inverts the rectangle.
         assert_eq!(host_bounds(Kind::Notes, rect(0, 0, 4, 10), 96).left, 4);
-    }
-
-    #[test]
-    fn settings_payload_updates_only_known_values_and_requires_every_control() {
-        let mut settings = crate::settings::Settings::default();
-        let valid = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict";
-        assert!(apply_settings_text(&mut settings, valid));
-        assert_eq!(settings.tab_layout, crate::settings::TabLayout::Vertical);
-        assert_eq!(settings.sidebar_width, 300);
-        assert!(!settings.sleep_enabled);
-        assert!(!settings.automatic_tab_grouping);
-        assert_eq!(settings.efficiency_mode, crate::settings::EfficiencyMode::On);
-        assert_eq!(settings.tracking_prevention, crate::settings::TrackingLevel::Strict);
-        assert!(!apply_settings_text(&mut settings, "tab_layout=wrong"));
-        assert!(!apply_settings_text(&mut settings, &valid.replace("efficiency_mode=on", "efficiency_mode=sometimes")));
-        assert!(!apply_settings_text(&mut settings, &valid.replace("tracking_prevention=strict", "tracking_prevention=off")));
-        assert!(!apply_settings_text(&mut settings, &valid.replace("\nefficiency_mode=on", "")));
-        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nunknown=x")));
-        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblocker_enabled=false")));
-        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nauto_update=false")), "the update switch is not a profile setting");
     }
 }

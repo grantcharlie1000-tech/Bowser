@@ -47,7 +47,6 @@ pub enum Command {
     ShowCommandPalette,
     ToggleNotes,
     AddBookmark,
-    ToggleTabLayout,
     /// Ctrl+H opens the History side panel.
     ShowHistory,
     /// Ctrl+Plus (and Ctrl+=, Ctrl+Numpad Plus) zooms the page in one step.
@@ -69,7 +68,6 @@ pub fn is_toggle(command: Command) -> bool {
             | Command::ToggleBlocker
             | Command::ToggleNotes
             | Command::TogglePictureInPicture
-            | Command::ToggleTabLayout
             | Command::ToggleReader
     )
 }
@@ -104,7 +102,6 @@ const VK_W: u32 = 0x57;
 const VK_Y: u32 = 0x59;
 const VK_Z: u32 = 0x5A;
 const VK_DELETE: u32 = 0x2E;
-const VK_V: u32 = 0x56;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
 const VK_OEM_5: u32 = 0xDC;
@@ -155,7 +152,6 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_LEFT, true, true, false) => Some(Command::FocusSplitLeft),
         (VK_RIGHT, true, true, false) => Some(Command::FocusSplitRight),
         (VK_W, true, true, false) => Some(Command::CloseSplitPane),
-        (VK_V, true, true, false) => Some(Command::ToggleTabLayout),
         (VK_H, true, false, false) => Some(Command::ShowHistory),
         // Ctrl+= and Ctrl+Shift+= (Ctrl+Plus on most layouts) both zoom in, as in Chrome.
         (VK_OEM_PLUS, true, _, false) | (VK_ADD, true, false, false) => Some(Command::ZoomIn),
@@ -213,7 +209,6 @@ mod tests {
             (VK_LEFT, true, true, false, Command::FocusSplitLeft),
             (VK_RIGHT, true, true, false, Command::FocusSplitRight),
             (VK_W, true, true, false, Command::CloseSplitPane),
-            (VK_V, true, true, false, Command::ToggleTabLayout),
             (VK_H, true, false, false, Command::ShowHistory),
             (VK_OEM_PLUS, true, false, false, Command::ZoomIn),
             (VK_OEM_PLUS, true, true, false, Command::ZoomIn),

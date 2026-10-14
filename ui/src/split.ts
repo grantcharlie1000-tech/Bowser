@@ -1,12 +1,14 @@
-// Split view host (?view=split): the empty side's "choose a tab" surface and the drop-zone card shown
-// while a tab is dragged over the page. Rust owns every model (see src/win32/split_ui.rs); this
-// page renders and reports intent. Page-controlled text is written with textContent only.
+// Split view host (?view=split): the empty side's "choose a tab" surface, the drop-zone card shown
+// while a tab is dragged over the page, and the private landing over a blank private tab
+// (private-page.ts). Rust owns every model (see src/win32/split_ui.rs); this page renders and
+// reports intent. Page-controlled text is written with textContent only.
 import { onInbound, send, type SplitCommand, type SplitDropMsg, type SplitPickMsg } from './protocol';
 import { validSplitCommand, type PickClosed, type PickTab } from './split-protocol';
 import { filterPick, moveSelection, pickHeading } from './split-logic';
 import { applyTheme } from './view';
 import { el, icon } from './dom';
 import { installTooltips } from './tooltip';
+import { buildPrivatePage } from './private-page';
 
 function sendSplit(cmd: SplitCommand): boolean {
   return validSplitCommand(cmd) && send(cmd);
@@ -221,7 +223,12 @@ export function startSplit(root: HTMLElement): void {
   root.setAttribute('role', 'region');
   installTooltips(root);
   const picker = buildPicker(root);
-  let mode: 'none' | 'pick' | 'drop' = 'none';
+  const privatePage = buildPrivatePage(() => sendSplit({ v: 1, t: 'split', a: 'closeprivate' }));
+  let mode: 'none' | 'pick' | 'drop' | 'private' = 'none';
+  const leavePrivate = (): void => {
+    if (mode === 'private') privatePage.hidden();
+    root.classList.remove('is-private');
+  };
   let side: 'l' | 'r' | null = null;
   // Any press inside the empty side makes it the focused side (the toolbar then follows it).
   root.addEventListener('pointerdown', () => {
@@ -239,6 +246,7 @@ export function startSplit(root: HTMLElement): void {
         applyTheme(msg.theme, msg.solid, msg.dark);
         break;
       case 'splitpick': {
+        leavePrivate();
         const first = mode !== 'pick' || side !== msg.side;
         mode = 'pick';
         side = msg.side;
@@ -246,12 +254,24 @@ export function startSplit(root: HTMLElement): void {
         break;
       }
       case 'splitdrop':
+        leavePrivate();
         mode = 'drop';
         side = msg.side;
         root.replaceChildren(buildDrop(msg));
         root.setAttribute('aria-label', 'Split view drop target');
         break;
+      case 'privatepage':
+        if (mode !== 'private') {
+          mode = 'private';
+          side = null;
+          root.classList.add('is-private');
+          root.setAttribute('aria-label', 'Private tab');
+          root.replaceChildren(privatePage.root);
+        }
+        privatePage.show(msg);
+        break;
       case 'splithide':
+        leavePrivate();
         mode = 'none';
         side = null;
         root.replaceChildren();

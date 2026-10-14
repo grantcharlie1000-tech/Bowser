@@ -79,10 +79,15 @@ pub fn browser_commands() -> CommandRegistry {
         ("New tab", "Open a blank tab", "new-tab"),
         (
             "New private tab",
-            "Open a tab that keeps no history or site data",
+            "Browse without saving history, cookies or site data",
             "new-private-tab",
         ),
         ("Close tab", "Close the current tab", "close-tab"),
+        (
+            "Close all private tabs",
+            "Close every private tab in this window",
+            "close-private-tabs",
+        ),
         ("Settings", "Open browser settings", "settings"),
         (
             "Toggle notes and tasks",
@@ -464,21 +469,65 @@ pub fn add_history_entry_at(
     title: &str,
 ) -> std::io::Result<()> {
     let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
-    let mut entries = read_history(path);
+    // A file that exists but cannot be read must never be replaced by one new entry.
+    let mut entries = read_history_strict(path)?;
     entries.retain(|(_, existing, _)| existing != &url);
     entries.push((timestamp, url, title.chars().take(256).collect::<String>()));
     if entries.len() > MAX_HISTORY {
         entries.drain(..entries.len() - MAX_HISTORY);
     }
-    let mut out = String::new();
-    for (timestamp, url, title) in entries {
-        out.push_str(&format!(
-            "{timestamp}\t{}\t{}\n",
-            escape(&url),
-            escape(&title)
-        ));
+    write_history(path, &entries)
+}
+
+/// What a tab's page load should add to history, so a visit is recorded whichever way the page
+/// was reached (typed, link, redirect, same-document change, reload) and not only when the address
+/// was typed into the omnibox. Pure: the window feeds it each tab's committed address, title and
+/// loading flag and persists whatever it returns.
+#[derive(Debug, Default)]
+pub struct VisitTracker {
+    /// Per tab: the address last recorded and whether its title was only the address.
+    last: std::collections::HashMap<u32, (String, bool)>,
+}
+
+impl VisitTracker {
+    /// `just_finished`: the tab was loading at the previous observation and is not now (a load,
+    /// including a reload of the same address, completed). Returns `(url, title)` to persist.
+    pub fn observe(
+        &mut self,
+        tab: u32,
+        url: Option<&str>,
+        title: &str,
+        loading: bool,
+        just_finished: bool,
+    ) -> Option<(String, String)> {
+        if loading {
+            return None;
+        }
+        // Only credential-free http(s) pages are history: no about:, data:, helium:, bowser: or file:.
+        let Some(url) = url.and_then(valid_http_url) else {
+            // The tab is on a page that is not history: coming back to the old address counts anew.
+            self.last.remove(&tab);
+            return None;
+        };
+        let title = title.trim();
+        let titled = !title.is_empty();
+        let record = match self.last.get(&tab) {
+            None => true,
+            Some((last, _)) if *last != url => true,
+            Some((_, was_placeholder)) => just_finished || (*was_placeholder && titled),
+        };
+        if !record {
+            return None;
+        }
+        if self.last.len() >= 1024 {
+            // Closed tabs are never reported; a bounded reset only costs one repeated visit.
+            self.last.clear();
+        }
+        self.last.insert(tab, (url.clone(), !titled));
+        let title = if titled { title.to_owned() } else { url.clone() };
+        Some((url, title))
     }
-    atomic_write(path, out.as_bytes())
+
 }
 
 pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
@@ -593,19 +642,54 @@ pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
     })
 }
 
+/// Largest history file that is read at all. The file is capped at `MAX_HISTORY` lines of at most
+/// a couple of kilobytes each, so this is only a guard against a foreign file.
+const MAX_HISTORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// History for display. An unreadable file shows as empty; mutators use [`read_history_strict`] so
+/// that never turns into a rewrite.
 pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
-    read_bounded(path).map_or_else(Vec::new, |text| {
-        text.lines()
-            .take(MAX_HISTORY)
-            .filter_map(|line| {
-                let mut fields = line.splitn(3, '\t');
-                let timestamp = fields.next()?.parse().ok()?;
-                let url = valid_http_url(&unescape(fields.next()?))?;
-                let title = unescape(fields.next()?);
-                Some((timestamp, url, title))
-            })
-            .collect()
-    })
+    read_history_strict(path).unwrap_or_default()
+}
+
+/// Reads history, telling a missing file (empty) apart from one that exists but cannot be read.
+/// Malformed lines are skipped; the newest `MAX_HISTORY` entries are kept (the file is oldest
+/// first). Tolerates CRLF line ends, a UTF-8 byte order mark and invalid UTF-8.
+pub(crate) fn read_history_strict(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
+    let bytes = match fs::File::open(path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_HISTORY_FILE_BYTES + 1), &mut bytes)?;
+            if bytes.len() as u64 > MAX_HISTORY_FILE_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "history file is too large to read",
+                ));
+            }
+            bytes
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    Ok(parse_history(&String::from_utf8_lossy(&bytes)))
+}
+
+fn parse_history(text: &str) -> Vec<(u64, String, String)> {
+    let mut entries: Vec<_> = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let timestamp = fields.next()?.trim().parse().ok()?;
+            let url = valid_http_url(&unescape(fields.next()?))?;
+            let title = unescape(fields.next().unwrap_or(""));
+            Some((timestamp, url, title))
+        })
+        .collect();
+    if entries.len() > MAX_HISTORY {
+        entries.drain(..entries.len() - MAX_HISTORY);
+    }
+    entries
 }
 
 pub type HistoryEntry = (u64, String, String);
@@ -618,7 +702,7 @@ pub struct HistoryDay {
 
 pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
     let normalized = valid_http_url(url).ok_or_else(invalid_url_error)?;
-    let mut entries = read_history(path);
+    let mut entries = read_history_strict(path)?;
     let n = entries.len();
     entries.retain(|(_, u, _)| u != &normalized);
     if entries.len() == n {
@@ -628,7 +712,7 @@ pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Result<usize> {
-    let mut entries = read_history(path);
+    let mut entries = read_history_strict(path)?;
     let n = entries.len();
     entries.retain(|(t, _, _)| *t < start || *t > end);
     let count = n - entries.len();
@@ -639,7 +723,7 @@ pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Resul
 }
 pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize> {
     let host = host.trim().trim_start_matches("www.").to_ascii_lowercase();
-    let mut entries = read_history(path);
+    let mut entries = read_history_strict(path)?;
     let n = entries.len();
     entries.retain(|(_, url, _)| {
         url::Url::parse(url)
@@ -657,8 +741,14 @@ pub fn clear_history(path: &Path) -> std::io::Result<()> {
     atomic_write(path, b"")
 }
 pub fn search_history(path: &Path, query: &str, limit: usize) -> Vec<HistoryEntry> {
+    search_entries(read_history(path), query, limit)
+}
+
+/// [`search_history`] over entries already read (the history page reads strictly, so it can tell
+/// an unreadable file from an empty one): newest first, `query` matched case-insensitively
+/// against the address and the title, at most `limit`.
+pub fn search_entries(mut entries: Vec<HistoryEntry>, query: &str, limit: usize) -> Vec<HistoryEntry> {
     let q = query.trim().to_lowercase();
-    let mut entries = read_history(path);
     entries.sort_by_key(|e| std::cmp::Reverse(e.0));
     entries
         .into_iter()
@@ -1031,6 +1121,169 @@ mod tests {
         assert!(delete_history_entry(&path, "https://example.com/").unwrap());
         clear_history(&path).unwrap();
         assert!(read_history(&path).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn history_temp(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("bowser-history-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn visit_tracker_records_a_finished_load_however_the_page_was_reached() {
+        let mut visits = VisitTracker::default();
+        // Still loading: nothing yet, even though the address is already known.
+        assert_eq!(visits.observe(1, Some("https://example.com/"), "", true, false), None);
+        // A link click, with no omnibox involved, is recorded when the load finishes.
+        assert_eq!(
+            visits.observe(1, Some("https://example.com/"), "Example", false, true),
+            Some(("https://example.com/".into(), "Example".into()))
+        );
+        // The same state seen again records nothing.
+        assert_eq!(visits.observe(1, Some("https://example.com/"), "Example", false, false), None);
+        // A redirect or same-document change lands on a new address.
+        assert_eq!(
+            visits.observe(1, Some("https://example.com/next#a"), "Next", false, true),
+            Some(("https://example.com/next#a".into(), "Next".into()))
+        );
+        // A reload of the same address is a visit again.
+        assert!(visits.observe(1, Some("https://example.com/next#a"), "Next", false, true).is_some());
+        // Another tab is independent.
+        assert!(visits.observe(2, Some("https://example.com/next#a"), "Next", false, false).is_some());
+    }
+
+    #[test]
+    fn visit_tracker_skips_pages_that_are_not_history() {
+        let mut visits = VisitTracker::default();
+        for url in [
+            "about:blank",
+            "data:text/html,hi",
+            "helium://settings",
+            "bowser://newtab",
+            "bowser://settings",
+            "bowser://settings/privacy",
+            "file:///C:/a.txt",
+            "https://user:pw@example.com/",
+        ] {
+            assert_eq!(visits.observe(1, Some(url), "T", false, true), None, "{url}");
+        }
+        assert_eq!(visits.observe(1, None, "T", false, true), None);
+        // Leaving a page for an internal one forgets it, so returning to it counts as a new visit.
+        assert!(visits.observe(3, Some("https://a.test/"), "A", false, true).is_some());
+        assert_eq!(visits.observe(3, Some("helium://settings"), "S", false, true), None);
+        assert!(visits.observe(3, Some("https://a.test/"), "A", false, false).is_some());
+    }
+
+    #[test]
+    fn visit_tracker_uses_the_address_for_an_empty_title_then_upgrades_it() {
+        let mut visits = VisitTracker::default();
+        assert_eq!(
+            visits.observe(1, Some("https://example.com/p"), "  ", false, true),
+            Some(("https://example.com/p".into(), "https://example.com/p".into()))
+        );
+        // The real title arrives after the load finished: recorded once more, then left alone.
+        assert_eq!(
+            visits.observe(1, Some("https://example.com/p"), "Page", false, false),
+            Some(("https://example.com/p".into(), "Page".into()))
+        );
+        assert_eq!(visits.observe(1, Some("https://example.com/p"), "Page (2)", false, false), None);
+    }
+
+    #[test]
+    fn recorded_visits_survive_a_round_trip_through_the_file() {
+        let root = history_temp("roundtrip");
+        let path = root.join("history.txt");
+        let title = "Tab\there\nand a \\ slash\r\nand more";
+        add_history_entry_at(&path, 1_700_000_000, "https://example.com/a?b=c#d", title).unwrap();
+        add_history_entry_at(&path, 1_700_000_100, "https://other.test/", "Other").unwrap();
+        let entries = read_history(&path);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].2, title);
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 2, "escaped newlines must not add lines");
+        assert!(!root.join("history.tmp").exists(), "the temp file is renamed away");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_reads_crlf_bom_missing_titles_and_skips_only_malformed_lines() {
+        let root = history_temp("tolerant");
+        let path = root.join("history.txt");
+        fs::write(
+            &path,
+            "\u{feff}1\thttps://a.test/\tA\r\nnot a line\r\n2\tftp://b.test/\tB\r\n3\thttps://c.test/\r\n4\thttps://d.test/\tD\r\n",
+        )
+        .unwrap();
+        let urls: Vec<_> = read_history(&path).into_iter().map(|e| e.1).collect();
+        assert_eq!(urls, ["https://a.test/", "https://c.test/", "https://d.test/"]);
+        // Adding a visit keeps every good entry.
+        add_history_entry_at(&path, 5, "https://e.test/", "E").unwrap();
+        assert_eq!(read_history(&path).len(), 4);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_large_history_file_is_read_and_extended_not_replaced() {
+        let root = history_temp("large");
+        let path = root.join("history.txt");
+        let mut text = String::new();
+        for i in 0..MAX_HISTORY {
+            text.push_str(&format!("{}\thttps://example.com/{}{i}\t{}\n", 1_700_000_000 + i, "p".repeat(900), "t".repeat(200)));
+        }
+        assert!(text.len() > MAX_FILE_BYTES, "the fixture must exceed the generic 256 KiB read bound");
+        fs::write(&path, &text).unwrap();
+        assert_eq!(read_history(&path).len(), MAX_HISTORY);
+        add_history_entry_at(&path, 1_800_000_000, "https://new.test/", "New").unwrap();
+        let entries = read_history(&path);
+        assert_eq!(entries.len(), MAX_HISTORY, "the oldest entry makes room");
+        assert_eq!(entries.last().unwrap().1, "https://new.test/");
+        assert_eq!(entries[0].0, 1_700_000_001);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn history_keeps_the_newest_entries_when_the_file_has_too_many_lines() {
+        let root = history_temp("newest");
+        let path = root.join("history.txt");
+        let text: String = (0..MAX_HISTORY + 20).map(|i| format!("{i}\thttps://h.test/{i}\tT\n")).collect();
+        fs::write(&path, text).unwrap();
+        let entries = read_history(&path);
+        assert_eq!(entries.len(), MAX_HISTORY);
+        assert_eq!(entries[0].0, 20);
+        assert_eq!(entries.last().unwrap().0 as usize, MAX_HISTORY + 19);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_utf8_does_not_empty_the_history() {
+        let root = history_temp("utf8");
+        let path = root.join("history.txt");
+        let mut bytes = b"1\thttps://a.test/\tcaf".to_vec();
+        bytes.extend_from_slice(&[0xE9, b'\n']);
+        bytes.extend_from_slice(b"2\thttps://b.test/\tB\n");
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(read_history(&path).len(), 2);
+        add_history_entry_at(&path, 3, "https://c.test/", "C").unwrap();
+        assert_eq!(read_history(&path).len(), 3);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unreadable_history_file_is_never_overwritten() {
+        let root = history_temp("unreadable");
+        let path = root.join("history.txt");
+        // A directory where the file should be: opening it for reading fails.
+        fs::create_dir_all(&path).unwrap();
+        assert!(add_history_entry_at(&path, 1, "https://a.test/", "A").is_err());
+        assert!(delete_history_entry(&path, "https://a.test/").is_err());
+        assert!(path.is_dir(), "nothing replaced the unreadable path");
+        // A missing file is simply empty and is created by the first visit.
+        let missing = root.join("new.txt");
+        assert!(read_history(&missing).is_empty());
+        add_history_entry_at(&missing, 1, "https://a.test/", "A").unwrap();
+        assert_eq!(read_history(&missing).len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

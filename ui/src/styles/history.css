@@ -1,0 +1,708 @@
+/*
+ * Surface: HISTORY PAGE (?view=history, drawn over a bowser://history tab). Owner: history.
+ * Built by ui/src/history-page.ts; words, the snapshot contract and keys in
+ * ui/src/history-page-logic.ts. Spec: docs/design/history-page.md.
+ *
+ * Colour: the theme's own window, text, hairline and accent tokens (tokens.css), plus the local
+ * --hp-* surfaces below, all derived from them (the same recipes as the settings page's --sp-*),
+ * so the page follows light, dark and the accent and sits beside Settings as one family.
+ * Motion: transform and opacity only, every animation finite; under reduced motion nothing moves
+ * (base.css turns transitions into short fades, and the keyframe animations below opt out).
+ */
+
+#app.hp-root {
+  --hp-page: var(--bw-window-opaque);
+  --hp-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
+  --hp-card-edge: var(--bw-hairline);
+  --hp-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque));
+  --hp-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --hp-row-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
+  --hp-row-press: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  --hp-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
+  --hp-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent);
+  --hp-danger: var(--bw-group-0);
+  --hp-warn: var(--bw-group-1);
+  /* Content column and its gutter; the header's inner column matches it exactly. */
+  --hp-col: 760px;
+  --hp-gutter: var(--bw-space-6);
+  /* The family stroke (the toolbar's #app default thins it for the caption glyphs). */
+  --bw-icon-stroke: 1.5px;
+  display: block;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0;
+  background: var(--hp-page);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+:root[data-scheme="light"] #app.hp-root {
+  --hp-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
+  --hp-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
+}
+
+/* `hidden` always wins over the display of the classes below. */
+.hp [hidden] {
+  display: none !important;
+}
+
+/* The page is its own scroller; the header sticks to its top. */
+.hp {
+  position: relative;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-padding-top: 152px;
+}
+
+/* ---- Header: mark, title and count, Clear browsing data, search ---- */
+.hp-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--hp-page);
+}
+
+/* A hairline under the header once the list scrolls beneath it. */
+.hp-head::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  inset-inline: 0;
+  height: 1px;
+  background: var(--hp-card-edge);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  pointer-events: none;
+}
+
+.hp-head.is-scrolled::after {
+  opacity: 1;
+}
+
+.hp-head-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+  max-width: calc(var(--hp-col) + 2 * var(--hp-gutter));
+  margin-inline: auto;
+  padding: var(--bw-space-6) var(--hp-gutter) var(--bw-space-4);
+}
+
+.hp-top {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.hp-brand {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.hp-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--bw-accent);
+}
+
+/* The clock's hands wind back once as the page opens: the page is about what came before. */
+@keyframes hp-rewind {
+  from {
+    transform: rotate(300deg);
+  }
+}
+
+.hp-mark.is-turn svg path {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+  animation: hp-rewind 720ms var(--bw-ease-out) 80ms both;
+}
+
+.hp-titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.hp-title {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+  letter-spacing: -0.01em;
+}
+
+.hp-summary {
+  margin: 0;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Buttons on the page sit at the 32px field height, on the field material (as on Settings). */
+.hp .bw-button {
+  height: 32px;
+  border-color: var(--hp-field-edge);
+  background-color: var(--hp-field);
+}
+
+.hp .bw-button.is-primary {
+  border-color: transparent;
+  background-color: var(--bw-accent);
+}
+
+.hp .bw-button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.hp-clear-data {
+  flex: none;
+}
+
+.hp-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.hp-search-icon {
+  position: absolute;
+  inset-inline-start: 14px;
+  color: var(--bw-text-2);
+  pointer-events: none;
+}
+
+.hp-search-input {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  padding: 0 40px;
+  border: 1px solid var(--hp-field-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--hp-field);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+  user-select: text;
+  transition: border-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.hp-search-input::placeholder {
+  color: var(--bw-text-2);
+}
+
+.hp-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.hp-search-input:hover {
+  border-color: color-mix(in srgb, var(--bw-text) 22%, transparent);
+}
+
+.hp-search-input:focus-visible {
+  border-color: var(--bw-focus);
+  box-shadow:
+    inset 0 0 0 1px var(--bw-focus),
+    0 0 0 3px color-mix(in srgb, var(--bw-focus) 22%, transparent);
+}
+
+.hp-search-clear {
+  position: absolute;
+  inset-inline-end: 10px;
+}
+
+/* The `/` hint: how to get here from anywhere on the page. Gone once the field is in use. */
+.hp-key {
+  position: absolute;
+  inset-inline-end: 12px;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--bw-space-1_5);
+  border: 1px solid var(--hp-field-edge);
+  border-radius: var(--bw-r-control);
+  color: var(--bw-text-2);
+  font: var(--bw-text-caption) / 1 var(--bw-font);
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  pointer-events: none;
+}
+
+.hp-search:focus-within .hp-key,
+.hp-search.has-text .hp-key {
+  opacity: 0;
+}
+
+/* ---- Days and rows ---- */
+.hp-main {
+  padding: 0 var(--hp-gutter) 96px;
+  outline: none;
+}
+
+.hp-col {
+  max-width: var(--hp-col);
+  margin-inline: auto;
+}
+
+.hp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-6);
+  padding-top: var(--bw-space-2);
+}
+
+/* Off-screen days skip layout and paint until they scroll near (history holds up to 500 rows). */
+.hp-day {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 480px;
+}
+
+.hp-day-h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bw-space-2);
+  margin: 0 0 var(--bw-space-2);
+  padding-inline: var(--bw-space-1);
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.hp-day-date,
+.hp-day-count {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: 400;
+}
+
+.hp-day-count {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A day's card: rows are inset pills, concentric with the card's corners (12 = 8 + 4). */
+.hp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-0_5);
+  margin: 0;
+  padding: var(--bw-space-1);
+  border: 1px solid var(--hp-card-edge);
+  border-radius: 12px;
+  background: var(--hp-card);
+  list-style: none;
+}
+
+.hp-row {
+  position: relative;
+  border-radius: var(--bw-r-island);
+}
+
+.hp-open {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--bw-space-3);
+  width: 100%;
+  min-height: 52px;
+  margin: 0;
+  padding: var(--bw-space-1_5) var(--bw-space-3) var(--bw-space-1_5) var(--bw-space-2);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.hp-row:hover > .hp-open,
+.hp-row:focus-within > .hp-open {
+  background-color: var(--hp-row-hover);
+}
+
+.hp-row > .hp-open:active {
+  background-color: var(--hp-row-press);
+}
+
+.hp-open:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.hp-lead {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--bw-r-island);
+}
+
+/* Sites without a cached icon get a letter on their own tone, so a site keeps its colour. */
+.hp-lead[data-tone] {
+  background: color-mix(in srgb, var(--hp-tone) 24%, transparent);
+}
+
+.hp-lead[data-tone="0"] { --hp-tone: var(--bw-group-0); }
+.hp-lead[data-tone="1"] { --hp-tone: var(--bw-group-1); }
+.hp-lead[data-tone="2"] { --hp-tone: var(--bw-group-2); }
+.hp-lead[data-tone="3"] { --hp-tone: var(--bw-group-3); }
+.hp-lead[data-tone="4"] { --hp-tone: var(--bw-group-4); }
+.hp-lead[data-tone="5"] { --hp-tone: var(--bw-group-5); }
+.hp-lead[data-tone="6"] { --hp-tone: var(--bw-group-6); }
+.hp-lead[data-tone="7"] { --hp-tone: var(--bw-group-7); }
+
+.hp-fav {
+  color: var(--bw-text);
+  font-size: var(--bw-text-body);
+  line-height: 1;
+  font-weight: var(--bw-weight-strong);
+}
+
+.hp-fav.is-image {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.hp-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hp-name,
+.hp-addr {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hp-addr {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* Room for the two row buttons, which take the time's place on hover and focus. */
+.hp-time {
+  min-width: 64px;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.hp-acts {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: var(--bw-space-2);
+  display: flex;
+  gap: var(--bw-space-0_5);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.hp-row:hover > .hp-acts,
+.hp-row:focus-within > .hp-acts {
+  opacity: 1;
+}
+
+.hp-row:hover .hp-time,
+.hp-row:focus-within .hp-time {
+  opacity: 0;
+}
+
+.hp-act {
+  color: var(--bw-text-2);
+}
+
+.hp-act:hover {
+  color: var(--bw-text);
+}
+
+.hp-act.is-remove:hover {
+  color: var(--hp-danger);
+}
+
+.hp-hit {
+  border-radius: 2px;
+  background: var(--hp-hit);
+  color: inherit;
+}
+
+/* A visit recorded while the page is open (or one put back by Undo) drops in and glows once. */
+@keyframes hp-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes hp-glow {
+  0%,
+  35% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+.hp-row.is-new {
+  animation: hp-arrive var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+.hp-row.is-new::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bw-accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-accent) 40%, transparent);
+  opacity: 0;
+  animation: hp-glow 1400ms var(--bw-ease-fade) both;
+  pointer-events: none;
+}
+
+/* A removed row fades while Bowser answers; the rows below then glide up into its place. */
+.hp-row.is-leaving {
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-in);
+}
+
+@keyframes hp-glide {
+  from {
+    transform: translateY(var(--hp-from, 0px));
+  }
+}
+
+.hp-row.is-gliding {
+  animation: hp-glide var(--bw-dur-base) var(--bw-ease-move) both;
+}
+
+/* ---- Empty, off, guest and error states ---- */
+.hp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-2);
+  padding: 72px var(--bw-space-4);
+  text-align: center;
+}
+
+.hp-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--bw-space-2);
+  border-radius: 50%;
+  background: var(--bw-accent-soft);
+  color: var(--bw-accent);
+}
+
+.hp-empty-mark[data-kind="nomatch"],
+.hp-empty-mark[data-kind="guest"] {
+  background: var(--hp-tile);
+  color: var(--bw-text-2);
+}
+
+.hp-empty-mark[data-kind="error"] {
+  background: color-mix(in srgb, var(--hp-warn) 18%, transparent);
+  color: var(--hp-warn);
+}
+
+.hp-empty-title {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+  letter-spacing: -0.01em;
+}
+
+.hp-empty-body {
+  max-width: 440px;
+  margin: 0 0 var(--bw-space-3);
+  color: var(--bw-text-2);
+}
+
+.hp-foot {
+  margin: var(--bw-space-6) 0 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-align: center;
+}
+
+.hp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- "Removed", with Undo ---- */
+.hp-toast {
+  position: fixed;
+  bottom: var(--bw-space-6);
+  left: 50%;
+  z-index: var(--bw-z-popup);
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  max-width: min(560px, calc(100% - 2 * var(--bw-space-4)));
+  padding: var(--bw-space-1) var(--bw-space-1) var(--bw-space-1) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition:
+    opacity var(--bw-dur-base) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-out);
+  pointer-events: none;
+}
+
+.hp-toast.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.hp-toast:not(:has(.hp-toast-undo:not([hidden]))) {
+  padding-block: var(--bw-space-1_5);
+  padding-inline-end: var(--bw-space-4);
+}
+
+.hp-toast-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--bw-accent);
+}
+
+.hp-toast.is-error .hp-toast-icon {
+  color: var(--hp-warn);
+}
+
+.hp-toast-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hp-toast-undo {
+  flex: none;
+  height: 28px;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border: 0;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font: inherit;
+  font-weight: var(--bw-weight-strong);
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.hp-toast-undo:hover {
+  background: color-mix(in srgb, var(--bw-accent) 34%, transparent);
+}
+
+.hp-toast-undo:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 1px;
+}
+
+/* ---- Narrow windows and split panes ---- */
+@media (max-width: 600px) {
+  #app.hp-root {
+    --hp-gutter: var(--bw-space-3);
+  }
+
+  .hp {
+    scroll-padding-top: 136px;
+  }
+
+  .hp-head-in {
+    gap: var(--bw-space-3);
+    padding-top: var(--bw-space-4);
+  }
+
+  /* Clear browsing data keeps its icon and its accessible name. */
+  .hp-clear-data {
+    width: 32px;
+    padding: 0;
+    gap: 0;
+    font-size: 0;
+  }
+
+  .hp-key,
+  .hp-rest {
+    display: none;
+  }
+
+  .hp-empty {
+    padding-top: 48px;
+  }
+}
+
+@media (max-width: 420px) {
+  .hp-day-date {
+    display: none;
+  }
+
+  .hp-open {
+    column-gap: var(--bw-space-2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hp-mark.is-turn svg path,
+  .hp-row.is-new,
+  .hp-row.is-new::after,
+  .hp-row.is-gliding {
+    animation: none;
+  }
+
+  .hp-row.is-leaving {
+    transform: none;
+  }
+
+  .hp-toast,
+  .hp-toast.is-on {
+    transform: translate(-50%, 0);
+  }
+}

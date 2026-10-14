@@ -101,7 +101,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -288,6 +288,8 @@ pub enum SplitCommand {
     Close,
     /// The empty side was clicked: it becomes the focused side.
     Focus,
+    /// The private landing's "Close all private tabs" (docs/design/private-tabs.md).
+    ClosePrivate,
     /// Tab `id` is being dragged at `x`,`y` (CSS pixels of the tab view; below the strip means over
     /// the page).
     DragOver { id: u32, x: u32, y: u32 },
@@ -304,7 +306,7 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
         "pick" | "drop" | "end" => &["id"],
         "reopen" => &["n"],
         "go" => &["text"],
-        "close" | "focus" => &[],
+        "close" | "focus" | "closeprivate" => &[],
         "over" => &["id", "x", "y"],
         _ => return Err(ProtocolError::InvalidValue("a")),
     };
@@ -333,6 +335,7 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
         }
         "close" => SplitCommand::Close,
         "focus" => SplitCommand::Focus,
+        "closeprivate" => SplitCommand::ClosePrivate,
         _ => SplitCommand::DragOver { id: uint_field(fields, "id")?, x: coord("x")?, y: coord("y")? },
     })
 }
@@ -851,7 +854,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h"],
         "pick" => &["tok", "id"],
@@ -966,7 +969,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -974,6 +977,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "bm" => PanelType::Bookmarks, "cust" => PanelType::Customize,
                 "notes" => PanelType::Notes, "set" => PanelType::Settings,
                 "ren" => PanelType::Rename,
+                // The bowser://history page (docs/design/history-page.md); not the rail panel's `hist`.
+                "hpage" => PanelType::HistoryPage,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -1576,6 +1581,13 @@ pub fn suggest_open_json(on: bool) -> String {
     format!("{{\"v\":1,\"t\":\"suggestOpen\",\"on\":{on}}}")
 }
 // --- end omnibox suggest ---
+
+/// `{"v":1,"t":"menuOpen","on":..}` (toolbar only): whether the main menu is open, so the toolbar's
+/// menu button shows it (`aria-expanded`, the pressed bubble and its spread dots). Sent when the
+/// menu opens and again when it closes, from the native pressed state (`Hit::MainMenu`).
+pub fn menu_open_json(on: bool) -> String {
+    format!("{{\"v\":1,\"t\":\"menuOpen\",\"on\":{on}}}")
+}
 
 /// The favicon gate shared by `fav` and `railfav`: a PNG of at most `MAX_FAVICON_BYTES` whose IHDR
 /// size is in range.
@@ -4099,6 +4111,22 @@ mod tests {
     fn suggest_open_json_is_a_flat_boolean_flag() {
         assert_eq!(suggest_open_json(true), r#"{"v":1,"t":"suggestOpen","on":true}"#);
         assert_eq!(suggest_open_json(false), r#"{"v":1,"t":"suggestOpen","on":false}"#);
+    }
+
+    /// Writes the cross-language fixture read by `ui/test/contract.mjs`.
+    #[test]
+    fn menu_open_messages_write_the_ui_fixture() {
+        assert_eq!(menu_open_json(true), r#"{"v":1,"t":"menuOpen","on":true}"#);
+        let fixture = format!("{{\"open\":{},\"shut\":{}}}\n", menu_open_json(true), menu_open_json(false));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/menu-open-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).expect("write menu open fixture");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("menu open fixture").replace("\r\n", "\n"),
+            fixture,
+            "set BOWSER_WRITE_FIXTURES=1 cargo test menu_open_messages_write_the_ui_fixture --lib"
+        );
     }
 
     /// Writes the cross-language fixture read by `ui/test/suggest.mjs`.

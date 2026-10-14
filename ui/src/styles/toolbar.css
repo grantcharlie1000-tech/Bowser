@@ -7,8 +7,9 @@
  * override it with `#app.<surface>`, which is more specific, so import order does not matter.
  *
  * Buttons are the shared .bw-icon-btn (components.css); this file only places them and sets the
- * one toolbar icon weight. Typing is never animated: the pill's hover and focus changes are plain
- * colour/shadow swaps, and nothing here transitions on the input itself.
+ * one toolbar icon weight. Typing is never animated: the pill's hover, focus and open changes are
+ * 83ms colour/opacity fades (the shadow and corners swap at once), and nothing here transitions on
+ * the input itself. The design, its tokens and the motion table: docs/design/omnibox.md.
  */
 
 #app {
@@ -52,7 +53,97 @@ html[data-scheme="dark"] #app {
   background: var(--bw-fill);
 }
 
-/* ---- Pill ---- */
+/* ---- Main menu button: three dots (menu-dots, view.ts .tb-menu) ----
+   The glyph is drawn at 24px (not the 16px of the other toolbar glyphs) so one grid unit is one CSS
+   px: 4px dots on 8px centres, 20px across, every centre on a whole pixel. That keeps all three
+   identical and crisp at 1x, 1.25x, 1.5x and 2x (4/5/6/8 device px dots on 8/10/12/16 px centres)
+   with 4px of the 28px bubble clear on each side. The rest state is the glyph untouched. Motion is
+   transform/translate on the three <circle>s only, and only while something happens (all of it
+   skipped under reduced motion, which keeps just the bubble's colour change):
+     hover   the dots hop in turn, 1.5px up and settling with a small dip, --bw-stagger apart
+             (167ms each, 227ms in all), then rest again
+     press   the dots pull together: the outer two close in 1px and all three shrink a little (83ms)
+     open    while the main menu is up (Rust menuOpen -> aria-expanded, which also holds the
+             pressed bubble) the outer dots spread 1px and settle with an overshoot
+             (--bw-ease-spring, 250ms); they glide back when it closes (167ms) */
+.tb-menu > svg {
+  width: 24px;
+  height: 24px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tb-menu > svg > circle {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform var(--bw-dur-base) var(--bw-ease-move);
+  }
+
+  .tb-menu:is(:hover, :focus-visible) > svg > circle {
+    animation: tb-menu-hop var(--bw-dur-base) linear;
+  }
+
+  .tb-menu:is(:hover, :focus-visible) > svg > circle:nth-child(2) {
+    animation-delay: var(--bw-stagger);
+  }
+
+  .tb-menu:is(:hover, :focus-visible) > svg > circle:nth-child(3) {
+    animation-delay: calc(var(--bw-stagger) * 2);
+  }
+
+  .tb-menu[aria-expanded="true"] > svg > circle {
+    transition: transform var(--bw-dur-slow) var(--bw-ease-spring);
+  }
+
+  .tb-menu[aria-expanded="true"] > svg > circle:first-child {
+    transform: translateX(-1px);
+  }
+
+  .tb-menu[aria-expanded="true"] > svg > circle:last-child {
+    transform: translateX(1px);
+  }
+
+  /* After the open rules: a press always reads as a press. */
+  .tb-menu:active > svg > circle {
+    transform: scale(0.9);
+    transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+  }
+
+  .tb-menu:active > svg > circle:first-child {
+    transform: translateX(1px) scale(0.9);
+  }
+
+  .tb-menu:active > svg > circle:last-child {
+    transform: translateX(-1px) scale(0.9);
+  }
+}
+
+/* Up fast and decelerating, a quick fall that dips a quarter pixel past rest, then settle. */
+@keyframes tb-menu-hop {
+  0% {
+    translate: 0 0;
+    animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1);
+  }
+  40% {
+    translate: 0 -1.5px;
+    animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0.6);
+  }
+  75% {
+    translate: 0 0.25px;
+    animation-timing-function: cubic-bezier(0.25, 0.4, 0.5, 1);
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+/* ---- Pill (docs/design/omnibox.md) ----
+   One box in four looks. The 1px border, the 26px height and --bw-r-omnibox never change, so nothing
+   inside the pill moves between them:
+     rest   the themed fill and a faint hairline
+     hover  the fill takes a wash of the hover colour and the hairline firms up (83ms colour fade)
+     focus  the raised omnibox material (opaque) and a small lift; no outline, the edge fades out
+     open   the same material and lift, and the bottom corners square off into the list
+            (hover.css .bw-suggest), so the two read as one. */
 .pill {
   position: relative;
   display: flex;
@@ -63,11 +154,13 @@ html[data-scheme="dark"] #app {
   height: var(--bw-pill-h);
   margin: 0 auto;
   background-color: var(--bw-fill);
-  border: 1px solid var(--bw-pill-edge);
+  border: 1px solid var(--bw-omni-edge);
   border-radius: var(--bw-r-omnibox);
   overflow: hidden;
   container-type: inline-size;
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    border-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
 /* Rust places the pill and the menu button to line up with the native layout (state pillx/pillw/menux). */
@@ -85,55 +178,39 @@ html[data-scheme="dark"] #app {
   left: var(--menu-x);
 }
 
-/* Hover lift: the fill takes a wash of the hover colour (83ms). */
-.pill:hover:not(:focus-within) {
+/* Hover: the fill takes a wash of the hover colour and the hairline firms up (83ms). */
+.pill:hover:not(:focus-within, .is-open) {
   background-color: color-mix(in srgb, var(--bw-fill), var(--bw-hover));
+  border-color: var(--bw-omni-edge-hover);
 }
 
-/* Focus ring, drawn entirely inside the pill's 26px box: the 1px accent border, a second accent pixel
-   and a 1px contrast line (the ::after layer). Nothing is drawn outside, so the pill and the
-   suggestions list below it share the same left and right edges. */
+/* Focus: the pill lifts onto the raised omnibox material (the list's own, so nothing changes in the
+   top half when the list opens). There is no outline, focused or open: the 1px border keeps its
+   place (so nothing moves) but fades to transparent (83ms), and the caret and the lift say where the
+   keyboard is. The lift (--bw-sh-omni) fits the toolbar's 4px margin. */
+.pill:focus-within,
+.pill.is-open {
+  background: var(--bw-omni-material);
+  box-shadow: var(--bw-sh-omni);
+}
+
 .pill:focus-within {
-  border-color: var(--bw-focus);
-}
-
-.pill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  /* The padding box's own radius, stated outright: `inherit` would scale differently once the
-     bottom corners square off (13 + 13 > 24 closed, 13 + 0 open) and shift the ring's arc. */
-  border-radius: calc(var(--bw-r-omnibox) - 1px);
-  box-shadow:
-    inset 0 0 0 1px var(--bw-focus),
-    inset 0 0 0 2px var(--bw-focus-inner);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.pill:focus-within::after,
-.pill.is-open::after {
-  opacity: 1;
+  border-color: transparent;
 }
 
 /* Open suggestions: the pill and the dropdown under it (hover.css .bw-suggest) are one surface.
-   The pill's top half is exactly what it is when closed and focused (same fill, same ring, same
-   edge position, same --bw-r-omnibox curvature); only the bottom corners square off and the bottom
-   edge opens into the list, which Rust tucks one device pixel under it. The ring's bottom strip is
-   masked away so the side rings run straight down into the list's. Rust sends suggestOpen when the
-   popup is on screen and again once it is gone, so the corners never show without the list. */
+   The top half keeps the focused material, lift and --bw-r-omnibox curvature; only the bottom
+   corners square off and the bottom edge opens into the list, which Rust tucks one device pixel
+   under it. Rust sends suggestOpen when the popup is on screen and again shortly before it is gone,
+   so the corners never show without the list. There is no outline while it is open: the border
+   keeps its 1px (so nothing moves) and is already transparent, while the
+   list unrolls (167ms, Rust). The material is set on .is-open too: a press on a row can take focus
+   from the input for a moment, and the top half must not flash back to the resting fill. */
 .pill.is-open,
 .pill.is-open:focus-within {
-  border-color: var(--bw-focus); /* uniform, so the top edge rasterises exactly as when closed */
+  border-color: transparent;
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
-}
-
-.pill.is-open::after {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  /* Integer-pixel clip (no mask raster): everything except the bottom strip between the side rings. */
-  clip-path: polygon(0 0, 100% 0, 100% 100%, calc(100% - 2px) 100%, calc(100% - 2px) calc(100% - 2px), 2px calc(100% - 2px), 2px 100%, 0 100%);
 }
 
 .pill.is-open .progress {
@@ -147,13 +224,17 @@ html[data-scheme="dark"] #app {
   height: 100%;
 }
 
+/* 13px text (the suggestion titles below use the same size), starting 6px after the site button:
+   the same x as the titles in the list (hover.css .bw-suggest-row), so the typed text and the rows
+   line up as one column. */
 .omni,
 .omni-display {
   position: absolute;
   inset: 0;
   margin: 0;
-  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-1);
+  padding: 0 var(--bw-space-2) 0 var(--bw-space-1_5);
   font: inherit;
+  font-size: var(--bw-text-omni);
 }
 
 .omni {
@@ -204,13 +285,30 @@ html[data-scheme="dark"] #app {
   color: var(--bw-text-2);
 }
 
-/* ---- Buttons inside the pill: 20px, round, 16px glyph ---- */
+/* ---- Buttons inside the pill: 20px, round, 16px glyph ----
+   Quiet at rest (secondary colour), primary under the pointer or when pressed. The site button sits
+   8px in, so its glyph centres on the same x as the suggestion rows' lead icons below it; the last
+   trailing button sits 4px in, the pill's own end inset. Keyboard focus keeps the shared inset ring
+   (.bw-focus-inset), drawn inside the button so the pill's clip never cuts it. */
+.pill .bw-icon-btn {
+  color: var(--bw-text-2);
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade),
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.pill .bw-icon-btn:is(:hover, :focus-visible, [aria-pressed="true"]) {
+  color: var(--bw-text);
+}
+
 .tb-site {
-  margin-left: var(--bw-space-0_5);
+  margin-left: var(--bw-space-2);
 }
 
 .tb-split {
-  margin-right: var(--bw-space-0_5);
+  margin-right: var(--bw-space-1);
 }
 
 /* Zoom chip (view.ts): shown only while the page is zoomed, and hidden through the [hidden]
@@ -265,7 +363,10 @@ html[data-scheme="dark"] #app {
 
 /* Private tab: a compact chip between the address and the split button. It never shrinks, so a
    long URL truncates (ellipsis) before it, and it sits in the pill's flex row, so it cannot cover
-   the site (security) button or the split button. Accent-soft wash with primary text keeps AA. */
+   the site (security) button or the split button. Private-violet mark and primary text (AA), with no
+   bubble behind them.
+   Each time it appears (a private tab opens or is selected) it pops once and the shades drop onto
+   the mark: transform/opacity, 240ms, then nothing runs (private.css, docs/design/private-tabs.md). */
 .tb-private {
   display: flex;
   flex: none;
@@ -273,9 +374,7 @@ html[data-scheme="dark"] #app {
   gap: var(--bw-space-1);
   height: var(--bw-icon-box);
   margin-right: var(--bw-space-0_5);
-  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-1);
-  border-radius: var(--bw-r-pill);
-  background: var(--bw-accent-soft);
+  padding: 0 var(--bw-space-1);
   color: var(--bw-text);
   font-size: var(--bw-text-chrome);
   line-height: 1;
@@ -283,8 +382,18 @@ html[data-scheme="dark"] #app {
   cursor: default;
 }
 
+.tb-private > svg {
+  color: var(--bw-private);
+}
+
 .tb-private[hidden] {
   display: none;
+}
+
+/* The resting (and hovered) pill edge takes the private tint; focus and the
+   open list have no edge, so the pill and the suggestions dropdown below it still meet seamlessly. */
+.pill[data-private="true"]:not(:focus-within, .is-open) {
+  border-color: var(--bw-private-edge);
 }
 
 /* Narrow pill: drop the split and reader buttons first, then the private label (the glyph stays), then the

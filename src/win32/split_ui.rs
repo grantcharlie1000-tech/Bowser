@@ -1,8 +1,9 @@
 //! Split view chrome around the two panes (see docs/design/split-view.md):
 //!
 //! - one HTML host (`View::Split`) in a Bowser-owned child window that shows either the empty
-//!   side's "choose a tab" surface (over the pane that has no page) or the drop-zone card while a
-//!   tab from the HTML strip is dragged over the page;
+//!   side's "choose a tab" surface (over the pane that has no page), the drop-zone card while a
+//!   tab from the HTML strip is dragged over the page, or the private landing over a blank private
+//!   tab outside split view (docs/design/private-tabs.md; one host, so no extra WebView2);
 //! - the split menus (toolbar button, divider grip, tab menu entries) and the entry points
 //!   (toggle, open with an empty side, drop a dragged tab);
 //! - divider click detection and the `pair` broadcast cache.
@@ -49,6 +50,8 @@ enum Shown {
     Picker { tab: TabId, pane: Pane, rect: RECT },
     /// The drop-zone card for a dragged tab over `pane`'s half of the page.
     Drop { pane: Pane, rect: RECT },
+    /// The private landing over blank private tab `tab` (no split), at the whole viewport `rect`.
+    Private { tab: TabId, rect: RECT },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -358,6 +361,12 @@ pub(crate) fn picker_pane(owner: HWND) -> Option<Pane> {
     .flatten()
 }
 
+/// Whether the private landing covers the viewport right now (the overlay then frames it like a
+/// page instead of painting the opaque new-tab surface over it).
+pub(crate) fn private_page_shown(owner: HWND) -> bool {
+    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. }))).unwrap_or(false)
+}
+
 /// The side a dragged tab would land on, when the HTML card cannot show it (overlay fallback).
 pub(crate) fn drop_fallback(owner: HWND) -> Option<Pane> {
     with(owner, |rt| {
@@ -383,6 +392,15 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
         return Shown::Drop { pane, rect };
     }
     let Some(split) = App::split_view(app) else {
+        // A blank private tab gets the private landing; a private tab with a page, or a blank tab
+        // inside a split (the picker), never does.
+        let tab = App::active_tab_id(app);
+        if App::tab_private(app, tab)
+            && App::tab_is_blank(app, tab)
+            && let Some(rect) = super::window::split_viewport(owner)
+        {
+            return Shown::Private { tab, rect };
+        }
         return Shown::Hidden;
     };
     for pane in [Pane::Left, Pane::Right] {
@@ -452,7 +470,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.suspended = false);
     }
     let rect = match want {
-        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } => rect,
+        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } => rect,
         Shown::Hidden => return,
     };
     // Theme first, then content, then show: the page never appears unthemed or stale.
@@ -476,6 +494,8 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 wire::drop_json(pane, &title)
             })
         }
+        // Cheap enough for every paint: the post below is skipped while the text is unchanged.
+        Shown::Private { tab, .. } => Some(wire::private_json(wire_id(tab), private_tab_count(app))),
         Shown::Hidden => None,
     };
     if let Some(content) = content
@@ -513,6 +533,10 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.focused_for = Some(tab));
         let _ = host.focus();
     }
+}
+
+fn private_tab_count(app: &AppRef) -> usize {
+    App::private_tab_ids(app).len()
 }
 
 fn pick_content(app: &AppRef, pane: Pane) -> String {
@@ -554,9 +578,18 @@ fn pick_content(app: &AppRef, pane: Pane) -> String {
     wire::pick_json(pane, &tabs, &closed)
 }
 
-/// A command from the empty side. Only acts while the picker is shown, on its own tab.
+/// A command from the empty side. Only acts while the picker is shown, on its own tab; the private
+/// landing's one command only while the landing is shown.
 fn picker_command(owner: HWND, app: &AppRef, command: SplitCommand) {
-    let Some(Some(Shown::Picker { tab: empty, .. })) = with(owner, |rt| rt.shown) else {
+    let shown = with(owner, |rt| rt.shown).flatten();
+    if let Some(Shown::Private { tab, .. }) = shown {
+        if command == SplitCommand::ClosePrivate && App::tab_private(app, tab) {
+            App::close_private_tabs(app);
+            super::window::split_ui_invalidate(owner);
+        }
+        return;
+    }
+    let Some(Shown::Picker { tab: empty, .. }) = shown else {
         return;
     };
     if !App::split_view(app).is_some_and(|split| split.contains(empty)) || !App::tab_is_blank(app, empty) {
@@ -589,7 +622,7 @@ fn picker_command(owner: HWND, app: &AppRef, command: SplitCommand) {
         SplitCommand::Focus => {
             let _ = App::focus_split_tab(app, empty);
         }
-        SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. } => {}
+        SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. } | SplitCommand::ClosePrivate => {}
     }
     super::window::split_ui_invalidate(owner);
 }

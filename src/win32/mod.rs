@@ -25,7 +25,7 @@ mod panel_history;
 pub(crate) use panel_history::{
     Action as HistoryAction, Line as HistoryLine, Model as HistoryModel, Range as HistoryRange,
     Row as HistoryRow, LIMIT as HISTORY_LIMIT, current_history_file, execute as execute_history_action,
-    local_offset as history_local_offset, now_secs as history_now_secs,
+    local_offset as history_local_offset, now_secs as history_now_secs, civil_date as history_civil_date,
 };
 mod html_panel;
 mod flyout;
@@ -37,6 +37,8 @@ pub mod passwords_import;
 mod passwords_panel;
 pub(crate) mod privacy_panel;
 mod profile_rename;
+mod settings_page;
+mod history_page; // bowser://history (docs/design/history-page.md)
 mod settings_panel;
 pub mod side_panel;
 mod site_info;
@@ -132,6 +134,10 @@ pub(crate) const WM_SPLIT_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging
 /// A page asked to open a link in split view (the URL waits in `split_ui`'s queue).
 pub(crate) const WM_SPLIT_LINK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5B2;
 // --- end split view ---
+/// The settings page's HTML host queued a command (`settings_page::run_queued` runs it).
+pub(crate) const WM_SETTINGS_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C1;
+/// The history page's HTML host queued a command (`history_page::run_queued` runs it).
+pub(crate) const WM_HISTORY_PAGE_COMMAND: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C2;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
 pub(crate) const WM_FOREGROUND_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 pub(crate) const WM_IDLE_TRIM_TIMER: usize = 1;
@@ -150,6 +156,47 @@ pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
 pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
+
+// --- settings page (docs/design/settings-page.md) ---
+/// Opens `bowser://settings` at `section` in window `hwnd` (the native Settings window when the
+/// window has no HTML chrome). `reuse_blank`: a blank normal shown tab becomes the page.
+pub(crate) fn open_settings_page(hwnd: HWND, app: &crate::app::AppRef, section: Option<crate::internal_page::Section>, reuse_blank: bool) {
+    settings_page::open(hwnd, app, section, reuse_blank);
+}
+
+/// The shown settings tab moved to `section` (a restored or typed address).
+pub(crate) fn settings_page_go(hwnd: HWND, section: Option<crate::internal_page::Section>) {
+    settings_page::go(hwnd, section);
+}
+
+/// Reload on a settings tab: the page reads everything again.
+pub(crate) fn settings_page_refresh(hwnd: HWND) {
+    settings_page::refresh(hwnd);
+}
+
+/// Gives the keyboard to the settings page.
+pub(crate) fn settings_page_focus(hwnd: HWND) {
+    settings_page::focus(hwnd);
+}
+// --- end settings page ---
+
+// --- history page (docs/design/history-page.md) ---
+/// Opens `bowser://history` in window `hwnd` (the History side panel when the window has no HTML
+/// chrome). `reuse_blank`: a blank normal shown tab becomes the page.
+pub(crate) fn open_history_page(hwnd: HWND, app: &crate::app::AppRef, reuse_blank: bool) {
+    history_page::open(hwnd, app, reuse_blank);
+}
+
+/// Reload on a history tab: the page reads history again.
+pub(crate) fn history_page_refresh(hwnd: HWND) {
+    history_page::refresh(hwnd);
+}
+
+/// Gives the keyboard to the history page.
+pub(crate) fn history_page_focus(hwnd: HWND) {
+    history_page::focus(hwnd);
+}
+// --- end history page ---
 
 // --- split view ---
 /// Opens `url` beside the shown tab once the window procedure runs (link context menu).

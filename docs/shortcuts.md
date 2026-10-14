@@ -12,9 +12,10 @@ All three end in `dispatch` in `src/win32/window.rs`. Modifiers match exactly, s
 editing chords stay with the field: Ctrl+A/C/X/Z, Ctrl+V (not Ctrl+Shift+V), Ctrl+Y, Ctrl+Shift+Z, and
 Ctrl/Shift with Left/Right/Home/End/Backspace/Delete (except Ctrl+Shift+Delete).
 
-Ctrl+Shift+V also reached the hidden native address EDIT: TranslateMessage queued a Ctrl+V character
-that the EDIT treated as a paste even though the keydown was consumed. `edit_subclass` now drops that
-character when Shift is held.
+Ctrl+Shift+V is not a Bowser chord: the tab layout is chosen only in Settings > Appearance
+(`bowser://settings/appearance`). Settings has no shortcut of its own (Ctrl+, is Passwords and
+passkeys); it opens from the main menu, the command palette or by typing `bowser://settings`. On the
+settings page, Ctrl+F or `/` moves to its search box.
 
 | Shortcut | Action | Status |
 | --- | --- | --- |
@@ -29,7 +30,6 @@ character when Shift is held.
 | Alt+Left / Alt+Right, Back / Forward keys | History back / forward | Bound |
 | Ctrl+, | Passwords & Passkeys | Bound |
 | Ctrl+Shift+L | Fill saved password | Bound |
-| Ctrl+Shift+V | Toggle horizontal/vertical tabs | Bound; fixed: no longer also pastes into the omnibox |
 | Ctrl+Shift+Z | Undo tab organisation | Bound (omnibox keeps it for redo while editing) |
 | Ctrl+Shift+\ | Toggle split view | Bound |
 | Ctrl+Shift+Left / Right | Focus split pane | Bound (omnibox keeps them for selection while editing) |
@@ -43,7 +43,7 @@ character when Shift is held.
 | Ctrl+Shift+B | Toggle blocker for site | Bound |
 | Ctrl+Shift+Y | Picture in picture | Bound |
 | Ctrl+Shift+Delete | Privacy dashboard | Bound; fixed: no longer left to the omnibox as a delete chord |
-| Ctrl+H | History side panel | Bound (new) |
+| Ctrl+H | History page (`bowser://history` in a tab; an open history tab is selected, never duplicated). The History side panel when the window has no HTML chrome | Bound |
 | Ctrl+Plus, Ctrl+=, Ctrl+Numpad Plus | Zoom in one step (25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500) | Bound (new); stored per origin in `site-prefs.txt`; Ctrl+Shift+= also zooms in |
 | Ctrl+Minus, Ctrl+Numpad Minus | Zoom out one step | Bound (new) |
 | Ctrl+0, Ctrl+Numpad 0 | Reset zoom to 100% | Bound (new) |

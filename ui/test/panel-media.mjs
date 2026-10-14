@@ -208,8 +208,8 @@ test('browserProbes is safe without browser globals', () => {
 });
 
 test('the media pane stays client-side', () => {
-  for (const file of ['media-logic.ts', 'settings.ts']) {
-    const text = readFileSync(join(here, '..', 'src', 'panels', file), 'utf8');
+  for (const file of ['panels/media-logic.ts', 'settings-page.ts']) {
+    const text = readFileSync(join(here, '..', 'src', file), 'utf8');
     assert.doesNotMatch(text, /fetch\(|XMLHttpRequest|sendBeacon|WebSocket|createMediaKeys|createSession/);
   }
 });

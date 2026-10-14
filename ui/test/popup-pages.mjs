@@ -27,7 +27,9 @@ test('Rust palette page passes the strict palette contract', () => {
   const commands = fixture.palette.items.filter((item) => item.s === 'command').map((item) => item.label);
   assert.deepEqual(commands.slice(0, 3), ['New tab', 'New private tab', 'Close tab']);
   const priv = fixture.palette.items.find((item) => item.label === 'New private tab');
-  assert.deepEqual(priv, { id: priv.id, s: 'command', label: 'New private tab', detail: 'Open a tab that keeps no history or site data', acc: 'Ctrl+Shift+P' });
+  assert.deepEqual(priv, { id: priv.id, s: 'command', label: 'New private tab', detail: 'Browse without saving history, cookies or site data', acc: 'Ctrl+Shift+P' });
+  const closeAll = fixture.palette.items.find((item) => item.label === 'Close all private tabs');
+  assert.deepEqual(closeAll, { id: closeAll.id, s: 'command', label: 'Close all private tabs', detail: 'Close every private tab in this window' });
   assert.equal(fixture.palette.items.find((item) => item.label === 'Profiles').acc, 'Ctrl+Shift+M');
   for (const bad of [
     { ...fixture.palette, extra: 1 },
