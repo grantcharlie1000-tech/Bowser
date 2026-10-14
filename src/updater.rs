@@ -1491,7 +1491,7 @@ const GITHUB_REPOSITORY: &str = "grantcharlie1000-tech/Bowser";
 const GITHUB_ASSET: &str = "Bowser.exe";
 /// Bump this when publishing `stable/release.json`. A pin with a lower revision is ignored,
 /// so a cached copy of an older pin cannot replace the build that contains this number.
-const PIN_REVISION: u32 = 9;
+const PIN_REVISION: u32 = 11;
 /// GitHub pin checks are quieter than a launch, but a restarted browser still notices a release
 /// within the hour.
 const PIN_CHECK_INTERVAL_SECS: u64 = 60 * 60;

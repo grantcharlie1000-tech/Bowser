@@ -28,7 +28,9 @@ import { sendPopupDismiss, sendPopupPick, sendPopupSize, type PopupCards } from 
 // it, then it eases left to sit beside the child. The child stays next to that row and only fades and
 // nudges in. Closing eases the parent back over the child, then the window shrinks and the child pane
 // is dropped. The window clip is the whole window during the move and the two cards only at rest: a
-// region that chases the transform arrives a frame late and cuts the cards.
+// region that chases the transform arrives a frame late and cuts the cards. A pixel the page leaves
+// transparent inside that window is not see-through on Windows 10 (it showed white), so the track is
+// painted as one card (.is-moving) for the motion and until the resting clip has landed.
 
 export interface MenuView {
   /** Shows a `menu` message. False (and nothing changes) when it is not a valid menu payload. */
@@ -37,6 +39,9 @@ export interface MenuView {
 
 /** How long to wait for the window to take the reported size before settling without the slide. */
 const RESIZE_WAIT_MS = 250;
+
+/** Frames the card backing stays after the resting clip is reported: the clip arrives a frame or two late. */
+const BACKING_FRAMES = 4;
 
 function disc(className: string, badge: MenuBadge): HTMLElement {
   const node = document.createElement('span');
@@ -71,6 +76,26 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   // callbacks of a motion that was finished or replaced.
   let abort: (() => void) | null = null;
   let epoch = 0;
+
+  // The track is painted as one card while the cards move (see .is-moving in menu.css). It comes off a
+  // few frames after the resting clip is reported, so the cut lands before the backing goes; `backing`
+  // voids a removal that a newer motion has overtaken.
+  let backing = 0;
+  const backingOn = (): void => {
+    backing += 1;
+    slide.parentElement?.classList.add('is-moving');
+  };
+  const backingOff = (): void => {
+    const mine = ++backing;
+    const track = slide.parentElement;
+    let frames = BACKING_FRAMES;
+    const tick = (): void => {
+      if (mine !== backing) return;
+      if (--frames > 0) requestAnimationFrame(tick);
+      else track?.classList.remove('is-moving');
+    };
+    requestAnimationFrame(tick);
+  };
 
   const settle = (): void => {
     const run = abort;
@@ -387,6 +412,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     markSelected();
     placeChild();
     measure(false);
+    backingOff();
   };
 
   // Calls `ready` once the page is `test`-wide (the window took the size just reported) or `late`
@@ -439,6 +465,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const mine = epoch;
     let cancel = (): void => {};
     abort = () => { cancel(); sync(); };
+    backingOn();
     setMotion(delta, true, true);
     const size = layoutSize();
     const target = Math.ceil(size.width);
@@ -450,6 +477,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
         if (epoch !== mine) return;
         abort = null;
         publish(tok, size.width, size.height, true);
+        backingOff();
       });
     };
     cancel = awaitWidth((width) => width >= target - 2, go, go);
@@ -473,6 +501,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const mine = epoch;
     let cancel = (): void => {};
     abort = () => { cancel(); sync(); };
+    backingOn();
     publish(tok, size.width, size.height, false);
     setMotion(delta, true, false);
     afterMotion(() => {

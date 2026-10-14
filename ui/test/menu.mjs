@@ -257,6 +257,19 @@ test('the menu view keeps the parent mounted and drives the slide through one cu
   assert.ok(!/scrollIntoView/.test(view), 'scrolling is done on the list, never on the clip');
 });
 
+test('the track is painted as one card while the cards move, so no bare pixel shows white', () => {
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
+  const view = readFileSync(join(here, '..', 'src', 'menu-view.ts'), 'utf8');
+  const backing = /\.html-menu-track\.is-moving \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(backing, /background: linear-gradient\(var\(--bw-overlay\), var\(--bw-overlay\)\), var\(--bw-window-opaque\);/);
+  assert.match(backing, /border-radius: var\(--bw-r-overlay\);/);
+  // On for the whole open and close motion, and off only after the resting clip is reported (or the
+  // motion is settled), a few frames later so the clip cuts the window before the backing goes.
+  assert.equal((view.match(/backingOn\(\);/g) ?? []).length, 2, 'open and close');
+  assert.match(view, /publish\(tok, size\.width, size\.height, true\);\s*backingOff\(\);/);
+  assert.match(view, /measure\(false\);\s*backingOff\(\);/);
+});
+
 test('disabled rows keep >= 3:1 contrast on the solid dark and light overlays', () => {
   const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
   const pct = Number(/color-mix\(in srgb, var\(--bw-text-2\) (\d+)%, transparent\)/.exec(css)[1]) / 100;

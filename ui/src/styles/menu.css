@@ -68,6 +68,15 @@
   overflow: hidden;
 }
 
+/* While the cards move the window clip is the whole window, and a pixel the page leaves transparent is
+   not see-through on Windows 10 (the extended frame paints it, white). The track is painted as one card
+   for that time, so the room the parent leaves and the child fades into is never bare. It is removed a
+   few frames after the clip has cut the window down to the two cards. */
+.html-menu-track.is-moving {
+  border-radius: var(--bw-r-overlay);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+}
+
 /* The parent card is the only thing that travels. It starts shifted right, so growing the window on
    the left does not throw it, then eases back to where it sits beside the child. The child stays
    next to the row that opened it and only fades and nudges in. The window clip does not follow
