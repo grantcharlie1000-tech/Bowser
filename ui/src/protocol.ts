@@ -36,7 +36,7 @@ export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
 export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -105,6 +105,7 @@ export type Command =
   // --- end omnibox suggest ---
   // --- downloads (docs/design/downloads.md) ---
   | { v: 1; t: 'dl'; a: 'toggle'; text: string }
+  | { v: 1; t: 'ext'; a: 'open'; text: string }
   | { v: 1; t: 'dlact'; tok: number; id: number; n: number }
   // --- end downloads ---
   // --- split view ---
@@ -263,6 +264,21 @@ export interface SuggestOpenMsg {
   readonly on: boolean;
 }
 // --- end omnibox suggest ---
+// --- extensions (docs/extensions.md "Managing extensions") ---
+/** The toolbar's extensions button (toolbar only): shown while an enabled extension has a popup. */
+export interface ExtButtonMsg {
+  readonly t: 'extbtn';
+  readonly on: boolean;
+  /** Enabled extensions with a popup. */
+  readonly n: number;
+  /** The only one's name when `n` is 1, else empty. */
+  readonly name: string;
+}
+/** Longest extension name Rust sends (`extensions_page::MAX_NAME_CHARS`). */
+export const MAX_EXTENSION_NAME = 128;
+/** At most this many extensions are installed in one profile (`extensions::MAX_INSTALLED`). */
+export const MAX_EXTENSIONS = 64;
+// --- end extensions ---
 // --- downloads (docs/design/downloads.md) ---
 export const DL_BUTTON_STATES = ['idle', 'active', 'paused', 'done', 'failed'] as const;
 export type DlButtonState = typeof DL_BUTTON_STATES[number];
@@ -357,7 +373,7 @@ export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; 
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -390,6 +406,7 @@ export type Inbound =
   // --- end omnibox suggest ---
   | MenuOpenMsg
   | DlButtonMsg // --- downloads ---
+  | ExtButtonMsg // --- extensions ---
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -446,7 +463,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -561,6 +578,22 @@ export function sendDownloadToggle(rect: Parameters<typeof rectWire>[0]): boolea
 /** A row or list action on the downloads bubble (`tok` is the page's). */
 export function sendDownloadAct(tok: number, id: number, n: number): boolean {
   return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && isInt(n, 0, MAX_DLACT) && (n < 8 ? id > 0 : id === 0) && send({ v: 1, t: 'dlact', tok, id, n });
+}
+
+/** The toolbar's extensions button was clicked; Rust opens the popup or the list of them under `rect`. */
+export function sendExtensionsButton(rect: Parameters<typeof rectWire>[0]): boolean {
+  const text = rectWire(rect);
+  return text !== null && isRectWire(text) && send({ v: 1, t: 'ext', a: 'open', text });
+}
+
+function parseExtButton(raw: Record<string, unknown>): ExtButtonMsg | null {
+  const keys = ['v', 't', 'on', 'n', 'name'];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  const { on, n, name } = raw;
+  if (!isBool(on) || !isInt(n, 0, MAX_EXTENSIONS) || !isStr(name, MAX_EXTENSION_NAME * 2) || Array.from(name).length > MAX_EXTENSION_NAME) return null;
+  // Shown exactly when there is something to open; a name only for a single one.
+  if (on !== n > 0 || (name !== '') !== (n === 1)) return null;
+  return { t: 'extbtn', on, n, name };
 }
 
 function parseDlButton(raw: Record<string, unknown>): DlButtonMsg | null {
@@ -888,6 +921,8 @@ export function parseInbound(data: unknown): Inbound | null {
     // --- downloads ---
     case 'dlbtn':
       return parseDlButton(raw);
+    case 'extbtn':
+      return parseExtButton(raw);
     // --- end downloads ---
     // --- split view ---
     case 'pair':

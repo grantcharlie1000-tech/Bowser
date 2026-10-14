@@ -4,6 +4,7 @@ import {
   onInbound,
   send,
   sendDownloadToggle,
+  sendExtensionsButton,
   sendSuggestEnd,
   sendSuggestPick,
   sendSuggestPreview,
@@ -104,6 +105,7 @@ function startToolbar(root: HTMLElement): void {
   view.reader.addEventListener('click', () => open('reader'));
   view.menu.addEventListener('click', () => open('menu'));
   view.downloads.button.addEventListener('click', () => { sendDownloadToggle(view.downloads.button.getBoundingClientRect()); });
+  view.extensions.button.addEventListener('click', () => { sendExtensionsButton(view.extensions.button.getBoundingClientRect()); });
 
   input.addEventListener('input', (ev) => {
     if (composing || (ev instanceof InputEvent && ev.isComposing)) return;
@@ -258,6 +260,9 @@ function startToolbar(root: HTMLElement): void {
         break;
       case 'dlbtn':
         view.downloads.apply(msg);
+        break;
+      case 'extbtn':
+        view.extensions.apply(msg);
         break;
       // --- split view ---
       case 'pair':

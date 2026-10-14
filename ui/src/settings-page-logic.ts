@@ -345,6 +345,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
   { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: 'Where files are saved, and whether Bowser asks first.' },
   { key: 'media', title: 'Media', nav: 'Media', lead: 'Which video formats and protected streams this device can play.' },
+  { key: 'extensions', title: 'Extensions', nav: 'Extensions', lead: 'Extensions in this profile, and what each one declared when you installed it.' },
   { key: 'updates', title: 'Updates', nav: 'Updates', lead: 'How Bowser keeps itself up to date.' },
   { key: 'about', title: 'About Bowser', nav: 'About Bowser', lead: 'Version, where settings live, and starting over.' },
 ];
@@ -418,6 +419,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'downloadDir', section: 'downloads', label: 'Location', description: '', keywords: 'download folder directory save path where change' },
   { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save each file before downloading', description: 'When this is off, files go straight to the location above.', keywords: 'save as prompt dialog ask where download location' },
   { id: 'media', section: 'media', label: 'Media support', description: 'Runs on this device only and sends nothing.', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode' },
+  { id: 'extensions', section: 'extensions', label: 'Installed extensions', description: 'Turn extensions on or off, open a popup, see what each one declares, or remove one.', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable' },
   { id: 'autoUpdate', section: 'updates', label: 'Update automatically', description: 'Checks in the background and installs the update the next time Bowser starts. Applies to every profile.', keywords: 'auto update upgrade version' },
   { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade' },
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release' },

@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "0.0.1",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "worker.js" },
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}

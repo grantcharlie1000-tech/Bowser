@@ -32,6 +32,7 @@ use crate::{
         host::{Accel, AccelHandler, ChromeHost, View},
         protocol::{Command, PanelFields, PanelType},
         settings::{self as wire, Ack, Action},
+        extensions_page as ext,
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -65,6 +66,13 @@ struct Runtime {
     /// Last Privacy dashboard snapshot sent (the dashboard is a section of the page).
     privacy: Option<String>,
     privacy_due: bool,
+    /// Last Extensions section snapshot sent, whether a fresh one is due, the extension being
+    /// removed (the engine answers later) and how the last extension command went.
+    extensions: Option<String>,
+    ext_due: bool,
+    ext_busy: String,
+    ext_ack: ext::Ack,
+    ext_error: String,
     dirty: bool,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
@@ -159,6 +167,13 @@ pub(crate) fn pane(owner: HWND, app: &AppRef) -> Option<Pane> {
 /// Whether the settings page can be drawn in this window (otherwise Settings is the native window).
 pub(crate) fn usable(owner: HWND) -> bool {
     available(owner)
+}
+
+/// The installed extensions changed (`WM_EXTENSIONS_CHANGED`): the Extensions section reads them
+/// again the next time the page syncs.
+pub(crate) fn extensions_changed(owner: HWND) {
+    let _ = with(owner, |rt| rt.ext_due = true);
+    super::window::split_ui_invalidate(owner);
 }
 
 /// The page's "Check for updates" finished with `result` (`staged`, `uptodate`, ...).
@@ -386,7 +401,10 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
     if with(owner, |rt| std::mem::take(&mut rt.dirty)).unwrap_or(false) {
-        let _ = with(owner, |rt| rt.privacy_due = true);
+        let _ = with(owner, |rt| {
+            rt.privacy_due = true;
+            rt.ext_due = true;
+        });
         let snapshot = snapshot(owner, app);
         // An answer is always delivered, even when the values did not change (a second identical
         // save still gets its "Saved").
@@ -407,6 +425,19 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             if fresh && host.post_json(&privacy).is_ok() {
                 let _ = with(owner, |rt| rt.privacy = Some(privacy));
             }
+        }
+    }
+    // The Extensions section: read afresh with the page or after a change, sent when it changed or
+    // carries an answer.
+    if with(owner, |rt| std::mem::take(&mut rt.ext_due)).unwrap_or(false) {
+        let extensions = extensions_snapshot(owner);
+        let fresh = with(owner, |rt| rt.ext_ack != ext::Ack::None || rt.extensions.as_deref() != Some(extensions.as_str())).unwrap_or(false);
+        if fresh && host.post_json(&extensions).is_ok() {
+            let _ = with(owner, |rt| {
+                rt.extensions = Some(extensions);
+                rt.ext_ack = ext::Ack::None;
+                rt.ext_error.clear();
+            });
         }
     }
     if let Some(section) = with(owner, |rt| rt.go.take()).flatten() {
@@ -524,6 +555,8 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
             Queued::Settings(fields) => {
                 if let Some(action) = wire::map_command(&fields) {
                     run(owner, app, tab, action);
+                } else if let Some(action) = ext::map_command(&fields) {
+                    run_extension(owner, app, action);
                 }
             }
             Queued::Privacy(fields) => {
@@ -634,6 +667,130 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             };
             answer(owner, crate::default_browser::make_default(&exe));
         }
+    }
+}
+
+// ----- the Extensions section (docs/extensions.md "Managing extensions") -----
+
+/// The section's snapshot: every installed extension with the declarations in Bowser's copy of its
+/// manifest, read now.
+fn extensions_snapshot(owner: HWND) -> String {
+    use crate::extensions::{self, PageKind};
+    let (busy, ack, error) = with(owner, |rt| (rt.ext_busy.clone(), rt.ext_ack, rt.ext_error.clone())).unwrap_or_default();
+    let profile = crate::profile::active().ok();
+    let read = profile.as_ref().map(|profile| extensions::read_records(&profile.extensions_file()));
+    let (readable, entries, error) = match (profile, read) {
+        (Some(profile), Some(Ok(records))) => {
+            let entries: Vec<ext::Entry> = records
+                .into_iter()
+                .map(|record| {
+                    let folder = extensions::folder_for(&profile.extensions_dir(), &record.id).ok();
+                    ext::Entry {
+                        manifest: folder.as_deref().and_then(extensions::installed_manifest),
+                        popup: folder.as_deref().is_some_and(|folder| extensions::declares_page(folder, PageKind::Popup)),
+                        failure: extensions::load_failure(&record.id).unwrap_or_default(),
+                        id: record.id,
+                        name: record.name,
+                        version: record.version,
+                        enabled: record.enabled,
+                    }
+                })
+                .collect();
+            (true, entries, error)
+        }
+        // The page's own heading says the list could not be read; this is why.
+        (_, Some(Err(read_error))) => (false, Vec::new(), read_error.to_string()),
+        _ => (false, Vec::new(), "The profile is not ready.".to_owned()),
+    };
+    ext::snapshot_json(ext::Status { readable, busy: &busy, ack, error: &error }, &entries)
+}
+
+/// Records how an extension command went; the next Extensions snapshot reports it once. That
+/// snapshot is always sent, even unchanged, so the page knows its command was answered.
+fn ext_answer(owner: HWND, ack: ext::Ack, error: String) {
+    let _ = with(owner, |rt| {
+        rt.ext_ack = ack;
+        rt.ext_error = error;
+        rt.ext_due = true;
+        rt.extensions = None;
+    });
+}
+
+/// Runs one command from the Extensions section. The id is looked up in `extensions.txt` again, so
+/// the page can only name an extension that is installed now.
+fn run_extension(owner: HWND, app: &AppRef, action: ext::Action) {
+    use crate::extensions::{self, ExtensionError, Record};
+    let Ok(profile) = crate::profile::active() else {
+        return ext_answer(owner, ext::Ack::Failed, "The profile is not ready.".to_owned());
+    };
+    let installed = |id: &str| -> Result<Record, String> {
+        extensions::read_records(&profile.extensions_file())
+            .map_err(|error| format!("The extensions list could not be read. {error}"))?
+            .into_iter()
+            .find(|record| record.id == id)
+            .ok_or_else(|| ExtensionError::NotInstalled.to_string())
+    };
+    match action {
+        ext::Action::SetEnabled { id, on } => {
+            let record = match installed(&id) {
+                Ok(record) => record,
+                Err(error) => return ext_answer(owner, ext::Ack::Failed, error),
+            };
+            if record.enabled == on {
+                return ext_answer(owner, ext::Ack::None, String::new());
+            }
+            match super::window::set_extension_enabled(app, &profile, &record, on) {
+                Ok(()) => ext_answer(owner, if on { ext::Ack::Enabled } else { ext::Ack::Disabled }, String::new()),
+                Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+            }
+        }
+        ext::Action::Remove(id) => {
+            // One removal at a time: the page shows the one in progress and holds the others.
+            if with(owner, |rt| !rt.ext_busy.is_empty()).unwrap_or(true) {
+                return;
+            }
+            let record = match installed(&id) {
+                Ok(record) => record,
+                Err(error) => return ext_answer(owner, ext::Ack::Failed, error),
+            };
+            let _ = with(owner, |rt| {
+                rt.ext_busy = record.id.clone();
+                rt.ext_due = true;
+            });
+            let raw = owner.0 as isize;
+            super::window::remove_extension(app, &profile, &record, move |result| {
+                let owner = HWND(raw as *mut _);
+                if !unsafe { IsWindow(Some(owner)) }.as_bool() {
+                    return;
+                }
+                let _ = with(owner, |rt| rt.ext_busy.clear());
+                match result {
+                    Ok(()) => ext_answer(owner, ext::Ack::Removed, String::new()),
+                    Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+                }
+                super::window::split_ui_invalidate(owner);
+            });
+        }
+        ext::Action::Popup(id) => match installed(&id) {
+            Ok(record) => {
+                let failure = extensions::load_failure(&record.id).unwrap_or_default();
+                match ext::popup_refusal(record.enabled, &failure) {
+                    None => super::window::open_extension_popup(app, &profile, &record),
+                    Some(refusal) => ext_answer(owner, ext::Ack::Failed, refusal.to_owned()),
+                }
+            }
+            Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+        },
+        ext::Action::Install => match super::window::install_extension(owner, app, &profile) {
+            Ok(true) => ext_answer(owner, ext::Ack::Installed, String::new()),
+            Ok(false) => ext_answer(owner, ext::Ack::None, String::new()),
+            Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+        },
+        ext::Action::InstallCrx => match super::window::install_extension_from_crx_file(owner, app, &profile) {
+            Ok(true) => ext_answer(owner, ext::Ack::Installed, String::new()),
+            Ok(false) => ext_answer(owner, ext::Ack::None, String::new()),
+            Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+        },
     }
 }
 

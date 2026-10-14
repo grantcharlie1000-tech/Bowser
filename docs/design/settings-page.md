@@ -36,7 +36,8 @@ changes.
 ## URL scheme (`src/internal_page.rs`, pure, unit tested)
 
 `bowser://settings` and `bowser://settings/<section>`, section one of `profile`, `appearance`,
-`privacy`, `performance`, `search`, `downloads`, `media`, `updates`, `about`. Scheme, host and section are
+`privacy`, `performance`, `search`, `downloads`, `media`, `extensions`, `updates`, `about`
+(the Extensions section is described in docs/extensions.md, "Managing extensions"). Scheme, host and section are
 case-insensitive; one trailing slash is allowed; query and fragment are dropped. User info, a port
 or a deeper path are rejected. An unknown section opens the page at the top
 (`bowser://settings`). Any other `bowser://` host is not a page: the omnibox reports it as today.

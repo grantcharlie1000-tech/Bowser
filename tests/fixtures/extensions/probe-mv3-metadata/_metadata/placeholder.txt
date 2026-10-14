@@ -1,0 +1,1 @@
+Dummy file. Bowser Stage 1 fixture for the root underscore rule. Not real Chromium metadata.

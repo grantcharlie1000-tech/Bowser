@@ -837,6 +837,41 @@ html[data-scheme="dark"] #app {
   }
 }
 
+/* ---- Extensions button (view.ts buildExtensionsButton; docs/extensions.md) ----
+   Left of the download button's slot, shown only while Rust says `extbtn.on` (an enabled extension
+   has a popup). Rust shrinks the pill by EXT_BUTTON_SLOT (32px) for it, so the actions group moves
+   left by another 32px and the menu button never moves. It enters and leaves like the download
+   button: fades and scales .85 -> 1 (167ms out), fades out (83ms) before `hidden`. */
+#app.placed.has-ext .actions {
+  left: calc(var(--menu-x) - 32px);
+}
+
+#app.placed.has-ext.has-dl .actions {
+  left: calc(var(--menu-x) - 64px);
+}
+
+.tb-ext {
+  margin-inline-end: var(--bw-space-0_5);
+}
+
+.tb-ext[hidden] {
+  display: none;
+}
+
+.tb-ext.is-in {
+  animation: tb-dl-in var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+.tb-ext.is-out {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-ext.is-in {
+    animation: bw-fade-in var(--bw-dur-fast) linear both;
+  }
+}
+
 /* ---- Progress: a 2px bar scaled with transform from the pill's left edge ---- */
 .progress {
   position: absolute;

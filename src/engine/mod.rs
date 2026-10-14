@@ -1,6 +1,9 @@
 pub mod download;
 pub mod web_app;
+mod extension_page;
 mod webview2;
+#[cfg(test)]
+mod extension_probe_live;
 pub(crate) use webview2::password_login_messages_enabled;
 
 pub use webview2::{RuntimeUnavailable, WebView2Engine};
@@ -218,6 +221,18 @@ pub trait EngineAdapter {
     /// Unloads an extension from the running profile. `done` runs once the browser has removed it.
     fn remove_extension(&mut self, _id: &str, done: Box<dyn FnOnce(Result<(), String>)>) {
         done(Ok(()));
+    }
+    /// Opens a loaded extension's popup or options page (read from its manifest in `folder`) in a
+    /// Bowser-owned window. `done` receives the outcome and may run later.
+    fn open_extension_page(
+        &mut self,
+        _id: &str,
+        _folder: &std::path::Path,
+        _kind: crate::extensions::PageKind,
+        _title: &str,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err("This browser engine does not support extensions.".to_owned()));
     }
     /// Counts the cookies the browser would send to `url` from one tab. `done` may run later.
     fn site_cookie_count(

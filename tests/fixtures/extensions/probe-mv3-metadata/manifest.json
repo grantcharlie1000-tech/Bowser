@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Bowser Probe MV3 Metadata",
+  "version": "0.0.1",
+  "description": "Bowser Stage 1 probe with a reserved root _metadata folder. Bowser refuses it.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "worker.js" },
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}
