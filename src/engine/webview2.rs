@@ -3048,13 +3048,10 @@ impl EngineAdapter for WebView2Engine {
         if !was_visible {
             state.pane_bounds.clear(); // --- split view ---
         }
+        let steps = switch_steps(previous, tab_id, was_visible);
         if previous != Some(tab_id) && !was_visible {
             if let Some(previous) = previous {
                 if state.known_tabs.contains(&previous) {
-                    if let Some(tab) = state.tabs.get_mut(&previous) {
-                        EngineAdapter::set_visible(tab, false)?;
-                        let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                    }
                     state.hidden_since.insert(previous, Instant::now());
                     state.suspended.remove(&previous);
                 } else {
@@ -3071,10 +3068,26 @@ impl EngineAdapter for WebView2Engine {
         state.suspended.remove(&tab_id);
         let bounds = state.bounds;
         let target = state.target;
-        if let Some(tab) = state.tabs.get_mut(&tab_id) {
-            EngineAdapter::resize(tab, bounds)?;
-            EngineAdapter::set_visible(tab, true)?;
-            let _ = EngineAdapter::set_memory_usage_target(tab, target);
+        // Show and size the new tab before hiding the previous one so no blank frame is presented.
+        for step in steps {
+            match step {
+                SwitchStep::Show(shown) => {
+                    if let Some(tab) = state.tabs.get_mut(&shown) {
+                        EngineAdapter::resize(tab, bounds)?;
+                        EngineAdapter::set_visible(tab, true)?;
+                        let _ = EngineAdapter::set_memory_usage_target(tab, target);
+                    }
+                }
+                SwitchStep::Hide(hidden) => {
+                    if state.known_tabs.contains(&hidden) {
+                        if let Some(tab) = state.tabs.get_mut(&hidden) {
+                            EngineAdapter::set_visible(tab, false)?;
+                            let _ =
+                                EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -3087,11 +3100,9 @@ impl EngineAdapter for WebView2Engine {
             }
             let next: HashSet<TabId> = panes.iter().map(|(tab, _)| *tab).collect();
             let old: Vec<TabId> = state.visible_tabs.difference(&next).copied().collect();
+            let shown: Vec<TabId> = panes.iter().map(|(tab, _)| *tab).collect();
+            let steps = pane_switch_steps(&shown, &old);
             for tab_id in old {
-                if let Some(tab) = state.tabs.get_mut(&tab_id) {
-                    EngineAdapter::set_visible(tab, false)?;
-                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                }
                 state.hidden_since.insert(tab_id, Instant::now());
                 state.suspended.remove(&tab_id);
             }
@@ -3101,16 +3112,35 @@ impl EngineAdapter for WebView2Engine {
             state.pane_bounds = panes.iter().copied().collect();
             // --- end split view ---
             let target = state.target;
-            for (tab_id, bounds) in panes {
+            for (tab_id, _) in panes {
                 state.known_tabs.insert(*tab_id);
                 state.hidden_since.remove(tab_id);
                 state.suspended.remove(tab_id);
-                if let Some(tab) = state.tabs.get_mut(tab_id) {
-                    EngineAdapter::resize(tab, *bounds)?;
-                    EngineAdapter::set_visible(tab, true)?;
-                    let _ = EngineAdapter::set_memory_usage_target(tab, target);
-                } else if !state.creating.contains(tab_id) {
+                if !state.tabs.contains_key(tab_id) && !state.creating.contains(tab_id) {
                     create.push(*tab_id);
+                }
+            }
+            // The next panes are shown and sized before the old ones are hidden, so the host
+            // never presents an empty content area between the two.
+            for step in steps {
+                match step {
+                    SwitchStep::Show(tab_id) => {
+                        let Some(bounds) = state.pane_bounds.get(&tab_id).copied() else {
+                            continue;
+                        };
+                        if let Some(tab) = state.tabs.get_mut(&tab_id) {
+                            EngineAdapter::resize(tab, bounds)?;
+                            EngineAdapter::set_visible(tab, true)?;
+                            let _ = EngineAdapter::set_memory_usage_target(tab, target);
+                        }
+                    }
+                    SwitchStep::Hide(tab_id) => {
+                        if let Some(tab) = state.tabs.get_mut(&tab_id) {
+                            EngineAdapter::set_visible(tab, false)?;
+                            let _ =
+                                EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                        }
+                    }
                 }
             }
         }
@@ -4790,6 +4820,34 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
     })
 }
 
+/// One visibility change in a tab or pane switch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SwitchStep {
+    Show(TabId),
+    Hide(TabId),
+}
+
+/// Orders a tab switch so the next tab is shown before the previous one is hidden. Nothing is
+/// hidden when the tab is already the active one or is already on screen in a split view.
+fn switch_steps(previous: Option<TabId>, next: TabId, next_was_visible: bool) -> Vec<SwitchStep> {
+    let mut steps = vec![SwitchStep::Show(next)];
+    if let Some(previous) = previous {
+        if previous != next && !next_was_visible {
+            steps.push(SwitchStep::Hide(previous));
+        }
+    }
+    steps
+}
+
+/// The split-view form of `switch_steps`: every next pane is shown before any old pane is hidden.
+fn pane_switch_steps(next: &[TabId], old: &[TabId]) -> Vec<SwitchStep> {
+    next.iter()
+        .copied()
+        .map(SwitchStep::Show)
+        .chain(old.iter().copied().map(SwitchStep::Hide))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4821,6 +4879,39 @@ mod tests {
                 None => done(None),
             }
         }
+    }
+
+    #[test]
+    fn switching_tabs_shows_the_next_before_hiding_the_previous() {
+        let steps = switch_steps(Some(TabId(1)), TabId(2), false);
+        assert_eq!(steps, vec![SwitchStep::Show(TabId(2)), SwitchStep::Hide(TabId(1))]);
+        let show = steps.iter().position(|s| *s == SwitchStep::Show(TabId(2))).unwrap();
+        let hide = steps.iter().position(|s| *s == SwitchStep::Hide(TabId(1))).unwrap();
+        assert!(show < hide);
+    }
+
+    #[test]
+    fn switching_to_the_same_or_an_onscreen_tab_hides_nothing() {
+        let same = switch_steps(Some(TabId(3)), TabId(3), false);
+        assert_eq!(same, vec![SwitchStep::Show(TabId(3))]);
+        let onscreen = switch_steps(Some(TabId(1)), TabId(2), true);
+        assert_eq!(onscreen, vec![SwitchStep::Show(TabId(2))]);
+        let first = switch_steps(None, TabId(2), false);
+        assert_eq!(first, vec![SwitchStep::Show(TabId(2))]);
+    }
+
+    #[test]
+    fn pane_switches_show_every_next_pane_before_hiding_old_ones() {
+        let steps = pane_switch_steps(&[TabId(2), TabId(3)], &[TabId(1), TabId(4)]);
+        assert_eq!(
+            steps,
+            vec![
+                SwitchStep::Show(TabId(2)),
+                SwitchStep::Show(TabId(3)),
+                SwitchStep::Hide(TabId(1)),
+                SwitchStep::Hide(TabId(4)),
+            ]
+        );
     }
 
     #[test]

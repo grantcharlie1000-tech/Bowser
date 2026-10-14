@@ -464,8 +464,9 @@ mod tests {
                 "src/engine/extension_page.rs production code uses {forbidden}"
             );
         }
-        // The observer that proved this is compiled out of the product.
-        let source = include_str!("extension_page.rs");
+        // The observer that proved this is compiled out of the product. The
+        // checkout may use CRLF; the gate is the source order, not the newline byte.
+        let source = include_str!("extension_page.rs").replace("\r\n", "\n");
         assert!(source.contains(concat!("#[cfg(test)]\npub(super) mod ", "observe")));
         assert!(source.contains(concat!("#[cfg(test)]\n        observe", "::attach")));
     }

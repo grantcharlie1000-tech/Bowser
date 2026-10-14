@@ -95,9 +95,9 @@ const WATCH_MS: u32 = 100;
 const DROP_TIMER: usize = 4;
 /// Requested frame interval; Windows timers tick at about 15.6 ms, which is close to one display frame.
 const DROP_FRAME_MS: u32 = 10;
-/// Open: the list unrolls from the pill (design token --bw-dur-base). Close is faster.
-const DROP_OPEN: Duration = Duration::from_millis(167);
-const DROP_CLOSE: Duration = Duration::from_millis(100);
+/// Open: the list unrolls from the pill (design token --bw-dur-fast). Close is faster.
+const DROP_OPEN: Duration = Duration::from_millis(83);
+const DROP_CLOSE: Duration = Duration::from_millis(67);
 /// Physical pixels the dropdown tucks under the pill's bottom edge, so no rounding can leave a gap.
 const DROP_OVERLAP: i32 = 1;
 // --- end omnibox suggest ---
@@ -208,6 +208,8 @@ struct Layer {
     drop_h: i32,
     /// The toolbar was told the dropdown is on screen (`suggestOpen`), so its pill joined it.
     drop_told: bool,
+    /// The omnibox has the keyboard, so the page stays awake for the dropdown it is about to ask for.
+    omnibox_focused: bool,
     // --- end omnibox suggest ---
 }
 
@@ -353,6 +355,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
                 drop: None,
                 drop_h: 0,
                 drop_told: false,
+                omnibox_focused: false,
             },
         );
     });
@@ -390,12 +393,14 @@ fn layer_command(owner: HWND, command: Command) {
                     _ => return None,
                 };
                 layer.host = Some(host.clone());
-                Some(host)
+                Some((host, layer.omnibox_focused)) // --- omnibox suggest ---
             })
             .flatten();
-            if let Some(host) = adopted {
+            if let Some((host, focused)) = adopted {
                 let _ = host.set_visible(false);
-                let _ = host.try_suspend();
+                if !focused {
+                    let _ = host.try_suspend();
+                }
             }
         }
         Command::PopupSize { tok, w, h, .. } => place(owner, tok, w, h),
@@ -972,7 +977,7 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
 
 /// Hides the layer, gives the keyboard back if it had it, and schedules suspension.
 fn hide(owner: HWND) {
-    let Some((window, host, was_shown, closed_suggest, untell)) = with_layer(owner, |layer| {
+    let Some((window, host, was_shown, closed_suggest, untell, focused_omnibox)) = with_layer(owner, |layer| {
         // --- omnibox suggest ---
         let was_suggest = matches!(layer.content, Some(Content::Suggest { .. }));
         let closed_suggest = was_suggest.then_some(layer.suggest_seq);
@@ -985,7 +990,7 @@ fn hide(owner: HWND) {
         layer.bounds = RECT::default();
         layer.tok = 0;
         layer.keyboard = false;
-        (layer.window, layer.host.clone(), was_shown, closed_suggest, untell)
+        (layer.window, layer.host.clone(), was_shown, closed_suggest, untell, layer.omnibox_focused)
     }) else {
         return;
     };
@@ -1011,7 +1016,9 @@ fn hide(owner: HWND) {
         if focused {
             let _ = SetForegroundWindow(owner);
         }
-        let _ = SetTimer(Some(window), SUSPEND_TIMER, SUSPEND_AFTER_MS, None);
+        if suspend_timer_wanted(false, focused_omnibox) {
+            let _ = SetTimer(Some(window), SUSPEND_TIMER, SUSPEND_AFTER_MS, None);
+        }
     }
     // --- omnibox suggest ---
     // The pill rounds its corners again only once the window is gone, so they never show a notch.
@@ -1285,8 +1292,32 @@ pub(crate) fn suggest_show(owner: HWND, seq: u32, anchor: RECT, width: u32, quer
     if !present(owner, Content::Suggest { seq, width, sel: 0, query: query.to_owned(), rows }, anchor) {
         return false;
     }
+    with_layer(owner, |layer| layer.omnibox_focused = true);
     super::window::html_toolbar_post(owner, &toolbar);
     true
+}
+
+/// Whether a hidden layer should count down to suspending its page: only while it is not shown and
+/// the omnibox does not have the keyboard. Pure.
+fn suspend_timer_wanted(visible: bool, omnibox_focused: bool) -> bool {
+    !visible && !omnibox_focused
+}
+
+/// The omnibox took the keyboard: keep the page awake (cancel a pending suspend, wake a suspended
+/// one) so the first dropdown does not wait for it.
+pub(crate) fn omnibox_focused(owner: HWND) {
+    let Some(window) = with_layer(owner, |layer| {
+        layer.omnibox_focused = true;
+        layer.window
+    }) else {
+        return;
+    };
+    unsafe {
+        let _ = KillTimer(Some(window), SUSPEND_TIMER);
+    }
+    if let Some(host) = ready_host(owner) {
+        let _ = host.resume();
+    }
 }
 
 /// Closes the dropdown at once if it is open; the toolbar page is told. For a pick or a submit:
@@ -1481,6 +1512,19 @@ fn suggest_shadow(dpi: u32, dark: bool) -> super::corner_fringe::Shadow {
 /// The toolbar lost the keyboard. A press on the dropdown itself also blurs the omnibox, so the
 /// dropdown stays when the pointer is over it, and closes otherwise.
 pub(crate) fn suggest_focus_lost(owner: HWND) {
+    with_layer(owner, |layer| layer.omnibox_focused = false);
+    close_unless_pointer_over(owner);
+    // A hidden layer was holding off suspension for the focus; start the countdown now.
+    if let Some((window, visible)) = with_layer(owner, |layer| (layer.window, layer.visible))
+        && suspend_timer_wanted(visible, false)
+    {
+        unsafe {
+            let _ = SetTimer(Some(window), SUSPEND_TIMER, SUSPEND_AFTER_MS, None);
+        }
+    }
+}
+
+fn close_unless_pointer_over(owner: HWND) {
     let Some(bounds) = with_layer(owner, |layer| {
         matches!(layer.content, Some(Content::Suggest { .. })).then_some(layer.bounds)
     })
@@ -1741,7 +1785,9 @@ unsafe extern "system" fn window_proc(
                     unsafe {
                         let _ = KillTimer(Some(hwnd), SUSPEND_TIMER);
                     }
-                    let idle = with_layer(owner, |layer| !layer.visible && layer.content.is_none());
+                    let idle = with_layer(owner, |layer| {
+                        !layer.visible && layer.content.is_none() && !layer.omnibox_focused // --- omnibox suggest ---
+                    });
                     if idle == Some(true)
                         && let Some(host) = ready_host(owner)
                     {
@@ -1789,6 +1835,14 @@ mod tests {
     }
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+
+    #[test]
+    fn suspend_timer_runs_only_while_hidden_and_the_omnibox_is_unfocused() {
+        assert!(suspend_timer_wanted(false, false));
+        assert!(!suspend_timer_wanted(false, true));
+        assert!(!suspend_timer_wanted(true, false));
+        assert!(!suspend_timer_wanted(true, true));
+    }
 
     #[test]
     fn dropdown_corner_radius_shrinks_with_a_short_or_narrow_list() {
@@ -1913,9 +1967,9 @@ mod tests {
         let open = DropMotion { started, from: 0, closing: false };
         let ms = Duration::from_millis;
         assert_eq!(drop_height(open, 300, ms(0)), (0, false));
-        let (early, _) = drop_height(open, 300, ms(40));
+        let (early, _) = drop_height(open, 300, ms(20));
         assert!(early > 150, "ease-out: most of the height shows in the first quarter ({early})");
-        let (late, done) = drop_height(open, 300, ms(100));
+        let (late, done) = drop_height(open, 300, ms(40));
         assert!(late < 300 && late > early && !done);
         assert_eq!(drop_height(open, 300, DROP_OPEN), (300, true));
         // Re-opening during a close starts from where the close left it.
@@ -1932,9 +1986,9 @@ mod tests {
         assert_eq!(ease_out(1.0, 3), 1.0);
         assert_eq!(ease_out(2.0, 5), 1.0);
         // The close keeps moving to its end (cubic), so it never sits nearly done with the pill open.
-        assert!(drop_height(close, 300, ms(60)).0 > 15, "still visibly closing at 60ms");
+        assert!(drop_height(close, 300, ms(40)).0 > 15, "still visibly closing at 40ms");
         // The pill gets its corners back about two frames before the close ends, never while opening.
-        assert!(!drop_untell_due(close, ms(40)));
+        assert!(!drop_untell_due(close, ms(20)));
         assert!(drop_untell_due(close, DROP_CLOSE - DROP_UNTELL_LEAD));
         assert!(!drop_untell_due(open, DROP_OPEN));
     }
@@ -2018,6 +2072,7 @@ mod tests {
             drop: None,
             drop_h: 0,
             drop_told: false,
+            omnibox_focused: false,
         };
         assert!(current(&layer(5, true), 5));
         assert!(!current(&layer(5, true), 4));

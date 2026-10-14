@@ -94,6 +94,34 @@ pub fn refresh_system_state() {
     APPEARANCE.store(UNKNOWN, Ordering::Relaxed);
 }
 
+/// Whether a `WM_SETTINGCHANGE` (`wparam` = SPI action, `lparam_name` = the changed
+/// setting's name when `lparam` carries one) can affect the glass or appearance state.
+pub fn setting_change_is_relevant(wparam: usize, lparam_name: Option<&str>) -> bool {
+    const SPI_SETHIGHCONTRAST: usize = 0x43;
+    const SPI_SETWORKAREA: usize = 0x2F;
+    const SPI_SETNONCLIENTMETRICS: usize = 0x2A;
+    const SPI_SETCLIENTAREAANIMATION: usize = 0x1043;
+    matches!(
+        lparam_name,
+        Some("ImmersiveColorSet" | "WindowsThemeElement" | "Policy")
+    ) || matches!(
+        wparam,
+        SPI_SETNONCLIENTMETRICS
+            | SPI_SETCLIENTAREAANIMATION
+            | SPI_SETHIGHCONTRAST
+            | SPI_SETWORKAREA
+    )
+}
+
+/// Refreshes the cached system state and reports whether the glass permission or the
+/// appearance actually changed.
+pub fn refresh_system_state_changed() -> bool {
+    let before = (system_allows_glass(), appearance());
+    refresh_system_state();
+    let after = (system_allows_glass(), appearance());
+    before != after
+}
+
 pub fn backdrop_mode() -> BackdropMode {
     if !system_allows_glass() {
         BackdropMode::Solid
@@ -514,6 +542,31 @@ mod tests {
             assert_eq!(b.min.left, l.caption_area.left, "dpi {dpi}");
             assert_eq!(b.close.right, l.caption_area.right, "dpi {dpi}");
             assert_eq!(b.close.bottom, m.px(Metrics::TOP_MARGIN) + l.strip.height(), "dpi {dpi}");
+        }
+    }
+
+    #[test]
+    fn setting_change_relevance_table() {
+        let cases: [(usize, Option<&str>, bool); 12] = [
+            (0, Some("ImmersiveColorSet"), true),
+            (0, Some("WindowsThemeElement"), true),
+            (0, Some("Policy"), true),
+            (0, Some("intl"), false),
+            (0, None, false),
+            (0x2A, None, true),
+            (0x1043, None, true),
+            (0x43, None, true),
+            (0x2F, None, true),
+            (0x2B, None, false),
+            (0x1042, Some("Environment"), false),
+            (0x2A, Some("Environment"), true),
+        ];
+        for (wparam, name, expected) in cases {
+            assert_eq!(
+                setting_change_is_relevant(wparam, name),
+                expected,
+                "wparam {wparam:#x} name {name:?}"
+            );
         }
     }
 

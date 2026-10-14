@@ -15,6 +15,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     rc::{Rc, Weak},
+    time::Instant,
 };
 use url::Url;
 use windows::{
@@ -24,7 +25,7 @@ use windows::{
             DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DrawTextW, HDC, InvalidateRect,
             SetBkMode, SetTextColor, TRANSPARENT,
         },
-        UI::HiDpi::GetDpiForWindow,
+        UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::SetTimer},
     },
 };
 
@@ -69,6 +70,8 @@ struct AppView {
 struct Shared {
     app: AppRef,
     profile_dir: PathBuf,
+    /// The browser window that owns the idle timer.
+    main_hwnd: HWND,
     parent: Option<HWND>,
     host: Option<WebAppHost>,
     active_id: Option<u32>,
@@ -86,12 +89,33 @@ thread_local! {
     static ICON_CHANGED: RefCell<Option<Box<dyn Fn()>>> = RefCell::new(None);
 }
 
+/// Timer id for suspending hidden apps; the main window's WM_TIMER arm calls `idle_timer`.
+pub(crate) const IDLE_TIMER: usize = 0xB05D;
+const IDLE_TIMER_MS: u32 = 30_000;
+
+/// Suspends apps that have stayed hidden long enough for the window `hwnd`. Returns whether any
+/// app is still hidden and awake, i.e. whether the timer should keep running.
+pub(crate) fn idle_timer(hwnd: HWND) -> bool {
+    let shared = WINDOWS.with(|windows| {
+        windows.borrow().values().find(|shared| shared.borrow().main_hwnd == hwnd).cloned()
+    });
+    let Some(host) = shared.and_then(|shared| shared.borrow().host.clone()) else { return false; };
+    host.suspend_hidden(Instant::now(), crate::efficiency::NORMAL_SUSPEND_AFTER);
+    host.has_pending_suspend()
+}
+
+fn arm_idle_timer(shared: &SharedRef) {
+    let main = shared.borrow().main_hwnd;
+    unsafe { SetTimer(Some(main), IDLE_TIMER, IDLE_TIMER_MS, None); }
+}
+
 /// Installs factories for the apps already present in the current profile.
 pub fn register(app: &AppRef) {
     let profile = profile::active().ok();
     let shared = Rc::new(RefCell::new(Shared {
         app: app.clone(),
         profile_dir: profile.as_ref().map_or_else(|| PathBuf::new(), |p| p.web_apps_dir()),
+        main_hwnd: app.borrow().hwnd,
         parent: None,
         host: None,
         active_id: None,
@@ -276,7 +300,7 @@ impl PanelContent for Content {
         if let Some(host) = self.shared.borrow().host.clone() {
             match target {
                 Some(rect) => { let _ = host.show_app(&self.id.to_string(), rect); }
-                None => { let _ = host.hide_all(); }
+                None => { let _ = host.hide_all(); arm_idle_timer(&self.shared); }
             }
         }
     }
@@ -315,7 +339,10 @@ impl PanelContent for Content {
             self.open_current();
         } else {
             let host = self.shared.borrow().host.clone();
-            if let Some(host) = host { let _ = host.hide_all(); }
+            if let Some(host) = host {
+                let _ = host.hide_all();
+                arm_idle_timer(&self.shared);
+            }
             self.shared.borrow_mut().active_id = None;
         }
     }

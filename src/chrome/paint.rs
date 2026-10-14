@@ -350,16 +350,27 @@ impl ChromeSurface {
     /// Hands the toolbar's back, forward, reload, omnibox and main menu to the HTML chrome.
     pub fn set_html_toolbar(&mut self, on: bool) {
         self.html_toolbar = on;
+        self.release_text_mask_when_html();
     }
 
     /// Hands the tab row to the HTML tab strip: its tabs and group balls are not painted natively.
     pub fn set_html_tabs(&mut self, on: bool) {
         self.html_tabs = on;
+        self.release_text_mask_when_html();
     }
 
     /// Hands the left rail to the HTML rail: its pill and buttons are not painted natively.
     pub fn set_html_rail(&mut self, on: bool) {
         self.html_rail = on;
+        self.release_text_mask_when_html();
+    }
+
+    /// With all three regions in HTML the native chrome draws little text, so the surface-sized
+    /// text mask is given back; the next `draw_text` grows it again.
+    fn release_text_mask_when_html(&mut self) {
+        if self.html_toolbar && self.html_tabs && self.html_rail {
+            self.text.release_mask();
+        }
     }
 
     /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page. The native
@@ -2859,7 +2870,11 @@ impl Drop for Dib {
 /// A white-on-black GDI text mask sharing coordinates with the chrome surface. Its DC permanently
 /// holds the current font, so measuring and drawing need no state changes.
 struct TextCache {
+    /// Starts (and, once the HTML regions own the chrome, returns to) a small bitmap: measuring
+    /// needs only the DC's font. `draw` grows it to `wanted` first.
     dib: Dib,
+    /// The surface size the mask must cover when text is drawn.
+    wanted: (i32, i32),
     font: HFONT,
     /// The font the DC started with, selected back before the cached fonts are deleted.
     original_font: HGDIOBJ,
@@ -2874,7 +2889,8 @@ struct TextCache {
 impl TextCache {
     fn new(width: i32, height: i32, dpi: u32) -> Self {
         let mut this = Self {
-            dib: Dib::new(width, height),
+            dib: Dib::new(1, 1),
+            wanted: (width.max(1), height.max(1)),
             font: HFONT::default(),
             original_font: HGDIOBJ::default(),
             dpi: 0,
@@ -2888,11 +2904,38 @@ impl TextCache {
         this
     }
     fn resize(&mut self, width: i32, height: i32, dpi: u32) {
-        if self.dib.resize(width, height) {
+        self.wanted = (width.max(1), height.max(1));
+        if self.mask_allocated() && self.dib.resize(width, height) {
             self.prepare_dc();
             self.select_font();
         }
         self.set_dpi(dpi);
+    }
+    /// Whether the mask has been grown past the small bitmap it starts with.
+    fn mask_allocated(&self) -> bool {
+        self.dib.width > 1 || self.dib.height > 1
+    }
+    /// Grows the mask to the surface size when it is smaller. `composite_mask` reads it at surface
+    /// coordinates, so every draw goes through here first.
+    fn ensure_mask(&mut self) {
+        if self.dib.width >= self.wanted.0 && self.dib.height >= self.wanted.1 {
+            return;
+        }
+        if self.dib.resize(self.wanted.0, self.wanted.1) {
+            self.prepare_dc();
+            self.select_font();
+        }
+    }
+    /// Shrinks the mask back to the small bitmap, for when the HTML regions draw all the chrome's
+    /// text and the native paths only measure.
+    fn release_mask(&mut self) {
+        if !self.mask_allocated() {
+            return;
+        }
+        // Not `Dib::resize`: a bitmap within two steps of the new size would be kept.
+        self.dib = Dib::new(1, 1);
+        self.prepare_dc();
+        self.select_font();
     }
     /// Changes `font_size`/`ui_font`. Returns whether either differed, in which case every cached
     /// font is rebuilt (the DPI cache key alone no longer identifies the right font).
@@ -2960,7 +3003,8 @@ impl TextCache {
     }
     /// Draws `text` inside `rect`, touching only `visible`, which is the part that will be read
     /// back. `visible` must lie inside the mask.
-    fn draw(&self, text: &[u16], rect: Rect, visible: Rect, ellipsis: bool) {
+    fn draw(&mut self, text: &[u16], rect: Rect, visible: Rect, ellipsis: bool) {
+        self.ensure_mask();
         if self.dib.bits.is_null() {
             return;
         }
@@ -3456,6 +3500,37 @@ mod tests {
             Rect::new(0, 0, 40, s.text.line_height()),
             true,
         );
+    }
+
+    #[test]
+    fn text_mask_is_released_when_all_three_html_regions_are_live() {
+        let mut s = ChromeSurface::new(320, 100, 96);
+        s.set_html_toolbar(true);
+        s.set_html_tabs(true);
+        s.set_html_rail(true);
+        assert!(s.text.dib.allocated.0 <= 64 && s.text.dib.allocated.1 <= 64);
+        assert!(s.caret_x("abc", 3) > 0, "measuring needs no surface-sized mask");
+        let surface = Rect::new(0, 0, s.width(), s.height());
+        s.draw_text("Label", Rect::new(4, 4, 120, 24), Rgba { r: 255, g: 255, b: 255, a: 255 }, true, surface, surface);
+        assert_eq!((s.text.dib.width, s.text.dib.height), (320, 100));
+        assert!(s.text.dib.allocated.0 >= 320 && s.text.dib.allocated.1 >= 100);
+        // A later release (the regions going live again) gives it back.
+        s.set_html_rail(true);
+        assert!(s.text.dib.allocated.0 <= 64 && s.text.dib.allocated.1 <= 64);
+    }
+
+    #[test]
+    fn text_mask_grows_with_the_surface_only_when_allocated() {
+        let mut s = ChromeSurface::new(320, 100, 96);
+        s.resize(640, 200, 96);
+        assert!(s.text.dib.allocated.0 <= 64 && s.text.dib.allocated.1 <= 64, "not allocated yet");
+        assert_eq!(s.text.wanted, (640, 200));
+        let surface = Rect::new(0, 0, s.width(), s.height());
+        s.draw_text("Label", Rect::new(4, 4, 120, 24), Rgba { r: 255, g: 255, b: 255, a: 255 }, true, surface, surface);
+        assert_eq!((s.text.dib.width, s.text.dib.height), (640, 200));
+        s.resize(800, 300, 96);
+        assert_eq!((s.text.dib.width, s.text.dib.height), (800, 300), "an allocated mask follows");
+        assert!(s.text.dib.allocated.0 >= 800 && s.text.dib.allocated.1 >= 300);
     }
 
     #[test]

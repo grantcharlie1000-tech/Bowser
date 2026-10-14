@@ -6,6 +6,7 @@ use std::{
     os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use url::Url;
@@ -15,7 +16,7 @@ use webview2_com::{
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
     GetFaviconCompletedHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
-    ProcessFailedEventHandler, Microsoft::Web::WebView2::Win32::*,
+    ProcessFailedEventHandler, TrySuspendCompletedHandler, Microsoft::Web::WebView2::Win32::*,
 };
 use windows::{
     Win32::{
@@ -56,6 +57,9 @@ struct WebAppView {
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
     remove_handlers: Vec<Box<dyn Fn()>>,
+    /// When the app was last hidden; `None` while it is visible.
+    hidden_since: Option<Instant>,
+    suspended: bool,
 }
 
 struct HostState {
@@ -167,7 +171,7 @@ impl WebAppHost {
             if state.closed {
                 return Err(Error::from(windows::Win32::Foundation::E_FAIL));
             }
-            for (id, app) in &state.apps {
+            for (id, app) in state.apps.iter_mut() {
                 app.set_visible(id == app_id)?;
             }
             state.current_app = Some(app_id.to_owned());
@@ -209,6 +213,7 @@ impl WebAppHost {
                     if state.closed {
                         app.close();
                     } else {
+                        let mut app = app;
                         let visible = state.current_app.as_deref() == Some(app_id.as_str());
                         // Re-apply the current bounds: the rect captured when creation began may be
                         // stale (e.g. the panel finished animating open while the controller was
@@ -248,11 +253,11 @@ impl WebAppHost {
         }
         state.bounds = bounds;
         state.current_app = Some(app_id.to_owned());
-        for (id, app) in &state.apps {
+        for (id, app) in state.apps.iter_mut() {
             unsafe {
                 app.controller.SetBounds(bounds)?;
-            app.set_visible(id == app_id)?;
             }
+            app.set_visible(id == app_id)?;
         }
         Ok(())
     }
@@ -260,10 +265,38 @@ impl WebAppHost {
     pub fn hide_all(&self) -> Result<()> {
         let mut state = self.state.borrow_mut();
         state.current_app = None;
-        for app in state.apps.values() {
+        for app in state.apps.values_mut() {
             app.set_visible(false)?;
         }
         Ok(())
+    }
+
+    /// Suspends every app that has been hidden for at least `after`, is not already suspended and
+    /// is not playing audio. Returns how many were suspended.
+    pub fn suspend_hidden(&self, now: Instant, after: Duration) -> usize {
+        let mut state = self.state.borrow_mut();
+        if state.closed {
+            return 0;
+        }
+        let mut suspended = 0;
+        for app in state.apps.values_mut() {
+            let hidden_for = app.hidden_since.map(|since| now.saturating_duration_since(since));
+            // Skip the audio query for apps that cannot be due anyway.
+            let due_without_audio = web_app_suspend_due(hidden_for, app.suspended, false, after);
+            if due_without_audio
+                && web_app_suspend_due(hidden_for, app.suspended, app.playing_audio(), after)
+                && app.suspend()
+            {
+                suspended += 1;
+            }
+        }
+        suspended
+    }
+
+    /// Whether any app is hidden and still awake, so an idle timer has more work to do.
+    pub fn has_pending_suspend(&self) -> bool {
+        let state = self.state.borrow();
+        !state.closed && state.apps.values().any(|app| app.hidden_since.is_some() && !app.suspended)
     }
 
     /// Retries the current document for an app after a load error.
@@ -336,9 +369,18 @@ impl Drop for WebAppHost {
 }
 
 impl WebAppView {
-    fn set_visible(&self, visible: bool) -> Result<()> {
+    fn set_visible(&mut self, visible: bool) -> Result<()> {
+        if visible {
+            // A suspended page must be resumed before it is shown.
+            self.resume();
+        }
         unsafe {
             self.controller.SetIsVisible(visible)?;
+        }
+        if visible {
+            self.hidden_since = None;
+        } else if self.hidden_since.is_none() {
+            self.hidden_since = Some(Instant::now());
         }
         if let Ok(api) = self.webview.cast::<ICoreWebView2_19>() {
             let level = if visible {
@@ -349,6 +391,35 @@ impl WebAppView {
             let _ = unsafe { api.SetMemoryUsageTargetLevel(level) };
         }
         Ok(())
+    }
+
+    /// Asks WebView2 to suspend the page. Returns whether the request was accepted; engines
+    /// without the suspend API leave the app awake.
+    fn suspend(&mut self) -> bool {
+        let Ok(webview3) = self.webview.cast::<ICoreWebView2_3>() else { return false; };
+        let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+        if unsafe { webview3.TrySuspend(&handler) }.is_ok() {
+            self.suspended = true;
+        }
+        self.suspended
+    }
+
+    fn resume(&mut self) {
+        if !self.suspended {
+            return;
+        }
+        if let Ok(webview3) = self.webview.cast::<ICoreWebView2_3>() {
+            let _ = unsafe { webview3.Resume() };
+        }
+        self.suspended = false;
+    }
+
+    /// A failed query counts as silent.
+    fn playing_audio(&self) -> bool {
+        self.webview.cast::<ICoreWebView2_8>().is_ok_and(|webview| {
+            let mut playing = BOOL::default();
+            unsafe { webview.IsDocumentPlayingAudio(&mut playing) }.is_ok() && playing.as_bool()
+        })
     }
 
     fn close(mut self) {
@@ -519,8 +590,19 @@ unsafe fn configure_web_app_controller(
 
         let initial_url = wide(origin.as_str());
         webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()))?;
-        Ok(WebAppView { controller, webview, remove_handlers: removers })
+        Ok(WebAppView { controller, webview, remove_handlers: removers, hidden_since: None, suspended: false })
     }
+}
+
+/// A hidden app is suspended once it has been hidden for `after`, unless it is already suspended
+/// or still playing audio. Pure.
+pub(crate) fn web_app_suspend_due(
+    hidden_for: Option<Duration>,
+    suspended: bool,
+    playing_audio: bool,
+    after: Duration,
+) -> bool {
+    !suspended && !playing_audio && hidden_for.is_some_and(|hidden| hidden >= after)
 }
 
 fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain(std::iter::once(0)).collect() }
@@ -613,6 +695,18 @@ fn same_registrable_domain(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspend_is_due_only_for_hidden_silent_awake_apps_past_the_delay() {
+        let after = Duration::from_secs(30);
+        let secs = |n| Some(Duration::from_secs(n));
+        assert!(web_app_suspend_due(secs(30), false, false, after));
+        assert!(web_app_suspend_due(secs(300), false, false, after));
+        assert!(!web_app_suspend_due(secs(29), false, false, after));
+        assert!(!web_app_suspend_due(None, false, false, after));
+        assert!(!web_app_suspend_due(secs(300), true, false, after));
+        assert!(!web_app_suspend_due(secs(300), false, true, after));
+    }
 
     #[test]
     fn validates_only_http_urls_without_credentials() {

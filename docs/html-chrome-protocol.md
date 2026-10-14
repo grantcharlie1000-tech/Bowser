@@ -390,10 +390,9 @@ answers an invalid name with `error` in a fresh snapshot. Only the rename dialog
 
 ### Popup readiness
 
-The popup controller is requested together with the toolbar, tab strip and rail controllers when
-the environment settles (last in that order), instead of 2 s after the toolbar became ready. The
-chrome controllers share one renderer, so the hidden popup page is ready about when the toolbar
-is. A menu requested earlier still falls back to native (and asks for the host if it is missing).
+The popup controller is requested when the toolbar reports ready, not together with the toolbar,
+tab strip and rail controllers, so the hidden popup page does not compete with the visible
+toolbar. A menu requested earlier falls back to native and asks for the host.
 Perf-log events (`--benchmark-log`): `html_toolbar_ready`, `html_popup_prewarm`,
 `html_popup_ready`, `html_popup_fallback`.
 

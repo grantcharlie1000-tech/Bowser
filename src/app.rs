@@ -4,7 +4,7 @@ use std::{
     hash::Hash,
     path::PathBuf,
     rc::Rc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
@@ -137,6 +137,61 @@ fn session_arm_allowed(has_store: bool, save_pending: bool, closing: bool) -> bo
     has_store && !save_pending && !closing
 }
 
+/// A change that touches the workspace file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceChange {
+    Create,
+    Delete,
+    Rename,
+    Move,
+    Icon,
+    Colour,
+    SwitchWorkspace,
+    TabSelect,
+    TabOpen,
+    TabClose,
+    TabMove,
+}
+
+/// How soon a workspace change must reach disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceSave {
+    /// Marks the file dirty; the session debounce timer, or the exit flush, writes it.
+    Deferred,
+    /// Writes at once.
+    Now,
+}
+
+/// Structural edits to workspaces are rare and written at once. Tab traffic (selecting, opening,
+/// closing, moving) is frequent and is written by the debounce timer instead.
+fn workspace_save_mode(change: WorkspaceChange) -> WorkspaceSave {
+    match change {
+        WorkspaceChange::Create
+        | WorkspaceChange::Delete
+        | WorkspaceChange::Rename
+        | WorkspaceChange::Move
+        | WorkspaceChange::Icon
+        | WorkspaceChange::Colour => WorkspaceSave::Now,
+        WorkspaceChange::SwitchWorkspace
+        | WorkspaceChange::TabSelect
+        | WorkspaceChange::TabOpen
+        | WorkspaceChange::TabClose
+        | WorkspaceChange::TabMove => WorkspaceSave::Deferred,
+    }
+}
+
+/// Modified time and length of a search-config file; a missing file is `(None, 0)`.
+type ConfigStamp = (Option<SystemTime>, u64);
+
+fn config_stamp(metadata: Option<&std::fs::Metadata>) -> ConfigStamp {
+    metadata.map_or((None, 0), |metadata| (metadata.modified().ok(), metadata.len()))
+}
+
+/// Whether either config file differs from the stamps taken at the last read.
+fn search_config_changed(previous: Option<[ConfigStamp; 2]>, now: [ConfigStamp; 2]) -> bool {
+    previous != Some(now)
+}
+
 /// Whether a tab with this address needs a content WebView2. Internal pages (`bowser://`) never
 /// do: Bowser draws them itself (docs/design/settings-page.md).
 pub fn tab_needs_controller(url: Option<&url::Url>) -> bool {
@@ -184,6 +239,32 @@ fn controller_close_plan(
 /// background policy: 30 s normally, shorter while efficiency mode is active.
 fn hidden_tab_suspend_eligible(hidden_for: Duration, suspend_after: Duration) -> bool {
     hidden_for >= suspend_after
+}
+
+/// How long after a page finishes loading the reader probe runs, so it stays off the first paint.
+const READER_PROBE_DELAY_MS: u32 = 1_200;
+
+/// Whether a scheduled reader probe should still run. `pending` is the tab and reader epoch stored
+/// at schedule time; `page_usable`, `controller_created`, `discarded`, `probed` and `epoch_now`
+/// describe that tab now. A tab that was left, navigated, discarded or already probed is skipped.
+fn reader_probe_due(
+    pending: Option<(TabId, u32)>,
+    active: TabId,
+    page_usable: bool,
+    controller_created: bool,
+    discarded: bool,
+    probed: bool,
+    epoch_now: u32,
+) -> bool {
+    let Some((tab, epoch)) = pending else {
+        return false;
+    };
+    tab == active
+        && epoch == epoch_now
+        && page_usable
+        && controller_created
+        && !discarded
+        && !probed
 }
 
 /// The tracking-prevention level to request when the engine is created. A benchmark's explicit
@@ -569,6 +650,8 @@ pub struct App {
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
     pub provider: SearchProvider,
+    /// Stamps of `settings.txt` and the search provider file when `provider` was last read.
+    search_config_stamp: Option<[ConfigStamp; 2]>,
     pub log: Rc<PerfLog>,
     pub minimized: bool,
     /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
@@ -585,6 +668,9 @@ pub struct App {
     /// Tabs left most recently first, for `ctrl_tab_mru`. Updated in `select_tab`; split-pane
     /// selection does not go through it, so it only orders ordinary tab switches.
     tab_mru: Vec<TabId>,
+    /// The reader probe waiting on `WM_READER_PROBE_TIMER`: the tab and its reader epoch when the
+    /// probe was scheduled. A newer schedule replaces it.
+    reader_probe_pending: Option<(TabId, u32)>,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
     // --- split view ---
@@ -616,6 +702,8 @@ pub struct App {
     organisation_undo: UndoStack<Snapshot>,
     workspaces: crate::workspaces::WorkspaceSet,
     workspaces_path: Option<PathBuf>,
+    /// A deferred workspace change waits for the debounce timer or the exit flush.
+    workspaces_dirty: bool,
     settings: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
     session_save_pending: bool,
@@ -1072,7 +1160,7 @@ impl App {
         icon: crate::workspaces::WorkspaceIcon,
     ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         app.borrow_mut().workspaces.set_icon(id, icon)?;
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Icon);
         Self::notify_rail_changed(app);
         Ok(())
     }
@@ -1083,7 +1171,7 @@ impl App {
         colour: Option<crate::workspaces::WorkspaceColour>,
     ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         app.borrow_mut().workspaces.set_colour(id, colour)?;
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Colour);
         Self::notify_rail_changed(app);
         Ok(())
     }
@@ -1094,7 +1182,7 @@ impl App {
         new_index: usize,
     ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         app.borrow_mut().workspaces.reorder(id, new_index)?;
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Move);
         Self::notify_rail_changed(app);
         Ok(())
     }
@@ -1121,7 +1209,7 @@ impl App {
         };
         let switched = Self::select_tab(app, selected);
         if switched {
-            Self::save_workspaces(app);
+            Self::save_workspaces(app, WorkspaceChange::SwitchWorkspace);
             Self::notify_rail_changed(app);
             Self::schedule_tab_idle_timer(app);
         }
@@ -1147,7 +1235,7 @@ impl App {
             }
         };
         let _ = Self::switch_workspace(app, id);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Create);
         Self::notify_rail_changed(app);
         Ok(id)
     }
@@ -1158,7 +1246,7 @@ impl App {
         name: &str,
     ) -> std::result::Result<(), crate::workspaces::WorkspaceError> {
         app.borrow_mut().workspaces.rename(id, name)?;
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Rename);
         Self::notify_rail_changed(app);
         Self::post_tab_changed(app.borrow().hwnd, Self::active_tab_id(app));
         Ok(())
@@ -1177,12 +1265,40 @@ impl App {
         for tab in removed {
             let _ = Self::close_tab(app, tab);
         }
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::Delete);
         Self::notify_rail_changed(app);
         Ok(())
     }
 
-    fn save_workspaces(app: &AppRef) {
+    /// Saves the workspace file as `workspace_save_mode` decides: at once, or by marking it dirty
+    /// and arming the session debounce timer.
+    fn save_workspaces(app: &AppRef, change: WorkspaceChange) {
+        if workspace_save_mode(change) == WorkspaceSave::Now {
+            Self::save_workspaces_now(app);
+            return;
+        }
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            state.workspaces_dirty = true;
+            state.hwnd
+        };
+        if hwnd.is_invalid() {
+            // No window yet to carry the timer, so nothing could flush the mark.
+            Self::save_workspaces_now(app);
+            return;
+        }
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                Some(hwnd),
+                win32::WM_SESSION_SAVE_TIMER,
+                crate::session::SAVE_DEBOUNCE_MS,
+                None,
+            );
+        }
+    }
+
+    fn save_workspaces_now(app: &AppRef) {
+        app.borrow_mut().workspaces_dirty = false;
         let (path, workspaces) = {
             let state = app.borrow();
             let order = state
@@ -1443,7 +1559,7 @@ impl App {
                 Ok(())
             });
             Self::post_tab_changed(hwnd, id);
-            Self::save_workspaces(app);
+            Self::save_workspaces(app, WorkspaceChange::TabOpen);
             Self::sync_window_title(app);
             Self::schedule_tab_idle_timer(app);
             return id;
@@ -1468,7 +1584,7 @@ impl App {
             Ok(())
         });
         Self::post_tab_changed(hwnd, id);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabOpen);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         id
@@ -1600,7 +1716,7 @@ impl App {
             Self::post_tab_changed(hwnd, active);
         }
         Self::release_unused_site_rules(app);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabClose);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         changed
@@ -1703,7 +1819,7 @@ impl App {
         Self::restore_discarded_tab(app, id);
         Self::reader_probe_if_needed(app, id);
         Self::post_tab_changed(hwnd, id);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         true
@@ -1868,7 +1984,7 @@ impl App {
             state.hwnd
         };
         Self::post_tab_changed(hwnd, id);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabMove);
         true
     }
 
@@ -1895,7 +2011,7 @@ impl App {
             state.hwnd
         };
         Self::post_tab_changed(hwnd, id);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabMove);
         true
     }
 
@@ -2888,7 +3004,7 @@ impl App {
         Self::restore_discarded_tab(app, split.left);
         Self::restore_discarded_tab(app, split.right);
         Self::post_tab_changed(hwnd, focused_tab);
-        Self::save_workspaces(app);
+        Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
         true
@@ -4157,6 +4273,59 @@ impl App {
             })
         };
         if needed {
+            Self::schedule_reader_probe(app, tab);
+        }
+    }
+
+    /// Defers the probe so it does not compete with the page's first paint. Remembers the tab and
+    /// its reader epoch; scheduling again replaces an earlier pending probe.
+    fn schedule_reader_probe(app: &AppRef, tab: TabId) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let Some(epoch) = state
+                .tabs
+                .iter()
+                .find(|candidate| candidate.id == tab)
+                .map(|candidate| candidate.reader.epoch)
+            else {
+                return;
+            };
+            state.reader_probe_pending = Some((tab, epoch));
+            state.hwnd
+        };
+        if hwnd.is_invalid() {
+            return;
+        }
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                Some(hwnd),
+                win32::WM_READER_PROBE_TIMER,
+                READER_PROBE_DELAY_MS,
+                None,
+            );
+        }
+    }
+
+    /// The reader probe timer fired: probes the pending tab if it is still due.
+    pub fn reader_probe_timer_fired(app: &AppRef) {
+        let due_tab = {
+            let mut state = app.borrow_mut();
+            let pending = state.reader_probe_pending.take();
+            pending.and_then(|(tab, _)| {
+                let entry = state.tabs.iter().find(|candidate| candidate.id == tab)?;
+                reader_probe_due(
+                    pending,
+                    state.tab_model.active(),
+                    entry.page_usable,
+                    entry.controller_created,
+                    entry.discarded,
+                    entry.reader.probed,
+                    entry.reader.epoch,
+                )
+                .then_some(tab)
+            })
+        };
+        if let Some(tab) = due_tab {
             Self::reader_probe(app, tab);
         }
     }
@@ -4551,6 +4720,7 @@ impl App {
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
             benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
+            search_config_stamp: None,
             log,
             minimized: false,
             efficiency: EfficiencyState::default(),
@@ -4564,6 +4734,7 @@ impl App {
             tabs: vec![AppTab::empty(initial_tab)],
             tab_model,
             tab_mru: Vec::new(),
+            reader_probe_pending: None,
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
@@ -4581,6 +4752,7 @@ impl App {
             organisation_undo: UndoStack::default(),
             workspaces: crate::workspaces::WorkspaceSet::new("Default", initial_tab),
             workspaces_path,
+            workspaces_dirty: false,
             settings: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
@@ -4804,6 +4976,11 @@ impl App {
         let snapshot = Self::session_snapshot(app);
         let mut state = app.borrow_mut();
         if state.session.is_none() {
+            let dirty = std::mem::take(&mut state.workspaces_dirty);
+            drop(state);
+            if dirty {
+                Self::save_workspaces_now(app);
+            }
             return;
         }
         state.session_save_pending = false;
@@ -4815,8 +4992,11 @@ impl App {
                 state.last_session_snapshot = Some(snapshot);
             }
         }
+        let dirty = std::mem::take(&mut state.workspaces_dirty);
         drop(state);
-        Self::save_workspaces(app);
+        if dirty {
+            Self::save_workspaces_now(app);
+        }
     }
 
     /// Clean exit: final snapshot and removal of the running marker.
@@ -4826,7 +5006,7 @@ impl App {
         if let Some(store) = store {
             store.finish(snapshot);
         }
-        Self::save_workspaces(app);
+        Self::save_workspaces_now(app);
     }
 
     /// A tab's render process crashed. The active tab reloads; a hidden tab is marked so that it
@@ -4880,9 +5060,18 @@ impl App {
         let Ok(profile) = crate::profile::active() else {
             return;
         };
-        let settings = crate::settings::Settings::load(&profile.settings_file());
-        self.provider =
-            SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
+        let settings_file = profile.settings_file();
+        let provider_file = profile.search_provider_file();
+        let stamps = [
+            config_stamp(std::fs::metadata(&settings_file).ok().as_ref()),
+            config_stamp(std::fs::metadata(&provider_file).ok().as_ref()),
+        ];
+        if !search_config_changed(self.search_config_stamp, stamps) {
+            return;
+        }
+        let settings = crate::settings::Settings::load(&settings_file);
+        self.provider = SearchProvider::from_config(settings.search_engine, &provider_file);
+        self.search_config_stamp = Some(stamps);
     }
 
     pub fn submit(app: &AppRef, input: &str) {
@@ -5207,7 +5396,7 @@ impl App {
                         App::tab_page_loaded(&app, tab_id);
                         // One read-only probe decides whether the toolbar offers reader view.
                         if app.borrow().tab_model.active() == tab_id {
-                            App::reader_probe(&app, tab_id);
+                            App::schedule_reader_probe(&app, tab_id);
                         }
                     }
                 }))
@@ -6702,6 +6891,96 @@ mod tests {
     use super::*;
     use crate::engine::MemoryUsageTarget;
     use std::{cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
+
+    #[test]
+    fn reader_probe_due_table() {
+        let tab = TabId(3);
+        let other = TabId(4);
+        // (pending, active, usable, controller, discarded, probed, epoch_now, due)
+        let table = [
+            (Some((tab, 2)), tab, true, true, false, false, 2, true),
+            (None, tab, true, true, false, false, 2, false),
+            (Some((tab, 2)), other, true, true, false, false, 2, false),
+            (Some((tab, 2)), tab, false, true, false, false, 2, false),
+            (Some((tab, 2)), tab, true, false, false, false, 2, false),
+            (Some((tab, 2)), tab, true, true, true, false, 2, false),
+            (Some((tab, 2)), tab, true, true, false, true, 2, false),
+            (Some((tab, 2)), tab, true, true, false, false, 3, false),
+        ];
+        for (pending, active, usable, controller, discarded, probed, epoch, due) in table {
+            assert_eq!(
+                reader_probe_due(pending, active, usable, controller, discarded, probed, epoch),
+                due,
+                "{pending:?} active {active:?} usable {usable} controller {controller} \
+                 discarded {discarded} probed {probed} epoch {epoch}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_save_mode_table() {
+        use WorkspaceChange::*;
+        use WorkspaceSave::*;
+        let table = [
+            (Create, Now),
+            (Delete, Now),
+            (Rename, Now),
+            (Move, Now),
+            (Icon, Now),
+            (Colour, Now),
+            (SwitchWorkspace, Deferred),
+            (TabSelect, Deferred),
+            (TabOpen, Deferred),
+            (TabClose, Deferred),
+            (TabMove, Deferred),
+        ];
+        for (change, mode) in table {
+            assert_eq!(workspace_save_mode(change), mode, "{change:?}");
+        }
+    }
+
+    #[test]
+    fn config_stamp_of_a_missing_file_is_empty() {
+        assert_eq!(config_stamp(None), (None, 0));
+    }
+
+    #[test]
+    fn search_config_changed_compares_both_stamps() {
+        let stamp = |len| (None, len);
+        let base = [stamp(1), stamp(2)];
+        assert!(search_config_changed(None, base));
+        assert!(!search_config_changed(Some(base), base));
+        assert!(search_config_changed(Some(base), [stamp(3), stamp(2)]));
+        assert!(search_config_changed(Some(base), [stamp(1), stamp(3)]));
+    }
+
+    #[test]
+    fn search_config_stamp_follows_a_rewritten_file() {
+        let dir = std::env::temp_dir().join(format!("bowser-config-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.txt");
+        let provider = dir.join("search-provider.txt");
+        let stamps = || {
+            [
+                config_stamp(std::fs::metadata(&settings).ok().as_ref()),
+                config_stamp(std::fs::metadata(&provider).ok().as_ref()),
+            ]
+        };
+
+        let missing = stamps();
+        assert_eq!(missing, [(None, 0), (None, 0)]);
+
+        std::fs::write(&settings, "search_engine=duckduckgo\n").unwrap();
+        let written = stamps();
+        assert!(search_config_changed(Some(missing), written));
+        assert!(!search_config_changed(Some(written), stamps()));
+
+        std::fs::write(&settings, "search_engine=duckduckgo\nsleep_enabled=false\n").unwrap();
+        assert!(search_config_changed(Some(written), stamps()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn navigation_progress_stages_are_monotonic_and_ignore_stale_ids() {
@@ -8777,6 +9056,7 @@ mod tests {
             benchmark_tracking_prevention: None,
             benchmark_memory_pressure: false,
             provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
+            search_config_stamp: None,
             log: Rc::new(PerfLog::new(None).unwrap()),
             minimized: false,
             efficiency: EfficiencyState::default(),
@@ -8790,6 +9070,7 @@ mod tests {
             tabs: vec![AppTab::empty(TabId(0))],
             tab_model: crate::tabs::TabList::new(),
             tab_mru: Vec::new(),
+            reader_probe_pending: None,
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
@@ -8804,6 +9085,7 @@ mod tests {
             organisation_undo: UndoStack::default(),
             workspaces: crate::workspaces::WorkspaceSet::new("Default", TabId(0)),
             workspaces_path: None,
+            workspaces_dirty: false,
             // Existing tests exercise the memory-pressure path; tab sleep has its own tests.
             settings: crate::settings::Settings {
                 sleep_enabled: false,

@@ -1277,6 +1277,37 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    /// The part of the state the tabs strip and the rail use: scale, solid, dark, the theme and the
+    /// font settings. Every toolbar-only field is neutral, so the serialised form does not change
+    /// while the toolbar's loading, label, zoom or progress do.
+    pub fn theme_only(&self) -> ViewState {
+        ViewState {
+            scale: self.scale,
+            pillx: 0,
+            pillw: 0,
+            menux: 0,
+            solid: self.solid,
+            dark: self.dark,
+            back: false,
+            forward: false,
+            loading: false,
+            split: false,
+            bookmarked: false,
+            progress: 0,
+            show_progress: false,
+            security: Security::None,
+            label: String::new(),
+            permblocked: false,
+            zoom: 100,
+            show_zoom: false,
+            private: false,
+            reader: crate::reader::Pill::Hidden,
+            font_scale: self.font_scale,
+            ui_font: self.ui_font.clone(),
+            theme: self.theme.clone(),
+        }
+    }
+
     /// Serialises a `state` message. Output is one JSON object.
     pub fn to_json(&self) -> String {
         let mut out = String::with_capacity(256);
@@ -2044,6 +2075,26 @@ mod tests {
             ui_font: String::new(),
             theme: Vec::new(),
         }
+    }
+
+    #[test]
+    fn theme_only_ignores_toolbar_fields_and_tracks_theme() {
+        let mut base = sample_state();
+        base.theme = vec![("bg", "#101010".to_string())];
+        let mut busy = base.clone();
+        busy.loading = true;
+        busy.label = "Loading".to_string();
+        busy.zoom = 150;
+        busy.progress = 40;
+        assert_ne!(base.to_json(), busy.to_json());
+        assert_eq!(base.theme_only().to_json(), busy.theme_only().to_json());
+
+        let mut light = base.clone();
+        light.dark = false;
+        assert_ne!(base.theme_only().to_json(), light.theme_only().to_json());
+        let mut retoned = base.clone();
+        retoned.theme = vec![("bg", "#202020".to_string())];
+        assert_ne!(base.theme_only().to_json(), retoned.theme_only().to_json());
     }
 
     #[test]
