@@ -733,6 +733,10 @@ impl WorkspaceSet {
                 "workspace file is too large",
             ));
         }
+        // Tab and title changes re-save constantly; most leave the workspaces untouched.
+        if crate::productivity::file_holds(path, text.as_bytes()) {
+            return Ok(());
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -946,6 +950,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bowser-workspaces-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
         workspaces.save(&path).unwrap();
+        assert_eq!(WorkspaceSet::load(&path).unwrap(), Some(workspaces));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saving_unchanged_workspaces_does_not_rewrite_the_file() {
+        let mut workspaces = WorkspaceSet::new("Default", TabId(1));
+        let dir = std::env::temp_dir().join(format!("bowser-workspaces-skip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(FILE_NAME);
+        workspaces.save(&path).unwrap();
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        workspaces.save(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp, "unchanged bytes are skipped");
+        workspaces.create("Research", TabId(2)).unwrap();
+        workspaces.save(&path).unwrap();
+        assert_ne!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
         assert_eq!(WorkspaceSet::load(&path).unwrap(), Some(workspaces));
         let _ = std::fs::remove_dir_all(dir);
     }

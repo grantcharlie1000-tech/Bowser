@@ -2629,19 +2629,26 @@ impl EngineAdapter for WebView2Engine {
     }
     fn set_visible(&mut self, visible: bool) -> Result<()> {
         let mut state = self.core.borrow_mut();
-        if let Some(active) = state.active_tab {
-            if let Some(tab) = state.tabs.get_mut(&active) {
+        let onscreen: Vec<TabId> = if !state.visible_tabs.is_empty() {
+            state.visible_tabs.iter().copied().collect()
+        } else if let Some(active) = state.active_tab {
+            vec![active]
+        } else {
+            Vec::new()
+        };
+        let target = state.target;
+        for tab_id in onscreen {
+            if let Some(tab) = state.tabs.get_mut(&tab_id) {
                 EngineAdapter::set_visible(tab, visible)?;
+                if !visible {
+                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                } else {
+                    let _ = EngineAdapter::set_memory_usage_target(tab, target);
+                }
             }
             if visible {
-                state.hidden_since.remove(&active);
-                state.suspended.remove(&active);
-            } else {
-                state.hidden_since.insert(active, Instant::now());
-                state.suspended.remove(&active);
-                if let Some(tab) = state.tabs.get_mut(&active) {
-                    let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                }
+                state.hidden_since.remove(&tab_id);
+                state.suspended.remove(&tab_id);
             }
         }
         Ok(())
@@ -2799,11 +2806,18 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
-        let webview = {
+        let (webview, is_suspended) = {
             let state = self.core.borrow();
-            state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone())
+            (
+                state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone()),
+                state.suspended.contains(&tab_id),
+            )
         };
         let Some(webview) = webview else {
+            done(false);
+            return;
+        };
+        if is_suspended {
             done(false);
             return;
         };
@@ -5418,5 +5432,58 @@ mod tests {
         let bad =
             "../escape\tabc\next-0123456789abcdef\t\next-0123456789abcdef\tab-cd\nno tab here\n";
         assert!(parse_extension_ids(bad).is_empty());
+    }
+
+    #[test]
+    fn minimize_hide_does_not_mark_the_active_tab_for_the_30s_suspend_sweep() {
+        let core = Rc::new(RefCell::new(EngineCore {
+            parent: HWND::default(),
+            bounds: RECT::default(),
+            environment: None,
+            allowed_file: None,
+            events: EngineEvents::default(),
+            tracking_policy: TrackingPolicy {
+                level: Some(TrackingPreventionLevel::Balanced),
+                enabled: true,
+            },
+            blocker: None,
+            private_blocker: None,
+            private_tabs: HashSet::new(),
+            active_tab: Some(TabId(1)),
+            visible_tabs: HashSet::from([TabId(1)]),
+            pane_bounds: HashMap::new(),
+            target: MemoryUsageTarget::Normal,
+            tabs: HashMap::new(),
+            known_tabs: HashSet::from([TabId(1), TabId(2)]),
+            creating: HashSet::new(),
+            prewarming: HashSet::new(),
+            prewarm_waiting: None,
+            waiting_controllers: VecDeque::new(),
+            pending: HashMap::new(),
+            hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
+            suspended: HashSet::new(),
+            closed: false,
+            browser_extensions: false,
+            extension_profile: None,
+            extensions_loaded: HashMap::new(),
+            startup_extensions: Vec::new(),
+            known_extensions: Vec::new(),
+            extension_ids_file: None,
+            extension_ids: HashMap::new(),
+            permissions: None,
+            chrome_ui_scheme: false,
+        }));
+        let mut engine = WebView2Engine { core: core.clone() };
+        // On minimize, set_visible(false) is called on the engine:
+        let _ = engine.set_visible(false);
+        // Active tab must NOT be added to hidden_since:
+        assert!(!core.borrow().hidden_since.contains_key(&TabId(1)));
+        // Background tab that was already hidden remains in hidden_since:
+        assert!(core.borrow().hidden_since.contains_key(&TabId(2)));
+
+        // 30s suspend sweep runs:
+        let _ = engine.suspend_hidden_tabs(30_000);
+        // Active tab is not suspended:
+        assert!(!core.borrow().suspended.contains(&TabId(1)));
     }
 }

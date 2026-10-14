@@ -103,6 +103,35 @@ pub fn video_ads_blocked(settings_text: &str) -> bool {
     blocked
 }
 
+/// [`video_ads_blocked`] for the `settings.txt` at `path`, as the blocker asks on every navigation
+/// and player response. The file is reread only when its length or modified time changed since the
+/// last answer, so the settings page's immediate save still takes effect. No file, a file over
+/// `cap` bytes, or one that cannot be read means on.
+pub fn video_ads_blocked_in_file(path: &std::path::Path, cap: usize) -> bool {
+    use std::{path::PathBuf, sync::Mutex, time::SystemTime};
+    static LAST: Mutex<Option<(PathBuf, u64, SystemTime, bool)>> = Mutex::new(None);
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    if len > cap as u64 {
+        return true;
+    }
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let (Some((cached, cached_len, cached_modified, blocked)), Some(modified)) = (&*last, modified) {
+        if cached == path && *cached_len == len && *cached_modified == modified {
+            return *blocked;
+        }
+    }
+    let blocked = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|text| text.len() <= cap)
+        .map_or(true, |text| video_ads_blocked(&text));
+    *last = modified.map(|modified| (path.to_path_buf(), len, modified, blocked));
+    blocked
+}
+
 fn is_ad_key(key: &str) -> bool {
     PLAYER_AD_KEYS.contains(&key)
 }
@@ -340,6 +369,26 @@ mod tests {
         assert!(video_ads_blocked(
             "block_youtube_video_ads=false\nblock_youtube_video_ads=true\n"
         ));
+    }
+
+    #[test]
+    fn the_settings_file_is_reread_only_when_it_changes() {
+        let dir = std::env::temp_dir().join(format!("bowser-youtube-setting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        assert!(video_ads_blocked_in_file(&path, 1024), "no file means on");
+        std::fs::write(&path, "block_youtube_video_ads=false\n").unwrap();
+        let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(!video_ads_blocked_in_file(&path, 1024));
+        // Same length and modified time: the answer comes from memory, not from the new bytes.
+        std::fs::write(&path, "block_youtube_video_ads=maybe\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        assert!(!video_ads_blocked_in_file(&path, 1024));
+        // A changed length is noticed at once.
+        std::fs::write(&path, "block_youtube_video_ads=true\n").unwrap();
+        assert!(video_ads_blocked_in_file(&path, 1024));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

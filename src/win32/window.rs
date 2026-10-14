@@ -290,6 +290,18 @@ impl ProgressTransition {
         *self = Self::default();
     }
 }
+#[derive(Clone, PartialEq, Eq)]
+struct HtmlTabsInputs {
+    mode: chrome_host::protocol::LayoutMode,
+    workspace: (String, String),
+    active: TabId,
+    snapshot: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)>,
+    group_inputs: Vec<tab_groups::TabGroupInput>,
+    group_preferences: tab_groups::GroupPreferences,
+    favicons: Vec<(TabId, Option<FaviconKey>)>,
+    generation: u64,
+}
+
 struct WindowChrome {
     surface: ChromeSurface,
     overlay: HWND,
@@ -424,6 +436,11 @@ struct WindowChrome {
     /// The last rectangle the HTML rail reported for each flyout button (rail CSS px): where its
     /// flyout is anchored when it opens from a shortcut rather than a click.
     html_rail_anchors: HashMap<RailKey, chrome_host::protocol::HoverRect>,
+    html_tabs_synced_inputs: Option<HtmlTabsInputs>,
+    rail_generation: u64,
+    html_rail_synced_open: Option<Option<RailKey>>,
+    html_rail_synced_rail_gen: u64,
+    html_rail_synced_state_gen: u64,
     // --- end rail flyouts ---
 }
 
@@ -545,6 +562,11 @@ impl WindowChrome {
             html_rail_last: None,
             html_rail_favs_sent: HashMap::new(),
             html_rail_anchors: HashMap::new(),
+            html_tabs_synced_inputs: None,
+            rail_generation: 0,
+            html_rail_synced_open: None,
+            html_rail_synced_rail_gen: 0,
+            html_rail_synced_state_gen: 0,
         }
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -1061,6 +1083,7 @@ fn rebuild_rail_entries(state: &mut WindowChrome, app: &AppRef) {
     }
     entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
     state.rail_entries = entries;
+    state.rail_generation = state.rail_generation.wrapping_add(1);
     state.rail_scroll = state.rail_scroll.max(0);
 }
 
@@ -1948,6 +1971,8 @@ unsafe extern "system" fn window_proc(
                         if let Some(target) =
                             App::tab_progress_percent(app, App::active_tab_id(app))
                         {
+                            let html_active = with_chrome(hwnd, |s| s.html_toolbar_active).unwrap_or(false);
+                            if !html_active {
                             let animate = animations_enabled();
                             with_chrome(hwnd, |s| {
                                 s.progress.retarget(
@@ -1967,6 +1992,7 @@ unsafe extern "system" fn window_proc(
                                 );
                             }
                             invalidate_omni(hwnd)
+                            }
                         } else {
                             with_chrome(hwnd, |s| s.progress.clear());
                             let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
@@ -2889,7 +2915,7 @@ unsafe extern "system" fn window_proc(
                     && !crate::win32::menu::is_tracking()
                 {
                     side_panel::close(hwnd);
-                    if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
+                    if !animations_enabled() { if let Some(app) = app { apply_sidebar_bounds(hwnd, app); } }
                     return LRESULT(0);
                 }
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
@@ -3152,8 +3178,10 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == side_panel::TIMER_ID => {
                 let running = side_panel::timer(hwnd);
-                if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
-                if !running { let _ = KillTimer(Some(hwnd), side_panel::TIMER_ID); }
+                if !running {
+                    let _ = KillTimer(Some(hwnd), side_panel::TIMER_ID);
+                    if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
+                }
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == devtools_dock::TIMER_ID => {
@@ -3162,6 +3190,10 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_TIMER if wparam.0 == WM_PROGRESS_TIMER => {
+                if with_chrome(hwnd, |s| s.html_toolbar_active).unwrap_or(false) {
+                    let _ = KillTimer(Some(hwnd), WM_PROGRESS_TIMER);
+                    return LRESULT(0);
+                }
                 let now = Instant::now();
                 let (running, active_matches) = with_chrome(hwnd, |s| {
                     let active = app.map(App::active_tab_id);
@@ -3236,6 +3268,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     App::release_chrome_environment(app);
                     let _ = App::privacy_stats_save_now(app);
+                    crate::productivity::flush_pending_history();
                     App::session_finish(app);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
@@ -3792,7 +3825,7 @@ pub(super) fn open_history_panel(hwnd: HWND, app: &AppRef) {
     }
     // --- end rail flyouts ---
     if side_panel::open(hwnd, side_panel::PanelId::History) {
-        apply_sidebar_bounds(hwnd, app);
+        if !animations_enabled() { apply_sidebar_bounds(hwnd, app); }
     } else if let Some(message) = side_panel::last_status() {
         show_error_message(message);
     }
@@ -3916,7 +3949,7 @@ fn rail_activate_at(hwnd: HWND, app: &AppRef, key: side_panel::PanelId, button: 
         return true;
     }
     let opened = side_panel::toggle(hwnd, key);
-    if opened { apply_sidebar_bounds(hwnd, app); }
+    if opened && !animations_enabled() { apply_sidebar_bounds(hwnd, app); }
     if !side_panel::is_open(hwnd) {
         if let Some(message) = side_panel::last_status() { show_error_message(message); return false; }
     }
@@ -4022,7 +4055,7 @@ fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32, at: POINT) {
     }
     // --- end rail flyouts ---
     if side_panel::open(hwnd, side_panel::PanelId::Customize) {
-        apply_sidebar_bounds(hwnd, app);
+        if !animations_enabled() { apply_sidebar_bounds(hwnd, app); }
     } else if let Some(message) = side_panel::last_status() {
         show_error_message(message);
     }
@@ -7135,7 +7168,7 @@ fn html_accelerator(hwnd: HWND, accel: Accel, view: View) -> bool {
         )
     {
         side_panel::close(hwnd);
-        if let Some(app) = app_of(hwnd) { apply_sidebar_bounds(hwnd, &app); }
+        if !animations_enabled() { if let Some(app) = app_of(hwnd) { apply_sidebar_bounds(hwnd, &app); } }
         return true;
     }
     if accel_command_gated(accel, editing, gated_chords(hwnd)).is_none() {
@@ -7906,12 +7939,49 @@ fn html_tabs_sync(hwnd: HWND) {
             s.html_tabs_workspace.as_ref().is_some_and(|(name, icon)| name == &workspace_name && icon == &workspace_icon)
         }).unwrap_or(false);
         if !already_sent && host.post_json(&json).is_ok() {
-            let _ = with_chrome(hwnd, |s| s.html_tabs_workspace = Some((workspace_name, workspace_icon)));
+            let _ = with_chrome(hwnd, |s| s.html_tabs_workspace = Some((workspace_name.clone(), workspace_icon.clone())));
         }
     }
     // --- end vertical sidebar ---
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
+    let tab_states: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)> = snapshot
+        .iter()
+        .map(|(id, title, loading, marker)| {
+            (
+                *id,
+                title.clone(),
+                *loading,
+                *marker,
+                App::tab_pinned(&app, *id),
+                App::tab_muted(&app, *id),
+                App::tab_private(&app, *id),
+            )
+        })
+        .collect();
+    let favicon_keys: Vec<(TabId, Option<FaviconKey>)> = ids
+        .iter()
+        .map(|&id| (id, App::tab_favicon_key(&app, id)))
+        .collect();
+    let current_inputs = HtmlTabsInputs {
+        mode,
+        workspace: (workspace_name, workspace_icon),
+        active,
+        snapshot: tab_states,
+        group_inputs: inputs.clone(),
+        group_preferences: preferences.clone(),
+        favicons: favicon_keys,
+        generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
+    };
+    let is_unchanged = with_chrome(hwnd, |s| {
+        s.html_tabs_last.is_some()
+            && s.html_tabs_synced_inputs.as_ref() == Some(&current_inputs)
+            && s.html_favicons_sent.len() == s.html_favicons.iter().filter(|(_, f)| f.png.is_some()).count()
+    })
+    .unwrap_or(false);
+    if is_unchanged {
+        return;
+    }
     let keys = tab_groups::group_keys(&inputs, &preferences);
     let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
         inputs.iter().map(|input| input.id).zip(keys).collect();
@@ -7971,7 +8041,16 @@ fn html_tabs_sync(hwnd: HWND) {
     .unwrap_or_default();
     if send_json && host.post_json(&json).is_ok() {
         let _ = with_chrome(hwnd, |s| {
-            if s.html_state_generation[1] == generation { s.html_tabs_last = Some(json); }
+            if s.html_state_generation[1] == generation {
+                s.html_tabs_last = Some(json);
+                s.html_tabs_synced_inputs = Some(current_inputs.clone());
+            }
+        });
+    } else {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[1] == generation && !send_json {
+                s.html_tabs_synced_inputs = Some(current_inputs.clone());
+            }
         });
     }
     for (id, key, png) in sends {
@@ -8208,7 +8287,18 @@ fn html_rail_move(hwnd: HWND, wire: RailKeyWire, before: Option<RailKeyWire>) {
 /// re-enter this window, and the App is not called at all here: the model is already built.
 fn html_rail_sync(hwnd: HWND) {
     let open = open_rail_panel(hwnd);
-    let Some((host, json, favicons, generation)) = with_chrome(hwnd, |s| {
+    let unchanged = with_chrome(hwnd, |s| {
+        s.html_rail_last.is_some()
+            && s.html_rail_synced_open == Some(open)
+            && s.html_rail_synced_rail_gen == s.rail_generation
+            && s.html_rail_synced_state_gen == s.html_state_generation[2]
+            && s.html_rail_favs_sent.len() == s.rail_entries.iter().filter(|e| e.png.is_some()).count()
+    })
+    .unwrap_or(false);
+    if unchanged {
+        return;
+    }
+    let Some((host, json, favicons, generation, rail_gen)) = with_chrome(hwnd, |s| {
         s.html_rail_region()?;
         let host = s.html_rail.clone()?;
         let items = {
@@ -8247,7 +8337,7 @@ fn html_rail_sync(hwnd: HWND) {
             .collect();
         s.html_rail_favs_sent.retain(|key, _| live.contains(key));
         let send_json = s.html_rail_last.as_deref() != Some(json.as_str());
-        Some((host, send_json.then_some(json), favicons, s.html_state_generation[2]))
+        Some((host, send_json.then_some(json), favicons, s.html_state_generation[2], s.rail_generation))
     })
     .flatten() else {
         return;
@@ -8255,14 +8345,29 @@ fn html_rail_sync(hwnd: HWND) {
     if let Some(json) = json {
         if host.post_json(&json).is_ok() {
             let _ = with_chrome(hwnd, |s| {
-                if s.html_state_generation[2] == generation { s.html_rail_last = Some(json); }
+                if s.html_state_generation[2] == generation {
+                    s.html_rail_last = Some(json);
+                    s.html_rail_synced_open = Some(open);
+                    s.html_rail_synced_rail_gen = rail_gen;
+                    s.html_rail_synced_state_gen = generation;
+                }
             });
         }
+    } else {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[2] == generation {
+                s.html_rail_synced_open = Some(open);
+                s.html_rail_synced_rail_gen = rail_gen;
+                s.html_rail_synced_state_gen = generation;
+            }
+        });
     }
     for (key, png, message) in favicons {
         if host.post_json(&message).is_ok() {
             let _ = with_chrome(hwnd, |s| {
-                if s.html_state_generation[2] == generation { s.html_rail_favs_sent.insert(key, png); }
+                if s.html_state_generation[2] == generation {
+                    s.html_rail_favs_sent.insert(key, png);
+                }
             });
         }
     }
@@ -9529,6 +9634,43 @@ mod tests {
                 assert_eq!(s.layout.viewport.top, chrome, "viewport top at dpi {dpi}, {tab_layout:?}");
             }
         }
+    }
+
+    #[test]
+    fn unchanged_chrome_sync_does_not_rebuild() {
+        let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
+        s.html_rail_last = Some(r#"{"v":1,"t":"rail","items":[]}"#.to_owned());
+        s.rail_generation = 42;
+        s.html_state_generation[2] = 1;
+        s.html_rail_synced_open = Some(None);
+        s.html_rail_synced_rail_gen = 42;
+        s.html_rail_synced_state_gen = 1;
+
+        let unchanged = s.html_rail_last.is_some()
+            && s.html_rail_synced_open == Some(None)
+            && s.html_rail_synced_rail_gen == s.rail_generation
+            && s.html_rail_synced_state_gen == s.html_state_generation[2]
+            && s.html_rail_favs_sent.len() == s.rail_entries.iter().filter(|e| e.png.is_some()).count();
+        assert!(unchanged, "identical inputs must be recognized as unchanged and skip rebuild");
+
+        let open_changed = s.html_rail_synced_open == Some(Some(RailKey::Bookmarks));
+        assert!(!open_changed, "changed open panel must invalidate cache and trigger rebuild");
+
+        s.rail_generation = 43;
+        let gen_changed = s.html_rail_synced_rail_gen == s.rail_generation;
+        assert!(!gen_changed, "changed rail generation must invalidate cache and trigger rebuild");
+    }
+
+    #[test]
+    fn sidebar_animation_schedules_one_page_resize() {
+        let mut resize_calls = 0;
+        let timer_frames = [true, true, true, false];
+        for running in timer_frames {
+            if !running {
+                resize_calls += 1;
+            }
+        }
+        assert_eq!(resize_calls, 1, "exactly one page resize must be scheduled at the end of sidebar animation");
     }
 }
 

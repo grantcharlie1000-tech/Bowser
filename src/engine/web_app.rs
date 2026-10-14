@@ -162,7 +162,7 @@ impl WebAppHost {
                 return Err(Error::from(windows::Win32::Foundation::E_FAIL));
             }
             for (id, app) in &state.apps {
-                unsafe { app.controller.SetIsVisible(id == app_id)?; }
+                app.set_visible(id == app_id)?;
             }
             state.current_app = Some(app_id.to_owned());
             if let Some(app) = state.apps.get(app_id) {
@@ -208,7 +208,7 @@ impl WebAppHost {
                         // stale (e.g. the panel finished animating open while the controller was
                         // still being built), which would otherwise leave the page at 0x0.
                         let _ = unsafe { app.controller.SetBounds(state.bounds) };
-                        let _ = unsafe { app.controller.SetIsVisible(visible) };
+                        let _ = app.set_visible(visible);
                         state.apps.insert(app_id, app);
                     }
                 }
@@ -245,7 +245,7 @@ impl WebAppHost {
         for (id, app) in &state.apps {
             unsafe {
                 app.controller.SetBounds(bounds)?;
-                app.controller.SetIsVisible(id == app_id)?;
+            app.set_visible(id == app_id)?;
             }
         }
         Ok(())
@@ -255,7 +255,7 @@ impl WebAppHost {
         let mut state = self.state.borrow_mut();
         state.current_app = None;
         for app in state.apps.values() {
-            unsafe { app.controller.SetIsVisible(false)?; }
+            app.set_visible(false)?;
         }
         Ok(())
     }
@@ -329,6 +329,21 @@ impl Drop for WebAppHost {
 }
 
 impl WebAppView {
+    fn set_visible(&self, visible: bool) -> Result<()> {
+        unsafe {
+            self.controller.SetIsVisible(visible)?;
+        }
+        if let Ok(api) = self.webview.cast::<ICoreWebView2_19>() {
+            let level = if visible {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+            } else {
+                COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+            };
+            let _ = unsafe { api.SetMemoryUsageTargetLevel(level) };
+        }
+        Ok(())
+    }
+
     fn close(mut self) {
         for remove in self.remove_handlers.drain(..) { remove(); }
         let _ = unsafe { self.controller.Close() };

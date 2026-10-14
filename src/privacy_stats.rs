@@ -113,7 +113,12 @@ impl PrivacyStats {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        write_atomic(path, self.serialise().as_bytes())
+        let text = self.serialise();
+        // The timer, the panel and exit all save; only a real change touches the disk.
+        if crate::productivity::file_holds(path, text.as_bytes()) {
+            return Ok(());
+        }
+        write_atomic(path, text.as_bytes())
     }
 
     pub fn parse(text: &str) -> Self {
@@ -340,5 +345,25 @@ mod tests {
         assert_eq!(stats.all_time_total(), 1);
         assert_eq!(stats.day_total("2026-10-11"), 1);
         assert_eq!(stats.host_count(), 0);
+    }
+
+    #[test]
+    fn saving_identical_statistics_does_not_rewrite_the_file() {
+        let dir = std::env::temp_dir().join(format!("bowser-privacy-stats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let mut stats = PrivacyStats::default();
+        stats.record_blocked("2026-10-10", "ads.example");
+        stats.save(&path).unwrap();
+        let stamp = UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        stats.save(&path).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp, "unchanged bytes are skipped");
+        stats.record_blocked("2026-10-10", "ads.example");
+        stats.save(&path).unwrap();
+        assert_ne!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+        assert_eq!(PrivacyStats::load(&path).all_time_total(), 2);
+        let _ = fs::remove_dir_all(dir);
     }
 }

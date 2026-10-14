@@ -7,7 +7,12 @@
 //! import bookmarks/history through [`add_bookmark`] and [`add_history_entry`] so both features
 //! share the same bounded on-disk format. No account or network state is involved.
 
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 pub const MAX_NOTES_BYTES: usize = 64 * 1024;
 pub const MAX_TASKS: usize = 500;
@@ -469,14 +474,137 @@ pub fn add_history_entry_at(
     title: &str,
 ) -> std::io::Result<()> {
     let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
-    // A file that exists but cannot be read must never be replaced by one new entry.
-    let mut entries = read_history_strict(path)?;
-    entries.retain(|(_, existing, _)| existing != &url);
-    entries.push((timestamp, url, title.chars().take(256).collect::<String>()));
-    if entries.len() > MAX_HISTORY {
-        entries.drain(..entries.len() - MAX_HISTORY);
+    // The caller only queues the visit: the read-merge-rewrite of the file runs on the history
+    // writer thread, and every history read or edit flushes the queue first. A file that exists
+    // but cannot be read is still refused here, cheaply, and again by the writer.
+    match fs::metadata(path) {
+        Ok(meta) if !meta.is_file() || meta.len() > MAX_HISTORY_FILE_BYTES => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "history file cannot be read",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    write_history(path, &entries)
+    queue_history_visit(path, (timestamp, url, title.chars().take(256).collect::<String>()));
+    Ok(())
+}
+
+/// How long the writer waits after a visit so a burst becomes one rewrite.
+const HISTORY_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Visits not yet in their file, per history file, oldest first.
+static PENDING_HISTORY: Mutex<Vec<(PathBuf, Vec<HistoryEntry>)>> = Mutex::new(Vec::new());
+/// Held across every read-modify-write of a history file so the writer thread and the UI thread
+/// never interleave.
+static HISTORY_IO: Mutex<()> = Mutex::new(());
+
+fn lock_history<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn queue_history_visit(path: &Path, visit: HistoryEntry) {
+    {
+        let mut pending = lock_history(&PENDING_HISTORY);
+        let queue = match pending.iter().position(|(queued, _)| queued == path) {
+            Some(index) => &mut pending[index].1,
+            None => {
+                pending.push((path.to_path_buf(), Vec::new()));
+                &mut pending.last_mut().expect("just pushed").1
+            }
+        };
+        queue.push(visit);
+        if queue.len() > MAX_HISTORY {
+            queue.drain(..queue.len() - MAX_HISTORY);
+        }
+    }
+    wake_history_writer();
+}
+
+fn wake_history_writer() {
+    static WRITER: std::sync::OnceLock<Option<Mutex<std::sync::mpsc::Sender<()>>>> =
+        std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (wake, woken) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("history-writer".into())
+            .spawn(move || {
+                while woken.recv().is_ok() {
+                    std::thread::sleep(HISTORY_FLUSH_DELAY);
+                    while woken.try_recv().is_ok() {}
+                    flush_pending_history();
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(wake))
+    });
+    match writer {
+        Some(wake) => {
+            let _ = lock_history(wake).send(());
+        }
+        // No writer thread: fall back to the synchronous write.
+        None => flush_pending_history(),
+    }
+}
+
+/// Writes every queued visit now. The writer thread calls this after a short delay; the window can
+/// call it on exit so a visit made just before closing is not dropped.
+pub fn flush_pending_history() {
+    let _io = lock_history(&HISTORY_IO);
+    let paths: Vec<PathBuf> = lock_history(&PENDING_HISTORY).iter().map(|(path, _)| path.clone()).collect();
+    for path in paths {
+        let _ = flush_history_locked(&path);
+    }
+}
+
+/// Writes the visits queued for `path`. On failure they stay queued for the next flush.
+fn flush_history_locked(path: &Path) -> std::io::Result<()> {
+    let visits = {
+        let mut pending = lock_history(&PENDING_HISTORY);
+        match pending.iter().position(|(queued, _)| queued == path) {
+            Some(index) => pending.swap_remove(index).1,
+            None => return Ok(()),
+        }
+    };
+    if visits.is_empty() {
+        return Ok(());
+    }
+    // A file that exists but cannot be read must never be replaced by the queued entries.
+    let result = read_history_file(path).and_then(|mut entries| {
+        for (timestamp, url, title) in &visits {
+            entries.retain(|(_, existing, _)| existing != url);
+            entries.push((*timestamp, url.clone(), title.clone()));
+        }
+        if entries.len() > MAX_HISTORY {
+            entries.drain(..entries.len() - MAX_HISTORY);
+        }
+        write_history(path, &entries)
+    });
+    if result.is_err() {
+        let mut pending = lock_history(&PENDING_HISTORY);
+        let mut visits = visits;
+        match pending.iter().position(|(queued, _)| queued == path) {
+            Some(index) => {
+                visits.append(&mut pending[index].1);
+                pending[index].1 = visits;
+            }
+            None => pending.push((path.to_path_buf(), visits)),
+        }
+        if let Some((_, queue)) = pending.iter_mut().find(|(queued, _)| queued == path) {
+            if queue.len() > MAX_HISTORY {
+                queue.drain(..queue.len() - MAX_HISTORY);
+            }
+        }
+    }
+    result
+}
+
+/// Entries for a read-modify-write: queued visits are flushed first. Hold [`HISTORY_IO`].
+fn read_history_for_update(path: &Path) -> std::io::Result<Vec<HistoryEntry>> {
+    let _ = flush_history_locked(path);
+    read_history_file(path)
 }
 
 /// What a tab's page load should add to history, so a visit is recorded whichever way the page
@@ -656,6 +784,12 @@ pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
 /// Malformed lines are skipped; the newest `MAX_HISTORY` entries are kept (the file is oldest
 /// first). Tolerates CRLF line ends, a UTF-8 byte order mark and invalid UTF-8.
 pub(crate) fn read_history_strict(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
+    // Queued visits reach the file first, so a reader never sees a stale history.
+    let _io = lock_history(&HISTORY_IO);
+    read_history_for_update(path)
+}
+
+fn read_history_file(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
     let bytes = match fs::File::open(path) {
         Ok(file) => {
             let mut bytes = Vec::new();
@@ -702,7 +836,8 @@ pub struct HistoryDay {
 
 pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
     let normalized = valid_http_url(url).ok_or_else(invalid_url_error)?;
-    let mut entries = read_history_strict(path)?;
+    let _io = lock_history(&HISTORY_IO);
+    let mut entries = read_history_for_update(path)?;
     let n = entries.len();
     entries.retain(|(_, u, _)| u != &normalized);
     if entries.len() == n {
@@ -712,7 +847,8 @@ pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Result<usize> {
-    let mut entries = read_history_strict(path)?;
+    let _io = lock_history(&HISTORY_IO);
+    let mut entries = read_history_for_update(path)?;
     let n = entries.len();
     entries.retain(|(t, _, _)| *t < start || *t > end);
     let count = n - entries.len();
@@ -723,7 +859,8 @@ pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Resul
 }
 pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize> {
     let host = host.trim().trim_start_matches("www.").to_ascii_lowercase();
-    let mut entries = read_history_strict(path)?;
+    let _io = lock_history(&HISTORY_IO);
+    let mut entries = read_history_for_update(path)?;
     let n = entries.len();
     entries.retain(|(_, url, _)| {
         url::Url::parse(url)
@@ -738,6 +875,9 @@ pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize
     Ok(count)
 }
 pub fn clear_history(path: &Path) -> std::io::Result<()> {
+    let _io = lock_history(&HISTORY_IO);
+    // Visits still queued were made before the clear.
+    lock_history(&PENDING_HISTORY).retain(|(queued, _)| queued != path);
     atomic_write(path, b"")
 }
 pub fn search_history(path: &Path, query: &str, limit: usize) -> Vec<HistoryEntry> {
@@ -839,6 +979,13 @@ fn invalid_url_error() -> std::io::Error {
         std::io::ErrorKind::InvalidInput,
         "only credential-free HTTP(S) URLs can be stored",
     )
+}
+
+/// True when `path` already holds exactly `bytes`, so a rewrite would change nothing. The length
+/// check keeps a differing file from being read at all.
+pub(crate) fn file_holds(path: &Path, bytes: &[u8]) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.len() == bytes.len() as u64)
+        && fs::read(path).is_ok_and(|current| current == bytes)
 }
 
 fn read_bounded(path: &Path) -> Option<String> {
@@ -1039,6 +1186,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let history = root.join("history.txt");
         add_history_entry_at(&history, 1_700_000_000, "https://example.com/", "Example").unwrap();
+        flush_pending_history();
         assert_eq!(
             fs::read_to_string(&history).unwrap(),
             "1700000000\thttps://example.com/\tExample\n"
@@ -1267,6 +1415,34 @@ mod tests {
         assert_eq!(read_history(&path).len(), 2);
         add_history_entry_at(&path, 3, "https://c.test/", "C").unwrap();
         assert_eq!(read_history(&path).len(), 3);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_queued_visit_is_visible_to_every_read_and_edit_before_it_is_flushed() {
+        let root = history_temp("queued");
+        let path = root.join("history.txt");
+        add_history_entry_at(&path, 1, "https://a.test/", "A").unwrap();
+        add_history_entry_at(&path, 2, "https://b.test/", "B").unwrap();
+        add_history_entry_at(&path, 3, "https://a.test/", "A again").unwrap();
+        // Reads flush first: one entry per URL, the latest visit last.
+        let entries = read_history_strict(&path).unwrap();
+        assert_eq!(entries, [(2, "https://b.test/".into(), "B".into()), (3, "https://a.test/".into(), "A again".into())]);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
+        // An edit also sees a visit that is still queued.
+        add_history_entry_at(&path, 4, "https://c.test/", "C").unwrap();
+        assert!(delete_history_entry(&path, "https://c.test/").unwrap());
+        assert_eq!(read_history(&path).len(), 2);
+        // Clearing drops visits that were made before it.
+        add_history_entry_at(&path, 5, "https://d.test/", "D").unwrap();
+        clear_history(&path).unwrap();
+        assert!(read_history(&path).is_empty());
+        // A visit queued for a different file is untouched by this one's flush.
+        let other = root.join("other.txt");
+        add_history_entry_at(&other, 6, "https://e.test/", "E").unwrap();
+        assert!(read_history(&path).is_empty());
+        flush_pending_history();
+        assert_eq!(fs::read_to_string(&other).unwrap(), "6\thttps://e.test/\tE\n");
         let _ = fs::remove_dir_all(root);
     }
 

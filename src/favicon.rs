@@ -157,6 +157,7 @@ fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Resu
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.ico", hex(&sha256(host.as_bytes()))));
     let temp = path.with_extension("tmp");
+    forget_bytes(&path);
     fs::write(&temp, bytes)?;
     #[cfg(windows)]
     {
@@ -191,13 +192,68 @@ fn load_favicon_bytes_in(dir: &std::path::Path, host: &str) -> io::Result<Option
     let path = dir.join(format!("{}.ico", hex(&sha256(host.as_bytes()))));
     match fs::metadata(&path) {
         Ok(m) if m.len() as usize <= MAX_FAVICON_FILE_BYTES => {
-            let bytes = fs::read(path)?;
+            let (len, modified) = (m.len(), m.modified().ok());
+            if let Some(bytes) = cached_bytes(&path, len, modified) {
+                return Ok(Some(bytes));
+            }
+            let bytes = fs::read(&path)?;
+            remember_bytes(path, len, modified, &bytes);
             Ok(Some(bytes))
         }
         Ok(_) => Ok(None),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// Recently read favicon files, so opening the palette or a history panel again does not reread
+/// the same host files. An entry is only used while the file's length and modified time still
+/// match; the most recently used entry is last.
+struct CachedBytes {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+    bytes: Vec<u8>,
+}
+
+const MAX_BYTES_CACHE_ENTRIES: usize = 128;
+const MAX_BYTES_CACHE_TOTAL: usize = 1024 * 1024;
+const MAX_BYTES_CACHE_ITEM: usize = 32 * 1024;
+
+static BYTES_CACHE: std::sync::Mutex<Vec<CachedBytes>> = std::sync::Mutex::new(Vec::new());
+
+fn bytes_cache() -> std::sync::MutexGuard<'static, Vec<CachedBytes>> {
+    BYTES_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn cached_bytes(path: &std::path::Path, len: u64, modified: Option<SystemTime>) -> Option<Vec<u8>> {
+    let mut cache = bytes_cache();
+    let index = cache.iter().position(|entry| entry.path == path)?;
+    if cache[index].len != len || cache[index].modified != modified || modified.is_none() {
+        cache.remove(index);
+        return None;
+    }
+    let entry = cache.remove(index);
+    let bytes = entry.bytes.clone();
+    cache.push(entry);
+    Some(bytes)
+}
+
+fn remember_bytes(path: PathBuf, len: u64, modified: Option<SystemTime>, bytes: &[u8]) {
+    if modified.is_none() || bytes.len() > MAX_BYTES_CACHE_ITEM || bytes.len() as u64 != len {
+        return;
+    }
+    let mut cache = bytes_cache();
+    cache.retain(|entry| entry.path != path);
+    cache.push(CachedBytes { path, len, modified, bytes: bytes.to_vec() });
+    let mut total: usize = cache.iter().map(|entry| entry.bytes.len()).sum();
+    while cache.len() > MAX_BYTES_CACHE_ENTRIES || total > MAX_BYTES_CACHE_TOTAL {
+        total -= cache.remove(0).bytes.len();
+    }
+}
+
+fn forget_bytes(path: &std::path::Path) {
+    bytes_cache().retain(|entry| entry.path != path);
 }
 fn favicon_dir() -> io::Result<PathBuf> {
     crate::profile::active()
@@ -625,6 +681,40 @@ mod tests {
             ]
         );
         assert!(favicon_url_candidates("file:///C:/private").is_empty());
+    }
+
+    #[test]
+    fn unchanged_favicon_files_are_not_reread_and_changed_ones_are() {
+        let root = std::env::temp_dir().join(format!("bowser-favicon-bytes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        store_favicon_in(&root, "cached.example", b"icon-one").unwrap();
+        let path = root.join(format!("{}.ico", hex(&sha256(b"cached.example"))));
+        assert_eq!(load_favicon_bytes_in(&root, "cached.example").unwrap(), Some(b"icon-one".to_vec()));
+        // Same length and modified time: the bytes come from memory, not from the file.
+        let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, b"icon-two").unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        assert_eq!(load_favicon_bytes_in(&root, "cached.example").unwrap(), Some(b"icon-one".to_vec()));
+        // A new modified time or length invalidates the entry.
+        fs::File::options().write(true).open(&path).unwrap().set_modified(stamp + std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(load_favicon_bytes_in(&root, "cached.example").unwrap(), Some(b"icon-two".to_vec()));
+        fs::write(&path, b"longer icon").unwrap();
+        assert_eq!(load_favicon_bytes_in(&root, "cached.example").unwrap(), Some(b"longer icon".to_vec()));
+        // Storing a favicon forgets the old bytes even when length and time would match.
+        store_favicon_in(&root, "cached.example", b"stored").unwrap();
+        assert_eq!(load_favicon_bytes_in(&root, "cached.example").unwrap(), Some(b"stored".to_vec()));
+        // The cache is bounded and never holds a large favicon.
+        for n in 0..MAX_BYTES_CACHE_ENTRIES + 8 {
+            store_favicon_in(&root, &format!("h{n}.example"), b"x").unwrap();
+            load_favicon_bytes_in(&root, &format!("h{n}.example")).unwrap();
+        }
+        store_favicon_in(&root, "big.example", &vec![7; MAX_BYTES_CACHE_ITEM + 1]).unwrap();
+        load_favicon_bytes_in(&root, "big.example").unwrap();
+        let cache = bytes_cache();
+        assert!(cache.len() <= MAX_BYTES_CACHE_ENTRIES);
+        assert!(cache.iter().all(|entry| entry.bytes.len() <= MAX_BYTES_CACHE_ITEM));
+        drop(cache);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

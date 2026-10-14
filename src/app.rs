@@ -477,17 +477,20 @@ pub fn idle_memory_decision(
         }
         return IdleMemoryDecision {
             target: MemoryUsageTarget::Low,
-            timer: IdleTimerAction::Arm(1_000),
+            timer: IdleTimerAction::Kill,
         };
     }
-    IdleMemoryDecision {
-        target: if idle_ms >= 3_000 {
-            MemoryUsageTarget::Low
-        } else {
-            MemoryUsageTarget::Normal
-        },
-        timer: IdleTimerAction::Arm(1_000),
-    }
+    let target = if idle_ms >= 3_000 {
+        MemoryUsageTarget::Low
+    } else {
+        MemoryUsageTarget::Normal
+    };
+    let timer = if target == MemoryUsageTarget::Low {
+        IdleTimerAction::Kill
+    } else {
+        IdleTimerAction::Arm(1_000)
+    };
+    IdleMemoryDecision { target, timer }
 }
 
 fn valid_viewport_bounds(bounds: windows::Win32::Foundation::RECT) -> bool {
@@ -5465,10 +5468,16 @@ impl App {
                 let _ = log.record(event);
             }
         }
+        if transition.target == Some(MemoryUsageTarget::Normal) {
+            let _ = Self::with_engine(app, |e| e.set_visible(true));
+        }
         if transition.resize_bounds {
             if let Some(bounds) = resize_bounds {
                 Self::resize_current(app, bounds);
             }
+        }
+        if transition.target == Some(MemoryUsageTarget::Low) {
+            let _ = Self::with_engine(app, |e| e.set_visible(false));
         }
         // EcoQoS follows the minimised state; it is set only while nobody can see the window.
         Self::sync_eco_qos(app);
@@ -8851,7 +8860,7 @@ mod tests {
     fn idle_policy_trims_only_loaded_visible_pages_after_three_seconds() {
         let decision = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
         assert_eq!(decision.target, MemoryUsageTarget::Low);
-        assert_eq!(decision.timer, IdleTimerAction::Arm(1_000));
+        assert_eq!(decision.timer, IdleTimerAction::Kill);
         assert_eq!(
             idle_memory_decision(false, true, 2_999, MemoryUsageTarget::Normal),
             IdleMemoryDecision {
@@ -8901,6 +8910,29 @@ mod tests {
     }
 
     #[test]
+    fn the_idle_timer_does_not_stay_repeating_after_memory_decision_is_stable() {
+        let counting = idle_memory_decision(false, true, 2_000, MemoryUsageTarget::Normal);
+        assert_eq!(counting.target, MemoryUsageTarget::Normal);
+        assert_eq!(counting.timer, IdleTimerAction::Arm(1_000));
+
+        let trimmed = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
+        assert_eq!(trimmed.target, MemoryUsageTarget::Low);
+        assert_eq!(trimmed.timer, IdleTimerAction::Kill);
+
+        let stable_low = idle_memory_decision(false, true, 10_000, MemoryUsageTarget::Low);
+        assert_eq!(stable_low.target, MemoryUsageTarget::Low);
+        assert_eq!(stable_low.timer, IdleTimerAction::Kill);
+
+        let active = idle_memory_decision(false, true, 0, MemoryUsageTarget::Low);
+        assert_eq!(active.target, MemoryUsageTarget::Normal);
+        assert_eq!(active.timer, IdleTimerAction::Arm(3_000));
+
+        let minimized = idle_memory_decision(true, true, 0, MemoryUsageTarget::Normal);
+        assert_eq!(minimized.target, MemoryUsageTarget::Low);
+        assert_eq!(minimized.timer, IdleTimerAction::Kill);
+    }
+
+    #[test]
     fn idle_timer_applies_targets_and_logs_benchmark_transitions() {
         let path =
             std::env::temp_dir().join(format!("bowser-idle-trim-{}.csv", std::process::id()));
@@ -8918,11 +8950,11 @@ mod tests {
 
         assert_eq!(
             App::idle_timer_fired(&app, 3_000, true),
-            IdleTimerAction::Arm(1_000)
+            IdleTimerAction::Kill
         );
         assert_eq!(
             App::idle_timer_fired(&app, 2_000, true),
-            IdleTimerAction::Arm(1_000)
+            IdleTimerAction::Kill
         );
         assert_eq!(
             App::idle_timer_fired(&app, 1_000, true),

@@ -924,18 +924,15 @@ fn normalise_site(entry: &str) -> Option<String> {
     (!entry.starts_with('#') && valid_rule_host(&entry)).then_some(entry)
 }
 
-/// Whether YouTube video-ad stripping is switched on, read fresh from the active profile's
-/// `settings.txt` on each navigation or player-response decision so the settings page's immediate
-/// save takes effect without a restart. The read is cheap and failure-safe: no active profile, or
-/// a missing or unreadable file, means on — the default and the behaviour Bowser has always had.
+/// Whether YouTube video-ad stripping is switched on. The settings file is reread only when its
+/// length or modified time changes, so a save on the settings page still takes effect without a
+/// restart. No active profile, or a missing or unreadable file, means on — the default Bowser
+/// has always used.
 fn youtube_video_ads_enabled() -> bool {
     let Ok(profile) = crate::profile::active() else {
         return true;
     };
-    match read_capped(&profile.settings_file(), crate::settings::MAX_FILE_BYTES) {
-        Some(text) => youtube::video_ads_blocked(&text),
-        None => true,
-    }
+    youtube::video_ads_blocked_in_file(&profile.settings_file(), crate::settings::MAX_FILE_BYTES)
 }
 
 fn read_capped(path: &Path, cap: usize) -> Option<String> {
