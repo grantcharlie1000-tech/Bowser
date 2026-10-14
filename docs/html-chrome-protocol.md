@@ -307,6 +307,11 @@ container query when the pill is narrower than 130 px. Site information carries 
 
 ### Privacy dashboard permissions (`priv`, `src/chrome_host/panels/privacy.rs`)
 
+The dashboard is a section of the settings page (Privacy and security), not a window of its own: the settings host
+accepts `priv` commands and is sent the `privacy` snapshot with each settings snapshot (`win32/settings_page.rs`).
+Opening the dashboard from anywhere (Ctrl+Shift+Delete, the history page, the menu) opens that section. The standalone
+`DialogPrivacy` window remains only as the fallback when the settings page cannot be drawn.
+
 The `privacy` snapshot's former `permissions` array is replaced by two members, built by
 `panels::privacy::write_permissions`:
 

@@ -330,7 +330,7 @@ export interface SectionSpec { readonly key: SettingsSection; readonly title: st
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs and text size.' },
-  { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention and history.' },
+  { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
   { key: 'media', title: 'Media', nav: 'Media', lead: 'Which video formats and protected streams this device can play.' },
@@ -410,7 +410,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release' },
   { id: 'file', section: 'about', label: 'Settings file', description: 'Every setting here is saved in this profile’s settings.txt, which you can also edit by hand.', keywords: 'settings.txt advanced edit text' },
   { id: 'reset', section: 'about', label: 'Reset settings', description: 'Puts layout, tabs, blocking, performance and search back to their defaults. History, updates and bookmarks are not changed.', keywords: 'defaults restore factory start over' },
-  { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: '', keywords: 'default browser make bowser windows handler http https' },
+  { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: 'Open web links from other apps in Bowser.', keywords: 'default browser make bowser windows handler http https' },
 ];
 
 /** Lower-case, accent-free, single-spaced text for matching. */

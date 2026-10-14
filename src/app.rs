@@ -3345,6 +3345,20 @@ impl App {
         Some((active, url))
     }
 
+    /// A non-private tab with a live page, for profile-wide engine calls such as clearing browsing
+    /// data: the active tab when it qualifies, else an awake one, else any. The settings page's own
+    /// tab never has a page, so the Privacy dashboard drawn on it still reaches the profile this way.
+    pub fn profile_page_tab(app: &AppRef) -> Option<TabId> {
+        let state = app.borrow();
+        let active = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .filter(|tab| tab.controller_created && !tab.discarded && !tab.private)
+            .min_by_key(|tab| (tab.id != active, tab.suspended))
+            .map(|tab| tab.id)
+    }
+
     /// Whether a permission request from the active tab's current page was denied.
     pub fn active_permission_blocked(app: &AppRef) -> bool {
         let state = app.borrow();

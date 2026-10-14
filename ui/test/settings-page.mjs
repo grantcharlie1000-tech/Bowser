@@ -370,7 +370,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.equal(app.querySelectorAll('.sp-nav-item').length, 8);
   assert.equal(app.querySelectorAll('section').length, 8);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
-  const rows = app.querySelectorAll('.sp-row').map((row) => row.dataset.row);
+  // The Privacy dashboard is one block standing for the `dashboard` row.
+  const rows = app.querySelectorAll('.sp-row, .sp-dash').map((row) => row.dataset.row);
   assert.deepEqual(rows, logic.ROWS.map((row) => row.id));
   for (const control of app.querySelectorAll('[role="switch"], [role="radiogroup"]')) {
     assert.ok(control.getAttribute('aria-labelledby') || control.getAttribute('aria-label'), control.className);
@@ -454,7 +455,7 @@ test('the toolbar checklist toggles one id and the reset button restores the ful
   switches[0].click();
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /toolbar_buttons=forward,reload,site-info,bookmark,newtab,split,reader\n/);
-  const reset = toolbarRow.querySelector('.sp-toolbar-actions').querySelector('button');
+  const reset = toolbarRow.querySelector('.sp-corner').querySelector('button');
   sent.length = 0;
   reset.click();
   assert.match(sent[0].text, /toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
@@ -477,21 +478,21 @@ test('the theme reset button clears both theme and accent in one save', () => {
 test('default browser status reflects the snapshot and the button sends a bare setdefault', () => {
   deliver(fixture.snap);
   const row = app.querySelector('.sp-row[data-row="defaultBrowser"]');
-  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser is your default browser.');
+  assert.equal(row.querySelector('.sp-desc').textContent, 'Bowser is your default browser.');
   sent.length = 0;
   row.querySelector('button').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'setdefault' }]);
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'no' } });
-  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser is not your default browser.');
+  assert.equal(row.querySelector('.sp-desc').textContent, 'Bowser is not your default browser.');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'unknown' } });
-  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser could not check whether it is the default browser.');
+  assert.equal(row.querySelector('.sp-desc').textContent, 'Bowser could not check whether it is the default browser.');
 });
 
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
   const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
   for (const sw of toolbarRow.querySelectorAll('[role="switch"]')) assert.equal(sw.disabled, true);
-  assert.equal(toolbarRow.querySelector('.sp-toolbar-actions').querySelector('button').disabled, true);
+  assert.equal(toolbarRow.querySelector('.sp-corner').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
   assert.equal(themeRow.querySelector('input').disabled, true);
   assert.equal(themeRow.querySelector('button').disabled, true);
@@ -502,4 +503,20 @@ test('an unreadable settings file disables the new controls too, except the setd
   // A registry action, not a settings.txt value: stays enabled like "Open settings file" and "Reset settings".
   assert.equal(app.querySelector('.sp-row[data-row="defaultBrowser"]').querySelector('button').disabled, false);
   deliver(fixture.snap);
+});
+
+test('the Privacy dashboard is part of the page: its snapshot fills the section and its commands go out as priv', () => {
+  globalThis.CSS ??= { escape: (value) => String(value) };
+  const privacy = JSON.parse(readFileSync(join(here, 'fixtures', 'privacy-snapshot.json'), 'utf8'));
+  const dash = app.querySelector('.sp-dash');
+  assert.equal(dash.dataset.row, 'dashboard');
+  deliver(privacy);
+  const headings = dash.querySelectorAll('.sp-group-h').map((h) => h.textContent);
+  for (const title of ['This site', 'Site permissions', 'Blocked requests', 'Clear browsing data']) assert.ok(headings.includes(title), title);
+  assert.equal(dash.querySelectorAll('.sp-card').length, headings.length, 'every dashboard group is a settings card');
+  const clear = dash.querySelectorAll('button').find((b) => b.textContent.includes('Clear statistics'));
+  assert.ok(clear, 'the statistics button is on the page');
+  sent.length = 0;
+  clear.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'clear-stats' }]);
 });

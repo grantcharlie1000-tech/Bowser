@@ -279,6 +279,11 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
 
 fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
     let app = runtime.try_borrow().ok()?.app.clone();
+    privacy_snapshot_json(&app)
+}
+
+/// The Privacy dashboard's `privacy` snapshot, for its own window and for the settings page.
+pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
     let profile = profile::active().ok();
     let snapshot = super::privacy_panel::gather(&app, profile.as_ref(), None);
     protocol::snap_json("privacy", |out| {
@@ -316,26 +321,31 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
 
 fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
+    if run_privacy_command(&app, owner, &f) { send_current(runtime); }
+}
+
+/// Runs one `priv` command from the dashboard (its window or the settings page). Returns whether
+/// the page should be sent a fresh snapshot, i.e. the command was a dashboard command.
+pub(crate) fn run_privacy_command(app: &AppRef, owner: HWND, f: &PanelFields) -> bool {
     // Permission dashboard commands are validated in `panels::privacy::map_command`; only a stored
     // Allow ever grants, and nothing here asks the page or the user for a decision.
-    if let Some(action) = panels::privacy::map_command(&f) {
-        apply_permission_action(&app, action);
-        send_current(runtime);
-        return;
+    if let Some(action) = panels::privacy::map_command(f) {
+        apply_permission_action(app, action);
+        return true;
     }
     let no_extra = f.parent.is_none() && f.before.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none();
     let id = match f.a.as_str() {
-        "clear-stats" if empty_fields(&f, false) => Some(8_800),
+        "clear-stats" if empty_fields(f, false) => Some(8_800),
         "clear-data" if no_extra && f.id.is_some_and(|kind| kind <= 2) && f.n.is_some_and(|range| (0..=3).contains(&range)) => {
             Some(8_900 + f.id.unwrap_or_default() as usize * 4 + f.n.unwrap_or_default() as usize)
         }
         _ => None,
     };
-    let Some(id) = id else { return; };
+    let Some(id) = id else { return false; };
     let profile = profile::active().ok();
-    let snapshot = super::privacy_panel::gather(&app, profile.as_ref(), None);
-    let _ = super::privacy_panel::apply(owner, &app, &snapshot, id);
-    send_current(runtime);
+    let snapshot = super::privacy_panel::gather(app, profile.as_ref(), None);
+    let _ = super::privacy_panel::apply(owner, app, &snapshot, id);
+    true
 }
 
 fn apply_permission_action(app: &crate::app::AppRef, action: panels::privacy::Action) {

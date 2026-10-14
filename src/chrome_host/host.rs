@@ -1032,7 +1032,8 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate)),
         // --- end split view ---
         // No `panel` family (dismiss): the page is a tab, closed like one.
-        View::Settings => matches!(command, Command::Panel { kind: PanelType::Settings, .. }),
+        // The Privacy dashboard is a section of the page, so its `priv` family reaches this host too.
+        View::Settings => matches!(command, Command::Panel { kind: PanelType::Settings | PanelType::Privacy, .. }),
         // Likewise a tab: only its own family, never the rail panel's `hist` or `panel`.
         View::HistoryPage => matches!(command, Command::Panel { kind: PanelType::HistoryPage, .. }),
     }
@@ -1223,7 +1224,6 @@ mod tests {
         }
         for foreign in [
             r#"{"v":1,"t":"panel","a":"dismiss"}"#,
-            r#"{"v":1,"t":"priv","a":"clear-stats"}"#,
             r#"{"v":1,"t":"hist","a":"open","id":1}"#,
             r#"{"v":1,"t":"notes","a":"add-note"}"#,
             r#"{"v":1,"t":"nav","a":"back"}"#,
@@ -1233,6 +1233,9 @@ mod tests {
             let command = parse_command(foreign).unwrap();
             assert!(!view_accepts_command(View::Settings, &command), "{foreign}");
         }
+        // The Privacy dashboard is a section of this page, so its own family is allowed here.
+        let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
+        assert!(view_accepts_command(View::Settings, &privacy));
         assert!(view_accepts_command(View::Settings, &Command::Ready));
     }
 
@@ -1366,7 +1369,8 @@ mod tests {
         assert!(!view_accepts_command(View::DialogPrivacy, &notes));
         let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
         assert!(view_accepts_command(View::DialogPrivacy, &privacy));
-        assert!(!view_accepts_command(View::Settings, &privacy));
+        assert!(view_accepts_command(View::Settings, &privacy));
+        assert!(!view_accepts_command(View::DialogNotes, &privacy));
         assert!(!view_accepts_command(View::Popup, &panel));
         assert!(view_accepts_command(View::Popup, &popup));
         assert!(!view_accepts_command(View::Panel, &popup));

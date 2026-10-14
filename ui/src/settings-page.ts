@@ -9,7 +9,8 @@ import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
-import { textButton } from './panels/kit';
+import { textButton, type PageSection } from './panels/kit';
+import { mountPrivacyDashboard } from './panels/privacy';
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
@@ -436,11 +437,10 @@ export function startSettingsPage(root: HTMLElement): void {
     toolbarList.append(item);
   }
   const toolbarReset = textButton('Reset to default', () => change((d) => { d.toolbarButtons = DEFAULT_TOOLBAR_BUTTONS; }));
-  const toolbarActions = el('div', 'sp-toolbar-actions');
+  const toolbarActions = el('div', 'sp-corner');
   toolbarActions.append(toolbarReset);
-  const toolbarWrap = el('div');
-  toolbarWrap.append(toolbarList, toolbarActions);
-  row(toolbarCard, 'toolbarButtons', toolbarWrap, { stack: true });
+  const toolbarRow = row(toolbarCard, 'toolbarButtons', toolbarList, { stack: true });
+  toolbarRow.root.append(toolbarActions);
   const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
   row(toolbarCard, 'showHomeButton', showHome.root);
 
@@ -539,7 +539,6 @@ export function startSettingsPage(root: HTMLElement): void {
   row(blockCard, 'blocker', blocker.root);
   const blockYoutube = switchControl((on) => change((d) => { d.blockYoutubeVideoAds = on; }));
   row(blockCard, 'blockYoutubeVideoAds', blockYoutube.root);
-  const allowBox = el('div', 'sp-allow');
   const allowList = el('ul', 'sp-sites');
   allowList.setAttribute('aria-label', 'Sites the blocker skips');
   const allowForm = el('div', 'sp-allow-add');
@@ -565,7 +564,6 @@ export function startSettingsPage(root: HTMLElement): void {
   allowInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addAllowed(); } });
   allowInput.addEventListener('input', () => { allowError.textContent = ''; });
   allowForm.append(allowInput, addButton);
-  allowBox.append(allowList, allowForm, allowError);
   const paintSites = (): void => {
     const sites = draft?.blockerAllow ?? [];
     allowList.replaceChildren(...sites.map((site) => {
@@ -589,14 +587,39 @@ export function startSettingsPage(root: HTMLElement): void {
     }));
     allowList.hidden = sites.length === 0;
   };
-  row(blockCard, 'allow', allowBox, { stack: true });
+  // The field and Add sit beside the label; the skipped sites and any error wrap beneath them.
+  const allowRow = row(blockCard, 'allow', allowForm);
+  allowRow.root.classList.add('is-wrap', 'is-tight');
+  allowRow.root.append(allowList, allowError);
   const trackCard = card('privacy', 'Tracking and history');
   const tracking = segmentedControl<TrackingPrevention>('Tracking prevention', [['balanced', 'Balanced'], ['strict', 'Strict']], (value) => change((d) => { d.trackingPrevention = value; }));
   row(trackCard, 'tracking', tracking.root);
   const history = switchControl((on) => { if (cmd({ a: 'history', on })) pending += 1; });
   const historyRow = row(trackCard, 'history', history.root);
-  const dataCard = card('privacy', 'Browsing data');
-  row(dataCard, 'dashboard', textButton('Open dashboard', () => cmd({ a: 'privacy' }), { icon: 'eye' }));
+
+  // The Privacy dashboard lives here, not in a window of its own: Rust sends its `privacy` snapshots
+  // to this page and takes its `priv` commands. Search treats the whole block as the `dashboard` row.
+  const dashHost = el('div', 'sp-dash');
+  dashHost.dataset.row = 'dashboard';
+  const dashStatus = el('p', 'sp-note sp-dash-status');
+  dashStatus.setAttribute('role', 'status');
+  dashStatus.setAttribute('aria-live', 'polite');
+  const dashColumn = el('div', 'sp-dash-col');
+  dashHost.append(dashStatus, dashColumn);
+  sectionNodes.get('privacy')?.append(dashHost);
+  const dashSection = (title: string): PageSection => {
+    const root = el('div', 'sp-group');
+    const heading = el('h3', 'sp-group-h');
+    heading.textContent = title;
+    const box = el('div', 'sp-card');
+    const body = el('div', 'pg-rows');
+    box.append(body);
+    root.append(heading, box);
+    return { root, body };
+  };
+  const dashboardSpec = ROWS.find((r) => r.id === 'dashboard')!;
+  rows.set('dashboard', { spec: dashboardSpec, root: dashHost, label: el('span'), desc: null, card: dashHost, flag: null, target: null });
+  const receiveDashboard = mountPrivacyDashboard({ column: dashColumn, status: dashStatus, scroll: main, section: dashSection });
 
   // Performance
   const powerCard = card('performance', 'Power');
@@ -770,12 +793,11 @@ export function startSettingsPage(root: HTMLElement): void {
   resetBox.append(cancel, reset);
   paintReset();
   row(aboutCard, 'reset', resetBox);
-  const defaultBrowserCard = card('about', 'Default browser');
-  const defaultBrowserStatus = el('p', 'sp-note');
+  const defaultBrowserCard = card('about');
   const defaultBrowserButton = textButton('Make Bowser the default browser', () => cmd({ a: 'setdefault' }));
-  const defaultBrowserWrap = el('div', 'sp-default-browser');
-  defaultBrowserWrap.append(defaultBrowserStatus, defaultBrowserButton);
-  row(defaultBrowserCard, 'defaultBrowser', defaultBrowserWrap, { stack: true });
+  const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
+  defaultBrowserRow.root.classList.add('is-tight');
+  const defaultBrowserStatus = defaultBrowserRow.desc!;
 
   // A group whose every row has no effect yet says so once, under its heading, not on each row.
   for (const group of groups) {
@@ -967,6 +989,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     for (const group of groups) group.root.hidden = hits !== null && !group.card.querySelector('.sp-row:not([hidden])');
     mediaResults.hidden = hits !== null && !hits.has('media');
+    dashHost.hidden = hits !== null && !hits.has('dashboard');
     for (const spec of SECTIONS) {
       const section = sectionNodes.get(spec.key)!;
       const any = hits === null || [...rows.values()].some((node) => node.spec.section === spec.key && hits.has(node.spec.id));
@@ -1037,6 +1060,7 @@ export function startSettingsPage(root: HTMLElement): void {
       go(message.s, false, false);
       return;
     }
+    if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
     if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded. The response was invalid.'; return; }

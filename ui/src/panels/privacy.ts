@@ -1,7 +1,7 @@
 import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
 import { CHOICES, CHOICE_LABEL, KINDS, KIND_LABEL, PRIVATE_TABS_NOTE, PRIVATE_TABS_TITLE, deniedText, filterSites, hasStored, parsePrivacySnapshot, privacyCommand, setPermissionCommand, storedCount, type Choice, type Kind, type PrivacySnapshot, type SiteRow } from './privacy-logic';
-import { emptyState, enter, pageSection, panelHeader, searchField, segmented, settingRow, textButton } from './kit';
+import { emptyState, enter, pageSection, panelHeader, searchField, segmented, settingRow, textButton, type PageSection } from './kit';
 
 type Fields = { id?: number; n?: number; text?: string };
 function emit(a: string, fields: Fields = {}): void {
@@ -25,17 +25,17 @@ const SITE_PAGE = 20;
 const onOff = (value: boolean | null, on = 'On', off = 'Off'): string => (value === null ? 'Unavailable' : value ? on : off);
 const plain = (value: number): string => value.toLocaleString('en-GB');
 
-export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void {
-  let snapshot: PrivacySnapshot | null = null;
-  let issue = '';
-  const ranges: string[] = ['0', '0', '0'];
-  let confirming: number | null = null;
-  let query = '';
-  let shown = SITE_PAGE;
-  let confirmingAll = false;
-  /** Focus key to restore after the next rebuild when the focused control is going away. */
-  let wantFocus: string | null = null;
+/** The elements the dashboard draws into: its own dialog window, or a section of the settings page. */
+export interface DashboardParts {
+  readonly column: HTMLElement;
+  readonly status: HTMLElement;
+  /** The element that scrolls, so a rebuild keeps the reader's place. */
+  readonly scroll: HTMLElement;
+  /** How a titled group of rows looks; the dialog's plain sections by default. */
+  readonly section?: (title: string) => PageSection;
+}
 
+export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void {
   const header = panelHeader('Privacy dashboard', 'Close privacy dashboard');
   const status = el('p', 'pn-status');
   status.setAttribute('role', 'status');
@@ -46,6 +46,20 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
   host.append(header.root, status, scroll);
   enter(host);
   root.replaceChildren(host);
+  return mountPrivacyDashboard({ column, status, scroll });
+}
+
+/** Draws the dashboard into `parts` and returns the handler for Rust's `privacy` snapshots. */
+export function mountPrivacyDashboard({ column, status, scroll, section = pageSection }: DashboardParts): (message: Inbound) => void {
+  let snapshot: PrivacySnapshot | null = null;
+  let issue = '';
+  const ranges: string[] = ['0', '0', '0'];
+  let confirming: number | null = null;
+  let query = '';
+  let shown = SITE_PAGE;
+  let confirmingAll = false;
+  /** Focus key to restore after the next rebuild when the focused control is going away. */
+  let wantFocus: string | null = null;
 
   // The search box lives outside the per-snapshot rebuild so typing never loses it.
   const search = searchField('Search sites');
@@ -144,7 +158,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     const { stats } = snapshot;
     const sections: HTMLElement[] = [];
 
-    const site = pageSection('This site');
+    const site = section('This site');
     site.body.append(
       settingRow('Profile', null, `${snapshot.profile}${snapshot.guest ? ' (Guest)' : ''}`),
       settingRow('Site', null, snapshot.site ?? 'No active site'),
@@ -155,7 +169,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     sections.push(site.root);
 
     // Permissions come first after the page facts: they are the part the user changes.
-    const permissions = pageSection('Site permissions');
+    const permissions = section('Site permissions');
     permissions.body.append(resetAllRow(snapshot));
     const bar = el('div', 'pg-bar');
     bar.append(search.root);
@@ -163,7 +177,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     paintSites();
     sections.push(permissions.root);
 
-    const denied = pageSection('Recently blocked requests');
+    const denied = section('Recently blocked requests');
     denied.body.append(settingRow('Last 50 this session', 'Site, kind and time only. Kept in memory and gone when Bowser closes.', textButton('Clear list', () => emit('denied-clear'), { subtle: true, aria: 'Clear the list of recently blocked requests' })));
     for (const row of snapshot.denied) {
       denied.body.append(settingRow(row.origin, deniedText(row)));
@@ -171,7 +185,7 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     if (!snapshot.denied.length) denied.body.append(settingRow('Nothing blocked yet', 'Requests from sites for camera, microphone, location, notifications or popups appear here.'));
     sections.push(denied.root);
 
-    const blocked = pageSection('Blocked requests');
+    const blocked = section('Blocked requests');
     blocked.body.append(
       settingRow('All time', null, plain(stats.allTime)),
       settingRow('This session', null, plain(stats.session)),
@@ -180,17 +194,17 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     );
     sections.push(blocked.root);
 
-    const top = pageSection('Top blocked sites');
+    const top = section('Top blocked sites');
     for (const item of stats.topSites) top.body.append(settingRow(item.host, null, plain(item.count)));
     if (!stats.topSites.length) top.body.append(settingRow('Nothing blocked yet', null));
     sections.push(top.root);
 
-    const days = pageSection('Last seven days');
+    const days = section('Last seven days');
     for (const item of stats.days) days.body.append(settingRow(item.day, null, plain(item.count)));
     if (!stats.days.length) days.body.append(settingRow('No activity recorded', null));
     sections.push(days.root);
 
-    const protection = pageSection('Protection');
+    const protection = section('Protection');
     protection.body.append(
       settingRow('Tracker blocking', null, onOff(snapshot.blockerSetting)),
       settingRow('SmartScreen', null, onOff(snapshot.smartScreen)),
@@ -200,12 +214,12 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
     sections.push(protection.root);
 
     // Static, plain-language note on what a private tab keeps (nothing on disk) and what it blocks.
-    const privateTabs = pageSection(PRIVATE_TABS_TITLE);
+    const privateTabs = section(PRIVATE_TABS_TITLE);
     privateTabs.root.classList.add('pg-private');
     for (const [label, text] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, text));
     sections.push(privateTabs.root);
 
-    const clear = pageSection('Clear browsing data');
+    const clear = section('Clear browsing data');
     CLEAR_KINDS.forEach((kind, kindIndex) => {
       const run = textButton('Clear', () => {
         if (confirming !== kindIndex) { confirming = kindIndex; paintRun(); return; }

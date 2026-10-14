@@ -56,6 +56,11 @@ pub(crate) struct Snapshot {
 }
 
 pub(crate) fn open(hwnd: HWND, app: &AppRef) {
+    // The dashboard is a section of the settings page, not a window of its own.
+    if super::settings_page::usable(hwnd) {
+        super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Privacy), false);
+        return;
+    }
     if super::html_dialog::html_only(hwnd)
         && let Some(env) = super::window::html_environment(hwnd)
     {
@@ -423,7 +428,9 @@ fn clear_data(hwnd: HWND, app: &AppRef, kind: BrowsingDataKind, range: BrowsingD
     ) {
         return false;
     }
-    let Some((tab, _)) = App::active_site(app) else {
+    // Any non-private tab with a page reaches the profile; the active tab may be the settings page,
+    // which has none.
+    let Some(tab) = App::profile_page_tab(app) else {
         show_result(
             hwnd,
             "Could not start",

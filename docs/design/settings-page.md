@@ -156,7 +156,7 @@ Sections (only settings Bowser really has):
 |---|---|---|
 | `profile` | You and Bowser | profile card (avatar, name, guest note), Manage profiles (the profile menu), Import from another browser |
 | `appearance` | Appearance | Layout (four illustrated tiles, sidebar width slider), Theme (Helium colours/System, accent colour, reset), Toolbar (the buttons as a two-column grid with their glyphs, reset, Home button), Address bar (centred, minimal URL, load progress), Tabs (group by site, new-tab placement, Ctrl+Tab MRU, split edge drop, then previews, pinning and Ctrl+S, which do nothing yet), Window (rounded content frame, frameless), Bookmarks bar (always/never/new tab, tab groups), Helium panels (left/right), Fonts (size, custom font), Zoom (default zoom, indicator), Shortcuts (Shift+Right Click, Ctrl+Shift+C) |
-| `privacy` | Privacy and security | Block ads and trackers, Block YouTube video ads, Allowed sites (chip list), Tracking prevention, Save browsing history, Privacy dashboard |
+| `privacy` | Privacy and security | Block ads and trackers, Block YouTube video ads, Allowed sites (chip list), Tracking prevention, Save browsing history, Privacy dashboard (embedded: site permissions, statistics, clear browsing data) |
 | `performance` | Performance | Efficiency mode (with "active now"), Sleep hidden tabs, Sleep after |
 | `search` | Search engine | Optimised, Google, DuckDuckGo (radio cards), custom provider note |
 | `media` | Media | the on-device media support check (runs when the section is first shown) |

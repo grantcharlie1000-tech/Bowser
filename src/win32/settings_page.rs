@@ -62,6 +62,9 @@ struct Runtime {
     state: Option<String>,
     /// Last snapshot sent, and whether a fresh one is due (settings are read from disk only then).
     snapshot: Option<String>,
+    /// Last Privacy dashboard snapshot sent (the dashboard is a section of the page).
+    privacy: Option<String>,
+    privacy_due: bool,
     dirty: bool,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
@@ -73,9 +76,15 @@ struct Runtime {
     check_result: &'static str,
 }
 
+/// A page command waiting to run: a settings command, or one of the embedded Privacy dashboard's.
+enum Queued {
+    Settings(PanelFields),
+    Privacy(PanelFields),
+}
+
 thread_local! {
     static RUNTIMES: RefCell<HashMap<isize, Runtime>> = RefCell::new(HashMap::new());
-    static QUEUE: RefCell<Vec<(isize, PanelFields)>> = const { RefCell::new(Vec::new()) };
+    static QUEUE: RefCell<Vec<(isize, Queued)>> = const { RefCell::new(Vec::new()) };
 }
 
 fn with<T>(owner: HWND, f: impl FnOnce(&mut Runtime) -> T) -> Option<T> {
@@ -145,6 +154,11 @@ pub(crate) fn shown(owner: HWND) -> bool {
 pub(crate) fn pane(owner: HWND, app: &AppRef) -> Option<Pane> {
     let tab = with(owner, |rt| rt.ready.then_some(rt.shown).flatten().map(|shown| shown.tab)).flatten()?;
     App::split_view(app)?.pane_for(tab)
+}
+
+/// Whether the settings page can be drawn in this window (otherwise Settings is the native window).
+pub(crate) fn usable(owner: HWND) -> bool {
+    available(owner)
 }
 
 /// The page's "Check for updates" finished with `result` (`staged`, `uptodate`, ...).
@@ -225,6 +239,7 @@ fn ensure_host(owner: HWND) {
                     rt.ready = true;
                     rt.state = None;
                     rt.snapshot = None;
+                    rt.privacy = None;
                     rt.dirty = true;
                     // A reloaded page starts at the top: show the tab's section again.
                     if rt.go.is_none() {
@@ -233,7 +248,8 @@ fn ensure_host(owner: HWND) {
                 });
                 super::window::split_ui_invalidate(owner);
             }
-            Command::Panel { kind: PanelType::Settings, f } => queue(owner, f),
+            Command::Panel { kind: PanelType::Settings, f } => queue(owner, Queued::Settings(f)),
+            Command::Panel { kind: PanelType::Privacy, f } => queue(owner, Queued::Privacy(f)),
             _ => {}
         }
     });
@@ -265,13 +281,13 @@ fn ensure_host(owner: HWND) {
 }
 
 /// Queues a page command and posts `WM_SETTINGS_COMMAND` so it runs from the window procedure.
-fn queue(owner: HWND, fields: PanelFields) {
+fn queue(owner: HWND, command: Queued) {
     let full = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         if queue.len() >= 16 {
             return true;
         }
-        queue.push((owner.0 as isize, fields));
+        queue.push((owner.0 as isize, command));
         false
     });
     if !full {
@@ -370,6 +386,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
     if with(owner, |rt| std::mem::take(&mut rt.dirty)).unwrap_or(false) {
+        let _ = with(owner, |rt| rt.privacy_due = true);
         let snapshot = snapshot(owner, app);
         // An answer is always delivered, even when the values did not change (a second identical
         // save still gets its "Saved").
@@ -381,6 +398,15 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 rt.ack = Ack::None;
                 rt.error.clear();
             });
+        }
+    }
+    // The embedded Privacy dashboard is read afresh with the page, and only sent when it changed.
+    if with(owner, |rt| std::mem::take(&mut rt.privacy_due)).unwrap_or(false) {
+        if let Some(privacy) = super::html_dialog::privacy_snapshot_json(app) {
+            let fresh = with(owner, |rt| rt.privacy.as_deref() != Some(privacy.as_str())).unwrap_or(false);
+            if fresh && host.post_json(&privacy).is_ok() {
+                let _ = with(owner, |rt| rt.privacy = Some(privacy));
+            }
         }
     }
     if let Some(section) = with(owner, |rt| rt.go.take()).flatten() {
@@ -478,19 +504,28 @@ fn answer(owner: HWND, result: Result<(), String>) {
 /// Runs the queued commands for `owner` (from `WM_SETTINGS_COMMAND`). A command acts only while
 /// the page is shown over a settings tab; anything else is dropped.
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
-    let commands: Vec<PanelFields> = QUEUE.with(|queue| {
+    let commands: Vec<Queued> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
         *queue = rest;
         mine.into_iter().map(|(_, fields)| fields).collect()
     });
-    for fields in commands {
+    for command in commands {
         let Some(tab) = with(owner, |rt| rt.shown.map(|shown| shown.tab)).flatten() else { continue };
         if !App::internal_page(app, tab).is_some_and(InternalPage::is_settings) {
             continue;
         }
-        if let Some(action) = wire::map_command(&fields) {
-            run(owner, app, tab, action);
+        match command {
+            Queued::Settings(fields) => {
+                if let Some(action) = wire::map_command(&fields) {
+                    run(owner, app, tab, action);
+                }
+            }
+            Queued::Privacy(fields) => {
+                if super::html_dialog::run_privacy_command(app, owner, &fields) {
+                    let _ = with(owner, |rt| rt.dirty = true);
+                }
+            }
         }
     }
     super::window::split_ui_invalidate(owner);
