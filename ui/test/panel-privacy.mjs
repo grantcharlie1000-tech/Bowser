@@ -144,6 +144,7 @@ test('the Private tabs note says, in plain words, what private tabs keep and blo
   for (const phrase of [
     'Ctrl+Shift+P', 'New private tab', 'no history, cookies, site data, permission choices or blocker statistics on disk',
     'memory only', 'last private tab closes', 'not restored after a restart or crash', 'never grouped',
+    'Only a bookmark you add yourself is kept', 'can still see your activity', 'Close all private tabs',
     'Strict tracking prevention and the blocker are always on', 'Per-site blocker exceptions are ignored',
     'Every permission request and download in a private tab is blocked',
   ]) assert.ok(text.includes(phrase), phrase);

@@ -141,6 +141,22 @@
   height: var(--bw-icon);
 }
 
+/* The Settings gear turns one tooth (60deg, its own symmetry, so the drawing never snaps) while its
+   row is selected: a 16px SVG, transform only. Nothing turns under reduced motion. */
+.html-menu-row[data-icon="gear"] .html-menu-lead svg {
+  transition: transform 320ms var(--bw-ease-out);
+}
+
+.html-menu-row[data-icon="gear"].selected:not(:disabled) .html-menu-lead svg {
+  transform: rotate(60deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .html-menu-row[data-icon="gear"].selected:not(:disabled) .html-menu-lead svg {
+    transform: none;
+  }
+}
+
 .html-menu-favicon {
   width: var(--bw-icon);
   height: var(--bw-icon);

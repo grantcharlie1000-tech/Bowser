@@ -79,6 +79,10 @@ pub struct SessionSplit {
 /// `about:blank`, URLs with userinfo, host-less or oversized URLs. The fragment (`#...`) is
 /// dropped: it can carry tokens or other page state that has no place on disk.
 pub fn persistable_url(url: &Url) -> Option<String> {
+    // A settings tab comes back as the settings page (canonical `bowser://settings[/section]` only).
+    if crate::internal_page::persistable(url) {
+        return Some(url.as_str().to_owned());
+    }
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none_or(str::is_empty)
         || !url.username().is_empty()
@@ -712,6 +716,37 @@ mod tests {
         assert!(persistable_url(&url("https://user@example.com/")).is_none());
         let long = format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES));
         assert!(persistable_url(&url(&long)).is_none());
+    }
+
+    #[test]
+    fn settings_tabs_are_persisted_in_canonical_form_only() {
+        assert_eq!(persistable_url(&url("bowser://settings")).as_deref(), Some("bowser://settings"));
+        assert_eq!(persistable_url(&url("bowser://settings/privacy")).as_deref(), Some("bowser://settings/privacy"));
+        for text in ["bowser://settings/", "bowser://settings#x", "bowser://settings/Privacy", "bowser://newtab", "bowser://settings/nope"] {
+            assert!(persistable_url(&url(text)).is_none(), "{text}");
+        }
+        let settings = url("bowser://settings/updates");
+        let page = url("https://example.com/");
+        let session = Session::from_tabs([(Some(&page), "Example", false), (Some(&settings), "Settings", false)], 1).unwrap();
+        assert_eq!(session.active, 1);
+        let restored = Session::parse(&session.serialize()).unwrap();
+        assert_eq!(restored.tabs[1].url, "bowser://settings/updates");
+        assert_eq!(restored.tabs[1].title, "Settings");
+    }
+
+    #[test]
+    fn history_tabs_are_persisted_in_canonical_form_only() {
+        assert_eq!(persistable_url(&url("bowser://history")).as_deref(), Some("bowser://history"));
+        for text in ["bowser://history/", "bowser://History", "bowser://history?q=x", "bowser://history#today", "bowser://history/today"] {
+            assert!(persistable_url(&url(text)).is_none(), "{text}");
+        }
+        let history = url("bowser://history");
+        let page = url("https://example.com/");
+        let session = Session::from_tabs([(Some(&history), "History", false), (Some(&page), "Example", false)], 0).unwrap();
+        let restored = Session::parse(&session.serialize()).unwrap();
+        assert_eq!(restored.active, 0);
+        assert_eq!(restored.tabs[0].url, "bowser://history");
+        assert_eq!(restored.tabs[0].title, "History");
     }
 
     #[test]

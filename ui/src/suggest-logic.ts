@@ -31,6 +31,15 @@ export function suggestAction(kind: SuggestKind): string {
   return kind === 'tab' ? 'Switch to tab' : '';
 }
 
+/**
+ * A small kind mark after the title, for a row whose favicon took the lead slot and so hides what
+ * kind of row it is: only a bookmark needs one (an open tab says "Switch to tab"; history and
+ * addresses are the default). Null when the lead glyph already says it.
+ */
+export function suggestBadge(kind: SuggestKind, hasFavicon: boolean): { readonly icon: IconName; readonly label: string } | null {
+  return kind === 'bm' && hasFavicon ? { icon: 'bookmark', label: 'Bookmark' } : null;
+}
+
 const asciiLower = (code: number): number => (code >= 65 && code <= 90 ? code + 32 : code);
 const stripPrefix = (text: string, prefix: string): string | null =>
   text.length >= prefix.length && suggestMatch(text.slice(0, prefix.length), prefix) !== null ? text.slice(prefix.length) : null;

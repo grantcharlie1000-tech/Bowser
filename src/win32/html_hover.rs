@@ -1425,22 +1425,53 @@ unsafe fn suggest_region(width: i32, visible: i32, radius: i32) -> HRGN {
     }
 }
 
-/// Lays the anti-aliasing fringe over the dropdown's bottom corners for the region `visible` pixels
-/// tall that sits at `bounds`, or takes it away when nothing needs it.
+/// Lays the dropdown's backdrop (anti-aliased bottom corners and shadow) under the region `visible`
+/// pixels tall of the list at `bounds`, or takes it away when nothing shows.
 fn place_fringe(owner: HWND, window: HWND, bounds: RECT, visible: i32, dpi: u32) {
     let width = bounds.right - bounds.left;
     let r = suggest_corner_radius(scale_px(SUGGEST_RADIUS, dpi), visible, width);
-    let appearance = glass::appearance();
-    let palette = theme::palette(appearance, true);
-    let surface = surface_colour(palette.window, appearance == theme::Appearance::Dark);
-    let (r8, g8, b8) = edge_colour(surface, palette.omnibox_text);
-    super::corner_fringe::show(owner, window, bounds.left, bounds.top + visible, width, r, (r8, g8, b8));
+    let surface = suggest_surface(glass::palette());
+    let dark = glass::appearance() == theme::Appearance::Dark;
+    // No outline: the partly covered corner pixels take the list's own colour, so the curve blends
+    // into the page without a ring of edge colour, and the shadow lifts the list off the page.
+    super::corner_fringe::show(
+        owner,
+        window,
+        super::corner_fringe::Backdrop {
+            left: bounds.left,
+            top: bounds.top,
+            width,
+            visible,
+            full: bounds.bottom - bounds.top,
+            radius: r,
+            surface: (surface.r, surface.g, surface.b),
+            shadow: suggest_shadow(dpi, dark),
+        },
+    );
 }
 
-/// The dropdown's edge colour: `--bw-pill-edge`, the text colour at 22% over the surface. Pure.
-fn edge_colour(surface: theme::Rgba, text: theme::Rgba) -> (u8, u8, u8) {
-    let mix = |top: u8, under: u8| (f32::from(top) * 0.22 + f32::from(under) * 0.78).round() as u8;
-    (mix(text.r, surface.r), mix(text.g, surface.g), mix(text.b, surface.b))
+/// The list's opaque colour, `--bw-omni-material` in tokens.css: the toolbar palette's omnibox fill
+/// over its window colour without the glass alpha. The fill's alpha is rounded to three places, as
+/// the CSS the page receives says it (`chrome_host::css_colour`), so both sides composite alike. Pure.
+fn suggest_surface(palette: &theme::Palette) -> theme::Rgba {
+    let (fill, window) = (palette.omnibox_fill, palette.window);
+    let a = (f32::from(fill.a) / 255.0 * 1000.0).round() / 1000.0;
+    let over = |top: u8, under: u8| (f32::from(top) * a + f32::from(under) * (1.0 - a)).round() as u8;
+    theme::Rgba { r: over(fill.r, window.r), g: over(fill.g, window.g), b: over(fill.b, window.b), a: 0xFF }
+}
+
+/// The list's shadow at `dpi`: an ambient edge (CSS `0 0 2px`) and a key shadow (`0 8px 16px`), the
+/// sizes of `--bw-sh-flyout`, a little stronger in dark where a dark page would swallow it. Pure.
+fn suggest_shadow(dpi: u32, dark: bool) -> super::corner_fringe::Shadow {
+    let scale = dpi.max(1) as f32 / FALLBACK_DPI as f32;
+    let (ambient, key) = if dark { (0.30, 0.32) } else { (0.16, 0.14) };
+    super::corner_fringe::Shadow {
+        ambient_sigma: 1.0 * scale,
+        ambient_alpha: ambient,
+        key_drop: (8.0 * scale).round(),
+        key_sigma: 8.0 * scale,
+        key_alpha: key,
+    }
 }
 
 /// The toolbar lost the keyboard. A press on the dropdown itself also blurs the omnibox, so the
@@ -1629,11 +1660,19 @@ unsafe fn paint_background(hwnd: HWND) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
-        // The page's own surface colour (the overlay tint over the window colour), so any area the
-        // WebView has not painted yet, such as rows the dropdown unrolls before its first frame at the
-        // new size, already reads as the surface rather than as a band of another colour.
+        // The page's own surface colour (the overlay tint over the window colour; for the omnibox
+        // dropdown, its omnibox material), so any area the WebView has not painted yet, such as rows
+        // the dropdown unrolls before its first frame at the new size, already reads as the surface
+        // rather than as a band of another colour.
         let appearance = glass::appearance();
-        let colour = surface_colour(theme::palette(appearance, true).window, appearance == theme::Appearance::Dark);
+        let suggest = owner_of_window(hwnd)
+            .and_then(|owner| with_layer(owner, |layer| layer.shown == Some(Kind::Suggest) || matches!(layer.content, Some(Content::Suggest { .. }))))
+            == Some(true);
+        let colour = if suggest {
+            suggest_surface(glass::palette())
+        } else {
+            surface_colour(theme::palette(appearance, true).window, appearance == theme::Appearance::Dark)
+        };
         let brush = CreateSolidBrush(COLORREF(
             u32::from(colour.r) | (u32::from(colour.g) << 8) | (u32::from(colour.b) << 16),
         ));
@@ -1757,11 +1796,30 @@ mod tests {
     }
 
     #[test]
-    fn dropdown_edge_is_the_text_colour_at_22_percent_over_the_surface() {
-        let surface = theme::Rgba { r: 40, g: 40, b: 40, a: 255 };
-        let text = theme::Rgba { r: 240, g: 240, b: 240, a: 255 };
-        assert_eq!(edge_colour(surface, text), (84, 84, 84));
-        assert_eq!(edge_colour(surface, surface), (40, 40, 40));
+    fn the_dropdown_surface_is_the_omnibox_fill_over_the_opaque_window() {
+        let rgb = |c: theme::Rgba| (c.r, c.g, c.b, c.a);
+        // Glass: the fill (white at 0x1C = 0.110 / 0x50 = 0.314) over the window RGB, as the CSS
+        // `--bw-omni-material` composites it.
+        assert_eq!(rgb(suggest_surface(theme::palette(theme::Appearance::Dark, false))), (57, 60, 67, 255));
+        assert_eq!(rgb(suggest_surface(theme::palette(theme::Appearance::Light, false))), (247, 249, 250, 255));
+        // Solid: the fill is opaque, so it is the surface.
+        assert_eq!(rgb(suggest_surface(theme::palette(theme::Appearance::Dark, true))), (0x2A, 0x3A, 0x3E, 255));
+        assert_eq!(rgb(suggest_surface(theme::palette(theme::Appearance::Light, true))), (255, 255, 255, 255));
+        // Not the hover cards' overlay colour: the list is the pill's material, not a menu's.
+        let dark = theme::palette(theme::Appearance::Dark, false);
+        assert_ne!(rgb(suggest_surface(dark)), rgb(surface_colour(theme::palette(theme::Appearance::Dark, true).window, true)));
+    }
+
+    #[test]
+    fn the_dropdown_shadow_scales_with_dpi_and_is_firmer_in_dark() {
+        let at96 = suggest_shadow(96, true);
+        let at144 = suggest_shadow(144, true);
+        assert_eq!(at96.margins(), (24, 32));
+        assert_eq!(at144.margins(), (36, 48));
+        assert_eq!(at144.key_drop, 12.0);
+        let light = suggest_shadow(96, false);
+        assert!(light.key_alpha < at96.key_alpha && light.ambient_alpha < at96.ambient_alpha);
+        assert!(light.ambient_alpha > 0.0, "light keeps an edge: no outline, so the shadow separates it from a white page");
     }
 
     #[test]

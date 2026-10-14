@@ -62,12 +62,14 @@ export function parsePrivacySnapshot(value: unknown): PrivacySnapshot | null {
 /** Static "Private tabs" note: [label, description] rows, rendered as plain setting rows. */
 export const PRIVATE_TABS_TITLE = 'Private tabs';
 export const PRIVATE_TABS_NOTE: readonly (readonly [string, string])[] = [
-  ['Open a private tab', 'Press Ctrl+Shift+P, or choose New private tab in the main menu.'],
-  ['Nothing saved to disk', 'Private tabs keep no history, cookies, site data, permission choices or blocker statistics on disk.'],
-  ['Cookies and site data', 'Held in memory only, and discarded when the last private tab closes.'],
-  ['Restore and groups', 'Private tabs are not restored after a restart or crash, and are never grouped.'],
+  ['Open a private tab', 'Press Ctrl+Shift+P, or choose New private tab in the main menu, a tab’s menu or the command palette.'],
+  ['Nothing saved to disk', 'Private tabs keep no history, cookies, site data, permission choices or blocker statistics on disk. Only a bookmark you add yourself is kept.'],
+  ['Cookies and site data', 'Held in memory only, and erased when your last private tab closes.'],
+  ['Restore and groups', 'Private tabs are not restored after a restart or crash, are never grouped, and are left out of saved sessions and workspaces.'],
   ['Protection', 'Strict tracking prevention and the blocker are always on. Per-site blocker exceptions are ignored.'],
   ['Permissions and downloads', 'Every permission request and download in a private tab is blocked.'],
+  ['Still visible', 'Websites you visit, and your internet provider, employer or school, can still see your activity.'],
+  ['Close them all', 'Choose Close all private tabs in the main menu, a private tab’s menu or the new private tab page.'],
 ];
 
 type Fields = { id?: number; n?: number; on?: boolean; text?: string };

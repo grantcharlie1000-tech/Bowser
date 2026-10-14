@@ -10,11 +10,18 @@ Geometry: 28px rows (the 32px component height would scroll the 15-row main menu
 work areas), 4px radius, 12px icon gap, 8px overlay radius, min 200 / max 360px, opaque overlay.
 
 ## Main menu (`main`)
-New tab `plus` | Profile `person` (submenu) | Notes & Tasks `notes` | Command palette `command` |
-Bookmark this page `bookmark` | Saved sessions `folder` | Extensions `puzzle` | Passwords & passkeys
-`key` | Import from another browser `download` | Vertical tabs `sidebar` (check) | Workspaces
-`workspace` (submenu) | Block ads & trackers `shield` (check) | Settings `gear` | Privacy dashboard
-`eye` | Exit `close`.
+The menu is short on purpose: what you do on every page, and nothing you set once. Profile card (header) |
+New tab `plus` | New private tab `private` | Close all private tabs `glasses` (only while a private tab is
+open) | History `history` (opens `bowser://history`) | Bookmark this page `bookmark` | Workspaces
+`workspace` (submenu) | Block ads & trackers `shield` (check) | Reader view `reader` (check; a capital A beside text lines over a full-width line, so it
+stays apart from the page-shaped `notes` and the book `workspace-book`) | More tools
+`more` (submenu: Notes & Tasks `notes`, Command palette `command`, Saved sessions `folder`, Hide
+distractions `eye`, Extensions `puzzle`, Passwords & passkeys `key`) | Restart to update `refresh` (only
+once a build is downloaded) | Settings `gear` (opens `bowser://settings` in a tab; the gear turns one
+tooth while the row is selected, docs/design/settings-page.md) | Exit `close`. Moved to Settings: the
+profile list (Manage profiles), Import from another browser, the Privacy dashboard, Check for updates and
+Update automatically. Passwords stay in the native menu: `chrome_host/guard.rs` keeps that word out of
+the HTML chrome.
 
 ## Profile (`profiles`, also the main menu's Profile page)
 Profile rows: avatar badge (disc with the profile's accent), check on the current one | Guest window
@@ -34,13 +41,13 @@ Rename `edit` | Change icon `workspace` (submenu of the twelve workspace glyphs)
 Rail web app (`rail-app:*`): Open `app-tile` | Edit `edit` | Remove `trash`.
 
 ## Tab context (`tab:*`)
-New tab to the right `plus` | New split view `split` | Add tab to group `tab-group` (submenu, check on
+New tab to the right `plus` | New private tab `private` | New split view `split` | Add tab to group `tab-group` (submenu, check on
 the standing mode, no icons) | Collapse/Expand group `chevron-up`/`chevron-down` | Remove from group
 `caption-minimize` (a dash) | Undo tab organisation `reset` | Copy URL `link` | Reload `reload` |
 Duplicate tab `copy` | Pin tab `pin` (check) | Mute tab `mute` / Unmute tab `volume` | Mute/Unmute site
 `workspace-globe` | Hibernate tab `clock` | Move tab to new window `external` | Picture in picture `pip` |
 Close tab `close` | Close other tabs `trash` | Close tabs to the left `back` | Close tabs to the right
-`forward`.
+`forward` | Close all private tabs `glasses` (private tabs only; docs/design/private-tabs.md).
 
 ## Split (`split`)
 Active split: Swap panes `reload` | Close left pane `back` | Close right pane `forward` | Replace pane

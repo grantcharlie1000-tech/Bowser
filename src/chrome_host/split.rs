@@ -6,6 +6,8 @@
 //! - `splitpick` fills the empty side (`View::Split`): the open tabs it can take and recently closed
 //!   pages; `splitdrop` turns the same view into the drop-zone card while a tab is dragged;
 //!   `splithide` clears it.
+//! - `privatepage` turns the same view into the private landing over a blank private tab
+//!   (docs/design/private-tabs.md): the tab's wire id and how many private tabs are open.
 
 use super::json::{capped, Json};
 use super::protocol::{favicon_data_uri, MAX_TAB_TITLE_CHARS};
@@ -110,6 +112,20 @@ pub fn hide_json() -> String {
     r#"{"v":1,"t":"splithide"}"#.to_owned()
 }
 
+/// Most private tabs a `privatepage` reports (shared with `ui/src/split-protocol.ts`).
+pub const MAX_PRIVATE_TABS: usize = 10_000;
+
+/// `{"v":1,"t":"privatepage","id":..,"n":..}`: the private landing over blank private tab `id`
+/// (wire id), with `n` private tabs open in the window (clamped to 1..=[`MAX_PRIVATE_TABS`]).
+pub fn private_json(id: u32, n: usize) -> String {
+    Json::object(|o| {
+        o.int("v", 1);
+        o.string("t", "privatepage");
+        o.uint("id", u64::from(id));
+        o.uint("n", n.clamp(1, MAX_PRIVATE_TABS) as u64);
+    })
+}
+
 /// The host shown under a row: the URL's host without a leading `www.`, or `""`.
 pub fn display_host(url: &str) -> String {
     url::Url::parse(url)
@@ -184,6 +200,13 @@ mod tests {
     }
 
     #[test]
+    fn private_page_message_carries_the_tab_and_a_clamped_count() {
+        assert_eq!(private_json(4, 2), r#"{"v":1,"t":"privatepage","id":4,"n":2}"#);
+        assert_eq!(private_json(1, 0), r#"{"v":1,"t":"privatepage","id":1,"n":1}"#);
+        assert_eq!(private_json(1, usize::MAX), format!(r#"{{"v":1,"t":"privatepage","id":1,"n":{MAX_PRIVATE_TABS}}}"#));
+    }
+
+    #[test]
     fn hosts_and_coordinates() {
         assert_eq!(display_host("https://www.example.com/a?b"), "example.com");
         assert_eq!(display_host("https://docs.rs/x"), "docs.rs");
@@ -203,6 +226,7 @@ mod tests {
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"go","text":"example.com"}"#), SplitCommand::Go("example.com".into()));
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"close"}"#), SplitCommand::Close);
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"focus"}"#), SplitCommand::Focus);
+        assert_eq!(ok(r#"{"v":1,"t":"split","a":"closeprivate"}"#), SplitCommand::ClosePrivate);
         assert_eq!(
             ok(r#"{"v":1,"t":"split","a":"over","id":2,"x":0,"y":16384}"#),
             SplitCommand::DragOver { id: 2, x: 0, y: 16384 }
@@ -217,6 +241,8 @@ mod tests {
             r#"{"v":1,"t":"split","a":"reopen","n":8}"#,
             r#"{"v":1,"t":"split","a":"go","text":"   "}"#,
             r#"{"v":1,"t":"split","a":"close","id":1}"#,
+            r#"{"v":1,"t":"split","a":"closeprivate","n":1}"#,
+            r#"{"v":1,"t":"split","a":"closePrivate"}"#,
             r#"{"v":1,"t":"split","a":"over","id":2,"x":16385,"y":0}"#,
             r#"{"v":1,"t":"split","a":"over","id":2,"x":1}"#,
             r#"{"v":1,"t":"split","a":"Pick","id":4}"#,
@@ -239,12 +265,13 @@ mod tests {
         ];
         let closed = [PickClosed { title: "Old page 😀", host: "old.example" }];
         let content = format!(
-            "{{\"pair\":{},\"pairNone\":{},\"pick\":{},\"drop\":{},\"hide\":{}}}\n",
+            "{{\"pair\":{},\"pairNone\":{},\"pick\":{},\"drop\":{},\"hide\":{},\"private\":{}}}\n",
             pair_json(Some((3, 8, Pane::Right, true))),
             pair_json(None),
             pick_json(Pane::Right, &tabs, &closed),
             drop_json(Pane::Left, "Example"),
             hide_json(),
+            private_json(4, 2),
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/split-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {

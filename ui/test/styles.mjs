@@ -60,7 +60,7 @@ test('every surface file names its owner in a header comment', () => {
 
 test('hand-tuned chrome geometry is unchanged', () => {
   const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
-  for (const [name, value] of [['--bw-toolbar-h', '34px'], ['--bw-pill-h', '26px'], ['--bw-r-tab', '9px'], ['--bw-nav-h', '28px']]) {
+  for (const [name, value] of [['--bw-toolbar-h', '30px'], ['--bw-pill-h', '26px'], ['--bw-r-tab', '9px'], ['--bw-nav-h', '28px']]) {
     assert.match(tokens, new RegExp(`${name}: ${value};`), name);
   }
 });

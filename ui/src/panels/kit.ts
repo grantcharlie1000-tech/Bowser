@@ -1,5 +1,6 @@
 // Shared building blocks for the side panels and dialog pages (history, bookmarks, notes,
-// settings, privacy): header, search field, empty state, icon buttons, roving list keys.
+// privacy, and the buttons on the settings page): header, search field, empty state, icon buttons,
+// roving list keys.
 import { el, icon, type IconName } from '../dom';
 import { sendPanel } from '../protocol';
 import { isNavKey, navIndex, tileLetter } from './kit-logic';
@@ -125,7 +126,7 @@ export function enter(node: HTMLElement): void {
   node.classList.add('bw-enter', 'pn-enter');
 }
 
-// ---- Settings-style pages (settings, privacy): sections of 48px rows, label left, control right.
+// ---- Settings-style pages (the Privacy dashboard): sections of 48px rows, label left, control right.
 
 let rowSeq = 0;
 
@@ -169,20 +170,6 @@ export function settingRow(label: string, description: string | null, control?: 
     row.append(wrap);
   }
   return row;
-}
-
-/** `<button role="switch">` toggle. Calls `onChange` with the new state. */
-export function toggleSwitch(checked: boolean, onChange: (on: boolean) => void): HTMLButtonElement {
-  const button = el('button', 'bw-toggle');
-  button.type = 'button';
-  button.setAttribute('role', 'switch');
-  button.setAttribute('aria-checked', String(checked));
-  button.addEventListener('click', () => {
-    const next = button.getAttribute('aria-checked') !== 'true';
-    button.setAttribute('aria-checked', String(next));
-    onChange(next);
-  });
-  return button;
 }
 
 /** Radio-style segmented control with roving tabindex and arrow keys. */

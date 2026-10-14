@@ -29,8 +29,8 @@ export interface MenuMessage {
 export const MENU_ICONS: readonly string[] = [
   'app-tile', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
-  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'extensions', 'external', 'eye',
-  'find', 'folder', 'forward', 'gear', 'glasses', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu',
+  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
+  'find', 'folder', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
   'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'search', 'settings',
   'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'trash', 'unlock', 'unsplit',

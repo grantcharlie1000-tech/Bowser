@@ -144,7 +144,11 @@ export function buildView(root: HTMLElement): View {
   const pill = el('div', 'pill');
   pill.append(site, field, privateChip, zoom, reader, split, progress);
 
-  const menu = iconButton('Menu', 'menu', 'tb-nav is-lg is-round');
+  // Three dots (menu-dots, drawn at 24px by toolbar.css .tb-menu); each is its own <circle>, so
+  // they can ripple.
+  const menu = iconButton('Menu', 'menu-dots', 'tb-nav tb-menu is-lg is-round');
+  menu.setAttribute('aria-haspopup', 'menu');
+  applyMenuOpen(menu, false);
 
   // Back and forward share one rounded container; reload is a plain icon beside it.
   const navGroup = el('div', 'nav-group');
@@ -208,6 +212,11 @@ export function applyReader(button: HTMLButtonElement, pill: ReaderPill): void {
   button.setAttribute('aria-pressed', String(pill === 'on'));
   if (pill === 'on') label(button, 'Leave reader view', 'Leave reader view (Esc)');
   else label(button, 'Reader view', 'Reader view (Ctrl+Alt+R)');
+}
+
+/** The menu button while the main menu is up (Rust `menuOpen`): the pressed bubble and spread dots. */
+export function applyMenuOpen(button: HTMLButtonElement, open: boolean): void {
+  button.setAttribute('aria-expanded', String(open));
 }
 
 /** The site button's glyph: a search glyph while there is no site (new tab, empty address), else the security glyph. */

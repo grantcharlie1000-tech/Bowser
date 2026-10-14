@@ -62,7 +62,7 @@ pub fn classify(url: Option<&Url>, load: LoadState) -> SiteSecurity {
             LoadState::Failed { certificate: true } => SiteSecurity::CertificateProblem,
             LoadState::Loading | LoadState::Failed { certificate: false } => SiteSecurity::Unknown,
         },
-        "about" | "file" | "data" | "blob" | "edge" | "chrome" => SiteSecurity::Internal,
+        "about" | "file" | "data" | "blob" | "edge" | "chrome" | "bowser" => SiteSecurity::Internal,
         _ => SiteSecurity::Unknown,
     }
 }
@@ -130,6 +130,8 @@ mod tests {
             "about:blank",
             "data:text/html,hi",
             "edge://settings",
+            "bowser://settings",
+            "bowser://settings/privacy",
         ] {
             assert_eq!(
                 classify(Some(&url(text)), LoadState::Loaded),

@@ -235,18 +235,22 @@ test('the private badge is out of flow, inside the icon box, and the private rul
 test('private marks use token pairs with real contrast and a geometry-free edge', () => {
   for (const badge of [rule(tabsCss, STRIP_BADGE), rule(sidebarCss, SIDE_BADGE)]) {
     assert.match(badge, /background: var\(--bw-window-opaque\);/);
-    assert.match(badge, /color: var\(--bw-text\);/);
-    assert.match(badge, /box-shadow: 0 0 0 1px var\(--bw-text-2\);/, 'contrasting ring');
-    assert.doesNotMatch(badge, /--bw-on-accent|background: var\(--bw-accent\)/);
+    assert.match(badge, /color: var\(--bw-private\);/);
+    assert.match(badge, /box-shadow: 0 0 0 1px var\(--bw-private\);/, 'contrasting ring');
+    assert.doesNotMatch(badge, /--bw-on-accent|--bw-accent/);
   }
-  // No favicon: the private glyph replaces the globe, in the primary text colour.
+  // No favicon: the private mark replaces the globe, in the private violet.
   assert.match(rule(tabsCss, '.strip .tab[data-private="true"][data-icon="glyph"] .glyph'), /display: none;/);
-  assert.match(rule(tabsCss, '.strip .tab[data-private="true"][data-icon="glyph"] .priv-glyph'), /display: block;[\s\S]*color: var\(--bw-text\);/);
+  assert.match(rule(tabsCss, '.strip .tab[data-private="true"][data-icon="glyph"] .priv-glyph'), /display: block;[\s\S]*color: var\(--bw-private\);/);
   assert.match(rule(sidebarCss, '.side-tab[data-private="true"] .side-face[data-state="glyph"] > .side-glyph'), /display: none;/);
-  assert.match(rule(sidebarCss, '.side-tab[data-private="true"] .side-face[data-state="glyph"] > .side-priv-glyph'), /color: var\(--bw-text\);/);
-  // The 2px accent edge is an inset shadow (strip: underline on the island layer; sidebar: leading bar).
-  assert.match(rule(tabsCss, '.strip .tab[data-private="true"]::before'), /box-shadow: inset 0 calc\(-1 \* var\(--bw-space-0_5\)\) 0 var\(--bw-accent\);/);
-  assert.match(rule(sidebarCss, '.side-tab[data-private="true"]:not(:focus-visible, .dragging)'), /box-shadow: inset var\(--bw-space-0_5\) 0 0 var\(--bw-accent\);/);
+  assert.match(rule(sidebarCss, '.side-tab[data-private="true"] .side-face[data-state="glyph"] > .side-priv-glyph'), /color: var\(--bw-private\);/);
+  // The 2px violet edge is an inset shadow (strip: underline on the island layer; sidebar: leading bar).
+  assert.match(rule(tabsCss, '.strip .tab[data-private="true"]::before'), /box-shadow: inset 0 calc\(-1 \* var\(--bw-space-0_5\)\) 0 var\(--bw-private\);/);
+  assert.match(rule(sidebarCss, '.side-tab[data-private="true"]:not(:focus-visible, .dragging)'), /box-shadow: inset var\(--bw-space-0_5\) 0 0 var\(--bw-private\);/);
+  // Private marks never borrow the theme accent: in any accent they still read as private.
+  for (const css of [tabsCss, sidebarCss]) {
+    for (const m of css.matchAll(/([^{}]*data-private[^{}]*)\{([^}]*)\}/g)) assert.doesNotMatch(m[2], /--bw-accent/, m[1].trim());
+  }
   assert.match(rule(sidebarCss, '.side-tab[data-private="true"].is-active:not(:focus-visible, .dragging)'), /var\(--bw-sh-tip\)/, 'the active row keeps its lift');
 });
 
@@ -254,7 +258,7 @@ test('the toolbar chip never shrinks and the address truncates first', () => {
   const css = readFileSync(join(srcDir, 'styles', 'toolbar.css'), 'utf8');
   assert.match(rule(css, '.tb-private'), /flex: none;/);
   assert.match(rule(css, '.omni-field'), /flex: 1 1 auto;[\s\S]*min-width: 0;/);
-  assert.match(rule(css, '.tb-private'), /background: var\(--bw-accent-soft\);/);
+  assert.doesNotMatch(rule(css, '.tb-private'), /background|border-radius/, 'no bubble behind the label');
 });
 
 test('the privacy panel renders the static Private tabs note as plain setting rows', () => {

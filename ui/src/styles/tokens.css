@@ -46,7 +46,7 @@
     --bw-progress: var(--progress); /* page-load bar */
 
     /* Colour: derived from the themed values, so they follow the theme too. */
-    --bw-pill-edge: color-mix(in srgb, var(--bw-text) 22%, transparent); /* omnibox pill border, rail rule */
+    --bw-pill-edge: color-mix(in srgb, var(--bw-text) 22%, transparent); /* .bw-pill border, rail rule (the omnibox uses --bw-omni-edge) */
     --bw-island: color-mix(in srgb, var(--bw-text) 13%, transparent); /* active tab / row island */
     --bw-island-idle: color-mix(in srgb, #000 22%, transparent); /* inactive tab / row island */
     --bw-island-active: color-mix(in srgb, var(--bw-text) 24%, transparent); /* the selected tab: the strongest fill in the strip */
@@ -81,6 +81,28 @@
     --bw-group-6: #a77cf0;
     --bw-group-7: #ec7fb7;
 
+    /* Colour: private tabs (docs/design/private-tabs.md). One fixed violet per scheme, independent of
+       the theme accent, so a private tab reads as private whatever accent the profile chose. Dark
+       B9A2FF on 20242C ~7.2:1, light 6440D0 on F4F6F8 ~6.1:1: text-grade, so it may colour glyphs
+       and short labels. Only private surfaces use these; normal tabs and the pill never do. */
+    --bw-private: #b9a2ff;
+    --bw-private-soft: color-mix(in srgb, var(--bw-private) 20%, transparent); /* chip wash */
+    --bw-private-edge: color-mix(in srgb, var(--bw-private) 50%, transparent); /* island / pill outline */
+
+    /* Omnibox (docs/design/omnibox.md). The raised material is what the focused pill, the open pill
+       and the suggestions list all paint: the themed fill over the opaque window colour. It is a
+       background value, not a colour; Rust paints the same colour natively under the list's corners
+       and in its backdrop (html_hover.rs suggest_surface), so keep the two in step. */
+    --bw-omni-material: linear-gradient(var(--bw-fill), var(--bw-fill)), var(--bw-window-opaque);
+    --bw-omni-edge: color-mix(in srgb, var(--bw-text) 12%, transparent); /* resting pill hairline */
+    --bw-omni-edge-hover: color-mix(in srgb, var(--bw-text) 20%, transparent);
+    --bw-omni-row-hover: color-mix(in srgb, var(--bw-text) 5%, transparent);
+    --bw-omni-row-selected: color-mix(in srgb, var(--bw-text) 11%, transparent);
+    --bw-omni-chip: color-mix(in srgb, var(--bw-text) 8%, transparent); /* "Switch to tab", the Enter keycap */
+    /* Lift of the focused pill, drawn inside the toolbar's 4px margin; the list's own (larger) shadow
+       is painted natively, under the popup, with the same two layers at --bw-sh-flyout's size. */
+    --bw-sh-omni: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 1px rgba(0, 0, 0, 0.24);
+
     /* Typography (Fluent ramp; Segoe UI Variable has an automatic optical axis). */
     --bw-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
     --bw-font-panel: "Segoe UI", sans-serif; /* legacy: panels and the menu popup; migrate to --bw-font */
@@ -89,6 +111,7 @@
     --bw-leading-caption: 16px;
     --bw-text-body: 14px; /* Body 14/20 */
     --bw-leading-body: 20px;
+    --bw-text-omni: 13px; /* the omnibox text and the suggestion titles under it (13/20) */
     --bw-text-subtitle: 20px; /* Subtitle 20/28 */
     --bw-leading-subtitle: 28px;
     --bw-weight-strong: 600;
@@ -103,9 +126,13 @@
        that curvature when its bottom corners square off into the open suggestions list, whose
        bottom corners use it too (a 999px radius would rescale once the bottom radii drop to 0). */
     --bw-r-omnibox: calc(var(--bw-pill-h) / 2);
+    /* Suggestion rows sit 5px inside the open surface (1px border + 4px padding), so every row's
+       highlight is concentric with its rounded bottom: one shape for every row, which also lets the
+       selection indicator slide between rows without changing shape. */
+    --bw-r-omni-row: calc(var(--bw-r-omnibox) - var(--bw-space-1) - 1px);
 
     /* Chrome geometry, tuned by hand (commit 2086c05). Change only with the owner's sign-off. */
-    --bw-toolbar-h: 34px; /* toolbar row */
+    --bw-toolbar-h: 30px; /* toolbar row: Metrics::STRIP_HEIGHT, so the pill sits where the native layout puts it */
     --bw-pill-h: 26px; /* omnibox pill; tabs and the rail are sized to match */
     --bw-pill-max-w: 624px;
     --bw-r-tab: 9px; /* tab / rail / sidebar island radius, tuned to the 26px pill */
@@ -142,6 +169,8 @@
     --bw-ease-move: cubic-bezier(0.55, 0.55, 0, 1); /* point-to-point */
     --bw-ease-fade: linear; /* opacity fades */
     --bw-ease-in: cubic-bezier(0.4, 0, 1, 1); /* exits: leaving content accelerates away */
+    --bw-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* settles with a small overshoot (micro motion only) */
+    --bw-stagger: 30ms; /* delay between siblings in a ripple, such as the menu button dots */
 
     /* Z-layers between top-level surfaces (local stacking inside a surface may use 1-3). */
     --bw-z-page: 0;
@@ -165,6 +194,10 @@
        the 62% placeholder, so inactive tabs and rail glyphs keep their contrast there. */
     --bw-text-dim: color-mix(in srgb, var(--bw-text) 86%, transparent);
     --bw-island-active: rgba(255, 255, 255, 0.92);
+    --bw-private: #6440d0;
+    --bw-private-soft: color-mix(in srgb, var(--bw-private) 13%, transparent);
+    --bw-omni-row-selected: color-mix(in srgb, var(--bw-text) 10%, transparent);
+    --bw-sh-omni: 0 1px 2px rgba(0, 0, 0, 0.14), 0 0 1px rgba(0, 0, 0, 0.18);
   }
 
   /* Reduced motion: movement durations collapse to 0; fades stay at <= 83ms. Together with the
@@ -212,6 +245,8 @@
     --color-group-5: var(--bw-group-5);
     --color-group-6: var(--bw-group-6);
     --color-group-7: var(--bw-group-7);
+    --color-private: var(--bw-private);
+    --color-private-soft: var(--bw-private-soft);
 
     --font-sans: var(--bw-font);
     --text-chrome: var(--bw-text-chrome);

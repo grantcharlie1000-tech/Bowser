@@ -248,3 +248,16 @@ test('railfav enforces the key grammar and the favicon rules', () => {
   assert.equal(parseInbound('{"v":1,"t":"railfav","k":"app:1","uri":"https://example.com/a.png"}'), null);
   assert.equal(parseInbound('{"v":1,"t":"railfav","k":"app:1","uri":"data:image/png;base64,A A"}'), null);
 });
+
+test('Rust menuOpen fixture parses as the menu button flag; anything else is rejected', () => {
+  const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'menu-open-messages.json'), 'utf8'));
+  assert.deepEqual(parseInbound(fixture.open), { t: 'menuOpen', on: true });
+  assert.deepEqual(parseInbound(fixture.shut), { t: 'menuOpen', on: false });
+  assert.deepEqual(parseInbound(JSON.stringify(fixture.open)), { t: 'menuOpen', on: true });
+  for (const bad of [
+    { v: 1, t: 'menuOpen' },
+    { v: 1, t: 'menuOpen', on: 1 },
+    { v: 2, t: 'menuOpen', on: true },
+    { v: 1, t: 'menuOpen', on: true, x: 1 },
+  ]) assert.equal(parseInbound(bad), null, JSON.stringify(bad));
+});

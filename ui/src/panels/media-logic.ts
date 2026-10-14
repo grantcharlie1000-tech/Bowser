@@ -1,4 +1,4 @@
-// Media support check for the Settings panel: pure logic with injectable probes. Nothing here
+// Media support check for the settings page (Media section): pure logic with injectable probes. Nothing here
 // touches the network or the DOM; `browserProbes()` is the only place that reads browser globals.
 // Results hold fixed ids, labels and booleans only, never page-derived text.
 

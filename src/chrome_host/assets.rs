@@ -14,7 +14,10 @@ pub const PANEL_START_URL: &str = "bowser-ui://app/index.html?view=panel";
 pub const POPUP_START_URL: &str = "bowser-ui://app/index.html?view=popup";
 pub const DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog";
 pub const NOTES_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=notes";
-pub const SETTINGS_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=settings";
+/// The settings page over a `bowser://settings` tab (docs/design/settings-page.md).
+pub const SETTINGS_START_URL: &str = "bowser-ui://app/index.html?view=settings";
+/// The history page over a `bowser://history` tab (docs/design/history-page.md).
+pub const HISTORY_PAGE_START_URL: &str = "bowser-ui://app/index.html?view=history";
 pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=privacy";
 pub const RENAME_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=rename";
 /// Start URL of the no-activate hover layer (tooltips, tab hover card, island menu).
@@ -171,7 +174,7 @@ mod tests {
     #[test]
     fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_DIALOG_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_START_URL, HISTORY_PAGE_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");

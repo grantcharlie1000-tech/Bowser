@@ -162,30 +162,32 @@
 
 /* ---- Private tab ----
    Nothing here takes room in the row: tab widths, the fill-the-row weights and the pinned 32px tile
-   are exactly those of a normal tab.
-   - Edge: an accent-tinted border plus a 2px accent underline drawn as an inset shadow on the island
-     layer (::before), so it never changes the box. Accent vs the window: dark glass B3C9CE on
-     20242C ~9:1, light glass 4A6D73 on F4F6F8 ~5:1, solid light 008A94 ~3.9:1 (>= 3:1 non-text).
-   - No favicon: the private glyph replaces the globe, full 16px, in --bw-text (the title colour).
-   - Favicon or spinner: a 10px glasses badge inside the icon box's bottom-right corner (it never
-     reaches the 4px gap before the title): --bw-text on the opaque window (~15:1) with a 1px
-     --bw-text-2 ring (>= 7:1 against the disc), so either the ring or the disc reads on any favicon. */
+   are exactly those of a normal tab. Private differs only by the private violet (--bw-private, see
+   tokens.css and docs/design/private-tabs.md), never by the theme accent, so it reads in any accent.
+   - Edge: a violet-tinted border plus a 2px violet underline drawn as an inset shadow on the island
+     layer (::before), so it never changes the box. Violet vs the window: dark B9A2FF on 20242C
+     ~7.2:1, light 6440D0 on F4F6F8 ~6.1:1 (>= 3:1 non-text).
+   - No favicon: the private mark (bowler and shades) replaces the globe, full 16px, in violet.
+   - Favicon or spinner: a 10px shades badge inside the icon box's bottom-right corner (it never
+     reaches the 4px gap before the title): violet on the opaque window with a 1px violet ring, so
+     either the ring or the disc reads on any favicon.
+   - A private tab entering the strip (.bw-enter) gives its mark one 240ms pop (private.css). */
 .strip .tab[data-private="true"],
 :root[data-scheme="light"] .strip .tab[data-private="true"]:not(.active) {
-  border-color: color-mix(in srgb, var(--bw-accent) 45%, transparent);
+  border-color: var(--bw-private-edge);
 }
 
-.strip .tab[data-private="true"].active { border-color: color-mix(in srgb, var(--bw-accent) 75%, transparent); }
+.strip .tab[data-private="true"].active { border-color: color-mix(in srgb, var(--bw-private) 75%, transparent); }
 
 .strip .tab[data-private="true"]::before {
-  box-shadow: inset 0 calc(-1 * var(--bw-space-0_5)) 0 var(--bw-accent);
+  box-shadow: inset 0 calc(-1 * var(--bw-space-0_5)) 0 var(--bw-private);
 }
 
 .strip .tab[data-private="true"][data-icon="glyph"] .glyph { display: none; }
 
 .strip .tab[data-private="true"][data-icon="glyph"] .priv-glyph {
   display: block;
-  color: var(--bw-text);
+  color: var(--bw-private);
 }
 
 .strip .priv-glyph svg { --bw-icon-stroke: 1.25px; }
@@ -202,8 +204,8 @@
   place-items: center;
   border-radius: 50%;
   background: var(--bw-window-opaque);
-  box-shadow: 0 0 0 1px var(--bw-text-2);
-  color: var(--bw-text);
+  box-shadow: 0 0 0 1px var(--bw-private);
+  color: var(--bw-private);
   pointer-events: none;
 }
 

@@ -42,6 +42,8 @@ npm test           # includes test/styles.mjs (CSS contract) and test/icons.mjs 
 | `src/styles/panels.css` | panels | `?view=panel` (`panel.ts`, `panels/*.ts`) |
 | `src/styles/dialog.css` | dialogs | `?view=dialog&p=...` (`dialog.ts`) |
 | `src/styles/menu.css` | menus | `?view=popup` (`menu-view.ts`, `popup.ts`) |
+| `src/styles/settings.css` | settings | `?view=settings`, the `bowser://settings` page (`settings-page.ts`, docs/design/settings-page.md) |
+| `src/styles/history.css` | history | `?view=history`, the `bowser://history` page (`history-page.ts`, docs/design/history-page.md) |
 | `src/icons.ts`, `scripts/gen-icons.mjs`, `icons/` | foundation | Icon family |
 
 Each surface file starts with a `Surface: NAME ... Owner:` header (enforced by `test/styles.mjs`).
@@ -76,7 +78,8 @@ message; `test/styles.mjs` fails if any file other than `tokens.css` reads them.
 | `--bw-focus` | accent | focus rings |
 | `--bw-text` / `--bw-text-2` | `text` / `placeholder` | primary / secondary text |
 | `--bw-completion`, `--bw-selection`, `--bw-hover`, `--bw-progress` | same names | omnibox completion, selection, hover wash, load bar |
-| `--bw-pill-edge` | text 22% | omnibox pill border, rail rule |
+| `--bw-pill-edge` | text 22% | `.bw-pill` component border, rail rule, card marker ring |
+| `--bw-omni-*` | see docs/design/omnibox.md | omnibox: `-material` (focused/open pill and the list), `-edge`, `-edge-hover`, `-halo`, `-row-hover`, `-row-selected`, `-chip`; with `--bw-sh-omni`, `--bw-text-omni` 13px, `--bw-r-omni-row` 8px |
 | `--bw-island` | text 13% | active tab / row island |
 | `--bw-island-idle` | black 22% | inactive island |
 | `--bw-island-active` | text 24% (light: white 92%) | the selected tab: the strongest fill in the strip |
@@ -92,6 +95,9 @@ message; `test/styles.mjs` fails if any file other than `tokens.css` reads them.
 (separators), `--bw-focus-inner` (1px contrast ring), `--bw-on-accent` (text on accent fills; dark
 in the dark scheme because Rust's dark accents are light), `--bw-scrim`.
 Group palette: `--bw-group-0` ... `--bw-group-7` (tabs.ts / sidebar.ts map Rust's colour ids).
+Private violet: `--bw-private` (#b9a2ff dark, #6440d0 light; text-grade on both), `--bw-private-soft`
+(chip wash), `--bw-private-edge` (outline). Only private surfaces use them; see
+docs/design/private-tabs.md.
 
 ### Type
 
@@ -109,7 +115,7 @@ Caption `--bw-text-caption`/`--bw-leading-caption` 12/16, Body 14/20, Subtitle 2
 | `--bw-r-island` / `--bw-r-overlay` | 8px | cards / menus, flyouts, dialogs |
 | `--bw-r-pill` | 999px | capsules |
 | `--bw-r-tab` | 9px | tab, rail and sidebar islands (tuned to the pill) |
-| `--bw-toolbar-h` | 34px | **hand-tuned, do not change without the owner** |
+| `--bw-toolbar-h` | 30px | must equal `Metrics::STRIP_HEIGHT` in `src/chrome/layout.rs` (the host region's height), or the pill is centred off the native layout |
 | `--bw-pill-h` / `--bw-tab-h` | 26px | **hand-tuned**; tabs and rail width follow it |
 | `--bw-nav-h` | 28px | toolbar buttons and nav group |
 | `--bw-icon` / `--bw-icon-box` | 16px / 20px | glyph / icon button |
@@ -193,10 +199,10 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (84): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
+- Glyphs (87): app-tile, back, bell, bookmark, camera, caption-maximize, caption-minimize,
   caption-restore, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
-  customize, download, droplet, edit, external, eye, folder, forward, gear, glasses, grid, grip, heart,
-  home, info, key, link, location, lock, menu, mic, more-horizontal, more-vertical, mute, notes,
+  customize, download, droplet, edit, enter, external, eye, folder, forward, gear, glasses, glint, grid, grip, heart,
+  home, info, key, link, location, lock, menu, menu-dots, mic, more-horizontal, more-vertical, mute, notes,
   person, pin, pip, plus, print, private, puzzle, reader, reload, reset, search, shield, sidebar, split,
   split-left, split-right, swap, tab-group, tab-switch, trash, unlock, unsplit, volume, warning, workspace, workspace-add, workspace-{bolt, book,
   briefcase, cart, code, game, globe, heart, home, leaf, music, star}, zoom-in, zoom-out.
@@ -226,15 +232,22 @@ draw identical shapes.
 - Durations: `--bw-dur-fast` for fades and hover colour, `--bw-dur-base` for movement and scale,
   `--bw-dur-slow` for large surfaces. Easing `--bw-ease-out` for enters, `--bw-ease-move` for
   point-to-point, `linear` (`--bw-ease-fade`) for fades, `--bw-ease-in` for exits.
+- Micro motion on a single control (the toolbar menu button's three dots, toolbar.css `.tb-menu`)
+  may use `--bw-ease-spring` (a small overshoot) and `--bw-stagger` (30ms between siblings). It
+  moves the glyph's own shapes with transform/translate only, rests on the untouched pixel-snapped
+  glyph, and sits inside `@media (prefers-reduced-motion: no-preference)`.
 - Enter: add `.bw-enter` (opacity 0 -> 1 with 4px drop and .98 scale, 167ms out-ease).
   `.is-down` drops from above (menus under the toolbar), `.is-rise` rises 8px
   (palette, dialogs), `.is-scale` scales only.
-- Omnibox suggestions are not a separate popover: the pill grows down into them. While Rust says
-  the list is on screen (`suggestOpen`), `.pill.is-open` squares only the pill's bottom corners
-  (top keeps `--bw-r-omnibox`, fill and focus ring exactly as when closed) and the list continues the
-  same ring down its sides over the pill's fill; the list's bottom corners use `--bw-r-omnibox` too. Rust unrolls the popup's window region (167ms quint out; 100ms cubic
-  out on Escape/blur; instant on pick or submit; none when Windows animations are off); the list
-  container never transforms, only its rows settle in on first open.
+- Omnibox suggestions are not a separate popover: the pill grows down into them
+  (docs/design/omnibox.md). The focused pill, the open pill and the list share one raised material
+  (`--bw-omni-material`). While Rust says the list is on screen (`suggestOpen`), `.pill.is-open`
+  squares only the pill's bottom corners and fades its focus edge out (83ms): no outline while open.
+  The list's bottom corners use `--bw-r-omnibox`, and a native shadow under the popup separates it from
+  the page. Rust unrolls the popup's window region (167ms quint out; 100ms cubic out on
+  Escape/blur; instant on pick or submit; none when Windows animations are off). The list container
+  never transforms: its rows settle in once on first open (167ms, 10ms stagger), and the selection
+  indicator slides between rows (83ms, front-loaded; instant under reduced motion).
 - Exit: add `.bw-exit` (83ms fade) and remove the element on `animationend`; it keeps receiving
   input while it fades.
 - Reduced motion (`prefers-reduced-motion: reduce`): `--bw-dur-base` and `--bw-dur-slow` become

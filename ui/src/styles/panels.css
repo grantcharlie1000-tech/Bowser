@@ -6,7 +6,7 @@
  *
  * One panel system, prefix by role:
  *   .pn-*  side panel parts: header, search bar, 32px list rows, sticky section headers, empty state
- *   .pg-*  settings-style pages (settings, privacy): 48px label/control rows in one column
+ *   .pg-*  settings-style pages (the Privacy dashboard): 48px label/control rows in one column
  * Everything reads --bw-* tokens and the shared .bw-* components (icon button, input, button,
  * toggle, segmented, row). Hover reveals row actions; focus-within reveals them for the keyboard.
  */
@@ -511,8 +511,7 @@
 }
 
 /* ---- Settings-style pages: one column, 48px rows, hairlines, no cards ---- */
-.pg-page,
-.pg-settings {
+.pg-page {
   display: flex;
 }
 
@@ -528,8 +527,7 @@
   margin: 0 auto;
 }
 
-.pg-page .pn-status,
-.pg-main .pn-status {
+.pg-page .pn-status {
   max-width: 640px;
   margin: 0 auto;
   padding-inline: 0;
@@ -597,15 +595,6 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--bw-space-2);
-}
-
-.pg-number {
-  width: 96px;
-  text-align: right;
-}
-
-.pg-wide {
-  width: 260px;
 }
 
 .pg-pair .bw-segmented > button {
@@ -681,164 +670,8 @@
   gap: var(--bw-space-2);
 }
 
-/* Settings: 220px nav + content column */
-.pg-settings {
-  flex-direction: row;
-}
-
-.pg-nav {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  width: 220px;
-  padding: 0 var(--bw-space-2);
-  border-right: 1px solid var(--bw-hairline);
-}
-
-.pg-nav-title {
-  display: flex;
-  align-items: center;
-  height: 44px;
-  margin: 0;
-  padding: 0 var(--bw-space-2);
-  font-size: var(--bw-text-body);
-  line-height: var(--bw-leading-body);
-  font-weight: var(--bw-weight-strong);
-}
-
-.pg-nav-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--bw-space-0_5);
-}
-
-.pg-nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--bw-space-3);
-  height: 32px;
-  margin: 0;
-  padding: 0 var(--bw-space-2);
-  border: 0;
-  border-radius: var(--bw-r-row);
-  background: transparent;
-  color: var(--bw-text);
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
-}
-
-.pg-nav-item:hover {
-  background: var(--bw-hover);
-}
-
-.pg-nav-item[aria-current="page"] {
-  background: var(--bw-island);
-}
-
-.pg-main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0; /* the stacked (narrow) layout must let .pg-scroll shrink, not push the footer off */
-}
-
-.pg-footer {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--bw-space-2);
-  padding: var(--bw-space-3) var(--bw-space-6);
-  border-top: 1px solid var(--bw-hairline);
-}
-
-.pg-note {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
-}
-
-.pg-footer[hidden] {
-  display: none;
-}
-
-/* Settings > Media support: on-demand check, status chips, suggestion list */
-.pg-settings .pg-media-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--bw-space-3);
-  margin-top: var(--bw-space-3);
-}
-
-.pg-settings .pg-media > .pg-desc {
-  display: block;
-  margin-top: var(--bw-space-3);
-}
-
-.pg-settings .pg-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 var(--bw-space-3);
-  border: 1px solid var(--bw-hairline);
-  border-radius: var(--bw-r-pill);
-  color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
-}
-
-.pg-settings .pg-chip.is-hardware,
-.pg-settings .pg-chip.is-available {
-  border-color: transparent;
-  background: var(--bw-accent-soft);
-  color: var(--bw-text);
-}
-
-.pg-settings .pg-chip.is-software {
-  border-color: var(--bw-border);
-  color: var(--bw-text);
-}
-
-.pg-settings .pg-hints {
-  margin: 0;
-  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-2) var(--bw-space-6);
-  line-height: var(--bw-leading-body);
-}
-
-.pg-settings .pg-hints li + li {
-  margin-top: var(--bw-space-2);
-}
-
 @media (max-width: 640px) {
-  .pg-settings {
-    flex-direction: column;
-  }
-
-  .pg-nav {
-    width: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--bw-hairline);
-    padding-bottom: var(--bw-space-2);
-  }
-
-  .pg-nav-title {
-    height: 36px;
-  }
-
-  .pg-nav-list {
-    flex-direction: row;
-  }
-
   .pg-row {
     flex-wrap: wrap;
-  }
-
-  .pg-wide {
-    width: 100%;
   }
 }

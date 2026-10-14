@@ -104,20 +104,43 @@ impl TrackingLevel {
     }
 }
 
-/// Arrangement of the browser's tab list.
+/// Arrangement of the browser chrome: where the toolbar and the tab list sit.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TabLayout {
+    /// Toolbar row on top, full-width tab row below it. The key stays `horizontal` so settings
+    /// files written before the other layouts existed keep working.
     #[default]
-    Horizontal,
+    ToolbarTop,
+    /// Tab row on top (with the window buttons), toolbar row below it.
+    TabsTop,
+    /// One row: navigation and address bar, then the tabs, then the window buttons.
+    SingleRow,
+    /// Sidebar tab list at the left; the top tab row is absent.
     Vertical,
 }
 
 impl TabLayout {
-    fn key(self) -> &'static str {
+    /// Every layout, in the order the settings dropdown lists them.
+    pub const ALL: [TabLayout; 4] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow, Self::Vertical];
+
+    /// The value saved in `settings.txt` and exchanged with the settings page.
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Horizontal => "horizontal",
+            Self::ToolbarTop => "horizontal",
+            Self::TabsTop => "tabs-top",
+            Self::SingleRow => "single-row",
             Self::Vertical => "vertical",
         }
+    }
+
+    /// The layout named by `key`, in any letter case.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layout| layout.key().eq_ignore_ascii_case(key))
+    }
+
+    /// Whether the tab list is the left sidebar rather than a row of tabs in the top chrome.
+    pub fn is_vertical(self) -> bool {
+        self == Self::Vertical
     }
 }
 
@@ -163,7 +186,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            tab_layout: TabLayout::Horizontal,
+            tab_layout: TabLayout::ToolbarTop,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: false,
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
@@ -212,11 +235,7 @@ impl Settings {
             let (key, value) = (key.trim(), value.trim());
             match key {
                 "tab_layout" => {
-                    settings.tab_layout = match value.to_ascii_lowercase().as_str() {
-                        "horizontal" => TabLayout::Horizontal,
-                        "vertical" => TabLayout::Vertical,
-                        _ => settings.tab_layout,
-                    };
+                    settings.tab_layout = TabLayout::from_key(value).unwrap_or(settings.tab_layout);
                 }
                 "sidebar_width" => {
                     if let Ok(width) = value.parse::<u16>() {
@@ -535,12 +554,46 @@ mod tests {
         assert_eq!(settings.sidebar_width, MAX_SIDEBAR_WIDTH);
         assert_eq!(
             Settings::parse("tab_layout=sideways").tab_layout,
-            TabLayout::Horizontal
+            TabLayout::ToolbarTop
         );
         assert_eq!(
             Settings::parse("sidebar_width=30").sidebar_width,
             MIN_SIDEBAR_WIDTH
         );
+    }
+
+    #[test]
+    fn parses_every_browser_layout_key() {
+        for (key, layout) in [
+            ("horizontal", TabLayout::ToolbarTop),
+            ("tabs-top", TabLayout::TabsTop),
+            ("single-row", TabLayout::SingleRow),
+            ("vertical", TabLayout::Vertical),
+        ] {
+            assert_eq!(layout.key(), key);
+            assert_eq!(Settings::parse(&format!("tab_layout={key}\n")).tab_layout, layout, "{key}");
+            assert_eq!(Settings::parse(&format!("tab_layout={}\n", key.to_ascii_uppercase())).tab_layout, layout, "{key}");
+        }
+        // The default is the toolbar-above-tabs layout, and a file without the key keeps it.
+        assert_eq!(Settings::default().tab_layout, TabLayout::ToolbarTop);
+        assert_eq!(Settings::parse("sleep_enabled=true\n").tab_layout, TabLayout::ToolbarTop);
+        // An unknown value keeps whatever the earlier lines set rather than resetting to the default.
+        assert_eq!(Settings::parse("tab_layout=single-row\ntab_layout=sideways\n").tab_layout, TabLayout::SingleRow);
+        assert_eq!(TabLayout::from_key("toolbar-top"), None);
+    }
+
+    #[test]
+    fn every_browser_layout_survives_a_save_round_trip() {
+        for layout in TabLayout::ALL {
+            let settings = Settings { tab_layout: layout, ..sample() };
+            let text = render_updated("", &settings);
+            assert!(text.contains(&format!("tab_layout={}\n", layout.key())), "{layout:?}");
+            assert_eq!(Settings::parse(&text).tab_layout, layout, "{layout:?}");
+            // Rewriting an existing file with another layout replaces the line in place.
+            let rewritten = render_updated(&text, &Settings { tab_layout: TabLayout::TabsTop, ..settings });
+            assert_eq!(rewritten.matches("tab_layout").count(), 1);
+            assert_eq!(Settings::parse(&rewritten).tab_layout, TabLayout::TabsTop);
+        }
     }
 
     #[test]

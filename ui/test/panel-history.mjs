@@ -32,3 +32,10 @@ test('history open commands carry only a validated positive row id', () => {
   assert.equal(logic.historyOpenCommand(0x1_0000_0000, false), null);
   assert.equal(logic.historyOpenCommand(Number.MAX_SAFE_INTEGER + 1, false), null);
 });
+
+test('ctrl, cmd and middle clicks open a history entry in a new tab; a plain click does not', () => {
+  assert.equal(logic.historyClickOpensNewTab({ ctrlKey: false, metaKey: false, button: 0 }), false);
+  assert.equal(logic.historyClickOpensNewTab({ ctrlKey: true, metaKey: false, button: 0 }), true);
+  assert.equal(logic.historyClickOpensNewTab({ ctrlKey: false, metaKey: true, button: 0 }), true);
+  assert.equal(logic.historyClickOpensNewTab({ ctrlKey: false, metaKey: false, button: 1 }), true);
+});
