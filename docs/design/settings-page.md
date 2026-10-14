@@ -80,12 +80,52 @@ start URL, so a fragment navigation would cut it off.
    Only Bowser's own entry points create an internal tab.
 
 Commands: `save` (text), `reset`, `openfile`, `autoupdate` (on), `history` (on), `section` (text),
-`checkupdates`, `restartupdate`, `privacy`, `profiles`, `import`, `refresh`. (The chrome sources
-never name the password store, `chrome_host/guard.rs`, so the page has no Passwords row; it stays
-in the main menu.) The snapshot
+`checkupdates`, `restartupdate`, `privacy`, `profiles`, `import`, `refresh`, `setdefault`. (The
+chrome sources never name the password store, `chrome_host/guard.rs`, so the page has no Passwords
+row; it stays in the main menu.) The snapshot
 (`{"t":"snap","p":"settings","d":{..}}`) carries the profile settings, `historyEnabled`, `guest`,
 `profile`, `avatar`, `version`, the update state (`update`, `updateVersion`, `lastCheck`,
-`checkResult`, `checking`), `efficiencyActive`, and `ack` (`none`, `saved`, `failed`) with `error`.
+`checkResult`, `checking`), `efficiencyActive`, `defaultBrowser` (`yes`/`no`/`unknown`, read-only),
+and `ack` (`none`, `saved`, `failed`) with `error`.
+
+Profile settings (`save` lists every one of these, once each, exactly, plus the pre-existing
+`tab_layout`, `sidebar_width`, `sleep_enabled`, `sleep_after_secs`, `blocker_enabled`,
+`blocker_allow`, `automatic_tab_grouping`, `efficiency_mode`, `tracking_prevention`;
+`search_engine` stays optional): `theme` (`helium`/`system`), `theme_accent` (empty or `#rrggbb`),
+`toolbar_buttons` (comma list of `back`, `forward`, `reload`, `site-info`, `bookmark`, `newtab`,
+`split`, `reader`), `centred_address_bar`, `minimal_url`, `show_load_progress`, `frameless`,
+`rounded_content_frame`, `show_home_button`, `bookmarks_bar` (`always`/`never`/`newtab`),
+`bookmarks_bar_tab_groups`, `side_panel_position` (`left`/`right`), `tab_preview_images`,
+`tab_preview_memory`, `font_size` (`small`/`medium`/`large`), `ui_font`, `default_zoom` (25-500),
+`show_zoom_indicator`, `new_tab_beside_active`, `ctrl_tab_mru`, `shift_right_click_context`,
+`ctrl_shift_c_copy_link`, `ctrl_s_vertical_tabs`, `pin_new_tab_groups`, `split_edge_drop`,
+`block_youtube_video_ads`. Live: theme and accent (the chrome host and the split/history/settings
+hosts; the native fallback chrome keeps its fixed colours), the address bar trio, rounded content
+frame, the Home button, default zoom and its indicator, new-tab placement, Ctrl+Tab's
+most-recently-used order, and split-edge drop. After a restart: `toolbar_buttons`, `frameless`,
+the bookmarks bar settings (there is no bookmarks bar yet to show, so these are stored only),
+the side panel's dock side, the tab preview settings (no capture exists yet, stored only),
+`font_size`/`ui_font` (read by the painted chrome, the HTML toolbar and the address field; the
+address field is refreshed on save), and `pin_new_tab_groups` (stored only: tab groups are
+implicit per-domain groups with no group-level pin, and the bookmarks bar it pins to does not
+exist yet).
+
+`ctrl_shift_c_copy_link`, `ctrl_s_vertical_tabs` and `shift_right_click_context` are live. The two
+chords are not in `shortcuts::command_for`, which swallows every key it maps; they go through
+`shortcuts::command_for_gated` with the live `GatedChords` (`App::gated_chords`), so a chord whose
+setting is off, or Ctrl+S outside the vertical layout, still reaches the page. Ctrl+Shift+C copies
+the active tab's address; Ctrl+S collapses or expands the vertical sidebar. With
+`shift_right_click_context` on, Shift+Right Click over a tab, group, rail button or the split
+divider opens the window's system menu instead of Bowser's own menu.
+
+"Make Bowser the default browser" (`setdefault`, `src/default_browser.rs`): registers Bowser under
+`HKEY_CURRENT_USER` only (`StartMenuInternet`, `RegisteredApplications`, the `Bowser.HTML` ProgID
+and its `URLAssociations`/`FileAssociations`), then calls
+`IApplicationAssociationRegistrationUI::LaunchAdvancedAssociationUI` so Windows' own defaults
+picker does the actual switch. No admin, no `HKLM`, and registering alone never makes Bowser the
+live default. `defaultBrowser` reads the `http` `UserChoice` ProgID to show the current state; it
+is never part of `save`. Any failure (registration or the dialog) answers through the existing
+`ack`/`error`.
 
 Private and guest: the page edits the active profile exactly as the dialog did. In a guest window
 the history switch is disabled (a guest never saves history);
@@ -115,16 +155,26 @@ Sections (only settings Bowser really has):
 | Path | Title | Cards and rows |
 |---|---|---|
 | `profile` | You and Bowser | profile card (avatar, name, guest note), Manage profiles (the profile menu), Import from another browser |
-| `appearance` | Appearance | Browser layout (four illustrated tiles), Sidebar width (slider), Group tabs by site |
-| `privacy` | Privacy and security | Block ads and trackers, Allowed sites (chip list), Tracking prevention, Save browsing history, Privacy dashboard |
+| `appearance` | Appearance | Layout (four illustrated tiles, sidebar width slider), Theme (Helium colours/System, accent colour, reset), Toolbar (the buttons as a two-column grid with their glyphs, reset, Home button), Address bar (centred, minimal URL, load progress), Tabs (group by site, new-tab placement, Ctrl+Tab MRU, split edge drop, then previews, pinning and Ctrl+S, which do nothing yet), Window (rounded content frame, frameless), Bookmarks bar (always/never/new tab, tab groups), Helium panels (left/right), Fonts (size, custom font), Zoom (default zoom, indicator), Shortcuts (Shift+Right Click, Ctrl+Shift+C) |
+| `privacy` | Privacy and security | Block ads and trackers, Block YouTube video ads, Allowed sites (chip list), Tracking prevention, Save browsing history, Privacy dashboard |
 | `performance` | Performance | Efficiency mode (with "active now"), Sleep hidden tabs, Sleep after |
 | `search` | Search engine | Optimised, Google, DuckDuckGo (radio cards), custom provider note |
 | `media` | Media | the on-device media support check (runs when the section is first shown) |
 | `updates` | Updates | Update automatically, status card with Check for updates or Restart to update |
-| `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched) |
+| `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched), Default browser (status, "Make Bowser the default browser") |
 
-Each row: label, one-line description, control (switch, segmented, select, slider, button). Rows
-whose change waits for a restart say "Applies after restart". Changes apply on change, not on a Save
+Hierarchy is three steps: the section title (Subtitle 20/28), a group heading above its card (Body
+Strong 14/20), and the rows inside the card. Space separates them (56px between sections, 24px
+between groups, an inset hairline between rows), so a card reads as one object rather than a
+stack of strips. Each row: label, one-line description, control (switch, segmented, select,
+slider, button). Under the description, a row may carry one quiet note with its own 12px glyph,
+never a badge: "Applies after restart" (`restart` in `ROWS`) or "Has no effect yet. Bowser keeps
+your choice for when it does." (`notYet`) for a setting that is saved but not acted on: frameless,
+the bookmarks bar pair, the tab preview pair, and, until their Rust wiring lands,
+`pin_new_tab_groups`, `ctrl_s_vertical_tabs`, `ctrl_shift_c_copy_link` and
+`shift_right_click_context`. Flip the row's flag in `settings-page-logic.ts` when one starts
+working. A group whose every row is `notYet` (Bookmarks bar, Shortcuts) says so once under its
+heading instead of on each row. In a group, the rows that work come first. Changes apply on change, not on a Save
 button; Bowser answers with a snapshot and the page shows a small "Saved" toast. Live: layout and
 sidebar width, efficiency mode, sleeping tabs, search engine, history, automatic updates. After a
 restart: blocker, allow list, tracking prevention, automatic grouping (as before).
@@ -166,6 +216,7 @@ Transform and opacity only, every animation finite, nothing in native paint.
 | Jump target card glow | after a search jump | 900ms fade of a wash layer | opacity | none |
 | Switch knob | toggle | 167ms move | transform | instant |
 | Layout tile press | click | 83ms scale 0.98 | transform | none |
+| Button press | click | 167ms scale 0.97 out | transform | none |
 | "Saved" toast | Bowser confirms a save | 167ms in, 1.6s hold, 167ms out | one element | fade only |
 | Gear turns one tooth (60deg) | page enter; menu row hover | 600ms / 320ms out | 16-24px SVG | none |
 

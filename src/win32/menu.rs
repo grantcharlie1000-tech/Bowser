@@ -67,6 +67,10 @@ const LIST_GAP: i32 = 4;
 const PAD: i32 = 8;
 const RADIUS: i32 = 12;
 const ROW_RADIUS: i32 = 6;
+/// Logical px a submenu row's chevron eases to the right while the row is highlighted, hinting the
+/// flyout it opens. Rides the row's existing hover channel, so it snaps with everything else under
+/// reduced motion.
+const CHEVRON_NUDGE: i32 = 2;
 const AVATAR: i32 = 36;
 const ICON_FRAME_TIMER: usize = 0xB047;
 const ICON_FRAME_MS: u32 = 16;
@@ -1490,6 +1494,13 @@ unsafe fn draw(dc: HDC, hwnd: HWND, client: &RECT, dpi: u32, state: &State) {
     }
 }
 
+/// How far a submenu row's chevron sits from its resting spot, eased by the row's `hover` channel
+/// (0 at rest, 1 fully highlighted) and scaled to the DPI. Pure so the easing is testable without a
+/// window; reduced motion snaps `hover` to its target upstream, so this snaps with it.
+fn chevron_offset(hover: f32, dpi: u32) -> i32 {
+    (scaled(CHEVRON_NUDGE, dpi) as f32 * hover.clamp(0.0, 1.0)).round() as i32
+}
+
 /// One row: optional hover or pressed fill, the icon or check colour, the label, and the shortcut
 /// or chevron on the right.
 unsafe fn draw_item(
@@ -1609,9 +1620,11 @@ unsafe fn draw_item(
             inner.bottom,
         );
         if item.submenu {
+            // A short ease to the right while the row is highlighted, hinting the flyout it opens.
+            // Transform-only (the draw rect shifts; nothing reflows) and rides the hover channel.
             draw_text(
                 dc,
-                hint_bounds,
+                offset(hint_bounds, POINT { x: chevron_offset(hover, dpi), y: 0 }),
                 "›",
                 text,
                 DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
@@ -1879,6 +1892,19 @@ mod tests {
         assert_eq!(motion.sample(1.0, start, true), 1.0);
         assert!(!motion.running(start));
         assert_eq!(motion.sample(0.0, start, true), 0.0);
+    }
+
+    #[test]
+    fn submenu_chevron_eases_from_rest_to_the_nudge_and_scales_with_dpi() {
+        // At rest the chevron sits in place; fully highlighted it has travelled the whole nudge.
+        assert_eq!(chevron_offset(0.0, 96), 0);
+        assert_eq!(chevron_offset(1.0, 96), CHEVRON_NUDGE);
+        // Mid-ease is partway along, and the travel scales with the row's DPI like every other size.
+        assert_eq!(chevron_offset(0.5, 96), (CHEVRON_NUDGE as f32 * 0.5).round() as i32);
+        assert_eq!(chevron_offset(1.0, 192), CHEVRON_NUDGE * 2);
+        // The hover channel is already clamped upstream; guard the pure helper against stray inputs.
+        assert_eq!(chevron_offset(-0.3, 96), 0);
+        assert_eq!(chevron_offset(1.4, 96), CHEVRON_NUDGE);
     }
 
     fn item(id: usize, enabled: bool) -> Entry {

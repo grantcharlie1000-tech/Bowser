@@ -116,6 +116,11 @@ pub trait EngineAdapter {
     fn focus_page(&mut self) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Opens the page DevTools window for the active tab. Does nothing when the tab has no live
+    /// page, so the user never sees a failure on a blank or internal tab.
+    fn open_dev_tools(&mut self) -> windows::core::Result<()> {
+        Ok(())
+    }
     fn set_visible(&mut self, _visible: bool) -> windows::core::Result<()> {
         Ok(())
     }

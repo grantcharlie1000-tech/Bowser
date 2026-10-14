@@ -204,6 +204,10 @@ impl WebAppHost {
                         app.close();
                     } else {
                         let visible = state.current_app.as_deref() == Some(app_id.as_str());
+                        // Re-apply the current bounds: the rect captured when creation began may be
+                        // stale (e.g. the panel finished animating open while the controller was
+                        // still being built), which would otherwise leave the page at 0x0.
+                        let _ = unsafe { app.controller.SetBounds(state.bounds) };
                         let _ = unsafe { app.controller.SetIsVisible(visible) };
                         state.apps.insert(app_id, app);
                     }
@@ -225,6 +229,24 @@ impl WebAppHost {
         state.bounds = bounds;
         for app in state.apps.values() {
             unsafe { app.controller.SetBounds(bounds)?; }
+        }
+        Ok(())
+    }
+
+    /// Moves every controller to `bounds` and makes `app_id` the visible one, hiding the rest.
+    /// Idempotent: safe to call on every bounds change, not just when the active app changes.
+    pub fn show_app(&self, app_id: &str, bounds: RECT) -> Result<()> {
+        let mut state = self.state.borrow_mut();
+        if state.closed {
+            return Ok(());
+        }
+        state.bounds = bounds;
+        state.current_app = Some(app_id.to_owned());
+        for (id, app) in &state.apps {
+            unsafe {
+                app.controller.SetBounds(bounds)?;
+                app.controller.SetIsVisible(id == app_id)?;
+            }
         }
         Ok(())
     }

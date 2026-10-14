@@ -2,6 +2,7 @@ mod card;
 mod corner_fringe;
 mod command_palette;
 mod composer;
+mod devtools_dock;
 pub mod frame;
 pub mod glass;
 mod hover_square;
@@ -49,7 +50,8 @@ mod split_ui;
 mod window;
 
 pub(crate) use window::{
-    schedule_idle_timer, schedule_power_timer, show_pending_address, sync_address_input,
+    gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer,
+    show_pending_address, sync_address_input,
 };
 
 use windows::{
@@ -204,6 +206,31 @@ pub(crate) fn queue_split_link(owner: HWND, url: url::Url) {
     split_ui::queue_link(owner, url);
 }
 // --- end split view ---
+
+// --- developer tools dock ---
+/// Snapshot of every top-level window, taken right before `OpenDevToolsWindow` so the DevTools
+/// window it creates can be found afterwards by diffing against it.
+pub(crate) fn dev_tools_dock_snapshot() -> Vec<isize> {
+    devtools_dock::snapshot_top_level()
+}
+
+/// True and closes `tab`'s docked DevTools pane (or cancels its pending discovery) when it was
+/// open; false when there was nothing to close, so the caller opens a new one instead.
+pub(crate) fn dev_tools_dock_close_if_open(hwnd: HWND, tab: crate::tabs::TabId) -> bool {
+    devtools_dock::close_if_open(hwnd, tab)
+}
+
+/// Starts the search for the DevTools window `OpenDevToolsWindow` just asked WebView2's browser
+/// process to create for `tab`, so it can be reparented into the dock once found.
+pub(crate) fn dev_tools_dock_discover(hwnd: HWND, tab: crate::tabs::TabId, before: Vec<isize>) {
+    devtools_dock::discover(hwnd, tab, before);
+}
+
+/// The tab closed: drops its tracked DevTools pane, closing it if it was open.
+pub(crate) fn dev_tools_dock_tab_closed(hwnd: HWND, tab: crate::tabs::TabId) {
+    devtools_dock::tab_closed(hwnd, tab);
+}
+// --- end developer tools dock ---
 
 pub(crate) fn post(
     hwnd: HWND,

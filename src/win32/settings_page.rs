@@ -365,7 +365,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         });
     }
     // Theme first, then content, then show: the page never appears unthemed or stale.
-    let state = super::window::split_host_state(owner);
+    let state = super::window::split_host_state(owner, App::settings_accent(app));
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
@@ -450,6 +450,11 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
         check_result,
         ack,
         error: &error,
+        default_browser: match crate::default_browser::is_http_default() {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        },
     })
 }
 
@@ -508,6 +513,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 App::apply_tab_layout_settings(app, settings.tab_layout, settings.sidebar_width);
                 App::apply_efficiency_mode(app, settings.efficiency_mode);
                 App::apply_sleep_settings(app, settings.sleep_enabled, settings.sleep_after_secs);
+                App::apply_live_settings(app, &settings);
             }
             answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
         }
@@ -519,6 +525,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 App::apply_tab_layout_settings(app, defaults.tab_layout, defaults.sidebar_width);
                 App::apply_efficiency_mode(app, defaults.efficiency_mode);
                 App::apply_sleep_settings(app, defaults.sleep_enabled, defaults.sleep_after_secs);
+                App::apply_live_settings(app, &defaults);
             }
             answer(owner, saved.map_err(|error| format!("Settings could not be reset: {error}.")));
         }
@@ -567,6 +574,12 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
         Action::Refresh => {
             let _ = with(owner, |rt| rt.dirty = true);
+        }
+        Action::SetDefault => {
+            let Some(exe) = crate::default_browser::current_exe() else {
+                return answer(owner, Err("Bowser's own program path could not be found.".into()));
+            };
+            answer(owner, crate::default_browser::make_default(&exe));
         }
     }
 }

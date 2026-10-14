@@ -20,7 +20,7 @@ const bundled = esbuild.buildSync({
   logLevel: 'silent',
 });
 const bundledUrl = `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString('base64')}`;
-const { parseInbound, MAX_TABS } = await import(bundledUrl);
+const { parseInbound, MAX_TABS, MAX_TEXT } = await import(bundledUrl);
 
 const names = (text) => findViolations(text).map((v) => v.rule);
 
@@ -144,12 +144,12 @@ test('a tabs message holds up to MAX_TABS items and no more', () => {
   assert.equal(parseInbound({ v: 1, t: 'tabs', active: 1, items: over }), null);
 });
 
-test('setText truncates at 2048 UTF-16 units without splitting a surrogate pair', () => {
-  const text = 'a'.repeat(2047) + '😀tail';
+test('setText truncates at MAX_TEXT UTF-16 units without splitting a surrogate pair', () => {
+  const text = 'a'.repeat(MAX_TEXT - 1) + '😀tail';
   const parsed = parseInbound({ t: 'setText', text, select: true });
-  assert.equal(parsed.text.length, 2047);
-  assert.equal(parsed.text, 'a'.repeat(2047));
-  assert.equal(parseInbound({ t: 'setText', text: '😀'.repeat(1200), select: false }).text.length, 2048);
+  assert.equal(parsed.text.length, MAX_TEXT - 1);
+  assert.equal(parsed.text, 'a'.repeat(MAX_TEXT - 1));
+  assert.equal(parseInbound({ t: 'setText', text: '😀'.repeat(MAX_TEXT / 2 + 100), select: false }).text.length, MAX_TEXT);
 });
 
 test('a full toolbar state message is accepted for all chrome views', () => {

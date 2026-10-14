@@ -257,7 +257,7 @@ export function applyState(view: View, state: StateMsg): void {
   setReloadMode(view.reload, state.loading);
 
   // Transform only (scaleX): the bar never changes layout. Opacity hides it at rest and at 100%.
-  const loadingNow = state.loading && state.progress < 100;
+  const loadingNow = state.loading && state.progress < 100 && (state.showProgress ?? true);
   view.progress.style.transform = `scaleX(${Math.max(0, Math.min(1, state.progress / 100))})`;
   view.progress.style.opacity = loadingNow ? '1' : '0';
   view.pill.classList.toggle('is-loading', loadingNow);
@@ -277,8 +277,9 @@ export function applyState(view: View, state: StateMsg): void {
   const text = state.label.trim() !== '' ? state.label : SECURITY_LABEL[state.security];
   label(site, text);
 
-  // Zoom chip: only while the page is zoomed. Nothing about the pill's box changes at 100%.
-  const zoomed = isZoomed(state.zoom);
+  // Zoom chip: only while the page is zoomed and `show_zoom_indicator` is on. Nothing about the
+  // pill's box changes at 100%.
+  const zoomed = state.showZoom !== false && isZoomed(state.zoom);
   view.zoom.hidden = !zoomed;
   if (zoomed) {
     const zoom = state.zoom as number;
@@ -292,7 +293,7 @@ export function applyState(view: View, state: StateMsg): void {
   }
 }
 
-export function applyTheme(theme: Theme, solid: boolean, dark: boolean): void {
+export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string): void {
   const root = document.documentElement;
   for (const token of THEME_TOKENS) {
     const value = theme[token];
@@ -300,4 +301,8 @@ export function applyTheme(theme: Theme, solid: boolean, dark: boolean): void {
   }
   document.body.classList.toggle('solid', solid);
   root.dataset.scheme = dark ? 'dark' : 'light';
+  // `font_size`/`ui_font`: the chrome's text size and face. Absent (other HTML surfaces that do
+  // not send them) leaves the page's own default alone.
+  if (fontScale !== undefined) root.style.fontSize = `${fontScale}%`;
+  if (uiFont !== undefined) root.style.fontFamily = uiFont;
 }

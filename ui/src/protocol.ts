@@ -8,7 +8,9 @@ export type { PairMsg, PrivatePageMsg, SplitCommand, SplitDropMsg, SplitInbound,
 // --- end split view ---
 
 export const PROTOCOL_VERSION = 1;
-export const MAX_TEXT = 2048;
+// Raised from 2048 so the settings page's `save` payload (every profile setting) fits; mirrors
+// chrome_host::protocol::MAX_TEXT_CHARS.
+export const MAX_TEXT = 4096;
 const MAX_LABEL = 512;
 /** Rail button label (also its tooltip and letter-tile source). */
 const MAX_RAIL_LABEL = 64;
@@ -184,14 +186,24 @@ export interface StateMsg {
   readonly progress: number;
   readonly security: Security;
   readonly label: string;
+  /** `show_load_progress` setting. Absent in older hosts, which means shown. */
+  readonly showProgress?: boolean;
   /** A permission request on the current page was denied (passive toolbar indicator). */
   readonly permblocked?: boolean;
   /** The page zoom of the active tab in percent (25 to 500). Absent in older hosts; 100 means no chip. */
   readonly zoom?: number;
+  /** `show_zoom_indicator` setting: whether the zoom chip may show at all. Absent in older hosts,
+   * which means shown. */
+  readonly showZoom?: boolean;
   /** The active tab is a private tab (the pill shows the private indicator). Absent in older hosts. */
   readonly private?: boolean;
   /** The reader view button. Absent in older hosts, which means hidden. */
   readonly reader?: ReaderPill;
+  /** `font_size`, as a percentage of the default chrome font size. Absent in older hosts, which
+   * means 100. */
+  readonly fontScale?: number;
+  /** `ui_font`; empty or absent means the page's own default font-family. */
+  readonly uiFont?: string;
   readonly theme: Theme;
 }
 export interface SetTextMsg {
@@ -830,11 +842,15 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'permblocked', 'zoom', 'private', 'reader', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'fontScale', 'uiFont', 'theme'])) return null;
+      if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
+      if ('showZoom' in raw && !isBool(raw.showZoom)) return null;
       if ('private' in raw && !isBool(raw.private)) return null;
       if ('reader' in raw && !isOneOf(raw.reader, READER_PILL)) return null;
+      if ('fontScale' in raw && !isInt(raw.fontScale, 50, 200)) return null;
+      if ('uiFont' in raw && !isStr(raw.uiFont, 64)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -860,10 +876,14 @@ export function parseInbound(data: unknown): Inbound | null {
         progress,
         security,
         label,
+        ...(isBool(raw.showProgress) ? { showProgress: raw.showProgress } : {}),
         ...(isBool(raw.permblocked) ? { permblocked: raw.permblocked } : {}),
         ...(typeof raw.zoom === 'number' ? { zoom: raw.zoom } : {}),
+        ...(isBool(raw.showZoom) ? { showZoom: raw.showZoom } : {}),
         ...(isBool(raw.private) ? { private: raw.private } : {}),
         ...(isOneOf(raw.reader, READER_PILL) ? { reader: raw.reader } : {}),
+        ...(isInt(raw.fontScale, 50, 200) ? { fontScale: raw.fontScale } : {}),
+        ...(isStr(raw.uiFont, 64) ? { uiFont: raw.uiFont } : {}),
         theme: parseTheme(raw.theme),
       };
     }

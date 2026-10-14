@@ -54,10 +54,87 @@ test('the Rust snapshots pass the strict snapshot contract and anything else is 
     { ...d, guest: true, historyEnabled: true },
     { ...d, profile: 'x'.repeat(65) },
     { ...d, autoUpdate: 'yes' },
+    { ...d, theme: 'dark' },
+    { ...d, themeAccent: '1a2b3c' },
+    { ...d, themeAccent: '#1A2B3C' },
+    { ...d, themeAccent: '#abc' },
+    { ...d, toolbarButtons: 'back,back' },
+    { ...d, toolbarButtons: 'back,sidebar' },
+    { ...d, toolbarButtons: 'back,' },
+    { ...d, centredAddressBar: 'true' },
+    { ...d, frameless: 0 },
+    { ...d, bookmarksBar: 'sometimes' },
+    { ...d, sidePanelPosition: 'top' },
+    { ...d, fontSize: 'huge' },
+    { ...d, uiFont: 'x'.repeat(65) },
+    { ...d, uiFont: 'a\nb' },
+    { ...d, defaultZoom: 24 },
+    { ...d, defaultZoom: 501 },
+    { ...d, defaultZoom: 100.5 },
+    { ...d, showZoomIndicator: 'yes' },
+    { ...d, ctrlSVerticalTabs: 1 },
+    { ...d, defaultBrowser: 'maybe' },
   ];
   for (const value of bad) assert.equal(logic.parseSettingsSnapshot(value), null, JSON.stringify(value).slice(0, 120));
-  const { readable: _r, ...missing } = d;
-  assert.equal(logic.parseSettingsSnapshot(missing), null);
+  for (const key of Object.keys(d)) {
+    const missing = { ...d };
+    delete missing[key];
+    assert.equal(logic.parseSettingsSnapshot(missing), null, `missing ${key}`);
+  }
+});
+
+test('browser-customizability fields: parse, draftOf and save', () => {
+  const d = fixture.snap.d;
+  const s = logic.parseSettingsSnapshot(d);
+  assert.equal(s.theme, 'helium');
+  assert.equal(s.themeAccent, '');
+  assert.equal(s.toolbarButtons, 'back,forward,reload,site-info,bookmark,newtab,split,reader');
+  assert.equal(s.defaultBrowser, 'yes');
+  assert.ok(logic.parseSettingsSnapshot({ ...d, themeAccent: '#1a2b3c' }));
+  assert.ok(logic.parseSettingsSnapshot({ ...d, toolbarButtons: '' }));
+  assert.ok(logic.parseSettingsSnapshot({ ...d, toolbarButtons: 'reader,back' }), 'any order is accepted from Rust');
+
+  const draft = logic.draftOf(s);
+  for (const key of [
+    'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame',
+    'showHomeButton', 'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont',
+    'defaultZoom', 'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs',
+    'pinNewTabGroups', 'splitEdgeDrop', 'blockYoutubeVideoAds',
+  ]) {
+    assert.deepEqual(draft[key], s[key], key);
+  }
+  assert.ok(!('defaultBrowser' in draft), 'defaultBrowser is read-only, never part of the draft');
+
+  const text = logic.saveText(draft);
+  for (const line of [
+    'theme=helium', 'theme_accent=', 'toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader', 'centred_address_bar=true',
+    'minimal_url=true', 'show_load_progress=true', 'frameless=false', 'rounded_content_frame=true', 'show_home_button=true', 'bookmarks_bar=never',
+    'bookmarks_bar_tab_groups=false', 'side_panel_position=left', 'tab_preview_images=true', 'tab_preview_memory=true', 'font_size=medium',
+    'ui_font=', 'default_zoom=100', 'show_zoom_indicator=true', 'new_tab_beside_active=true', 'ctrl_tab_mru=true', 'shift_right_click_context=false',
+    'ctrl_shift_c_copy_link=true', 'ctrl_s_vertical_tabs=false', 'pin_new_tab_groups=false', 'split_edge_drop=true', 'block_youtube_video_ads=true',
+  ]) {
+    const matches = text.split('\n').filter((l) => l === line);
+    assert.equal(matches.length, 1, `${line} appears exactly once`);
+  }
+  assert.doesNotMatch(text, /defaultBrowser|default_browser/);
+
+  for (const broken of [
+    { theme: 'dark' },
+    { themeAccent: '1a2b3c' },
+    { themeAccent: '#ABCDEF' },
+    { toolbarButtons: 'back,back' },
+    { toolbarButtons: 'back,sidebar' },
+    { bookmarksBar: 'sometimes' },
+    { sidePanelPosition: 'top' },
+    { fontSize: 'huge' },
+    { uiFont: 'x'.repeat(65) },
+    { defaultZoom: 24 },
+    { defaultZoom: 501 },
+  ]) {
+    assert.equal(logic.saveText({ ...draft, ...broken }), null, JSON.stringify(broken));
+  }
+  assert.ok(logic.saveText({ ...draft, themeAccent: '' }));
+  assert.ok(logic.saveText({ ...draft, toolbarButtons: '' }));
 });
 
 test('settingsgo carries one known section or the top, nothing else', () => {
@@ -83,13 +160,20 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   for (const section of logic.SETTINGS_SECTIONS) assert.ok(logic.ROWS.some((row) => row.section === section), `${section} has rows`);
   // The restart notes match what Rust applies live (chrome_host/settings.rs, settings_page.rs run()).
   const restart = logic.ROWS.filter((row) => row.restart).map((row) => row.id).sort();
-  assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'tracking']);
+  assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'sidePanelPosition', 'tracking']);
+  // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
+  const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
+  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'pinNewTabGroups', 'shiftRightClickContext', 'tabPreviewImages', 'tabPreviewMemory']);
+  for (const row of logic.ROWS) {
+    assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
+    assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
+  }
 });
 
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -97,7 +181,7 @@ test('save sends every profile setting exactly once in the order Rust expects', 
   for (const broken of [{ sidebarWidth: 999 }, { sleepAfterSecs: 10 }, { blockerAllow: ['a b'] }, { tabLayout: 'sideways' }, { efficiencyMode: 'max' }, { searchEngine: 'bing' }]) {
     assert.equal(logic.saveText({ ...draft, ...broken }), null, JSON.stringify(broken));
   }
-  assert.equal(logic.saveText({ ...draft, blockerAllow: Array.from({ length: 300 }, (_, i) => `site${i}.example`) }), null, 'over the 2048 text cap');
+  assert.equal(logic.saveText({ ...draft, blockerAllow: Array.from({ length: 300 }, (_, i) => `site${i}.example`) }), null, 'over the MAX_TEXT cap');
 });
 
 test('search matches every word across label, description, keywords and section; marks are merged', () => {
@@ -109,6 +193,10 @@ test('search matches every word across label, description, keywords and section;
   assert.ok(logic.matchRows('TAB layout').has('layout'));
   assert.ok(logic.matchRows('privacy cookies').has('dashboard'), 'section title plus keyword');
   assert.ok(logic.matchRows('netflix').has('media'));
+  assert.ok(logic.matchRows('youtube').has('blockYoutubeVideoAds'));
+  assert.ok(logic.matchRows('frameless').has('frameless'));
+  assert.ok(logic.matchRows('accent colour').has('themeAccent'));
+  assert.ok(logic.matchRows('default browser').has('defaultBrowser'));
   assert.equal(logic.matchRows('zzzz').size, 0);
   assert.ok(logic.matchRows('café').size === 0);
   assert.equal(logic.fold('  Café  Au   Lait '), 'cafe au lait');
@@ -292,6 +380,23 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.equal(app.querySelector('.sp-tile[aria-checked="true"]')?.querySelector('.sp-tile-name').textContent, 'Toolbar above tabs');
 });
 
+test('rows that do nothing yet say so; a group of only such rows says it once', () => {
+  const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
+  assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('blocker').textContent, logic.RESTART_NOTE);
+  assert.equal(flagOf('centredAddressBar'), null);
+  // Bookmarks bar and Shortcuts hold only such rows: one note under the heading, none on the rows.
+  for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
+  const notes = app.querySelectorAll('.sp-group-note');
+  assert.equal(notes.length, 2);
+  assert.ok(notes.every((note) => note.textContent === logic.NOT_YET_GROUP_NOTE));
+  const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
+  assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless sp-f-frameless', 'the note is read with the control');
+  assert.ok(app.querySelectorAll('.sp-flag').every((flag) => !/Applies after restart/.test(flag.textContent) || !logic.ROWS.find((r) => `sp-f-${r.id}` === flag.id)?.notYet));
+});
+
 test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
   sent.length = 0;
   const vertical = app.querySelectorAll('.sp-tile')[3];
@@ -337,4 +442,64 @@ test('a guest cannot switch history on', () => {
   sent.length = 0;
   history.click();
   assert.deepEqual(sent, []);
+});
+
+test('the toolbar checklist toggles one id and the reset button restores the full catalog', () => {
+  deliver(fixture.snap);
+  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
+  const switches = toolbarRow.querySelectorAll('[role="switch"]');
+  assert.equal(switches.length, 8);
+  assert.ok(switches.every((sw) => sw.getAttribute('aria-checked') === 'true'), 'the default set is every button, all on');
+  sent.length = 0;
+  switches[0].click();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /toolbar_buttons=forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  const reset = toolbarRow.querySelector('.sp-toolbar-actions').querySelector('button');
+  sent.length = 0;
+  reset.click();
+  assert.match(sent[0].text, /toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
+});
+
+test('the theme reset button clears both theme and accent in one save', () => {
+  deliver(fixture.snap);
+  const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
+  const accent = themeRow.querySelector('input');
+  accent.value = '#abcdef';
+  accent.dispatch('change');
+  const reset = themeRow.querySelector('button');
+  sent.length = 0;
+  reset.click();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /theme=helium\n/);
+  assert.match(sent[0].text, /theme_accent=\n/);
+});
+
+test('default browser status reflects the snapshot and the button sends a bare setdefault', () => {
+  deliver(fixture.snap);
+  const row = app.querySelector('.sp-row[data-row="defaultBrowser"]');
+  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser is your default browser.');
+  sent.length = 0;
+  row.querySelector('button').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'setdefault' }]);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'no' } });
+  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser is not your default browser.');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'unknown' } });
+  assert.equal(row.querySelector('.sp-note').textContent, 'Bowser could not check whether it is the default browser.');
+});
+
+test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
+  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
+  for (const sw of toolbarRow.querySelectorAll('[role="switch"]')) assert.equal(sw.disabled, true);
+  assert.equal(toolbarRow.querySelector('.sp-toolbar-actions').querySelector('button').disabled, true);
+  const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
+  assert.equal(themeRow.querySelector('input').disabled, true);
+  assert.equal(themeRow.querySelector('button').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="uiFont"]').querySelector('input').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="defaultZoom"]').querySelector('input').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="centredAddressBar"]').querySelector('[role="switch"]').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="fontSize"]').querySelectorAll('[role="radio"]').every((b) => b.disabled), true);
+  // A registry action, not a settings.txt value: stays enabled like "Open settings file" and "Reset settings".
+  assert.equal(app.querySelector('.sp-row[data-row="defaultBrowser"]').querySelector('button').disabled, false);
+  deliver(fixture.snap);
 });

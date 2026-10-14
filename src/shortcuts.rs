@@ -58,6 +58,16 @@ pub enum Command {
     /// Ctrl+Alt+R turns reader view on or off for the active page. The one binding that uses
     /// Ctrl and Alt together (see `ctrl_alt_r_is_the_only_ctrl_alt_chord`).
     ToggleReader,
+    /// F12 and Ctrl+Shift+I toggle the docked DevTools pane for the active tab.
+    OpenDevTools,
+    /// Ctrl+N opens another window for this profile.
+    NewWindow,
+    /// Ctrl+Shift+C copies the active tab's address. Only bound while `ctrl_shift_c_copy_link` is on
+    /// (see [`GatedChords`]); otherwise the chord belongs to the page.
+    CopyLink,
+    /// Ctrl+S collapses or expands the vertical sidebar. Only bound while `ctrl_s_vertical_tabs` is
+    /// on and the vertical layout is active (see [`GatedChords`]); otherwise the page keeps Ctrl+S.
+    ToggleSidebar,
 }
 
 /// Commands that flip a setting. An auto-repeated key press must not flip it again.
@@ -69,7 +79,29 @@ pub fn is_toggle(command: Command) -> bool {
             | Command::ToggleNotes
             | Command::TogglePictureInPicture
             | Command::ToggleReader
+            | Command::OpenDevTools
+            | Command::ToggleSidebar
     )
+}
+
+/// Which setting-gated chords are bound right now. [`command_for`] stays the fixed table; a chord that
+/// only exists while a setting is on must not be swallowed while it is off, so it is reached through
+/// [`command_for_gated`] with the live state. The default binds none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GatedChords {
+    /// `ctrl_shift_c_copy_link`.
+    pub copy_link: bool,
+    /// `ctrl_s_vertical_tabs` while the vertical tab layout is active.
+    pub toggle_sidebar: bool,
+}
+
+impl GatedChords {
+    pub fn new(copy_link: bool, ctrl_s_vertical_tabs: bool, vertical_layout: bool) -> Self {
+        Self {
+            copy_link,
+            toggle_sidebar: ctrl_s_vertical_tabs && vertical_layout,
+        }
+    }
 }
 
 const VK_TAB: u32 = 0x09;
@@ -91,12 +123,15 @@ const VK_B: u32 = 0x42;
 const VK_D: u32 = 0x44;
 const VK_E: u32 = 0x45;
 const VK_H: u32 = 0x48;
+const VK_I: u32 = 0x49;
 const VK_K: u32 = 0x4B;
 const VK_L: u32 = 0x4C;
 const VK_M: u32 = 0x4D;
 const VK_N: u32 = 0x4E;
 const VK_P: u32 = 0x50;
+const VK_C: u32 = 0x43;
 const VK_R: u32 = 0x52;
+const VK_S: u32 = 0x53;
 const VK_T: u32 = 0x54;
 const VK_W: u32 = 0x57;
 const VK_Y: u32 = 0x59;
@@ -104,6 +139,7 @@ const VK_Z: u32 = 0x5A;
 const VK_DELETE: u32 = 0x2E;
 const VK_OEM_COMMA: u32 = 0xBC;
 const VK_F4: u32 = 0x73;
+const VK_F12: u32 = 0x7B;
 const VK_OEM_5: u32 = 0xDC;
 const VK_F5: u32 = 0x74;
 const VK_F6: u32 = 0x75;
@@ -143,6 +179,7 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         (VK_P, true, true, false) => Some(Command::NewPrivateTab),
         (VK_M, true, true, false) => Some(Command::ShowProfileMenu),
         (VK_K, true, true, false) => Some(Command::ShowCommandPalette),
+        (VK_N, true, false, false) => Some(Command::NewWindow),
         (VK_N, true, true, false) => Some(Command::ToggleNotes),
         (VK_D, true, false, false) => Some(Command::AddBookmark),
         (VK_E, true, true, false) => Some(Command::ShowExtensionsMenu),
@@ -160,8 +197,25 @@ pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Comma
         }
         (VK_0, true, false, false) | (VK_NUMPAD0, true, false, false) => Some(Command::ZoomReset),
         (VK_R, true, false, true) => Some(Command::ToggleReader),
+        (VK_F12, false, false, false) | (VK_I, true, true, false) => Some(Command::OpenDevTools),
         _ => None,
     }
+}
+
+/// [`command_for`] plus the chords whose setting is on in `gated`. A chord whose setting is off maps
+/// to `None`, so callers that swallow mapped keys leave it to the page.
+pub fn command_for_gated(
+    key: u32,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    gated: GatedChords,
+) -> Option<Command> {
+    command_for(key, ctrl, shift, alt).or(match (key, ctrl, shift, alt) {
+        (VK_C, true, true, false) if gated.copy_link => Some(Command::CopyLink),
+        (VK_S, true, false, false) if gated.toggle_sidebar => Some(Command::ToggleSidebar),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -200,6 +254,7 @@ mod tests {
             (VK_P, true, true, false, Command::NewPrivateTab),
             (VK_M, true, true, false, Command::ShowProfileMenu),
             (VK_K, true, true, false, Command::ShowCommandPalette),
+            (VK_N, true, false, false, Command::NewWindow),
             (VK_N, true, true, false, Command::ToggleNotes),
             (VK_D, true, false, false, Command::AddBookmark),
             (VK_E, true, true, false, Command::ShowExtensionsMenu),
@@ -218,6 +273,8 @@ mod tests {
             (VK_0, true, false, false, Command::ZoomReset),
             (VK_NUMPAD0, true, false, false, Command::ZoomReset),
             (VK_R, true, false, true, Command::ToggleReader),
+            (VK_F12, false, false, false, Command::OpenDevTools),
+            (VK_I, true, true, false, Command::OpenDevTools),
         ];
         for index in 0..8 {
             table.push((
@@ -379,6 +436,88 @@ mod tests {
         // Ctrl+R still reloads and Ctrl+Shift+R still hard-reloads.
         assert_eq!(command_for(VK_R, true, false, false), Some(Command::Reload));
         assert_eq!(command_for(VK_R, true, true, false), Some(Command::HardReload));
+    }
+
+    #[test]
+    fn dev_tools_opens_on_f12_and_ctrl_shift_i_only() {
+        assert_eq!(
+            command_for(VK_F12, false, false, false),
+            Some(Command::OpenDevTools)
+        );
+        assert_eq!(
+            command_for(VK_I, true, true, false),
+            Some(Command::OpenDevTools)
+        );
+        assert!(
+            is_toggle(Command::OpenDevTools),
+            "key-repeat must not flap the docked pane open and shut"
+        );
+        // Neighbouring chords stay unbound: F12 with modifiers and Ctrl+I without Shift reach the page.
+        for (key, ctrl, shift, alt) in [
+            (VK_F12, true, false, false),  // Ctrl+F12
+            (VK_F12, false, true, false),  // Shift+F12
+            (VK_I, true, false, false),    // Ctrl+I, italics in editors
+            (VK_I, false, false, false),   // I
+            (VK_I, true, true, true),      // Ctrl+Shift+Alt+I
+        ] {
+            assert_eq!(command_for(key, ctrl, shift, alt), None, "key {key:#04X}");
+        }
+    }
+
+    #[test]
+    fn setting_gated_chords_are_unbound_in_the_fixed_table() {
+        // command_for never claims them, so nothing that swallows keys with it can eat them.
+        assert_eq!(command_for(VK_C, true, true, false), None);
+        assert_eq!(command_for(VK_S, true, false, false), None);
+    }
+
+    #[test]
+    fn copy_link_chord_is_bound_only_while_its_setting_is_on() {
+        let on = GatedChords::new(true, false, false);
+        let off = GatedChords::default();
+        assert_eq!(
+            command_for_gated(VK_C, true, true, false, on),
+            Some(Command::CopyLink)
+        );
+        assert_eq!(command_for_gated(VK_C, true, true, false, off), None);
+        // Neighbours stay with the page whatever the setting: Ctrl+C, Ctrl+Shift+Alt+C, Shift+C.
+        for (ctrl, shift, alt) in [(true, false, false), (true, true, true), (false, true, false)] {
+            assert_eq!(command_for_gated(VK_C, ctrl, shift, alt, on), None);
+        }
+    }
+
+    #[test]
+    fn sidebar_chord_needs_its_setting_and_the_vertical_layout() {
+        let vertical = GatedChords::new(false, true, true);
+        assert_eq!(
+            command_for_gated(VK_S, true, false, false, vertical),
+            Some(Command::ToggleSidebar)
+        );
+        // Setting on but a horizontal layout, or vertical layout with the setting off: the page gets it.
+        assert_eq!(GatedChords::new(false, true, false), GatedChords::default());
+        assert_eq!(GatedChords::new(false, false, true), GatedChords::default());
+        assert_eq!(
+            command_for_gated(VK_S, true, false, false, GatedChords::default()),
+            None
+        );
+        for (ctrl, shift, alt) in [(true, true, false), (true, false, true), (false, false, false)] {
+            assert_eq!(command_for_gated(VK_S, ctrl, shift, alt, vertical), None);
+        }
+        assert!(is_toggle(Command::ToggleSidebar), "holding Ctrl+S must not flap the sidebar");
+    }
+
+    #[test]
+    fn gated_lookup_leaves_every_fixed_binding_alone() {
+        let all = GatedChords::new(true, true, true);
+        for key in 0..=0xFF_u32 {
+            for modifiers in 0..8_u8 {
+                let (ctrl, shift, alt) =
+                    (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
+                if let Some(fixed) = command_for(key, ctrl, shift, alt) {
+                    assert_eq!(command_for_gated(key, ctrl, shift, alt, all), Some(fixed));
+                }
+            }
+        }
     }
 
     #[test]

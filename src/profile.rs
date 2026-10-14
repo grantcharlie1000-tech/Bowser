@@ -801,8 +801,19 @@ pub fn spawn_guest_window() -> bool {
     command.spawn().is_ok()
 }
 
+/// Addresses a new window can be given on the command line. The launch parser accepts only
+/// these; anything else makes the new process exit before a window exists.
+pub fn can_open_in_new_window(url: &url::Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "file")
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
 /// Starts a new Bowser process for `profile` and opens `url` in its initial tab.
 pub fn spawn_window_with_url(profile: &Profile, url: &url::Url) -> bool {
+    if !can_open_in_new_window(url) {
+        return false;
+    }
     spawn_window_inner(profile, Some(url))
 }
 
@@ -885,6 +896,27 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_new_window_accepts_only_a_plain_http_https_or_file_address() {
+        let ok = [
+            "https://example.com/a",
+            "http://example.com",
+            "file:///C:/page.html",
+        ];
+        for address in ok {
+            assert!(can_open_in_new_window(&url::Url::parse(address).unwrap()), "{address}");
+        }
+        let refused = [
+            "bowser://settings",
+            "javascript:alert(1)",
+            "https://user:pass@example.com/",
+            "https://user@example.com/",
+        ];
+        for address in refused {
+            assert!(!can_open_in_new_window(&url::Url::parse(address).unwrap()), "{address}");
+        }
     }
 
     #[test]

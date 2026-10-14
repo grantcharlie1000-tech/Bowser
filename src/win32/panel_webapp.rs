@@ -21,64 +21,16 @@ use windows::{
     Win32::{
         Foundation::{HWND, RECT, RECT as GdiRect},
         Graphics::Gdi::{
-            BI_RGB, DIB_RGB_COLORS, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DrawTextW,
-            HDC, InvalidateRect, SetBkMode, SetTextColor, StretchDIBits,
-            BITMAPINFO, BITMAPINFOHEADER, TRANSPARENT,
+            DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DrawTextW, HDC, InvalidateRect,
+            SetBkMode, SetTextColor, TRANSPARENT,
         },
         UI::HiDpi::GetDpiForWindow,
     },
 };
 
-const APP_HEADER_DIP: i32 = 78;
-const HEADER_BUTTONS_DIP: i32 = 30;
-const BUTTON_WIDTH_DIP: i32 = 54;
-const BUTTON_GAP_DIP: i32 = 4;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Rect {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HeaderAction {
-    Back,
-    ReloadStop,
-    NewTab,
-    Home,
-    Close,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct HeaderButton {
-    action: HeaderAction,
-    rect: Rect,
-}
-
-fn header_buttons(width: i32, dpi: u32) -> Vec<Rect> {
-    let scale = |dip: i32| dip.saturating_mul(dpi.max(96) as i32) / 96;
-    let button = scale(BUTTON_WIDTH_DIP);
-    let gap = scale(BUTTON_GAP_DIP);
-    let total = button * 5 + gap * 4;
-    let left = ((width - total) / 2).max(scale(8));
-    let top = scale(APP_HEADER_DIP - HEADER_BUTTONS_DIP);
-    (0..5)
-        .map(|index| {
-            let x = left + index * (button + gap);
-            Rect { left: x, top, right: x + button, bottom: top + scale(HEADER_BUTTONS_DIP) }
-        })
-        .collect()
-}
-
-fn hit_header_button(buttons: &[HeaderButton], point: (i32, i32)) -> Option<HeaderAction> {
-    buttons.iter().find(|b| contains(b.rect, point)).map(|b| b.action)
-}
-
-fn contains(rect: Rect, (x, y): (i32, i32)) -> bool {
-    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
-}
+/// The Retry button shown over a failed page, in panel-local DIPs (left, top, right, bottom below
+/// the content top). The only painted control left: the site otherwise fills the whole panel.
+const RETRY_DIP: (i32, i32, i32, i32) = (16, 42, 104, 78);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ViewState {
@@ -109,12 +61,9 @@ impl ViewState {
 
 #[derive(Clone)]
 struct AppView {
-    name: String,
     initial_url: String,
     current_url: String,
-    unnamed: bool,
     state: ViewState,
-    favicon: Option<Vec<u8>>,
 }
 
 struct Shared {
@@ -124,6 +73,10 @@ struct Shared {
     host: Option<WebAppHost>,
     active_id: Option<u32>,
     views: HashMap<u32, Rc<RefCell<AppView>>>,
+    /// The most recent webview rectangle (the whole panel content area). The host is created
+    /// asynchronously, so bounds that arrive before it exists are kept here and applied the moment
+    /// the controller is ready — otherwise the first-opened app sits at a 0x0 rect and stays blank.
+    webview_bounds: RECT,
 }
 
 type SharedRef = Rc<RefCell<Shared>>;
@@ -143,6 +96,7 @@ pub fn register(app: &AppRef) {
         host: None,
         active_id: None,
         views: HashMap::new(),
+        webview_bounds: RECT::default(),
     }));
     WINDOWS.with(|windows| { windows.borrow_mut().insert(app.borrow().hwnd.0 as isize, shared.clone()); });
     let config = profile.as_ref().and_then(|p| SidebarConfig::load(p.root()).ok()).unwrap_or_default();
@@ -159,7 +113,7 @@ pub fn register_app(app: &AppRef, web_app: WebApp) {
 fn register_app_with(shared: SharedRef, web_app: WebApp) {
     let id = web_app.id;
     side_panel::register_content(PanelId::WebApp(id), move || {
-        Box::new(Content::new(shared.clone(), id, web_app.name.clone(), web_app.url.clone()))
+        Box::new(Content::new(shared.clone(), id, web_app.url.clone()))
     });
 }
 
@@ -226,33 +180,28 @@ struct Content {
 }
 
 impl Content {
-    fn new(shared: SharedRef, id: u32, name: String, url: String) -> Self {
-        let unnamed = name.trim().is_empty();
+    fn new(shared: SharedRef, id: u32, url: String) -> Self {
         let view = {
             let mut state = shared.borrow_mut();
             state.views.entry(id).or_insert_with(|| Rc::new(RefCell::new(AppView {
-                name: if unnamed { "Web app".to_owned() } else { name },
                 initial_url: url.clone(),
                 current_url: url,
-                unnamed,
                 state: ViewState::Loading,
-                favicon: None,
             }))).clone()
         };
         Self { shared, id, view, bounds: RECT::default(), dpi: 96 }
     }
 
     fn ensure_host(&mut self, parent: HWND) {
-        let (needs_create, profile_dir, app, weak_shared) = {
+        let (needs_create, profile_dir, app, weak_shared, initial) = {
             let mut shared = self.shared.borrow_mut();
             shared.parent = Some(parent);
             shared.active_id = Some(self.id);
-            (shared.host.is_none(), shared.profile_dir.clone(), shared.app.clone(), Rc::downgrade(&self.shared))
+            (shared.host.is_none(), shared.profile_dir.clone(), shared.app.clone(), Rc::downgrade(&self.shared), shared.webview_bounds)
         };
         if !needs_create { self.open_current(); return; }
 
         let events = make_events(weak_shared.clone(), app.clone());
-        let initial = self.bounds;
         let app_id = self.id;
         let result = WebAppHost::begin_create(parent, initial, &profile_dir, events, move |result| {
             let Some(shared) = weak_shared.upgrade() else { return; };
@@ -261,10 +210,14 @@ impl Content {
                     let active = {
                         let mut state = shared.borrow_mut();
                         state.host = Some(host.clone());
-                        state.active_id.map(|id| (id, state.views.get(&id).cloned()))
+                        let bounds = state.webview_bounds;
+                        state.active_id.map(|id| (id, state.views.get(&id).cloned(), bounds))
                     };
-                    if let Some((id, Some(view))) = active {
+                    if let Some((id, Some(view), bounds)) = active {
                         let url = view.borrow().initial_url.clone();
+                        // Apply the bounds that accumulated during async creation before the first
+                        // controller is made, so it opens at the real panel rect, not 0x0.
+                        let _ = host.set_bounds(bounds);
                         let _ = host.open_app(&id.to_string(), &url);
                     }
                 }
@@ -289,47 +242,16 @@ impl Content {
         }
     }
 
-    fn action(&mut self, action: HeaderAction) {
-        match action {
-            HeaderAction::Close => {
-                let owner = self.shared.borrow().app.borrow().hwnd;
-                side_panel::close(owner);
-            }
-            HeaderAction::NewTab => self.open_in_tab(),
-            HeaderAction::Back => {
-                if let Some(host) = self.shared.borrow().host.clone() { let _ = host.go_back(&self.id.to_string()); }
-            }
-            HeaderAction::ReloadStop => {
-                let loading = self.view.borrow().state == ViewState::Loading;
-                let host = self.shared.borrow().host.clone();
-                if let Some(host) = host {
-                    if loading { let _ = host.stop_app(&self.id.to_string()); }
-                    else { let _ = host.retry_app(&self.id.to_string()); }
-                    self.view.borrow_mut().state = if loading { ViewState::Ready } else { ViewState::Loading };
-                } else {
-                    let parent = self.shared.borrow().parent;
-                    if let Some(parent) = parent { self.ensure_host(parent); }
-                }
-            }
-            HeaderAction::Home => {
-                let url = self.view.borrow().initial_url.clone();
-                if let Some(host) = self.shared.borrow().host.clone() {
-                    let _ = host.navigate_app(&self.id.to_string(), &url);
-                }
-                self.view.borrow_mut().state.retry();
-            }
+    /// Re-runs a failed load, or starts the host again if it never came up.
+    fn retry(&mut self) {
+        self.view.borrow_mut().state.retry();
+        let host = self.shared.borrow().host.clone();
+        if let Some(host) = host { let _ = host.retry_app(&self.id.to_string()); }
+        else {
+            let parent = self.shared.borrow().parent;
+            if let Some(parent) = parent { self.ensure_host(parent); }
         }
         self.invalidate();
-    }
-
-    fn open_in_tab(&self) {
-        let current = self.shared.borrow().host.as_ref()
-            .and_then(|host| host.current_url(&self.id.to_string()))
-            .unwrap_or_else(|| self.view.borrow().current_url.clone());
-        let Ok(url) = Url::parse(&current) else { return; };
-        let app = self.shared.borrow().app.clone();
-        App::new_tab(&app);
-        App::navigate_current(&app, &url);
     }
 
     fn invalidate(&self) {
@@ -347,68 +269,45 @@ impl PanelContent for Content {
 
     fn on_bounds_changed(&mut self, bounds: RECT) {
         self.bounds = bounds;
-        let top = bounds.top + scale(APP_HEADER_DIP, self.dpi);
-        if bounds.right <= bounds.left || bounds.bottom <= top {
-            if let Some(host) = self.shared.borrow().host.clone() { let _ = host.hide_all(); }
-            return;
-        }
+        let target = webview_rect(bounds);
+        // Remember the latest rect even while the host is still being created, so the controller can
+        // be placed correctly the instant it arrives rather than staying at its 0x0 initial bounds.
+        self.shared.borrow_mut().webview_bounds = target.unwrap_or_default();
         if let Some(host) = self.shared.borrow().host.clone() {
-            let _ = host.set_bounds(RECT { left: bounds.left, top, right: bounds.right, bottom: bounds.bottom });
+            match target {
+                Some(rect) => { let _ = host.show_app(&self.id.to_string(), rect); }
+                None => { let _ = host.hide_all(); }
+            }
         }
     }
 
     fn paint(&mut self, hdc: HDC, rect: RECT, palette: &Palette) {
+        // The site fills the panel, so only the transient states below are ever drawn natively.
         let view = self.view.borrow();
-        let header = scale(APP_HEADER_DIP, self.dpi);
-        let title = nonempty_wide(&view.name);
-        let mut title_rect = GdiRect { left: scale(56, self.dpi), top: rect.top + scale(6, self.dpi), right: rect.right - scale(8, self.dpi), bottom: rect.top + scale(34, self.dpi) };
         unsafe {
             let _ = SetBkMode(hdc, TRANSPARENT);
             let _ = SetTextColor(hdc, colorref(palette.omnibox_text));
-            if let Some(mut title) = title { let _ = DrawTextW(hdc, &mut title, &mut title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE); }
-            draw_favicon(hdc, view.favicon.as_deref(), rect.left + scale(18, self.dpi), rect.top + scale(8, self.dpi), self.dpi);
-        }
-        let buttons = build_buttons(rect.right - rect.left, self.dpi);
-        let labels = ["Back", if view.state == ViewState::Loading { "Stop" } else { "Reload" }, "New tab", "Home", "Close"];
-        for (button, label) in buttons.iter().zip(labels) {
-            let Some(mut text) = nonempty_wide(label) else { continue };
-            let mut area = GdiRect { left: rect.left + button.rect.left, top: rect.top + button.rect.top, right: rect.left + button.rect.right, bottom: rect.top + button.rect.bottom };
-            unsafe { let _ = DrawTextW(hdc, &mut text, &mut area, DT_CENTER | DT_VCENTER | DT_SINGLELINE); }
         }
         match &view.state {
-            ViewState::Loading => draw_status(hdc, "Loading…", rect, header, self.dpi, palette),
+            ViewState::Loading => draw_status(hdc, "Loading…", rect, self.dpi, palette),
             ViewState::Error(message) => {
-                draw_status(hdc, message, rect, header, self.dpi, palette);
+                draw_status(hdc, message, rect, self.dpi, palette);
                 let mut text: Vec<u16> = "Retry".encode_utf16().collect();
-                let mut retry = GdiRect { left: rect.left + scale(16, self.dpi), top: rect.top + header + scale(42, self.dpi), right: rect.left + scale(104, self.dpi), bottom: rect.top + header + scale(78, self.dpi) };
+                let (left, top, right, bottom) = retry_rect(self.dpi);
+                let mut retry = GdiRect { left: rect.left + left, top: rect.top + top, right: rect.left + right, bottom: rect.top + bottom };
                 unsafe { let _ = DrawTextW(hdc, &mut text, &mut retry, DT_CENTER | DT_VCENTER | DT_SINGLELINE); }
             }
             ViewState::Ready => {}
-            ViewState::Removed => draw_status(hdc, view.state.label(), rect, header, self.dpi, palette),
+            ViewState::Removed => draw_status(hdc, view.state.label(), rect, self.dpi, palette),
         }
     }
 
     fn on_mouse_down(&mut self, x: i32, y: i32) {
-        let top = scale(APP_HEADER_DIP, self.dpi);
+        // Only a failed page has anything native to click; a ready page is entirely the webview.
+        if !matches!(self.view.borrow().state, ViewState::Error(_)) { return; }
+        let (left, top, right, bottom) = retry_rect(self.dpi);
         let local = (x, y - self.bounds.top);
-        let buttons = build_buttons(self.bounds.right - self.bounds.left, self.dpi);
-        if let Some(action) = hit_header_button(&buttons, local) {
-            self.action(action);
-        } else if matches!(self.view.borrow().state, ViewState::Error(_))
-            && local.0 >= scale(16, self.dpi)
-            && local.0 < scale(104, self.dpi)
-            && local.1 >= top + scale(42, self.dpi)
-            && local.1 < top + scale(78, self.dpi)
-        {
-            self.view.borrow_mut().state.retry();
-            let host = self.shared.borrow().host.clone();
-            if let Some(host) = host { let _ = host.retry_app(&self.id.to_string()); }
-            else {
-                let parent = self.shared.borrow().parent;
-                if let Some(parent) = parent { self.ensure_host(parent); }
-            }
-            self.invalidate();
-        }
+        if local.0 >= left && local.0 < right && local.1 >= top && local.1 < bottom { self.retry(); }
     }
 
     fn on_focus(&mut self, focused: bool) {
@@ -421,25 +320,17 @@ impl PanelContent for Content {
         }
     }
 
-    fn title(&self) -> &str { "Web app" }
+    /// Empty so the host paints no caption: the site, not a label, is the panel's content.
+    fn title(&self) -> &str { "" }
     fn preferred_width(&self) -> i32 { 420 }
 }
 
 fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
-    let titles_weak = weak.clone();
     let favicons_weak = weak.clone();
     let nav_weak = weak.clone();
     let failed_weak = weak.clone();
     WebAppEvents {
-        title_changed: Some(Rc::new(move |id, title| {
-            if title.trim().is_empty() { return; }
-            let Some(shared) = titles_weak.upgrade() else { return; };
-            if let Some(view) = lookup_view(&shared, id) {
-                let mut view = view.borrow_mut();
-                if view.unnamed { view.name = title; }
-            }
-            invalidate_shared(&shared);
-        })),
+        title_changed: None,
         favicon_changed: Some(Rc::new(move |id, url, bytes| {
             let (Some(shared), Some(bytes)) = (favicons_weak.upgrade(), bytes) else { return; };
             let host = url.as_ref().and_then(Url::host_str).map(str::to_owned)
@@ -449,7 +340,6 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
                     persist_favicon_pointer(id, &bytes);
                 }
             }
-            if let Some(view) = lookup_view(&shared, id) { view.borrow_mut().favicon = Some(bytes); }
             ICON_CHANGED.with(|slot| { if let Some(callback) = slot.borrow().as_ref() { callback(); } });
             invalidate_shared(&shared);
         })),
@@ -506,31 +396,24 @@ fn persist_favicon_pointer(id: &str, bytes: &[u8]) {
     let _ = config.save(root);
 }
 
-fn build_buttons(width: i32, dpi: u32) -> Vec<HeaderButton> {
-    let actions = [HeaderAction::Back, HeaderAction::ReloadStop, HeaderAction::NewTab, HeaderAction::Home, HeaderAction::Close];
-    header_buttons(width, dpi).into_iter().zip(actions).map(|(rect, action)| HeaderButton { action, rect }).collect()
-}
-
-fn draw_status(hdc: HDC, text: &str, rect: RECT, header: i32, dpi: u32, palette: &Palette) {
+fn draw_status(hdc: HDC, text: &str, rect: RECT, dpi: u32, palette: &Palette) {
     let Some(mut text) = nonempty_wide(text) else { return };
-    let mut area = GdiRect { left: rect.left + scale(16, dpi), top: rect.top + header + scale(16, dpi), right: rect.right - scale(12, dpi), bottom: rect.bottom };
+    let mut area = GdiRect { left: rect.left + scale(16, dpi), top: rect.top + scale(16, dpi), right: rect.right - scale(12, dpi), bottom: rect.bottom };
     unsafe { let _ = SetTextColor(hdc, colorref(palette.omnibox_text)); let _ = DrawTextW(hdc, &mut text, &mut area, DT_LEFT | DT_VCENTER); }
 }
 
-unsafe fn draw_favicon(hdc: HDC, bytes: Option<&[u8]>, x: i32, y: i32, dpi: u32) {
-    let Some(bitmap) = bytes.and_then(|bytes| crate::favicon::decode(bytes, 24)) else { return; };
-    let mut info = BITMAPINFO::default();
-    info.bmiHeader = BITMAPINFOHEADER {
-        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: bitmap.width as i32,
-        biHeight: -(bitmap.height as i32),
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB.0,
-        ..Default::default()
-    };
-    let side = scale(24, dpi);
-    unsafe { let _ = StretchDIBits(hdc, x, y, side, side, 0, 0, bitmap.width as i32, bitmap.height as i32, Some(bitmap.bgra_premultiplied.as_ptr().cast()), &info, DIB_RGB_COLORS, windows::Win32::Graphics::Gdi::SRCCOPY); }
+/// The Retry button's rectangle relative to the content origin, in pixels. Pure.
+fn retry_rect(dpi: u32) -> (i32, i32, i32, i32) {
+    let (left, top, right, bottom) = RETRY_DIP;
+    (scale(left, dpi), scale(top, dpi), scale(right, dpi), scale(bottom, dpi))
+}
+
+/// The webview rectangle for a panel content area: the whole area, so the site fills the panel with
+/// no native header above it. Returns `None` when the panel is too small (collapsed or
+/// mid-animation) to show any page, so the webview is hidden instead of being sized to a
+/// zero/negative rectangle. Pure.
+fn webview_rect(bounds: RECT) -> Option<RECT> {
+    (bounds.right > bounds.left && bounds.bottom > bounds.top).then_some(bounds)
 }
 
 fn scale(value: i32, dpi: u32) -> i32 { value.saturating_mul(dpi.max(96) as i32) / 96 }
@@ -539,16 +422,6 @@ fn colorref(value: theme::Rgba) -> windows::Win32::Foundation::COLORREF { window
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn header_buttons_are_centered_and_hit_test_without_overlap() {
-        let buttons = build_buttons(420, 96);
-        assert_eq!(buttons.len(), 5);
-        for pair in buttons.windows(2) { assert!(pair[0].rect.right <= pair[1].rect.left); }
-        assert_eq!(hit_header_button(&buttons, center(buttons[0].rect)), Some(HeaderAction::Back));
-        assert_eq!(hit_header_button(&buttons, center(buttons[4].rect)), Some(HeaderAction::Close));
-        assert_eq!(hit_header_button(&buttons, (0, 0)), None);
-    }
 
     #[test]
     fn loading_error_retry_and_removal_transitions_are_stable() {
@@ -565,12 +438,19 @@ mod tests {
     }
 
     #[test]
-    fn header_layout_scales_at_higher_dpi() {
-        let normal = header_buttons(600, 96);
-        let high = header_buttons(900, 144);
-        assert_eq!(normal[0].right - normal[0].left, 54);
-        assert_eq!(high[0].right - high[0].left, 81);
+    fn retry_button_scales_with_dpi() {
+        assert_eq!(retry_rect(96), (16, 42, 104, 78));
+        assert_eq!(retry_rect(192), (32, 84, 208, 156));
     }
 
-    fn center(rect: Rect) -> (i32, i32) { ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2) }
+    #[test]
+    fn webview_rect_fills_the_panel_content_area_and_hides_when_too_small() {
+        // The site fills the whole content area: no header offset at any DPI.
+        let bounds = RECT { left: 0, top: 10, right: 420, bottom: 800 };
+        assert_eq!(webview_rect(bounds), Some(bounds));
+        // Collapsed/animating width yields no rect, so the controller is hidden rather than 0-sized.
+        assert_eq!(webview_rect(RECT { left: 0, top: 0, right: 0, bottom: 800 }), None);
+        // A panel with no height never produces a zero/negative-height webview.
+        assert_eq!(webview_rect(RECT { left: 0, top: 50, right: 420, bottom: 50 }), None);
+    }
 }

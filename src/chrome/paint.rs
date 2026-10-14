@@ -118,6 +118,15 @@ pub struct ChromeView<'a> {
     pub rail: Option<RailView<'a>>,
     /// Fixed toolbar and caption icon tracks driven by the window's shared frame timer.
     pub icon_motion: Option<&'a Motion>,
+    /// `rounded_content_frame`: whether the page and new-tab surface get rounded corners. Off draws
+    /// them square (radius 0).
+    pub content_rounded: bool,
+    /// `toolbar_buttons` contains `site-info`: the connection icon inside the omnibox. Off draws
+    /// nothing there and gives its space to the address text.
+    pub show_site_info: bool,
+    /// `toolbar_buttons` contains `split`: the split-view button inside the omnibox. Off draws
+    /// nothing there and gives its space to the address text.
+    pub show_split: bool,
 }
 
 impl ChromeView<'_> {
@@ -292,6 +301,11 @@ impl ChromeSurface {
     /// Recreates the cached fonts, for when the system message font changes.
     pub fn rebuild_fonts(&mut self) {
         self.text.rebuild_fonts();
+    }
+
+    /// Applies `font_size`/`ui_font`. Rebuilds every cached font when either changed.
+    pub fn set_font(&mut self, size_percent: u32, face: &str) {
+        self.text.set_font(size_percent, face);
     }
 
     /// The caret rectangle from the last omnibox paint. A caret blink only needs this repainted.
@@ -623,7 +637,7 @@ impl ChromeSurface {
         }
         let m = view.layout.metrics;
         let palette = view.palette;
-        let radius = m.px(9);
+        let radius = if view.content_rounded { m.px(9) } else { 0 };
         let base = Rgba { a: 255, ..palette.window };
         self.round(region, radius, base, dirty);
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
@@ -634,7 +648,7 @@ impl ChromeSurface {
             return;
         };
         let m = view.layout.metrics;
-        let radius = m.px(9);
+        let radius = if view.content_rounded { m.px(9) } else { 0 };
         let colour = view.palette.omnibox_border;
         if let Some(panes) = panes {
             // --- split view ---
@@ -1826,14 +1840,19 @@ impl ChromeSurface {
             },
             dirty,
         );
-        let left_inset = m.px(Metrics::OMNIBOX_TEXT_LEFT);
+        let left_inset = m.px(if view.show_site_info { Metrics::OMNIBOX_TEXT_LEFT } else { Metrics::OMNIBOX_TEXT_INSET });
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let split_button = view.layout.split_button();
+        let split_button = view.show_split.then(|| view.layout.split_button()).unwrap_or_default();
+        let text_right_limit = if view.show_split {
+            split_button.left - m.px(4)
+        } else {
+            rect.right - m.px(Metrics::OMNIBOX_TEXT_INSET)
+        };
         let text_area = Rect::new(
             rect.left + left_inset,
             top,
-            (split_button.left - m.px(4)).max(rect.left + left_inset),
+            text_right_limit.max(rect.left + left_inset),
             top + line,
         );
         let origin = text_area;
@@ -1843,10 +1862,14 @@ impl ChromeSurface {
             SiteSecurity::CertificateProblem => CERTIFICATE_WARNING,
             _ => view.palette.omnibox_placeholder,
         };
-        let button = view.layout.site_info_button();
-        self.paint_site_icon(view.omnibox.site, button, icon_colour,
-            view.icon_frame(Hit::SiteInfo), view.palette.progress_fill, dirty);
-        self.paint_split_button(view, split_button, dirty);
+        if view.show_site_info {
+            let button = view.layout.site_info_button();
+            self.paint_site_icon(view.omnibox.site, button, icon_colour,
+                view.icon_frame(Hit::SiteInfo), view.palette.progress_fill, dirty);
+        }
+        if view.show_split {
+            self.paint_split_button(view, split_button, dirty);
+        }
         // Text, selection and caret never leave the field, however far the text is scrolled.
         let field = Rect::new(text_area.left, rect.top, text_area.right, rect.bottom);
         let caret_width = m.px(1).max(1);
@@ -2814,6 +2837,10 @@ struct TextCache {
     dpi: u32,
     fonts: Vec<(u32, HFONT)>,
     line_height: i32,
+    /// `font_size`, as a percentage of the system message font. Part of the cache key alongside DPI.
+    size_percent: u32,
+    /// `ui_font`; empty means the system message font's own face.
+    face: String,
 }
 impl TextCache {
     fn new(width: i32, height: i32, dpi: u32) -> Self {
@@ -2824,6 +2851,8 @@ impl TextCache {
             dpi: 0,
             fonts: Vec::new(),
             line_height: 16,
+            size_percent: 100,
+            face: String::new(),
         };
         this.prepare_dc();
         this.set_dpi(dpi);
@@ -2835,6 +2864,17 @@ impl TextCache {
             self.select_font();
         }
         self.set_dpi(dpi);
+    }
+    /// Changes `font_size`/`ui_font`. Returns whether either differed, in which case every cached
+    /// font is rebuilt (the DPI cache key alone no longer identifies the right font).
+    fn set_font(&mut self, size_percent: u32, face: &str) -> bool {
+        if self.size_percent == size_percent && self.face == face {
+            return false;
+        }
+        self.size_percent = size_percent;
+        self.face = face.to_owned();
+        self.rebuild_fonts();
+        true
     }
     /// One-off DC state for a freshly created DIB.
     fn prepare_dc(&mut self) {
@@ -2853,7 +2893,8 @@ impl TextCache {
         self.font = if let Some((_, font)) = self.fonts.iter().find(|(d, _)| *d == dpi) {
             *font
         } else {
-            let font = create_message_font(dpi, ANTIALIASED_QUALITY);
+            let face = (!self.face.is_empty()).then_some(self.face.as_str());
+            let font = create_message_font_with(dpi, ANTIALIASED_QUALITY, self.size_percent, face);
             self.fonts.push((dpi, font));
             font
         };
@@ -2971,6 +3012,17 @@ pub fn create_message_font(
     dpi: u32,
     quality: windows::Win32::Graphics::Gdi::FONT_QUALITY,
 ) -> HFONT {
+    create_message_font_with(dpi, quality, 100, None)
+}
+
+/// [`create_message_font`], scaled by `size_percent` (`font_size`) and, when `face` is given
+/// (`ui_font`), set to that face name instead of the system message font's own.
+pub fn create_message_font_with(
+    dpi: u32,
+    quality: windows::Win32::Graphics::Gdi::FONT_QUALITY,
+    size_percent: u32,
+    face: Option<&str>,
+) -> HFONT {
     unsafe {
         let mut ncm = NONCLIENTMETRICSW {
             cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
@@ -2989,6 +3041,16 @@ pub fn create_message_font(
         }
         let mut logfont: LOGFONTW = ncm.lfMessageFont;
         logfont.lfQuality = quality;
+        if size_percent != 100 {
+            logfont.lfHeight = (i64::from(logfont.lfHeight) * i64::from(size_percent) / 100) as i32;
+        }
+        if let Some(face) = face.filter(|face| !face.is_empty()) {
+            let mut name = [0u16; 32];
+            for (slot, unit) in name.iter_mut().zip(face.encode_utf16().take(31)) {
+                *slot = unit;
+            }
+            logfont.lfFaceName = name;
+        }
         CreateFontIndirectW(&logfont)
     }
 }
@@ -3252,6 +3314,9 @@ mod tests {
             departures: &[],
             rail: None,
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         };
         let dirty = Rect::new(0, 0, 240, 84);
         let mut surface = ChromeSurface::new(500, 120, 96);
@@ -3344,6 +3409,9 @@ mod tests {
             departures: &[],
             rail: None,
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         }
     }
 
@@ -3396,6 +3464,9 @@ mod tests {
             departures,
             rail: None,
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         };
         let mut surface = ChromeSurface::new(1000, 120, 96);
         surface.paint(&view, Rect::new(0, 0, 1000, surface.height()));
@@ -3469,6 +3540,9 @@ mod tests {
                 tooltip,
             }),
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         };
         surface.paint(&view, dirty);
     }
@@ -3663,6 +3737,9 @@ mod tests {
                 tooltip: None,
             }),
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         };
         surface.paint(&view, Rect::new(0, 0, 300, 400));
     }
@@ -4788,6 +4865,9 @@ mod tests {
                                     departures: &[],
                                     rail: None,
                                     icon_motion: None,
+                                    content_rounded: true,
+                                    show_site_info: true,
+                                    show_split: true,
                                 };
                                 let mut surface = ChromeSurface::new(width, 120, dpi);
                                 surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -4865,6 +4945,9 @@ mod tests {
                 departures: &[],
                 rail: None,
                 icon_motion: None,
+                content_rounded: true,
+                show_site_info: true,
+                show_split: true,
             };
             let mut surface = ChromeSurface::new(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -4902,6 +4985,9 @@ mod tests {
                 departures: &[],
                 rail: None,
                 icon_motion: None,
+                content_rounded: true,
+                show_site_info: true,
+                show_split: true,
             };
             let mut surface = ChromeSurface::new(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
@@ -4957,6 +5043,9 @@ mod tests {
             departures: &[],
             rail: None,
             icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
         };
         let mut s = ChromeSurface::new(1000, 800, 96);
         let full_dirty = Rect::new(0, 0, 1000, s.height());

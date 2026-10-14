@@ -12,10 +12,11 @@ import { selectField, type SelectField } from './panels/select';
 import { textButton } from './panels/kit';
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
-  EFFICIENCY_MODES, LAYOUT_HINTS, MAX_SIDEBAR, MIN_SIDEBAR, ROWS, SECTIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS,
+  BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SECTIONS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
-  saveText, sleepOptions, updateView, type Draft, type EfficiencyMode, type RowSpec, type SearchEngine,
-  type SettingsSnapshot, type TabLayout, type TrackingPrevention,
+  saveText, sleepOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
+  type SearchEngine, type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
 } from './settings-page-logic';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -139,7 +140,26 @@ function layoutArt(layout: TabLayout): SVGSVGElement {
 
 // ---- The page ----
 
-interface RowNode { readonly spec: RowSpec; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly card: HTMLElement }
+interface RowNode {
+  readonly spec: RowSpec; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly card: HTMLElement;
+  /** "Applies after restart" or "no effect yet", when the row has one. */
+  readonly flag: HTMLElement | null;
+  /** The control the label and description are wired to. */
+  readonly target: HTMLElement | null;
+}
+/** A group: its heading (outside the card) and the card that holds its rows. */
+interface Group { readonly root: HTMLElement; readonly heading: HTMLElement | null; readonly card: HTMLElement }
+
+/** "Applies after restart" or "no effect yet" under a row's description, or `null`. */
+function rowFlag(spec: RowSpec): HTMLElement | null {
+  if (!spec.notYet && !spec.restart) return null;
+  const flag = el('span', `sp-flag${spec.notYet ? ' is-later' : ''}`);
+  flag.id = `sp-f-${spec.id}`;
+  const text = el('span');
+  text.textContent = spec.notYet ? NOT_YET_NOTE : RESTART_NOTE;
+  flag.append(icon(spec.notYet ? 'clock' : 'reload', { size: 12, fine: true }), text);
+  return flag;
+}
 
 export function startSettingsPage(root: HTMLElement): void {
   root.classList.add('sp-root');
@@ -245,7 +265,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const sectionNodes = new Map<SettingsSection, HTMLElement>();
   const navButtons = new Map<SettingsSection, HTMLButtonElement>();
   const rows = new Map<string, RowNode>();
-  const cards: HTMLElement[] = [];
+  const groups: Group[] = [];
   let cardSeq = 0;
 
   for (const spec of SECTIONS) {
@@ -282,19 +302,22 @@ export function startSettingsPage(root: HTMLElement): void {
     items[next]?.focus();
   });
 
-  /** A card in `section`, with an optional heading. */
+  /** A group in `section`: an optional heading above a card of rows. Returns the card. */
   const card = (section: SettingsSection, heading?: string): HTMLElement => {
+    const group = el('div', 'sp-group');
     const node = el('div', 'sp-card');
     node.setAttribute('role', 'group');
+    let h: HTMLElement | null = null;
     if (heading) {
-      const h = el('h3', 'sp-card-h');
+      h = el('h3', 'sp-group-h');
       h.id = `sp-card-${++cardSeq}`;
       h.textContent = heading;
       node.setAttribute('aria-labelledby', h.id);
-      node.append(h);
+      group.append(h);
     }
-    sectionNodes.get(section)?.append(node);
-    cards.push(node);
+    group.append(node);
+    sectionNodes.get(section)?.append(group);
+    groups.push({ root: group, heading: h, card: node });
     return node;
   };
 
@@ -316,22 +339,21 @@ export function startSettingsPage(root: HTMLElement): void {
       desc.textContent = spec.description;
       text.append(desc);
     }
-    if (spec.restart) {
-      const chip = el('span', 'sp-chip');
-      chip.textContent = 'Applies after restart';
-      text.append(chip);
-    }
+    const flag = rowFlag(spec);
+    if (flag) text.append(flag);
     node.append(text);
+    let target: HTMLElement | null = null;
     if (control) {
       const wrap = el('div', 'sp-ctl');
       wrap.append(control);
-      const target = control.matches('button, input, [role="radiogroup"]') ? control : control.querySelector<HTMLElement>('button, input, [role="radiogroup"]');
+      target = control.matches('button, input, [role="radiogroup"]') ? control : control.querySelector<HTMLElement>('button, input, [role="radiogroup"]');
       if (target && !target.hasAttribute('aria-label')) target.setAttribute('aria-labelledby', label.id);
-      if (target && desc) target.setAttribute('aria-describedby', desc.id);
+      const described = [desc?.id, flag?.id].filter(Boolean).join(' ');
+      if (target && described !== '') target.setAttribute('aria-describedby', described);
       node.append(wrap);
     }
     into.append(node);
-    const result = { spec, root: node, label, desc, card: into };
+    const result = { spec, root: node, label, desc, card: into, flag, target };
     rows.set(id, result);
     return result;
   };
@@ -347,7 +369,7 @@ export function startSettingsPage(root: HTMLElement): void {
   row(profileCard, 'profiles', manage);
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
-  // Appearance
+  // Appearance: the two big visual choices first, then the chrome, tabs and text.
   const layoutCard = card('appearance', 'Layout');
   const layout = radioGroup<TabLayout>('sp-tiles', 'Browser layout', TAB_LAYOUTS.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
@@ -374,14 +396,149 @@ export function startSettingsPage(root: HTMLElement): void {
   width.addEventListener('input', paintWidth);
   width.addEventListener('change', () => change((d) => { d.sidebarWidth = Number(width.value); }));
   row(layoutCard, 'sidebarWidth', widthWrap);
+
+  // Theme
+  const themeCard = card('appearance', 'Theme');
+  const theme = segmentedControl<ThemeMode>('Theme', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium colours' : 'System'] as const), (value) => change((d) => { d.theme = value; }));
+  row(themeCard, 'theme', theme.root);
+  const accentInput = el('input', 'sp-color');
+  accentInput.type = 'color';
+  accentInput.setAttribute('aria-label', 'Accent colour');
+  accentInput.addEventListener('change', () => change((d) => { d.themeAccent = accentInput.value.toLowerCase(); }));
+  const accentReset = textButton('Reset to default', () => change((d) => { d.theme = 'helium'; d.themeAccent = ''; }));
+  const accentWrap = el('div', 'sp-reset');
+  accentWrap.append(accentInput, accentReset);
+  row(themeCard, 'themeAccent', accentWrap);
+
+  // Toolbar
+  const TOOLBAR_LABELS: Readonly<Record<ToolbarButton, string>> = {
+    back: 'Back', forward: 'Forward', reload: 'Reload', 'site-info': 'Site information', bookmark: 'Bookmark', newtab: 'New tab', split: 'Split view', reader: 'Reader view',
+  };
+  const TOOLBAR_ICONS: Readonly<Record<ToolbarButton, IconName>> = {
+    back: 'back', forward: 'forward', reload: 'reload', 'site-info': 'info', bookmark: 'bookmark', newtab: 'plus', split: 'split', reader: 'reader',
+  };
+  const toolbarCard = card('appearance', 'Toolbar');
+  const toolbarSwitches = new Map<ToolbarButton, Control<boolean>>();
+  const toolbarList = el('div', 'sp-toolbar-list');
+  for (const id of TOOLBAR_BUTTONS) {
+    const item = el('div', 'sp-toolbar-item');
+    const label = el('span', 'sp-label');
+    label.textContent = TOOLBAR_LABELS[id];
+    const glyph = icon(TOOLBAR_ICONS[id], { className: 'sp-toolbar-glyph' });
+    const sw = switchControl((on) => change((d) => {
+      const ids = new Set(toolbarButtonsList(d.toolbarButtons));
+      if (on) ids.add(id); else ids.delete(id);
+      d.toolbarButtons = TOOLBAR_BUTTONS.filter((b) => ids.has(b)).join(',');
+    }));
+    sw.root.setAttribute('aria-label', TOOLBAR_LABELS[id]);
+    toolbarSwitches.set(id, sw);
+    item.append(glyph, label, sw.root);
+    toolbarList.append(item);
+  }
+  const toolbarReset = textButton('Reset to default', () => change((d) => { d.toolbarButtons = DEFAULT_TOOLBAR_BUTTONS; }));
+  const toolbarActions = el('div', 'sp-toolbar-actions');
+  toolbarActions.append(toolbarReset);
+  const toolbarWrap = el('div');
+  toolbarWrap.append(toolbarList, toolbarActions);
+  row(toolbarCard, 'toolbarButtons', toolbarWrap, { stack: true });
+  const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
+  row(toolbarCard, 'showHomeButton', showHome.root);
+
+  // Address bar
+  const addressCard = card('appearance', 'Address bar');
+  const centred = switchControl((on) => change((d) => { d.centredAddressBar = on; }));
+  row(addressCard, 'centredAddressBar', centred.root);
+  const minimal = switchControl((on) => change((d) => { d.minimalUrl = on; }));
+  row(addressCard, 'minimalUrl', minimal.root);
+  const loadProgress = switchControl((on) => change((d) => { d.showLoadProgress = on; }));
+  row(addressCard, 'showLoadProgress', loadProgress.root);
+
+  // Tabs (the rows Bowser does not act on yet sit last)
   const tabsCard = card('appearance', 'Tabs');
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
   row(tabsCard, 'grouping', grouping.root);
+  const besideActive = switchControl((on) => change((d) => { d.newTabBesideActive = on; }));
+  row(tabsCard, 'newTabBesideActive', besideActive.root);
+  const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
+  row(tabsCard, 'ctrlTabMru', mru.root);
+  const edgeDrop = switchControl((on) => change((d) => { d.splitEdgeDrop = on; }));
+  row(tabsCard, 'splitEdgeDrop', edgeDrop.root);
+  const previewImages = switchControl((on) => change((d) => { d.tabPreviewImages = on; }));
+  row(tabsCard, 'tabPreviewImages', previewImages.root);
+  const previewMemory = switchControl((on) => change((d) => { d.tabPreviewMemory = on; }));
+  row(tabsCard, 'tabPreviewMemory', previewMemory.root);
+  const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
+  row(tabsCard, 'pinNewTabGroups', pinGroups.root);
+  const vTabs = switchControl((on) => change((d) => { d.ctrlSVerticalTabs = on; }));
+  row(tabsCard, 'ctrlSVerticalTabs', vTabs.root);
+
+  // Window
+  const windowCard = card('appearance', 'Window');
+  const rounded = switchControl((on) => change((d) => { d.roundedContentFrame = on; }));
+  row(windowCard, 'roundedContentFrame', rounded.root);
+  const frameless = switchControl((on) => change((d) => { d.frameless = on; }));
+  row(windowCard, 'frameless', frameless.root);
+
+  // Bookmarks bar
+  const bookmarksCard = card('appearance', 'Bookmarks bar');
+  const bookmarksBarCtl = segmentedControl<BookmarksBarMode>('Bookmarks bar', BOOKMARKS_BAR_MODES.map((key) => [key, key === 'always' ? 'Always show' : key === 'never' ? 'Always hide' : 'Only on the new tab'] as const), (value) => change((d) => { d.bookmarksBar = value; }));
+  row(bookmarksCard, 'bookmarksBar', bookmarksBarCtl.root);
+  const bookmarksGroups = switchControl((on) => change((d) => { d.bookmarksBarTabGroups = on; }));
+  row(bookmarksCard, 'bookmarksBarTabGroups', bookmarksGroups.root);
+
+  // Helium panels
+  const panelsCard = card('appearance', 'Helium panels');
+  const sidePanelCtl = segmentedControl<SidePanelPosition>('Side panel position', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; }));
+  row(panelsCard, 'sidePanelPosition', sidePanelCtl.root);
+
+  // Fonts
+  const fontsCard = card('appearance', 'Fonts');
+  const fontSizeCtl = segmentedControl<FontSize>('Font size', FONT_SIZES.map((key) => [key, key === 'small' ? 'Small' : key === 'medium' ? 'Medium (recommended)' : 'Large'] as const), (value) => change((d) => { d.fontSize = value; }));
+  row(fontsCard, 'fontSize', fontSizeCtl.root);
+  const uiFont = el('input', 'bw-input sp-ui-font-input');
+  uiFont.type = 'text';
+  uiFont.placeholder = 'System font';
+  uiFont.maxLength = MAX_UI_FONT;
+  uiFont.autocomplete = 'off';
+  uiFont.spellcheck = false;
+  uiFont.setAttribute('aria-label', 'Customise fonts');
+  uiFont.addEventListener('change', () => change((d) => { d.uiFont = uiFont.value.trim(); }));
+  row(fontsCard, 'uiFont', uiFont);
+
+  // Zoom
+  const zoomCard = card('appearance', 'Zoom');
+  const zoomInput = el('input', 'bw-input sp-zoom-input');
+  zoomInput.type = 'number';
+  zoomInput.min = String(MIN_ZOOM);
+  zoomInput.max = String(MAX_ZOOM);
+  zoomInput.step = '5';
+  zoomInput.setAttribute('aria-label', 'Default zoom');
+  zoomInput.addEventListener('change', () => {
+    const n = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(Number(zoomInput.value)) || 100));
+    zoomInput.value = String(n);
+    change((d) => { d.defaultZoom = n; });
+  });
+  const zoomWrap = el('div', 'sp-zoom-wrap');
+  const zoomSuffix = el('span', 'sp-value');
+  zoomSuffix.textContent = '%';
+  zoomWrap.append(zoomInput, zoomSuffix);
+  row(zoomCard, 'defaultZoom', zoomWrap);
+  const zoomIndicator = switchControl((on) => change((d) => { d.showZoomIndicator = on; }));
+  row(zoomCard, 'showZoomIndicator', zoomIndicator.root);
+
+  // Shortcuts
+  const shortcutsCard = card('appearance', 'Shortcuts');
+  const shiftRightClick = switchControl((on) => change((d) => { d.shiftRightClickContext = on; }));
+  row(shortcutsCard, 'shiftRightClickContext', shiftRightClick.root);
+  const copyLink = switchControl((on) => change((d) => { d.ctrlShiftCCopyLink = on; }));
+  row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
 
   // Privacy and security
   const blockCard = card('privacy', 'Blocking');
   const blocker = switchControl((on) => change((d) => { d.blockerEnabled = on; }));
   row(blockCard, 'blocker', blocker.root);
+  const blockYoutube = switchControl((on) => change((d) => { d.blockYoutubeVideoAds = on; }));
+  row(blockCard, 'blockYoutubeVideoAds', blockYoutube.root);
   const allowBox = el('div', 'sp-allow');
   const allowList = el('ul', 'sp-sites');
   allowList.setAttribute('aria-label', 'Sites the blocker skips');
@@ -613,6 +770,29 @@ export function startSettingsPage(root: HTMLElement): void {
   resetBox.append(cancel, reset);
   paintReset();
   row(aboutCard, 'reset', resetBox);
+  const defaultBrowserCard = card('about', 'Default browser');
+  const defaultBrowserStatus = el('p', 'sp-note');
+  const defaultBrowserButton = textButton('Make Bowser the default browser', () => cmd({ a: 'setdefault' }));
+  const defaultBrowserWrap = el('div', 'sp-default-browser');
+  defaultBrowserWrap.append(defaultBrowserStatus, defaultBrowserButton);
+  row(defaultBrowserCard, 'defaultBrowser', defaultBrowserWrap, { stack: true });
+
+  // A group whose every row has no effect yet says so once, under its heading, not on each row.
+  for (const group of groups) {
+    const inGroup = [...rows.values()].filter((node) => node.card === group.card);
+    if (inGroup.length < 2 || !inGroup.every((node) => node.spec.notYet) || !group.heading) continue;
+    const note = el('p', 'sp-flag is-later sp-group-note');
+    note.id = `${group.heading.id}-note`;
+    const text = el('span');
+    text.textContent = NOT_YET_GROUP_NOTE;
+    note.append(icon('clock', { size: 12, fine: true }), text);
+    group.heading.after(note);
+    group.card.setAttribute('aria-describedby', note.id);
+    for (const node of inGroup) {
+      node.flag?.remove();
+      if (node.desc) node.target?.setAttribute('aria-describedby', node.desc.id); else node.target?.removeAttribute('aria-describedby');
+    }
+  }
 
   // ---- applying a snapshot ----
   const apply = (s: SettingsSnapshot): void => {
@@ -623,6 +803,34 @@ export function startSettingsPage(root: HTMLElement): void {
     width.value = String(d.sidebarWidth);
     paintWidth();
     grouping.set(d.automaticTabGrouping);
+    previewImages.set(d.tabPreviewImages);
+    previewMemory.set(d.tabPreviewMemory);
+    besideActive.set(d.newTabBesideActive);
+    mru.set(d.ctrlTabMru);
+    pinGroups.set(d.pinNewTabGroups);
+    edgeDrop.set(d.splitEdgeDrop);
+    vTabs.set(d.ctrlSVerticalTabs);
+    theme.set(d.theme);
+    accentInput.value = d.themeAccent !== '' ? d.themeAccent : '#000000';
+    for (const [id, sw] of toolbarSwitches) sw.set(toolbarButtonsList(d.toolbarButtons).includes(id));
+    showHome.set(d.showHomeButton);
+    centred.set(d.centredAddressBar);
+    minimal.set(d.minimalUrl);
+    loadProgress.set(d.showLoadProgress);
+    frameless.set(d.frameless);
+    rounded.set(d.roundedContentFrame);
+    bookmarksBarCtl.set(d.bookmarksBar);
+    bookmarksGroups.set(d.bookmarksBarTabGroups);
+    sidePanelCtl.set(d.sidePanelPosition);
+    fontSizeCtl.set(d.fontSize);
+    uiFont.value = d.uiFont;
+    zoomInput.value = String(d.defaultZoom);
+    zoomIndicator.set(d.showZoomIndicator);
+    shiftRightClick.set(d.shiftRightClickContext);
+    copyLink.set(d.ctrlShiftCCopyLink);
+    blockYoutube.set(d.blockYoutubeVideoAds);
+    defaultBrowserStatus.textContent = s.defaultBrowser === 'yes' ? 'Bowser is your default browser.'
+      : s.defaultBrowser === 'no' ? 'Bowser is not your default browser.' : 'Bowser could not check whether it is the default browser.';
     blocker.set(d.blockerEnabled);
     paintSites();
     tracking.set(d.trackingPrevention);
@@ -654,10 +862,20 @@ export function startSettingsPage(root: HTMLElement): void {
     manage.disabled = false;
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
-    for (const control of [layout, grouping, blocker, tracking, efficiency, sleep, engine]) control.disable(!s.readable);
+    for (const control of [
+      layout, grouping, blocker, tracking, efficiency, sleep, engine,
+      previewImages, previewMemory, besideActive, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
+      rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
+      ...toolbarSwitches.values(),
+    ]) control.disable(!s.readable);
     width.disabled = !s.readable;
     allowInput.disabled = !s.readable;
     addButton.disabled = !s.readable;
+    accentInput.disabled = !s.readable;
+    accentReset.disabled = !s.readable;
+    toolbarReset.disabled = !s.readable;
+    uiFont.disabled = !s.readable;
+    zoomInput.disabled = !s.readable;
     if (query !== '') filter();
   };
 
@@ -747,7 +965,7 @@ export function startSettingsPage(root: HTMLElement): void {
       marked(node.label, labelText);
       if (node.desc) marked(node.desc, node.desc.textContent ?? '');
     }
-    for (const node of cards) node.hidden = hits !== null && !node.querySelector('.sp-row:not([hidden])');
+    for (const group of groups) group.root.hidden = hits !== null && !group.card.querySelector('.sp-row:not([hidden])');
     mediaResults.hidden = hits !== null && !hits.has('media');
     for (const spec of SECTIONS) {
       const section = sectionNodes.get(spec.key)!;

@@ -12,6 +12,7 @@ const SHAPES = {
   "caption-maximize": [["rect",{"height":"16","rx":"2","width":"16","x":"4","y":"4"}]],
   "caption-minimize": [["path",{"d":"M4 12h16"}]],
   "caption-restore": [["path",{"d":"M7 7h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7ZM4 17V5a2 2 0 0 1 2-2h12"}]],
+  "cast": [["path",{"d":"M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"}],["path",{"d":"M3 12a8 8 0 0 1 7 7"}],["path",{"d":"M3 16a4 4 0 0 1 3.5 3.5"}],["line",{"x1":"3","x2":"3.01","y1":"20","y2":"20"}]],
   "check": [["path",{"d":"m4 12 5.5 5.5L20 6.5"}]],
   "chevron-down": [["path",{"d":"M4.125 8.06 12 15.94l7.875-7.88"}]],
   "chevron-left": [["path",{"d":"M14.25 4.125 6.375 12l7.875 7.875"}]],
@@ -61,7 +62,9 @@ const SHAPES = {
   "reader": [["path",{"d":"M3.25 15 7.75 4l4.5 11M4.68 11.5h6.14"}],["path",{"d":"M15.75 5h5M15.75 10h5M15.75 15h5M3.25 20h17.5"}]],
   "reload": [["path",{"d":"M20 12A8 8 0 1 1 19 8M19 3v5h-5"}]],
   "reset": [["path",{"d":"M4 12a8 8 0 1 0 1-4M5 3v5h5"}]],
+  "save": [["path",{"d":"M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"}],["polyline",{"points":"17 21 17 13 7 13 7 21"}],["polyline",{"points":"7 3 7 8 15 8"}]],
   "search": [["circle",{"cx":"10.5","cy":"10.5","r":"6.5"}],["path",{"d":"m15.5 15.5 5 5"}]],
+  "share": [["circle",{"cx":"18","cy":"5","r":"3"}],["circle",{"cx":"6","cy":"12","r":"3"}],["circle",{"cx":"18","cy":"19","r":"3"}],["line",{"x1":"8.59","x2":"15.42","y1":"13.51","y2":"17.49"}],["line",{"x1":"15.41","x2":"8.59","y1":"6.51","y2":"10.49"}]],
   "shield": [["path",{"d":"M5 2.5C6.5 6.5 15 7.5 15 12S6.5 17.5 5 21.5M8.5 5.5 4.5 12 8.5 18.5M4.5 12H21M17.5 8.5 21 12 17.5 15.5"}]],
   "sidebar": [["rect",{"height":"15","rx":"2","width":"18","x":"3","y":"4.5"}],["path",{"d":"M9 4.5v15"}]],
   "split": [["rect",{"height":"14","rx":"2","width":"7.25","x":"3.5","y":"5"}],["rect",{"height":"14","rx":"2","width":"7.25","x":"13.25","y":"5"}]],
@@ -75,6 +78,7 @@ const SHAPES = {
   "unsplit": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"M12 5v4M12 15v4M9.5 12h-3M8 10.5 6.5 12 8 13.5M14.5 12h3M16 10.5l1.5 1.5-1.5 1.5"}]],
   "volume": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"}]],
   "warning": [["path",{"d":"M12 3 21 20H3zM12 9v5"}],["circle",{"cx":"12","cy":"17.5","fill":"currentColor","r":"1","stroke":"none"}]],
+  "window": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"M3 9h18M12 11.5v5M9.5 14h5"}]],
   "workspace": [["path",{"d":"M12 3.5 20.5 8 12 12.5 3.5 8zM3.5 12l8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5"}]],
   "workspace-add": [["path",{"d":"M4 7.5a3.5 3.5 0 0 1 3.5-3.5h9A3.5 3.5 0 0 1 20 7.5v9a3.5 3.5 0 0 1-3.5 3.5h-9A3.5 3.5 0 0 1 4 16.5zM12 8.5v7M8.5 12h7"}]],
   "workspace-bolt": [["path",{"d":"M13 2.5L5.5 13.5H11.5L10.5 21.5L18.5 10.5H12.5Z"}]],
@@ -123,4 +127,4 @@ export type IconName = DrawnIconName | keyof typeof ALIASES;
 
 export const ICON_SHAPES: Readonly<Record<DrawnIconName, readonly IconShape[]>> = SHAPES;
 export const ICON_ALIASES: Readonly<Record<keyof typeof ALIASES, DrawnIconName>> = ALIASES;
-export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","find","folder","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","info","key","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","private","profile","puzzle","reader","refresh","reload","reset","search","settings","shield","sidebar","sidebar-toggle","split","split-left","split-right","split-view","star","stop","swap","tab-close","tab-group","tab-switch","trash","unlock","unsplit","volume","warning","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];
+export const ICON_NAMES: readonly IconName[] = ["app-tile","arrow-left","arrow-right","back","bell","bookmark","camera","caption-close","caption-maximize","caption-minimize","caption-restore","cast","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","find","folder","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","info","key","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","palette","pencil","person","picture-in-picture","pin","pip","plus","print","private","profile","puzzle","reader","refresh","reload","reset","save","search","settings","share","shield","sidebar","sidebar-toggle","split","split-left","split-right","split-view","star","stop","swap","tab-close","tab-group","tab-switch","trash","unlock","unsplit","volume","warning","window","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];

@@ -29,6 +29,18 @@ impl Rgba {
             a: alpha,
         }
     }
+
+    /// Parses `#rrggbb` (the `theme_accent` setting's form). `None` for anything else.
+    pub fn parse_hex(value: &str) -> Option<Self> {
+        let bytes = value.as_bytes();
+        if bytes.len() != 7 || bytes[0] != b'#' {
+            return None;
+        }
+        let byte = |i: usize| -> Option<u8> {
+            u8::from_str_radix(std::str::from_utf8(&bytes[i..i + 2]).ok()?, 16).ok()
+        };
+        Some(Self { r: byte(1)?, g: byte(3)?, b: byte(5)?, a: 0xFF })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +224,45 @@ pub fn palette(appearance: Appearance, solid_fallback: bool) -> &'static Palette
         (Appearance::Dark, false) => &DARK_GLASS,
         (Appearance::Light, true) => &LIGHT_SOLID,
         (Appearance::Dark, true) => &DARK_SOLID,
+    }
+}
+
+/// `palette` with its focus and progress colours replaced by `accent`, when the `theme`/
+/// `theme_accent` settings choose one. The rest of the palette (and its contrast guarantees) is
+/// unchanged: an explicit accent trades the curated ring/progress contrast for the colour chosen,
+/// exactly as a browser's own "accent colour" picker does.
+pub fn with_accent(palette: &Palette, accent: Option<Rgba>) -> Palette {
+    let mut palette = palette.clone();
+    if let Some(accent) = accent {
+        palette.omnibox_focus_border = accent;
+        palette.progress_fill = accent;
+    }
+    palette
+}
+
+const DWM_KEY: &str = r"Software\Microsoft\Windows\DWM";
+const COLORIZATION_COLOR: &str = "ColorizationColor";
+
+/// Windows' own accent colour (`theme=system`), from the DWM colorization value (`0xAARRGGBB`,
+/// read as opaque since the setting never wants a translucent accent). `None` when it cannot be
+/// read.
+pub fn system_accent_colour() -> Option<Rgba> {
+    let value = registry_dword(DWM_KEY, COLORIZATION_COLOR)?;
+    Some(Rgba { r: (value >> 16) as u8, g: (value >> 8) as u8, b: value as u8, a: 0xFF })
+}
+
+/// The accent to show, combining the `theme`/`theme_accent` settings with the live system colour:
+/// an explicit `theme_accent` always wins; otherwise `theme=system` uses `system_accent`, and
+/// `theme=helium` keeps the palette's own curated colours (`None`).
+pub fn resolved_accent(theme: crate::settings::Theme, accent_hex: Option<&str>, system_accent: Option<Rgba>) -> Option<Rgba> {
+    if let Some(hex) = accent_hex {
+        if let Some(colour) = Rgba::parse_hex(hex) {
+            return Some(colour);
+        }
+    }
+    match theme {
+        crate::settings::Theme::System => system_accent,
+        crate::settings::Theme::Helium => None,
     }
 }
 
@@ -591,5 +642,38 @@ mod tests {
     fn appearance_displays_as_lowercase_word() {
         assert_eq!(Appearance::Light.to_string(), "light");
         assert_eq!(Appearance::Dark.to_string(), "dark");
+    }
+
+    #[test]
+    fn rgba_parses_exact_lower_case_hex_only() {
+        assert_eq!(Rgba::parse_hex("#1a2b3c"), Some(Rgba { r: 0x1a, g: 0x2b, b: 0x3c, a: 0xFF }));
+        assert_eq!(Rgba::parse_hex("#FFFFFF"), Some(Rgba { r: 0xFF, g: 0xFF, b: 0xFF, a: 0xFF }));
+        for bad in ["1a2b3c", "#1a2b3", "#1a2b3cd", "", "#gggggg", "red"] {
+            assert_eq!(Rgba::parse_hex(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn with_accent_overrides_only_focus_and_progress() {
+        let base = palette(Appearance::Light, true);
+        let accent = Rgba::hex(0xFF0000, 0xFF);
+        let accented = with_accent(base, Some(accent));
+        assert_eq!(accented.omnibox_focus_border, accent);
+        assert_eq!(accented.progress_fill, accent);
+        assert_eq!(accented.window, base.window, "nothing else moves");
+        assert_eq!(&with_accent(base, None), base);
+    }
+
+    #[test]
+    fn resolved_accent_prefers_an_explicit_colour_then_system_then_heliums_own() {
+        use crate::settings::Theme;
+        let system = Rgba::hex(0x00FF00, 0xFF);
+        let explicit = Rgba::hex(0x0000FF, 0xFF);
+        assert_eq!(resolved_accent(Theme::Helium, Some("#0000ff"), Some(system)), Some(explicit), "an explicit accent wins under any theme");
+        assert_eq!(resolved_accent(Theme::System, Some("#0000ff"), Some(system)), Some(explicit));
+        assert_eq!(resolved_accent(Theme::System, None, Some(system)), Some(system));
+        assert_eq!(resolved_accent(Theme::System, None, None), None, "no system colour could be read");
+        assert_eq!(resolved_accent(Theme::Helium, None, Some(system)), None, "helium keeps its own curated colours");
+        assert_eq!(resolved_accent(Theme::Helium, Some("not-a-colour"), Some(system)), None, "an invalid explicit value is ignored");
     }
 }

@@ -144,11 +144,13 @@ impl SitePrefsStore {
         self.sites.get(origin)?.zoom
     }
 
-    /// The zoom a page at `uri` should show: its stored value, or 100. Non-web addresses are 100.
-    pub fn zoom_for_uri(&self, uri: &str) -> u16 {
+    /// The zoom a page at `uri` should show: its stored value, or `default` (the `default_zoom`
+    /// setting) for a site with none. Non-web addresses and a stored value of exactly `default` both
+    /// read as `default`.
+    pub fn zoom_for_uri(&self, uri: &str, default: u16) -> u16 {
         origin_of(uri)
             .and_then(|origin| self.zoom(&origin))
-            .unwrap_or(ZOOM_DEFAULT)
+            .unwrap_or(default)
     }
 
     /// Stores a zoom percent for one origin (`None` or 100 clears it), then saves. A value outside
@@ -389,13 +391,14 @@ mod tests {
             store.set_zoom("http://localhost:8080", Some(80)).unwrap();
         }
         let reloaded = SitePrefsStore::load(&path);
-        assert_eq!(reloaded.zoom_for_uri("https://a.test/some/page?q=1"), 125);
-        assert_eq!(reloaded.zoom_for_uri("http://localhost:8080/x"), 80);
-        assert_eq!(reloaded.zoom_for_uri("http://a.test/"), 100, "scheme differs");
-        assert_eq!(reloaded.zoom_for_uri("https://sub.a.test/"), 100, "host differs");
-        assert_eq!(reloaded.zoom_for_uri("https://a.test:8443/"), 100, "port differs");
-        assert_eq!(reloaded.zoom_for_uri("file:///C:/x.html"), 100);
-        assert_eq!(reloaded.zoom_for_uri("not a url"), 100);
+        assert_eq!(reloaded.zoom_for_uri("https://a.test/some/page?q=1", 100), 125);
+        assert_eq!(reloaded.zoom_for_uri("http://localhost:8080/x", 100), 80);
+        assert_eq!(reloaded.zoom_for_uri("http://a.test/", 100), 100, "scheme differs");
+        assert_eq!(reloaded.zoom_for_uri("https://sub.a.test/", 100), 100, "host differs");
+        assert_eq!(reloaded.zoom_for_uri("https://a.test:8443/", 100), 100, "port differs");
+        assert_eq!(reloaded.zoom_for_uri("file:///C:/x.html", 100), 100);
+        assert_eq!(reloaded.zoom_for_uri("not a url", 100), 100);
+        assert_eq!(reloaded.zoom_for_uri("https://no-override.test/", 150), 150, "a configured default is used when a site has no override");
     }
 
     #[test]
@@ -426,7 +429,7 @@ mod tests {
         let mut store = SitePrefsStore::in_memory();
         assert!(!store.persists());
         store.set_zoom("https://a.test", Some(150)).unwrap();
-        assert_eq!(store.zoom_for_uri("https://a.test/"), 150);
+        assert_eq!(store.zoom_for_uri("https://a.test/", 100), 150);
     }
 
     #[test]

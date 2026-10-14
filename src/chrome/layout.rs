@@ -355,10 +355,25 @@ pub fn compute_in_frame_for(
     active_index: usize,
     maximised: bool,
 ) -> Layout {
+    compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, true)
+}
+
+/// [`compute_in_frame_for`] with the omnibox centred in the toolbar only when `centred` is set; off,
+/// the omnibox sits left-aligned next to navigation, matching `centred_address_bar`.
+pub fn compute_in_frame_for_with(
+    variant: TabLayout,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    centred: bool,
+) -> Layout {
     let client_w = client_w.max(0);
     let client_h = client_h.max(0);
     let inset = left_rail_inset(dpi);
-    let mut layout = compute_for(
+    let mut layout = compute_for_with(
         variant,
         client_w - inset,
         client_h,
@@ -366,6 +381,7 @@ pub fn compute_in_frame_for(
         tab_count,
         active_index,
         maximised,
+        centred,
     )
     .shifted_right(inset);
     layout.client = Rect::new(0, 0, client_w, client_h);
@@ -459,6 +475,23 @@ pub fn compute_for(
     tab_count: usize,
     active_index: usize,
     maximised: bool,
+) -> Layout {
+    compute_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, true)
+}
+
+/// [`compute_for`] with the omnibox centred in the toolbar only when `centred` is set; off, the
+/// omnibox sits left-aligned next to navigation, matching `centred_address_bar`. `SingleRow` and
+/// `TabsTop` already have no dead space to centre in, so `centred` only changes `ToolbarTop` and
+/// `Vertical`.
+pub fn compute_for_with(
+    variant: TabLayout,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    centred: bool,
 ) -> Layout {
     let m = Metrics::new(dpi);
     let client_w = client_w.max(0);
@@ -588,7 +621,12 @@ pub fn compute_for(
             (width, omnibox_min)
         } else {
             let width = (omnibox_max - omnibox_min).min(m.px(Metrics::OMNIBOX_MAX_WIDTH));
-            let left = (client_w / 2 - width / 2).clamp(omnibox_min, (omnibox_max - width).max(omnibox_min));
+            let left = if centred {
+                (client_w / 2 - width / 2).clamp(omnibox_min, (omnibox_max - width).max(omnibox_min))
+            } else {
+                // `centred_address_bar` off: left-aligned next to navigation instead of centred.
+                omnibox_min
+            };
             (width, left)
         };
         omnibox = Rect::new(
@@ -1173,11 +1211,25 @@ pub fn compute_vertical_in_frame(
     maximised: bool,
     sidebar_width: i32,
 ) -> (Layout, crate::vertical_tabs::SidebarLayout) {
+    compute_vertical_in_frame_with(client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, true)
+}
+
+/// [`compute_vertical_in_frame`] with the omnibox centred in the toolbar only when `centred` is set.
+pub fn compute_vertical_in_frame_with(
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    sidebar_width: i32,
+    centred: bool,
+) -> (Layout, crate::vertical_tabs::SidebarLayout) {
     let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(
         client_w, client_h, dpi, sidebar_width, maximised,
     );
     let offset = sidebar.sidebar.right;
-    let mut layout = compute_for(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised)
+    let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised, centred)
         .shifted_right(offset);
     layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
     layout.rail = left_rail(client_h, dpi);

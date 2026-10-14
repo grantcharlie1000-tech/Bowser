@@ -179,18 +179,19 @@ impl ShortcutForward {
 
 /// Only mapped chords are returned, so typing, clipboard and other page keys always reach the page.
 /// Escape is excluded: it stops a load only while the tab is loading, which this handler cannot see,
-/// so it is left to the page.
+/// so it is left to the page. A setting-gated chord (`gated`) is mapped only while its setting is on.
 fn shortcut_forward(
     key: u32,
     kind: COREWEBVIEW2_KEY_EVENT_KIND,
     ctrl: bool,
     shift: bool,
     alt: bool,
+    gated: shortcuts::GatedChords,
 ) -> Option<ShortcutForward> {
     if !is_key_down(kind) || key == u32::from(VK_ESCAPE.0) {
         return None;
     }
-    shortcuts::command_for(key, ctrl, shift, alt)?;
+    shortcuts::command_for_gated(key, ctrl, shift, alt, gated)?;
     Some(ShortcutForward {
         key,
         ctrl,
@@ -2114,8 +2115,13 @@ impl WebView2Engine {
             error
         };
         unsafe {
+            // A second window of this profile is another process on this same folder
+            // ("Move tab to new window", "open profile window"). Exclusive access makes
+            // that process fail to create its browser, after the original tab was closed.
+            // The session lock still refuses a plain second launch. Web apps keep their
+            // own folder and their own exclusive access.
             options2
-                .SetExclusiveUserDataFolderAccess(true)
+                .SetExclusiveUserDataFolderAccess(false)
                 .map_err(request_error)?;
         }
         if browser_extensions {
@@ -2171,6 +2177,22 @@ impl EngineAdapter for WebView2Engine {
             Some(controller) => unsafe {
                 controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
             },
+            None => Ok(()),
+        }
+    }
+
+    fn open_dev_tools(&mut self) -> Result<()> {
+        // No active page (blank or internal tab) means no DevTools to open: nothing happens and
+        // nothing fails. Opening the DevTools UI leaves the ad blocker's protocol session intact.
+        let active_webview = {
+            let state = self.core.borrow();
+            state
+                .active_tab
+                .and_then(|active| state.tabs.get(&active))
+                .and_then(|tab| tab.webview.clone())
+        };
+        match active_webview {
+            Some(webview) => unsafe { webview.OpenDevToolsWindow() },
             None => Ok(()),
         }
     }
@@ -3136,6 +3158,10 @@ unsafe fn configure_controller(
             verify_private_profile(&webview)?;
         }
         let settings = webview.Settings()?;
+        // Browsing tabs keep the page DevTools available in every build (the "Developer tools"
+        // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
+        // touch the ad blocker's `CallDevToolsProtocolMethod` Fetch/Network session.
+        settings.SetAreDevToolsEnabled(true)?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
                 settings4.SetIsPasswordAutosaveEnabled(false)?;
@@ -3901,7 +3927,12 @@ unsafe fn configure_controller(
                     {
                         callback(tab_id);
                     }
-                    if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt) {
+                    let gated = if ctrl {
+                        win32::gated_chords(parent)
+                    } else {
+                        shortcuts::GatedChords::default()
+                    };
+                    if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt, gated) {
                         win32::post(
                             parent,
                             win32::WM_SHORTCUT_KEY,
@@ -5119,6 +5150,43 @@ mod tests {
         })
     }
 
+    /// The ungated filter: every setting-gated chord is off, as when the app cannot be reached.
+    fn shortcut_forward(
+        key: u32,
+        kind: COREWEBVIEW2_KEY_EVENT_KIND,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<ShortcutForward> {
+        super::shortcut_forward(key, kind, ctrl, shift, alt, shortcuts::GatedChords::default())
+    }
+
+    #[test]
+    fn gated_chords_are_swallowed_only_while_their_setting_is_on() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        let on = shortcuts::GatedChords::new(true, true, true);
+        // Ctrl+Shift+C and Ctrl+S reach the page unless the setting claims them.
+        assert_eq!(shortcut_forward(0x43, down, true, true, false), None);
+        assert_eq!(shortcut_forward(0x53, down, true, false, false), None);
+        assert_eq!(
+            super::shortcut_forward(0x43, down, true, true, false, on),
+            forward(0x43, true, true, false)
+        );
+        assert_eq!(
+            super::shortcut_forward(0x53, down, true, false, false, on),
+            forward(0x53, true, false, false)
+        );
+        // Only a key press is claimed, and the setting claims nothing else.
+        assert_eq!(
+            super::shortcut_forward(0x43, COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP, true, true, false, on),
+            None
+        );
+        assert_eq!(super::shortcut_forward(0x43, down, true, false, false, on), None);
+        // Ctrl+S is claimed only in the vertical layout.
+        let horizontal = shortcuts::GatedChords::new(true, true, false);
+        assert_eq!(super::shortcut_forward(0x53, down, true, false, false, horizontal), None);
+    }
+
     #[test]
     fn history_shortcuts_accept_alt_keydown_and_system_keydown_only() {
         for kind in [
@@ -5215,6 +5283,20 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_forward_swallows_the_dev_tools_chords() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        // F12 and Ctrl+Shift+I are handled by Bowser (Developer tools), not forwarded to the page.
+        assert_eq!(
+            shortcut_forward(0x7B, down, false, false, false),
+            forward(0x7B, false, false, false)
+        );
+        assert_eq!(
+            shortcut_forward(0x49, down, true, true, false),
+            forward(0x49, true, true, false)
+        );
+    }
+
+    #[test]
     fn shortcut_forward_never_swallows_page_editing_and_navigation_keys() {
         let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
         for (key, ctrl, shift, alt) in [
@@ -5239,8 +5321,8 @@ mod tests {
             (0x25, false, true, false),  // Shift+Left, selection
             (0x21, false, false, false), // Page Up
             (0x22, false, false, false), // Page Down
-            (0x7B, false, false, false), // F12
-            (0x7B, true, false, false),  // Ctrl+F12
+            (0x7B, true, false, false),  // Ctrl+F12, not the DevTools chord
+            (0x49, true, false, false),  // Ctrl+I, italics in editors
             (0x1B, false, false, false), // Escape, left to the page
         ] {
             assert_eq!(

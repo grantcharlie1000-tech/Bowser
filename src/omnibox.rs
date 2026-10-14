@@ -171,6 +171,34 @@ pub fn display_form(url: &Url) -> String {
     format!("{scheme}{rest}")
 }
 
+/// The condensed address shown when `minimal_url` is on and the field is unfocused: the registrable
+/// host, plus the path when it is more than just `/`. Query and fragment are dropped, since they are
+/// rarely useful once condensed. Falls back to [`display_form`] for a URL with no host (`file://`,
+/// internal pages).
+pub fn minimal_display_form(url: &Url) -> String {
+    let Some(host) = url.host_str() else {
+        return display_form(url);
+    };
+    let host = crate::blocker::registrable_domain(host);
+    let path = url.path();
+    if path.is_empty() || path == "/" {
+        host.to_owned()
+    } else {
+        format!("{host}{path}")
+    }
+}
+
+/// [`display_form`], condensed through [`minimal_display_form`] when `minimal` is set. The unfocused
+/// address display calls this with `minimal_url`; the suggestion dropdown and the focused field
+/// always want the full form, so they call `display_form` directly.
+pub fn address_display(url: &Url, minimal: bool) -> String {
+    if minimal {
+        minimal_display_form(url)
+    } else {
+        display_form(url)
+    }
+}
+
 /// Whether a navigation may replace the address text with the page's URL. While the field has keyboard
 /// focus the text and selection belong to the user, so the URL is only remembered until focus leaves.
 pub fn should_sync_displayed_url(field_focused: bool) -> bool {

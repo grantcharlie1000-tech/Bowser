@@ -252,7 +252,7 @@ mod tests {
         ] {
             assert!(parse_command(raw).is_err(), "{raw}");
         }
-        let long = format!(r#"{{"v":1,"t":"split","a":"go","text":"{}"}}"#, "x".repeat(2049));
+        let long = format!(r#"{{"v":1,"t":"split","a":"go","text":"{}"}}"#, "x".repeat(crate::chrome_host::protocol::MAX_TEXT_CHARS + 1));
         assert!(parse_command(&long).is_err());
     }
 

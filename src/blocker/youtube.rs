@@ -76,6 +76,33 @@ pub fn player_payload(url: &str) -> Option<PlayerPayload> {
     }
 }
 
+/// The profile `settings.txt` key that turns YouTube video-ad stripping on or off. Its value is
+/// exactly `true` or `false`; a missing line means on, the default and the behaviour Bowser has
+/// always had.
+pub const BLOCK_VIDEO_ADS_KEY: &str = "block_youtube_video_ads";
+
+/// Reads [`BLOCK_VIDEO_ADS_KEY`] from the text of a profile `settings.txt`. Other lines and
+/// invalid values are ignored; among valid `true`/`false` values the last one wins; with no valid
+/// line at all the result is `true`. Callers treat an unreadable or missing file as empty text, so
+/// a failed read also means on.
+pub fn video_ads_blocked(settings_text: &str) -> bool {
+    let mut blocked = true;
+    for line in settings_text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != BLOCK_VIDEO_ADS_KEY {
+            continue;
+        }
+        match value.trim() {
+            "true" => blocked = true,
+            "false" => blocked = false,
+            _ => {}
+        }
+    }
+    blocked
+}
+
 fn is_ad_key(key: &str) -> bool {
     PLAYER_AD_KEYS.contains(&key)
 }
@@ -282,6 +309,37 @@ mod tests {
         ] {
             assert_eq!(player_payload(url), None, "{url}");
         }
+    }
+
+    #[test]
+    fn video_ads_default_on_and_the_key_toggles_it() {
+        // Missing line, empty text, and any unknown/invalid value all mean on.
+        for text in [
+            "",
+            "sleep_enabled=false\nblocker_allow=a.com\n",
+            "block_youtube_video_ads=\n",
+            "block_youtube_video_ads=1\n",
+            "block_youtube_video_ads=TRUE\n",
+            "block_youtube_video_ads=yes\n",
+            "block_youtube_video_ads\n",
+        ] {
+            assert!(video_ads_blocked(text), "{text:?}");
+        }
+        // The exact persisted lines.
+        assert!(video_ads_blocked("block_youtube_video_ads=true"));
+        assert!(!video_ads_blocked("block_youtube_video_ads=false"));
+        assert!(!video_ads_blocked(
+            "sleep_enabled=true\nblock_youtube_video_ads=false\nblocker_allow=a.com\n"
+        ));
+        // Surrounding whitespace on the line is tolerated; an invalid value does not reset a
+        // valid earlier one, and a later valid value wins.
+        assert!(!video_ads_blocked("  block_youtube_video_ads = false \n"));
+        assert!(!video_ads_blocked(
+            "block_youtube_video_ads=false\nblock_youtube_video_ads=maybe\n"
+        ));
+        assert!(video_ads_blocked(
+            "block_youtube_video_ads=false\nblock_youtube_video_ads=true\n"
+        ));
     }
 
     #[test]

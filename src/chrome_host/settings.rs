@@ -9,10 +9,13 @@
 use super::json::{capped, Json};
 use super::protocol::{snap_json, PanelFields};
 use crate::internal_page::Section;
-use crate::settings::{Settings, TabLayout};
+use crate::settings::{
+    BookmarksBar, FontSize, SidePanelPosition, Settings, TabLayout, Theme,
+};
 
-/// Longest `save` payload (the page's `MAX_TEXT`).
-pub const MAX_SAVE_TEXT: usize = 2048;
+/// Longest `save` payload (the page's `MAX_TEXT`). Raised from 2048 alongside the page's `MAX_TEXT`
+/// to fit the full set of profile settings; still well under `settings::MAX_FILE_BYTES` (16 KiB).
+pub const MAX_SAVE_TEXT: usize = 4096;
 const MAX_PROFILE_CHARS: usize = 64;
 const MAX_AVATAR_CHARS: usize = 4;
 const MAX_ERROR_CHARS: usize = 240;
@@ -71,6 +74,9 @@ pub struct Snapshot<'a> {
     pub check_result: &'static str,
     pub ack: Ack,
     pub error: &'a str,
+    /// Whether Bowser is the current HKCU http default: `"yes"`, `"no"` or `"unknown"` (detection
+    /// failed or is not supported). Read-only: never part of `save`.
+    pub default_browser: &'static str,
 }
 
 pub fn snapshot_json(s: &Snapshot<'_>) -> String {
@@ -88,6 +94,32 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.string("efficiencyMode", settings.efficiency_mode.key());
         out.bool("efficiencyActive", s.efficiency_active);
         out.string("trackingPrevention", settings.tracking_prevention.key());
+        out.string("theme", settings.theme.key());
+        out.string("themeAccent", settings.theme_accent.as_deref().unwrap_or(""));
+        out.string("toolbarButtons", &settings.toolbar_buttons.join(","));
+        out.bool("centredAddressBar", settings.centred_address_bar);
+        out.bool("minimalUrl", settings.minimal_url);
+        out.bool("showLoadProgress", settings.show_load_progress);
+        out.bool("frameless", settings.frameless);
+        out.bool("roundedContentFrame", settings.rounded_content_frame);
+        out.bool("showHomeButton", settings.show_home_button);
+        out.string("bookmarksBar", settings.bookmarks_bar.key());
+        out.bool("bookmarksBarTabGroups", settings.bookmarks_bar_tab_groups);
+        out.string("sidePanelPosition", settings.side_panel_position.key());
+        out.bool("tabPreviewImages", settings.tab_preview_images);
+        out.bool("tabPreviewMemory", settings.tab_preview_memory);
+        out.string("fontSize", settings.font_size.key());
+        out.string("uiFont", &settings.ui_font);
+        out.uint("defaultZoom", u64::from(settings.default_zoom));
+        out.bool("showZoomIndicator", settings.show_zoom_indicator);
+        out.bool("newTabBesideActive", settings.new_tab_beside_active);
+        out.bool("ctrlTabMru", settings.ctrl_tab_mru);
+        out.bool("shiftRightClickContext", settings.shift_right_click_context);
+        out.bool("ctrlShiftCCopyLink", settings.ctrl_shift_c_copy_link);
+        out.bool("ctrlSVerticalTabs", settings.ctrl_s_vertical_tabs);
+        out.bool("pinNewTabGroups", settings.pin_new_tab_groups);
+        out.bool("splitEdgeDrop", settings.split_edge_drop);
+        out.bool("blockYoutubeVideoAds", settings.block_youtube_video_ads);
         out.bool("autoUpdate", s.auto_update);
         out.bool("historyEnabled", s.history_enabled && !s.guest);
         out.bool("guest", s.guest);
@@ -101,6 +133,7 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.string("ack", s.ack.key());
         out.string("error", capped(s.error, MAX_ERROR_CHARS));
         out.bool("readable", s.readable);
+        out.string("defaultBrowser", s.default_browser);
     })
     .expect("settings is a panel token")
 }
@@ -125,6 +158,9 @@ pub enum Action {
     Import,
     /// The page wants a fresh snapshot (it regained focus).
     Refresh,
+    /// "Make Bowser the default browser": registers Bowser under HKCU, then asks Windows to show
+    /// its own defaults UI. Any failure comes back through `ack`/`error`.
+    SetDefault,
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -155,6 +191,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "profiles" if bare => Action::Profiles,
         "import" if bare => Action::Import,
         "refresh" if bare => Action::Refresh,
+        "setdefault" if bare => Action::SetDefault,
         _ => return None,
     })
 }
@@ -179,10 +216,45 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             "search_engine" => { let Some(value) = crate::navigation::SearchEngine::parse(value) else { return false; }; settings.search_engine = Some(value); }
             "efficiency_mode" => { let Some(value) = crate::settings::EfficiencyMode::parse(value) else { return false; }; settings.efficiency_mode = value; }
             "tracking_prevention" => { let Some(value) = crate::settings::TrackingLevel::parse(value) else { return false; }; settings.tracking_prevention = value; }
+            "theme" => { let Some(value) = Theme::parse(value) else { return false; }; settings.theme = value; }
+            "theme_accent" => { let Some(value) = crate::settings::parse_theme_accent(value) else { return false; }; settings.theme_accent = value; }
+            "toolbar_buttons" => { let Some(value) = crate::settings::parse_toolbar_buttons(value) else { return false; }; settings.toolbar_buttons = value; }
+            "centred_address_bar" => settings.centred_address_bar = match value { "true" => true, "false" => false, _ => return false },
+            "minimal_url" => settings.minimal_url = match value { "true" => true, "false" => false, _ => return false },
+            "show_load_progress" => settings.show_load_progress = match value { "true" => true, "false" => false, _ => return false },
+            "frameless" => settings.frameless = match value { "true" => true, "false" => false, _ => return false },
+            "rounded_content_frame" => settings.rounded_content_frame = match value { "true" => true, "false" => false, _ => return false },
+            "show_home_button" => settings.show_home_button = match value { "true" => true, "false" => false, _ => return false },
+            "bookmarks_bar" => { let Some(value) = BookmarksBar::parse(value) else { return false; }; settings.bookmarks_bar = value; }
+            "bookmarks_bar_tab_groups" => settings.bookmarks_bar_tab_groups = match value { "true" => true, "false" => false, _ => return false },
+            "side_panel_position" => { let Some(value) = SidePanelPosition::parse(value) else { return false; }; settings.side_panel_position = value; }
+            "tab_preview_images" => settings.tab_preview_images = match value { "true" => true, "false" => false, _ => return false },
+            "tab_preview_memory" => settings.tab_preview_memory = match value { "true" => true, "false" => false, _ => return false },
+            "font_size" => { let Some(value) = FontSize::parse(value) else { return false; }; settings.font_size = value; }
+            "ui_font" => { let Some(value) = crate::settings::parse_ui_font(value) else { return false; }; settings.ui_font = value; }
+            "default_zoom" => { let Ok(value) = value.parse::<u16>() else { return false; }; if !(crate::settings::MIN_DEFAULT_ZOOM..=crate::settings::MAX_DEFAULT_ZOOM).contains(&value) { return false; } settings.default_zoom = value; }
+            "show_zoom_indicator" => settings.show_zoom_indicator = match value { "true" => true, "false" => false, _ => return false },
+            "new_tab_beside_active" => settings.new_tab_beside_active = match value { "true" => true, "false" => false, _ => return false },
+            "ctrl_tab_mru" => settings.ctrl_tab_mru = match value { "true" => true, "false" => false, _ => return false },
+            "shift_right_click_context" => settings.shift_right_click_context = match value { "true" => true, "false" => false, _ => return false },
+            "ctrl_shift_c_copy_link" => settings.ctrl_shift_c_copy_link = match value { "true" => true, "false" => false, _ => return false },
+            "ctrl_s_vertical_tabs" => settings.ctrl_s_vertical_tabs = match value { "true" => true, "false" => false, _ => return false },
+            "pin_new_tab_groups" => settings.pin_new_tab_groups = match value { "true" => true, "false" => false, _ => return false },
+            "split_edge_drop" => settings.split_edge_drop = match value { "true" => true, "false" => false, _ => return false },
+            "block_youtube_video_ads" => settings.block_youtube_video_ads = match value { "true" => true, "false" => false, _ => return false },
             _ => return false,
         }
     }
-    ["tab_layout", "sidebar_width", "sleep_enabled", "sleep_after_secs", "blocker_enabled", "blocker_allow", "automatic_tab_grouping", "efficiency_mode", "tracking_prevention"].iter().all(|key| seen.contains(key))
+    [
+        "tab_layout", "sidebar_width", "sleep_enabled", "sleep_after_secs", "blocker_enabled", "blocker_allow",
+        "automatic_tab_grouping", "efficiency_mode", "tracking_prevention", "theme", "theme_accent",
+        "toolbar_buttons", "centred_address_bar", "minimal_url", "show_load_progress", "frameless",
+        "rounded_content_frame", "show_home_button", "bookmarks_bar", "bookmarks_bar_tab_groups",
+        "side_panel_position", "tab_preview_images", "tab_preview_memory", "font_size", "ui_font",
+        "default_zoom", "show_zoom_indicator", "new_tab_beside_active", "ctrl_tab_mru",
+        "shift_right_click_context", "ctrl_shift_c_copy_link", "ctrl_s_vertical_tabs", "pin_new_tab_groups",
+        "split_edge_drop", "block_youtube_video_ads",
+    ].iter().all(|key| seen.contains(key))
 }
 
 #[cfg(test)]
@@ -196,7 +268,12 @@ mod tests {
     #[test]
     fn settings_payload_updates_only_known_values_and_requires_every_control() {
         let mut settings = Settings::default();
-        let valid = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict";
+        let valid = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=example.com\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict\n\
+            theme=system\ntheme_accent=#1a2b3c\ntoolbar_buttons=back,reload\ncentred_address_bar=false\nminimal_url=false\nshow_load_progress=false\n\
+            frameless=true\nrounded_content_frame=false\nshow_home_button=false\nbookmarks_bar=always\nbookmarks_bar_tab_groups=true\n\
+            side_panel_position=right\ntab_preview_images=false\ntab_preview_memory=false\nfont_size=large\nui_font=Consolas\n\
+            default_zoom=125\nshow_zoom_indicator=false\nnew_tab_beside_active=false\nctrl_tab_mru=false\nshift_right_click_context=true\n\
+            ctrl_shift_c_copy_link=false\nctrl_s_vertical_tabs=true\npin_new_tab_groups=true\nsplit_edge_drop=false\nblock_youtube_video_ads=false";
         assert!(apply_settings_text(&mut settings, valid));
         assert_eq!(settings.tab_layout, TabLayout::Vertical);
         assert_eq!(settings.sidebar_width, 300);
@@ -204,6 +281,14 @@ mod tests {
         assert!(!settings.automatic_tab_grouping);
         assert_eq!(settings.efficiency_mode, crate::settings::EfficiencyMode::On);
         assert_eq!(settings.tracking_prevention, crate::settings::TrackingLevel::Strict);
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.theme_accent.as_deref(), Some("#1a2b3c"));
+        assert_eq!(settings.toolbar_buttons, vec!["back".to_owned(), "reload".to_owned()]);
+        assert_eq!(settings.bookmarks_bar, BookmarksBar::Always);
+        assert_eq!(settings.side_panel_position, SidePanelPosition::Right);
+        assert_eq!(settings.font_size, FontSize::Large);
+        assert_eq!(settings.ui_font, "Consolas");
+        assert_eq!(settings.default_zoom, 125);
         for layout in TabLayout::ALL {
             assert!(apply_settings_text(&mut settings, &valid.replace("tab_layout=vertical", &format!("tab_layout={}", layout.key()))), "{layout:?}");
             assert_eq!(settings.tab_layout, layout);
@@ -223,6 +308,25 @@ mod tests {
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nsearch_engine=bing")));
         assert!(apply_settings_text(&mut settings, &format!("{valid}\nsearch_engine=google")));
         assert!(!apply_settings_text(&mut settings, &"x".repeat(MAX_SAVE_TEXT + 1)));
+        // Every new key is required, exact-match, and validated the same way as the file parser.
+        assert!(!apply_settings_text(&mut settings, &valid.replace("\ntheme=system", "")), "theme is required");
+        assert!(apply_settings_text(&mut settings, &valid.replace("theme=system", "theme=Helium")), "theme folds case like efficiency_mode and tracking_prevention");
+        assert_eq!(settings.theme, Theme::Helium);
+        assert!(apply_settings_text(&mut settings, &valid.replace("theme_accent=#1a2b3c", "theme_accent=#1A2B3C")), "accent case is folded like other tokens");
+        assert_eq!(settings.theme_accent.as_deref(), Some("#1a2b3c"));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("theme_accent=#1a2b3c", "theme_accent=red")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("theme_accent=#1a2b3c", "theme_accent=1a2b3c")), "the # is required");
+        assert!(apply_settings_text(&mut settings, &valid.replace("theme_accent=#1a2b3c", "theme_accent=")), "empty clears the accent");
+        assert_eq!(settings.theme_accent, None);
+        assert!(!apply_settings_text(&mut settings, &valid.replace("toolbar_buttons=back,reload", "toolbar_buttons=back,back")), "no duplicates");
+        assert!(!apply_settings_text(&mut settings, &valid.replace("toolbar_buttons=back,reload", "toolbar_buttons=back,bogus")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("bookmarks_bar=always", "bookmarks_bar=sometimes")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("side_panel_position=right", "side_panel_position=centre")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("font_size=large", "font_size=huge")));
+        assert!(!apply_settings_text(&mut settings, &valid.replace("default_zoom=125", "default_zoom=24")), "below the minimum");
+        assert!(!apply_settings_text(&mut settings, &valid.replace("default_zoom=125", "default_zoom=501")), "above the maximum");
+        assert!(!apply_settings_text(&mut settings, &valid.replace("frameless=true", "frameless=maybe")));
+        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblock_youtube_video_ads=true")), "duplicate key");
     }
 
     #[test]
@@ -261,7 +365,7 @@ mod tests {
         history.on = Some(true);
         assert_eq!(map_command(&history), Some(Action::History(true)));
 
-        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh)] {
+        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
             let mut with_on = fields(name);
             with_on.on = Some(true);
@@ -293,6 +397,7 @@ mod tests {
             check_result: "staged",
             ack: Ack::Saved,
             error: "",
+            default_browser: "yes",
         }
     }
 
@@ -304,7 +409,7 @@ mod tests {
         assert!(json.starts_with(r#"{"v":1,"t":"snap","p":"settings","d":{"tabLayout":"horizontal","sidebarWidth":260,"#), "{json}");
         assert!(json.contains(r#""searchEngine":null,"searchFallback":"default""#), "{json}");
         assert!(json.contains(r#""profile":"Work \"\u003cb>\"""#), "{json}");
-        assert!(json.ends_with(r#""ack":"saved","error":"","readable":true}}"#), "{json}");
+        assert!(json.ends_with(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes"}}"#), "{json}");
         let guest = Snapshot { guest: true, ..sample(&settings) };
         assert!(snapshot_json(&guest).contains(r#""historyEnabled":false,"guest":true"#));
         let custom = Snapshot { custom_search: true, ..sample(&settings) };

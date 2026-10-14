@@ -24,6 +24,7 @@ use std::{
 };
 
 use crate::navigation::SearchEngine;
+use crate::site_prefs::{ZOOM_MAX as DEFAULT_ZOOM_MAX, ZOOM_MIN as DEFAULT_ZOOM_MIN};
 
 pub const FILE_NAME: &str = "settings.txt";
 /// Starter file written by "Open settings file" when none exists. Every setting is commented out.
@@ -38,7 +39,33 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # search_engine=optimised\r\n\
     # automatic_tab_grouping=true\r\n\
     # efficiency_mode=auto\r\n\
-    # tracking_prevention=balanced\r\n";
+    # tracking_prevention=balanced\r\n\
+    # theme=helium\r\n\
+    # theme_accent=\r\n\
+    # toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\r\n\
+    # centred_address_bar=true\r\n\
+    # minimal_url=true\r\n\
+    # show_load_progress=true\r\n\
+    # frameless=false\r\n\
+    # rounded_content_frame=true\r\n\
+    # show_home_button=true\r\n\
+    # bookmarks_bar=never\r\n\
+    # bookmarks_bar_tab_groups=false\r\n\
+    # side_panel_position=left\r\n\
+    # tab_preview_images=true\r\n\
+    # tab_preview_memory=true\r\n\
+    # font_size=medium\r\n\
+    # ui_font=\r\n\
+    # default_zoom=100\r\n\
+    # show_zoom_indicator=true\r\n\
+    # new_tab_beside_active=true\r\n\
+    # ctrl_tab_mru=true\r\n\
+    # shift_right_click_context=false\r\n\
+    # ctrl_shift_c_copy_link=true\r\n\
+    # ctrl_s_vertical_tabs=false\r\n\
+    # pin_new_tab_groups=false\r\n\
+    # split_edge_drop=true\r\n\
+    # block_youtube_video_ads=true\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -144,6 +171,180 @@ impl TabLayout {
     }
 }
 
+/// `theme=helium|system` (default `helium`): Bowser's own fixed colours, or the Windows accent and
+/// light/dark choice. `theme_accent` can override either with a chosen colour.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Theme {
+    #[default]
+    Helium,
+    System,
+}
+
+impl Theme {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Helium => "helium",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "helium" => Some(Self::Helium),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+/// Longest `ui_font` value kept, in characters.
+pub const MAX_UI_FONT_CHARS: usize = 64;
+
+/// Whether `value` is exactly `#` followed by six hex digits (lower or upper case).
+fn is_hex_colour(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Parses a `theme_accent` value: empty (the theme's own colour) or `#rrggbb`, canonicalised to
+/// lower case. `None` for anything else, including a value of the wrong length.
+pub fn parse_theme_accent(value: &str) -> Option<Option<String>> {
+    if value.is_empty() {
+        return Some(None);
+    }
+    is_hex_colour(value).then(|| Some(value.to_ascii_lowercase()))
+}
+
+/// Toolbar buttons the "Customise your toolbar" row can show or hide, in the order they appear
+/// when every one of them is on (the default).
+pub const KNOWN_TOOLBAR_BUTTONS: [&str; 8] = [
+    "back", "forward", "reload", "site-info", "bookmark", "newtab", "split", "reader",
+];
+
+/// Parses a `toolbar_buttons` value: a comma-separated list of [`KNOWN_TOOLBAR_BUTTONS`], each at
+/// most once. `None` for an unknown id, a repeated id, or more entries than known buttons exist.
+pub fn parse_toolbar_buttons(value: &str) -> Option<Vec<String>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut buttons = Vec::new();
+    for raw in value.split(',') {
+        let id = raw.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if !KNOWN_TOOLBAR_BUTTONS.contains(&id) || !seen.insert(id) {
+            return None;
+        }
+        buttons.push(id.to_owned());
+    }
+    (buttons.len() <= KNOWN_TOOLBAR_BUTTONS.len()).then_some(buttons)
+}
+
+fn default_toolbar_buttons() -> Vec<String> {
+    KNOWN_TOOLBAR_BUTTONS.iter().map(|&id| id.to_owned()).collect()
+}
+
+/// Parses a `ui_font` value: any text up to [`MAX_UI_FONT_CHARS`] characters with no control
+/// characters. Empty means the system font. `None` (keep the previous value) otherwise.
+pub fn parse_ui_font(value: &str) -> Option<String> {
+    (value.chars().count() <= MAX_UI_FONT_CHARS && !value.chars().any(char::is_control))
+        .then(|| value.to_owned())
+}
+
+pub const MIN_DEFAULT_ZOOM: u16 = DEFAULT_ZOOM_MIN;
+pub const MAX_DEFAULT_ZOOM: u16 = DEFAULT_ZOOM_MAX;
+
+/// `bookmarks_bar=always|never|newtab` (default `never`): when the bookmarks bar is shown.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BookmarksBar {
+    Always,
+    #[default]
+    Never,
+    NewTab,
+}
+
+impl BookmarksBar {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+            Self::NewTab => "newtab",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            "newtab" => Some(Self::NewTab),
+            _ => None,
+        }
+    }
+}
+
+/// `side_panel_position=left|right` (default `left`): which edge the rail panels (Helium panels)
+/// are docked to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SidePanelPosition {
+    #[default]
+    Left,
+    Right,
+}
+
+impl SidePanelPosition {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// `font_size=small|medium|large` (default `medium`): the chrome's text size.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FontSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl FontSize {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "small" => Some(Self::Small),
+            "medium" => Some(Self::Medium),
+            "large" => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// The chrome's text size as a percentage of the system message font, for the native chrome and
+    /// the HTML chrome's root font-size alike.
+    pub fn scale_percent(self) -> u32 {
+        match self {
+            Self::Small => 90,
+            Self::Medium => 100,
+            Self::Large => 115,
+        }
+    }
+}
+
 pub const MIN_SIDEBAR_WIDTH: u16 = 180;
 /// Logical width of the collapsed (icons-only) vertical sidebar.
 pub const COLLAPSED_SIDEBAR_WIDTH: u16 = 48;
@@ -181,6 +382,65 @@ pub struct Settings {
     pub efficiency_mode: EfficiencyMode,
     /// `tracking_prevention=balanced|strict` (default balanced). Applies on the next start.
     pub tracking_prevention: TrackingLevel,
+    /// `theme=helium|system` (default helium). Applies immediately.
+    pub theme: Theme,
+    /// `theme_accent`: an override colour, or `None` for the theme's own. Applies immediately.
+    pub theme_accent: Option<String>,
+    /// `toolbar_buttons`: the toolbar's optional buttons, in the order shown. Applies after restart.
+    pub toolbar_buttons: Vec<String>,
+    /// `centred_address_bar` (default true). Applies immediately.
+    pub centred_address_bar: bool,
+    /// `minimal_url` (default true): the registrable host (and a path when useful) while unfocused,
+    /// the full address while focused. Applies immediately.
+    pub minimal_url: bool,
+    /// `show_load_progress` (default true). Applies immediately.
+    pub show_load_progress: bool,
+    /// `frameless` (default false): hide the browser chrome until the pointer nears the window
+    /// edge. Applies after restart.
+    pub frameless: bool,
+    /// `rounded_content_frame` (default true). Applies immediately.
+    pub rounded_content_frame: bool,
+    /// `show_home_button` (default true): the Home button in the rail. Applies immediately.
+    pub show_home_button: bool,
+    /// `bookmarks_bar=always|never|newtab` (default never). Applies after restart.
+    pub bookmarks_bar: BookmarksBar,
+    /// `bookmarks_bar_tab_groups` (default false). Applies after restart.
+    pub bookmarks_bar_tab_groups: bool,
+    /// `side_panel_position=left|right` (default left). Applies after restart.
+    pub side_panel_position: SidePanelPosition,
+    /// `tab_preview_images` (default true). Applies after restart.
+    pub tab_preview_images: bool,
+    /// `tab_preview_memory` (default true). Applies after restart.
+    pub tab_preview_memory: bool,
+    /// `font_size=small|medium|large` (default medium). Applies immediately.
+    pub font_size: FontSize,
+    /// `ui_font` (default empty, the system font). Applies immediately.
+    pub ui_font: String,
+    /// `default_zoom` in percent, 25 to 500 (default 100): the page zoom new tabs start at. A
+    /// site's own stored zoom still wins over this.
+    pub default_zoom: u16,
+    /// `show_zoom_indicator` (default true): the toolbar's zoom chip while not at 100%.
+    pub show_zoom_indicator: bool,
+    /// `new_tab_beside_active` (default true). Applies immediately.
+    pub new_tab_beside_active: bool,
+    /// `ctrl_tab_mru` (default true): Ctrl+Tab and Ctrl+Shift+Tab swap to the tab last active
+    /// instead of stepping through strip order.
+    pub ctrl_tab_mru: bool,
+    /// `shift_right_click_context` (default false): Shift+Right Click forces the system context
+    /// menu over Bowser's own tab and rail menus. Right click is unaffected when this is off.
+    pub shift_right_click_context: bool,
+    /// `ctrl_shift_c_copy_link` (default true): Ctrl+Shift+C copies the active tab's address.
+    pub ctrl_shift_c_copy_link: bool,
+    /// `ctrl_s_vertical_tabs` (default false): Ctrl+S toggles the vertical sidebar's collapsed
+    /// state while the vertical layout is active; otherwise Ctrl+S is left for the page.
+    pub ctrl_s_vertical_tabs: bool,
+    /// `pin_new_tab_groups` (default false): a tab group formed from now on starts pinned.
+    pub pin_new_tab_groups: bool,
+    /// `split_edge_drop` (default true): dropping a dragged tab on the window's left or right edge
+    /// starts a split.
+    pub split_edge_drop: bool,
+    /// `block_youtube_video_ads` (default true). Read by the blocker; this module only stores it.
+    pub block_youtube_video_ads: bool,
 }
 
 impl Default for Settings {
@@ -198,6 +458,32 @@ impl Default for Settings {
             automatic_tab_grouping: true,
             efficiency_mode: EfficiencyMode::Auto,
             tracking_prevention: TrackingLevel::Balanced,
+            theme: Theme::Helium,
+            theme_accent: None,
+            toolbar_buttons: default_toolbar_buttons(),
+            centred_address_bar: true,
+            minimal_url: true,
+            show_load_progress: true,
+            frameless: false,
+            rounded_content_frame: true,
+            show_home_button: true,
+            bookmarks_bar: BookmarksBar::Never,
+            bookmarks_bar_tab_groups: false,
+            side_panel_position: SidePanelPosition::Left,
+            tab_preview_images: true,
+            tab_preview_memory: true,
+            font_size: FontSize::Medium,
+            ui_font: String::new(),
+            default_zoom: crate::site_prefs::ZOOM_DEFAULT,
+            show_zoom_indicator: true,
+            new_tab_beside_active: true,
+            ctrl_tab_mru: true,
+            shift_right_click_context: false,
+            ctrl_shift_c_copy_link: true,
+            ctrl_s_vertical_tabs: false,
+            pin_new_tab_groups: false,
+            split_edge_drop: true,
+            block_youtube_video_ads: true,
         }
     }
 }
@@ -299,6 +585,136 @@ impl Settings {
                         settings.tracking_prevention = level;
                     }
                 }
+                "theme" => {
+                    if let Some(theme) = Theme::parse(value) {
+                        settings.theme = theme;
+                    }
+                }
+                "theme_accent" => {
+                    if let Some(accent) = parse_theme_accent(value) {
+                        settings.theme_accent = accent;
+                    }
+                }
+                "toolbar_buttons" => {
+                    if let Some(buttons) = parse_toolbar_buttons(value) {
+                        settings.toolbar_buttons = buttons;
+                    }
+                }
+                "centred_address_bar" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.centred_address_bar = on;
+                    }
+                }
+                "minimal_url" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.minimal_url = on;
+                    }
+                }
+                "show_load_progress" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.show_load_progress = on;
+                    }
+                }
+                "frameless" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.frameless = on;
+                    }
+                }
+                "rounded_content_frame" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.rounded_content_frame = on;
+                    }
+                }
+                "show_home_button" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.show_home_button = on;
+                    }
+                }
+                "bookmarks_bar" => {
+                    if let Some(mode) = BookmarksBar::parse(value) {
+                        settings.bookmarks_bar = mode;
+                    }
+                }
+                "bookmarks_bar_tab_groups" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.bookmarks_bar_tab_groups = on;
+                    }
+                }
+                "side_panel_position" => {
+                    if let Some(position) = SidePanelPosition::parse(value) {
+                        settings.side_panel_position = position;
+                    }
+                }
+                "tab_preview_images" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.tab_preview_images = on;
+                    }
+                }
+                "tab_preview_memory" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.tab_preview_memory = on;
+                    }
+                }
+                "font_size" => {
+                    if let Some(size) = FontSize::parse(value) {
+                        settings.font_size = size;
+                    }
+                }
+                "ui_font" => {
+                    if let Some(font) = parse_ui_font(value) {
+                        settings.ui_font = font;
+                    }
+                }
+                "default_zoom" => {
+                    if let Ok(zoom) = value.parse::<u16>() {
+                        settings.default_zoom = zoom.clamp(MIN_DEFAULT_ZOOM, MAX_DEFAULT_ZOOM);
+                    }
+                }
+                "show_zoom_indicator" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.show_zoom_indicator = on;
+                    }
+                }
+                "new_tab_beside_active" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.new_tab_beside_active = on;
+                    }
+                }
+                "ctrl_tab_mru" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.ctrl_tab_mru = on;
+                    }
+                }
+                "shift_right_click_context" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.shift_right_click_context = on;
+                    }
+                }
+                "ctrl_shift_c_copy_link" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.ctrl_shift_c_copy_link = on;
+                    }
+                }
+                "ctrl_s_vertical_tabs" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.ctrl_s_vertical_tabs = on;
+                    }
+                }
+                "pin_new_tab_groups" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.pin_new_tab_groups = on;
+                    }
+                }
+                "split_edge_drop" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.split_edge_drop = on;
+                    }
+                }
+                "block_youtube_video_ads" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.block_youtube_video_ads = on;
+                    }
+                }
                 _ => {}
             }
         }
@@ -340,6 +756,19 @@ pub fn parse_sleep_after_secs(text: &str) -> Result<u64, String> {
     Ok(secs)
 }
 
+/// Validates the default zoom percent typed into the settings window. Out-of-range input is
+/// refused, not clamped, matching `parse_sleep_after_secs`.
+pub fn parse_default_zoom(text: &str) -> Result<u16, String> {
+    let percent = text
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "Enter the zoom as a whole percentage, for example 100.".to_owned())?;
+    if !(MIN_DEFAULT_ZOOM..=MAX_DEFAULT_ZOOM).contains(&percent) {
+        return Err(format!("Enter a zoom from {MIN_DEFAULT_ZOOM} to {MAX_DEFAULT_ZOOM} percent."));
+    }
+    Ok(percent)
+}
+
 /// Validates the comma-separated allow list typed into the settings window. Entries are trimmed
 /// and empty ones dropped, matching `parse`, so a saved list reads back unchanged.
 pub fn parse_blocker_allow(text: &str) -> Result<Vec<String>, String> {
@@ -377,7 +806,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 12] = [
+    let values: [(&str, Option<String>); 38] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         (
@@ -414,8 +843,34 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             "tracking_prevention",
             Some(settings.tracking_prevention.key().to_owned()),
         ),
+        ("theme", Some(settings.theme.key().to_owned())),
+        ("theme_accent", Some(settings.theme_accent.clone().unwrap_or_default())),
+        ("toolbar_buttons", Some(settings.toolbar_buttons.join(","))),
+        ("centred_address_bar", Some(bool_text(settings.centred_address_bar).to_owned())),
+        ("minimal_url", Some(bool_text(settings.minimal_url).to_owned())),
+        ("show_load_progress", Some(bool_text(settings.show_load_progress).to_owned())),
+        ("frameless", Some(bool_text(settings.frameless).to_owned())),
+        ("rounded_content_frame", Some(bool_text(settings.rounded_content_frame).to_owned())),
+        ("show_home_button", Some(bool_text(settings.show_home_button).to_owned())),
+        ("bookmarks_bar", Some(settings.bookmarks_bar.key().to_owned())),
+        ("bookmarks_bar_tab_groups", Some(bool_text(settings.bookmarks_bar_tab_groups).to_owned())),
+        ("side_panel_position", Some(settings.side_panel_position.key().to_owned())),
+        ("tab_preview_images", Some(bool_text(settings.tab_preview_images).to_owned())),
+        ("tab_preview_memory", Some(bool_text(settings.tab_preview_memory).to_owned())),
+        ("font_size", Some(settings.font_size.key().to_owned())),
+        ("ui_font", Some(settings.ui_font.clone())),
+        ("default_zoom", Some(settings.default_zoom.to_string())),
+        ("show_zoom_indicator", Some(bool_text(settings.show_zoom_indicator).to_owned())),
+        ("new_tab_beside_active", Some(bool_text(settings.new_tab_beside_active).to_owned())),
+        ("ctrl_tab_mru", Some(bool_text(settings.ctrl_tab_mru).to_owned())),
+        ("shift_right_click_context", Some(bool_text(settings.shift_right_click_context).to_owned())),
+        ("ctrl_shift_c_copy_link", Some(bool_text(settings.ctrl_shift_c_copy_link).to_owned())),
+        ("ctrl_s_vertical_tabs", Some(bool_text(settings.ctrl_s_vertical_tabs).to_owned())),
+        ("pin_new_tab_groups", Some(bool_text(settings.pin_new_tab_groups).to_owned())),
+        ("split_edge_drop", Some(bool_text(settings.split_edge_drop).to_owned())),
+        ("block_youtube_video_ads", Some(bool_text(settings.block_youtube_video_ads).to_owned())),
     ];
-    let mut written = [false; 12];
+    let mut written = [false; 38];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -687,6 +1142,32 @@ mod tests {
             search_engine: Some(SearchEngine::DuckDuckGo),
             efficiency_mode: EfficiencyMode::On,
             tracking_prevention: TrackingLevel::Strict,
+            theme: Theme::System,
+            theme_accent: Some("#1a2b3c".to_owned()),
+            toolbar_buttons: vec!["back".to_owned(), "reload".to_owned()],
+            centred_address_bar: false,
+            minimal_url: false,
+            show_load_progress: false,
+            frameless: true,
+            rounded_content_frame: false,
+            show_home_button: false,
+            bookmarks_bar: BookmarksBar::Always,
+            bookmarks_bar_tab_groups: true,
+            side_panel_position: SidePanelPosition::Right,
+            tab_preview_images: false,
+            tab_preview_memory: false,
+            font_size: FontSize::Large,
+            ui_font: "Consolas".to_owned(),
+            default_zoom: 125,
+            show_zoom_indicator: false,
+            new_tab_beside_active: false,
+            ctrl_tab_mru: false,
+            shift_right_click_context: true,
+            ctrl_shift_c_copy_link: false,
+            ctrl_s_vertical_tabs: true,
+            pin_new_tab_groups: true,
+            split_edge_drop: false,
+            block_youtube_video_ads: false,
         }
     }
 
@@ -862,7 +1343,15 @@ mod tests {
             "# my notes\r\nfoo=bar\r\nnotes_panel_width=360\r\nsleep_enabled=false\r\n# blocker_allow=old.com\r\n\
              tab_layout=vertical\r\nsidebar_width=300\r\nsidebar_collapsed=false\r\nside_panel_width=340\r\nsleep_after_secs=900\r\n\
              blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
-             automatic_tab_grouping=false\r\nefficiency_mode=on\r\ntracking_prevention=strict\r\n"
+             automatic_tab_grouping=false\r\nefficiency_mode=on\r\ntracking_prevention=strict\r\n\
+             theme=system\r\ntheme_accent=#1a2b3c\r\ntoolbar_buttons=back,reload\r\n\
+             centred_address_bar=false\r\nminimal_url=false\r\nshow_load_progress=false\r\n\
+             frameless=true\r\nrounded_content_frame=false\r\nshow_home_button=false\r\n\
+             bookmarks_bar=always\r\nbookmarks_bar_tab_groups=true\r\nside_panel_position=right\r\n\
+             tab_preview_images=false\r\ntab_preview_memory=false\r\nfont_size=large\r\nui_font=Consolas\r\n\
+             default_zoom=125\r\nshow_zoom_indicator=false\r\nnew_tab_beside_active=false\r\nctrl_tab_mru=false\r\n\
+             shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
+             pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }
@@ -982,6 +1471,35 @@ mod tests {
         assert!(parse_blocker_allow("a b.com").is_err());
         let too_many = vec!["x.com"; MAX_BLOCKER_ALLOW + 1].join(",");
         assert!(parse_blocker_allow(&too_many).is_err());
+
+        assert_eq!(parse_default_zoom(" 100 "), Ok(100));
+        assert_eq!(parse_default_zoom(&MIN_DEFAULT_ZOOM.to_string()), Ok(MIN_DEFAULT_ZOOM));
+        assert_eq!(parse_default_zoom(&MAX_DEFAULT_ZOOM.to_string()), Ok(MAX_DEFAULT_ZOOM));
+        assert!(parse_default_zoom("24").is_err());
+        assert!(parse_default_zoom("501").is_err());
+        assert!(parse_default_zoom("1.5").is_err());
+        assert!(parse_default_zoom("").is_err());
+    }
+
+    #[test]
+    fn theme_accent_parses_hex_and_folds_case() {
+        assert_eq!(parse_theme_accent(""), Some(None));
+        assert_eq!(parse_theme_accent("#1a2b3c"), Some(Some("#1a2b3c".to_owned())));
+        assert_eq!(parse_theme_accent("#1A2B3C"), Some(Some("#1a2b3c".to_owned())));
+        for bad in ["1a2b3c", "#1a2b3", "#1a2b3cd", "red", "#gggggg"] {
+            assert_eq!(parse_theme_accent(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn toolbar_buttons_reject_unknown_and_duplicate_ids_and_cap_the_list() {
+        assert_eq!(parse_toolbar_buttons(""), Some(Vec::new()));
+        assert_eq!(parse_toolbar_buttons("back,reload"), Some(vec!["back".to_owned(), "reload".to_owned()]));
+        assert_eq!(parse_toolbar_buttons(" back , reload "), Some(vec!["back".to_owned(), "reload".to_owned()]));
+        assert_eq!(parse_toolbar_buttons(&KNOWN_TOOLBAR_BUTTONS.join(",")), Some(default_toolbar_buttons()));
+        assert_eq!(parse_toolbar_buttons("back,bogus"), None);
+        assert_eq!(parse_toolbar_buttons("back,back"), None, "no duplicates");
+        assert_eq!(parse_toolbar_buttons("Back"), None, "ids are exact case");
     }
 
     #[test]

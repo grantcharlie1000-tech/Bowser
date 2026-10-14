@@ -91,13 +91,23 @@ pub type AccelHandler = Rc<dyn Fn(Accel) -> bool>;
 /// Ctrl+Y, Ctrl+Shift+Z, and Ctrl or Shift with Left/Right/Home/End/Backspace/Delete. Alt+Left and
 /// Alt+Right stay navigation. Repeats of toggle commands are not claimed.
 pub fn accel_command(accel: Accel, omnibox_editing: bool) -> Option<Shortcut> {
+    accel_command_gated(accel, omnibox_editing, shortcuts::GatedChords::default())
+}
+
+/// [`accel_command`] that also claims the setting-gated chords `gated` binds right now.
+pub fn accel_command_gated(
+    accel: Accel,
+    omnibox_editing: bool,
+    gated: shortcuts::GatedChords,
+) -> Option<Shortcut> {
     if !accel.key_down || accel.vk == VK_ESCAPE {
         return None;
     }
     if omnibox_editing && is_editing_chord(accel) {
         return None;
     }
-    let command = shortcuts::command_for(accel.vk, accel.ctrl, accel.shift, accel.alt)?;
+    let command =
+        shortcuts::command_for_gated(accel.vk, accel.ctrl, accel.shift, accel.alt, gated)?;
     if accel.repeat && shortcuts::is_toggle(command) {
         return None;
     }
@@ -1569,6 +1579,23 @@ mod tests {
         let mut next = key(0x09, true, false, false);
         next.repeat = true;
         assert_eq!(accel_command(next, false), Some(Shortcut::NextTab));
+    }
+
+    #[test]
+    fn accelerator_claims_gated_chords_only_when_bound() {
+        let copy = key(0x43, true, true, false); // Ctrl+Shift+C
+        let save = key(0x53, true, false, false); // Ctrl+S
+        let all = shortcuts::GatedChords::new(true, true, true);
+        assert_eq!(accel_command(copy, false), None);
+        assert_eq!(accel_command(save, false), None);
+        assert_eq!(accel_command_gated(copy, false, all), Some(Shortcut::CopyLink));
+        assert_eq!(accel_command_gated(save, false, all), Some(Shortcut::ToggleSidebar));
+        // The omnibox field keeps Ctrl+C-style editing: Ctrl+Shift+C is claimed by neither while editing.
+        assert_eq!(accel_command_gated(copy, true, all), None);
+        // Holding Ctrl+S does not flip the sidebar again.
+        let mut held = save;
+        held.repeat = true;
+        assert_eq!(accel_command_gated(held, false, all), None);
     }
 
     #[test]

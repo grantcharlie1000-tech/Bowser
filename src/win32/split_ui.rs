@@ -474,7 +474,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         Shown::Hidden => return,
     };
     // Theme first, then content, then show: the page never appears unthemed or stale.
-    let state = super::window::split_host_state(owner);
+    let state = super::window::split_host_state(owner, App::settings_accent(app));
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
@@ -665,6 +665,9 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
 /// The side of the page under the dragged tab, or `None` when the pointer is not over the page
 /// (or the drop would not make sense: the tab already fills that side).
 fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32) -> Option<Pane> {
+    if !App::settings(app).split_edge_drop {
+        return None;
+    }
     let (screen, dpi) = super::window::tabs_host_screen(owner)?;
     let (sx, sy) = wire::css_to_screen((screen.left, screen.top), dpi as f32 / 96.0, x, y);
     let mut point = POINT { x: sx, y: sy };

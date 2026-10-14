@@ -213,7 +213,7 @@ function startToolbar(root: HTMLElement): void {
     switch (msg.t) {
       case 'state':
         loading = msg.loading;
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        applyTheme(msg.theme, msg.solid, msg.dark, msg.fontScale, msg.uiFont);
         applyState(view, msg);
         break;
       case 'setText':

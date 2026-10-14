@@ -28,13 +28,13 @@ export interface MenuMessage {
  */
 export const MENU_ICONS: readonly string[] = [
   'app-tile', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
-  'caption-minimize', 'caption-restore', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
+  'caption-minimize', 'caption-restore', 'cast', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
   'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
   'find', 'folder', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
-  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'search', 'settings',
+  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
   'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'trash', 'unlock', 'unsplit',
-  'volume', 'warning', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
+  'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',
 ];
@@ -119,11 +119,22 @@ export function typeahead(entries: readonly MenuEntry[], from: number, text: str
   return -1;
 }
 
-/** One drill-in page: the top-level list or a submenu reached from the row labelled `label`. */
+/**
+ * One page of the stack: the top-level list or a submenu reached from the row labelled `label`.
+ * While a submenu is open, `selected` of the page it came from stays on the row that opened it.
+ */
 export interface MenuPage { readonly entries: readonly MenuEntry[]; readonly label: string; selected: number }
 
-/** Keyboard state of an open menu. Pages are a stack; the last one is on screen. */
+/** Keyboard state of an open menu. Pages are a stack; the last one takes the keys. */
 export interface MenuNav { pages: MenuPage[]; typed: string; typedAt: number }
+
+/** Pages on screen at once: the open page and the page it came from, side by side. */
+export const VISIBLE_PAGES = 2;
+
+/** Index of the first page on screen. Pages before it have slid out of view. */
+export function firstVisible(nav: MenuNav): number {
+  return Math.max(0, nav.pages.length - VISIBLE_PAGES);
+}
 
 /**
  * What a key or click did: nothing, moved the selection, changed page (redraw and resize), picked a
@@ -150,7 +161,27 @@ export function currentPage(nav: MenuNav): MenuPage {
   return page;
 }
 
-/** Runs the row at `index`: a submenu opens as a new page, a command is picked. */
+/**
+ * Runs the row at `index` of the page at `level`, which may be the parent of the open page (it
+ * stays on screen). A command is picked. A submenu row closes the pages above its own first: the
+ * row whose submenu is already open then only closes it, any other row opens its own.
+ */
+export function activateAt(nav: MenuNav, level: number, index: number): MenuOutcome {
+  const page = nav.pages[level];
+  const entry = page?.entries[index];
+  if (!page || !isSelectable(entry)) return NONE;
+  if (level === nav.pages.length - 1) return activate(nav, index);
+  if (!entry.submenu) {
+    page.selected = index;
+    return { kind: 'pick', id: entry.id };
+  }
+  const open = page.selected === index;
+  nav.pages.length = level + 1;
+  nav.typed = '';
+  return open ? PAGE : activate(nav, index);
+}
+
+/** Runs the row at `index`: a submenu opens beside the current page as a new page, a command is picked. */
 export function activate(nav: MenuNav, index: number): MenuOutcome {
   const page = currentPage(nav);
   const entry = page.entries[index];
@@ -164,7 +195,7 @@ export function activate(nav: MenuNav, index: number): MenuOutcome {
   return { kind: 'pick', id: entry.id };
 }
 
-/** Leaves a submenu page. False on the top page. */
+/** Closes the open submenu, back to the page it came from. False on the top page. */
 export function back(nav: MenuNav): boolean {
   if (nav.pages.length <= 1) return false;
   nav.pages.pop();

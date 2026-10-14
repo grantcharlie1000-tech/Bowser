@@ -755,12 +755,16 @@ fn theme_json(like_toolbar: bool) -> String {
         split: false,
         bookmarked: false,
         progress: 0,
+        show_progress: true,
         security: Security::None,
         label: String::new(),
         permblocked: false,
         zoom: 100,
+        show_zoom: false,
         private: false,
         reader: crate::reader::Pill::Hidden,
+        font_scale: 100,
+        ui_font: String::new(),
         theme: chrome_host::theme_tokens(palette),
     }
     .to_json()

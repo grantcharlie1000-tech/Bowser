@@ -866,6 +866,7 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
         return;
     };
     let bounds = page_bounds(at, i32::from(w), i32::from(h), dpi, work);
+    let bounds = if shown && matches!(at, Anchor::Point(..)) { keep_right_edge(previous, bounds, work) } else { bounds };
     if shown && bounds == previous {
         return;
     }
@@ -1130,6 +1131,19 @@ fn popup_bounds(
     }
 }
 
+/// A menu that opens a submenu beside itself reports a wider page, and closing it reports the old
+/// width again. The page slides its panes assuming the window's right edge stays where it is, so a
+/// shown popup that changes width keeps its previous right edge (clamped into the work area) and
+/// grows or shrinks on the left. The top, bottom and width come from `bounds`.
+fn keep_right_edge(previous: RECT, bounds: RECT, work: RECT) -> RECT {
+    let width = bounds.right - bounds.left;
+    if width == previous.right - previous.left {
+        return bounds;
+    }
+    let right = previous.right.min(work.right).max(work.left + width);
+    RECT { left: right - width, right, ..bounds }
+}
+
 // --- popup surfaces (lane PP) ---
 fn page_bounds(at: Anchor, width_css: i32, height_css: i32, dpi: u32, work: RECT) -> RECT {
     match at {
@@ -1260,6 +1274,21 @@ mod tests {
             (anchored.left, anchored.top, anchored.right, anchored.bottom),
             (100, 50, 400, 250)
         );
+    }
+
+    #[test]
+    fn a_shown_popup_that_changes_width_keeps_its_right_edge_inside_the_work_area() {
+        let work = RECT { left: 0, top: 0, right: 1000, bottom: 700 };
+        let rect = |left, top, right, bottom| RECT { left, top, right, bottom };
+        let key = |r: RECT| (r.left, r.top, r.right, r.bottom);
+        // A submenu opens: 200 px becomes 500 px, growing on the left; the height still follows the page.
+        assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(700, 100, 1200, 420), work)), (400, 100, 900, 420));
+        // It closes: back to 200 px, the right edge unchanged.
+        assert_eq!(key(keep_right_edge(rect(400, 100, 900, 420), rect(400, 100, 600, 400), work)), (700, 100, 900, 400));
+        // No room on the left: the window is clamped to the work area instead.
+        assert_eq!(key(keep_right_edge(rect(100, 100, 300, 400), rect(100, 100, 600, 400), work)), (0, 100, 500, 400));
+        // An unchanged width leaves the placement alone (a flip above the anchor included).
+        assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(700, 50, 900, 350), work)), (700, 50, 900, 350));
     }
 
     #[test]

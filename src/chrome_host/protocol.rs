@@ -9,8 +9,9 @@ use std::{fmt, time::{Duration, Instant}};
 
 /// Largest raw message accepted from the page, in bytes.
 pub const MAX_RAW_BYTES: usize = 16 * 1024;
-/// Longest text field accepted from the page, in characters.
-pub const MAX_TEXT_CHARS: usize = 2048;
+/// Longest text field accepted from the page, in characters. Raised from 2048 so the settings
+/// page's `save` payload (every profile setting, `chrome_host::settings::MAX_SAVE_TEXT`) fits.
+pub const MAX_TEXT_CHARS: usize = 4096;
 /// Longest name a composer page may submit (the page limits names to 40; Rust checks again).
 pub const MAX_COMPOSER_NAME_CHARS: usize = 128;
 /// Most keys one page message may carry (`v` and `t` included). The largest message type uses four
@@ -1154,6 +1155,8 @@ pub struct ViewState {
     pub bookmarked: bool,
     /// Clamped to 0..=100 when serialised.
     pub progress: u8,
+    /// `show_load_progress` setting: whether the pill's loading bar is shown at all.
+    pub show_progress: bool,
     pub security: Security,
     pub label: String,
     /// A camera, microphone, location or notification request was denied on the current page
@@ -1162,10 +1165,18 @@ pub struct ViewState {
     /// The page zoom of the active tab in percent. Clamped to 25..=500 when serialised; the toolbar
     /// shows a reset chip while it is not 100.
     pub zoom: u16,
+    /// `show_zoom_indicator` setting: whether the zoom chip may show at all. The chip still only
+    /// appears while `zoom` is not 100.
+    pub show_zoom: bool,
     /// The active tab is a private tab (the pill shows the private indicator).
     pub private: bool,
     /// The reader view button: hidden, offered (the page looks like an article) or on.
     pub reader: crate::reader::Pill,
+    /// `font_size`, as a percentage of the default chrome font size. The page scales its root
+    /// font-size by this.
+    pub font_scale: u32,
+    /// `ui_font`; empty means the page's own default font-family.
+    pub ui_font: String,
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1194,6 +1205,8 @@ impl ViewState {
         }
         out.push_str(",\"progress\":");
         out.push_str(&self.progress.min(100).to_string());
+        out.push_str(",\"showProgress\":");
+        out.push_str(if self.show_progress { "true" } else { "false" });
         out.push_str(",\"security\":");
         out.push_str(&json_string(self.security.as_str()));
         out.push_str(",\"label\":");
@@ -1202,10 +1215,16 @@ impl ViewState {
         out.push_str(if self.permblocked { "true" } else { "false" });
         out.push_str(",\"zoom\":");
         out.push_str(&self.zoom.clamp(crate::site_prefs::ZOOM_MIN, crate::site_prefs::ZOOM_MAX).to_string());
+        out.push_str(",\"showZoom\":");
+        out.push_str(if self.show_zoom { "true" } else { "false" });
         out.push_str(",\"private\":");
         out.push_str(if self.private { "true" } else { "false" });
         out.push_str(",\"reader\":");
         out.push_str(&json_string(self.reader.as_str()));
+        out.push_str(",\"fontScale\":");
+        out.push_str(&self.font_scale.clamp(50, 200).to_string());
+        out.push_str(",\"uiFont\":");
+        out.push_str(&json_string(truncate_utf16(&self.ui_font, crate::settings::MAX_UI_FONT_CHARS)));
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1917,12 +1936,16 @@ mod tests {
             split: false,
             bookmarked: false,
             progress: 0,
+            show_progress: true,
             security: Security::Secure,
             label: "Secure".to_string(),
             permblocked: false,
             zoom: 100,
+            show_zoom: true,
             private: false,
             reader: crate::reader::Pill::Hidden,
+            font_scale: 100,
+            ui_font: String::new(),
             theme: Vec::new(),
         }
     }
@@ -2055,11 +2078,11 @@ mod tests {
             r#"{"v":1,"t":"ren","a":"save","text":false}"#,
             r#"{"v":1,"t":"ren","a":"Save"}"#,
         ] { assert!(parse_command(raw).is_err(), "{raw}"); }
-        let long_name = format!(r#"{{"v":1,"t":"ren","a":"save","text":"{}"}}"#, "x".repeat(2049));
+        let long_name = format!(r#"{{"v":1,"t":"ren","a":"save","text":"{}"}}"#, "x".repeat(MAX_TEXT_CHARS + 1));
         assert!(parse_command(&long_name).is_err());
-        let long = format!(r#"{{"v":1,"t":"notes","a":"save","text":"{}"}}"#, "x".repeat(2049));
+        let long = format!(r#"{{"v":1,"t":"notes","a":"save","text":"{}"}}"#, "x".repeat(MAX_TEXT_CHARS + 1));
         assert!(parse_command(&long).is_err());
-        let long_url = format!(r#"{{"v":1,"t":"bm","a":"open","url":"{}"}}"#, "é".repeat(2049));
+        let long_url = format!(r#"{{"v":1,"t":"bm","a":"open","url":"{}"}}"#, "é".repeat(MAX_TEXT_CHARS + 1));
         assert!(parse_command(&long_url).is_err());
         assert_eq!(
             err(r#"{"v":1,"t":"hist","a":"open","id":1,"parent":2,"before":3,"a":"again"}"#),
@@ -2777,12 +2800,16 @@ mod tests {
             split: true,
             bookmarked: false,
             progress: 42,
+            show_progress: false,
             security: Security::Secure,
             label: "Secure".to_string(),
             permblocked: true,
             zoom: 125,
+            show_zoom: true,
             private: true,
             reader: crate::reader::Pill::Available,
+            font_scale: 115,
+            ui_font: "Consolas".to_string(),
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -2790,14 +2817,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"private":true,"reader":"available","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","fontScale":115,"uiFont":"Consolas","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"private":false,"reader":"none","theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","fontScale":100,"uiFont":"","theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
@@ -2964,11 +2991,11 @@ mod tests {
 
     #[test]
     fn set_text_caps_utf16_without_splitting_a_code_point() {
-        let exact = format!("{}😀", "a".repeat(2046));
+        let exact = format!("{}😀", "a".repeat(MAX_TEXT_CHARS - 2));
         assert_eq!(set_text_json(&exact, false), format!("{{\"t\":\"setText\",\"text\":\"{exact}\",\"select\":false}}"));
-        let split = format!("{}😀tail", "a".repeat(2047));
-        assert_eq!(set_text_json(&split, true), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":true}}", "a".repeat(2047)));
-        assert_eq!(set_text_json(&"😀".repeat(1025), false), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":false}}", "😀".repeat(1024)));
+        let split = format!("{}😀tail", "a".repeat(MAX_TEXT_CHARS - 1));
+        assert_eq!(set_text_json(&split, true), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":true}}", "a".repeat(MAX_TEXT_CHARS - 1)));
+        assert_eq!(set_text_json(&"😀".repeat(MAX_TEXT_CHARS / 2 + 1), false), format!("{{\"t\":\"setText\",\"text\":\"{}\",\"select\":false}}", "😀".repeat(MAX_TEXT_CHARS / 2)));
     }
 
     #[test]

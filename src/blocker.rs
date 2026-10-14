@@ -819,11 +819,22 @@ impl BlockerState {
     }
 
     /// DevTools Response-stage patterns for the YouTube player responses, whenever the blocker is
-    /// switched on for the tab at all. They do not follow the current page's site exception, so
-    /// the first watch page opened from an excepted site still pauses; each paused response is
-    /// then decided by [`Self::player_ads_rewrite`].
+    /// switched on for the tab at all and the `block_youtube_video_ads` option is on. They do not
+    /// follow the current page's site exception, so the first watch page opened from an excepted
+    /// site still pauses; each paused response is then decided by [`Self::player_ads_rewrite`].
+    ///
+    /// The option is read fresh from the active profile's `settings.txt` so toggling it off takes
+    /// effect without a restart: a navigation with the option off enables no Response-stage pause.
     pub fn response_patterns(&self, private: bool) -> &'static [youtube::ResponsePattern] {
-        if crate::private::blocker_applies(private, self.enabled, false) {
+        self.response_patterns_gated(private, youtube_video_ads_enabled())
+    }
+
+    fn response_patterns_gated(
+        &self,
+        private: bool,
+        video_ads_on: bool,
+    ) -> &'static [youtube::ResponsePattern] {
+        if video_ads_on && crate::private::blocker_applies(private, self.enabled, false) {
             &youtube::RESPONSE_PATTERNS
         } else {
             &[]
@@ -834,12 +845,29 @@ impl BlockerState {
     /// through. A watch page is the tab's next document, so its own site decides; any other
     /// response follows the page on `top_host`, like every request rule. A private tab always
     /// strips; a normal tab honours the switch and site exceptions.
+    ///
+    /// Returns `None` for every response when the `block_youtube_video_ads` option is off, read
+    /// fresh from the active profile's `settings.txt` so the choice takes effect without a restart.
+    /// Video and audio come from googlevideo.com and are never touched here either way.
     pub fn player_ads_rewrite(
         &self,
         url: &str,
         top_host: &str,
         private: bool,
     ) -> Option<youtube::PlayerPayload> {
+        self.player_ads_rewrite_gated(url, top_host, private, youtube_video_ads_enabled())
+    }
+
+    fn player_ads_rewrite_gated(
+        &self,
+        url: &str,
+        top_host: &str,
+        private: bool,
+        video_ads_on: bool,
+    ) -> Option<youtube::PlayerPayload> {
+        if !video_ads_on {
+            return None;
+        }
         let payload = youtube::player_payload(url)?;
         let blocking = match payload {
             youtube::PlayerPayload::WatchPage => {
@@ -894,6 +922,20 @@ fn normalise_site(entry: &str) -> Option<String> {
     let entry = entry.trim().trim_start_matches("*.").trim_matches('.');
     let entry = entry.to_ascii_lowercase();
     (!entry.starts_with('#') && valid_rule_host(&entry)).then_some(entry)
+}
+
+/// Whether YouTube video-ad stripping is switched on, read fresh from the active profile's
+/// `settings.txt` on each navigation or player-response decision so the settings page's immediate
+/// save takes effect without a restart. The read is cheap and failure-safe: no active profile, or
+/// a missing or unreadable file, means on — the default and the behaviour Bowser has always had.
+fn youtube_video_ads_enabled() -> bool {
+    let Ok(profile) = crate::profile::active() else {
+        return true;
+    };
+    match read_capped(&profile.settings_file(), crate::settings::MAX_FILE_BYTES) {
+        Some(text) => youtube::video_ads_blocked(&text),
+        None => true,
+    }
 }
 
 fn read_capped(path: &Path, cap: usize) -> Option<String> {
@@ -1885,45 +1927,53 @@ mod tests {
 
     #[test]
     fn the_player_rewrite_follows_the_switch_site_exceptions_and_private_tabs() {
+        // The gated core, exercised with the `block_youtube_video_ads` option on, so the test does
+        // not touch the active profile's settings file. The option-off path has its own test.
         use youtube::PlayerPayload::{Json, WatchPage};
         let beacon = "https://www.youtube.com/api/stats/ads?ver=2";
         let mut s = builtin();
         assert!(s.should_block(beacon, YOUTUBE));
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false),
+            s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, false, true),
             Some(Json)
         );
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_WATCH, "news.example", false),
+            s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", false, true),
             Some(WatchPage)
         );
         let elsewhere = "https://news.example/youtubei/v1/player";
-        assert_eq!(s.player_ads_rewrite(elsewhere, YOUTUBE, false), None);
         assert_eq!(
-            s.response_patterns(false).len(),
+            s.player_ads_rewrite_gated(elsewhere, YOUTUBE, false, true),
+            None
+        );
+        assert_eq!(
+            s.response_patterns_gated(false, true).len(),
             youtube::RESPONSE_PATTERNS.len()
         );
 
         // Ctrl+Shift+B on YouTube: a normal tab is left alone, a private one is not.
         assert_eq!(s.toggle_site(YOUTUBE), SiteToggle::Allowed);
         assert!(!s.should_block(beacon, YOUTUBE));
-        assert_eq!(s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false), None);
+        assert_eq!(
+            s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, false, true),
+            None
+        );
         // The watch page's own site decides, wherever the tab was before it.
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_WATCH, "news.example", false),
+            s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", false, true),
             None
         );
         assert!(
-            !s.response_patterns(false).is_empty(),
+            !s.response_patterns_gated(false, true).is_empty(),
             "each response is decided on its own"
         );
         assert!(s.should_block_private(beacon, YOUTUBE));
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, true),
+            s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, true, true),
             Some(Json)
         );
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_WATCH, "", true),
+            s.player_ads_rewrite_gated(YOUTUBE_WATCH, "", true, true),
             Some(WatchPage)
         );
 
@@ -1931,25 +1981,57 @@ mod tests {
         s.enabled = false;
         assert!(!s.should_block(beacon, "news.example"));
         assert_eq!(
-            s.player_ads_rewrite(YOUTUBE_PLAYER, "news.example", false),
+            s.player_ads_rewrite_gated(YOUTUBE_PLAYER, "news.example", false, true),
             None
         );
-        assert!(s.response_patterns(false).is_empty());
-        assert!(!s.response_patterns(true).is_empty());
+        assert!(s.response_patterns_gated(false, true).is_empty());
+        assert!(!s.response_patterns_gated(true, true).is_empty());
         assert!(s.should_block_private(beacon, "news.example"));
 
         // blocker_allow in settings exempts a normal tab the same way.
         let configured = BlockerState::new(Blocker::from_lists(None), &["youtube.com".to_owned()]);
         assert!(!configured.should_block(beacon, YOUTUBE));
         assert_eq!(
-            configured.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, false),
+            configured.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, false, true),
             None
         );
         assert!(configured.should_block_private(beacon, YOUTUBE));
         assert_eq!(
-            configured.player_ads_rewrite(YOUTUBE_PLAYER, YOUTUBE, true),
+            configured.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, true, true),
             Some(Json)
         );
+    }
+
+    #[test]
+    fn block_youtube_video_ads_off_pauses_and_rewrites_nothing() {
+        use youtube::PlayerPayload::Json;
+        let s = builtin();
+        // On, every path that would strip does strip (same as the switch/exception test above).
+        assert_eq!(
+            s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, false, true),
+            Some(Json)
+        );
+        assert_eq!(
+            s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", true, true),
+            Some(youtube::PlayerPayload::WatchPage)
+        );
+        assert!(!s.response_patterns_gated(false, true).is_empty());
+
+        // Off: no Response-stage pause for either tab kind, and no response is ever rewritten,
+        // even in a private tab where the blocker otherwise always applies. The video and audio
+        // on googlevideo.com are untouched here regardless, as always.
+        assert!(s.response_patterns_gated(false, false).is_empty());
+        assert!(s.response_patterns_gated(true, false).is_empty());
+        for private in [false, true] {
+            assert_eq!(
+                s.player_ads_rewrite_gated(YOUTUBE_PLAYER, YOUTUBE, private, false),
+                None
+            );
+            assert_eq!(
+                s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", private, false),
+                None
+            );
+        }
     }
 
     #[test]

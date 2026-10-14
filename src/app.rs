@@ -269,6 +269,8 @@ const SLEEP_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const SLEEP_BLOCKED_BACKOFF: Duration = Duration::from_secs(120);
 /// A tab whose render process crashed again within this window is reported, not reloaded.
 const CRASH_RELOAD_MIN_GAP: Duration = Duration::from_secs(10);
+/// Tabs kept in `tab_mru` (`ctrl_tab_mru`), oldest dropped first.
+const MAX_TAB_MRU: usize = 64;
 
 /// Either signal is enough: Windows' load figure lags behind a sudden drop in free memory.
 pub fn memory_pressure(load_percent: u32, available_phys_bytes: u64) -> bool {
@@ -554,6 +556,9 @@ pub struct App {
     navigation_progress: NavigationProgress,
     tabs: Vec<AppTab>,
     tab_model: crate::tabs::TabList,
+    /// Tabs left most recently first, for `ctrl_tab_mru`. Updated in `select_tab`; split-pane
+    /// selection does not go through it, so it only orders ordinary tab switches.
+    tab_mru: Vec<TabId>,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
     // --- split view ---
@@ -890,6 +895,26 @@ impl App {
 
     pub fn sidebar_collapsed(app: &AppRef) -> bool {
         app.borrow().settings.sidebar_collapsed
+    }
+
+    /// The setting-gated chords bound right now. Read from key handlers that may run while the app is
+    /// borrowed, so a busy app binds none and the page keeps the key.
+    pub fn gated_chords(app: &AppRef) -> crate::shortcuts::GatedChords {
+        app.try_borrow()
+            .map(|state| {
+                crate::shortcuts::GatedChords::new(
+                    state.settings.ctrl_shift_c_copy_link,
+                    state.settings.ctrl_s_vertical_tabs,
+                    state.settings.tab_layout.is_vertical(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// `shift_right_click_context`: Shift+Right Click shows the system menu, not Bowser's own.
+    pub fn shift_right_click_context(app: &AppRef) -> bool {
+        app.try_borrow()
+            .is_ok_and(|state| state.settings.shift_right_click_context)
     }
 
     /// Collapses or expands the sidebar (the saved expanded width is untouched) and relays out.
@@ -1305,7 +1330,8 @@ impl App {
                 .iter()
                 .find(|tab| tab.id == old)
                 .is_some_and(|tab| tab.controller_created);
-            let id = state.tab_model.add(false);
+            let beside_active = state.settings.new_tab_beside_active;
+            let id = state.tab_model.add(beside_active);
             state.tab_model.select(id);
             let _ = state.workspaces.add_tab(id);
             let _ = state.workspaces.select_tab(id);
@@ -1449,6 +1475,7 @@ impl App {
                 (true, state.hwnd, active, was_active, false)
             }
         };
+        win32::dev_tools_dock_tab_closed(hwnd, id);
         let next_has_controller = app
             .borrow()
             .tabs
@@ -1532,6 +1559,13 @@ impl App {
             let was_active = state.tab_model.active() == id;
             if !state.tab_model.select(id) {
                 return false;
+            }
+            if !was_active {
+                state.tab_mru.retain(|mru| *mru != previous);
+                state.tab_mru.push(previous);
+                if state.tab_mru.len() > MAX_TAB_MRU {
+                    state.tab_mru.remove(0);
+                }
             }
             let _ = state.workspaces.select_tab(id);
             if was_active {
@@ -1668,11 +1702,43 @@ impl App {
     }
 
     pub fn select_next(app: &AppRef) -> TabId {
+        if app.borrow().settings.ctrl_tab_mru {
+            return Self::select_mru_other(app, 1);
+        }
         Self::select_relative(app, 1)
     }
 
     pub fn select_prev(app: &AppRef) -> TabId {
+        if app.borrow().settings.ctrl_tab_mru {
+            return Self::select_mru_other(app, -1);
+        }
         Self::select_relative(app, -1)
+    }
+
+    /// `ctrl_tab_mru`: swaps to the tab last active before this one (the top of `tab_mru`, skipping
+    /// any since closed), whichever of Ctrl+Tab/Ctrl+Shift+Tab was pressed: repeated presses simply
+    /// flip between the last two tabs, rather than walking further back through history. With no
+    /// recorded history yet (for example, right after new tabs were only ever appended) this falls
+    /// back to `delta`'s ordinary positional cycling, so the first press after startup still does
+    /// something sensible.
+    fn select_mru_other(app: &AppRef, delta: isize) -> TabId {
+        let active = Self::active_tab_id(app);
+        let candidate = {
+            let state = app.borrow();
+            state
+                .tab_mru
+                .iter()
+                .rev()
+                .find(|id| **id != active && state.tab_model.get(**id).is_some())
+                .copied()
+        };
+        match candidate {
+            Some(id) => {
+                let _ = Self::select_tab(app, id);
+                id
+            }
+            None => Self::select_relative(app, delta),
+        }
     }
 
     fn select_relative(app: &AppRef, delta: isize) -> TabId {
@@ -2578,7 +2644,7 @@ impl App {
             (state.hwnd, state.edit, active)
         };
         if active {
-            win32::sync_address_input(hwnd, edit, id, &url);
+            win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
             Self::sync_window_title(app);
         }
         Self::post_tab_changed(hwnd, id);
@@ -2601,7 +2667,7 @@ impl App {
             (state.hwnd, state.edit, active)
         };
         if active {
-            win32::sync_address_input(hwnd, edit, id, &url);
+            win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
         }
         Self::post_tab_changed_kind(hwnd, id, false, true);
     }
@@ -3055,6 +3121,27 @@ impl App {
         let _ = Self::with_engine(app, |engine| engine.focus_page());
     }
 
+    /// Toggles the docked DevTools pane for the active tab's page. Internal pages (settings,
+    /// history) have no engine page, so there is nothing to inspect and the request is ignored.
+    /// F12 and Ctrl+Shift+I repeat while held, so this toggles rather than only ever opening —
+    /// otherwise key-repeat would flap the dock open and shut (see `shortcuts::is_toggle`).
+    pub fn open_dev_tools(app: &AppRef) {
+        let tab = Self::active_tab_id(app);
+        if Self::internal_page(app, tab).is_some() {
+            return;
+        }
+        let hwnd = app.borrow().hwnd;
+        if win32::dev_tools_dock_close_if_open(hwnd, tab) {
+            return;
+        }
+        let before = win32::dev_tools_dock_snapshot();
+        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.open_dev_tools()) {
+            win32::show_error_message(&format!("Developer tools could not be opened: {error}"));
+            return;
+        }
+        win32::dev_tools_dock_discover(hwnd, tab, before);
+    }
+
     pub fn can_go_back(app: &AppRef) -> bool {
         app.borrow()
             .engine
@@ -3346,17 +3433,17 @@ impl App {
             // A private tab neither reads nor writes stored zoom; it keeps its own level.
             return;
         }
-        let (store, current) = {
+        let (store, current, default_zoom) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
                 return;
             };
-            (state.site_prefs.clone(), entry.zoom)
+            (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom)
         };
         let Some(store) = store else {
             return;
         };
-        let target = store.borrow().zoom_for_uri(url.as_str());
+        let target = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
         if target == current {
             return;
         }
@@ -4090,6 +4177,7 @@ impl App {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(initial_tab)],
             tab_model,
+            tab_mru: Vec::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
@@ -4467,7 +4555,7 @@ impl App {
             let state = app.borrow();
             (state.hwnd, state.edit, state.tab_model.active())
         };
-        win32::show_pending_address(hwnd, edit, active, &url);
+        win32::show_pending_address(hwnd, edit, active, &url, Self::settings(app).minimal_url);
         {
             let mut state = app.borrow_mut();
             let _ = state.log.record("submitted");
@@ -4688,7 +4776,7 @@ impl App {
                     }
                     if active {
                         let main = app.borrow().hwnd;
-                        let event = if win32::sync_address_input(main, edit, tab_id, &url) {
+                        let event = if win32::sync_address_input(main, edit, tab_id, &url, Self::settings(&app).minimal_url) {
                             "address_updated"
                         } else {
                             "address_update_failed"
@@ -5585,6 +5673,67 @@ impl App {
     /// Whether efficiency mode is in force right now (for the Settings panel).
     pub fn efficiency_active(app: &AppRef) -> bool {
         app.borrow().efficiency.active
+    }
+
+    /// A clone of the profile's current settings, for callers outside this module that only need to
+    /// read a value or two (win32 chrome glue). Settings are not large or changed often enough for
+    /// this to matter.
+    pub fn settings(app: &AppRef) -> crate::settings::Settings {
+        app.borrow().settings.clone()
+    }
+
+    /// The accent a chrome host should theme with, from the `theme`/`theme_accent` settings and (for
+    /// `theme=system`) the live Windows accent colour. `None` keeps the palette's own colours.
+    pub fn settings_accent(app: &AppRef) -> Option<crate::theme::Rgba> {
+        let state = app.borrow();
+        crate::theme::resolved_accent(
+            state.settings.theme,
+            state.settings.theme_accent.as_deref(),
+            crate::theme::system_accent_colour(),
+        )
+    }
+
+    /// Settings saved on the settings page that take effect immediately and have no dedicated
+    /// `apply_*` of their own (layout, efficiency and sleep already have one, each with its own
+    /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
+    /// and takes effect on the next start, matching the page's "Applies after restart" rows.
+    pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        let (hwnd, edit) = {
+            let mut state = app.borrow_mut();
+            state.settings.theme = settings.theme;
+            state.settings.theme_accent = settings.theme_accent.clone();
+            state.settings.centred_address_bar = settings.centred_address_bar;
+            state.settings.minimal_url = settings.minimal_url;
+            state.settings.show_load_progress = settings.show_load_progress;
+            state.settings.rounded_content_frame = settings.rounded_content_frame;
+            state.settings.show_home_button = settings.show_home_button;
+            state.settings.toolbar_buttons = settings.toolbar_buttons.clone();
+            state.settings.font_size = settings.font_size;
+            state.settings.ui_font = settings.ui_font.clone();
+            state.settings.default_zoom = settings.default_zoom;
+            state.settings.show_zoom_indicator = settings.show_zoom_indicator;
+            state.settings.new_tab_beside_active = settings.new_tab_beside_active;
+            state.settings.ctrl_tab_mru = settings.ctrl_tab_mru;
+            state.settings.shift_right_click_context = settings.shift_right_click_context;
+            state.settings.ctrl_shift_c_copy_link = settings.ctrl_shift_c_copy_link;
+            state.settings.ctrl_s_vertical_tabs = settings.ctrl_s_vertical_tabs;
+            state.settings.split_edge_drop = settings.split_edge_drop;
+            state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
+            (state.hwnd, state.edit)
+        };
+        let bounds = app.borrow_mut().latest_viewport_bounds();
+        Self::resize_current(app, bounds);
+        // The address field's own font follows font_size and ui_font (the painted chrome and the
+        // HTML toolbar re-read them on the relayout below).
+        if !hwnd.is_invalid() && !edit.is_invalid() {
+            win32::refresh_edit_font(hwnd, app);
+        }
+        let active = Self::active_tab_id(app);
+        if let Some(url) = Self::tab_committed_url(app, active) {
+            win32::sync_address_input(hwnd, edit, active, &url, settings.minimal_url);
+        }
+        Self::notify_rail_changed(app);
+        Self::post_tab_changed(hwnd, active);
     }
 
     /// Applies a changed `efficiency_mode` setting without a restart.
@@ -7247,6 +7396,29 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_tab_mru_swaps_to_the_last_active_tab_and_can_be_turned_off() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        let second = App::new_tab(&app);
+        let third = App::new_tab(&app);
+        assert!(app.borrow().settings.ctrl_tab_mru, "on by default");
+
+        // Visit first, then second (recording second's predecessor, first, in the MRU history);
+        // from third, Ctrl+Tab should swap back to second, the tab last left, not strip-order first.
+        assert!(App::select_tab(&app, first));
+        assert!(App::select_tab(&app, second));
+        assert!(App::select_tab(&app, third));
+        assert_eq!(App::select_next(&app), second);
+        assert_eq!(App::active_tab_id(&app), second);
+        // Pressing it again flips back to third: the swap alternates between the last two tabs.
+        assert_eq!(App::select_prev(&app), third);
+
+        app.borrow_mut().settings.ctrl_tab_mru = false;
+        assert_eq!(App::active_tab_id(&app), third);
+        assert_eq!(App::select_next(&app), first, "off: plain strip-order cycling");
+    }
+
+    #[test]
     fn pinning_moves_both_tab_models_without_touching_active_webview() {
         let app = app_with_pending(rect(800, 600));
         let first = App::active_tab_id(&app);
@@ -8215,6 +8387,7 @@ mod tests {
             navigation_progress: NavigationProgress::default(),
             tabs: vec![AppTab::empty(TabId(0))],
             tab_model: crate::tabs::TabList::new(),
+            tab_mru: Vec::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),

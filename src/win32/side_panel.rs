@@ -1,6 +1,7 @@
-//! Left-docked host for rail panels. The host window is stable while content changes.
+//! Rail panel host, docked left or right per `side_panel_position`. The host window is stable
+//! while content changes.
 
-use crate::{theme, win32::glass};
+use crate::{settings::SidePanelPosition, theme, win32::glass};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -124,6 +125,7 @@ pub struct SidePanelHost {
     retired_blur: Vec<bool>,
     width_dip: i32,
     width: i32,
+    position: SidePanelPosition,
     client: RECT,
     resizing: bool,
     animation: Option<Animation>,
@@ -145,6 +147,10 @@ pub fn active_id(owner: HWND) -> Option<PanelId> {
 
 pub fn active_width_px(owner: HWND) -> i32 {
     HOSTS.with(|hosts| unsafe { hosts.borrow().get(&(owner.0 as isize)).copied().map_or(0, |raw| host(HWND(raw as *mut c_void)).map_or(0, |h| h.width)) })
+}
+
+pub fn active_position(owner: HWND) -> SidePanelPosition {
+    HOSTS.with(|hosts| unsafe { hosts.borrow().get(&(owner.0 as isize)).copied().map_or(SidePanelPosition::Left, |raw| host(HWND(raw as *mut c_void)).map_or(SidePanelPosition::Left, |h| h.position)) })
 }
 
 pub fn open(owner: HWND, id: PanelId) -> bool {
@@ -196,9 +202,10 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     };
     content.on_focus(true);
     let header = content.native_header();
-    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
+    let position = crate::profile::active().ok().map(|profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_position).unwrap_or(SidePanelPosition::Left);
+    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, position, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
     let instance = HINSTANCE(unsafe { GetModuleHandleW(None).unwrap_or_default().0 });
-    let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, panel_origin(client.left, inset), client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
+    let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, panel_left(client, inset, 0, position), client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
     let Ok(hwnd) = hwnd else { return false };
     HOSTS.with(|hosts| { hosts.borrow_mut().insert(owner.0 as isize, hwnd.0 as isize); });
     if let Some(state) = unsafe { host(hwnd) }
@@ -260,7 +267,7 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
                 STATUS.with(|status| status.set(Some("The window is too narrow for a side panel and a readable page.")));
             }
         }
-        let bounds = panel_bounds(viewport, inset, state.width.max(0));
+        let bounds = panel_bounds(viewport, inset, state.width.max(0), state.position);
         let _ = SetWindowPos(hwnd, None, bounds.left, bounds.top, bounds.right-bounds.left, bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
         if let Some(child) = state.content.as_ref().and_then(|c| c.wants_native_child()) {
             let header = scale(HEADER_DIP, window_dpi);
@@ -282,14 +289,17 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
 pub fn adjust_viewport(viewport: RECT, owner: HWND) -> RECT {
     let width = active_width_px(owner);
     if width == 0 { return viewport; }
-    reserved_viewport(viewport, crate::chrome::layout::left_rail_inset(dpi(owner)), width)
+    reserved_viewport(viewport, crate::chrome::layout::left_rail_inset(dpi(owner)), width, active_position(owner))
 }
 
-/// The page area left of which a panel of `width` takes: the panel starts at the rail inset or the
-/// viewport edge, whichever is further right, and the page begins where the panel ends. Pure.
-fn reserved_viewport(viewport: RECT, inset: i32, width: i32) -> RECT {
-    let left = panel_origin(viewport.left, inset) + width.max(0);
-    RECT { left, ..viewport }
+/// The page area a panel of `width` leaves: left-docked, the panel starts at the rail inset or the
+/// viewport edge (whichever is further right) and the page begins where the panel ends; right-docked,
+/// the panel ends at the viewport's right edge and the page ends where the panel begins. Pure.
+fn reserved_viewport(viewport: RECT, inset: i32, width: i32, position: SidePanelPosition) -> RECT {
+    match position {
+        SidePanelPosition::Left => RECT { left: panel_origin(viewport.left, inset) + width.max(0), ..viewport },
+        SidePanelPosition::Right => RECT { right: viewport.right - width.max(0), ..viewport },
+    }
 }
 
 /// Height of the native title row: none when the content draws its own header. Pure.
@@ -314,7 +324,7 @@ pub fn timer(owner: HWND) -> bool {
         state.width = animation_width(anim.from, anim.to, t);
         if t >= 1.0 { state.width = anim.to; state.animation = None; }
         let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
-        let origin = panel_origin(state.client.left, inset);
+        let origin = panel_left(state.client, inset, state.width, state.position);
         let _ = SetWindowPos(hwnd, None, origin, state.client.top, state.width, state.client.bottom-state.client.top, SWP_NOZORDER | SWP_NOACTIVATE);
         if state.width == 0 && state.id.is_none() { let _ = ShowWindow(hwnd, SW_HIDE); }
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -352,11 +362,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_NCCREATE => { let create=&*(lp.0 as *const CREATESTRUCTW); SetWindowLongPtrW(hwnd,GWLP_USERDATA,create.lpCreateParams as isize); DefWindowProcW(hwnd,msg,wp,lp) }
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => { paint(hwnd); LRESULT(0) }
-        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.width=width_from_drag(s.owner,x); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); let _=SetWindowPos(hwnd,None,panel_origin(s.client.left,crate::chrome::layout::left_rail_inset(dpi(s.owner))),s.client.top,s.width,s.client.bottom-s.client.top,SWP_NOZORDER|SWP_NOACTIVATE); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if x>=s.width-scale(RESIZE_DIP,dpi(hwnd)) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
+        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.width=width_from_drag(s.owner,x,s.width,s.position); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); let inset=crate::chrome::layout::left_rail_inset(dpi(s.owner)); let _=SetWindowPos(hwnd,None,panel_left(s.client,inset,s.width,s.position),s.client.top,s.width,s.client.bottom-s.client.top,SWP_NOZORDER|SWP_NOACTIVATE); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if over_grip(x,s.width,scale(RESIZE_DIP,dpi(hwnd)),s.position) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
         WM_LBUTTONDOWN => {
             let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32;
             let close_owner = if let Some(s)=host(hwnd) {
-                if x>=s.width-scale(RESIZE_DIP,dpi(hwnd)) { s.resizing=true; let _=SetCapture(hwnd); None }
+                if over_grip(x,s.width,scale(RESIZE_DIP,dpi(hwnd)),s.position) { s.resizing=true; let _=SetCapture(hwnd); None }
                 else if s.header && y<scale(HEADER_DIP,dpi(hwnd)) && x>s.width-scale(36,dpi(hwnd)) { Some(s.owner) }
                 else { if let Some(c)=s.content.as_mut() { c.on_mouse_down(x,y); } None }
             } else { None };
@@ -414,14 +424,47 @@ fn paint(hwnd: HWND) {
 
 fn save_width(_owner: HWND, width: i32) { let width=width.clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); if let Ok(profile)=crate::profile::active() { if profile.is_guest() { GUEST_WIDTH.with(|v|v.set(width)); } else { let path=profile.settings_file(); let mut settings=crate::settings::Settings::load(&path); settings.side_panel_width=width as u16; let _=crate::settings::save(&path,&settings); } } else { GUEST_WIDTH.with(|v|v.set(width)); } }
 fn panel_origin(viewport_left: i32, inset: i32) -> i32 { viewport_left.max(inset) }
+
+/// The host window's left edge for a panel of `width`, docked per `position`. Pure.
+fn panel_left(viewport: RECT, inset: i32, width: i32, position: SidePanelPosition) -> i32 {
+    match position {
+        SidePanelPosition::Left => panel_origin(viewport.left, inset),
+        SidePanelPosition::Right => viewport.right - width.max(0),
+    }
+}
+
+/// Host-local x the resize grip sits at. Pure.
+fn grip_edge(width: i32, resize_px: i32, position: SidePanelPosition) -> i32 {
+    match position {
+        SidePanelPosition::Left => width - resize_px,
+        SidePanelPosition::Right => resize_px,
+    }
+}
+
+/// Whether host-local `x` is over the resize grip. Pure.
+fn over_grip(x: i32, width: i32, resize_px: i32, position: SidePanelPosition) -> bool {
+    match position {
+        SidePanelPosition::Left => x >= grip_edge(width, resize_px, position),
+        SidePanelPosition::Right => x <= grip_edge(width, resize_px, position),
+    }
+}
+
+/// The panel width (px, before DPI/available-space clamping) implied by dragging the grip to
+/// host-local `x`, from a width of `before` px. Pure.
+fn width_px_from_grip(x: i32, before: i32, position: SidePanelPosition) -> i32 {
+    match position {
+        SidePanelPosition::Left => x,
+        SidePanelPosition::Right => before - x,
+    }
+}
 pub(crate) fn should_dismiss_panel_accelerator(vk: u32, key_down: bool, open: bool, text_focused: bool) -> bool {
     vk == 0x1B && key_down && open && !text_focused
 }
-fn panel_bounds(viewport: RECT, inset: i32, width: i32) -> RECT {
-    let left = panel_origin(viewport.left, inset);
+fn panel_bounds(viewport: RECT, inset: i32, width: i32, position: SidePanelPosition) -> RECT {
+    let left = panel_left(viewport, inset, width, position);
     RECT { left, top: viewport.top, right: left + width.max(0), bottom: viewport.bottom }
 }
-fn width_from_drag(owner: HWND, x: i32) -> i32 { let mut r=RECT::default(); unsafe { let _=GetClientRect(owner,&mut r); } let inset=crate::chrome::layout::left_rail_inset(dpi(owner)); let viewport_left=HOSTS.with(|hosts| unsafe { let raw=hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0); host(HWND(raw as *mut c_void)).map_or(0,|state|state.client.left) }); let origin=panel_origin(viewport_left,inset); panel_width_px(x.saturating_mul(96)/dpi(owner) as i32,dpi(owner),(r.right-origin).max(0)).unwrap_or(0) }
+fn width_from_drag(owner: HWND, x: i32, before_width: i32, position: SidePanelPosition) -> i32 { let mut r=RECT::default(); unsafe { let _=GetClientRect(owner,&mut r); } let inset=crate::chrome::layout::left_rail_inset(dpi(owner)); let viewport_left=HOSTS.with(|hosts| unsafe { let raw=hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0); host(HWND(raw as *mut c_void)).map_or(0,|state|state.client.left) }); let origin=panel_origin(viewport_left,inset); let px=width_px_from_grip(x,before_width,position); panel_width_px(px.saturating_mul(96)/dpi(owner) as i32,dpi(owner),(r.right-origin).max(0)).unwrap_or(0) }
 
 pub fn panel_width_px(width_dip: i32, dpi: u32, available: i32) -> Option<i32> {
     let available=available.max(0); let min=scale(MIN_WIDTH_DIP,dpi.max(96));
@@ -457,7 +500,7 @@ mod tests {
     #[test]
     fn vertical_sidebar_places_panel_after_sidebar_and_reserves_its_width() {
         let viewport = RECT { left: 300, top: 80, right: 1600, bottom: 900 };
-        let panel = panel_bounds(viewport, 44, 360);
+        let panel = panel_bounds(viewport, 44, 360, SidePanelPosition::Left);
         let page = reserve_viewport(viewport, panel.right - panel.left);
         assert_eq!(panel, RECT { left: 300, top: 80, right: 660, bottom: 900 });
         assert_eq!(page.left, panel.right);
@@ -467,16 +510,44 @@ mod tests {
     fn page_is_rebounded_to_the_space_right_of_an_open_panel_and_restored_on_close() {
         let viewport = RECT { left: 34, top: 70, right: 1276, bottom: 796 };
         // Open at full width: the page starts where the panel ends (rail inset 34 + 340).
-        assert_eq!(reserved_viewport(viewport, 34, 340), RECT { left: 374, ..viewport });
+        assert_eq!(reserved_viewport(viewport, 34, 340, SidePanelPosition::Left), RECT { left: 374, ..viewport });
         // Mid animation and closed, the same formula follows the width back to the full page.
-        assert_eq!(reserved_viewport(viewport, 34, 120).left, 154);
-        assert_eq!(reserved_viewport(viewport, 34, 0), viewport);
+        assert_eq!(reserved_viewport(viewport, 34, 120, SidePanelPosition::Left).left, 154);
+        assert_eq!(reserved_viewport(viewport, 34, 0, SidePanelPosition::Left), viewport);
         // A viewport that starts left of the rail inset still clears the rail.
-        assert_eq!(reserved_viewport(RECT { left: 0, ..viewport }, 34, 340).left, 374);
+        assert_eq!(reserved_viewport(RECT { left: 0, ..viewport }, 34, 340, SidePanelPosition::Left).left, 374);
         // A vertical sidebar pushes the viewport right of the inset: the panel sits after it.
-        assert_eq!(reserved_viewport(RECT { left: 300, ..viewport }, 34, 340).left, 640);
+        assert_eq!(reserved_viewport(RECT { left: 300, ..viewport }, 34, 340, SidePanelPosition::Left).left, 640);
         // Never negative width.
-        assert_eq!(reserved_viewport(viewport, 34, -5), viewport);
+        assert_eq!(reserved_viewport(viewport, 34, -5, SidePanelPosition::Left), viewport);
+    }
+
+    #[test]
+    fn right_docked_panel_sits_at_the_viewport_s_right_edge_and_the_page_ends_before_it() {
+        let viewport = RECT { left: 34, top: 70, right: 1276, bottom: 796 };
+        let panel = panel_bounds(viewport, 34, 340, SidePanelPosition::Right);
+        assert_eq!(panel, RECT { left: 936, top: 70, right: 1276, bottom: 796 });
+        let page = reserved_viewport(viewport, 34, 340, SidePanelPosition::Right);
+        assert_eq!(page, RECT { right: 936, ..viewport });
+        assert_eq!(page.right, panel.left);
+        // Closed (width 0), the page regains the full viewport, same as left-docked.
+        assert_eq!(reserved_viewport(viewport, 34, 0, SidePanelPosition::Right), viewport);
+        assert_eq!(reserved_viewport(viewport, 34, -5, SidePanelPosition::Right), viewport, "never negative width");
+    }
+
+    #[test]
+    fn the_resize_grip_and_drag_direction_mirror_for_a_right_docked_panel() {
+        let resize_px = 6;
+        // Left-docked: the grip is the panel's own right edge, dragging it sets the width directly.
+        assert!(over_grip(354, 360, resize_px, SidePanelPosition::Left));
+        assert!(!over_grip(300, 360, resize_px, SidePanelPosition::Left));
+        assert_eq!(width_px_from_grip(400, 360, SidePanelPosition::Left), 400);
+        // Right-docked: the grip is the panel's own left edge (host-local x near 0); dragging it
+        // further left (a smaller, even negative, local x) grows the width from where it was.
+        assert!(over_grip(2, 360, resize_px, SidePanelPosition::Right));
+        assert!(!over_grip(60, 360, resize_px, SidePanelPosition::Right));
+        assert_eq!(width_px_from_grip(-40, 360, SidePanelPosition::Right), 400);
+        assert_eq!(width_px_from_grip(60, 360, SidePanelPosition::Right), 300);
     }
 
     #[test]

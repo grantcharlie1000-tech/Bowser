@@ -12,6 +12,12 @@
  * stay pinned); Rust caps the window to the work area and flips or clamps its position.
  *
  * The popup is solid, not glass: the overlay tint is painted over the opaque window colour.
+ *
+ * A submenu opens beside its parent instead of replacing it. The menu is one surface (#app) holding
+ * a track of at most two panes, the open page and the page it came from, split by a hairline. The
+ * window is widened to fit both and keeps its right edge (html_popup.rs keep_right_edge), so the
+ * parent slides left to make room and the submenu lands where the parent was; closing slides the
+ * parent back before the window shrinks. The slide is a single transform on .html-menu-slide.
  */
 
 #app.html-menu {
@@ -35,6 +41,55 @@
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
   outline: none;
+}
+
+/* ---- Panes. The menu view (not the composer) sets .is-paned: the width limits move from the surface
+   to each pane, so two panes can share the surface. ---- */
+#app.html-menu.is-paned {
+  min-width: 0;
+  max-width: none;
+}
+
+/* The clip: whatever the slide pushes past the surface is cut here, not painted into the padding. */
+.html-menu-track {
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The slide offset is set by the view while a submenu opens or closes; 0 at rest. The duration is
+   --bw-dur-base (167ms) and collapses to 0 under reduced motion, which also snaps the transition
+   (base.css keeps only opacity transitions there), so nothing slides. */
+.html-menu-slide {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  min-height: 0;
+  transform: translateX(var(--menu-slide, 0px));
+  transition: transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+.html-menu-slide.is-snap {
+  transition: none;
+}
+
+.html-menu-pane {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: max-content;
+  min-width: 190px;
+  max-width: 350px;
+  min-height: 0;
+}
+
+/* The submenu: a hairline between the panes, with the same 4px of room either side. */
+.html-menu-pane + .html-menu-pane {
+  margin-inline-start: var(--bw-space-1);
+  padding-inline-start: var(--bw-space-1);
+  border-inline-start: 1px solid var(--bw-hairline);
 }
 
 /* ---- Header card (main menu, site information). ---- */
@@ -90,8 +145,7 @@
   min-height: 0;
 }
 
-.html-menu-row,
-.html-menu-back {
+.html-menu-row {
   box-sizing: border-box;
   display: flex;
   flex: none;
@@ -110,8 +164,34 @@
 }
 
 .html-menu-row.selected:not(:disabled),
-.html-menu-back:hover {
+.html-menu-row.is-open {
   background: color-mix(in srgb, var(--bw-text) 10%, transparent);
+}
+
+/* The parent page stays on screen under the pointer: its rows tint on hover (no selection moves,
+   the keys stay with the open page). */
+.html-menu-pane:not(.is-active) .html-menu-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bw-text) 10%, transparent);
+}
+
+/* Press feedback: the row dips to 0.98 while held, transform only so nothing reflows, easing back
+   on release. Fast (83ms, in the 80-120ms press band) and snapped under reduced motion below. The
+   hover tint stays instant (background is not transitioned). */
+.html-menu-row {
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.html-menu-row:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Reduced motion keeps the press dip (it is direct feedback) but snaps to it with no travel, the way
+   the native menu snaps its icon press channel. --bw-dur-fast does not collapse on its own, so drop
+   the transition here. The submenu chevron, a hover hint, is dropped above like the gear. */
+@media (prefers-reduced-motion: reduce) {
+  .html-menu-row {
+    transition: none;
+  }
 }
 
 /* Keyboard selection also gets the focus ring (the menu root owns focus; rows are active descendants). */
@@ -153,6 +233,33 @@
 
 @media (prefers-reduced-motion: reduce) {
   .html-menu-row[data-icon="gear"].selected:not(:disabled) .html-menu-lead svg {
+    transform: none;
+  }
+}
+
+/* The chevron on a submenu row eases 2px toward the flyout it opens while the row is selected: a
+   short transform, no layout width animation. Snapped under reduced motion below. */
+.html-menu-row[aria-haspopup="menu"] .html-menu-trail {
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.html-menu-row[aria-haspopup="menu"].selected:not(:disabled) .html-menu-trail {
+  transform: translateX(2px);
+}
+
+/* The row whose submenu is open keeps the nudge while the submenu is beside it. */
+.html-menu-row[aria-haspopup="menu"].is-open .html-menu-trail {
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .html-menu-row[aria-haspopup="menu"].selected:not(:disabled) .html-menu-trail {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .html-menu-row[aria-haspopup="menu"].is-open .html-menu-trail {
     transform: none;
   }
 }
@@ -245,21 +352,6 @@
   font-weight: 400;
 }
 
-/* Back row of a drill-in page: chevron and the parent's name. */
-.html-menu-back {
-  margin-bottom: var(--bw-space-1);
-  padding-inline-start: var(--bw-space-1);
-  color: var(--bw-text-2);
-  font-weight: var(--bw-weight-strong);
-}
-
-.html-menu-back svg {
-  flex: none;
-  width: var(--bw-icon);
-  height: var(--bw-icon);
-  margin-inline-end: var(--bw-space-2);
-}
-
 /* ---- Footer note (version, or the explanation under a confirmation). ---- */
 .html-menu-footer {
   flex: none;
@@ -270,9 +362,10 @@
   overflow-wrap: anywhere;
 }
 
-/* ---- Motion. Open: fade 83ms with the content dropping 4px from the anchor over 167ms. Drill-in:
-   the list slides 8px in from the side it came from. Close is instant (the window hides). Only
-   opacity and transform; input is never blocked while it runs. ---- */
+/* ---- Motion. Open: fade 83ms with the first pane's content dropping 4px from the anchor over 167ms.
+   A submenu opening or closing slides the track (.html-menu-slide, above) over 167ms with ease-out.
+   Close of the window is instant (it hides). Only opacity and transform; input is never blocked
+   while it runs. ---- */
 @keyframes html-menu-fade {
   from {
     opacity: 0;
@@ -285,40 +378,19 @@
   }
 }
 
-@keyframes html-menu-drill-in {
-  from {
-    opacity: 0;
-    transform: translateX(8px);
-  }
-}
-
-@keyframes html-menu-drill-back {
-  from {
-    opacity: 0;
-    transform: translateX(-8px);
-  }
-}
-
 #app.html-menu.is-entering {
   animation: html-menu-fade var(--bw-dur-fast) var(--bw-ease-fade) both;
 }
 
-#app.html-menu.is-entering > :not(.html-menu-list, .html-menu-footer),
-#app.html-menu.is-entering > .html-menu-list:not(.is-drill) {
+/* The composer's page is a direct child of the surface; the menu's content is inside its first pane. */
+#app.html-menu.is-entering > :not(.html-menu-track),
+#app.html-menu.is-entering .html-menu-pane.is-first > :not(.html-menu-footer) {
   animation: html-menu-drop var(--bw-dur-base) var(--bw-ease-out) both;
-}
-
-#app.html-menu[data-drill="1"] .html-menu-list.is-drill {
-  animation: html-menu-drill-in var(--bw-dur-base) var(--bw-ease-out) both;
-}
-
-#app.html-menu[data-drill="-1"] .html-menu-list.is-drill {
-  animation: html-menu-drill-back var(--bw-dur-base) var(--bw-ease-out) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
   #app.html-menu.is-entering > *,
-  #app.html-menu .html-menu-list.is-drill {
+  #app.html-menu.is-entering .html-menu-pane.is-first > * {
     animation: none;
   }
 }

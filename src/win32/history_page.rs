@@ -365,7 +365,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.dirty = true);
     }
     // Theme first, then content, then show: the page never appears unthemed or stale.
-    let state = super::window::split_host_state(owner);
+    let state = super::window::split_host_state(owner, App::settings_accent(app));
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
