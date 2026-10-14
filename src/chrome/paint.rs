@@ -179,9 +179,10 @@ pub struct ChromeSurface {
     /// The HTML chrome draws the left rail. Its pill, buttons, tooltips and fades are not painted
     /// here, and its region is left transparent. Native panels still open beside it.
     html_rail: bool,
-    /// The HTML chrome is expected but its page is not up yet (`[toolbar, tabs, rail]`): the native
-    /// look of that region is not painted, so the window never shows a different design for the few
-    /// seconds the chrome takes to load. The window colour, captions and "+" are still drawn.
+    /// The HTML chrome is expected but its page is not up yet (`[toolbar, tabs, rail]`). The native
+    /// look of the toolbar and rail is not painted while they load. The tab row keeps its native
+    /// tabs until the HTML strip is ready; the vertical sidebar waits for its HTML view. The window
+    /// colour, captions and "+" are always drawn.
     html_pending: [bool; 3],
 }
 
@@ -361,8 +362,9 @@ impl ChromeSurface {
         self.html_rail = on;
     }
 
-    /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page: nothing is
-    /// painted natively there until the page is up or has failed.
+    /// Marks the toolbar, tab row or rail (`index` 0, 1, 2) as waiting for its HTML page. The native
+    /// horizontal tab row remains visible while its page loads; the vertical sidebar, toolbar and
+    /// rail wait for their HTML page or fall back to native paint after a failure.
     pub fn set_html_pending(&mut self, index: usize, pending: bool) {
         self.html_pending[index] = pending;
     }
@@ -603,7 +605,7 @@ impl ChromeSurface {
         } else if !self.html_pending[2] {
             self.paint_left_rail(view, dirty);
         }
-        if !self.html_tabs && !self.html_pending[1] {
+        if !self.html_tabs {
             self.paint_departures(view, dirty);
             self.paint_tabs(view, dirty);
         }
@@ -3384,6 +3386,59 @@ mod tests {
             assert!(blank.chunks(4).all(|px| px == &blank[..4]), "{r:?} is one flat colour while waiting");
             assert_ne!(region(&native, r), blank, "{r:?} is drawn natively once nothing is awaited");
         }
+    }
+
+    #[test]
+    fn tab_strip_waiting_for_html_page_keeps_native_tabs_visible() {
+        let layout = crate::chrome::layout::compute(800, 120, 96, 1, false);
+        let tabs = [TabView {
+            title: "Visible tab",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+            group_colour: None,
+            group_frame: None,
+        }];
+        let view = test_view(
+            &layout,
+            &tabs,
+            palette(Appearance::Dark, false),
+            omnibox("example.com", (0, 0), ""),
+        );
+        let row = Rect::from(layout.tab_row);
+        let pixels = |surface: &ChromeSurface| -> Vec<u8> {
+            (row.top..row.bottom)
+                .flat_map(|y| {
+                    (row.left..row.right).flat_map(move |x| (0..4).map(move |c| (y, x, c)))
+                })
+                .map(|(y, x, c)| {
+                    surface.pixels()[y as usize * surface.stride() + x as usize * 4 + c]
+                })
+                .collect()
+        };
+
+        let mut native = ChromeSurface::new(800, 120, 96);
+        native.set_html_pending(1, false);
+        native.paint(&view, Rect::new(0, 0, 800, native.height()));
+        let mut waiting = ChromeSurface::new(800, 120, 96);
+        waiting.set_html_pending(1, true);
+        waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
+
+        let native_pixels = pixels(&native);
+        let waiting_pixels = pixels(&waiting);
+        assert!(
+            native_pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel.iter().any(|channel| *channel != 0)),
+            "the native row should contain the tab's painted pixels"
+        );
+        assert!(
+            waiting_pixels == native_pixels,
+            "the native tab row remains visible until its HTML page is ready"
+        );
     }
 
     #[test]
