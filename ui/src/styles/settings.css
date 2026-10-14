@@ -1354,29 +1354,35 @@
   color: var(--sp-warn);
 }
 
+/* Empty: a compact row (mark, then the words, then the two install buttons under them) rather
+   than a tall centred stack. */
 .sp-ext-state.is-empty {
-  flex-direction: column;
-  gap: var(--bw-space-2);
-  padding: var(--bw-space-6) var(--sp-row-x);
-  text-align: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--bw-space-2) var(--bw-space-3);
+  padding: var(--bw-space-3) var(--sp-row-x);
+  text-align: start;
 }
 
 .sp-ext-state.is-empty > .sp-text {
-  align-items: center;
+  align-items: flex-start;
 }
 
 .sp-ext-state.is-empty .sp-desc {
-  max-width: 48ch;
+  max-width: 60ch;
 }
 
 .sp-ext-state.is-empty > .bw-button,
 .sp-ext-state.is-empty > .sp-ext-state-actions {
-  margin-top: var(--bw-space-2);
+  grid-column: 2;
+  justify-content: flex-start;
 }
 
 .sp-ext-state.is-empty .sp-ext-state-mark {
-  width: 40px;
-  height: 40px;
+  grid-row: 1;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--sp-field-edge);
   border-radius: var(--bw-r-island);
   background: var(--sp-field);
