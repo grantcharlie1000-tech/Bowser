@@ -1,8 +1,13 @@
+pub mod download;
 pub mod web_app;
 mod webview2;
 pub(crate) use webview2::password_login_messages_enabled;
 
 pub use webview2::{RuntimeUnavailable, WebView2Engine};
+
+/// Pause, resume and cancel act on the operation the `Started` event named; they work for tab and
+/// web app downloads alike (see `download`).
+pub use download::{cancel as cancel_download, pause as pause_download, resume as resume_download};
 
 use windows::Win32::Foundation::RECT;
 
@@ -319,6 +324,12 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
+    /// Without this and `download_plan`, every download is cancelled.
+    pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
+    /// Where a download from a normal tab goes (a path, the Save dialog, or none).
+    pub download_plan:
+        Option<std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
     // --- split view ---
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,

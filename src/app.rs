@@ -131,6 +131,12 @@ pub fn should_prewarm(has_engine: bool, initializing: bool, closing: bool, text:
         && text.chars().any(|character| !character.is_whitespace())
 }
 
+/// Whether a tab-state change may arm the session save timer at all. Checked before a snapshot is
+/// built: with a save already queued, nothing is built per change.
+fn session_arm_allowed(has_store: bool, save_pending: bool, closing: bool) -> bool {
+    has_store && !save_pending && !closing
+}
+
 /// Whether a tab with this address needs a content WebView2. Internal pages (`bowser://`) never
 /// do: Bowser draws them itself (docs/design/settings-page.md).
 pub fn tab_needs_controller(url: Option<&url::Url>) -> bool {
@@ -515,6 +521,23 @@ impl From<std::io::Error> for AppError {
     }
 }
 
+/// What a downloads action leaves for the window to do (see `App::download_act`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DownloadFollowup {
+    /// Done (or nothing more to do).
+    None,
+    /// Open `bowser://downloads`.
+    OpenPage,
+    /// Open this recorded http(s) URL in a new tab (Retry).
+    OpenTab(String),
+    /// Put this text on the clipboard (Copy link).
+    CopyText(String),
+    /// The id is unknown or the action is not legal for the entry: ignore the command.
+    Rejected,
+    /// The action could not be carried out (the file is gone, the shell or engine refused).
+    Failed,
+}
+
 pub struct App {
     pub hwnd: HWND,
     pub edit: HWND,
@@ -617,6 +640,11 @@ pub struct App {
     /// Reader theme and size as last reported by the page, passed back in on the next use. Session
     /// only.
     reader_prefs: crate::reader::Prefs,
+    /// The downloads list (docs/design/downloads.md, `crate::downloads`): fed by the engine's
+    /// download events, read by the chrome bridge through the `downloads_*` methods below.
+    downloads: crate::downloads::DownloadManager,
+    /// Told after every change to `downloads` (set by the window; see `set_downloads_observer`).
+    downloads_observer: Option<Rc<dyn Fn(crate::downloads::Change)>>,
 }
 
 // --- split view ---
@@ -3080,6 +3108,8 @@ impl App {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::history_page_refresh(hwnd);
+            } else if page.is_downloads() {
+                win32::downloads_page_refresh(hwnd);
             } else {
                 win32::settings_page_refresh(hwnd);
             }
@@ -3116,6 +3146,8 @@ impl App {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::history_page_focus(hwnd);
+            } else if page.is_downloads() {
+                win32::downloads_page_focus(hwnd);
             } else {
                 win32::settings_page_focus(hwnd);
             }
@@ -3578,6 +3610,288 @@ impl App {
 
     pub fn permissions_handle(app: &AppRef) -> Option<engine::PermissionsHandle> {
         app.borrow().permissions.clone()
+    }
+
+    // --- downloads (docs/design/downloads.md; the model is `crate::downloads`) ---
+
+    fn download_event_hook(app: &AppRef) -> Rc<dyn Fn(crate::downloads::DownloadEvent)> {
+        let weak = Rc::downgrade(app);
+        Rc::new(move |event| {
+            if let Some(app) = weak.upgrade() {
+                Self::on_download_event(&app, event);
+            }
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn download_plan_hook(
+        app: &AppRef,
+    ) -> Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan> {
+        let weak = Rc::downgrade(app);
+        Rc::new(move |request| match weak.upgrade() {
+            Some(app) => Self::download_plan(&app, request),
+            None => crate::downloads::DownloadPlan::Cancel,
+        })
+    }
+
+    /// The event and plan hooks a web app panel's downloads report through (tabs get theirs in
+    /// `start_engine_creation`).
+    #[allow(clippy::type_complexity)]
+    pub fn download_hooks(
+        app: &AppRef,
+    ) -> (
+        Rc<dyn Fn(crate::downloads::DownloadEvent)>,
+        Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>,
+    ) {
+        (Self::download_event_hook(app), Self::download_plan_hook(app))
+    }
+
+    fn unix_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64)
+    }
+
+    fn downloads_time() -> crate::downloads::Time {
+        crate::downloads::Time {
+            now: Self::unix_ms() / 1000,
+            offset_secs: win32::history_local_offset(),
+        }
+    }
+
+    /// Where a download goes: the folder setting (or the Downloads folder when it is empty or
+    /// unusable) with a name that clashes with nothing, or the Save dialog when the user asked to
+    /// be asked. Runs inside WebView2's `DownloadStarting`, so it never waits on anything.
+    fn download_plan(
+        app: &AppRef,
+        request: &crate::downloads::DownloadRequest,
+    ) -> crate::downloads::DownloadPlan {
+        use crate::downloads::{DownloadPlan, plan_destination, resolve_dir};
+        let Ok(state) = app.try_borrow() else {
+            return DownloadPlan::Cancel;
+        };
+        let default_dir = crate::download_shell::default_downloads_dir();
+        let Ok(dir) = resolve_dir(&state.settings.download_dir, default_dir.as_deref()) else {
+            return DownloadPlan::Cancel;
+        };
+        plan_destination(
+            &dir,
+            state.settings.ask_download_location,
+            &request.suggested_name,
+            // A file on disk, or the destination of a download still running (WebView2 may not
+            // have created it yet).
+            &|path| path.exists() || state.downloads.path_in_use(path),
+        )
+    }
+
+    /// An engine download event reaches the list. The observer (set by the window) hears of the
+    /// change afterwards, with the App unborrowed; operations the list let go of are released.
+    pub fn on_download_event(app: &AppRef, event: crate::downloads::DownloadEvent) {
+        let (change, released, observer) = {
+            let Ok(mut state) = app.try_borrow_mut() else {
+                return;
+            };
+            let change = state.downloads.on_event(event, Self::unix_ms());
+            (change, state.downloads.take_released(), state.downloads_observer.clone())
+        };
+        if !released.is_empty() {
+            engine::download::release(&released);
+        }
+        if change != crate::downloads::Change::None
+            && let Some(observer) = observer
+        {
+            observer(change);
+        }
+    }
+
+    /// Runs `f` on the list and, when it changed anything, tells the observer. `None` if the App
+    /// is borrowed (a re-entrant call).
+    fn downloads_apply<R>(
+        app: &AppRef,
+        f: impl FnOnce(&mut crate::downloads::DownloadManager) -> R,
+    ) -> Option<R> {
+        let (result, changed, released, observer) = {
+            let mut state = app.try_borrow_mut().ok()?;
+            let before = state.downloads.revision();
+            let result = f(&mut state.downloads);
+            (
+                result,
+                state.downloads.revision() != before,
+                state.downloads.take_released(),
+                state.downloads_observer.clone(),
+            )
+        };
+        if !released.is_empty() {
+            engine::download::release(&released);
+        }
+        if changed && let Some(observer) = observer {
+            observer(crate::downloads::Change::State);
+        }
+        Some(result)
+    }
+
+    /// Registers (or clears) the function told after every change to the downloads list: `Progress`
+    /// while bytes move (already about four a second), `State` for everything else. It runs with
+    /// the App unborrowed; post a message to the window and read the snapshots there.
+    pub fn set_downloads_observer(
+        app: &AppRef,
+        observer: Option<Rc<dyn Fn(crate::downloads::Change)>>,
+    ) {
+        app.borrow_mut().downloads_observer = observer;
+    }
+
+    /// Grows with every change to the list: a cheap "did anything change" poll.
+    pub fn downloads_revision(app: &AppRef) -> u64 {
+        app.borrow().downloads.revision()
+    }
+
+    pub fn downloads_list_state(app: &AppRef) -> crate::downloads::ListState {
+        app.borrow().downloads.list_state()
+    }
+
+    /// The toolbar button's state (`{v:1,t:"dlbtn",..}` through `Toolbar::json`).
+    pub fn downloads_toolbar(app: &AppRef) -> crate::downloads::Toolbar {
+        app.borrow().downloads.snapshot_for_toolbar()
+    }
+
+    /// The bubble's message for popup token `tok` (`{v:1,t:"downloads",..}`): up to five rows.
+    pub fn downloads_bubble_json(app: &AppRef, tok: u32, auto: bool) -> String {
+        Self::downloads_check_files(app);
+        app.borrow().downloads.snapshot_for_bubble(
+            tok,
+            auto,
+            crate::downloads::BUBBLE_ROWS,
+            Self::downloads_time(),
+        )
+    }
+
+    /// The page's snapshot for `query` (`{v:1,t:"snap",p:"downloadspage",..}`); `ack` answers its
+    /// last change.
+    pub fn downloads_page_json(app: &AppRef, query: &str, ack: crate::downloads::Ack) -> String {
+        Self::downloads_check_files(app);
+        app.borrow().downloads.snapshot_for_page(query, ack, Self::downloads_time())
+    }
+
+    /// The bubble opened or closed: finished downloads stop asking for attention.
+    pub fn downloads_mark_seen(app: &AppRef) -> bool {
+        Self::downloads_apply(app, |downloads| downloads.mark_seen()).unwrap_or(false)
+    }
+
+    /// Re-checks finished downloads against the disk (at most every two seconds), so a deleted
+    /// file reads `missing`. True when a row changed.
+    pub fn downloads_check_files(app: &AppRef) -> bool {
+        let now = Self::unix_ms();
+        Self::downloads_apply(app, |downloads| {
+            downloads.refresh_missing_if_stale(now, &crate::download_shell::regular_file)
+        })
+        .unwrap_or(false)
+    }
+
+    pub fn downloads_can_undo(app: &AppRef) -> bool {
+        app.borrow().downloads.can_undo()
+    }
+
+    /// Puts the last removal back. True if anything came back.
+    pub fn downloads_undo(app: &AppRef) -> bool {
+        Self::downloads_apply(app, |downloads| downloads.undo()).is_some_and(|count| count > 0)
+    }
+
+    /// The folder downloads are saved to now, created if need be.
+    fn download_dir(app: &AppRef) -> Option<PathBuf> {
+        let setting = app.borrow().settings.download_dir.clone();
+        crate::downloads::resolve_dir(&setting, crate::download_shell::default_downloads_dir().as_deref()).ok()
+    }
+
+    /// The download folder as the settings page shows it (the setting, else the Downloads folder).
+    /// Not created.
+    pub fn download_dir_display(app: &AppRef) -> String {
+        let setting = app.borrow().settings.download_dir.clone();
+        if !setting.is_empty() {
+            return setting;
+        }
+        crate::download_shell::default_downloads_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Settings > Downloads > Change: the native folder picker over `owner`, then the choice is
+    /// saved. False when cancelled or the folder is not usable as a setting.
+    pub fn pick_download_folder(app: &AppRef, owner: HWND) -> bool {
+        let start = Self::download_dir(app);
+        let Some(chosen) = crate::download_shell::pick_folder(owner, start.as_deref()) else {
+            return false;
+        };
+        let Some(dir) = crate::settings::parse_download_dir(&chosen.to_string_lossy()) else {
+            return false;
+        };
+        app.borrow_mut().settings.download_dir = dir;
+        Self::save_settings(app);
+        true
+    }
+
+    /// Settings > Downloads > "Ask where to save each file".
+    pub fn set_ask_download_location(app: &AppRef, on: bool) {
+        app.borrow_mut().settings.ask_download_location = on;
+        Self::save_settings(app);
+    }
+
+    /// Performs a bubble or page action for entry `id` (0 for the list-level ones): the list
+    /// checks the id and that the action is legal for the entry's state; engine pause, resume and
+    /// cancel, opening the file, showing it in Explorer and opening the folder happen here, on the
+    /// recorded path only. What needs the window (open the page, a new tab, the clipboard) comes back
+    /// as the [`DownloadFollowup`].
+    pub fn download_act(app: &AppRef, id: u32, action: crate::downloads::Action) -> DownloadFollowup {
+        use crate::downloads::{EngineCommand, Outcome};
+        let Some(outcome) = Self::downloads_apply(app, |downloads| downloads.act(id, action)) else {
+            return DownloadFollowup::Failed;
+        };
+        let shell_result = |done: bool| {
+            if done {
+                DownloadFollowup::None
+            } else {
+                // The file is gone or the shell refused: let the row say so.
+                let _ = Self::downloads_apply(app, |downloads| {
+                    downloads.refresh_missing(&crate::download_shell::regular_file)
+                });
+                DownloadFollowup::Failed
+            }
+        };
+        match outcome {
+            Outcome::Rejected => DownloadFollowup::Rejected,
+            Outcome::Changed => DownloadFollowup::None,
+            Outcome::Engine { key, command } => {
+                let done = match command {
+                    EngineCommand::Pause => engine::pause_download(key),
+                    EngineCommand::Resume => engine::resume_download(key),
+                    EngineCommand::Cancel => engine::cancel_download(key),
+                };
+                if done { DownloadFollowup::None } else { DownloadFollowup::Failed }
+            }
+            Outcome::OpenFile(path) => shell_result(crate::download_shell::open_file(&path)),
+            Outcome::ShowInFolder(path) => shell_result(crate::download_shell::show_in_folder(&path)),
+            Outcome::OpenFolder => match Self::download_dir(app) {
+                Some(dir) if crate::download_shell::open_folder(&dir) => DownloadFollowup::None,
+                _ => DownloadFollowup::Failed,
+            },
+            Outcome::OpenPage => DownloadFollowup::OpenPage,
+            Outcome::CopyLink(url) => crate::downloads::copy_link_text(&url)
+                .map_or(DownloadFollowup::Rejected, DownloadFollowup::CopyText),
+            Outcome::Retry(url) => DownloadFollowup::OpenTab(url),
+        }
+    }
+
+    /// The window is closing: downloads still running are cancelled and kept as failed
+    /// `Interrupted`, and the list is saved. Call after the engine has closed.
+    pub fn downloads_shutdown(app: &AppRef) {
+        let keys = {
+            let Ok(mut state) = app.try_borrow_mut() else {
+                return;
+            };
+            let keys = state.downloads.shutdown(Self::unix_ms());
+            state.downloads_observer = None;
+            keys
+        };
+        engine::download::release(&keys);
     }
 
     /// Runs `f` on the engine when one exists. The app is borrowed for the call, so `f` must not
@@ -4099,6 +4413,14 @@ impl App {
             Some(profile.tab_groups_file()),
         );
         app.settings = settings;
+        if track_privacy {
+            // A guest's list lives in memory only; so does one the profile folder cannot hold.
+            app.downloads = if profile.is_guest() {
+                crate::downloads::DownloadManager::in_memory(true)
+            } else {
+                crate::downloads::DownloadManager::open(&profile.downloads_file())
+            };
+        }
         if track_privacy && app.settings.blocker_enabled {
             let mut state = crate::blocker::BlockerState::load(
                 &profile.blocker_dir(),
@@ -4226,6 +4548,8 @@ impl App {
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
             reader_prefs: crate::reader::Prefs::default(),
+            downloads: crate::downloads::DownloadManager::in_memory(false),
+            downloads_observer: None,
         }
     }
 
@@ -4368,22 +4692,21 @@ impl App {
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
     /// timer; further changes before it fires are coalesced.
     pub fn session_changed(app: &AppRef) -> bool {
+        // A save already queued (or none possible) needs no snapshot: the timer builds the one that
+        // is written, so a title that changes every few seconds costs nothing in between.
+        {
+            let state = app.borrow();
+            if !session_arm_allowed(state.session.is_some(), state.session_save_pending, state.closing) {
+                return false;
+            }
+        }
         let snapshot = Self::session_snapshot(app);
         let mut state = app.borrow_mut();
         if snapshot == state.last_session_snapshot {
-            state.session_save_pending = false;
             return false;
         }
-        if state.session.is_some()
-            && snapshot != state.last_session_snapshot
-            && !state.session_save_pending
-            && !state.closing
-        {
-            state.session_save_pending = true;
-            true
-        } else {
-            false
-        }
+        state.session_save_pending = true;
+        true
     }
 
     fn session_snapshot(app: &AppRef) -> Option<crate::session::Session> {
@@ -4522,6 +4845,8 @@ impl App {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::open_history_page(hwnd, app, true);
+            } else if page.is_downloads() {
+                win32::open_downloads_page(hwnd, app, true);
             } else {
                 win32::open_settings_page(hwnd, app, page.section(), true);
             }
@@ -4751,9 +5076,10 @@ impl App {
         let nav_progress_events_app = Rc::downgrade(app);
         let favicon_events_app = Rc::downgrade(app);
         let login_events_app = Rc::downgrade(app);
+        // Metadata only: the vault is opened and decrypted when a login event asks for it, not here.
         let login_messages_enabled = crate::profile::active().is_ok_and(|profile| {
             crate::engine::password_login_messages_enabled(
-                crate::passwords::PasswordStore::open_default().is_ok(),
+                crate::passwords::PasswordStore::login_events_available(),
                 profile.is_guest(),
             )
         });
@@ -5145,6 +5471,8 @@ impl App {
                     });
                 callback
             }),
+            download_event: Some(Self::download_event_hook(app)),
+            download_plan: Some(Self::download_plan_hook(app)),
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {
@@ -5396,6 +5724,8 @@ impl App {
                 let hwnd = app.borrow().hwnd;
                 if page.is_history() {
                     win32::open_history_page(hwnd, app, false);
+                } else if page.is_downloads() {
+                    win32::open_downloads_page(hwnd, app, false);
                 } else {
                     win32::open_settings_page(hwnd, app, page.section(), false);
                 }
@@ -5407,6 +5737,8 @@ impl App {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::history_page_focus(hwnd);
+            } else if page.is_downloads() {
+                win32::downloads_page_focus(hwnd);
             } else {
                 win32::settings_page_go(hwnd, page.section());
             }
@@ -8443,6 +8775,8 @@ mod tests {
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
             reader_prefs: crate::reader::Prefs::default(),
+            downloads: crate::downloads::DownloadManager::in_memory(false),
+            downloads_observer: None,
         }))
     }
 
@@ -9128,6 +9462,14 @@ mod tests {
         assert!(!should_prewarm(true, false, false, "hello"));
         assert!(!should_prewarm(false, true, false, "hello"));
         assert!(!should_prewarm(false, false, true, "hello"));
+    }
+
+    #[test]
+    fn session_timer_arms_only_without_a_queued_save() {
+        assert!(session_arm_allowed(true, false, false));
+        assert!(!session_arm_allowed(false, false, false));
+        assert!(!session_arm_allowed(true, true, false), "a queued save builds no snapshot");
+        assert!(!session_arm_allowed(true, false, true));
     }
 
     #[test]

@@ -12,7 +12,7 @@ work areas), 4px radius, 12px icon gap, 8px overlay radius, min 200 / max 360px,
 ## Main menu (`main`)
 The menu is short on purpose: what you do on every page, and nothing you set once. Profile card (header) |
 New tab `plus` | New private tab `private` | Close all private tabs `glasses` (only while a private tab is
-open) | History `history` (opens `bowser://history`) | Bookmark this page `bookmark` | Workspaces
+open) | History `history` (opens `bowser://history`) | Downloads `download` (opens `bowser://downloads`, Ctrl+J) | Bookmark this page `bookmark` | Workspaces
 `workspace` (submenu) | Block ads & trackers `shield` (check) | Reader view `reader` (check; a capital A beside text lines over a full-width line, so it
 stays apart from the page-shaped `notes` and the book `workspace-book`) | More tools
 `more` (submenu: Notes & Tasks `notes`, Command palette `command`, Saved sessions `folder`, Hide

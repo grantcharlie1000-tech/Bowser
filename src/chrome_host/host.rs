@@ -37,7 +37,7 @@ use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
         PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, RESPONSE_HEADERS, SCHEME,
-        SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL,
+        SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
         Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
@@ -188,6 +188,9 @@ pub enum View {
     /// The history page shown over a `bowser://history` tab (docs/design/history-page.md). Sends
     /// only the `hpage` family.
     HistoryPage,
+    /// The downloads page shown over a `bowser://downloads` tab (docs/design/downloads.md). Sends
+    /// only the `dpage` family.
+    DownloadsPage,
 }
 
 impl View {
@@ -206,6 +209,7 @@ impl View {
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
             Self::HistoryPage => HISTORY_PAGE_START_URL,
+            Self::DownloadsPage => DOWNLOADS_PAGE_START_URL,
         }
     }
 }
@@ -896,7 +900,8 @@ fn install_handlers(
             }));
         }
 
-        // Every request is answered here: embedded asset or 404. Nothing reaches the network.
+        // Every `bowser-ui` request is answered here: embedded asset or 404. The filter below keeps
+        // real network requests out of this handler, so a page load never wakes it.
         let env = environment.clone();
         webview.add_WebResourceRequested(
             &WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
@@ -922,7 +927,7 @@ fn install_handlers(
         removers.push(Box::new(move || {
             let _ = w.remove_WebResourceRequested(token);
         }));
-        let filter = wide("*");
+        let filter = wide(UI_REQUEST_FILTER);
         webview.AddWebResourceRequestedFilter(
             PCWSTR(filter.as_ptr()),
             COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
@@ -1015,14 +1020,14 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
+        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),
             // --- end split view ---
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
-        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. }),
+        View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. } | Command::DownloadsAct { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
@@ -1036,8 +1041,13 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Settings => matches!(command, Command::Panel { kind: PanelType::Settings | PanelType::Privacy, .. }),
         // Likewise a tab: only its own family, never the rail panel's `hist` or `panel`.
         View::HistoryPage => matches!(command, Command::Panel { kind: PanelType::HistoryPage, .. }),
+        View::DownloadsPage => matches!(command, Command::Panel { kind: PanelType::DownloadsPage, .. }),
     }
 }
+
+/// The only requests the chrome WebView2 raises `WebResourceRequested` for: its own scheme. A bare
+/// `*` would hand every network request the chrome makes to the handler as well.
+const UI_REQUEST_FILTER: &str = "bowser-ui://*";
 
 /// The path of a `bowser-ui://app/...` URI, or `None` for any other scheme or host.
 fn request_path(uri: &str) -> Option<String> {
@@ -1069,6 +1079,15 @@ mod tests {
         assert_eq!((LOADING_BOUNDS.right - LOADING_BOUNDS.left, LOADING_BOUNDS.bottom - LOADING_BOUNDS.top), (1, 1));
         assert!(!same_rect(LOADING_BOUNDS, RECT { left: 0, top: 0, right: 800, bottom: 40 }));
         assert!(same_rect(LOADING_BOUNDS, LOADING_BOUNDS));
+    }
+
+    #[test]
+    fn the_request_filter_is_the_ui_scheme_only() {
+        assert_eq!(UI_REQUEST_FILTER, format!("{SCHEME}://*"));
+        assert_ne!(UI_REQUEST_FILTER, "*");
+        // Everything the filter lets through is something `request_path` understands.
+        assert!(request_path("bowser-ui://app/index.html").is_some());
+        assert!(request_path("https://example.com/").is_none());
     }
 
     #[test]
@@ -1186,7 +1205,7 @@ mod tests {
         assert_eq!(View::DialogPrivacy.start_url(), "bowser-ui://app/index.html?view=dialog&p=privacy");
         assert_eq!(View::DialogRename.start_url(), "bowser-ui://app/index.html?view=dialog&p=rename");
         assert_eq!(View::Hover.start_url(), "bowser-ui://app/index.html?view=hover");
-        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::HistoryPage];
+        let views = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::HistoryPage, View::DownloadsPage];
         for view in views {
             assert!(is_start_url(view, view.start_url()), "{view:?}");
             for other in views.iter().filter(|other| **other != view) {
@@ -1316,6 +1335,83 @@ mod tests {
     }
     // --- end history page ---
 
+    // --- downloads (docs/design/downloads.md) ---
+    #[test]
+    fn the_downloads_page_is_trusted_only_from_its_exact_url_and_only_for_its_own_commands() {
+        let url = View::DownloadsPage.start_url();
+        assert_eq!(url, "bowser-ui://app/index.html?view=downloads");
+        assert!(is_trusted_message(View::DownloadsPage, url, url));
+        for other in [
+            "bowser-ui://app/index.html?view=downloads#today",
+            "bowser-ui://app/index.html?view=downloads&q=x",
+            "bowser-ui://app/index.html?view=Downloads",
+            "bowser-ui://APP/index.html?view=downloads",
+            "bowser-ui://app/index.html?view=history",
+            "https://evil.example/index.html?view=downloads",
+            "bowser://downloads",
+            View::HistoryPage.start_url(),
+            View::Popup.start_url(),
+            START_URL,
+            "",
+        ] {
+            assert!(!is_start_url(View::DownloadsPage, other), "{other}");
+            assert!(!is_trusted_message(View::DownloadsPage, other, url), "sender {other}");
+            assert!(!is_trusted_message(View::DownloadsPage, url, other), "message {other}");
+        }
+        let all = [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::Split, View::HistoryPage];
+        for view in all {
+            assert!(!is_start_url(view, url), "{view:?} accepted the downloads page URL");
+        }
+        // The page speaks `dpage` and nothing else; no other host accepts `dpage`.
+        for raw in [
+            r#"{"v":1,"t":"dpage","a":"open","id":7}"#,
+            r#"{"v":1,"t":"dpage","a":"search","text":"zip"}"#,
+            r#"{"v":1,"t":"dpage","a":"clear"}"#,
+        ] {
+            let command = parse_command(raw).unwrap();
+            assert!(view_accepts_command(View::DownloadsPage, &command), "{raw}");
+            for view in all {
+                assert!(!view_accepts_command(view, &command), "{view:?} {raw}");
+            }
+        }
+        for foreign in [
+            r#"{"v":1,"t":"hpage","a":"open","id":1}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1}"#,
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"set","a":"downloadask","on":true}"#,
+            r#"{"v":1,"t":"dlact","tok":1,"id":1,"n":0}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"submit","text":"https://example.com/"}"#,
+            r#"{"v":1,"t":"pick","tok":1,"id":2}"#,
+        ] {
+            let command = parse_command(foreign).unwrap();
+            assert!(!view_accepts_command(View::DownloadsPage, &command), "{foreign}");
+        }
+        assert!(view_accepts_command(View::DownloadsPage, &Command::Ready));
+    }
+
+    #[test]
+    fn the_download_button_and_bubble_commands_reach_only_their_own_hosts() {
+        let toggle = parse_command(r#"{"v":1,"t":"dl","a":"toggle","text":"640,3,28,28"}"#).unwrap();
+        let act = parse_command(r#"{"v":1,"t":"dlact","tok":3,"id":9,"n":2}"#).unwrap();
+        let others = [View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::Hover, View::Split, View::HistoryPage, View::DownloadsPage];
+        assert!(view_accepts_command(View::Toolbar, &toggle));
+        assert!(!view_accepts_command(View::Toolbar, &act));
+        assert!(view_accepts_command(View::Popup, &act));
+        assert!(!view_accepts_command(View::Popup, &toggle));
+        for view in others {
+            assert!(!view_accepts_command(view, &toggle), "{view:?}");
+            assert!(view == View::Popup || !view_accepts_command(view, &act), "{view:?}");
+        }
+        // The toggle shares the popup-command gate (one per 250 ms); the bubble's actions do not.
+        let mut gate = Throttle::new(POPUP_COMMAND_INTERVAL);
+        let now = Instant::now();
+        assert!(is_popup_command(&toggle) && gate.allow(now));
+        assert!(!gate.allow(now));
+        assert!(!is_popup_command(&act));
+    }
+    // --- end downloads ---
+
     // --- omnibox suggest ---
     #[test]
     fn suggest_commands_come_only_from_the_toolbar_and_the_hover_layer() {
@@ -1336,7 +1432,7 @@ mod tests {
 
     #[test]
     fn new_views_reject_nearby_urls_and_foreign_command_families() {
-        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::HistoryPage] {
+        for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::Settings, View::DialogPrivacy, View::DialogRename, View::HistoryPage, View::DownloadsPage] {
             let url = view.start_url();
             assert!(is_trusted_message(view, url, url));
             assert!(!is_start_url(view, &format!("{url}&x=1")));

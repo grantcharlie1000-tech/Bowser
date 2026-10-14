@@ -1,0 +1,1074 @@
+/*
+ * Surface: DOWNLOADS (?view=popup `downloads` page, the bubble; ?view=downloads, the
+ * bowser://downloads page). Owner: downloads. Built by ui/src/downloads-bubble.ts,
+ * ui/src/downloads-page.ts and the shared row in ui/src/downloads-view.ts; words and contracts in
+ * ui/src/downloads-logic.ts. Spec: docs/design/downloads.md (motion table under "Tokens and motion").
+ * The toolbar button lives in toolbar.css.
+ *
+ * Colour: theme tokens only, plus local --dl-* / --db-* / --dp-* values derived from them with the
+ * history page's recipes, so both surfaces follow light, dark and the accent. File kinds take a
+ * tone from the group palette. Progress uses --bw-progress, the page-load colour.
+ * Motion: transform and opacity only, every animation finite except the indeterminate sweep, which
+ * runs only while a row is active with no known size. Under reduced motion nothing moves (base.css
+ * turns transitions into short fades; the keyframe animations below opt out).
+ */
+
+/* ---- The row (bubble and page) ---- */
+.dl-row {
+  --dl-tone: var(--bw-text-2);
+  --dl-warn: #ff9a8b; /* proposed token: --bw-danger (dark) */
+  --dl-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
+  --dl-press: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  --dl-track: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --dl-tile: 32px;
+  --dl-act: 28px;
+  position: relative;
+  border-radius: var(--bw-r-island);
+  list-style: none;
+}
+
+:root[data-scheme="light"] .dl-row {
+  --dl-warn: #c42b1c; /* proposed token: --bw-danger (light) */
+}
+
+.dl-row[data-kind="image"] { --dl-tone: var(--bw-group-7); }
+.dl-row[data-kind="video"] { --dl-tone: var(--bw-group-0); }
+.dl-row[data-kind="audio"] { --dl-tone: var(--bw-group-6); }
+.dl-row[data-kind="archive"] { --dl-tone: var(--bw-group-1); }
+.dl-row[data-kind="document"] { --dl-tone: var(--bw-group-5); }
+.dl-row[data-kind="code"] { --dl-tone: var(--bw-group-3); }
+.dl-row[data-kind="program"] { --dl-tone: var(--bw-group-4); }
+
+/* A file that is not there (failed, cancelled, gone) loses its colour. */
+.dl-row:is([data-state="failed"], [data-state="cancelled"], [data-state="missing"]) {
+  --dl-tone: var(--bw-text-2);
+}
+
+.dl-open {
+  display: grid;
+  grid-template-columns: var(--dl-tile) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--bw-space-3);
+  width: 100%;
+  min-height: 56px;
+  margin: 0;
+  /* Room on the right for the buttons that always show (the others float in over the text). */
+  padding: var(--bw-space-2) calc(var(--dl-primary, 1) * var(--dl-act) + var(--bw-space-3)) var(--bw-space-2) var(--bw-space-2);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dl-row:hover > .dl-open,
+.dl-row:focus-within > .dl-open {
+  background-color: var(--dl-hover);
+}
+
+.dl-row[data-state="done"] > .dl-open:active {
+  background-color: var(--dl-press);
+}
+
+.dl-open:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.dl-tile {
+  display: grid;
+  place-items: center;
+  width: var(--dl-tile);
+  height: var(--dl-tile);
+  border-radius: var(--bw-r-island);
+  background: color-mix(in srgb, var(--dl-tone) 18%, transparent);
+  color: color-mix(in srgb, var(--dl-tone) 82%, var(--bw-text));
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+:root[data-scheme="light"] .dl-tile {
+  background: color-mix(in srgb, var(--dl-tone) 16%, transparent);
+  color: color-mix(in srgb, var(--dl-tone) 62%, #000);
+}
+
+.dl-text {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dl-name {
+  display: flex;
+  min-width: 0;
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+.dl-stem {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+}
+
+/* The tail (the stem's last characters and the extension) never truncates: the name elides in
+   the middle, `Quarterly report — final (appr… v3.pdf`. */
+.dl-ext {
+  flex: none;
+  white-space: pre;
+  unicode-bidi: isolate;
+}
+
+.dl-row[data-state="missing"] .dl-name {
+  color: var(--bw-text-2);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--bw-text-2) 70%, transparent);
+}
+
+.dl-meta {
+  display: flex;
+  min-width: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dl-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-status[data-tone="warn"] {
+  color: var(--dl-warn);
+}
+
+/* A state change (finished, failed) crossfades the line once. */
+.dl-status.is-swap {
+  animation: dl-swap var(--bw-dur-base) var(--bw-ease-fade);
+}
+
+@keyframes dl-swap {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The bar sits in the row's bottom padding, so showing or collapsing it never moves anything. */
+.dl-bar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: -5px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--dl-track);
+  opacity: 0;
+  transform: scaleY(0);
+  transition:
+    opacity var(--bw-dur-base) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-in);
+}
+
+.dl-row:is([data-state="active"], [data-state="paused"]) .dl-bar {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+.dl-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--bw-progress);
+  transform: scaleX(var(--dl-f, 0));
+  transform-origin: 0 50%;
+  /* 250ms linear: Rust re-sends at most 4 times a second, so the bar glides from one to the next. */
+  transition:
+    transform var(--bw-dur-slow) linear,
+    background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dl-row[data-state="paused"] .dl-fill {
+  background: color-mix(in srgb, var(--bw-text) 40%, transparent);
+}
+
+/* No size known: a third of the track sweeps across, only while the row is active. */
+.dl-row.is-unknown .dl-fill {
+  width: 34%;
+  transform: translateX(-100%);
+  animation: dl-sweep 1100ms linear infinite;
+}
+
+@keyframes dl-sweep {
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* Buttons: the ones that always show keep the right edge; the rest float in over the end of the
+   text on hover or focus, on a backdrop of the row's own colour that feathers into the text. */
+.dl-acts {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: var(--bw-space-2);
+  display: flex;
+  gap: 0;
+  transform: translateY(-50%);
+}
+
+.dl-acts::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 -20px;
+  z-index: -1;
+  border-radius: var(--bw-r-pill);
+  background: var(--dl-backdrop);
+  mask-image: linear-gradient(to right, transparent, #000 20px);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  pointer-events: none;
+}
+
+.dl-act {
+  color: var(--bw-text-2);
+}
+
+.dl-act:hover {
+  color: var(--bw-text);
+}
+
+.dl-act[data-act="pause"],
+.dl-act[data-act="resume"],
+.dl-act[data-act="retry"],
+.dl-act[data-act="show"] {
+  color: var(--bw-text);
+}
+
+.dl-act[data-tier="secondary"] {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dl-row:is(:hover, :focus-within) .dl-act[data-tier="secondary"],
+.dl-row:is(:hover, :focus-within) > .dl-acts::before {
+  opacity: 1;
+}
+
+.dl-row:not(:has(.dl-act[data-tier="secondary"])) > .dl-acts::before {
+  display: none;
+}
+
+/* Arrive, leave and glide (FLIP): new rows drop in at the top, a removed row fades where it was
+   while the rows below glide into its place. */
+.dl-row.is-new {
+  animation: dl-arrive var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+@keyframes dl-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+.dl-row.is-gliding,
+.db-foot.is-gliding {
+  animation: dl-glide var(--bw-dur-base) var(--bw-ease-move) both;
+}
+
+@keyframes dl-glide {
+  from {
+    transform: translateY(var(--dl-from, 0px));
+  }
+}
+
+/* ---- The bubble (popup page `downloads`) ---- */
+.bw-dl {
+  --db-surface: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  /* The family stroke (the toolbar's #app default thins it). */
+  --bw-icon-stroke: 1.5px;
+}
+
+.bw-dl .dl-row {
+  --dl-backdrop: linear-gradient(var(--dl-hover), var(--dl-hover)), var(--db-surface);
+}
+
+.db-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  height: 44px;
+  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-4);
+}
+
+.db-title {
+  margin: 0;
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.db-sub {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.db-folder {
+  margin-inline-start: auto;
+  color: var(--bw-text-2);
+}
+
+.db-folder:hover {
+  color: var(--bw-text);
+}
+
+.db-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-0_5);
+  margin: 0;
+  padding: 0 var(--bw-space-1) var(--bw-space-1);
+}
+
+.db-list > .dl-row.is-leaving {
+  position: absolute;
+  top: var(--dl-top, 0px);
+  inset-inline: var(--bw-space-1);
+  animation: dl-leave var(--bw-dur-fast) var(--bw-ease-fade) both;
+}
+
+@keyframes dl-leave {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.db-empty {
+  margin: 0;
+  padding: var(--bw-space-3) var(--bw-space-4) var(--bw-space-4);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.db-empty[hidden],
+.db-sub[hidden],
+.db-more[hidden] {
+  display: none;
+}
+
+.db-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  padding: 0 var(--bw-space-3) 0 var(--bw-space-4);
+  border: 0;
+  border-top: 1px solid var(--bw-hairline);
+  background: transparent;
+  color: var(--bw-text);
+  font: inherit;
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.db-foot:hover {
+  background-color: var(--bw-hover);
+}
+
+.db-foot:active {
+  background-color: color-mix(in srgb, var(--bw-text) 10%, transparent);
+}
+
+.db-foot:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+  border-radius: 0 0 var(--bw-r-overlay) var(--bw-r-overlay);
+}
+
+.db-foot > svg {
+  color: var(--bw-text-2);
+}
+
+.db-more {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.db-key,
+.dp-key {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--bw-space-1_5);
+  border: 1px solid color-mix(in srgb, var(--bw-text) 14%, transparent);
+  border-radius: var(--bw-r-control);
+  color: var(--bw-text-2);
+  font: var(--bw-text-caption) / 1 var(--bw-font);
+}
+
+.db-key {
+  margin-inline-start: auto;
+}
+
+.db-sr,
+.dp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- The page (bowser://downloads) ---- */
+#app.dp-root {
+  --dp-page: var(--bw-window-opaque);
+  --dp-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
+  --dp-card-edge: var(--bw-hairline);
+  --dp-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque));
+  --dp-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --dp-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
+  --dp-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent);
+  --dp-warn: var(--bw-group-1);
+  --dp-col: 760px;
+  --dp-gutter: var(--bw-space-6);
+  --bw-icon-stroke: 1.5px;
+  display: block;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0;
+  background: var(--dp-page);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+:root[data-scheme="light"] #app.dp-root {
+  --dp-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
+  --dp-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
+}
+
+.dp [hidden] {
+  display: none !important;
+}
+
+.dp {
+  position: relative;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-padding-top: 152px;
+}
+
+.dp .dl-row {
+  --dl-tile: 40px;
+  --dl-backdrop: linear-gradient(var(--dl-hover), var(--dl-hover)), linear-gradient(var(--dp-card), var(--dp-card));
+}
+
+.dp .dl-open {
+  grid-template-columns: var(--dl-tile) minmax(0, 1fr) auto;
+  min-height: 64px;
+  padding-block: var(--bw-space-3);
+}
+
+.dp .dl-tile {
+  border-radius: 10px;
+}
+
+/* The page's meta line: status, then the site it came from. */
+.dp .dl-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  unicode-bidi: isolate;
+}
+
+.dp .dl-host::before {
+  content: "•";
+  margin-inline: var(--bw-space-1_5);
+}
+
+.dp .dl-bar {
+  bottom: -7px;
+}
+
+/* The time gives way to the buttons on hover and focus; a running row shows its buttons always. */
+.dl-time {
+  min-width: 48px;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dp .dl-open {
+  padding-inline-end: var(--bw-space-3);
+}
+
+.dp .dl-row:is([data-state="active"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) > .dl-open {
+  padding-inline-end: calc(var(--dl-primary, 1) * var(--dl-act) + var(--bw-space-3));
+}
+
+.dp .dl-row:is([data-state="active"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) .dl-time,
+.dp .dl-row:is(:hover, :focus-within) .dl-time {
+  opacity: 0;
+}
+
+/* A finished row's buttons all wait for hover or focus (its time sits there at rest). */
+.dp .dl-row[data-state="done"] .dl-act {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dp .dl-row[data-state="done"]:is(:hover, :focus-within) .dl-act {
+  opacity: 1;
+}
+
+.dp-hit {
+  border-radius: 2px;
+  background: var(--dp-hit);
+  color: inherit;
+}
+
+/* Header */
+.dp-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--dp-page);
+}
+
+.dp-head::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  inset-inline: 0;
+  height: 1px;
+  background: var(--dp-card-edge);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  pointer-events: none;
+}
+
+.dp-head.is-scrolled::after {
+  opacity: 1;
+}
+
+.dp-head-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+  max-width: calc(var(--dp-col) + 2 * var(--dp-gutter));
+  margin-inline: auto;
+  padding: var(--bw-space-6) var(--dp-gutter) var(--bw-space-4);
+}
+
+.dp-top {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.dp-brand {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.dp-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  color: var(--bw-accent);
+}
+
+/* The arrow drops into its tray once as the page opens: the toolbar button's start motion. */
+.dp-mark.is-drop > svg {
+  animation: dp-drop 560ms var(--bw-ease-out) 80ms both;
+}
+
+@keyframes dp-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.6);
+  }
+
+  25% {
+    opacity: 1;
+  }
+
+  60% {
+    transform: translateY(1.5px) scale(1.06, 0.9);
+    animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1);
+  }
+
+  100% {
+    transform: none;
+  }
+}
+
+.dp-titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+.dp-title {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+  letter-spacing: -0.01em;
+}
+
+.dp-summary {
+  margin: 0;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.dp-clear-note {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.dp .bw-button {
+  height: 32px;
+  border-color: var(--dp-field-edge);
+  background-color: var(--dp-field);
+}
+
+.dp .bw-button > svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The confirming Clear all: the settings page's danger fill (settings.css `.sp .bw-button.is-danger`). */
+.dp .bw-button.is-danger {
+  border-color: transparent;
+  background-color: #c42b1c;
+  color: #fff;
+}
+
+.dp-settings {
+  color: var(--bw-text-2);
+}
+
+.dp-settings:hover {
+  color: var(--bw-text);
+}
+
+.dp-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.dp-search-icon {
+  position: absolute;
+  inset-inline-start: 14px;
+  color: var(--bw-text-2);
+  pointer-events: none;
+}
+
+.dp-search-input {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  padding: 0 40px;
+  border: 1px solid var(--dp-field-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--dp-field);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  outline: none;
+  user-select: text;
+  transition: border-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dp-search-input::placeholder {
+  color: var(--bw-text-2);
+}
+
+.dp-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.dp-search-input:hover {
+  border-color: color-mix(in srgb, var(--bw-text) 22%, transparent);
+}
+
+.dp-search-input:focus-visible {
+  border-color: var(--bw-focus);
+  box-shadow:
+    inset 0 0 0 1px var(--bw-focus),
+    0 0 0 3px color-mix(in srgb, var(--bw-focus) 22%, transparent);
+}
+
+.dp-search-clear {
+  position: absolute;
+  inset-inline-end: 10px;
+}
+
+.dp-key {
+  position: absolute;
+  inset-inline-end: 12px;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+  pointer-events: none;
+}
+
+.dp-search:focus-within .dp-key,
+.dp-search.has-text .dp-key {
+  opacity: 0;
+}
+
+.dp-note {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  margin: 0;
+  padding-inline: var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* Days and rows */
+.dp-main {
+  padding: 0 var(--dp-gutter) 96px;
+  outline: none;
+}
+
+.dp-col {
+  max-width: var(--dp-col);
+  margin-inline: auto;
+}
+
+.dp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-6);
+  padding-top: var(--bw-space-2);
+}
+
+.dp-day {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}
+
+.dp-day-h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bw-space-2);
+  margin: 0 0 var(--bw-space-2);
+  padding-inline: var(--bw-space-1);
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.dp-day-date,
+.dp-day-count {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: 400;
+}
+
+.dp-day-count {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.dp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-0_5);
+  margin: 0;
+  padding: var(--bw-space-1);
+  border: 1px solid var(--dp-card-edge);
+  border-radius: 12px;
+  background: var(--dp-card);
+  list-style: none;
+}
+
+/* A download that starts while the page is open (or one put back) drops in and glows once. */
+.dp .dl-row.is-new::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bw-accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-accent) 40%, transparent);
+  opacity: 0;
+  animation: dp-glow 1400ms var(--bw-ease-fade) both;
+  pointer-events: none;
+}
+
+@keyframes dp-glow {
+  0%,
+  35% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A removed row fades while Bowser answers; the rows below then glide up into its place. */
+.dp .dl-row.is-leaving {
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-in);
+}
+
+/* Empty, no matches, guest and error */
+.dp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-2);
+  padding: 72px var(--bw-space-4);
+  text-align: center;
+}
+
+.dp-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--bw-space-2);
+  border-radius: 50%;
+  background: var(--bw-accent-soft);
+  color: var(--bw-accent);
+}
+
+.dp-empty-mark[data-kind="nomatch"],
+.dp-empty-mark[data-kind="guest"] {
+  background: var(--dp-tile);
+  color: var(--bw-text-2);
+}
+
+.dp-empty-mark[data-kind="error"] {
+  background: color-mix(in srgb, var(--dp-warn) 18%, transparent);
+  color: var(--dp-warn);
+}
+
+.dp-empty-title {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+  font-weight: var(--bw-weight-strong);
+  letter-spacing: -0.01em;
+}
+
+.dp-empty-body {
+  max-width: 440px;
+  margin: 0 0 var(--bw-space-3);
+  color: var(--bw-text-2);
+}
+
+.dp-foot {
+  margin: var(--bw-space-6) 0 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  text-align: center;
+}
+
+/* "Removed", with Undo */
+.dp-toast {
+  position: fixed;
+  bottom: var(--bw-space-6);
+  left: 50%;
+  z-index: var(--bw-z-popup);
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  max-width: min(560px, calc(100% - 2 * var(--bw-space-4)));
+  padding: var(--bw-space-1) var(--bw-space-1) var(--bw-space-1) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition:
+    opacity var(--bw-dur-base) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-out);
+  pointer-events: none;
+}
+
+.dp-toast.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.dp-toast:not(:has(.dp-toast-undo:not([hidden]))) {
+  padding-block: var(--bw-space-1_5);
+  padding-inline-end: var(--bw-space-4);
+}
+
+.dp-toast-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--bw-accent);
+}
+
+.dp-toast.is-error .dp-toast-icon {
+  color: var(--dp-warn);
+}
+
+.dp-toast-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-toast-undo {
+  flex: none;
+  height: 28px;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border: 0;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font: inherit;
+  font-weight: var(--bw-weight-strong);
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dp-toast-undo:hover {
+  background: color-mix(in srgb, var(--bw-accent) 34%, transparent);
+}
+
+.dp-toast-undo:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 1px;
+}
+
+/* Narrow windows and split panes: the header tools keep their icons and names. */
+@media (max-width: 680px) {
+  #app.dp-root {
+    --dp-gutter: var(--bw-space-3);
+  }
+
+  .dp-head-in {
+    gap: var(--bw-space-3);
+    padding-top: var(--bw-space-4);
+  }
+
+  .dp-folder,
+  .dp-clear:not(.is-danger) {
+    width: 32px;
+    padding: 0;
+    gap: 0;
+    font-size: 0;
+  }
+
+  .dp-key,
+  .dp-clear-note {
+    display: none;
+  }
+}
+
+@media (max-width: 460px) {
+  .dp-day-date,
+  .dp .dl-host {
+    display: none;
+  }
+
+  .dp .dl-open {
+    column-gap: var(--bw-space-2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dl-row.is-new,
+  .dl-row.is-gliding,
+  .db-foot.is-gliding,
+  .dp .dl-row.is-new::after,
+  .dp-mark.is-drop > svg,
+  .dl-status.is-swap {
+    animation: none;
+  }
+
+  .db-list > .dl-row.is-leaving {
+    animation: bw-fade-out var(--bw-dur-fast) linear both;
+  }
+
+  .dp .dl-row.is-leaving {
+    transform: none;
+  }
+
+  /* The sweep carries status: it keeps moving, slower. */
+  .dl-row.is-unknown .dl-fill {
+    animation-duration: 2200ms;
+  }
+
+  .dp-toast,
+  .dp-toast.is-on {
+    transform: translate(-50%, 0);
+  }
+}

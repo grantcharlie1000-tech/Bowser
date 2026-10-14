@@ -699,6 +699,46 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_snapshot_is_not_written_again() {
+        let dir = temp_dir("unchanged");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        let snapshot = sample();
+        store.save(&snapshot).unwrap();
+        assert!(dir.join(FILE_NAME).exists());
+        // Without a write the file stays gone: the second save never touches the disk.
+        fs::remove_file(dir.join(FILE_NAME)).unwrap();
+        store.save(&snapshot).unwrap();
+        assert!(!dir.join(FILE_NAME).exists());
+        let mut changed = snapshot.clone();
+        changed.active = 0;
+        store.save(&changed).unwrap();
+        assert_eq!(
+            Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()).unwrap(),
+            changed
+        );
+        store.finish(None);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_first_successful_write_clears_the_crash_count() {
+        let dir = temp_dir("crash-count");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        let offer = Offer {
+            session: sample(),
+            consecutive: 2,
+            ask: true,
+        };
+        store.begin_run(Some(&offer));
+        assert_eq!(store.lock_count, 2);
+        store.save(&sample()).unwrap();
+        assert_eq!(store.lock_count, 0);
+        store.finish(None);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn only_plain_web_urls_are_persisted() {
         assert_eq!(
             persistable_url(&url("https://example.com/p?q=1#f")).as_deref(),

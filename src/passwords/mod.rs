@@ -217,6 +217,16 @@ impl From<io::Error> for PasswordError {
     }
 }
 
+/// The cheap startup check behind `PasswordStore::login_events_available`: a missing vault file is
+/// fine (the first save creates it), an existing one must be a regular file `open` would accept by
+/// size. Metadata only; the file is neither read nor decrypted.
+fn vault_file_usable(path: &std::path::Path) -> bool {
+    match fs::metadata(path) {
+        Ok(meta) => meta.is_file() && meta.len() <= MAX_STORE_BYTES as u64,
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
+}
+
 impl PasswordStore {
     /// Open the vault of the running profile (`profile::active`). DPAPI uses current-user scope only.
     pub fn open_default() -> Result<Self, PasswordError> {
@@ -225,6 +235,14 @@ impl PasswordStore {
             return Err(PasswordError::Disabled);
         }
         Self::open(profile.passwords_file())
+    }
+
+    /// Whether login events may reach the vault of the running profile. Decided from file
+    /// metadata alone: nothing is read or decrypted until a login event actually asks for the
+    /// vault (`open_default` then). Guest profiles stay disabled.
+    pub fn login_events_available() -> bool {
+        crate::profile::active()
+            .is_ok_and(|profile| !profile.is_guest() && vault_file_usable(&profile.passwords_file()))
     }
 
     /// Open a vault at an explicit local path (useful for isolated app profiles and tests).
@@ -1737,6 +1755,24 @@ mod tests {
         assert_eq!(PasswordStore::open(&path).unwrap().len(), 2);
         drop(reopened);
         drop(store);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_predicate_checks_metadata_without_decrypting() {
+        let root = temp_vault_root();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("passwords.bin");
+        // No vault yet: login events stay on so the first save can create it.
+        assert!(vault_file_usable(&path));
+        // Bytes DPAPI could never unprotect: the predicate must not look inside the file.
+        fs::write(&path, b"not a vault").unwrap();
+        assert!(vault_file_usable(&path));
+        assert!(PasswordStore::open(&path).is_err());
+        // Not a regular file: no.
+        let dir = root.join("dir");
+        fs::create_dir(&dir).unwrap();
+        assert!(!vault_file_usable(&dir));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -44,6 +44,12 @@ pub struct WebAppEvents {
     pub navigation_state: Option<NavigationCallback>,
     pub failed: Option<FailureCallback>,
     pub on_open_in_tab: Option<Rc<dyn Fn(Url)>>,
+    /// Downloads from a web app panel are tracked like a tab's (engine/download.rs); without both
+    /// hooks they are cancelled.
+    pub download_event: Option<Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
+    pub download_plan:
+        Option<Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
+    pub policy_event: Option<Rc<dyn Fn(&'static str)>>,
 }
 
 struct WebAppView {
@@ -309,6 +315,7 @@ impl WebAppHost {
         let mut state = self.state.borrow_mut();
         if state.current_app.as_deref() == Some(app_id) { state.current_app = None; }
         if let Some(app) = state.apps.remove(app_id) { app.close(); }
+        super::download::interrupt_owner(super::download::app_owner(app_id));
     }
 
     pub fn close(&self) {
@@ -316,7 +323,7 @@ impl WebAppHost {
         if state.closed { return; }
         state.closed = true;
         state.current_app = None;
-        for (_, app) in state.apps.drain() { app.close(); }
+        for (id, app) in state.apps.drain() { app.close(); super::download::interrupt_owner(super::download::app_owner(&id)); }
     }
 }
 
@@ -353,7 +360,7 @@ impl WebAppView {
 unsafe fn configure_web_app_controller(
     _environment: &ICoreWebView2Environment,
     controller: ICoreWebView2Controller,
-    _parent: HWND,
+    parent: HWND,
     bounds: RECT,
     app_id: &str,
     origin: Url,
@@ -467,8 +474,10 @@ unsafe fn configure_web_app_controller(
         removers.push(Box::new(move || { let _ = event_webview.remove_PermissionRequested(permission_token); }));
 
         let webview4: ICoreWebView2_4 = webview.cast()?;
+        let download_hooks = super::download::DownloadHooks { event: events.download_event.clone(), plan: events.download_plan.clone(), policy: events.policy_event.clone() };
+        let download_source = super::download::Source { owner: super::download::app_owner(app_id), parent, private: false };
         webview4.add_DownloadStarting(&DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
-            if let Some(args) = args { let _ = args.SetCancel(true); }
+            if let Some(args) = args { super::download::handle_starting(&args, &download_source, &download_hooks); }
             Ok(())
         })), &mut token)?;
         let download_webview = webview.clone(); let download_token = token;

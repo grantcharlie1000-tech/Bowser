@@ -1,9 +1,10 @@
 //! Bowser's internal pages: `bowser://settings` and its sections (docs/design/settings-page.md),
-//! and `bowser://history` (docs/design/history-page.md).
+//! `bowser://history` (docs/design/history-page.md) and `bowser://downloads`
+//! (docs/design/downloads.md).
 //!
 //! An internal page is a Bowser route, not a web address. A tab showing one has no content
 //! WebView2: Bowser draws the page in its own trusted chrome host (`src/win32/settings_page.rs`,
-//! `src/win32/history_page.rs`).
+//! `src/win32/history_page.rs`, `src/win32/downloads_page.rs`).
 //! This module is the pure part: parsing typed text and stored addresses, the canonical form, and
 //! which addresses the session may keep. Nothing here touches a window or the engine.
 
@@ -26,6 +27,13 @@ pub const HISTORY_TITLE: &str = "History";
 /// The history clock as a 32px PNG favicon (icons/history-favicon.png, drawn from
 /// icons/rail/clock.svg in the settings gear's slate).
 pub const HISTORY_FAVICON: &[u8] = include_bytes!("../icons/history-favicon.png");
+/// The downloads page's host (`bowser://downloads`, no sections).
+pub const DOWNLOADS_HOST: &str = "downloads";
+/// Title of a downloads tab.
+pub const DOWNLOADS_TITLE: &str = "Downloads";
+/// The download arrow as a 32px PNG favicon (icons/downloads-favicon.png, drawn from
+/// icons/extra/download.svg in the settings gear's slate and the history clock's weight).
+pub const DOWNLOADS_FAVICON: &[u8] = include_bytes!("../icons/downloads-favicon.png");
 
 /// A section of the settings page, in the order the page lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,18 +43,20 @@ pub enum Section {
     Privacy,
     Performance,
     Search,
+    Downloads,
     Media,
     Updates,
     About,
 }
 
 impl Section {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Profile,
         Self::Appearance,
         Self::Privacy,
         Self::Performance,
         Self::Search,
+        Self::Downloads,
         Self::Media,
         Self::Updates,
         Self::About,
@@ -60,6 +70,7 @@ impl Section {
             Self::Privacy => "privacy",
             Self::Performance => "performance",
             Self::Search => "search",
+            Self::Downloads => "downloads",
             Self::Media => "media",
             Self::Updates => "updates",
             Self::About => "about",
@@ -77,6 +88,7 @@ impl Section {
 pub enum InternalPage {
     Settings(Option<Section>),
     History,
+    Downloads,
 }
 
 impl InternalPage {
@@ -86,6 +98,7 @@ impl InternalPage {
             Self::Settings(None) => format!("{SCHEME}://{SETTINGS_HOST}"),
             Self::Settings(Some(section)) => format!("{SCHEME}://{SETTINGS_HOST}/{}", section.key()),
             Self::History => format!("{SCHEME}://{HISTORY_HOST}"),
+            Self::Downloads => format!("{SCHEME}://{DOWNLOADS_HOST}"),
         };
         Url::parse(&text).expect("canonical internal URL parses")
     }
@@ -94,7 +107,7 @@ impl InternalPage {
     pub fn section(self) -> Option<Section> {
         match self {
             Self::Settings(section) => section,
-            Self::History => None,
+            Self::History | Self::Downloads => None,
         }
     }
 
@@ -102,6 +115,7 @@ impl InternalPage {
         match self {
             Self::Settings(_) => SETTINGS_TITLE,
             Self::History => HISTORY_TITLE,
+            Self::Downloads => DOWNLOADS_TITLE,
         }
     }
 
@@ -110,6 +124,7 @@ impl InternalPage {
         match self {
             Self::Settings(_) => SETTINGS_FAVICON,
             Self::History => HISTORY_FAVICON,
+            Self::Downloads => DOWNLOADS_FAVICON,
         }
     }
 
@@ -125,6 +140,10 @@ impl InternalPage {
     pub fn is_history(self) -> bool {
         matches!(self, Self::History)
     }
+
+    pub fn is_downloads(self) -> bool {
+        matches!(self, Self::Downloads)
+    }
 }
 
 /// Whether `url` uses the internal scheme at all (handled or not). Such an address must never be
@@ -135,15 +154,16 @@ pub fn is_internal(url: &Url) -> bool {
 
 /// The page an internal address names. Scheme, host and section are case-insensitive, one
 /// trailing slash is allowed, query and fragment are ignored, and an unknown settings section is
-/// the top of the settings page. History has no sections: any path is not a page. User info, a
-/// port, a deeper path or any other host are not a page.
+/// the top of the settings page. History and downloads have no sections: any path is not a page.
+/// User info, a port, a deeper path or any other host are not a page.
 pub fn parse(url: &Url) -> Option<InternalPage> {
     if !is_internal(url) || !url.username().is_empty() || url.password().is_some() || url.port().is_some() {
         return None;
     }
     let host = url.host_str()?;
     let settings = host.eq_ignore_ascii_case(SETTINGS_HOST);
-    if !settings && !host.eq_ignore_ascii_case(HISTORY_HOST) {
+    let history = host.eq_ignore_ascii_case(HISTORY_HOST);
+    if !settings && !history && !host.eq_ignore_ascii_case(DOWNLOADS_HOST) {
         return None;
     }
     let path = url.path();
@@ -153,7 +173,7 @@ pub fn parse(url: &Url) -> Option<InternalPage> {
         return None;
     }
     if !settings {
-        return path.is_empty().then_some(InternalPage::History);
+        return path.is_empty().then_some(if history { InternalPage::History } else { InternalPage::Downloads });
     }
     let section = Section::from_key(&path.to_ascii_lowercase());
     Some(InternalPage::Settings(section))
@@ -173,7 +193,7 @@ pub fn parse_input(text: &str) -> Option<InternalPage> {
     parse(&Url::parse(text).ok()?)
 }
 
-/// Whether the session may store `url`: exactly a canonical settings or history address, nothing
+/// Whether the session may store `url`: exactly a canonical settings, history or downloads address, nothing
 /// else on the internal scheme (so a hand-edited session file cannot smuggle in an odd form).
 pub fn persistable(url: &Url) -> bool {
     parse(url).is_some_and(|page| page.url().as_str() == url.as_str())
@@ -223,7 +243,8 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 8);
+        assert_eq!(Section::ALL.len(), 9);
+        assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
     #[test]
@@ -296,9 +317,71 @@ mod tests {
         assert_eq!(open_plan(&[(1, false)], (1, false, false), true), OpenPlan::NewTab);
     }
 
+    // ---- bowser://downloads (docs/design/downloads.md) ----
+
+    #[test]
+    fn the_downloads_page_has_one_canonical_address_and_no_sections() {
+        let page = InternalPage::Downloads;
+        assert_eq!(page.url().as_str(), "bowser://downloads");
+        assert_eq!(parse(&page.url()), Some(page));
+        assert_eq!(page.title(), "Downloads");
+        assert_eq!(page.section(), None);
+        assert!(page.is_downloads() && !page.is_history() && !page.is_settings());
+        assert!(page.same_page(InternalPage::Downloads));
+        assert!(!page.same_page(InternalPage::History));
+        assert!(!page.same_page(InternalPage::Settings(None)));
+    }
+
+    #[test]
+    fn typed_downloads_addresses_open_the_page() {
+        for text in ["bowser://downloads", "bowser://downloads/", " BOWSER://Downloads ", "bowser://DOWNLOADS/", "bowser://downloads?q=zip", "bowser://downloads#today", "\tbowser://downloads\n"] {
+            assert_eq!(parse_input(text), Some(InternalPage::Downloads), "{text:?}");
+        }
+        for text in [
+            "downloads",
+            "bowser:downloads",
+            "bowser://downloads/today",
+            "bowser://downloads/x/y",
+            "bowser://downloads.evil.example",
+            "bowser://user@downloads",
+            "bowser://downloads:80",
+            "bowser://downloadsx",
+            "bowser://download",
+            "https://downloads",
+            "chrome://downloads",
+            "edge://downloads",
+            "bowser-ui://app/index.html?view=downloads",
+        ] {
+            assert_eq!(parse_input(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_session_keeps_only_the_canonical_downloads_address() {
+        assert!(persistable(&url("bowser://downloads")));
+        for text in ["bowser://downloads/", "bowser://Downloads", "bowser://downloads?q=x", "bowser://downloads#a", "bowser://downloads/today"] {
+            assert!(!persistable(&url(text)), "{text}");
+        }
+    }
+
+    #[test]
+    fn open_reuses_an_existing_downloads_tab_and_never_another_internal_page() {
+        let shows = |tabs: &[(u32, Option<InternalPage>)], page: InternalPage| -> Vec<(u32, bool)> {
+            tabs.iter().map(|(id, shown)| (*id, shown.is_some_and(|shown| shown.same_page(page)))).collect()
+        };
+        let tabs = [(1, None), (2, Some(InternalPage::History)), (3, Some(InternalPage::Downloads))];
+        assert_eq!(open_plan(&shows(&tabs, InternalPage::Downloads), (1, false, false), false), OpenPlan::Existing(3));
+        assert_eq!(open_plan(&shows(&tabs, InternalPage::History), (3, false, false), false), OpenPlan::Existing(2));
+        assert_eq!(open_plan(&shows(&tabs, InternalPage::Downloads), (3, false, false), true), OpenPlan::Existing(3));
+        let history_only = [(1, None), (2, Some(InternalPage::History))];
+        assert_eq!(open_plan(&shows(&history_only, InternalPage::Downloads), (2, false, false), true), OpenPlan::NewTab);
+        assert_eq!(open_plan(&shows(&history_only, InternalPage::Downloads), (1, true, false), true), OpenPlan::Current(1));
+        assert_eq!(open_plan(&shows(&history_only, InternalPage::Downloads), (1, true, true), true), OpenPlan::NewTab);
+    }
+
     #[test]
     fn the_favicon_is_a_small_png_the_strip_accepts() {
-        for favicon in [SETTINGS_FAVICON, HISTORY_FAVICON] {
+        for favicon in [SETTINGS_FAVICON, HISTORY_FAVICON, DOWNLOADS_FAVICON] {
             assert!(favicon.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
             assert!(favicon.len() <= crate::chrome_host::protocol::MAX_FAVICON_BYTES);
             assert_eq!(u32::from_be_bytes(favicon[16..20].try_into().unwrap()), 32);
@@ -306,6 +389,9 @@ mod tests {
             assert!(crate::chrome_host::protocol::favicon_data_uri(favicon).is_some());
         }
         assert_ne!(SETTINGS_FAVICON, HISTORY_FAVICON);
+        assert_ne!(DOWNLOADS_FAVICON, HISTORY_FAVICON);
+        assert_ne!(DOWNLOADS_FAVICON, SETTINGS_FAVICON);
+        assert_eq!(InternalPage::Downloads.favicon(), DOWNLOADS_FAVICON);
         assert_eq!(InternalPage::History.favicon(), HISTORY_FAVICON);
         assert_eq!(InternalPage::Settings(Some(Section::About)).favicon(), SETTINGS_FAVICON);
     }
@@ -322,6 +408,7 @@ mod tests {
         assert!(page.is_history() && !page.is_settings());
         assert!(page.same_page(InternalPage::History));
         assert!(!page.same_page(InternalPage::Settings(None)));
+        assert!(!page.same_page(InternalPage::Downloads) && !page.is_downloads());
         assert!(InternalPage::Settings(None).same_page(InternalPage::Settings(Some(Section::Privacy))));
     }
 
@@ -344,7 +431,6 @@ mod tests {
             "chrome://history",
             "edge://history",
             "bowser-ui://app/index.html?view=history",
-            "bowser://downloads",
             "bowser://bookmarks",
         ] {
             assert_eq!(parse_input(text), None, "{text:?}");

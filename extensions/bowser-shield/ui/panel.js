@@ -6,8 +6,9 @@
 // The models at the top (summaryModel, statusModel, droppedModel) and the chord helpers are pure and
 // are covered by the Node tests. mount() is the DOM part.
 //
-// Loaded as a classic script: <script src> in the popup and options pages, and listed in the content
-// script entry so the overlay can render it too (see VERIFICATION.md on why the manifest lists it).
+// Loaded as a classic script: <script src> in the popup and options pages, and injected into the top
+// frame by the service worker the first time the chord opens the overlay (content/panel-css.js goes in
+// with it). It is not in the manifest's content script list, so ordinary frames never load it.
 
 const ShieldPanel = (function () {
   "use strict";
@@ -135,58 +136,13 @@ const ShieldPanel = (function () {
 
   // ---- the chord (section 7.1) ------------------------------------------------------------------
 
-  var MODIFIERS = { alt: "alt", shift: "shift", ctrl: "ctrl", control: "ctrl", meta: "meta" };
-
-  function parseChord(text) {
-    if (typeof text !== "string") return null;
-    var parts = text.split("+");
-    if (parts.length < 2) return null;
-    var chord = { alt: false, shift: false, ctrl: false, meta: false, code: null };
-    for (var i = 0; i < parts.length; i++) {
-      var word = parts[i].trim();
-      var low = word.toLowerCase();
-      if (Object.prototype.hasOwnProperty.call(MODIFIERS, low)) {
-        if (chord[MODIFIERS[low]]) return null;
-        chord[MODIFIERS[low]] = true;
-      } else if (chord.code !== null) {
-        return null;
-      } else if (/^[a-z]$/i.test(word)) {
-        chord.code = "Key" + word.toUpperCase();
-      } else if (/^[0-9]$/.test(word)) {
-        chord.code = "Digit" + word;
-      } else if (/^f([1-9]|1[0-2])$/i.test(word)) {
-        chord.code = "F" + word.slice(1);
-      } else {
-        return null;
-      }
-    }
-    if (chord.code === null) return null;
-    if (!chord.alt && !chord.ctrl && !chord.meta) return null;
-    return chord;
-  }
-
-  function matchChord(chord, event) {
-    return (
-      !!chord &&
-      event.code === chord.code &&
-      !!event.altKey === chord.alt &&
-      !!event.shiftKey === chord.shift &&
-      !!event.ctrlKey === chord.ctrl &&
-      !!event.metaKey === chord.meta
-    );
-  }
-
-  function isEditable(el) {
-    if (!el) return false;
-    var tag = String(el.tagName || "").toUpperCase();
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-    if (el.isContentEditable) return true;
-    if (typeof el.getAttribute === "function") {
-      var role = el.getAttribute("role");
-      if (role && role.toLowerCase() === "textbox") return true;
-    }
-    return false;
-  }
+  // The helpers live in lib/shield-chord.js, which every frame's content script already carries; this
+  // file is loaded into the top frame only when the chord is pressed (see ensurePanel in the content
+  // script) and by the popup and options pages, which list shield-chord.js before it.
+  var Chord = typeof module === "object" && module.exports ? require("../lib/shield-chord.js") : self.ShieldChord;
+  var parseChord = Chord.parseChord;
+  var matchChord = Chord.matchChord;
+  var isEditable = Chord.isEditable;
 
   // ---- rendering --------------------------------------------------------------------------------
 

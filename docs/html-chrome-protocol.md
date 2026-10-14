@@ -255,7 +255,8 @@ themed tokens, imported by `app.css` and inlined into `dist/app.css` by `build.m
 ## Popup pages: command palette and site information; name prompt dialog
 
 The popup host (`?view=popup`) shows one page at a time, chosen by the message `t`: `menu` (menus),
-`palette` and `siteinfo`. Rust owns every model; the page only renders and reports intent.
+`palette`, `siteinfo`, `composer` and `downloads` (the download bubble, see "Downloads" below). Rust
+owns every model; the page only renders and reports intent.
 
 ### Rust -> JS
 
@@ -427,10 +428,11 @@ holds for its whole life. It accepts `ready` and the `set` family only (no `pane
 | Direction | Message | Meaning |
 |---|---|---|
 | Rust -> page | `state` | the split host's state: opaque window colour, `solid: true` |
-| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | 25 keys, all required (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
-| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance privacy performance search media updates about`; sent when Bowser moves the tab, never as an echo |
+| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | every key required, including `downloadDir` (display path, <= 260) and `downloadAsk` (bool) (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
+| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance privacy performance search downloads media updates about`; sent when Bowser moves the tab, never as an echo |
 | page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`) |
-| page -> Rust | `{v:1,t:"set",a:"autoupdate"\|"history",on}` | install-wide update switch; the profile's history switch (never for a guest) |
+| page -> Rust | `{v:1,t:"set",a:"autoupdate"\|"history"\|"downloadask",on}` | install-wide update switch; the profile's history switch (never for a guest); "Ask where to save each file before downloading" |
+| page -> Rust | `{v:1,t:"set",a:"downloadfolder"}` | no other field: Rust shows the native folder picker, then sends the next snapshot (`downloadDir`) |
 | page -> Rust | `{v:1,t:"set",a:"section",text}` | the page moved to a section; the tab's address follows |
 | page -> Rust | `{v:1,t:"set",a}` with `a` one of `reset openfile checkupdates restartupdate privacy profiles import refresh` | no other field |
 
@@ -453,3 +455,70 @@ over the tab's page area (docs/design/history-page.md). Exact start URL
 | page -> Rust | `{v:1,t:"hpage",a}` with `a` one of `undo privacy settings refresh` | no other field: put the last removal back, the Privacy dashboard, Settings at Privacy and security, a fresh snapshot |
 
 Commands are queued and run from `WM_HISTORY_PAGE_COMMAND`, only while a history tab is shown.
+
+## Downloads (toolbar button, bubble, `bowser://downloads`)
+
+Behaviour, the entry object and the motion are in docs/design/downloads.md (authoritative for these
+shapes); the UI parsers are `ui/src/downloads-logic.ts` (`parseEntry`, `parseBubble`,
+`parseDownloadsSnapshot`) and `ui/src/protocol.ts` (`dlbtn`), tested against
+`ui/test/fixtures/downloads-messages.json`, which Rust's own tests write. Entry objects carry exactly
+`id name host url state got total eta bps err resume clock` (`url` is `""` or http(s); `err` only when
+`failed`; `bps` 0 unless `active`).
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> toolbar | `{v:1,t:"dlbtn",on,state,n,pct,burst}` | `state` `idle active paused done failed`, `n` active + paused count, `pct` 0-100 or -1 (the ring sweeps), `burst` counts download starts (the start animation plays when it changes, never on the first message). Every key required. While `on`, Rust shrinks `pillw` by 32 CSS px (`DL_BUTTON_SLOT`) and the toolbar places the 28 px button 32 px left of `menux` |
+| toolbar -> Rust | `{v:1,t:"dl",a:"toggle",text:"x,y,w,h"}` | the button was clicked; `text` is its rect (hover-layer grammar); a popup command (250 ms limit) |
+| Rust -> popup | `{v:1,t:"downloads",tok,auto,items,more,active}` | the bubble: at most 5 entries, `more` entries beyond them (a count), `active` count; re-posted under the same `tok` on every change (the page patches rows by id); `auto` = opened by a download start (closes itself after 6 s untouched) |
+| popup -> Rust | `size`, `dismiss`, `{v:1,t:"dlact",tok,id,n}` | `n` 0-7 act on entry `id` (pause, resume, cancel, open, show in folder, remove, copy link, retry); 8-10 with `id` 0 (open the page, open the folder, clear all) |
+| Rust -> page | `state` (`solid:true`), `{v:1,t:"snap",p:"downloadspage",d:{state,query,rows,more,undo,ack,active}}` | `state` `on error guest` (a guest window lists its in-memory downloads); `rows` day headers `{label,date,count}` each followed by its entries; `more` bool; `ack` `none removed restored cleared failed` |
+| page -> Rust | `{v:1,t:"dpage",a,...}` | `search` (`text` <= 256, no control characters); `open show remove pause resume cancel retry copy` with `id`; bare `undo clear folder refresh settings`. Only `View::DownloadsPage` (exact start URL `bowser-ui://app/index.html?view=downloads`) accepts `dpage` |
+
+Every JS -> Rust message stays within six keys and 16 KiB. Text from Rust reaches the DOM through
+`textContent` only; the page and bubble render no links (rows are buttons, and Rust acts on the
+recorded path or address of the id).
+
+### The Rust side (`src/chrome_host/{protocol,host,downloads_page}.rs`, `src/win32/{downloads_ui,downloads_page,html_popup}.rs`)
+
+- **Hosts.** `view_accepts_command` admits `dl` from the toolbar only, `dlact` from the popup host only,
+  and from `View::DownloadsPage` only `ready` and `dpage` (`PanelType::DownloadsPage`; no other view accepts
+  `dpage`, and the page never gets `hpage`, `hist`, `panel` or `set`). Both `dl` and `dlact` are strict:
+  `dl` carries exactly `a:"toggle"` and a canonical rectangle in `text`; `dlact` carries `tok`, `id`, `n`
+  with `n` 0-10 and `id >= 1` exactly for `n` 0-7 and `id` 0 for 8-10 (three payload keys, five with `v`
+  and `t` at most, under the six-key rule). Anything else is dropped before dispatch.
+- **Rate limits.** `dl` is a popup command: at most one per 250 ms per host, like `open` `menu`. `dlact` is
+  not (a Pause then a Cancel must both arrive); it still takes a token from the per-host bucket, is checked
+  against the open bubble's token twice (when it arrives and when it runs), and runs from the deferred
+  queue (`DeferredChromeCommand::DownloadsAct`, limit 8) so Explorer, `ShellExecute` and the clipboard never
+  run inside WebView2's callback. `dpage` commands queue (16) and run from `WM_DOWNLOADS_PAGE_COMMAND`,
+  only while a downloads tab is shown.
+- **Toolbar button.** `App`'s downloads observer only posts `WM_DOWNLOADS_CHANGED`; the window procedure
+  (`downloads_ui::changed`) sends `dlbtn`, re-posts the open bubble under its own `tok`, and tells a shown
+  downloads page to refresh. Byte progress goes out at most every 250 ms (a trailing timer sends the last
+  one); every other change goes at once. While the bubble is open the button stays `on` even when nothing is
+  running or unseen (it hides when the bubble closes, which marks finished downloads seen). `state.pillw`
+  is `toolbar_css_placement_with_slot(.., DL_BUTTON_SLOT)` while `dlbtn.on` (also the omnibox suggestion
+  dropdown's width); `pillx` and `menux` do not change. A reloaded toolbar page is sent the current
+  `dlbtn` again with its first `state`.
+- **Bubble.** Popup page `downloads` (`html_popup::show_downloads`; the message has no `kind` key, so it
+  does not go through the palette/site-info `Page` writer), anchored under the button rectangle from the
+  last `dl` (or the reserved slot before the first click) with `Placement::BelowRight` (right edge at the
+  button's right edge, flipped above when there is no room, clamped to the work area), closed by the same
+  paths as site information (outside click and deactivation, Esc, the button again, a tab or workspace
+  switch). A download starting opens it with `auto:true` only when this window is the foreground window with
+  the HTML toolbar up, no popup is open and the downloads page is not showing; it is shown passively
+  (`SW_SHOWNOACTIVATE`, no `SetForegroundWindow`, no page focus), so it never takes the keyboard from the
+  page; clicking into it activates it like any popup. `dlact` `n` 3, 4, 7, 8 and 9 (open, show, retry,
+  open the page, open the folder) close the bubble after they ran; the rest leave it open. Retry opens the
+  recorded http(s) address in a new tab, Copy link puts the recorded address on the clipboard.
+- **Page.** `bowser://downloads` is a tab with no content WebView2, shown over the tab's page area by
+  `src/win32/downloads_page.rs` exactly as the history page is. Snapshots are posted only when they differ;
+  `ack` (`removed`, `restored`, `cleared`, `failed`) goes out once. `Ctrl+J`, the main menu's Downloads row,
+  the bubble footer (`dlact` 8), the omnibox and session restore all go through `downloads_page::open`; without
+  the HTML chrome it opens the download folder instead.
+- **Settings.** The settings snapshot ends with `downloadDir` and `downloadAsk`; `set` `downloadask` (`on`) and
+  the bare `set` `downloadfolder` are handled in `settings_page.rs`; `save` neither carries nor changes the
+  download settings (a `download_dir` or `ask_download_location` line in a save is refused).
+- **Limits.** Bubble message <= 240 KiB (`html_popup::MAX_PAGE_BYTES`), five rows; page snapshot <= 240 KiB
+  (`downloads::MAX_SNAPSHOT_BYTES`, oldest rows dropped with `more: true`); search text <= 256 characters;
+  `downloadDir` <= 260 characters. Chrome webviews keep cancelling their own downloads.

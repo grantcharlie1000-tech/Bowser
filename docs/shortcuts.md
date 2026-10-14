@@ -50,7 +50,7 @@ settings page, Ctrl+F or `/` moves to its search box.
 | Ctrl+mouse wheel | Zoom in / out | Not a chord: WebView2's own page zoom stays on, and `ZoomFactorChanged` stores the result like a key press |
 | Ctrl+Alt+R | Reader view on / off | Bound. The only Ctrl+Alt chord; on layouts where AltGr reports as Ctrl+Alt, AltGr+R also toggles it. A held chord does not repeat |
 | Esc | Leave reader view | Only while reader view is on (the content WebView reports Escape to the app and still passes it to the page); otherwise unchanged |
-| Ctrl+J | Downloads | Unbound on purpose: downloads are cancelled by policy, there is no download manager |
+| Ctrl+J | Downloads page (`bowser://downloads` in a tab; an open downloads tab is selected, never duplicated). The download folder in Explorer when the window has no HTML chrome | Bound. The toolbar button, not this chord, opens the bubble |
 | Shift+F10 / Menu key | Page context menu | Not a browser chord; handled natively by the focused page |
 
 ## Page zoom

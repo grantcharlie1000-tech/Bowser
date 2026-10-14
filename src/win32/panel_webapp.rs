@@ -329,7 +329,11 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
     let favicons_weak = weak.clone();
     let nav_weak = weak.clone();
     let failed_weak = weak.clone();
+    let (download_event, download_plan) = App::download_hooks(&app);
     WebAppEvents {
+        download_event: Some(download_event),
+        download_plan: Some(download_plan),
+        policy_event: None,
         title_changed: None,
         favicon_changed: Some(Rc::new(move |id, url, bytes| {
             let (Some(shared), Some(bytes)) = (favicons_weak.upgrade(), bytes) else { return; };

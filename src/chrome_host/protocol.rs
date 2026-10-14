@@ -28,6 +28,8 @@ pub const MESSAGE_BURST: u32 = 60;
 pub const POPUP_COMMAND_INTERVAL: Duration = Duration::from_millis(250);
 /// Largest choice an `act` message may carry (a segmented control has at most this many + 1 options).
 pub const MAX_ACT_CHOICE: u8 = 7;
+/// Largest `dlact.n`: 0-7 act on an entry, 8-10 on the list (`downloads::Action::from_code`).
+pub const MAX_DLACT: u8 = 10;
 /// Theme keys Rust may send to the page. Anything else is dropped.
 pub const THEME_TOKENS: [&str; 10] = [
     "bg",
@@ -102,7 +104,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -254,6 +256,12 @@ pub enum Command {
     /// token `tok` set to choice `n`. The popup stays open; Rust validates `id` and `n` against the
     /// page it sent and answers with a refreshed page.
     PopupAct { tok: u32, id: u32, n: u8 },
+    /// The toolbar's download button was clicked: `rect` is the button in toolbar CSS pixels, the
+    /// bubble's anchor (docs/design/downloads.md). A popup command.
+    DownloadsToggle { rect: HoverRect },
+    /// A row or list action on the open downloads bubble (`tok` is the bubble's): `n` 0..=7 name
+    /// entry `id` (>= 1), 8..=10 are list actions with `id` 0. Rust checks the id and the state.
+    DownloadsAct { tok: u32, id: u32, n: u8 },
     /// Enter or the confirm row on an open composer page: the name (and, for web apps, the address)
     /// as typed. Rust validates them again and answers with the page, carrying an error or `done`.
     PopupCompose { tok: u32, name: String, url: Option<String> },
@@ -913,12 +921,15 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
         "dismiss" => &["tok"],
         "act" => &["tok", "id", "n"],
+        // The downloads button and bubble (docs/design/downloads.md).
+        "dl" => &["a", "text"],
+        "dlact" => &["tok", "id", "n"],
         "compose" => &["tok", "name", "url"],
         "composeopen" => &["a", "id", "name", "url", "r"],
         // --- hover layer ---
@@ -1028,7 +1039,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1036,6 +1047,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "bm" => PanelType::Bookmarks, "cust" => PanelType::Customize,
                 "notes" => PanelType::Notes, "set" => PanelType::Settings,
                 "ren" => PanelType::Rename,
+                // The bowser://downloads page (docs/design/downloads.md).
+                "dpage" => PanelType::DownloadsPage,
                 // The bowser://history page (docs/design/history-page.md); not the rail panel's `hist`.
                 "hpage" => PanelType::HistoryPage,
                 _ => PanelType::Privacy,
@@ -1064,6 +1077,19 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             let n = uint_field(fields, "n")?;
             if n > u32::from(MAX_ACT_CHOICE) { return Err(ProtocolError::InvalidValue("n")); }
             Command::PopupAct { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")?, n: n as u8 }
+        }
+        "dl" => {
+            if str_field(fields, "a")? != "toggle" { return Err(ProtocolError::InvalidValue("a")); }
+            let rect = HoverRect::parse(str_field(fields, "text")?).ok_or(ProtocolError::InvalidValue("text"))?;
+            Command::DownloadsToggle { rect }
+        }
+        "dlact" => {
+            let n = uint_field(fields, "n")?;
+            if n > u32::from(MAX_DLACT) { return Err(ProtocolError::InvalidValue("n")); }
+            let id = uint_field(fields, "id")?;
+            // Entry actions name an entry; list actions name none.
+            if (n < 8) != (id > 0) { return Err(ProtocolError::InvalidValue("id")); }
+            Command::DownloadsAct { tok: uint_field(fields, "tok")?, id, n: n as u8 }
         }
         "compose" => {
             let name = str_field(fields, "name")?;
@@ -1748,6 +1774,7 @@ pub fn is_popup_command(command: &Command) -> bool {
         Command::BeginDrag
             | Command::Caption(_)
             | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader)
+            | Command::DownloadsToggle { .. }
             | Command::Tab { action: TabAction::Menu, .. }
             | Command::Group { action: GroupAction::Menu, .. }
             // --- vertical sidebar (lane S) ---
@@ -2269,8 +2296,80 @@ mod tests {
         for (pill, wire) in [(Pill::Hidden, "none"), (Pill::Available, "available"), (Pill::On, "on")] {
             let mut state = sample_state();
             state.reader = pill;
-            assert!(state.to_json().contains(&format!(r#""reader":"{wire}","theme""#)), "{wire}");
+            assert!(state.to_json().contains(&format!(r#""reader":"{wire}","fontScale""#)), "{wire}");
         }
+    }
+
+    #[test]
+    fn downloads_commands_carry_exactly_their_own_fields() {
+        // The toolbar button: a toggle with the button's rectangle.
+        assert_eq!(
+            ok(r#"{"v":1,"t":"dl","a":"toggle","text":"640,3,28,28"}"#),
+            Command::DownloadsToggle { rect: HoverRect { x: 640, y: 3, w: 28, h: 28 } },
+        );
+        for raw in [
+            r#"{"v":1,"t":"dl","a":"toggle"}"#,
+            r#"{"v":1,"t":"dl","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"open","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"Toggle","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"1,2,3"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"1,2,3,4,5"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"-1,2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"01,2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"1, 2,3,4"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"16385,0,1,1"}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":5}"#,
+            r#"{"v":1,"t":"dl","a":"toggle","text":"1,2,3,4","id":1}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+        // The bubble: entry actions 0..=7 name an entry, list actions 8..=10 name none.
+        for n in 0..=7u8 {
+            assert_eq!(
+                ok(&format!(r#"{{"v":1,"t":"dlact","tok":4,"id":9,"n":{n}}}"#)),
+                Command::DownloadsAct { tok: 4, id: 9, n },
+            );
+        }
+        for n in 8..=10u8 {
+            assert_eq!(
+                ok(&format!(r#"{{"v":1,"t":"dlact","tok":4,"id":0,"n":{n}}}"#)),
+                Command::DownloadsAct { tok: 4, id: 0, n },
+            );
+        }
+        assert_eq!(
+            ok(r#"{"v":1,"t":"dlact","tok":4294967295,"id":4294967295,"n":7}"#),
+            Command::DownloadsAct { tok: u32::MAX, id: u32::MAX, n: 7 },
+        );
+        for raw in [
+            r#"{"v":1,"t":"dlact","tok":4,"id":0,"n":3}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":8}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":0,"n":11}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":-1}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":1.5}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9}"#,
+            r#"{"v":1,"t":"dlact","id":9,"n":1}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"n":1}"#,
+            r#"{"v":1,"t":"dlact","tok":"4","id":9,"n":1}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":4294967296,"n":1}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":1,"on":true}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":1,"url":"https://x.test/"}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+        // Only the toggle counts toward the popup-command limit: a pause then a cancel in the bubble
+        // must both get through.
+        assert!(is_popup_command(&Command::DownloadsToggle { rect: HoverRect::default() }));
+        assert!(!is_popup_command(&Command::DownloadsAct { tok: 1, id: 1, n: 0 }));
+        // The page family: the downloads page, not the history page or the rail panel.
+        let page = |raw: &str| match ok(raw) {
+            Command::Panel { kind, f } => (kind, f),
+            other => panic!("{other:?}"),
+        };
+        let (kind, f) = page(r#"{"v":1,"t":"dpage","a":"remove","id":7}"#);
+        assert_eq!((kind, f.a.as_str(), f.id), (PanelType::DownloadsPage, "remove", Some(7)));
+        let (kind, f) = page(r#"{"v":1,"t":"dpage","a":"search","text":"zip"}"#);
+        assert_eq!((kind, f.text.as_deref()), (PanelType::DownloadsPage, Some("zip")));
+        assert!(parse_command(r#"{"v":1,"t":"dpage","a":"open","id":1,"extra":2}"#).is_err());
     }
 
     #[test]

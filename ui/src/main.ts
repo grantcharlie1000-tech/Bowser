@@ -3,6 +3,7 @@ import {
   MAX_TEXT,
   onInbound,
   send,
+  sendDownloadToggle,
   sendSuggestEnd,
   sendSuggestPick,
   sendSuggestPreview,
@@ -19,8 +20,10 @@ import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
-import { startSettingsPage } from './settings-page';
-import { startHistoryPage } from './history-page';
+// Types only: the settings and history pages are separate bundles (see loadPage).
+import type { startSettingsPage } from './settings-page';
+import type { startHistoryPage } from './history-page';
+import { startDownloadsPage } from './downloads-page';
 // --- split view ---
 import { startSplit } from './split';
 import { syncSplitButton } from './split-chrome';
@@ -100,6 +103,7 @@ function startToolbar(root: HTMLElement): void {
   view.zoom.addEventListener('click', () => open('zoomreset'));
   view.reader.addEventListener('click', () => open('reader'));
   view.menu.addEventListener('click', () => open('menu'));
+  view.downloads.button.addEventListener('click', () => { sendDownloadToggle(view.downloads.button.getBoundingClientRect()); });
 
   input.addEventListener('input', (ev) => {
     if (composing || (ev instanceof InputEvent && ev.isComposing)) return;
@@ -252,6 +256,9 @@ function startToolbar(root: HTMLElement): void {
       case 'menuOpen':
         applyMenuOpen(view.menu, msg.on);
         break;
+      case 'dlbtn':
+        view.downloads.apply(msg);
+        break;
       // --- split view ---
       case 'pair':
         syncSplitButton(view.split, msg);
@@ -280,6 +287,19 @@ function trustedTypesEnforced(): boolean {
   return false;
 }
 
+/**
+ * Imports a page bundle that build.mjs writes beside app.js, so the views that start with the
+ * browser never parse it. The specifier is a variable so esbuild leaves the import() to the browser,
+ * which fetches bowser-ui://app/<file> (assets.rs) relative to app.js. A failed load leaves the page
+ * blank and unready, like a failed CSP check.
+ */
+function loadPage<T>(file: './settings-page.js' | './history-page.js'): Promise<T> {
+  return (import(file) as Promise<T>).catch((err: unknown) => {
+    document.title = 'page-load-failed';
+    throw err;
+  });
+}
+
 function start(): void {
   const root = document.getElementById('app');
   if (!root) return;
@@ -305,8 +325,9 @@ function start(): void {
   else if (view === 'dialog') startDialog(root);
   else if (view === 'hover') startHover(root); // --- hover layer ---
   else if (view === 'split') startSplit(root); // --- split view ---
-  else if (view === 'settings') startSettingsPage(root); // bowser://settings (docs/design/settings-page.md)
-  else if (view === 'history') startHistoryPage(root); // bowser://history (docs/design/history-page.md)
+  else if (view === 'settings') void loadPage<{ startSettingsPage: typeof startSettingsPage }>('./settings-page.js').then((page) => page.startSettingsPage(root)); // bowser://settings (docs/design/settings-page.md)
+  else if (view === 'history') void loadPage<{ startHistoryPage: typeof startHistoryPage }>('./history-page.js').then((page) => page.startHistoryPage(root)); // bowser://history (docs/design/history-page.md)
+  else if (view === 'downloads') startDownloadsPage(root); // bowser://downloads (docs/design/downloads.md)
   else {
     startToolbar(root);
     installTooltips(root); // --- hover layer ---

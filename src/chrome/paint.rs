@@ -2733,13 +2733,32 @@ fn raster_line(
     }
 }
 
-/// A 32-bit top-down DIB section selected into its own memory DC.
+/// Allocation step of the chrome bitmaps, in pixels. A window resized by a few pixels at a time
+/// (a live drag of its edge) keeps its bitmaps; at most two steps of slack are kept per direction.
+const DIB_STEP: i32 = 64;
+
+/// The bitmap size to allocate for a `size` image, or `None` while the `allocated` bitmap still
+/// holds it with less than two steps of slack each way. A new allocation rounds up to a step. Pure.
+fn dib_allocation(allocated: (i32, i32), size: (i32, i32)) -> Option<(i32, i32)> {
+    let fits = |have: i32, want: i32| have >= want && have - want < 2 * DIB_STEP;
+    if fits(allocated.0, size.0) && fits(allocated.1, size.1) {
+        return None;
+    }
+    let round = |value: i32| (value.max(1) + DIB_STEP - 1) / DIB_STEP * DIB_STEP;
+    Some((round(size.0), round(size.1)))
+}
+
+/// A 32-bit top-down DIB section selected into its own memory DC. The bitmap may be larger than
+/// the image (`width` x `height`): rows are `stride()` bytes apart, and only the image is painted,
+/// read or presented.
 struct Dib {
     dc: HDC,
     bitmap: HBITMAP,
     bits: *mut u8,
     width: i32,
     height: i32,
+    /// The bitmap's own size, at least the image's (see `dib_allocation`).
+    allocated: (i32, i32),
 }
 impl Dib {
     fn new(width: i32, height: i32) -> Self {
@@ -2749,26 +2768,33 @@ impl Dib {
             bits: ptr::null_mut(),
             width: 0,
             height: 0,
+            allocated: (0, 0),
         };
         value.resize(width, height);
         value
     }
-    /// Reallocates for a new size and reports whether it did. A freshly created DIB is zeroed.
+    /// Sets the image size and reports whether the bitmap was reallocated for it. A size the
+    /// current bitmap holds keeps it (its pixels outside the old image are stale until painted,
+    /// which every resize does in full). A freshly created DIB is zeroed.
     fn resize(&mut self, width: i32, height: i32) -> bool {
         let (width, height) = (width.max(1), height.max(1));
-        if self.width == width && self.height == height {
+        let held = if self.bits.is_null() { (0, 0) } else { self.allocated };
+        let Some(allocated) = dib_allocation(held, (width, height)) else {
+            self.width = width;
+            self.height = height;
             return false;
-        }
+        };
         self.release();
         self.width = width;
         self.height = height;
+        self.allocated = allocated;
         unsafe {
             let dc = CreateCompatibleDC(None);
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width,
-                    biHeight: -height,
+                    biWidth: allocated.0,
+                    biHeight: -allocated.1,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -2799,9 +2825,10 @@ impl Dib {
         self.dc = HDC::default();
         self.bitmap = HBITMAP::default();
         self.bits = ptr::null_mut();
+        self.allocated = (0, 0);
     }
     fn stride(&self) -> usize {
-        self.width as usize * 4
+        self.allocated.0.max(0) as usize * 4
     }
     fn len(&self) -> usize {
         self.stride() * self.height as usize
@@ -3382,6 +3409,51 @@ mod tests {
         let text = format!("{}\u{1F600}", "a".repeat(MAX_TEXT_UNITS - 1));
         assert_eq!(encode_into(&mut units, &text), MAX_TEXT_UNITS - 1);
         assert!(units.iter().all(|&unit| unit == u16::from(b'a')));
+    }
+
+    #[test]
+    fn chrome_bitmaps_keep_their_allocation_through_small_resizes() {
+        let first = dib_allocation((0, 0), (1000, 700)).expect("first allocation");
+        assert_eq!(first, (1024, 704));
+        // A live resize a few pixels at a time keeps the bitmap, growing or shrinking.
+        for size in [(1001, 700), (1024, 704), (990, 690), (961, 641)] {
+            assert_eq!(dib_allocation(first, size), None, "{size:?}");
+        }
+        // Past its edge, or with two steps of slack, it is rebuilt at the new size's step.
+        assert_eq!(dib_allocation(first, (1025, 700)), Some((1088, 704)));
+        assert_eq!(dib_allocation(first, (896, 704)), Some((896, 704)));
+    }
+
+    #[test]
+    fn a_resize_inside_the_bitmap_paints_what_a_fresh_surface_paints() {
+        let tabs = [TabView {
+            title: "Tab",
+            loading: false,
+            favicon: None,
+            emphasis: rest(),
+            group_size: None,
+            group_control: false,
+            marker: None,
+            group_colour: None,
+            group_frame: None,
+        }];
+        let pal = palette(Appearance::Dark, false);
+        let small = crate::chrome::layout::compute(800, 120, 96, 1, false);
+        let mut resized = ChromeSurface::new(800, 120, 96);
+        resized.paint(&test_view(&small, &tabs, pal, omnibox("other.test", (0, 0), "")), Rect::new(0, 0, 800, 120));
+        // 812 x 120 fits the 800 x 120 surface's bitmap, so its old pixels are still there.
+        resized.resize(812, 120, 96);
+        let big = crate::chrome::layout::compute(812, 120, 96, 1, false);
+        let view = test_view(&big, &tabs, pal, omnibox("example.com", (0, 0), ""));
+        let mut fresh = ChromeSurface::new(812, 120, 96);
+        for surface in [&mut resized, &mut fresh] {
+            surface.paint(&view, Rect::new(0, 0, 812, 120));
+        }
+        let image = |s: &ChromeSurface| -> Vec<u8> {
+            (0..120usize).flat_map(|y| s.pixels()[y * s.stride()..y * s.stride() + 812 * 4].to_vec()).collect()
+        };
+        assert_eq!((resized.width(), resized.height()), (812, 120));
+        assert!(image(&resized) == image(&fresh), "a reused bitmap paints exactly what a new one does");
     }
 
     fn rest() -> Emphasis {

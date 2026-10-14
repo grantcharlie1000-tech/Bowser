@@ -8,3 +8,5 @@
 /target-*/
 /target-*.log
 /benchmarks/bin/
+test-bin/
+built-after-test-bowser.exe

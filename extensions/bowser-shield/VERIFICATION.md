@@ -32,7 +32,7 @@ Machine for the timings below: Intel Core i5-7300HQ at 2.50 GHz, Windows 10 Home
 | service worker | `background/service-worker.js` loaded unmodified into a fake `chrome`: defaults, the probe (4 ways to land in dom mode), sync, orphan removal, per-rule retry when the browser rejects a batch, caps, site exceptions, `frameContext`, counting, the schema-version guard, message validation |
 | content script | `content/shield-content.js` loaded unmodified against a fake DOM, `MutationObserver` and `chrome`: the sheet, per-rule `insertRule`, filtered/unfiltered, storage-driven rebuilds, the no-service-worker fallback, the scrubber, batching and dedupe, the chord, the overlay, Escape, click outside |
 | panel | the 7.2 state table row by row (`summaryModel`), the options view and its controls through a fake DOM, the chord parser |
-| package | the manifest deep-equals section 2 of the design except for one entry (see below); installer caps from section 0; HTML pages have no inline script; the overlay's CSS string is the same text as the block in `ui.css`; the token header has four to six named colours; focus outline present; no all-caps labels |
+| package | the manifest deep-equals section 2 of the design; installer caps from section 0; HTML pages have no inline script; the overlay's CSS string is the same text as the block in `ui.css`; the token header has four to six named colours; focus outline present; no all-caps labels |
 
 ### How the tests were written
 
@@ -143,13 +143,15 @@ decides UI. Everything else is judgement, and is listed so it can be overruled.
 
 ### Decided by that rule
 
-1. **Section 2 manifest vs section 1/7.1 (the overlay needs `ui/panel.js`).** Section 1 and 7.1 say the
-   overlay renders the same `ui/panel.js`, but the section 2 `content_scripts[0].js` list has only
-   `lib/shield-core.js`, `content/panel-css.js` and `content/shield-content.js`. A content script
-   cannot load another extension file without `web_accessible_resources` (which 2.3 forbids) or the
-   `scripting` permission (which 2.1 refuses). Section 7 wins for UI, so **`ui/panel.js` is added to
-   the content script list**, between `panel-css.js` and `shield-content.js`. This is the only
-   difference from section 2; a test pins the manifest to section 2 with exactly that one change.
+1. **The overlay's panel code loads on demand (section 7.1).** The first version listed `ui/panel.js`
+   and `content/panel-css.js` in the content script entry, so about 34 KiB of panel ran in every frame
+   of every page although it is only used on a key press. It is now injected into the top frame by the
+   service worker (`loadPanel`, `chrome.scripting.executeScript`) the first time the chord is pressed,
+   which costs the `scripting` permission (section 2.1). The chord helpers moved to
+   `lib/shield-chord.js`, which every frame still carries. The manifest now deep-equals section 2 of
+   the design with no exceptions. **Not verified live:** that this WebView2 runtime provides
+   `chrome.scripting`. The Node tests fake the injection; if the API is missing the chord opens
+   nothing (the popup and options pages still work).
 2. **Section 5.2 vs 3.3 on `path:`.** 5.2 says a path becomes a plain-substring `urlFilter` with "no
    pattern characters", but 3.3 allows `*`, `|` and `^` in a path, and in a `urlFilter` they are
    wildcard, anchor and separator. Section 5 wins for DNR output, so such a path is **not translated**:

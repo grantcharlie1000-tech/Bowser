@@ -19,6 +19,8 @@ importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
   var SITE_LIMIT = 500;
   var SEEN_LIMIT = 4096;
   var HIDDEN_BATCH_LIMIT = 1000;
+  // Injected into the top frame the first time the chord opens the overlay (see "loadPanel").
+  var PANEL_FILES = ["content/panel-css.js", "ui/panel.js"];
   var CHORD_MODIFIERS = { alt: "alt", shift: "shift", ctrl: "ctrl", control: "ctrl", meta: "meta" };
 
   var DEFAULTS = {
@@ -555,6 +557,17 @@ importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
           ensureEntry(tabId, hostOf(topUrl(sender))).bad.set(sender.frameId || 0, Math.floor(msg.count));
         }
         return { ok: true };
+      }
+      case "loadPanel": {
+        // Only the top frame hosts the overlay. The panel scripts go into the isolated world the
+        // content script already runs in, so they see ShieldChord and each other's globals.
+        if (tabId === null || sender.frameId) return { ok: false };
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: tabId, frameIds: [0] }, files: PANEL_FILES });
+          return { ok: true };
+        } catch (e) {
+          return { ok: false };
+        }
       }
       case "chord": {
         if (tabId !== null && sender.frameId) {

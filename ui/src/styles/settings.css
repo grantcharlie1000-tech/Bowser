@@ -402,6 +402,12 @@
   line-height: var(--bw-leading-caption);
 }
 
+/* The download location: a long path wraps anywhere rather than pushing the Change button out. */
+.sp-path {
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
 /* "Applies after restart" and "Has no effect yet": a quiet line with its own glyph, never a
    badge, so it informs without shouting across a card full of switches. */
 .sp-flag {

@@ -4,7 +4,7 @@ use std::{
     backtrace::Backtrace,
     fs::{self, OpenOptions},
     io::Write,
-    panic::{AssertUnwindSafe, PanicHookInfo},
+    panic::PanicHookInfo,
     process::ExitCode,
     rc::Rc,
 };
@@ -100,9 +100,12 @@ const MAX_CRASH_LOG_BYTES: u64 = 256 * 1024;
 
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
+    // Release builds use `panic = "abort"`: the hook runs on the panicking thread, to completion,
+    // and only then does the process abort. The log is written here, straight to the file, with
+    // nothing relying on unwinding (a panic inside the hook aborts in either mode).
     std::panic::set_hook(Box::new(move |info| {
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| append_crash_log(info)));
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| previous(info)));
+        append_crash_log(info);
+        previous(info);
     }));
 }
 

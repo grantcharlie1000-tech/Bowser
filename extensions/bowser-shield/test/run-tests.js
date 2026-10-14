@@ -970,6 +970,7 @@ describe("cosmetic", () => {
 // 7.2 The panel: the summary state table, the chord, and the renderer's wiring
 // ---------------------------------------------------------------------------
 
+const ShieldChord = require("../lib/shield-chord.js");
 const ShieldPanel = require("../ui/panel.js");
 
 function baseState(over) {
@@ -1140,6 +1141,10 @@ describe("panel: status and banner text", () => {
 });
 
 describe("panel: chord", () => {
+  test("the panel re-exports the helpers every frame's content script carries, not copies", () => {
+    for (const name of ["parseChord", "matchChord", "isEditable"]) assert.equal(ShieldPanel[name], ShieldChord[name], name);
+  });
+
   test("parses the default chord", () => {
     assert.deepEqual(ShieldPanel.parseChord("Alt+Shift+S"), { alt: true, shift: true, ctrl: false, meta: false, code: "KeyS" });
   });
@@ -2385,6 +2390,7 @@ async function loadContent(opts) {
   const runtimeListeners = [];
   const changeListeners = [];
   const sent = [];
+  const panelInjections = [];
   const chrome = {
     runtime: {
       lastError: undefined,
@@ -2393,6 +2399,14 @@ async function loadContent(opts) {
         let reply;
         try {
           reply = opts.background ? opts.background(msg) : undefined;
+          // What the service worker's scripting.executeScript does: the panel files run in the
+          // content script's own world. opts.panelLoads === false is a runtime without the API.
+          if (msg.type === "loadPanel" && opts.panelLoads !== false) {
+            panelInjections.push(msg.type);
+            run("content/panel-css.js");
+            run("ui/panel.js");
+            reply = { ok: true };
+          }
           chrome.runtime.lastError = undefined;
         } catch (e) {
           chrome.runtime.lastError = { message: String(e.message || e) };
@@ -2424,8 +2438,7 @@ async function loadContent(opts) {
     return opts.fetch ? opts.fetch(url) : Promise.reject(new Error("no fetch in this test"));
   };
   run("lib/shield-core.js");
-  run("content/panel-css.js");
-  run("ui/panel.js");
+  run("lib/shield-chord.js");
   chrome.runtime.getURL = (p) => "ext:///" + p;
   vm.runInThisContext(
     "(function(self, window, document, location, chrome, MutationObserver, fetch){" + CONTENT_SOURCE + "\n})",
@@ -2437,6 +2450,7 @@ async function loadContent(opts) {
     html,
     store,
     sent,
+    panelInjections,
     fetchLog,
     winListeners,
     docListeners,
@@ -2874,13 +2888,60 @@ describe("content script: the dom-mode scrubber", () => {
 
 describe("content script: the chord and the overlay", () => {
   const chordEvent = (o) => Object.assign({ code: "KeyS", key: "S", altKey: true, shiftKey: true }, o);
+  // The panel arrives from the service worker on the first press, so the overlay appears a tick later.
+  const press = async (env, ev) => {
+    const event = env.key("keydown", ev || chordEvent());
+    await sleep(25);
+    return event;
+  };
+  const withState = (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m));
+
+  test("no panel code is in a frame until the chord asks for it", async () => {
+    const env = await loadContent({ background: withState });
+    await sleep(25);
+    assert.equal(env.win.ShieldPanel, undefined);
+    assert.equal(env.win.SHIELD_PANEL_CSS, undefined);
+    assert.deepEqual(env.panelInjections, []);
+    assert.deepEqual(env.sentOfType("loadPanel"), []);
+    await press(env);
+    assert.deepEqual(env.sentOfType("loadPanel"), [{ type: "loadPanel" }]);
+    assert.equal(env.panelInjections.length, 1);
+    assert.ok(env.win.ShieldPanel && env.win.SHIELD_PANEL_CSS);
+  });
+
+  test("the panel is injected once, however many times the chord is pressed", async () => {
+    const env = await loadContent({ background: withState });
+    await press(env);
+    await press(env);
+    await press(env);
+    assert.equal(env.panelInjections.length, 1);
+    assert.ok(env.overlay(), "the third press opened it again");
+  });
+
+  test("a runtime that cannot inject the panel leaves the page alone", async () => {
+    const env = await loadContent({ panelLoads: false, background: withState });
+    await press(env);
+    assert.equal(env.overlay(), null);
+    assert.equal(env.win.ShieldPanel, undefined);
+  });
+
+  test("a subframe never asks for the panel and listens for the chord only", async () => {
+    const env = await loadContent({ top: false, hostname: "ads.partner.test", background: ctxBackground(NEWS_CTX) });
+    await press(env);
+    assert.deepEqual(env.sentOfType("loadPanel"), []);
+    assert.equal((env.winListeners.keydown || []).length, 1);
+    assert.equal(env.winListeners.pointerdown, undefined, "no outside-click listener without an overlay");
+    env.fromBackground({ type: "togglePanel" });
+    await sleep(25);
+    assert.equal(env.overlay(), null);
+  });
 
   test("Alt+Shift+S in the top frame opens the panel in a closed shadow root and renders the panel into it", async () => {
     const env = await loadContent({
       background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)),
       storage: { "shield.cosmetic": COSMETIC }
     });
-    const ev = env.key("keydown", chordEvent());
+    const ev = await press(env);
     assert.equal(ev.defaultPrevented, true);
     const host = env.overlay();
     assert.ok(host, "overlay host added to the document element");
@@ -2892,7 +2953,7 @@ describe("content script: the chord and the overlay", () => {
 
   test("the overlay's stylesheet comes from panel-css.js", async () => {
     const env = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
-    env.key("keydown", chordEvent());
+    await press(env);
     const shadow = env.overlay().shadow;
     const css = shadow.children.find((c) => c.tagName === "STYLE");
     const adopted = shadow.adoptedStyleSheets && shadow.adoptedStyleSheets[0];
@@ -2902,7 +2963,7 @@ describe("content script: the chord and the overlay", () => {
 
   test("Escape closes it", async () => {
     const env = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
-    env.key("keydown", chordEvent());
+    await press(env);
     assert.ok(env.overlay());
     env.key("keydown", { code: "Escape", key: "Escape" });
     assert.equal(env.overlay(), null);
@@ -2910,7 +2971,7 @@ describe("content script: the chord and the overlay", () => {
 
   test("a click outside closes it and a click inside does not", async () => {
     const env = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
-    env.key("keydown", chordEvent());
+    await press(env);
     const host = env.overlay();
     env.key("pointerdown", { target: host, composedPath: () => [host, env.html] });
     assert.ok(env.overlay(), "a click that lands in the panel keeps it open");
@@ -2920,8 +2981,8 @@ describe("content script: the chord and the overlay", () => {
 
   test("the chord again toggles it closed", async () => {
     const env = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
-    env.key("keydown", chordEvent());
-    env.key("keydown", chordEvent());
+    await press(env);
+    await press(env);
     assert.equal(env.overlay(), null);
   });
 
@@ -2945,7 +3006,7 @@ describe("content script: the chord and the overlay", () => {
     const env = await loadContent({
       background: (m) => (m.type === "getState" ? baseState() : ctxBackground({ siteHost: "bank.example", enabled: true, mode: "network", filtered: false })(m))
     });
-    env.key("keydown", chordEvent());
+    await press(env);
     assert.ok(env.overlay());
   });
 
@@ -2953,7 +3014,7 @@ describe("content script: the chord and the overlay", () => {
     const env = await loadContent({
       background: (m) => (m.type === "getState" ? baseState({ enabled: false }) : ctxBackground({ siteHost: "news.example", enabled: false, mode: "network", filtered: false })(m))
     });
-    env.key("keydown", chordEvent());
+    await press(env);
     assert.ok(env.overlay());
   });
 
@@ -2967,10 +3028,25 @@ describe("content script: the chord and the overlay", () => {
   test("togglePanel from the background opens the panel in the top frame only", async () => {
     const top = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
     top.fromBackground({ type: "togglePanel" });
+    await sleep(25);
     assert.ok(top.overlay());
     const sub = await loadContent({ top: false, background: ctxBackground(NEWS_CTX) });
     sub.fromBackground({ type: "togglePanel" });
     assert.equal(sub.overlay(), null);
+  });
+
+  test("a storage change the script does not read does not make the frame ask the worker again", async () => {
+    const env = await loadContent({ background: withState });
+    await sleep(25);
+    const asked = () => env.sentOfType("frameContext").length;
+    const before = asked();
+    env.changed({ "shield.compiled": { sourceHash: "abc" } });
+    env.changed({ "shield.counters": { blocked: 3 } });
+    await sleep(90);
+    assert.equal(asked(), before);
+    env.changed({ "shield.siteOff": ["news.example"] });
+    await sleep(90);
+    assert.equal(asked(), before + 1, "a setting it does read still refreshes");
   });
 
   test("a stored custom chord replaces the default", async () => {
@@ -2978,9 +3054,9 @@ describe("content script: the chord and the overlay", () => {
       background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)),
       storage: { "shield.panelChord": "Alt+Shift+K" }
     });
-    env.key("keydown", chordEvent());
+    await press(env);
     assert.equal(env.overlay(), null);
-    env.key("keydown", chordEvent({ code: "KeyK" }));
+    await press(env, chordEvent({ code: "KeyK" }));
     assert.ok(env.overlay());
   });
 
@@ -2989,7 +3065,7 @@ describe("content script: the chord and the overlay", () => {
       background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)),
       storage: { "shield.panelChord": "nonsense" }
     });
-    env.key("keydown", chordEvent());
+    await press(env);
     assert.ok(env.overlay());
   });
 
@@ -3004,7 +3080,7 @@ describe("content script: the chord and the overlay", () => {
 
   test("the overlay host leaves no stable attribute in the page, and its layout is set with important priority", async () => {
     const env = await loadContent({ background: (m) => (m.type === "getState" ? baseState() : ctxBackground(NEWS_CTX)(m)) });
-    env.key("keydown", chordEvent());
+    await press(env);
     const host = env.overlay();
     assert.ok(host);
     assert.deepEqual(Object.keys(host.attrs), [], "no attribute on the host");
@@ -3032,18 +3108,17 @@ function walk(dir, out = []) {
 describe("package: manifest", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
 
-  test("is section 2 of the design, with one deliberate difference: ui/panel.js in the content script list", () => {
+  test("is section 2 of the design", () => {
     const design = fs.readFileSync(path.join(ROOT, "DESIGN.md"), "utf8").replace(/\r\n/g, "\n");
     const anchor = design.indexOf("## 2. manifest.json");
     const open = design.indexOf("```json\n", anchor) + 8;
     const close = design.indexOf("\n```", open);
     const spec = JSON.parse(design.slice(open, close));
-    spec.content_scripts[0].js = ["lib/shield-core.js", "content/panel-css.js", "ui/panel.js", "content/shield-content.js"];
     assert.deepEqual(manifest, spec);
   });
 
-  test("declares exactly the three permission strings and the two host patterns", () => {
-    assert.deepEqual(manifest.permissions, ["declarativeNetRequest", "declarativeNetRequestFeedback", "storage"]);
+  test("declares exactly the four permission strings and the two host patterns", () => {
+    assert.deepEqual(manifest.permissions, ["declarativeNetRequest", "declarativeNetRequestFeedback", "scripting", "storage"]);
     assert.deepEqual(manifest.host_permissions, ["http://*/*", "https://*/*"]);
     assert.equal(manifest.web_accessible_resources, undefined);
     assert.equal(manifest.content_security_policy, undefined);
@@ -3054,8 +3129,20 @@ describe("package: manifest", () => {
     assert.equal(cs.js[0], "lib/shield-core.js");
     assert.equal(cs.run_at, "document_start");
     assert.equal(cs.all_frames, true);
-    assert.ok(cs.js.indexOf("ui/panel.js") < cs.js.indexOf("content/shield-content.js"));
-    assert.ok(cs.js.indexOf("content/panel-css.js") < cs.js.indexOf("content/shield-content.js"));
+    assert.ok(cs.js.indexOf("lib/shield-chord.js") < cs.js.indexOf("content/shield-content.js"));
+  });
+
+  test("the panel is not in the every-frame content script list; the worker injects exactly those files", () => {
+    const cs = manifest.content_scripts[0];
+    assert.deepEqual(cs.js, ["lib/shield-core.js", "lib/shield-chord.js", "content/shield-content.js"]);
+    const worker = fs.readFileSync(path.join(ROOT, "background", "service-worker.js"), "utf8");
+    assert.ok(worker.includes('var PANEL_FILES = ["content/panel-css.js", "ui/panel.js"];'));
+    for (const rel of ["content/panel-css.js", "ui/panel.js"]) assert.ok(fs.existsSync(path.join(ROOT, rel)), rel);
+  });
+
+  test("the content scripts of every frame stay small", () => {
+    const bytes = manifest.content_scripts[0].js.reduce((n, rel) => n + fs.statSync(path.join(ROOT, rel)).size, 0);
+    assert.ok(bytes < 50 * 1024, "every-frame content scripts are " + bytes + " bytes");
   });
 
   test("the service worker is a classic script, not a module", () => {
@@ -3107,7 +3194,7 @@ describe("package: manifest", () => {
     const files = walk(ROOT).filter((f) => f.entry.isFile()).map((f) => f.rel).sort();
     const expected = [
       "DESIGN.md", "VERIFICATION.md", "manifest.json",
-      "lib/shield-core.js", "lib/shield-dnr.js",
+      "lib/shield-core.js", "lib/shield-chord.js", "lib/shield-dnr.js",
       "rules/starter.srl", "rules/starter-dnr.json",
       "background/service-worker.js",
       "content/panel-css.js", "content/shield-content.js",
@@ -3132,10 +3219,10 @@ describe("package: pages and styles", () => {
       assert.match(html, new RegExp('<body data-page="' + page + '">'));
     });
 
-    test(page + ".html loads the core, then the panel, then its own script, with no inline script or handler", () => {
+    test(page + ".html loads the core and chord helpers, then the panel, then its own script, with no inline script or handler", () => {
       const srcs = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)].map((m) => m[1]);
-      assert.deepEqual(srcs, ["../lib/shield-core.js", "panel.js", page + ".js"]);
-      assert.equal((html.match(/<script/g) || []).length, 3, "every script tag has a src");
+      assert.deepEqual(srcs, ["../lib/shield-core.js", "../lib/shield-chord.js", "panel.js", page + ".js"]);
+      assert.equal((html.match(/<script/g) || []).length, 4, "every script tag has a src");
       assert.ok(!/\son[a-z]+\s*=/i.test(html), "no inline event handlers");
       for (const s of srcs) assert.ok(fs.existsSync(path.join(ROOT, "ui", s)), s);
     });

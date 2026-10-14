@@ -64,6 +64,12 @@ fn site_host<'a>(host: &str, sites: &[&'a str]) -> Option<&'a str> {
     })
 }
 
+/// True when a lowercase page host is `youtube.com` / `youtube-nocookie.com` or a subdomain of
+/// one: the only pages whose player responses are paused at all.
+pub fn is_youtube_host(host: &str) -> bool {
+    site_host(host, &["youtube.com", "youtube-nocookie.com"]).is_some()
+}
+
 /// Which player response `url` returns, if it is one this module rewrites. Only the exact paths
 /// count: `/youtubei/v1/player/heartbeat` (live streams) and `/youtubei/v1/next` are not.
 pub fn player_payload(url: &str) -> Option<PlayerPayload> {
@@ -389,6 +395,29 @@ mod tests {
         std::fs::write(&path, "block_youtube_video_ads=true\n").unwrap();
         assert!(video_ads_blocked_in_file(&path, 1024));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_youtube_and_its_subdomains_are_youtube_pages() {
+        for host in [
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtube-nocookie.com",
+            "www.youtube-nocookie.com",
+        ] {
+            assert!(is_youtube_host(host), "{host}");
+        }
+        for host in [
+            "",
+            "news.example",
+            "notyoutube.com",
+            "youtube.com.evil.example",
+            "youtube.co.uk",
+            "googlevideo.com",
+        ] {
+            assert!(!is_youtube_host(host), "{host}");
+        }
     }
 
     #[test]

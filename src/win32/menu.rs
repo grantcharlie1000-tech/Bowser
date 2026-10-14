@@ -624,7 +624,7 @@ pub(crate) fn show(
     };
     let chosen = match placement {
         Placement::AboveLeft => track(owner, anchor, menu),
-        Placement::BelowLeft => track_below(owner, anchor, menu),
+        Placement::BelowLeft | Placement::BelowRight => track_below(owner, anchor, menu),
     };
     callback(&app, chosen);
 }

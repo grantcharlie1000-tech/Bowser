@@ -35,8 +35,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -83,7 +83,7 @@ export type Command =
   | { v: 1; t: 'rail'; a: RailAction; k: string; r?: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
   | ({ v: 1; t: PanelKind } & PanelFields)
-  | { v: 1; t: 'size'; tok: number; w: number; h: number }
+  | { v: 1; t: 'size'; tok: number; w: number; h: number; c?: string }
   | { v: 1; t: 'pick'; tok: number; id: number }
   | { v: 1; t: 'dismiss'; tok: number }
   // --- popup surfaces (lane PP) ---
@@ -103,6 +103,10 @@ export type Command =
   | { v: 1; t: 'suggestPreview'; seq: number; i: number }
   | { v: 1; t: 'suggestEnd' }
   // --- end omnibox suggest ---
+  // --- downloads (docs/design/downloads.md) ---
+  | { v: 1; t: 'dl'; a: 'toggle'; text: string }
+  | { v: 1; t: 'dlact'; tok: number; id: number; n: number }
+  // --- end downloads ---
   // --- split view ---
   | SplitCommand;
   // --- end split view ---
@@ -259,6 +263,24 @@ export interface SuggestOpenMsg {
   readonly on: boolean;
 }
 // --- end omnibox suggest ---
+// --- downloads (docs/design/downloads.md) ---
+export const DL_BUTTON_STATES = ['idle', 'active', 'paused', 'done', 'failed'] as const;
+export type DlButtonState = typeof DL_BUTTON_STATES[number];
+/** The toolbar's download button (toolbar only). */
+export interface DlButtonMsg {
+  readonly t: 'dlbtn';
+  /** Show the button. */
+  readonly on: boolean;
+  /** What the icon shows; `done`/`failed` are unseen finished or failed downloads. */
+  readonly state: DlButtonState;
+  /** Active downloads. */
+  readonly n: number;
+  /** Aggregate progress 0-100, -1 unknown (the ring sweeps). */
+  readonly pct: number;
+  /** Counts download starts; the button plays its start animation when it changes. */
+  readonly burst: number;
+}
+// --- end downloads ---
 /** Whether the main menu is open (toolbar only): the menu button shows it while it is up. */
 export interface MenuOpenMsg {
   readonly t: 'menuOpen';
@@ -335,7 +357,7 @@ export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; 
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'media', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -367,6 +389,7 @@ export type Inbound =
   | SuggestOpenMsg
   // --- end omnibox suggest ---
   | MenuOpenMsg
+  | DlButtonMsg // --- downloads ---
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -423,7 +446,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -526,6 +549,28 @@ export function sendComposerOpen(
   return send({ v: 1, t: 'composeopen', a: mode, ...fields, r });
 }
 // --- end popup surfaces ---
+
+// --- downloads (docs/design/downloads.md) ---
+/** Largest `n` a `dlact` may carry: 0-7 row actions, 8-10 list actions (id 0). */
+export const MAX_DLACT = 10;
+/** The toolbar's download button was clicked; `rect` is the button in toolbar CSS px. */
+export function sendDownloadToggle(rect: Parameters<typeof rectWire>[0]): boolean {
+  const text = rectWire(rect);
+  return text !== null && isRectWire(text) && send({ v: 1, t: 'dl', a: 'toggle', text });
+}
+/** A row or list action on the downloads bubble (`tok` is the page's). */
+export function sendDownloadAct(tok: number, id: number, n: number): boolean {
+  return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && isInt(n, 0, MAX_DLACT) && (n < 8 ? id > 0 : id === 0) && send({ v: 1, t: 'dlact', tok, id, n });
+}
+
+function parseDlButton(raw: Record<string, unknown>): DlButtonMsg | null {
+  const keys = ['v', 't', 'on', 'state', 'n', 'pct', 'burst'];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  const { on, state, n, pct, burst } = raw;
+  if (!isBool(on) || !isOneOf(state, DL_BUTTON_STATES) || !isInt(n, 0, MAX_ID) || !isInt(pct, -1, 100) || !isInt(burst, 0, MAX_ID)) return null;
+  return { t: 'dlbtn', on, state, n, pct, burst };
+}
+// --- end downloads ---
 
 // --- hover layer ---
 /** Code-point-safe cap, matching Rust's character count. */
@@ -840,6 +885,10 @@ export function parseInbound(data: unknown): Inbound | null {
     case 'menuOpen':
       if (!hasOnlyKeys(raw, ['v', 't', 'on']) || raw.v !== 1 || !isBool(raw.on)) return null;
       return { t: 'menuOpen', on: raw.on };
+    // --- downloads ---
+    case 'dlbtn':
+      return parseDlButton(raw);
+    // --- end downloads ---
     // --- split view ---
     case 'pair':
     case 'splitpick':

@@ -138,6 +138,10 @@ export interface SettingsSnapshot {
   readable: boolean;
   /** Whether Bowser is currently the HKCU default http handler. Read-only, never part of `save`. */
   defaultBrowser: DefaultBrowserState;
+  /** Where downloads are saved (a display path). Changed only through the native folder picker. */
+  downloadDir: string;
+  /** "Ask where to save each file before downloading"; its own command, never part of `save`. */
+  downloadAsk: boolean;
 }
 
 type RecordValue = Record<string, unknown>;
@@ -151,7 +155,9 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame', 'showHomeButton',
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
-  'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser'];
+  'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk'];
+/** The longest download folder Rust sends (`MAX_PATH`). */
+export const MAX_DOWNLOAD_DIR = 260;
 /** A site the blocker skips: no whitespace, no controls, no comma (the file separator). */
 const SITE_RE = /^[^\s\u0000-\u001f\u007f,]{1,253}$/u;
 
@@ -185,6 +191,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     if (typeof v[key] !== 'boolean') return null;
   }
   if (!oneOf(v.defaultBrowser, DEFAULT_BROWSER_STATES)) return null;
+  // A display path: no control characters (it is drawn as text, never used as one).
+  if (!isStrUpTo(v.downloadDir, MAX_DOWNLOAD_DIR * 2) || /[\u0000-\u001f\u007f]/.test(v.downloadDir) || typeof v.downloadAsk !== 'boolean') return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -238,6 +246,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     error: v.error,
     readable: v.readable as boolean,
     defaultBrowser: v.defaultBrowser,
+    downloadDir: v.downloadDir,
+    downloadAsk: v.downloadAsk,
   };
 }
 
@@ -333,6 +343,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
+  { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: 'Where files are saved, and whether Bowser asks first.' },
   { key: 'media', title: 'Media', nav: 'Media', lead: 'Which video formats and protected streams this device can play.' },
   { key: 'updates', title: 'Updates', nav: 'Updates', lead: 'How Bowser keeps itself up to date.' },
   { key: 'about', title: 'About Bowser', nav: 'About Bowser', lead: 'Version, where settings live, and starting over.' },
@@ -404,6 +415,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'sleep', section: 'performance', label: 'Sleep hidden tabs', description: 'Hidden tabs are put to sleep after a delay to free memory, sooner under memory pressure.', keywords: 'memory discard suspend hibernate inactive' },
   { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: 'How long a tab stays hidden before it sleeps.', keywords: 'delay timeout minutes memory' },
   { id: 'engine', section: 'search', label: 'Search engine', description: 'Used for searches typed in the address bar. Type img before a query for images.', keywords: 'google duckduckgo optimised default address bar omnibox images' },
+  { id: 'downloadDir', section: 'downloads', label: 'Location', description: '', keywords: 'download folder directory save path where change' },
+  { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save each file before downloading', description: 'When this is off, files go straight to the location above.', keywords: 'save as prompt dialog ask where download location' },
   { id: 'media', section: 'media', label: 'Media support', description: 'Runs on this device only and sends nothing.', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode' },
   { id: 'autoUpdate', section: 'updates', label: 'Update automatically', description: 'Checks in the background and installs the update the next time Bowser starts. Applies to every profile.', keywords: 'auto update upgrade version' },
   { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade' },

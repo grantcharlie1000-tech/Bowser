@@ -427,6 +427,416 @@ html[data-scheme="dark"] #app {
   }
 }
 
+/* ---- Download button (view.ts buildDownloadButton; docs/design/downloads.md) ----
+   Between the pill and the menu button, shown only while Rust says `dlbtn.on`. Rust shrinks the
+   pill by DL_BUTTON_SLOT (32px: the 28px button and a 4px gap), so the actions group moves left by
+   the same 32px and the menu button never moves. The ring is drawn around the 28px hover disc's
+   centre (radius 11, 2px stroke) and the arrow shrinks into it while it shows.
+     appear    fades and scales .85 -> 1 (167ms out); leaving fades out (83ms) before `hidden`
+     start     (burst) the arrow drops in from above with a soft landing (480ms) and the ring
+               pulses once where it lands; the button's own arrow takes over on the last frame
+     progress  the arc follows `pct` (250ms linear: the rate Rust re-sends at, so it glides)
+     unknown   a quarter arc sweeps (1.1s per turn, only while active)
+     paused    the arc greys out and stops
+     finish    the arc closes, the arrow sinks away and a check springs in (300ms), holds 1.2s,
+               then ring and check fade and the arrow returns with a dot while the finished
+               download is unseen (accent; warning tone for a failure)
+   Exception, documented in the design doc: the arc uses `stroke-dashoffset` (paint only, one 28px
+   SVG). Everything else is transform and opacity. */
+#app.placed.has-dl .actions {
+  left: calc(var(--menu-x) - 32px);
+}
+
+.tb-dl {
+  --tb-dl-g: 1;
+  --tb-dl-tone: var(--bw-progress);
+  position: relative;
+  margin-inline-end: var(--bw-space-0_5);
+}
+
+.tb-dl[hidden] {
+  display: none;
+}
+
+.tb-dl:not([data-ring="none"]) {
+  --tb-dl-g: 0.72;
+}
+
+.tb-dl > span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.tb-dl > span > svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.tb-dl > .tb-dl-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.8);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-out);
+  pointer-events: none;
+}
+
+.tb-dl:not([data-ring="none"]) > .tb-dl-ring {
+  opacity: 1;
+  transform: rotate(-90deg) scale(1);
+}
+
+.tb-dl-ring circle {
+  fill: none;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.tb-dl-track {
+  stroke: color-mix(in srgb, var(--bw-text) 16%, transparent);
+}
+
+.tb-dl-arc {
+  stroke: var(--tb-dl-tone);
+  stroke-dasharray: 100 100;
+  stroke-dashoffset: 100;
+  transition:
+    stroke-dashoffset var(--bw-dur-slow) linear,
+    stroke var(--bw-dur-fast) var(--bw-ease-fade),
+    opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.tb-dl-sweep {
+  stroke: var(--tb-dl-tone);
+  stroke-dasharray: 26 74;
+  opacity: 0;
+}
+
+.tb-dl-spin {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+}
+
+.tb-dl[data-ring="sweep"] .tb-dl-arc,
+.tb-dl.is-zero .tb-dl-arc {
+  opacity: 0;
+}
+
+.tb-dl[data-ring="sweep"] .tb-dl-sweep {
+  opacity: 1;
+}
+
+.tb-dl[data-ring="sweep"] .tb-dl-spin {
+  animation: tb-dl-spin 1100ms linear infinite;
+}
+
+.tb-dl[data-ring="paused"] {
+  --tb-dl-tone: color-mix(in srgb, var(--bw-text) 42%, transparent);
+}
+
+@keyframes tb-dl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tb-dl-glyph {
+  transform: scale(var(--tb-dl-g));
+  transition:
+    transform var(--bw-dur-base) var(--bw-ease-move),
+    opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.tb-dl-check,
+.tb-dl-drop {
+  opacity: 0;
+}
+
+.tb-dl-check {
+  color: var(--tb-dl-tone);
+}
+
+.tb-dl-check > svg {
+  --bw-icon-stroke: 2px;
+}
+
+/* The landing pulse: a ring of the progress tone that widens and fades. */
+.tb-dl > .tb-dl-halo {
+  inset: 2px;
+  border: 1.5px solid var(--tb-dl-tone);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+/* Unseen finished (or failed) download: a small dot at the top right. */
+.tb-dl > .tb-dl-dot {
+  inset: 3px 3px auto auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tb-dl-tone);
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-slow) var(--bw-ease-spring);
+}
+
+.tb-dl[data-state="failed"] {
+  --tb-dl-tone: var(--tb-warn);
+}
+
+.tb-dl:is([data-state="done"], [data-state="failed"]):not(.is-finish) > .tb-dl-dot {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.tb-dl.is-in {
+  animation: tb-dl-in var(--bw-dur-base) var(--bw-ease-out) both;
+}
+
+.tb-dl.is-out {
+  opacity: 0;
+}
+
+@keyframes tb-dl-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* Start: the drop falls (accelerating), lands a pixel low and squashed, settles, and hands over
+   to the button's own arrow on its last frame (the arrow is hidden until then, steps(1)). */
+.tb-dl.is-burst > .tb-dl-drop {
+  animation: tb-dl-drop 480ms both;
+}
+
+.tb-dl.is-burst > .tb-dl-glyph {
+  animation: tb-dl-handoff 480ms steps(1, end) both;
+}
+
+.tb-dl.is-burst > .tb-dl-halo {
+  animation: tb-dl-halo 360ms var(--bw-ease-out) 250ms;
+}
+
+@keyframes tb-dl-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-13px) scale(calc(var(--tb-dl-g) * 1.08));
+    animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.6);
+  }
+
+  18% {
+    opacity: 1;
+  }
+
+  55% {
+    transform: translateY(1.5px) scale(calc(var(--tb-dl-g) * 1.07), calc(var(--tb-dl-g) * 0.88));
+    animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1);
+  }
+
+  78% {
+    transform: translateY(-0.5px) scale(var(--tb-dl-g));
+    animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(var(--tb-dl-g));
+  }
+}
+
+@keyframes tb-dl-handoff {
+  0% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes tb-dl-halo {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.7);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+
+/* Finish (2s, view.ts FINISH_MS): 0-250ms the arc closes (its own transition); 250-550ms the arrow
+   sinks and the check springs in; hold to 1750ms; then ring and check fade, the arrow returns. */
+.tb-dl.is-finish > .tb-dl-glyph {
+  animation: tb-dl-glyph-finish 2000ms both;
+}
+
+.tb-dl.is-finish > .tb-dl-check {
+  animation: tb-dl-check-finish 2000ms both;
+}
+
+.tb-dl.is-finish > .tb-dl-ring {
+  animation: tb-dl-ring-finish 2000ms both;
+}
+
+.tb-dl.is-finish > .tb-dl-halo {
+  animation: tb-dl-halo 420ms var(--bw-ease-out) 230ms;
+}
+
+@keyframes tb-dl-glyph-finish {
+  0%,
+  12.5% {
+    opacity: 1;
+    transform: scale(0.72);
+    animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  }
+
+  22% {
+    opacity: 0;
+    transform: translateY(4px) scale(0.5);
+  }
+
+  91% {
+    opacity: 0;
+    transform: scale(0.8);
+    animation-timing-function: cubic-bezier(0, 0, 0, 1);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tb-dl-check-finish {
+  0%,
+  15% {
+    opacity: 0;
+    transform: scale(0.3) rotate(-15deg);
+    animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  27.5% {
+    opacity: 1;
+    transform: scale(0.8) rotate(0deg);
+  }
+
+  85% {
+    opacity: 1;
+    transform: scale(0.8);
+    animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  }
+
+  91%,
+  100% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@keyframes tb-dl-ring-finish {
+  0%,
+  87.5% {
+    opacity: 1;
+    transform: rotate(-90deg) scale(1);
+    animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: rotate(-90deg) scale(1.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb-dl.is-in {
+    animation: bw-fade-in var(--bw-dur-fast) linear both;
+  }
+
+  .tb-dl.is-burst > :is(.tb-dl-drop, .tb-dl-glyph, .tb-dl-halo),
+  .tb-dl.is-finish > .tb-dl-halo {
+    animation: none;
+  }
+
+  .tb-dl.is-finish > .tb-dl-glyph {
+    animation-name: tb-dl-glyph-fade;
+  }
+
+  .tb-dl.is-finish > .tb-dl-check {
+    animation-name: tb-dl-check-fade;
+  }
+
+  .tb-dl.is-finish > .tb-dl-ring {
+    animation-name: tb-dl-ring-fade;
+  }
+
+  /* It carries status, so it keeps turning, slower. */
+  .tb-dl[data-ring="sweep"] .tb-dl-spin {
+    animation-duration: 2200ms;
+  }
+}
+
+@keyframes tb-dl-glyph-fade {
+  0%,
+  12.5% {
+    opacity: 1;
+  }
+
+  20%,
+  87.5% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes tb-dl-check-fade {
+  0%,
+  12.5% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+
+  20%,
+  87.5% {
+    opacity: 1;
+    transform: scale(0.8);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes tb-dl-ring-fade {
+  0%,
+  87.5% {
+    opacity: 1;
+    transform: rotate(-90deg);
+  }
+
+  100% {
+    opacity: 0;
+    transform: rotate(-90deg);
+  }
+}
+
 /* ---- Progress: a 2px bar scaled with transform from the pill's left edge ---- */
 .progress {
   position: absolute;

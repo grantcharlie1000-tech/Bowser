@@ -1,8 +1,9 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
-import { MAX_TEXT, THEME_TOKENS, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
+import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
+import { buttonLabel, buttonTip, ringMode, ringOffset } from './downloads-logic';
 
 export interface View {
   readonly back: HTMLButtonElement;
@@ -22,6 +23,8 @@ export interface View {
   /** Private-tab chip in the pill (glyph + "Private"); shown while state.private is true. */
   readonly privateChip: HTMLElement;
   readonly menu: HTMLButtonElement;
+  /** The download button between the pill and the menu (docs/design/downloads.md). */
+  readonly downloads: DownloadButton;
 }
 
 /** Accessible name and tooltip of the pill's private-tab chip. */
@@ -155,8 +158,9 @@ export function buildView(root: HTMLElement): View {
   navGroup.append(back, forward);
   const nav = el('div', 'nav');
   nav.append(navGroup, reload);
+  const downloads = buildDownloadButton(root);
   const actions = el('div', 'actions');
-  actions.append(menu);
+  actions.append(downloads.button, menu);
 
   // Empty areas of the toolbar (the root and its flex wrappers) are the window drag surface.
   // Buttons, the omnibox and the pill are not marked, so they keep their own behaviour.
@@ -166,7 +170,143 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu };
+  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu, downloads };
+}
+
+// ---- Download button (docs/design/downloads.md "Toolbar button", styles in toolbar.css) ----
+//
+// Markup: button.tb-dl[data-state][data-ring] >
+//   svg.tb-dl-ring > circle.tb-dl-track, circle.tb-dl-arc (pathLength 100), g.tb-dl-spin > circle.tb-dl-sweep
+//   span.tb-dl-glyph (the arrow), span.tb-dl-check (finish morph), span.tb-dl-drop (start
+//   animation), span.tb-dl-halo (landing), span.tb-dl-dot (unseen finished / failed)
+// Classes: .is-in (fading/scaling in), .is-out (fading out before `hidden`), .is-burst (a download
+// started), .is-finish (arrow -> check, hold, back). Motion lives in toolbar.css.
+
+export interface DownloadButton {
+  readonly button: HTMLButtonElement;
+  /** Applies a `dlbtn` message; the first one never plays the start animation. */
+  apply(msg: DlButtonMsg): void;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** The ring: 28px box, radius 11, so a 2px stroke spans 20-24px around the 28px hover disc's centre. */
+const RING_R = '11';
+/** Arrow -> check, hold, and back (toolbar.css .is-finish keyframes add up to this). */
+const FINISH_MS = 2000;
+const OUT_MS = 90;
+
+function ringCircle(className: string): SVGCircleElement {
+  const circle = document.createElementNS(SVG_NS, 'circle');
+  circle.setAttribute('class', className);
+  circle.setAttribute('cx', '14');
+  circle.setAttribute('cy', '14');
+  circle.setAttribute('r', RING_R);
+  circle.setAttribute('pathLength', '100');
+  return circle;
+}
+
+function restart(node: Element, className: string): void {
+  node.classList.remove(className);
+  void (node as HTMLElement).offsetWidth;
+  node.classList.add(className);
+}
+
+function buildDownloadButton(root: HTMLElement): DownloadButton {
+  const button = el('button', 'bw-icon-btn tb-nav is-lg is-round tb-dl');
+  button.type = 'button';
+  button.hidden = true;
+  button.setAttribute('aria-haspopup', 'dialog');
+  label(button, 'Downloads');
+  const ring = document.createElementNS(SVG_NS, 'svg');
+  ring.setAttribute('class', 'tb-dl-ring');
+  ring.setAttribute('viewBox', '0 0 28 28');
+  ring.setAttribute('aria-hidden', 'true');
+  ring.setAttribute('focusable', 'false');
+  const arc = ringCircle('tb-dl-arc');
+  const spin = document.createElementNS(SVG_NS, 'g');
+  spin.setAttribute('class', 'tb-dl-spin');
+  spin.append(ringCircle('tb-dl-sweep'));
+  ring.append(ringCircle('tb-dl-track'), arc, spin);
+  const part = (className: string, glyph: IconName | null): HTMLElement => {
+    const node = el('span', className);
+    node.setAttribute('aria-hidden', 'true');
+    if (glyph) node.append(icon(glyph));
+    return node;
+  };
+  const glyph = part('tb-dl-glyph', 'download');
+  const check = part('tb-dl-check', 'check');
+  const drop = part('tb-dl-drop', 'download');
+  const halo = part('tb-dl-halo', null);
+  const dot = part('tb-dl-dot', null);
+  button.append(ring, glyph, check, drop, halo, dot);
+  button.dataset.state = 'idle';
+  button.dataset.ring = 'none';
+  // One-shot classes come off when their animation ends, so showing the button again never replays them.
+  button.addEventListener('animationend', (event) => {
+    if (event.animationName === 'tb-dl-in' || event.animationName === 'bw-fade-in') button.classList.remove('is-in');
+    else if (event.animationName === 'tb-dl-drop') button.classList.remove('is-burst');
+  });
+
+  let last: DlButtonMsg | null = null;
+  let finishTimer = 0;
+  let outTimer = 0;
+
+  const show = (on: boolean): void => {
+    window.clearTimeout(outTimer);
+    if (on) {
+      button.classList.remove('is-out');
+      if (button.hidden) {
+        button.hidden = false;
+        root.classList.add('has-dl');
+        restart(button, 'is-in');
+      }
+      return;
+    }
+    if (button.hidden || button.classList.contains('is-out')) return;
+    // Fade out (83ms) before the slot closes; the button takes input until it is gone.
+    button.classList.remove('is-in');
+    button.classList.add('is-out');
+    outTimer = window.setTimeout(() => {
+      button.hidden = true;
+      button.classList.remove('is-out', 'is-burst', 'is-finish');
+      root.classList.remove('has-dl');
+    }, OUT_MS);
+  };
+
+  return {
+    button,
+    apply(msg: DlButtonMsg): void {
+      const first = last === null;
+      const prev = last;
+      last = msg;
+      show(msg.on);
+      const mode = ringMode(msg);
+      // A download that was running and is now finished plays the morph once.
+      const finished = !first && msg.state === 'done' && prev !== null && (prev.state === 'active' || prev.state === 'paused');
+      if (finished) {
+        arc.style.setProperty('stroke-dashoffset', '0');
+        button.dataset.ring = 'progress';
+        restart(button, 'is-finish');
+        window.clearTimeout(finishTimer);
+        finishTimer = window.setTimeout(() => {
+          button.classList.remove('is-finish');
+          if (last) button.dataset.ring = ringMode(last);
+        }, FINISH_MS);
+      } else if (!button.classList.contains('is-finish') || mode !== 'none') {
+        button.classList.remove('is-finish');
+        window.clearTimeout(finishTimer);
+        button.dataset.ring = mode;
+        if (mode === 'progress' || mode === 'paused') arc.style.setProperty('stroke-dashoffset', String(ringOffset(msg.pct)));
+      }
+      // A zero-length arc would still draw its round cap as a dot.
+      button.classList.toggle('is-zero', !finished && !button.classList.contains('is-finish') && (mode === 'progress' || mode === 'paused') && msg.pct <= 0);
+      button.dataset.state = msg.state;
+      if (!first && prev !== null && msg.burst !== prev.burst && msg.on) {
+        restart(button, 'is-burst');
+      }
+      label(button, buttonLabel(msg), buttonTip(msg));
+    },
+  };
 }
 
 /**

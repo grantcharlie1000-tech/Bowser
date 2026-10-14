@@ -27,14 +27,14 @@ export interface MenuMessage {
  * drift, and when a Rust `.glyph("...")` is not in the family).
  */
 export const MENU_ICONS: readonly string[] = [
-  'app-tile', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
+  'app-tile', 'archive', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'cast', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
   'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
-  'find', 'folder', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
-  'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'pencil', 'person',
-  'picture-in-picture', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
+  'file', 'file-text', 'find', 'folder', 'folder-download', 'folder-open', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'image', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
+  'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'package', 'pause', 'pencil', 'person',
+  'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
   'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'trash', 'unlock', 'unsplit',
-  'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
+  'video', 'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',
 ];

@@ -134,8 +134,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   // while a card is moving: the clip would lag the transform and cut the edges.
   const flyoutCards = (): PopupCards | undefined => {
     if (!nav || nav.pages.length < 2) return undefined;
-    const parent = panes.get(nav.pages[nav.pages.length - 2]);
-    const child = panes.get(nav.pages[nav.pages.length - 1]);
+    const parent = panes.get(nav.pages[nav.pages.length - 2]!);
+    const child = panes.get(nav.pages[nav.pages.length - 1]!);
     if (!parent || !child) return undefined;
     const origin = root.getBoundingClientRect();
     const box = (pane: HTMLElement) => {
@@ -168,8 +168,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       slide.style.removeProperty('--menu-child-y');
       return;
     }
-    const parent = panes.get(nav.pages[nav.pages.length - 2]);
-    const child = panes.get(nav.pages[nav.pages.length - 1]);
+    const parent = panes.get(nav.pages[nav.pages.length - 2]!);
+    const child = panes.get(nav.pages[nav.pages.length - 1]!);
     const row = parent?.querySelector<HTMLElement>('.html-menu-row.is-open');
     if (!parent || !child || !row) return;
     const style = getComputedStyle(child);
@@ -237,9 +237,9 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     // Flush style so the transitions exist before they are queried. A duration of zero (reduced
     // motion) leaves nothing running, and `then` runs in this turn.
     void slide.offsetWidth;
-    const running = [slide, ...slide.querySelectorAll<HTMLElement>('.html-menu-pane')]
+    const running = [slide, ...Array.from(slide.querySelectorAll<HTMLElement>('.html-menu-pane'))]
       .flatMap((node) => node.getAnimations())
-      .filter((animation) => animation.playState === 'running' || animation.playState === 'pending');
+      .filter((animation) => animation.playState === 'running' || animation.pending);
     if (running.length === 0) then();
     else void Promise.allSettled(running.map((animation) => animation.finished)).then(then);
   };
