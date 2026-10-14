@@ -147,6 +147,9 @@ pub(crate) const WM_DOWNLOADS_PAGE_COMMAND: u32 = windows::Win32::UI::WindowsAnd
 /// The downloads list changed (posted from `App`'s downloads observer); `WPARAM` is 0 for a progress
 /// tick and 1 for any other change (`downloads_ui::changed` throttles the first, never the second).
 pub(crate) const WM_DOWNLOADS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C4;
+/// The installed extensions changed (installed, turned on or off, removed, or a load result came
+/// in): the toolbar's extensions button and the settings page's Extensions section read them again.
+pub(crate) const WM_EXTENSIONS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C5;
 /// Trailing flush of a throttled progress update (`downloads_ui`).
 pub(crate) const WM_DOWNLOADS_TIMER: usize = 0xB070;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
@@ -226,6 +229,12 @@ pub(crate) fn downloads_page_focus(hwnd: HWND) {
     downloads_page::focus(hwnd);
 }
 // --- end downloads ---
+
+/// Tells every Bowser window that the installed extensions changed (docs/extensions.md). Posted, so
+/// it is safe from an engine callback; each window catches up from its own window procedure.
+pub(crate) fn extensions_changed() {
+    window::post_to_every_window(WM_EXTENSIONS_CHANGED);
+}
 
 // --- split view ---
 /// Opens `url` beside the shown tab once the window procedure runs (link context menu).

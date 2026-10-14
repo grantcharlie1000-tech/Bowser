@@ -367,11 +367,11 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 9);
-  assert.equal(app.querySelectorAll('section').length, 9);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 10);
+  assert.equal(app.querySelectorAll('section').length, 10);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
-  // The Privacy dashboard is one block standing for the `dashboard` row.
-  const rows = app.querySelectorAll('.sp-row, .sp-dash').map((row) => row.dataset.row);
+  // The Privacy dashboard and the Extensions block each stand for one row.
+  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext').map((row) => row.dataset.row);
   assert.deepEqual(rows, logic.ROWS.map((row) => row.id));
   for (const control of app.querySelectorAll('[role="switch"], [role="radiogroup"]')) {
     assert.ok(control.getAttribute('aria-labelledby') || control.getAttribute('aria-label'), control.className);
@@ -540,4 +540,19 @@ test('the Privacy dashboard is part of the page: its snapshot fills the section 
   sent.length = 0;
   clear.click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'clear-stats' }]);
+});
+
+test('the Extensions section is part of the page: its snapshot fills the block and its commands go out as set', () => {
+  const extensions = JSON.parse(readFileSync(join(here, 'fixtures', 'extensions-messages.json'), 'utf8'));
+  const block = app.querySelector('.sp-ext');
+  assert.equal(block.dataset.row, 'extensions');
+  assert.equal(block.parent, app.querySelector('section[data-section="extensions"]'));
+  assert.ok(block.querySelector('.sp-ext-state.is-loading'), 'loading until Bowser answers');
+  deliver(extensions.snap);
+  assert.equal(block.querySelectorAll('.sp-ext-item').length, 2);
+  sent.length = 0;
+  block.querySelector('.sp-ext-item[data-id="ext-0123456789abcdef"]').querySelector('[role="switch"]').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'extension', text: 'ext-0123456789abcdef', on: false }]);
+  assert.ok(logic.matchRows('addon').has('extensions'));
+  assert.ok(logic.matchRows('manifest permissions').has('extensions'));
 });

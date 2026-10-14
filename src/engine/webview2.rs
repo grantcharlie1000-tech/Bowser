@@ -219,7 +219,7 @@ fn is_key_down(kind: COREWEBVIEW2_KEY_EVENT_KIND) -> bool {
     )
 }
 
-type ExternalSchemeCallback = Box<
+pub(super) type ExternalSchemeCallback = Box<
     dyn FnMut(
         Option<ICoreWebView2>,
         Option<ICoreWebView2LaunchingExternalUriSchemeEventArgs>,
@@ -227,7 +227,7 @@ type ExternalSchemeCallback = Box<
 >;
 
 #[implement(ICoreWebView2LaunchingExternalUriSchemeEventHandler)]
-struct ExternalSchemeHandler(RefCell<ExternalSchemeCallback>);
+pub(super) struct ExternalSchemeHandler(pub(super) RefCell<ExternalSchemeCallback>);
 
 impl ICoreWebView2LaunchingExternalUriSchemeEventHandler_Impl for ExternalSchemeHandler_Impl {
     fn Invoke(
@@ -256,12 +256,12 @@ enum NavigationStartPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ControllerSecuritySetting {
+pub(super) enum ControllerSecuritySetting {
     WebMessages,
     HostObjects,
 }
 
-fn apply_controller_security_policy<E>(
+pub(super) fn apply_controller_security_policy<E>(
     mut disable: impl FnMut(ControllerSecuritySetting) -> std::result::Result<(), E>,
 ) -> std::result::Result<(), E> {
     for setting in [
@@ -303,6 +303,35 @@ fn navigation_start_policy(uri: &Url, allowed_file: Option<&Url>) -> NavigationS
         // Tabs must never load it, whatever the mode.
         | "bowser-ui" => NavigationStartPolicy::Block,
         _ => NavigationStartPolicy::ExternalProtocol,
+    }
+}
+
+/// Navigation policy of a Bowser-hosted extension page (popup or options). The grant is for the
+/// one URL Bowser built from the extension's manifest and is used up by the first navigation to it.
+/// It is not a scheme unblock: tabs keep `navigation_start_policy`, which refuses every extension
+/// scheme.
+pub(super) struct HostedPagePolicy {
+    granted: Url,
+    pending: Cell<bool>,
+}
+
+impl HostedPagePolicy {
+    /// `None` unless `url` is exactly a URL [`crate::extensions::page_url`] builds.
+    pub(super) fn new(url: &Url) -> Option<Self> {
+        crate::extensions::is_page_url(url).then(|| Self {
+            granted: url.clone(),
+            pending: Cell::new(true),
+        })
+    }
+
+    pub(super) fn allow_navigation(&self, uri: &Url) -> bool {
+        consume_allowed_file_navigation(uri, Some(&self.granted), &self.pending)
+    }
+
+    /// Frames may be blank or the granted extension's own pages, nothing else.
+    pub(super) fn allow_frame(&self, uri: &Url) -> bool {
+        (uri.scheme() == "about" && matches!(uri.path(), "blank" | "srcdoc"))
+            || (crate::extensions::is_page_url(uri) && uri.host_str() == self.granted.host_str())
     }
 }
 
@@ -1126,6 +1155,9 @@ struct EngineCore {
     closed: bool,
     /// Whether the environment was created with browser extensions enabled.
     browser_extensions: bool,
+    /// Why extensions were requested but not enabled (runtime below the floor), shown instead of
+    /// the restart advice.
+    extensions_refused: Option<String>,
     /// Profile handle used for extension calls; captured from the first page's webview.
     extension_profile: Option<ICoreWebView2Profile7>,
     /// Extensions currently added to the profile, by Bowser extension id.
@@ -1143,6 +1175,9 @@ struct EngineCore {
     /// The environment was created with the `bowser-ui` scheme registered (HTML chrome mode), so
     /// the chrome views may be hosted in it.
     chrome_ui_scheme: bool,
+    /// The one open Bowser-hosted extension page (popup or options), if any. Opening another
+    /// closes it.
+    extension_page: Option<super::extension_page::HostedPage>,
 }
 
 /// Completion for an extension operation. It runs once, on the UI thread.
@@ -1168,6 +1203,67 @@ impl WebView2Engine {
             return None;
         }
         state.environment.clone()
+    }
+
+    /// Opens an enabled, loaded extension's popup or options page in a Bowser-owned window. The URL
+    /// is built here from the manifest in `folder` and the id WebView2 gave the extension; `show`
+    /// is false only for the live probe.
+    fn open_extension_page_with(
+        &mut self,
+        id: &str,
+        folder: &Path,
+        kind: crate::extensions::PageKind,
+        title: &str,
+        show: bool,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        let (environment, webview_id, loaded) = {
+            let state = self.core.borrow();
+            (
+                state.environment.clone().filter(|_| !state.closed),
+                state.extension_ids.get(id).cloned(),
+                state.extensions_loaded.contains_key(id),
+            )
+        };
+        let Some(environment) = environment else {
+            done(Err("Bowser is still opening this window. Try again in a moment.".to_owned()));
+            return;
+        };
+        let (Some(webview_id), true) = (webview_id, loaded) else {
+            done(Err("This extension is not loaded in this window.".to_owned()));
+            return;
+        };
+        let url = match crate::extensions::extension_page_url(folder, kind, &webview_id) {
+            Ok(url) => url,
+            Err(error) => {
+                done(Err(error.to_string()));
+                return;
+            }
+        };
+        let previous = self.core.borrow_mut().extension_page.take();
+        if let Some(previous) = previous {
+            previous.close();
+        }
+        let weak = Rc::downgrade(&self.core);
+        super::extension_page::open(
+            &environment,
+            url,
+            title,
+            show,
+            Box::new(move |result| match result {
+                Ok(page) => match weak.upgrade() {
+                    Some(core) if !core.borrow().closed => {
+                        core.borrow_mut().extension_page = Some(page);
+                        done(Ok(()));
+                    }
+                    _ => {
+                        page.close();
+                        done(Err("Bowser closed this window.".to_owned()));
+                    }
+                },
+                Err(reason) => done(Err(reason)),
+            }),
+        );
     }
 }
 
@@ -1540,6 +1636,112 @@ impl WebView2Engine {
     }
 }
 
+/// Oldest runtime this build enables browser extensions on. Microsoft documents 120.0.2210.55 as the
+/// first runtime with the API. 134.0.3124.44 is where MV3 service workers were fixed to register
+/// (WebView2Feedback #5113); that floor is inferred from the issue, not documented by Microsoft.
+const EXTENSION_RUNTIME_FLOOR: [u32; 4] = [134, 0, 3124, 44];
+
+/// `a.b.c.d` from the start of a runtime version string. Preview channels add a word after the
+/// number, which is ignored. Anything else is not a version.
+fn parse_runtime_version(version: &str) -> Option<[u32; 4]> {
+    let mut parts = version.split_whitespace().next()?.split('.');
+    let mut numbers = [0u32; 4];
+    for number in &mut numbers {
+        let part = parts.next()?;
+        if part.is_empty() || part.len() > 9 || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(numbers)
+}
+
+/// Whether `version` is at or above [`EXTENSION_RUNTIME_FLOOR`]. An unreadable version is not.
+fn runtime_supports_extensions(version: &str) -> bool {
+    parse_runtime_version(version).is_some_and(|parsed| parsed >= EXTENSION_RUNTIME_FLOOR)
+}
+
+fn runtime_floor_log_line(version: &str, enabled: bool) -> String {
+    let [a, b, c, d] = EXTENSION_RUNTIME_FLOOR;
+    let version = parse_runtime_version(version)
+        .map_or_else(|| "unreadable".to_owned(), |[a, b, c, d]| format!("{a}.{b}.{c}.{d}"));
+    format!("extension call=runtime_floor version={version} floor={a}.{b}.{c}.{d} enabled={enabled}")
+}
+
+/// Text from the runtime or an extension, made safe for one log line: control and invisible format
+/// characters, quotes and backslashes become `?`, and the length is capped.
+fn log_text(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .take(max_chars)
+        .map(|c| {
+            if c.is_control() || crate::extensions::is_invisible_format(c) || matches!(c, '"' | '\\')
+            {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// One diagnostic line for an extension call. `status` is the HRESULT the call or its completion
+/// gave, or `None` when it reported success without returning the extension. Only the WebView2 id
+/// and the name are logged, never extension files or their contents.
+fn extension_log_line(
+    call: &str,
+    bowser: Option<&str>,
+    status: Option<windows::core::HRESULT>,
+    webview_id: Option<&str>,
+    name: Option<&str>,
+) -> String {
+    let (result, hresult) = match status {
+        Some(code) if code.is_ok() => ("ok", format!("0x{:08X}", code.0 as u32)),
+        Some(code) => ("failed", format!("0x{:08X}", code.0 as u32)),
+        None => ("no_extension", "none".to_owned()),
+    };
+    let bowser = bowser.map_or_else(|| "none".to_owned(), |id| log_text(id, 32));
+    let webview_id = webview_id.map_or_else(|| "none".to_owned(), |id| log_text(id, 128));
+    let name = name.map_or_else(|| "none".to_owned(), |name| format!("\"{}\"", log_text(name, 64)));
+    format!(
+        "extension call={call} bowser={bowser} result={result} hresult={hresult} id={webview_id} name={name}"
+    )
+}
+
+fn profile7_log_line(status: windows::core::HRESULT) -> String {
+    format!(
+        "extension call=profile7_cast supported={} hresult=0x{:08X}",
+        status.is_ok(),
+        status.0 as u32
+    )
+}
+
+/// Extension diagnostics are off unless `BOWSER_EXTENSION_TRACE` is set, then go to stderr (the same
+/// opt-in as `BOWSER_SUGGEST_TRACE`). The benchmark event log only takes fixed lowercase names, so
+/// it cannot carry an HRESULT or a name, and benchmark launches never load extensions.
+fn extension_trace_enabled() -> bool {
+    std::env::var_os("BOWSER_EXTENSION_TRACE").is_some()
+}
+
+fn extension_trace(line: &str) {
+    if extension_trace_enabled() {
+        eprintln!("{line}");
+    }
+}
+
+fn status_code(status: &Result<()>) -> windows::core::HRESULT {
+    status.as_ref().err().map_or(windows::core::HRESULT(0), Error::code)
+}
+
+/// The WebView2 id and name of a live extension, for the trace. Reads nothing unless tracing is on.
+fn extension_identity(
+    extension: &ICoreWebView2BrowserExtension,
+) -> (Option<String>, Option<String>) {
+    if !extension_trace_enabled() {
+        return (None, None);
+    }
+    (extension_webview_id(extension), extension_name(extension))
+}
+
 /// Holds a completion until WebView2 answers, so it runs at most once even if the request fails
 /// after the handler was created.
 fn once_slot(done: ExtensionDone) -> Rc<RefCell<Option<ExtensionDone>>> {
@@ -1567,6 +1769,9 @@ fn capture_extension_profile(core: &Rc<RefCell<EngineCore>>, webview: &ICoreWebV
         .cast::<ICoreWebView2_13>()
         .and_then(|webview| unsafe { webview.Profile() })
         .and_then(|profile| profile.cast::<ICoreWebView2Profile7>());
+    extension_trace(&profile7_log_line(
+        profile.as_ref().err().map_or(windows::core::HRESULT(0), Error::code),
+    ));
     let pending = std::mem::take(&mut core.borrow_mut().startup_extensions);
     match profile {
         Ok(profile) => {
@@ -1575,9 +1780,10 @@ fn capture_extension_profile(core: &Rc<RefCell<EngineCore>>, webview: &ICoreWebV
         }
         Err(_) => {
             for (id, _) in pending {
-                crate::extensions::record_load_result(
+                record_load(
                     &id,
                     Err("This WebView2 runtime does not support browser extensions.".to_owned()),
+                    win32::extensions_changed,
                 );
             }
         }
@@ -1615,6 +1821,13 @@ fn list_profile_extensions(profile: &ICoreWebView2Profile7, done: ProfileList) {
     let completion = slot.clone();
     let handler =
         ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |status, list| {
+            extension_trace(&extension_log_line(
+                "list",
+                None,
+                Some(status_code(&status)),
+                None,
+                None,
+            ));
             let result = match (status, list) {
                 (Ok(()), Some(list)) => extensions_in(&list),
                 (Ok(()), None) => Ok(Vec::new()),
@@ -1627,6 +1840,7 @@ fn list_profile_extensions(profile: &ICoreWebView2Profile7, done: ProfileList) {
             Ok(())
         }));
     if let Err(error) = unsafe { profile.GetBrowserExtensions(&handler) } {
+        extension_trace(&extension_log_line("list", None, Some(error.code()), None, None));
         let done = slot.borrow_mut().take();
         if let Some(done) = done {
             done(Err(format!("{error}")));
@@ -1641,8 +1855,29 @@ fn extensions_in(
     unsafe { list.Count(&mut count) }.map_err(|error| format!("{error}"))?;
     let mut found = Vec::new();
     for index in 0..count {
-        let extension =
-            unsafe { list.GetValueAtIndex(index) }.map_err(|error| format!("{error}"))?;
+        let extension = match unsafe { list.GetValueAtIndex(index) } {
+            Ok(extension) => extension,
+            Err(error) => {
+                extension_trace(&extension_log_line(
+                    "list_item",
+                    None,
+                    Some(error.code()),
+                    None,
+                    None,
+                ));
+                return Err(format!("{error}"));
+            }
+        };
+        let (traced_id, traced_name) = extension_identity(&extension);
+        if extension_trace_enabled() {
+            extension_trace(&extension_log_line(
+                "list_item",
+                None,
+                Some(windows::core::HRESULT(0)),
+                traced_id.as_deref(),
+                traced_name.as_deref(),
+            ));
+        }
         if let Some(id) = extension_webview_id(&extension) {
             found.push((id, extension));
         }
@@ -1658,8 +1893,23 @@ fn extension_webview_id(extension: &ICoreWebView2BrowserExtension) -> Option<Str
     (!id.is_empty()).then_some(id)
 }
 
+/// The extension's name as WebView2 reports it (a localized `__MSG_` name is resolved).
+fn extension_name(extension: &ICoreWebView2BrowserExtension) -> Option<String> {
+    let mut name = PWSTR::null();
+    unsafe { extension.Name(&mut name) }.ok()?;
+    Some(CoTaskMemPWSTR::from(name).to_string())
+}
+
+/// Records how an extension's load went, then runs `announce` so the windows read it: the toolbar
+/// button and the settings page both show the result and only catch up when told. The engine calls
+/// this on the UI thread, where `win32::extensions_changed` posts to every window.
+fn record_load(id: &str, result: std::result::Result<(), String>, announce: impl FnOnce()) {
+    crate::extensions::record_load_result(id, result);
+    announce();
+}
+
 fn report_load(id: String) -> ExtensionDone {
-    Box::new(move |result| crate::extensions::record_load_result(&id, result))
+    Box::new(move |result| record_load(&id, result, win32::extensions_changed))
 }
 
 /// Brings the profile in line with Bowser's records before enabled extensions are loaded. The
@@ -1854,6 +2104,14 @@ fn add_extension(
         ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |status, extension| {
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
+                    let (traced_id, traced_name) = extension_identity(&extension);
+                    extension_trace(&extension_log_line(
+                        "add",
+                        Some(&loaded_id),
+                        Some(windows::core::HRESULT(0)),
+                        traced_id.as_deref(),
+                        traced_name.as_deref(),
+                    ));
                     if let Some(core) = weak.upgrade() {
                         let mut state = core.borrow_mut();
                         if let Some(webview_id) = extension_webview_id(&extension) {
@@ -1864,8 +2122,20 @@ fn add_extension(
                     }
                     Ok(())
                 }
-                (Ok(()), None) => Err("WebView2 did not return the extension.".to_owned()),
-                (Err(error), _) => Err(format!("{error}")),
+                (Ok(()), None) => {
+                    extension_trace(&extension_log_line("add", Some(&loaded_id), None, None, None));
+                    Err("WebView2 did not return the extension.".to_owned())
+                }
+                (Err(error), _) => {
+                    extension_trace(&extension_log_line(
+                        "add",
+                        Some(&loaded_id),
+                        Some(error.code()),
+                        None,
+                        None,
+                    ));
+                    Err(format!("{error}"))
+                }
             };
             finish_slot(&completion, result);
             Ok(())
@@ -1876,6 +2146,7 @@ fn add_extension(
         .chain(std::iter::once(0))
         .collect();
     if let Err(error) = unsafe { profile.AddBrowserExtension(PCWSTR(path.as_ptr()), &handler) } {
+        extension_trace(&extension_log_line("add", Some(&id), Some(error.code()), None, None));
         finish_slot(&slot, Err(format!("{error}")));
     }
 }
@@ -1887,11 +2158,28 @@ fn set_loaded_enabled(
 ) {
     let slot = once_slot(done);
     let completion = slot.clone();
+    let call = if enabled { "enable" } else { "disable" };
+    let (traced_id, traced_name) = extension_identity(extension);
+    let completion_identity = (traced_id.clone(), traced_name.clone());
     let handler = BrowserExtensionEnableCompletedHandler::create(Box::new(move |status| {
+        extension_trace(&extension_log_line(
+            call,
+            None,
+            Some(status_code(&status)),
+            completion_identity.0.as_deref(),
+            completion_identity.1.as_deref(),
+        ));
         finish_slot(&completion, status.map_err(|error| format!("{error}")));
         Ok(())
     }));
     if let Err(error) = unsafe { extension.Enable(enabled, &handler) } {
+        extension_trace(&extension_log_line(
+            call,
+            None,
+            Some(error.code()),
+            traced_id.as_deref(),
+            traced_name.as_deref(),
+        ));
         finish_slot(&slot, Err(format!("{error}")));
     }
 }
@@ -1905,7 +2193,18 @@ fn remove_loaded(
     let slot = once_slot(done);
     let completion = slot.clone();
     let weak = Rc::downgrade(core);
+    // Read before the call: a removed extension may no longer answer for its id or name.
+    let (traced_id, traced_name) = extension_identity(extension);
+    let completion_identity = (traced_id.clone(), traced_name.clone());
+    let requested_id = id.clone();
     let handler = BrowserExtensionRemoveCompletedHandler::create(Box::new(move |status| {
+        extension_trace(&extension_log_line(
+            "remove",
+            Some(&id),
+            Some(status_code(&status)),
+            completion_identity.0.as_deref(),
+            completion_identity.1.as_deref(),
+        ));
         let result = status.map_err(|error| format!("{error}"));
         if result.is_ok() {
             if let Some(core) = weak.upgrade() {
@@ -1919,6 +2218,13 @@ fn remove_loaded(
         Ok(())
     }));
     if let Err(error) = unsafe { extension.Remove(&handler) } {
+        extension_trace(&extension_log_line(
+            "remove",
+            Some(&requested_id),
+            Some(error.code()),
+            traced_id.as_deref(),
+            traced_name.as_deref(),
+        ));
         finish_slot(&slot, Err(format!("{error}")));
     }
 }
@@ -2001,8 +2307,33 @@ impl WebView2Engine {
     {
         let blocker = extras.blocker;
         let private_blocker = extras.private_blocker;
-        let browser_extensions = extras.browser_extensions;
         let startup_extensions = extras.startup_extensions;
+        // Extensions are only enabled on a runtime at or above the floor. The version comes from
+        // the same probe the start-up runtime check uses, so no new COM surface is involved.
+        let mut extensions_refused: Option<String> = None;
+        if extras.browser_extensions {
+            let version = query_runtime(PCWSTR::null()).ok();
+            let supported = version.as_deref().is_some_and(runtime_supports_extensions);
+            extension_trace(&runtime_floor_log_line(
+                version.as_deref().unwrap_or(""),
+                supported,
+            ));
+            if !supported {
+                let [a, b, c, d] = EXTENSION_RUNTIME_FLOOR;
+                let reason = match version.as_deref().and_then(parse_runtime_version) {
+                    Some([ra, rb, rc, rd]) => format!(
+                        "This WebView2 runtime ({ra}.{rb}.{rc}.{rd}) is older than {a}.{b}.{c}.{d}, which browser extensions need."
+                    ),
+                    None => "Bowser could not read the WebView2 runtime version, so extensions stay off."
+                        .to_owned(),
+                };
+                for (id, _) in &startup_extensions {
+                    record_load(id, Err(reason.clone()), win32::extensions_changed);
+                }
+                extensions_refused = Some(reason);
+            }
+        }
+        let browser_extensions = extras.browser_extensions && extensions_refused.is_none();
         let known_extensions = extras.known_extensions;
         let extension_ids_file = extras.extension_ids_file;
         let permissions = extras.permissions;
@@ -2132,6 +2463,7 @@ impl WebView2Engine {
                         suspended: HashSet::new(),
                         closed: false,
                         browser_extensions,
+                        extensions_refused: extensions_refused.clone(),
                         extension_profile: None,
                         extensions_loaded: HashMap::new(),
                         startup_extensions: startup_extensions.clone(),
@@ -2140,6 +2472,7 @@ impl WebView2Engine {
                         extension_ids: extension_ids.clone(),
                         permissions: permissions.clone(),
                         chrome_ui_scheme: chrome_ui_scheme_env.get(),
+                        extension_page: None,
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -2166,14 +2499,12 @@ impl WebView2Engine {
                 .map_err(request_error)?;
         }
         if browser_extensions {
-            // Older runtimes lack the options interface or the setter. Bowser then starts without
-            // extensions, and each extension reports that it could not load.
-            let enabled = options2
+            // This options object is webview2-com's own, so the cast and the setter only record the
+            // request and cannot report whether the runtime supports extensions. The runtime's
+            // answer is the `ICoreWebView2Profile7` cast in `capture_extension_profile`, which logs it.
+            let _ = options2
                 .cast::<ICoreWebView2EnvironmentOptions6>()
                 .and_then(|options6| unsafe { options6.SetAreBrowserExtensionsEnabled(true) });
-            if enabled.is_err() {
-                event(creation_log.as_ref(), "browser_extensions_unavailable");
-            }
         }
         if chrome_ui_scheme_requested {
             // HTML chrome mode only. A runtime without custom schemes still runs the tabs; the
@@ -2245,12 +2576,13 @@ impl EngineAdapter for WebView2Engine {
         enabled: bool,
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
-        let (profile, loaded, extensions_on) = {
+        let (profile, loaded, extensions_on, refused) = {
             let state = self.core.borrow();
             (
                 state.extension_profile.clone(),
                 state.extensions_loaded.get(id).cloned(),
                 state.browser_extensions,
+                state.extensions_refused.clone(),
             )
         };
         match (loaded, profile) {
@@ -2262,9 +2594,9 @@ impl EngineAdapter for WebView2Engine {
             (None, None) if extensions_on => done(Err(
                 "Bowser is still opening this window. Try again in a moment.".to_owned(),
             )),
-            (None, None) => done(Err(
-                "This window was started without extensions. Restart Bowser to load it.".to_owned(),
-            )),
+            (None, None) => done(Err(refused.unwrap_or_else(|| {
+                "This window was started without extensions. Restart Bowser to load it.".to_owned()
+            }))),
         }
     }
 
@@ -2297,6 +2629,17 @@ impl EngineAdapter for WebView2Engine {
             }
             _ => done(Ok(())),
         }
+    }
+
+    fn open_extension_page(
+        &mut self,
+        id: &str,
+        folder: &Path,
+        kind: crate::extensions::PageKind,
+        title: &str,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        self.open_extension_page_with(id, folder, kind, title, true, done);
     }
 
     fn site_cookie_count(
@@ -2960,6 +3303,10 @@ impl EngineAdapter for WebView2Engine {
         }
     }
     fn close(&mut self) -> Result<()> {
+        let page = self.core.borrow_mut().extension_page.take();
+        if let Some(page) = page {
+            page.close();
+        }
         let tabs: Vec<WebView2Tab> = {
             let mut state = self.core.borrow_mut();
             state.closed = true;
@@ -4447,6 +4794,35 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
+    /// production code, so the source-scanning tests below see the whole production region.
+    impl WebView2Engine {
+        /// Opens an extension page without showing a window.
+        pub(in crate::engine) fn open_extension_page_hidden(
+            &mut self,
+            id: &str,
+            folder: &Path,
+            kind: crate::extensions::PageKind,
+            done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+        ) {
+            self.open_extension_page_with(id, folder, kind, "Bowser extension probe", false, done);
+        }
+
+        /// Runs a script in the open hosted page.
+        pub(in crate::engine) fn extension_page_script(
+            &self,
+            script: &str,
+            done: Box<dyn FnOnce(Option<String>)>,
+        ) {
+            let webview =
+                self.core.borrow().extension_page.as_ref().map(|page| page.webview.clone());
+            match webview {
+                Some(webview) => super::super::extension_page::execute_script(&webview, script, done),
+                None => done(None),
+            }
+        }
+    }
+
     #[test]
     fn engine_never_blocks_on_a_webview2_completion() {
         // Tab controllers are configured inside WebView2's controller-created callback, where a
@@ -5254,6 +5630,99 @@ mod tests {
         }
     }
 
+    const HOSTED_ID: &str = "hekkainhmjhmmgdonhilehemnlbachak";
+
+    /// A hosted page's grant is for the one URL Bowser built, once. The live probe observed
+    /// `chrome-extension` as the scheme (docs/extensions.md); `extension` and `ms-browser-extension`
+    /// stay refused even for the same id and path. None of this reaches a tab: see
+    /// `extension_origin_schemes_are_not_loadable_in_tabs_today`.
+    #[test]
+    fn hosted_extension_page_grant_is_one_shot_and_exact_for_the_observed_scheme_only() {
+        let granted = Url::parse(&format!("chrome-extension://{HOSTED_ID}/popup.html")).unwrap();
+        let policy = HostedPagePolicy::new(&granted).expect("a Bowser-built page URL is grantable");
+        for other in [
+            format!("chrome-extension://{HOSTED_ID}/other.html"),
+            format!("chrome-extension://{HOSTED_ID}/popup.html?x=1"),
+            format!("chrome-extension://{HOSTED_ID}/popup.html#x"),
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/popup.html".to_owned(),
+            format!("extension://{HOSTED_ID}/popup.html"),
+            format!("ms-browser-extension://{HOSTED_ID}/popup.html"),
+            "https://example.com/".to_owned(),
+            "file:///C:/Windows/win.ini".to_owned(),
+            "about:blank".to_owned(),
+        ] {
+            let other = Url::parse(&other).unwrap();
+            assert!(!policy.allow_navigation(&other), "{other} must not use the grant");
+        }
+        // Refusals above did not use up the grant.
+        assert!(policy.allow_navigation(&granted), "first navigation to the granted URL");
+        assert!(!policy.allow_navigation(&granted), "the grant is one-shot");
+    }
+
+    #[test]
+    fn hosted_extension_page_policy_cannot_be_built_for_any_other_scheme_or_shape() {
+        for refused in [
+            format!("extension://{HOSTED_ID}/popup.html"),
+            format!("ms-browser-extension://{HOSTED_ID}/popup.html"),
+            format!("https://{HOSTED_ID}/popup.html"),
+            format!("chrome-extension://{HOSTED_ID}/"),
+            format!("chrome-extension://{HOSTED_ID}/popup.html?x=1"),
+            "chrome-extension://short/popup.html".to_owned(),
+            "file:///C:/Windows/win.ini".to_owned(),
+        ] {
+            assert!(HostedPagePolicy::new(&Url::parse(&refused).unwrap()).is_none(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn hosted_extension_page_frames_stay_inside_the_granted_extension() {
+        let granted = Url::parse(&format!("chrome-extension://{HOSTED_ID}/popup.html")).unwrap();
+        let policy = HostedPagePolicy::new(&granted).unwrap();
+        for allowed in [
+            "about:blank",
+            "about:srcdoc",
+            &format!("chrome-extension://{HOSTED_ID}/frame.html"),
+        ] {
+            assert!(policy.allow_frame(&Url::parse(allowed).unwrap()), "{allowed}");
+        }
+        for refused in [
+            "https://example.com/",
+            "http://127.0.0.1/",
+            "data:text/html,x",
+            "blob:chrome-extension://x/y",
+            "file:///C:/Windows/win.ini",
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/frame.html",
+            &format!("extension://{HOSTED_ID}/frame.html"),
+            &format!("ms-browser-extension://{HOSTED_ID}/frame.html"),
+        ] {
+            assert!(!policy.allow_frame(&Url::parse(refused).unwrap()), "{refused}");
+        }
+    }
+
+    /// Documents what tabs do with the schemes an extension origin might use. The live probe
+    /// observed `chrome-extension` (docs/extensions.md) and Bowser still unblocks none of these for
+    /// tabs: `ms-browser-extension` has its own Block arm, and the other two fall into the
+    /// external-protocol path, which only cancels the OS launch (`LaunchingExternalUriScheme`).
+    /// Nothing here lets a tab load one. Hosted pages use `HostedPagePolicy` instead.
+    #[test]
+    fn extension_origin_schemes_are_not_loadable_in_tabs_today() {
+        for (value, expected) in [
+            ("ms-browser-extension://abc/page.html", NavigationStartPolicy::Block),
+            ("chrome-extension://abc/page.html", NavigationStartPolicy::ExternalProtocol),
+            ("extension://abc/page.html", NavigationStartPolicy::ExternalProtocol),
+        ] {
+            let url = Url::parse(value).unwrap();
+            for grant in [None, Some(&url)] {
+                assert_eq!(navigation_start_policy(&url, grant), expected, "{value}");
+            }
+            assert!(!navigation_scheme_allowed(&url), "{value}");
+            assert!(!frame_navigation_scheme_allowed(&url), "{value}");
+            assert_eq!(popup_decision(&url, true, true, false), PopupDecision::Block, "{value}");
+            assert_eq!(top_host_for_source(value), "", "{value}");
+            assert!(web_url_from_source(value).is_none(), "{value}");
+        }
+    }
+
     #[test]
     fn benchmark_file_grant_can_authorize_only_its_exact_first_navigation() {
         let allowed = Url::parse("file:///C:/Bowser/benchmarks/fixtures/light.html").unwrap();
@@ -5564,6 +6033,138 @@ mod tests {
     }
 
     #[test]
+    fn extension_log_lines_carry_hresult_id_and_name() {
+        use windows::core::HRESULT;
+        assert_eq!(
+            extension_log_line(
+                "add",
+                Some("ext-0123456789abcdef"),
+                Some(HRESULT(0)),
+                Some("ciocoifocbggchcecjgibbaeojegkpen"),
+                Some("Bowser Probe MV3"),
+            ),
+            "extension call=add bowser=ext-0123456789abcdef result=ok hresult=0x00000000 id=ciocoifocbggchcecjgibbaeojegkpen name=\"Bowser Probe MV3\""
+        );
+        // E_ACCESSDENIED is what WebView2 documents for a reserved `_` name.
+        assert_eq!(
+            extension_log_line("add", None, Some(HRESULT(0x8007_0005_u32 as i32)), None, None),
+            "extension call=add bowser=none result=failed hresult=0x80070005 id=none name=none"
+        );
+        // A completion that reported success without an extension has no HRESULT to report.
+        assert_eq!(
+            extension_log_line("add", None, None, None, None),
+            "extension call=add bowser=none result=no_extension hresult=none id=none name=none"
+        );
+    }
+
+    #[test]
+    fn extension_log_lines_cannot_be_forged_by_a_name_or_id() {
+        use windows::core::HRESULT;
+        let line = extension_log_line(
+            "remove",
+            None,
+            Some(HRESULT(0)),
+            Some("id\r\nextension call=enable"),
+            Some("a\nextension call=remove\u{202e}\"b\\"),
+        );
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        assert!(!line.chars().any(|c| c.is_control() || crate::extensions::is_invisible_format(c)));
+        assert!(line.ends_with("name=\"a?extension call=remove??b?\""), "{line}");
+        assert!(line.contains("id=id??extension call=enable "), "{line}");
+        let long = extension_log_line("add", None, Some(HRESULT(0)), None, Some(&"n".repeat(500)));
+        assert!(long.len() < 200, "names are capped: {} bytes", long.len());
+    }
+
+    #[test]
+    fn profile7_log_line_says_whether_the_runtime_supports_extensions() {
+        use windows::core::HRESULT;
+        assert_eq!(
+            profile7_log_line(HRESULT(0)),
+            "extension call=profile7_cast supported=true hresult=0x00000000"
+        );
+        // E_NOINTERFACE: the runtime has no ICoreWebView2Profile7.
+        assert_eq!(
+            profile7_log_line(HRESULT(0x8000_4002_u32 as i32)),
+            "extension call=profile7_cast supported=false hresult=0x80004002"
+        );
+    }
+
+    #[test]
+    fn a_load_result_is_recorded_and_then_announced() {
+        let id = "ext-00000000000000ab";
+        let announced = std::cell::Cell::new(0);
+        let seen_by_listener = std::cell::RefCell::new(None);
+        record_load(id, Err("boom".to_owned()), || {
+            announced.set(announced.get() + 1);
+            // Windows catch up from the record, so it must already be written when they hear.
+            *seen_by_listener.borrow_mut() = Some(crate::extensions::load_failure(id));
+        });
+        assert_eq!(announced.get(), 1);
+        assert_eq!(seen_by_listener.into_inner(), Some(Some("boom".to_owned())));
+        record_load(id, Ok(()), || announced.set(announced.get() + 1));
+        assert_eq!(announced.get(), 2, "a success is announced too: the failure it clears left the toolbar");
+        assert_eq!(crate::extensions::load_failure(id), None);
+    }
+
+    #[test]
+    fn every_engine_load_result_is_announced_to_the_windows() {
+        // The startup paths cannot run without WebView2; this keeps one of them from recording a
+        // result without telling the windows. Calls: report_load, the profile refusal, the runtime floor.
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        assert_eq!(production.matches("crate::extensions::record_load_result(").count(), 1, "only record_load records");
+        assert_eq!(production.matches("record_load(").count() - production.matches("fn record_load(").count(), 3);
+    }
+
+    #[test]
+    fn runtime_floor_for_extensions_is_134_0_3124_44() {
+        for version in [
+            "134.0.3124.44",
+            "134.0.3124.45",
+            "134.0.3125.0",
+            "135.0.0.0",
+            "155.0.4283.45",
+            " 155.0.4283.45\n",
+            // Preview channels append a word to the version.
+            "156.0.4300.0 beta",
+        ] {
+            assert!(runtime_supports_extensions(version), "{version:?}");
+        }
+        for version in [
+            "134.0.3124.43",
+            "134.0.3123.999",
+            "133.9.9999.99",
+            "120.0.2210.55",
+            "",
+            "garbage",
+            "134.0.3124",
+            "134.0.3124.44.1",
+            "134.0.3124.x",
+            "-1.0.0.0",
+            "999999999999.0.0.0",
+        ] {
+            assert!(!runtime_supports_extensions(version), "{version:?}");
+        }
+    }
+
+    #[test]
+    fn runtime_floor_log_line_reports_the_version_and_the_decision() {
+        assert_eq!(
+            runtime_floor_log_line("155.0.4283.45", true),
+            "extension call=runtime_floor version=155.0.4283.45 floor=134.0.3124.44 enabled=true"
+        );
+        assert_eq!(
+            runtime_floor_log_line("120.0.2210.55", false),
+            "extension call=runtime_floor version=120.0.2210.55 floor=134.0.3124.44 enabled=false"
+        );
+        // Text that is not a version is not echoed.
+        assert_eq!(
+            runtime_floor_log_line("evil\nline", false),
+            "extension call=runtime_floor version=unreadable floor=134.0.3124.44 enabled=false"
+        );
+    }
+
+    #[test]
     fn minimize_hide_does_not_mark_the_active_tab_for_the_30s_suspend_sweep() {
         let core = Rc::new(RefCell::new(EngineCore {
             parent: HWND::default(),
@@ -5593,6 +6194,7 @@ mod tests {
             suspended: HashSet::new(),
             closed: false,
             browser_extensions: false,
+            extensions_refused: None,
             extension_profile: None,
             extensions_loaded: HashMap::new(),
             startup_extensions: Vec::new(),
@@ -5601,6 +6203,7 @@ mod tests {
             extension_ids: HashMap::new(),
             permissions: None,
             chrome_ui_scheme: false,
+            extension_page: None,
         }));
         let mut engine = WebView2Engine { core: core.clone() };
         // On minimize, set_visible(false) is called on the engine:

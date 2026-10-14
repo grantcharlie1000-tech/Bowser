@@ -7,7 +7,8 @@
 //! Layout inside a profile: `Extensions\<id>\` holds the copied folder and `extensions.txt` lists
 //! one installed extension per line as `id<TAB>enabled(0|1)<TAB>name<TAB>version`.
 //!
-//! Scope: only unpacked folders chosen by the user. Chrome Web Store installs are not supported.
+//! Scope: only unpacked folders and `.crx` files chosen by the user. Chrome Web Store installs are
+//! not supported.
 
 use std::{
     collections::{BTreeMap, hash_map::RandomState},
@@ -40,6 +41,9 @@ const MAX_FAILURE_CHARS: usize = 200;
 const ID_PREFIX: &str = "ext-";
 const ID_LEN: usize = ID_PREFIX.len() + 16;
 const MANIFEST_FILE_NAME: &str = "manifest.json";
+/// The one root entry starting with `_` that is accepted. WebView2 reserves the others for the
+/// system (`E_ACCESSDENIED`), so they are refused before anything is copied or loaded.
+const LOCALES_FOLDER: &str = "_locales";
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 /// Open a reparse point itself instead of the target it names.
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -67,6 +71,7 @@ pub enum ExtensionError {
     LinkNotAllowed,
     UnsupportedEntry,
     InvalidName,
+    ReservedRootName,
     TooManyFiles,
     TooLarge,
     TooDeep,
@@ -87,6 +92,9 @@ impl std::fmt::Display for ExtensionError {
             Self::LinkNotAllowed => "The folder contains a link or junction, which is not allowed.",
             Self::UnsupportedEntry => "The folder contains an entry that is not a file or folder.",
             Self::InvalidName => "The folder contains a file name Bowser does not accept.",
+            Self::ReservedRootName => {
+                "The folder has a top-level file or folder whose name starts with \"_\" (only _locales is allowed). WebView2 reserves those names."
+            }
             Self::TooManyFiles => "The extension has too many files.",
             Self::TooLarge => "The extension is too large.",
             Self::TooDeep => "The extension folders are nested too deeply.",
@@ -251,9 +259,42 @@ fn string_list(
     }
 }
 
-/// Non-blank text of at most `max` characters with no control characters.
+/// Non-blank text of at most `max` characters with no control characters and no invisible format
+/// characters. Such text is refused, never cleaned up: the user must be shown what the manifest says.
 fn is_plain_text(text: &str, max: usize) -> bool {
-    !text.trim().is_empty() && text.chars().count() <= max && !text.chars().any(char::is_control)
+    !text.trim().is_empty()
+        && text.chars().count() <= max
+        && !text.chars().any(|c| c.is_control() || is_invisible_format(c))
+}
+
+/// Unicode format characters (category Cf: bidi overrides and isolates, zero-width characters, the
+/// soft hyphen, the BOM, tag characters and so on) plus the line and paragraph separators. They draw
+/// nothing or reorder what is drawn, so they could disguise a name or a permission in a prompt.
+pub(crate) fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061c}'
+            | '\u{06dd}'
+            | '\u{070f}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
 }
 
 /// One to four dot-separated integers, each 0 to 65535, as Chrome requires.
@@ -309,7 +350,7 @@ enum EntryKind {
 }
 
 /// Visits every entry under `root` (depth first) and fails on links, unsupported entries, invalid
-/// names or any cap. `visit` receives each entry's path relative to `root`.
+/// names, a reserved root name or any cap. `visit` receives each entry's path relative to `root`.
 fn walk_with_limits(
     root: &Path,
     limits: Limits,
@@ -332,9 +373,16 @@ fn walk_with_limits(
             if !is_valid_entry_name(name) {
                 return Err(ExtensionError::InvalidName);
             }
+            let at_root = relative.as_os_str().is_empty();
+            if at_root && name.starts_with('_') && name != LOCALES_FOLDER {
+                return Err(ExtensionError::ReservedRootName);
+            }
             let meta = fs::symlink_metadata(entry.path()).map_err(|_| ExtensionError::Io)?;
             if is_link(&meta) {
                 return Err(ExtensionError::LinkNotAllowed);
+            }
+            if at_root && name == LOCALES_FOLDER && !meta.is_dir() {
+                return Err(ExtensionError::ReservedRootName);
             }
             let child = relative.join(name);
             if meta.is_dir() {
@@ -669,26 +717,305 @@ fn sanitize_text(text: &str) -> String {
         .to_owned()
 }
 
-/// Human-readable summary for the install confirmation. It lists everything that grants access:
-/// declared and optional permissions, host access, and the pages each content script runs on
-/// (`<all_urls>` included).
+/// Longest item shown in the summary, and longest run of items on one line. Longer items are cut
+/// and the rest of the list is replaced by a count, so a padded manifest cannot push lines out of
+/// the dialog.
+const MAX_SUMMARY_ITEM_CHARS: usize = 56;
+const MAX_SUMMARY_LIST_CHARS: usize = 120;
+
+/// Upper bound on the text of the install confirmation (see [`install_prompt`]).
+pub const MAX_PROMPT_CHARS: usize = 2_400;
+
+/// Human-readable summary for the install confirmation. Counts come first, then a flag for access to
+/// every website, then site access and content-script pages, then permissions. Each list is capped,
+/// with the real count stated, so nothing can be padded out of view.
 pub fn permission_summary(manifest: &Manifest) -> String {
-    let list = |items: &[String]| {
-        if items.is_empty() {
-            "none".to_owned()
-        } else {
-            items.join(", ")
-        }
+    let count = |items: &[String], one: &str, many: &str| {
+        format!("{} {}", items.len(), if items.len() == 1 { one } else { many })
     };
+    let mut lines = vec![
+        format!("Manifest version {}.", manifest.manifest_version),
+        format!(
+            "Declared: {}, {}, {}, {}, {}.",
+            count(&manifest.permissions, "permission", "permissions"),
+            count(&manifest.host_permissions, "site access", "site access"),
+            count(
+                &manifest.content_script_matches,
+                "content-script match",
+                "content-script matches"
+            ),
+            count(
+                &manifest.optional_permissions,
+                "optional permission",
+                "optional permissions"
+            ),
+            count(
+                &manifest.optional_host_permissions,
+                "optional site access",
+                "optional site access"
+            ),
+        ),
+    ];
+    let broad = |lists: &[&[String]]| {
+        lists
+            .iter()
+            .any(|list| list.iter().any(|item| is_broad_pattern(item)))
+    };
+    if broad(&[
+        &manifest.permissions,
+        &manifest.host_permissions,
+        &manifest.content_script_matches,
+    ]) {
+        lines.push("Every website: yes".to_owned());
+    } else if broad(&[
+        &manifest.optional_permissions,
+        &manifest.optional_host_permissions,
+    ]) {
+        lines.push("Every website (optional): yes".to_owned());
+    }
+    for (label, items) in [
+        ("Site access", &manifest.host_permissions),
+        ("Content scripts run on", &manifest.content_script_matches),
+        ("Permissions", &manifest.permissions),
+        ("Optional site access", &manifest.optional_host_permissions),
+        ("Optional permissions", &manifest.optional_permissions),
+    ] {
+        lines.push(format!("{label}: {}", capped_list(items)));
+    }
+    lines.join("\n")
+}
+
+/// The whole install confirmation: what is being installed, the capped permission summary, and what
+/// Bowser does and does not do about it. WebView2 is not documented to limit an extension to less
+/// than its manifest declares, so the dialog assumes it has everything it declares; Bowser cannot
+/// narrow it afterwards, so the answer is all or nothing.
+pub fn install_prompt(manifest: &Manifest) -> String {
     format!(
-        "Manifest version {}.\nPermissions: {}\nSite access: {}\nContent scripts run on: {}\nOptional permissions: {}\nOptional site access: {}",
-        manifest.manifest_version,
-        list(&manifest.permissions),
-        list(&manifest.host_permissions),
-        list(&manifest.content_script_matches),
-        list(&manifest.optional_permissions),
-        list(&manifest.optional_host_permissions)
+        "Install \"{}\" version {}?\n\n{}\n\nAssume an extension that is on has everything it declares. Bowser shows these but cannot narrow them. Only install extensions you trust. An extension can read and change the pages it has access to.",
+        manifest.name,
+        manifest.version,
+        permission_summary(manifest)
     )
+}
+
+/// `<all_urls>`, or any `*`, `http` or `https` pattern whose host is exactly `*`.
+fn is_broad_pattern(pattern: &str) -> bool {
+    if pattern == "<all_urls>" {
+        return true;
+    }
+    let Some((scheme, rest)) = pattern.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "*" | "http" | "https") && rest.split('/').next() == Some("*")
+}
+
+/// The first items that fit on one line, each cut to a fixed length, then how many were left out.
+fn capped_list(items: &[String]) -> String {
+    if items.is_empty() {
+        return "none".to_owned();
+    }
+    let mut shown = String::new();
+    let mut used = 0;
+    let mut listed = 0;
+    for item in items {
+        let text = if item.chars().count() > MAX_SUMMARY_ITEM_CHARS {
+            let cut: String = item.chars().take(MAX_SUMMARY_ITEM_CHARS).collect();
+            format!("{cut}...")
+        } else {
+            item.clone()
+        };
+        let width = text.chars().count() + if listed == 0 { 0 } else { 2 };
+        if listed > 0 && used + width > MAX_SUMMARY_LIST_CHARS {
+            break;
+        }
+        if listed > 0 {
+            shown.push_str(", ");
+        }
+        shown.push_str(&text);
+        used += width;
+        listed += 1;
+    }
+    let left_out = items.len() - listed;
+    if left_out > 0 {
+        shown.push_str(&format!(", and {left_out} more"));
+    }
+    shown
+}
+
+/// The scheme WebView2 gave extension pages in the live probe (runtime 155.0.4283.45): both
+/// `chrome.runtime.getURL` and the page origin used it. See `docs/extensions.md`.
+pub const EXTENSION_PAGE_SCHEME: &str = "chrome-extension";
+
+/// Which page of an extension Bowser may host itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    Popup,
+    Options,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageError {
+    /// The manifest declares no such page.
+    NoPage,
+    /// The declared path is not a plain relative path.
+    UnsafePath,
+    /// The path names no plain file inside the extension folder.
+    MissingFile,
+    /// The WebView2 id is not the 32-letter form the runtime reports.
+    InvalidWebviewId,
+    /// `manifest.json` could not be read or parsed.
+    Unreadable,
+}
+
+impl std::fmt::Display for PageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoPage => "The extension does not declare that page.",
+            Self::UnsafePath => "The extension declares a page path that Bowser will not open.",
+            Self::MissingFile => "The extension's page file is missing.",
+            Self::InvalidWebviewId => "WebView2 gave the extension an id Bowser does not recognise.",
+            Self::Unreadable => "The extension's manifest could not be read.",
+        })
+    }
+}
+
+/// The raw page path a manifest declares, unvalidated. Popup: `action.default_popup`. Options:
+/// `options_ui.page`, else `options_page`.
+pub fn declared_page(manifest: &[u8], kind: PageKind) -> Option<String> {
+    if manifest.len() as u64 > MAX_MANIFEST_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(manifest).ok()?;
+    let json::Value::Object(fields) = json::parse(text.strip_prefix('\u{feff}').unwrap_or(text))?
+    else {
+        return None;
+    };
+    let text_member = |value: Option<&json::Value>, key: &str| match value {
+        Some(json::Value::Object(inner)) => match json::get(inner, key) {
+            Some(json::Value::String(text)) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let text_field = |key: &str| match json::get(&fields, key) {
+        Some(json::Value::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    match kind {
+        PageKind::Popup => text_member(json::get(&fields, "action"), "default_popup"),
+        PageKind::Options => text_member(json::get(&fields, "options_ui"), "page")
+            .or_else(|| text_field("options_page")),
+    }
+}
+
+const MAX_PAGE_PATH_CHARS: usize = 256;
+
+/// A plain relative path: `/`-separated segments of ASCII letters, digits, `.`, `_` and `-`. That
+/// leaves no scheme, drive, backslash, query, fragment, percent escape or `.`/`..` segment to
+/// interpret, so the path means the same thing in a URL and on disk.
+fn is_plain_page_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_PAGE_PATH_CHARS
+        && path.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && !segment.ends_with('.')
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        })
+}
+
+/// The 32 letters `a` to `p` WebView2 reports as an extension id.
+fn is_webview_extension_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'a'..=b'p'))
+}
+
+/// `chrome-extension://<id>/<path>` for a WebView2 id and a validated relative path.
+pub fn page_url(webview_id: &str, path: &str) -> Result<url::Url, PageError> {
+    if !is_webview_extension_id(webview_id) {
+        return Err(PageError::InvalidWebviewId);
+    }
+    if !is_plain_page_path(path) {
+        return Err(PageError::UnsafePath);
+    }
+    url::Url::parse(&format!("{EXTENSION_PAGE_SCHEME}://{webview_id}/{path}"))
+        .map_err(|_| PageError::UnsafePath)
+}
+
+/// Whether `url` is exactly what [`page_url`] builds: the extension scheme, a 32-letter id as the
+/// host, a plain path, and nothing else (no port, user, query or fragment).
+pub fn is_page_url(url: &url::Url) -> bool {
+    let (Some(host), Some(path)) = (url.host_str(), url.path().strip_prefix('/')) else {
+        return false;
+    };
+    page_url(host, path).is_ok_and(|built| built == *url)
+}
+
+/// The bytes of a plain, size-capped `manifest.json` that parses as a JSON object.
+fn read_page_manifest(folder: &Path) -> Result<Vec<u8>, PageError> {
+    let manifest_path = folder.join(MANIFEST_FILE_NAME);
+    let meta = fs::symlink_metadata(&manifest_path).map_err(|_| PageError::Unreadable)?;
+    if !is_plain_file(&meta) || meta.len() > MAX_MANIFEST_BYTES {
+        return Err(PageError::Unreadable);
+    }
+    let bytes = fs::read(&manifest_path).map_err(|_| PageError::Unreadable)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| PageError::Unreadable)?;
+    match json::parse(text.strip_prefix('\u{feff}').unwrap_or(text)) {
+        Some(json::Value::Object(_)) => Ok(bytes),
+        _ => Err(PageError::Unreadable),
+    }
+}
+
+/// Whether the manifest in `folder` names a page of this kind. It does not validate the path; the
+/// extensions menu uses it to list only extensions that have something to open.
+pub fn declares_page(folder: &Path, kind: PageKind) -> bool {
+    read_page_manifest(folder).is_ok_and(|bytes| declared_page(&bytes, kind).is_some())
+}
+
+/// The manifest of an installed extension, read from Bowser's own copy in `folder`: the declarations
+/// the user saw when they installed it. `None` when the copy is missing or no longer parses.
+pub fn installed_manifest(folder: &Path) -> Option<Manifest> {
+    parse_manifest(&read_page_manifest(folder).ok()?).ok()
+}
+
+/// Whether the manifest's required site access, permissions or content scripts cover every website.
+pub fn reaches_every_site(manifest: &Manifest) -> bool {
+    [
+        &manifest.permissions,
+        &manifest.host_permissions,
+        &manifest.content_script_matches,
+    ]
+    .iter()
+    .any(|list| list.iter().any(|item| is_broad_pattern(item)))
+}
+
+/// The URL of an extension's popup or options page, read from Bowser's own copy in `folder`. The
+/// declared file must be a plain file reached through plain folders, so a link inside the copy
+/// cannot point the page outside it.
+pub fn extension_page_url(
+    folder: &Path,
+    kind: PageKind,
+    webview_id: &str,
+) -> Result<url::Url, PageError> {
+    let bytes = read_page_manifest(folder)?;
+    let path = declared_page(&bytes, kind).ok_or(PageError::NoPage)?;
+    let url = page_url(webview_id, &path)?;
+    let mut current = folder.to_path_buf();
+    let segments: Vec<&str> = path.split('/').collect();
+    for (index, segment) in segments.iter().enumerate() {
+        current.push(segment);
+        let plain = if index + 1 == segments.len() {
+            fs::symlink_metadata(&current).is_ok_and(|meta| is_plain_file(&meta))
+        } else {
+            is_plain_dir(&current)
+        };
+        if !plain {
+            return Err(PageError::MissingFile);
+        }
+    }
+    Ok(url)
 }
 
 static LOAD_RESULTS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
@@ -1451,5 +1778,495 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("extensions")
+            .join(name)
+    }
+
+    #[test]
+    fn probe_fixtures_are_accepted_or_refused_as_intended() {
+        for name in ["probe-mv3", "probe-mv3-locales", "probe-mv3-key"] {
+            let inspection = inspect_source(&fixture(name))
+                .unwrap_or_else(|error| panic!("{name} should be accepted: {error}"));
+            let manifest = inspection.manifest;
+            assert_eq!(manifest.manifest_version, 3, "{name}");
+            assert_eq!(manifest.permissions, vec!["storage"], "{name}");
+            assert_eq!(manifest.host_permissions, vec!["http://127.0.0.1/*"], "{name}");
+            assert_eq!(manifest.content_script_matches, vec!["http://127.0.0.1/*"], "{name}");
+            assert!(manifest.optional_permissions.is_empty(), "{name}");
+        }
+        assert_eq!(
+            inspect_source(&fixture("probe-mv3-metadata")).err(),
+            Some(ExtensionError::ReservedRootName)
+        );
+    }
+
+    #[test]
+    fn locales_fixture_keeps_its_raw_name_and_its_locales_folder_through_install() {
+        let source = fixture("probe-mv3-locales");
+        assert_eq!(
+            inspect_source(&source).unwrap().manifest.name,
+            "__MSG_extName__"
+        );
+        let dir = temp_dir("fixture-locales");
+        let extensions = dir.join("Extensions");
+        let file = dir.join("extensions.txt");
+        let record = install(&source, &extensions, &file).unwrap();
+        let copy = extensions.join(&record.id);
+        assert!(copy.join("_locales").join("en").join("messages.json").is_file());
+        assert!(copy.join("worker.js").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn metadata_fixture_is_refused_and_install_leaves_nothing_behind() {
+        let dir = temp_dir("fixture-metadata");
+        let extensions = dir.join("Extensions");
+        let file = dir.join("extensions.txt");
+        assert_eq!(
+            install_confirmed(&fixture("probe-mv3-metadata"), &extensions, &file, &mut |_| true),
+            Err(ExtensionError::ReservedRootName)
+        );
+        assert_eq!(fs::read_dir(&extensions).map_or(0, |entries| entries.count()), 0);
+        assert!(read_records(&file).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_root_locales_folder_may_start_with_an_underscore() {
+        let dir = temp_dir("underscore");
+        fs::write(dir.join("manifest.json"), MV3).unwrap();
+
+        fs::create_dir_all(dir.join("_locales").join("en")).unwrap();
+        fs::write(dir.join("_locales").join("en").join("messages.json"), "{}").unwrap();
+        assert!(inspect_source(&dir).is_ok(), "_locales is the one allowed name");
+        let _ = fs::remove_dir_all(dir.join("_locales"));
+
+        // Refused whether the entry is a folder or a file, and the case must match exactly.
+        for (name, is_dir) in [
+            ("_metadata", true),
+            ("_other", true),
+            ("_file.txt", false),
+            ("_Locales", true),
+            ("__MACOSX", true),
+        ] {
+            let path = dir.join(name);
+            if is_dir {
+                fs::create_dir_all(&path).unwrap();
+            } else {
+                fs::write(&path, "x").unwrap();
+            }
+            assert_eq!(
+                inspect_source(&dir).err(),
+                Some(ExtensionError::ReservedRootName),
+                "{name}"
+            );
+            let _ = if is_dir { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        }
+
+        // A file named _locales is not the locales folder.
+        fs::write(dir.join("_locales"), "x").unwrap();
+        assert_eq!(inspect_source(&dir).err(), Some(ExtensionError::ReservedRootName));
+        let _ = fs::remove_file(dir.join("_locales"));
+
+        // The rule covers the root only; deeper names are the runtime's business.
+        fs::create_dir_all(dir.join("lib").join("_vendor")).unwrap();
+        assert!(inspect_source(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_key_and_default_locale_are_accepted_and_ignored() {
+        let manifest = parse_manifest(&manifest(
+            r#"{"manifest_version":3,"name":"__MSG_n__","version":"1","default_locale":"en","key":"MIIBIjANBgkq"}"#,
+        ))
+        .unwrap();
+        assert_eq!(manifest.name, "__MSG_n__");
+    }
+
+    #[test]
+    fn names_and_permissions_with_invisible_format_characters_are_refused() {
+        // Right-to-left override, isolates, zero-width, soft hyphen, BOM, tag character and the
+        // line and paragraph separators.
+        for c in [
+            '\u{202e}', '\u{202a}', '\u{2066}', '\u{2069}', '\u{200b}', '\u{200d}', '\u{200f}',
+            '\u{00ad}', '\u{feff}', '\u{2060}', '\u{e0041}', '\u{2028}', '\u{2029}',
+        ] {
+            let escaped = c.escape_unicode();
+            let cases = [
+                format!(r#"{{"manifest_version":3,"name":"Safe{c}Name","version":"1"}}"#),
+                format!(r#"{{"manifest_version":3,"name":"a","version":"1","permissions":["tab{c}s"]}}"#),
+                format!(r#"{{"manifest_version":3,"name":"a","version":"1","host_permissions":["https://a.test{c}/*"]}}"#),
+                format!(r#"{{"manifest_version":3,"name":"a","version":"1","optional_permissions":["{c}"]}}"#),
+                format!(r#"{{"manifest_version":3,"name":"a","version":"1","optional_host_permissions":["x{c}"]}}"#),
+                format!(r#"{{"manifest_version":3,"name":"a","version":"1","content_scripts":[{{"matches":["https://a.test/{c}*"]}}]}}"#),
+            ];
+            for text in cases {
+                assert!(
+                    parse_manifest(text.as_bytes()).is_err(),
+                    "{escaped} must be refused, not stripped: {text}"
+                );
+            }
+        }
+        // The same characters written as JSON escapes are caught after decoding.
+        assert!(
+            parse_manifest(br#"{"manifest_version":3,"name":"a\u202eb","version":"1"}"#).is_err()
+        );
+        // Ordinary non-ASCII text is still fine.
+        let ok = parse_manifest(
+            "{\"manifest_version\":3,\"name\":\"Café 日本語 😀\",\"version\":\"1\"}".as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(ok.name, "Café 日本語 😀");
+    }
+
+    /// A manifest that fills every list to its cap with the longest items, with the one pattern that
+    /// matters (`<all_urls>`) as the very last site-access entry.
+    fn padded_manifest() -> Manifest {
+        let filler = |prefix: &str| -> Vec<String> {
+            (0..MAX_LIST_LEN)
+                .map(|i| format!("{prefix}{i}{}", "x".repeat(MAX_LIST_ITEM_CHARS))[..MAX_LIST_ITEM_CHARS].to_owned())
+                .collect()
+        };
+        let mut host_permissions = filler("https://pad");
+        *host_permissions.last_mut().unwrap() = "<all_urls>".to_owned();
+        Manifest {
+            name: "n".repeat(MAX_NAME_CHARS),
+            version: "65535.65535.65535.65535".to_owned(),
+            manifest_version: 3,
+            permissions: filler("perm"),
+            host_permissions,
+            content_script_matches: filler("https://script"),
+            optional_permissions: filler("opt"),
+            optional_host_permissions: filler("https://optsite"),
+        }
+    }
+
+    #[test]
+    fn summary_is_capped_counted_and_cannot_hide_site_access() {
+        let manifest = padded_manifest();
+        let summary = permission_summary(&manifest);
+        assert!(
+            summary.chars().count() < MAX_PROMPT_CHARS / 2,
+            "summary is {} characters",
+            summary.chars().count()
+        );
+        // Counts are real counts of the manifest, not of what is shown.
+        assert!(summary.contains("256 permissions"), "{summary}");
+        assert!(summary.contains("256 site access"), "{summary}");
+        assert!(summary.contains("256 content-script matches"), "{summary}");
+        assert!(summary.contains("more"), "{summary}");
+        // The broad grant is flagged up front even though `<all_urls>` is not among the items shown.
+        assert!(!summary.contains("<all_urls>, "));
+        let broad = summary.find("Every website").expect("broad access is flagged");
+        let site = summary.find("Site access:").unwrap();
+        let permissions = summary.find("Permissions:").unwrap();
+        let optional = summary.find("Optional permissions:").unwrap();
+        assert!(broad < site && site < permissions && permissions < optional);
+        assert!(summary.find("Content scripts run on:").unwrap() < permissions);
+    }
+
+    #[test]
+    fn summary_flags_every_website_only_for_broad_patterns() {
+        let summary_for = |body: &str| permission_summary(&parse_manifest(&manifest(body)).unwrap());
+        for pattern in ["<all_urls>", "*://*/*", "http://*/*", "https://*/*"] {
+            for key in ["host_permissions", "permissions"] {
+                let body = format!(
+                    r#"{{"manifest_version":3,"name":"x","version":"1","{key}":["{pattern}"]}}"#
+                );
+                assert!(summary_for(&body).contains("Every website: yes"), "{key} {pattern}");
+            }
+            let script = format!(
+                r#"{{"manifest_version":3,"name":"x","version":"1","content_scripts":[{{"matches":["{pattern}"]}}]}}"#
+            );
+            assert!(summary_for(&script).contains("Every website: yes"), "script {pattern}");
+        }
+        let optional = summary_for(
+            r#"{"manifest_version":3,"name":"x","version":"1","optional_host_permissions":["*://*/*"]}"#,
+        );
+        assert!(optional.contains("Every website (optional): yes"));
+        assert!(!optional.contains("Every website: yes"));
+        let narrow = summary_for(MV3);
+        assert!(!narrow.contains("Every website"), "{narrow}");
+        for pattern in ["https://*.example.com/*", "https://example.com/*", "http://127.0.0.1/*"] {
+            let body = format!(
+                r#"{{"manifest_version":3,"name":"x","version":"1","host_permissions":["{pattern}"]}}"#
+            );
+            assert!(!summary_for(&body).contains("Every website"), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn short_lists_are_shown_in_full_with_their_counts() {
+        let summary = permission_summary(&parse_manifest(&manifest(MV3)).unwrap());
+        assert!(summary.contains("2 permissions"), "{summary}");
+        assert!(summary.contains("1 site access"), "{summary}");
+        assert!(summary.contains("Permissions: storage, tabs"), "{summary}");
+        assert!(summary.contains("Site access: https://example.com/*"), "{summary}");
+        assert!(!summary.contains("more"), "{summary}");
+    }
+
+    #[test]
+    fn install_prompt_stays_short_and_does_not_claim_bowser_enforces_permissions() {
+        let prompt = install_prompt(&padded_manifest());
+        assert!(
+            prompt.chars().count() <= MAX_PROMPT_CHARS,
+            "prompt is {} characters",
+            prompt.chars().count()
+        );
+        let prompt = install_prompt(&parse_manifest(&manifest(MV3)).unwrap());
+        assert!(prompt.starts_with("Install \"Demo\" version 1.2.3?"), "{prompt}");
+        assert!(prompt.contains("https://example.com/*"));
+        assert!(prompt.contains("has everything it declares"), "{prompt}");
+        assert!(prompt.contains("cannot narrow"), "{prompt}");
+        assert!(prompt.contains("Only install extensions you trust"), "{prompt}");
+        let lower = prompt.to_lowercase();
+        assert!(!lower.contains("webview2 grants"), "{prompt}");
+        assert!(!lower.contains("bowser enforces"), "{prompt}");
+        assert!(!lower.contains("web store"), "{prompt}");
+        assert!(!lower.contains("chrome"), "{prompt}");
+    }
+
+    const WEBVIEW_ID: &str = "hekkainhmjhmmgdonhilehemnlbachak";
+
+    #[test]
+    fn declared_page_reads_the_popup_and_both_options_forms() {
+        let both = br#"{"action":{"default_popup":"popup.html"},"options_ui":{"page":"opts/o.html"},"options_page":"old.html"}"#;
+        assert_eq!(declared_page(both, PageKind::Popup).as_deref(), Some("popup.html"));
+        assert_eq!(declared_page(both, PageKind::Options).as_deref(), Some("opts/o.html"));
+        let legacy = br#"{"options_page":"old.html"}"#;
+        assert_eq!(declared_page(legacy, PageKind::Options).as_deref(), Some("old.html"));
+        assert_eq!(declared_page(legacy, PageKind::Popup), None);
+        for wrong in [
+            &br#"{"action":{"default_popup":3}}"#[..],
+            br#"{"action":"popup.html"}"#,
+            br#"{"action":{}}"#,
+            b"not json",
+            b"",
+        ] {
+            assert_eq!(declared_page(wrong, PageKind::Popup), None);
+        }
+    }
+
+    #[test]
+    fn page_url_uses_the_observed_scheme_the_webview_id_and_the_path() {
+        assert_eq!(EXTENSION_PAGE_SCHEME, "chrome-extension");
+        assert_eq!(
+            page_url(WEBVIEW_ID, "popup.html").unwrap().as_str(),
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html"
+        );
+        assert_eq!(
+            page_url(WEBVIEW_ID, "ui/pages/popup-1.html").unwrap().as_str(),
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/ui/pages/popup-1.html"
+        );
+    }
+
+    #[test]
+    fn page_url_refuses_every_path_that_is_not_plain_and_relative() {
+        let long = "a/".repeat(200) + "x.html";
+        for bad in [
+            "",
+            "/popup.html",
+            "../popup.html",
+            "a/../popup.html",
+            "a/./popup.html",
+            "./popup.html",
+            "a//popup.html",
+            "popup.html/",
+            "https://evil.example/x.html",
+            "chrome-extension://other/x.html",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "C:/Windows/x.html",
+            "C:x.html",
+            "a\\popup.html",
+            "popup.html?x=1",
+            "popup.html#x",
+            "%2e%2e/popup.html",
+            "popup.html ",
+            " popup.html",
+            "popup.html.",
+            "p\u{f6}pup.html",
+            "pop\0up.html",
+            "pop up.html",
+            long.as_str(),
+        ] {
+            assert_eq!(page_url(WEBVIEW_ID, bad), Err(PageError::UnsafePath), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn page_url_refuses_ids_that_are_not_the_observed_form() {
+        for bad in [
+            "",
+            "short",
+            "HEKKAINHMJHMMGDONHILEHEMNLBACHAK",
+            "hekkainhmjhmmgdonhilehemnlbachakk",
+            "hekkainhmjhmmgdonhilehemnlbachaq",
+            "hekkainhmjhmmgdonhilehemnlbac.ak",
+            "hekkainhmjhmmgdonhilehemnlbac@ak",
+            "evil.example/hekkainhmjhmmgdonhi",
+        ] {
+            assert_eq!(page_url(bad, "popup.html"), Err(PageError::InvalidWebviewId), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn declares_page_is_true_only_for_a_manifest_that_names_one() {
+        assert!(declares_page(&fixture("probe-mv3"), PageKind::Popup));
+        assert!(declares_page(&fixture("probe-mv3"), PageKind::Options));
+        assert!(!declares_page(&fixture("probe-mv3-key"), PageKind::Popup));
+        let missing = temp_dir("declares-missing");
+        assert!(!declares_page(&missing, PageKind::Popup));
+        let _ = fs::remove_dir_all(&missing);
+    }
+
+    #[test]
+    fn every_page_error_has_its_own_plain_message() {
+        let all = [
+            PageError::NoPage,
+            PageError::UnsafePath,
+            PageError::MissingFile,
+            PageError::InvalidWebviewId,
+            PageError::Unreadable,
+        ];
+        let messages: std::collections::BTreeSet<String> =
+            all.iter().map(ToString::to_string).collect();
+        assert_eq!(messages.len(), all.len());
+        assert!(messages.iter().all(|message| message.ends_with('.') && !message.contains("Error")));
+    }
+
+    #[test]
+    fn is_page_url_accepts_only_what_page_url_builds() {
+        for good in ["popup.html", "ui/pages/popup-1.html"] {
+            let built = page_url(WEBVIEW_ID, good).unwrap();
+            assert!(is_page_url(&built), "{built}");
+        }
+        for bad in [
+            "extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html",
+            "ms-browser-extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html",
+            "https://hekkainhmjhmmgdonhilehemnlbachak/popup.html",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html?x=1",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html#x",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak:81/popup.html",
+            "chrome-extension://user@hekkainhmjhmmgdonhilehemnlbachak/popup.html",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak",
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/a%20b.html",
+            "chrome-extension://HEKKAINHMJHMMGDONHILEHEMNLBACHAK/popup.html",
+            "chrome-extension://other/popup.html",
+        ] {
+            let url = url::Url::parse(bad).unwrap();
+            assert!(!is_page_url(&url), "{bad}");
+        }
+    }
+
+    fn page_folder(name: &str, manifest_body: &str, files: &[&str]) -> PathBuf {
+        let dir = temp_dir(name);
+        fs::write(dir.join("manifest.json"), manifest_body).unwrap();
+        for file in files {
+            let path = dir.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "<html></html>").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn extension_page_url_needs_the_declared_file_to_exist_inside_the_folder() {
+        let dir = page_folder(
+            "page-ok",
+            r#"{"action":{"default_popup":"ui/popup.html"},"options_page":"options.html"}"#,
+            &["ui/popup.html"],
+        );
+        assert_eq!(
+            extension_page_url(&dir, PageKind::Popup, WEBVIEW_ID).unwrap().as_str(),
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/ui/popup.html"
+        );
+        // Declared but absent.
+        assert_eq!(
+            extension_page_url(&dir, PageKind::Options, WEBVIEW_ID),
+            Err(PageError::MissingFile)
+        );
+        // A folder where a file is expected is not a page.
+        fs::create_dir_all(dir.join("options.html")).unwrap();
+        assert_eq!(
+            extension_page_url(&dir, PageKind::Options, WEBVIEW_ID),
+            Err(PageError::MissingFile)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extension_page_url_reports_no_page_and_unreadable_manifests() {
+        let none = page_folder("page-none", r#"{"manifest_version":3}"#, &[]);
+        assert_eq!(extension_page_url(&none, PageKind::Popup, WEBVIEW_ID), Err(PageError::NoPage));
+        let bad = page_folder("page-bad", "not json", &[]);
+        assert_eq!(extension_page_url(&bad, PageKind::Popup, WEBVIEW_ID), Err(PageError::Unreadable));
+        let missing = temp_dir("page-nomanifest");
+        assert_eq!(
+            extension_page_url(&missing, PageKind::Popup, WEBVIEW_ID),
+            Err(PageError::Unreadable)
+        );
+        for dir in [none, bad, missing] {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn extension_page_url_refuses_a_declared_path_that_escapes_or_has_a_scheme() {
+        for declared in [
+            r#""../outside.html""#,
+            r#""https://evil.example/p.html""#,
+            r#""a\\b.html""#,
+            r#""/abs.html""#,
+        ] {
+            let body = format!(r#"{{"action":{{"default_popup":{declared}}}}}"#);
+            let dir = page_folder("page-escape", &body, &[]);
+            fs::write(dir.parent().unwrap().join("outside.html"), "x").unwrap();
+            assert_eq!(
+                extension_page_url(&dir, PageKind::Popup, WEBVIEW_ID),
+                Err(PageError::UnsafePath),
+                "{declared}"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn extension_page_url_never_follows_a_junction_out_of_the_folder() {
+        let dir = page_folder("page-link", r#"{"action":{"default_popup":"link/popup.html"}}"#, &[]);
+        let outside = temp_dir("page-link-outside");
+        fs::write(outside.join("popup.html"), "<html></html>").unwrap();
+        make_junction(&dir.join("link"), &outside);
+        assert_eq!(
+            extension_page_url(&dir, PageKind::Popup, WEBVIEW_ID),
+            Err(PageError::MissingFile)
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn the_probe_fixture_declares_a_popup_and_an_options_page_that_exist() {
+        let source = fixture("probe-mv3");
+        assert_eq!(
+            extension_page_url(&source, PageKind::Popup, WEBVIEW_ID).unwrap().as_str(),
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/popup.html"
+        );
+        assert_eq!(
+            extension_page_url(&source, PageKind::Options, WEBVIEW_ID).unwrap().as_str(),
+            "chrome-extension://hekkainhmjhmmgdonhilehemnlbachak/options.html"
+        );
+        // The other probe variants declare no popup.
+        assert_eq!(
+            extension_page_url(&fixture("probe-mv3-key"), PageKind::Popup, WEBVIEW_ID),
+            Err(PageError::NoPage)
+        );
     }
 }

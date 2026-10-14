@@ -1020,7 +1020,7 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
+        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),

@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod settings;
 pub mod history_page; // bowser://history (docs/design/history-page.md)
 pub mod downloads_page; // bowser://downloads (docs/design/downloads.md)
+pub mod extensions_page; // the settings page's Extensions section and the toolbar button (docs/extensions.md)
 // --- split view ---
 pub mod split;
 // --- end split view ---
@@ -166,6 +167,10 @@ pub fn css_px_from_physical(physical: i32, dpi: u32) -> i32 {
 /// 28 px button and a 4 px gap. The pill gives up exactly this much width, so the page's actions group
 /// moves left by the same amount and the menu button never moves. The toolbar page agrees (`.has-dl`).
 pub const DL_BUTTON_SLOT: i32 = 32;
+
+/// CSS px the toolbar reserves for the extensions button (docs/extensions.md), left of the download
+/// button's slot: the same 28 px button and 4 px gap. The toolbar page agrees (`.has-ext`).
+pub const EXT_BUTTON_SLOT: i32 = 32;
 
 /// Pill x, pill width and menu x in CSS px relative to the HTML toolbar host's left edge.
 pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32)> {

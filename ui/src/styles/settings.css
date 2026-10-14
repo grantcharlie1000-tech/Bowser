@@ -1122,6 +1122,272 @@
   border-bottom: 0;
 }
 
+/* ---- Extensions (extensions-section.ts; docs/extensions.md "Managing extensions") ----
+   One card of extension rows, built like the setting rows: inset hairlines, 12px block padding, the
+   actions on the right. The tile is Bowser's own puzzle glyph, never a stand-in for an extension's
+   icon; it takes the accent while the extension is on (state, as everywhere on the page) and the
+   name greys while it is off. What a manifest declares opens under its row as a quiet well of
+   chips; the removal question sits in the row, never in a dialog. */
+.sp-ext-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+  /* The button's height, so the heading does not move when the empty state hides it. */
+  min-height: 32px;
+  margin-bottom: var(--bw-space-2);
+}
+
+.sp-ext-head > .sp-group-h {
+  margin-bottom: 0;
+}
+
+/* The two install buttons share a row and a weight. */
+.sp-ext-installs,
+.sp-ext-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-2);
+}
+
+.sp-ext-item {
+  position: relative;
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-ext-item + .sp-ext-item::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-ext-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bw-space-3);
+}
+
+.sp-ext-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--bw-r-island);
+  background: var(--sp-field);
+  color: var(--bw-accent);
+  transition: color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-ext-item.is-off .sp-ext-tile {
+  color: var(--bw-text-2);
+}
+
+.sp-ext-name {
+  font-weight: var(--bw-weight-strong);
+  overflow-wrap: anywhere;
+  transition: color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-ext-item.is-off .sp-ext-name {
+  color: var(--bw-text-2);
+}
+
+.sp-ext-reach {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--bw-space-1_5);
+}
+
+.sp-ext-reach > svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  color: var(--sp-warn);
+}
+
+/* Every website: said in the primary text colour, so it is read, not skimmed. */
+.sp-ext-reach.is-broad {
+  color: var(--bw-text);
+}
+
+.sp-ext-failure {
+  margin-top: var(--bw-space-0_5);
+  overflow-wrap: anywhere;
+}
+
+.sp-ext-toggle-details {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  margin: var(--bw-space-1) 0 0 calc(var(--bw-space-1) * -1);
+  padding: 2px var(--bw-space-1);
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: var(--bw-text-2);
+  font: var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
+  cursor: default;
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-ext-toggle-details:hover {
+  background: color-mix(in srgb, var(--bw-text) 6%, transparent);
+  color: var(--bw-text);
+}
+
+.sp-ext-toggle-details:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 0;
+  box-shadow: 0 0 0 3px var(--bw-focus-inner);
+}
+
+.sp-ext-actions {
+  gap: var(--bw-space-2);
+  min-height: 32px;
+}
+
+.sp-ext-item.is-busy .sp-ext-main > :not(.sp-ext-actions) {
+  opacity: 0.6;
+}
+
+/* Declarations and the removal question line up under the name, past the tile. */
+.sp-ext-details,
+.sp-ext-confirm {
+  margin: var(--bw-space-3) 0 0 calc(32px + var(--bw-space-3));
+  padding: var(--bw-space-3);
+  border-radius: var(--bw-r-row);
+}
+
+.sp-ext-details {
+  background: var(--sp-well);
+}
+
+.sp-ext-details > .sp-desc {
+  margin: 0;
+}
+
+.sp-ext-decl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--bw-space-2) var(--bw-space-4);
+  margin: 0;
+}
+
+.sp-ext-decl > dt {
+  padding-top: 3px;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp-ext-decl > dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  margin: 0;
+}
+
+.sp-ext-chip {
+  max-width: 100%;
+  padding: 1px var(--bw-space-1_5);
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--bw-r-control);
+  background: var(--sp-field);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+
+.sp-ext-more {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-ext-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-4);
+  border: 1px solid color-mix(in srgb, #c42b1c 45%, transparent);
+  background: color-mix(in srgb, #c42b1c 8%, transparent);
+}
+
+.sp-ext-confirm > .sp-desc {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--bw-text);
+}
+
+/* Loading, unreadable and empty: one message in the card, never a blank one. */
+.sp-ext-state {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 56px;
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-ext-state-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--bw-text-2);
+}
+
+.sp-ext-state.is-error .sp-ext-state-mark {
+  color: var(--sp-warn);
+}
+
+.sp-ext-state.is-empty {
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-6) var(--sp-row-x);
+  text-align: center;
+}
+
+.sp-ext-state.is-empty > .sp-text {
+  align-items: center;
+}
+
+.sp-ext-state.is-empty .sp-desc {
+  max-width: 48ch;
+}
+
+.sp-ext-state.is-empty > .bw-button,
+.sp-ext-state.is-empty > .sp-ext-state-actions {
+  margin-top: var(--bw-space-2);
+}
+
+.sp-ext-state.is-empty .sp-ext-state-mark {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--bw-r-island);
+  background: var(--sp-field);
+}
+
+.sp-ext-note {
+  max-width: 72ch;
+  margin-top: var(--bw-space-2);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
 /* ---- "Saved" toast ---- */
 .sp-toast {
   position: fixed;

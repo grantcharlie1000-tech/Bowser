@@ -1,9 +1,10 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
-import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
+import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
 import { buttonLabel, buttonTip, ringMode, ringOffset } from './downloads-logic';
+import { extButtonText } from './extensions-logic';
 
 export interface View {
   readonly back: HTMLButtonElement;
@@ -25,6 +26,8 @@ export interface View {
   readonly menu: HTMLButtonElement;
   /** The download button between the pill and the menu (docs/design/downloads.md). */
   readonly downloads: DownloadButton;
+  /** The extensions button, left of the download button's slot (docs/extensions.md). */
+  readonly extensions: ExtensionsButton;
 }
 
 /** Accessible name and tooltip of the pill's private-tab chip. */
@@ -159,8 +162,9 @@ export function buildView(root: HTMLElement): View {
   const nav = el('div', 'nav');
   nav.append(navGroup, reload);
   const downloads = buildDownloadButton(root);
+  const extensions = buildExtensionsButton(root);
   const actions = el('div', 'actions');
-  actions.append(downloads.button, menu);
+  actions.append(extensions.button, downloads.button, menu);
 
   // Empty areas of the toolbar (the root and its flex wrappers) are the window drag surface.
   // Buttons, the omnibox and the pill are not marked, so they keep their own behaviour.
@@ -170,7 +174,55 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu, downloads };
+  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu, downloads, extensions };
+}
+
+// ---- Extensions button (docs/extensions.md "Managing extensions", styles in toolbar.css) ----
+//
+// Shown only while Rust says an enabled extension has a popup (`extbtn.on`); Rust has already moved
+// the pill to make room. The glyph is Bowser's own puzzle, never a stand-in for an extension's icon:
+// the extension is named in the tooltip (one) or in the list Rust opens under the button (several).
+// No badge, no action icon: WebView2 exposes neither.
+
+export interface ExtensionsButton {
+  readonly button: HTMLButtonElement;
+  apply(msg: ExtButtonMsg): void;
+}
+
+function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
+  const button = iconButton('Extensions', 'puzzle', 'tb-nav is-lg is-round tb-ext');
+  button.hidden = true;
+  let outTimer = 0;
+  button.addEventListener('animationend', (event) => {
+    if (event.animationName === 'tb-dl-in' || event.animationName === 'bw-fade-in') button.classList.remove('is-in');
+  });
+  return {
+    button,
+    apply(msg: ExtButtonMsg): void {
+      window.clearTimeout(outTimer);
+      const text = extButtonText(msg);
+      label(button, text.label, text.tip);
+      if (text.menu) button.setAttribute('aria-haspopup', 'menu');
+      else button.removeAttribute('aria-haspopup');
+      if (msg.on) {
+        button.classList.remove('is-out');
+        if (button.hidden) {
+          button.hidden = false;
+          root.classList.add('has-ext');
+          restart(button, 'is-in');
+        }
+        return;
+      }
+      if (button.hidden || button.classList.contains('is-out')) return;
+      button.classList.remove('is-in');
+      button.classList.add('is-out');
+      outTimer = window.setTimeout(() => {
+        button.hidden = true;
+        button.classList.remove('is-out');
+        root.classList.remove('has-ext');
+      }, OUT_MS);
+    },
+  };
 }
 
 // ---- Download button (docs/design/downloads.md "Toolbar button", styles in toolbar.css) ----

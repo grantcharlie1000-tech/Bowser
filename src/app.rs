@@ -815,6 +815,7 @@ impl App {
                 Ok(())
             };
             crate::extensions::record_load_result(&id, result);
+            win32::extensions_changed();
             return;
         }
         let report = id.clone();
@@ -823,10 +824,56 @@ impl App {
                 &id,
                 &folder,
                 enabled,
-                Box::new(move |result| crate::extensions::record_load_result(&report, result)),
+                Box::new(move |result| {
+                    crate::extensions::record_load_result(&report, result);
+                    // The toolbar button and the settings page show load results; they catch up later.
+                    win32::extensions_changed();
+                }),
             );
             Ok(())
         });
+    }
+
+    /// Opens a loaded extension's popup or options page in a Bowser-owned window. A failure is
+    /// shown to the user; it is not recorded as a load failure, because the extension itself loaded.
+    pub fn open_extension_page(
+        app: &AppRef,
+        id: String,
+        folder: PathBuf,
+        kind: crate::extensions::PageKind,
+        title: String,
+    ) {
+        if app.borrow().engine.is_none() {
+            win32::show_error_message("Bowser is still starting. Try again in a moment.");
+            return;
+        }
+        // The engine is taken out of `app` while it runs, so a refusal that comes back at once is
+        // shown after the call, not from inside it.
+        let in_call = std::rc::Rc::new(std::cell::Cell::new(true));
+        let early = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let (call_flag, call_early) = (in_call.clone(), early.clone());
+        Self::with_engine(app, move |engine| {
+            engine.open_extension_page(
+                &id,
+                &folder,
+                kind,
+                &title,
+                Box::new(move |result| {
+                    if let Err(reason) = result {
+                        if call_flag.get() {
+                            *call_early.borrow_mut() = Some(reason);
+                        } else {
+                            win32::show_error_message(&format!("The extension page was not opened. {reason}"));
+                        }
+                    }
+                }),
+            );
+            Ok(())
+        });
+        in_call.set(false);
+        if let Some(reason) = early.borrow_mut().take() {
+            win32::show_error_message(&format!("The extension page was not opened. {reason}"));
+        }
     }
 
     /// Unloads an extension from the running profile, then calls `done` with the outcome. `done`

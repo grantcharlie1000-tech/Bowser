@@ -191,6 +191,8 @@ enum DeferredChromeCommand {
     PopupCompose { tok: u32 },
     /// The toolbar's download button was clicked (its rectangle waits in `downloads_ui`).
     DownloadsToggle,
+    /// The toolbar's extensions button was clicked (its rectangle waits in `html_ext_rect`).
+    ExtensionsButton,
     /// A row or list action on the open downloads bubble.
     DownloadsAct { tok: u32, id: u32, n: u8 },
     /// A composer the Customize flyout asked for; the request waits in `composer`.
@@ -508,6 +510,11 @@ struct WindowChrome {
     /// last `dlbtn` message the page was sent (docs/design/downloads.md, `downloads_ui`).
     html_dl_slot: i32,
     html_dl_last: Option<String>,
+    /// The same for the extensions button (`0` or `EXT_BUTTON_SLOT`, docs/extensions.md): its slot,
+    /// the last `extbtn` message the page was sent, and the button's rectangle from its last click.
+    html_ext_slot: i32,
+    html_ext_last: Option<String>,
+    html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
@@ -672,6 +679,9 @@ impl WindowChrome {
             html_last_state: None,
             html_dl_slot: 0,
             html_dl_last: None,
+            html_ext_slot: 0,
+            html_ext_last: None,
+            html_ext_rect: None,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -1040,6 +1050,10 @@ impl WindowChrome {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
         self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none());
+    }
+    /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
+    fn toolbar_slot(&self) -> i32 {
+        self.html_dl_slot + self.html_ext_slot
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -2558,6 +2572,11 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     super::downloads_ui::changed(hwnd, app, wparam.0);
                 }
+                LRESULT(0)
+            }
+            super::WM_EXTENSIONS_CHANGED => {
+                html_refresh_extensions_button(hwnd);
+                super::settings_page::extensions_changed(hwnd);
                 LRESULT(0)
             }
             // --- end split view ---
@@ -6689,6 +6708,10 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     const TOGGLE_BASE: usize = 100;
     const REMOVE_BASE: usize = 1000;
     const REMOVE_MENU: usize = 2;
+    const POPUP_MENU: usize = 3;
+    const MANAGE: usize = 4;
+    const INSTALL_CRX: usize = 5;
+    const POPUP_BASE: usize = 3000;
     const MAX_LISTED: usize = extensions::MAX_INSTALLED;
 
     let Ok(profile) = crate::profile::active() else {
@@ -6735,6 +6758,27 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
         })
         .collect();
     entries.push(Entry::Separator);
+    // Only an enabled extension whose manifest names a popup is listed.
+    let popup_entries: Vec<Entry> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| {
+            record.enabled
+                && extensions::folder_for(&profile.extensions_dir(), &record.id)
+                    .is_ok_and(|folder| extensions::declares_page(&folder, extensions::PageKind::Popup))
+        })
+        .map(|(index, record)| {
+            Entry::Item(
+                Item::new(POPUP_BASE + index, record.name.clone(), Icon::Grid).glyph("puzzle"),
+            )
+        })
+        .collect();
+    let popup = Item::new(POPUP_MENU, "Open extension popup…", Icon::Grid).glyph("puzzle");
+    entries.push(Entry::Item(if popup_entries.is_empty() {
+        popup.disabled()
+    } else {
+        popup.submenu_with(popup_entries)
+    }));
     let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
     entries.push(Entry::Item(if records.is_empty() {
         remove.disabled()
@@ -6742,19 +6786,26 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
         remove.submenu_with(remove_entries)
     }));
     entries.push(Entry::Separator);
+    entries.push(Entry::Item(Item::new(MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
     entries.push(Entry::Item(Item::new(
         INSTALL,
         "Install unpacked extension…",
         Icon::Plus,
     )
     .glyph("folder")));
+    entries.push(Entry::Item(Item::new(
+        INSTALL_CRX,
+        "Install CRX file…",
+        Icon::Plus,
+    )
+    .glyph("puzzle")));
 
     // --- popup host (lane M) ---
     let point = screen_point(hwnd, main_menu_anchor(hwnd));
     let menu = Menu {
         header: None,
         entries,
-        footer: "Unpacked extensions".to_owned(),
+        footer: "Extensions".to_owned(),
     };
     menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "extensions", move |app, chosen| {
         let command = chosen.map_or(0, |chosen| chosen.id);
@@ -6767,15 +6818,42 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
                 .find(|record| record.id == listed.id)
         };
         match command {
-            INSTALL => install_extension(hwnd, app, &profile),
+            INSTALL => {
+                if let Err(error) = install_extension(hwnd, app, &profile) {
+                    show_error_message(&error);
+                }
+            }
+            INSTALL_CRX => {
+                if let Err(error) = install_extension_from_crx_file(hwnd, app, &profile) {
+                    show_error_message(&error);
+                }
+            }
+            MANAGE => super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Extensions), false),
             id if (TOGGLE_BASE..TOGGLE_BASE + MAX_LISTED).contains(&id) => {
                 if let Some(record) = live(id - TOGGLE_BASE) {
-                    toggle_extension(app, &profile, &record);
+                    if let Err(error) = set_extension_enabled(app, &profile, &record, !record.enabled) {
+                        show_error_message(&error);
+                    }
                 }
             }
             id if (REMOVE_BASE..REMOVE_BASE + MAX_LISTED).contains(&id) => {
                 if let Some(record) = live(id - REMOVE_BASE) {
-                    remove_extension(app, &profile, &record);
+                    let question = format!(
+                        "Remove the extension \"{}\" from this profile? Its copied files will be deleted.",
+                        record.name
+                    );
+                    if crate::win32::ask_yes_no(&question) {
+                        remove_extension(app, &profile, &record, |result| {
+                            if let Err(error) = result {
+                                show_error_message(&error);
+                            }
+                        });
+                    }
+                }
+            }
+            id if (POPUP_BASE..POPUP_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - POPUP_BASE).filter(|record| record.enabled) {
+                    open_extension_popup(app, &profile, &record);
                 }
             }
             _ => {}
@@ -6784,86 +6862,287 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     // --- end popup host ---
 }
 
-fn toggle_extension(
-    app: &AppRef,
-    profile: &crate::profile::Profile,
-    record: &crate::extensions::Record,
-) {
+/// Enabled extensions whose copied manifest names a popup and that did not fail to load this
+/// session, in list order: what the toolbar's extensions button offers.
+fn popup_extensions(profile: &crate::profile::Profile) -> Vec<crate::extensions::Record> {
     use crate::extensions;
-    let enabled = !record.enabled;
-    if let Err(error) = extensions::set_enabled(&profile.extensions_file(), &record.id, enabled) {
-        show_error_message(&format!("The extension was not changed. {error}"));
-        return;
+    let Ok(records) = extensions::read_records(&profile.extensions_file()) else {
+        return Vec::new();
+    };
+    records
+        .into_iter()
+        .filter(|record| {
+            record.enabled
+                && extensions::load_failure(&record.id).is_none()
+                && extensions::folder_for(&profile.extensions_dir(), &record.id)
+                    .is_ok_and(|folder| extensions::declares_page(&folder, extensions::PageKind::Popup))
+        })
+        .collect()
+}
+
+/// The toolbar's extensions button (docs/extensions.md): reserves its slot beside the pill while an
+/// enabled extension has a popup (so the pill's new width is sent first), then sends the `extbtn`
+/// message when it differs from the last one the page got. Runs when the toolbar page is ready and
+/// on `WM_EXTENSIONS_CHANGED`.
+fn html_refresh_extensions_button(hwnd: HWND) {
+    let popups = crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default();
+    let names: Vec<&str> = popups.iter().map(|record| record.name.as_str()).collect();
+    let json = chrome_host::extensions_page::button_json(&names);
+    let slot = if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
+    let moved = with_chrome(hwnd, |s| std::mem::replace(&mut s.html_ext_slot, slot) != slot).unwrap_or(false);
+    if moved {
+        html_sync(hwnd);
     }
+    let Some((host, generation)) = with_chrome(hwnd, |s| {
+        (s.html_page_ready && s.html_ext_last.as_deref() != Some(json.as_str()))
+            .then(|| s.html.clone())
+            .flatten()
+            .map(|host| (host, s.html_state_generation[0]))
+    })
+    .flatten() else {
+        return;
+    };
+    if host.post_json(&json).is_ok() {
+        let _ = with_chrome(hwnd, |s| {
+            if s.html_state_generation[0] == generation {
+                s.html_ext_last = Some(json);
+            }
+        });
+    }
+}
+
+/// Posts `message` to every Bowser window on this thread.
+pub(super) fn post_to_every_window(message: u32) {
+    let all: Vec<isize> = WINDOWS.with(|all| all.try_borrow().map(|all| all.keys().copied().collect()).unwrap_or_default());
+    for raw in all {
+        crate::win32::post(HWND(raw as *mut _), message, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// The toolbar's extensions button was clicked: the only extension with a popup opens it; with
+/// several, their names hang from the button with "Manage extensions" under them.
+fn show_extensions_button_menu(hwnd: HWND, app: &AppRef) {
+    const MANAGE: usize = 1;
+    const POPUP_BASE: usize = 100;
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    let popups = popup_extensions(&profile);
+    match popups.as_slice() {
+        [] => {
+            // The button outlived its last popup (the list changed on disk): go where it can be fixed.
+            super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Extensions), false);
+            return;
+        }
+        [only] => {
+            open_extension_popup(app, &profile, only);
+            return;
+        }
+        _ => {}
+    }
+    let mut entries: Vec<Entry> = popups
+        .iter()
+        .take(crate::extensions::MAX_INSTALLED)
+        .enumerate()
+        .map(|(index, record)| Entry::Item(Item::new(POPUP_BASE + index, record.name.clone(), Icon::Grid).glyph("puzzle")))
+        .collect();
+    entries.push(Entry::Separator);
+    entries.push(Entry::Item(Item::new(MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
+    let Some(anchor) = extensions_anchor(hwnd) else {
+        return;
+    };
+    let menu = Menu {
+        header: None,
+        entries,
+        footer: "Extension popups".to_owned(),
+    };
+    menu::show(hwnd, anchor, menu::Placement::BelowRight, menu, "extensions-button", move |app, chosen| {
+        match chosen.map_or(0, |chosen| chosen.id) {
+            MANAGE => super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Extensions), false),
+            id if id >= POPUP_BASE => {
+                // The pick names the extension it was built from; it must still have a popup now.
+                let Some(listed) = popups.get(id - POPUP_BASE) else { return };
+                if let Some(record) = popup_extensions(&profile).into_iter().find(|record| record.id == listed.id) {
+                    open_extension_popup(app, &profile, &record);
+                }
+            }
+            _ => {}
+        }
+    });
+}
+
+/// The screen point the extensions list hangs from: under the button, at its right edge. The rect
+/// is the button as the page last reported it; without one, the slot Rust reserved stands in.
+fn extensions_anchor(hwnd: HWND) -> Option<windows::Win32::Foundation::POINT> {
+    let (host, dpi, menux, dl_slot, rect) = with_chrome(hwnd, |s| {
+        let (_, _, menux) = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.toolbar_slot())?;
+        Some((s.html.clone()?, s.dpi, menux, s.html_dl_slot, s.html_ext_rect))
+    })
+    .flatten()?;
+    let screen = host.screen_bounds()?;
+    let fallback = chrome_host::protocol::HoverRect { x: (menux - dl_slot - chrome_host::EXT_BUTTON_SLOT).max(0) as u32, y: 3, w: 28, h: 28 };
+    let scale = dpi as f32 / 96.0;
+    let button = super::html_hover::anchor_to_screen(screen, scale, rect.unwrap_or(fallback));
+    Some(windows::Win32::Foundation::POINT { x: button.right, y: button.bottom + (4.0 * scale).round() as i32 })
+}
+
+/// Opens the extension's popup page in a Bowser-owned window. The engine builds the address from
+/// the manifest in the extension's folder and refuses anything that is not a plain page path.
+pub(super) fn open_extension_popup(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record) {
+    use crate::extensions;
     match extensions::folder_for(&profile.extensions_dir(), &record.id) {
-        Ok(folder) => App::set_extension_enabled(app, record.id.clone(), folder, enabled),
+        Ok(folder) => App::open_extension_page(
+            app,
+            record.id.clone(),
+            folder,
+            extensions::PageKind::Popup,
+            format!("{} popup", record.name),
+        ),
         Err(error) => show_error_message(&error.to_string()),
     }
 }
 
-fn remove_extension(
+/// Turns an installed extension on or off: the flag in `extensions.txt`, then the engine loads or
+/// unloads Bowser's existing copy. Nothing is read from the original folder again and nothing is
+/// asked, so turning one back on uses exactly what was installed. The load result arrives later
+/// (`App::set_extension_enabled`) and every window hears about it.
+pub(super) fn set_extension_enabled(
     app: &AppRef,
     profile: &crate::profile::Profile,
     record: &crate::extensions::Record,
+    enabled: bool,
+) -> Result<(), String> {
+    use crate::extensions;
+    extensions::set_enabled(&profile.extensions_file(), &record.id, enabled)
+        .map_err(|error| format!("The extension was not changed. {error}"))?;
+    super::extensions_changed();
+    let folder = extensions::folder_for(&profile.extensions_dir(), &record.id).map_err(|error| error.to_string())?;
+    App::set_extension_enabled(app, record.id.clone(), folder, enabled);
+    Ok(())
+}
+
+/// Unloads an extension, then drops it from the list and deletes Bowser's copy. The caller has
+/// already asked the user. `done` runs once the engine answers (later, or at once without an
+/// engine) with what went wrong, if anything.
+pub(super) fn remove_extension(
+    app: &AppRef,
+    profile: &crate::profile::Profile,
+    record: &crate::extensions::Record,
+    done: impl FnOnce(Result<(), String>) + 'static,
 ) {
     use crate::extensions;
-    let question = format!(
-        "Remove the extension \"{}\" from this profile? Its copied files will be deleted.",
-        record.name
-    );
-    if !crate::win32::ask_yes_no(&question) {
-        return;
-    }
     let extensions_dir = profile.extensions_dir();
     let records_file = profile.extensions_file();
     let id = record.id.clone();
     App::remove_extension(
         app,
         record.id.clone(),
-        Box::new(move |result| match result {
-            Ok(()) => {
-                extensions::record_load_result(&id, Ok(()));
-                if let Err(error) = extensions::uninstall(&extensions_dir, &records_file, &id) {
-                    show_error_message(&format!(
-                        "The extension was removed from the list, but its files were not deleted. {error}"
-                    ));
+        Box::new(move |result| {
+            let result = match result {
+                Ok(()) => {
+                    extensions::record_load_result(&id, Ok(()));
+                    extensions::uninstall(&extensions_dir, &records_file, &id).map_err(|error| {
+                        format!("The extension was removed from the list, but its files were not deleted. {error}")
+                    })
                 }
-            }
-            Err(reason) => {
-                extensions::record_load_result(&id, Err(format!("Remove failed: {reason}")));
-            }
+                Err(reason) => {
+                    extensions::record_load_result(&id, Err(format!("Remove failed: {reason}")));
+                    Err(format!("The extension was not removed. {reason}"))
+                }
+            };
+            super::extensions_changed();
+            done(result);
         }),
     );
 }
 
 /// Asks for an unpacked extension folder, shows its permissions, then copies it into the profile
-/// and loads it. Nothing is copied before the user agrees.
-fn install_extension(hwnd: HWND, app: &AppRef, profile: &crate::profile::Profile) {
+/// and loads it. Nothing is copied before the user agrees. `Ok(false)` when the user cancelled.
+pub(super) fn install_extension(hwnd: HWND, app: &AppRef, profile: &crate::profile::Profile) -> Result<bool, String> {
     use crate::extensions;
     let Some(folder) = pick_extension_folder(hwnd) else {
-        return;
+        return Ok(false);
     };
     let result = extensions::install_confirmed(
         &folder,
         &profile.extensions_dir(),
         &profile.extensions_file(),
-        &mut |inspection| {
-            let question = format!(
-                "Install \"{}\" version {}?\n\n{}\n\nOnly install extensions you trust. An extension can read and change the pages it has access to.",
-                inspection.manifest.name,
-                inspection.manifest.version,
-                extensions::permission_summary(&inspection.manifest)
-            );
-            crate::win32::ask_yes_no(&question)
-        },
+        &mut |inspection| crate::win32::ask_yes_no(&extensions::install_prompt(&inspection.manifest)),
     );
+    finish_install(app, profile, result.map_err(|error| error.to_string()))
+}
+
+/// Asks for a `.crx` file on this computer, verifies it, unpacks it into a temporary folder and
+/// installs that folder through the same permission prompt and copy as an unpacked extension.
+/// Nothing is installed when the file does not verify or the user declines; the temporary folder is
+/// always deleted. No network is used. `Ok(false)` when the user cancelled or declined.
+pub(super) fn install_extension_from_crx_file(
+    hwnd: HWND,
+    app: &AppRef,
+    profile: &crate::profile::Profile,
+) -> Result<bool, String> {
+    use crate::extensions;
+    let Some(file) = pick_crx_file(hwnd) else {
+        return Ok(false);
+    };
+    let result = crate::crx_file::install_crx_file(
+        &file,
+        &profile.extensions_dir(),
+        &profile.extensions_file(),
+        &mut |inspection| crate::win32::ask_yes_no(&extensions::install_prompt(&inspection.manifest)),
+    );
+    finish_install(app, profile, result.map_err(|error| error.to_string()))
+}
+
+/// What both install paths do with the answer: a recorded extension is loaded from Bowser's copy and
+/// every window hears about it; a declined prompt is `Ok(false)`; a failure is worded for the page.
+fn finish_install(
+    app: &AppRef,
+    profile: &crate::profile::Profile,
+    result: Result<Option<crate::extensions::Record>, String>,
+) -> Result<bool, String> {
+    use crate::extensions;
     match result {
-        Ok(Some(record)) => match extensions::folder_for(&profile.extensions_dir(), &record.id) {
-            Ok(installed) => App::set_extension_enabled(app, record.id, installed, true),
-            Err(error) => show_error_message(&error.to_string()),
+        Ok(Some(record)) => {
+            super::extensions_changed();
+            let installed = extensions::folder_for(&profile.extensions_dir(), &record.id).map_err(|error| error.to_string())?;
+            App::set_extension_enabled(app, record.id, installed, true);
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(error) => Err(format!("The extension was not installed. {error}")),
+    }
+}
+
+/// File picker for one `.crx` file. `None` when cancelled or when the dialog fails.
+fn pick_crx_file(owner: HWND) -> Option<std::path::PathBuf> {
+    use windows::Win32::{
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree},
+        UI::Shell::{
+            Common::COMDLG_FILTERSPEC, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FileOpenDialog,
+            IFileOpenDialog, SIGDN_FILESYSPATH,
         },
-        Ok(None) => {}
-        Err(error) => show_error_message(&format!("The extension was not installed. {error}")),
+    };
+    unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST)
+            .ok()?;
+        dialog
+            .SetTitle(w!("Choose a .crx extension file on this computer"))
+            .ok()?;
+        let filters = [COMDLG_FILTERSPEC {
+            pszName: w!("CRX extension file (*.crx)"),
+            pszSpec: w!("*.crx"),
+        }];
+        dialog.SetFileTypes(&filters).ok()?;
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let display = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = display.to_string().ok().map(std::path::PathBuf::from);
+        CoTaskMemFree(Some(display.0.cast_const().cast()));
+        path
     }
 }
 
@@ -7409,6 +7688,7 @@ fn html_refresh(hwnd: HWND) {
         // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
         s.html_last_state = None;
         s.html_dl_last = None;
+        s.html_ext_last = None;
         s.html_state_generation[0] = s.html_state_generation[0].wrapping_add(1);
         s.html_text_sent = None;
         s.html_synced_tab = None;
@@ -7445,6 +7725,7 @@ fn html_refresh(hwnd: HWND) {
         }
     }
     html_sync(hwnd);
+    html_refresh_extensions_button(hwnd);
     if let Some((id, text)) = handoff {
         if host.post_json(&set_text_json(&text, false)).is_ok() {
             let current = with_chrome(hwnd, |s| {
@@ -7497,8 +7778,8 @@ fn html_sync(hwnd: HWND) {
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
-    let dl_slot = with_chrome(hwnd, |s| s.html_dl_slot).unwrap_or(0);
-    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, dl_slot).unwrap_or_default();
+    let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
+    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
     let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
     let settings = App::settings(&app);
     let state = ViewState {
@@ -7789,6 +8070,11 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::DownloadsToggle { rect } => {
             super::downloads_ui::note_button_rect(hwnd, rect);
             defer_html_command(hwnd, DeferredChromeCommand::DownloadsToggle);
+        }
+        // The extensions button: a popup opens, or the list of them hangs from the button.
+        ChromeCommand::ExtensionsButton { rect } => {
+            let _ = with_chrome(hwnd, |s| s.html_ext_rect = Some(rect));
+            defer_html_command(hwnd, DeferredChromeCommand::ExtensionsButton);
         }
         ChromeCommand::Open(OpenTarget::Reader) => {
             // The toolbar button: the same toggle as Ctrl+Alt+R. It opens no menu, so it runs here.
@@ -8424,6 +8710,7 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::PopupAct { tok, id, n } => html_popup::run_act(hwnd, tok, id, n, &app),
         DeferredChromeCommand::PopupCompose { tok } => html_popup::run_compose(hwnd, tok, &app),
         DeferredChromeCommand::DownloadsToggle => super::downloads_ui::toggle(hwnd, &app),
+        DeferredChromeCommand::ExtensionsButton => show_extensions_button_menu(hwnd, &app),
         DeferredChromeCommand::DownloadsAct { tok, id, n } => super::downloads_ui::run_act(hwnd, &app, tok, id, n),
         DeferredChromeCommand::ComposerOpen => {
             if let Some(request) = super::composer::take(hwnd) {
@@ -9131,7 +9418,7 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
         let omnibox = s.layout.omnibox;
-        let pill = chrome_host::toolbar_pill_rect_with_slot(&s.layout, s.dpi, s.html_dl_slot).unwrap_or(RECT {
+        let pill = chrome_host::toolbar_pill_rect_with_slot(&s.layout, s.dpi, s.toolbar_slot()).unwrap_or(RECT {
             left: omnibox.left,
             top: omnibox.top,
             right: omnibox.right,
@@ -9140,7 +9427,7 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
         let mut origin = windows::Win32::Foundation::POINT { x: pill.left, y: pill.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
         let (w, h) = (pill.right - pill.left, pill.bottom - pill.top);
-        let css = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.html_dl_slot)
+        let css = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.toolbar_slot())
             .map_or_else(|| chrome_host::css_px_from_physical(w, s.dpi), |(_, pill_w, _)| pill_w);
         (RECT { left: origin.x, top: origin.y, right: origin.x + w, bottom: origin.y + h }, css.max(1) as u32)
     }) else {

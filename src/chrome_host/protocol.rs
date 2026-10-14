@@ -259,6 +259,9 @@ pub enum Command {
     /// The toolbar's download button was clicked: `rect` is the button in toolbar CSS pixels, the
     /// bubble's anchor (docs/design/downloads.md). A popup command.
     DownloadsToggle { rect: HoverRect },
+    /// The toolbar's extensions button was clicked: `rect` is the button in toolbar CSS pixels, the
+    /// anchor of the list of extension popups (docs/extensions.md). A popup command.
+    ExtensionsButton { rect: HoverRect },
     /// A row or list action on the open downloads bubble (`tok` is the bubble's): `n` 0..=7 name
     /// entry `id` (>= 1), 8..=10 are list actions with `id` 0. Rust checks the id and the state.
     DownloadsAct { tok: u32, id: u32, n: u8 },
@@ -929,6 +932,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "act" => &["tok", "id", "n"],
         // The downloads button and bubble (docs/design/downloads.md).
         "dl" => &["a", "text"],
+        // The extensions button (docs/extensions.md).
+        "ext" => &["a", "text"],
         "dlact" => &["tok", "id", "n"],
         "compose" => &["tok", "name", "url"],
         "composeopen" => &["a", "id", "name", "url", "r"],
@@ -1082,6 +1087,11 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             if str_field(fields, "a")? != "toggle" { return Err(ProtocolError::InvalidValue("a")); }
             let rect = HoverRect::parse(str_field(fields, "text")?).ok_or(ProtocolError::InvalidValue("text"))?;
             Command::DownloadsToggle { rect }
+        }
+        "ext" => {
+            if str_field(fields, "a")? != "open" { return Err(ProtocolError::InvalidValue("a")); }
+            let rect = HoverRect::parse(str_field(fields, "text")?).ok_or(ProtocolError::InvalidValue("text"))?;
+            Command::ExtensionsButton { rect }
         }
         "dlact" => {
             let n = uint_field(fields, "n")?;
@@ -1775,6 +1785,7 @@ pub fn is_popup_command(command: &Command) -> bool {
             | Command::Caption(_)
             | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader)
             | Command::DownloadsToggle { .. }
+            | Command::ExtensionsButton { .. }
             | Command::Tab { action: TabAction::Menu, .. }
             | Command::Group { action: GroupAction::Menu, .. }
             // --- vertical sidebar (lane S) ---
@@ -2301,6 +2312,25 @@ mod tests {
     }
 
     #[test]
+    fn the_extensions_button_sends_only_its_rectangle() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"ext","a":"open","text":"608,3,28,28"}"#),
+            Command::ExtensionsButton { rect: HoverRect { x: 608, y: 3, w: 28, h: 28 } },
+        );
+        for raw in [
+            r#"{"v":1,"t":"ext","a":"open"}"#,
+            r#"{"v":1,"t":"ext","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"ext","a":"toggle","text":"1,2,3,4"}"#,
+            r#"{"v":1,"t":"ext","a":"open","text":"1,2,3"}"#,
+            r#"{"v":1,"t":"ext","a":"open","text":"ext-0123456789abcdef"}"#,
+            r#"{"v":1,"t":"ext","a":"open","text":"1,2,3,4","id":1}"#,
+            r#"{"v":1,"t":"ext","a":"open","text":"1,2,3,4","url":"chrome-extension://a/p.html"}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
     fn downloads_commands_carry_exactly_their_own_fields() {
         // The toolbar button: a toggle with the button's rectangle.
         assert_eq!(
@@ -2359,6 +2389,7 @@ mod tests {
         // Only the toggle counts toward the popup-command limit: a pause then a cancel in the bubble
         // must both get through.
         assert!(is_popup_command(&Command::DownloadsToggle { rect: HoverRect::default() }));
+        assert!(is_popup_command(&Command::ExtensionsButton { rect: HoverRect::default() }));
         assert!(!is_popup_command(&Command::DownloadsAct { tok: 1, id: 1, n: 0 }));
         // The page family: the downloads page, not the history page or the rail panel.
         let page = |raw: &str| match ok(raw) {

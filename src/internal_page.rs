@@ -45,12 +45,13 @@ pub enum Section {
     Search,
     Downloads,
     Media,
+    Extensions,
     Updates,
     About,
 }
 
 impl Section {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Profile,
         Self::Appearance,
         Self::Privacy,
@@ -58,6 +59,7 @@ impl Section {
         Self::Search,
         Self::Downloads,
         Self::Media,
+        Self::Extensions,
         Self::Updates,
         Self::About,
     ];
@@ -72,6 +74,7 @@ impl Section {
             Self::Search => "search",
             Self::Downloads => "downloads",
             Self::Media => "media",
+            Self::Extensions => "extensions",
             Self::Updates => "updates",
             Self::About => "about",
         }
@@ -243,7 +246,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 9);
+        assert_eq!(Section::ALL.len(), 10);
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
