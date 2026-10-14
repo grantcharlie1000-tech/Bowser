@@ -785,6 +785,7 @@ impl WindowChrome {
         };
         let mut sidebar_tabs = Vec::with_capacity(if reproject { ids.len() } else { 0 });
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
+        let html_strip = self.html_tab_region().is_some();
         // The previous snapshot by id: one pass, not a search of every old tab for every tab.
         let previous: HashMap<TabId, &TabSnapshot> = self.tabs.iter().map(|tab| (tab.id, tab)).collect();
         for &id in &ids {
@@ -801,7 +802,11 @@ impl WindowChrome {
                 sidebar_tabs.push((id, title.clone(), App::tab_pinned(app, id), loading));
             }
             let key = App::tab_favicon_key(app, id);
-            let image = if old.is_some_and(|t| {
+            // A live HTML tab strip paints the favicons itself: no bytes are fetched or decoded here.
+            // `tab_favicon` decodes on demand for the native readers that still want one.
+            let image = if !native_favicon_wanted(html_strip) {
+                None
+            } else if old.is_some_and(|t| {
                 t.favicon_key == key
                     && (key.is_none()
                         || t.favicon
@@ -810,22 +815,7 @@ impl WindowChrome {
             }) {
                 old.and_then(|tab| tab.favicon.clone())
             } else if let (Some(k), Some(bytes)) = (key, App::tab_favicon(app, id)) {
-                if let Some(cached) = self.favicons.get(k, size, &bytes) {
-                    Some(Rc::new(cached.clone()))
-                } else if self.failed.contains(&(k, size)) {
-                    None
-                } else {
-                    let decoded = favicon::decode(&bytes, size);
-                    if let Some(bitmap) = &decoded {
-                        self.favicons.insert(k, size, &bytes, bitmap.clone());
-                    } else {
-                        if self.failed.len() == 64 {
-                            self.failed.pop_front();
-                        }
-                        self.failed.push_back((k, size));
-                    }
-                    decoded.map(Rc::new)
-                }
+                decode_cached_favicon(&mut self.favicons, &mut self.failed, k, size, &bytes)
             } else {
                 None
             };
@@ -1163,23 +1153,29 @@ impl WindowChrome {
     /// Repaints only what one animation frame moves: the islands the motion asks for, and the
     /// ghosts that are fading or finishing. Returns whether another frame is needed.
     fn animate(&mut self, hwnd: HWND, now: Instant) -> bool {
+        // A live HTML tab strip animates itself: the native island repaints below would paint nothing.
+        let native_strip = self.html_tab_region().is_none();
         // Repaint ghosts before pruning, so the frame that drops one also clears its pixels.
-        for departure in self.motion.departures() {
-            invalidate(hwnd, departure.rect.intersect(self.layout.tab_zone));
-        }
-        let running = self.motion.step(now);
-        for &id in self.motion.repaint() {
-            if let Some(rect) = self.tab_rect(id) {
-                invalidate(hwnd, rect);
+        if native_strip {
+            for departure in self.motion.departures() {
+                invalidate(hwnd, departure.rect.intersect(self.layout.tab_zone));
             }
         }
-        for key in self.motion.repaint_groups() {
-            if let Some(rect) = self
-                .motion
-                .group_repaint_bounds(key, now, self.layout.metrics)
-                .map(|rect| rect.intersect(self.layout.tab_zone))
-            {
-                invalidate(hwnd, rect);
+        let running = self.motion.step(now);
+        if native_strip {
+            for &id in self.motion.repaint() {
+                if let Some(rect) = self.tab_rect(id) {
+                    invalidate(hwnd, rect);
+                }
+            }
+            for key in self.motion.repaint_groups() {
+                if let Some(rect) = self
+                    .motion
+                    .group_repaint_bounds(key, now, self.layout.metrics)
+                    .map(|rect| rect.intersect(self.layout.tab_zone))
+                {
+                    invalidate(hwnd, rect);
+                }
             }
         }
         // The rail's press and active motion lives in the painter, so ask it for its own frame.
@@ -2163,6 +2159,17 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED | WM_THEMECHANGED => {
+                if message == WM_SETTINGCHANGE {
+                    // lParam is the changed setting's name, or null.
+                    let name = (lparam.0 != 0)
+                        .then(|| windows::core::PCWSTR(lparam.0 as *const u16))
+                        .and_then(|name| name.to_string().ok());
+                    if !glass::setting_change_is_relevant(wparam.0, name.as_deref())
+                        && !glass::refresh_system_state_changed()
+                    {
+                        return LRESULT(0);
+                    }
+                }
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
@@ -2662,7 +2669,14 @@ unsafe extern "system" fn window_proc(
                         position_edit(hwnd);
                         repaint(hwnd);
                         arm_motion(hwnd);
-                    } else if let Some(((toolbar, tabs), _)) = refreshed {
+                    } else if let Some(((toolbar, tabs), _)) = refreshed
+                        .filter(|_| {
+                            with_chrome(hwnd, |s| {
+                                native_strip_pixels_change(s.html_region().is_some(), s.html_tab_region().is_some())
+                            })
+                            .unwrap_or(true)
+                        })
+                    {
                         for strip in [toolbar, tabs] {
                             let rect = windows::Win32::Foundation::RECT {
                                 left: strip.left,
@@ -3776,6 +3790,18 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == super::panel_webapp::IDLE_TIMER => {
+                let running = super::panel_webapp::idle_timer(hwnd);
+                if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == super::WM_READER_PROBE_TIMER => {
+                let _ = KillTimer(Some(hwnd), super::WM_READER_PROBE_TIMER);
+                if let Some(app) = app {
+                    App::reader_probe_timer_fired(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == devtools_dock::TIMER_ID => {
                 let running = devtools_dock::timer(hwnd);
                 if !running { let _ = KillTimer(Some(hwnd), devtools_dock::TIMER_ID); }
@@ -4103,15 +4129,61 @@ fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     })
     .flatten()
 }
-/// Favicon of a tab as the chrome last decoded it, for the island menu's rows.
+/// Favicon of a tab for the island menu's rows: the chrome's decoded bitmap, or, while a live HTML
+/// tab strip left it undecoded, one decoded now through the same cache.
 pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
-    with_chrome(hwnd, |s| {
-        s.tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .and_then(|tab| tab.favicon.clone())
-    })
-    .flatten()
+    let (key, image, size) = with_chrome(hwnd, |s| {
+        let tab = s.tabs.iter().find(|tab| tab.id == id);
+        (
+            tab.and_then(|tab| tab.favicon_key),
+            tab.and_then(|tab| tab.favicon.clone()),
+            Metrics::new(s.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32,
+        )
+    })?;
+    if image.is_some() {
+        return image;
+    }
+    let key = key?;
+    let bytes = App::tab_favicon(&app_of(hwnd)?, id)?;
+    with_chrome(hwnd, |s| decode_cached_favicon(&mut s.favicons, &mut s.failed, key, size, &bytes)).flatten()
+}
+
+/// Whether the native tab row needs decoded favicons: not while the HTML tab strip is live.
+fn native_favicon_wanted(html_tabs_live: bool) -> bool {
+    !html_tabs_live
+}
+
+/// Whether a tab change that moves no tab must repaint the native toolbar and tab row: only when
+/// either is not drawn by a live HTML view.
+fn native_strip_pixels_change(html_toolbar_live: bool, html_tabs_live: bool) -> bool {
+    !(html_toolbar_live && html_tabs_live)
+}
+
+/// `bytes` decoded at `size` through the favicon cache. A failed decode is remembered in `failed`,
+/// a ring of the last 64, so it is not retried.
+fn decode_cached_favicon(
+    cache: &mut FaviconCache,
+    failed: &mut VecDeque<(FaviconKey, u32)>,
+    key: FaviconKey,
+    size: u32,
+    bytes: &[u8],
+) -> Option<Rc<favicon::FaviconBitmap>> {
+    if let Some(cached) = cache.get(key, size, bytes) {
+        return Some(Rc::new(cached.clone()));
+    }
+    if failed.contains(&(key, size)) {
+        return None;
+    }
+    let decoded = favicon::decode(bytes, size);
+    if let Some(bitmap) = &decoded {
+        cache.insert(key, size, bytes, bitmap.clone());
+    } else {
+        if failed.len() == 64 {
+            failed.pop_front();
+        }
+        failed.push_back((key, size));
+    }
+    decoded.map(Rc::new)
 }
 fn overflow_tab_ids(layout: &Layout, slots: &[StripSlot], tabs: &[TabSnapshot]) -> Vec<TabId> {
     layout
@@ -7518,10 +7590,8 @@ fn html_env_settled(hwnd: HWND) {
             start_html_tabs(hwnd);
             start_html_rail(hwnd);
             // --- popup surfaces (lane PP) ---
-            // Requested last, with the visible chrome: the chrome controllers share one renderer,
-            // so the hidden popup page is ready about when the toolbar is, instead of a separate
-            // (slow, on a loaded machine) start 2 s after it. It stays suspended while hidden.
-            html_popup::prewarm(hwnd, env);
+            // The popup is created by `request_popup_prewarm` when the toolbar activates, so the
+            // hidden page does not compete with the visible toolbar.
             // --- end popup surfaces ---
             // The flyout panel and the hover layer are created the first time they are used
             // (`ensure_flyout_panel`, `ensure_hover_layer`).
@@ -7700,8 +7770,7 @@ fn html_refresh(hwnd: HWND) {
     // --- popup host (lane M) ---
     if activating {
         perf_event(hwnd, "html_toolbar_ready");
-        // Normally created with the other chrome controllers; this only covers a host that
-        // failed and was shut down.
+        // The normal start of the popup: requested once the toolbar reports ready.
         request_popup_prewarm(hwnd);
     }
     // --- end popup host ---
@@ -7811,7 +7880,8 @@ fn html_sync(hwnd: HWND) {
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
-    html_broadcast_state(hwnd, &json);
+    let theme_json = state.theme_only().to_json();
+    html_broadcast_state(hwnd, &json, &theme_json);
     html_broadcast_pair(hwnd, &app); // --- split view ---
     let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
         return;
@@ -7848,16 +7918,19 @@ fn html_sync(hwnd: HWND) {
     }
 }
 
-/// Each ready page receives the same state; each host has its own successful-send cache.
-fn html_broadcast_state(hwnd: HWND, json: &str) {
+/// The toolbar receives the full state; the tabs strip and the rail receive the theme-only state, so
+/// toolbar churn (loading, progress, zoom, label) does not repost to them. Each host has its own
+/// successful-send cache.
+fn html_broadcast_state(hwnd: HWND, json: &str, theme_json: &str) {
     let Some(candidates) = with_chrome(hwnd, |s| [
         (s.html_page_ready && chrome_host::state_differs(&s.html_last_state, json)).then(|| s.html.clone()).flatten(),
-        (s.html_tabs_page_ready && chrome_host::state_differs(&s.html_tabs_last_state, json)).then(|| s.html_tabs.clone()).flatten(),
-        (s.html_rail_page_ready && chrome_host::state_differs(&s.html_rail_last_state, json)).then(|| s.html_rail.clone()).flatten(),
+        (s.html_tabs_page_ready && chrome_host::state_differs(&s.html_tabs_last_state, theme_json)).then(|| s.html_tabs.clone()).flatten(),
+        (s.html_rail_page_ready && chrome_host::state_differs(&s.html_rail_last_state, theme_json)).then(|| s.html_rail.clone()).flatten(),
     ]) else { return; };
     let generations = with_chrome(hwnd, |s| s.html_state_generation).unwrap_or_default();
     for (index, candidate) in candidates.into_iter().enumerate() {
         let Some(host) = candidate else { continue; };
+        let json = if index == 0 { json } else { theme_json };
         if host.post_json(json).is_ok() {
             let _ = with_chrome(hwnd, |s| {
                 if s.html_state_generation[index] == generations[index] {
@@ -8029,6 +8102,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             if on {
                 // The dropdown is drawn by the hover layer: have it ready by the first keystroke.
                 ensure_hover_layer(hwnd);
+                super::html_hover::omnibox_focused(hwnd);
             } else {
                 super::html_hover::suggest_focus_lost(hwnd);
             }
@@ -10488,6 +10562,20 @@ mod tests {
         );
         assert!(!progress.settled(start + Duration::from_millis(300)));
         assert!(progress.settled(start + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn native_strip_repaints_unless_both_html_views_are_live() {
+        assert!(native_strip_pixels_change(false, false));
+        assert!(native_strip_pixels_change(true, false));
+        assert!(native_strip_pixels_change(false, true));
+        assert!(!native_strip_pixels_change(true, true));
+    }
+
+    #[test]
+    fn native_favicons_are_wanted_only_without_a_live_html_tab_strip() {
+        assert!(native_favicon_wanted(false));
+        assert!(!native_favicon_wanted(true));
     }
 
     #[test]

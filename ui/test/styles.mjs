@@ -75,6 +75,14 @@ test('toggles: on-state is accent with an on-accent knob; every interactive cont
   assert.match(source, /\.bw-select-button,[\s\S]*?\):focus-visible/, 'select button is in the shared focus ring list');
 });
 
+test('tab selection is instant and the settle frame still wins', () => {
+  const instant = /\.strip \.tab\.active:where\([^{]*\)\{transition-property:transform\}/.exec(css);
+  assert.ok(instant, 'active tab only transitions transform');
+  assert.match(css, /\.strip \.tab\.active::?before\{transition:none\}/, 'active fill does not fade in');
+  const settle = css.indexOf('.strip.settle .tab{transition:none}');
+  assert.ok(settle > instant.index, '.strip.settle .tab must come after the active rule');
+});
+
 test('panel styles carry no legacy 13px Segoe UI block', () => {
   for (const file of ['panels.css', 'dialog.css', 'rail.css', 'components.css']) {
     const text = readFileSync(join(stylesDir, file), 'utf8');

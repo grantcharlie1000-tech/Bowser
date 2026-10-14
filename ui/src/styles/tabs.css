@@ -87,6 +87,10 @@
 .strip .tab.active::after { opacity: 0; }
 .strip .tab.active:hover::after { opacity: 1; }
 
+/* Selection is instant; only the tab that loses it fades out. :where() keeps this at the same specificity as .strip.settle .tab below, which must still win for the FLIP settle frame. */
+.strip .tab.active:where(:not(.landing, .dragging)) { transition-property: transform; }
+.strip .tab.active::before { transition: none; }
+
 /* Light scheme: the shared idle wash is a black 22%, which dulls the glass. Inactive tabs get a faint
    ink wash instead; the active tab is a near-white island (as in the native strip, where the selected
    tab is the lightest surface). */

@@ -170,6 +170,8 @@ pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
 pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
+/// Defers the active tab's reader probe until after the page's first paint.
+pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB05E;
 
 // --- settings page (docs/design/settings-page.md) ---
 /// Opens `bowser://settings` at `section` in window `hwnd` (the native Settings window when the
