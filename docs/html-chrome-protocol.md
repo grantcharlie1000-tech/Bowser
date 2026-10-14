@@ -166,7 +166,9 @@ dialog host accepts `panel` and its own family (`notes`, `priv`, `ren`); only th
 accepts `hpage`.
 
 The popup host alone accepts `{v:1,t:"size",tok,w,h}` (`tok` unsigned u32; `w` and `h` whole CSS
-pixels from 1 to 4000), `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
+pixels from 1 to 4000). A submenu adds `c`, eight comma-separated integers `px,py,pw,ph,cx,cy,cw,ch`
+(parent card, then child card, CSS pixels; widths and heights 1 to 4000, origins 0 to 4000) so the
+window can clip to those two cards. Still six keys at most. Also `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
 `{v:1,t:"dismiss",tok}` (`tok` unsigned u32). Toolbar, tab-strip and rail hosts reject all panel,
 dialog and popup command families before dispatch. `ready` is accepted by every host.
 

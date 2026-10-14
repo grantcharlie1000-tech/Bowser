@@ -211,18 +211,29 @@ test('a submenu slides the parent aside with one transform, ease-out, and snaps 
   const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8').replace(/\r\n/g, '\n');
   const tokens = readFileSync(join(here, '..', 'src', 'styles', 'tokens.css'), 'utf8');
   const slide = /\.html-menu-slide \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  // The strip moves by one transform only; no layout property is transitioned or animated for it.
-  assert.match(slide, /transform: translateX\(var\(--menu-slide, 0px\)\);/);
-  assert.match(slide, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\);/);
-  assert.ok(!/transition:[^;]*(width|left|margin|padding|height)/.test(slide));
-  assert.match(css, /\.html-menu-slide\.is-snap \{\s*transition: none;\s*\}/);
+  const host = /\.html-menu-pane\.is-host \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  const child = /\.html-menu-pane\.is-child \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  // Only the parent card travels, and only by a transform. The child fades and nudges in place.
+  assert.ok(!/transform:/.test(slide), 'the strip itself does not travel');
+  assert.match(host, /transform: translateX\(var\(--menu-slide, 0px\)\);/);
+  assert.match(host, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\);/);
+  assert.match(child, /opacity: var\(--menu-child-in, 1\);/);
+  assert.match(child, /transform: translateX\(var\(--menu-child-x, 0px\)\);/);
+  assert.ok(!/transition:[^;]*(width|left|margin|padding|height)/.test(host));
+  assert.ok(!/transition:[^;]*(width|left|margin|padding|height)/.test(child));
+  assert.match(css, /\.html-menu-slide\.is-snap \.html-menu-pane \{\s*transition: none;\s*\}/);
   // --bw-dur-base is the ~160ms token (167ms) and is zeroed under reduced motion, where base.css also
-  // keeps only opacity transitions, so the slide snaps with no travel.
+  // keeps only opacity transitions, so the parent snaps with no travel.
   assert.match(tokens, /--bw-dur-base: 167ms;/);
   assert.match(tokens, /@media \(prefers-reduced-motion: reduce\)[^]*?--bw-dur-base: 0ms;/);
   assert.match(tokens, /--bw-ease-out: cubic-bezier\(0, 0, 0, 1\);/);
-  // The parent stays on screen: panes sit side by side, the older one keeps its tint and chevron nudge.
-  assert.match(css, /\.html-menu-pane \+ \.html-menu-pane \{[^}]*border-inline-start: 1px solid var\(--bw-hairline\);/);
+  // The parent stays on screen. The child is its own card, not a stretched column of the parent:
+  // panes start at the top of their own content, and the child is offset to the row that opened it.
+  assert.match(slide, /align-items: flex-start;/);
+  assert.match(css, /\.html-menu-pane \{[^}]*border-radius: var\(--bw-r-overlay\);/);
+  assert.match(css, /#app\.html-menu\.is-paned \{[^}]*background: transparent;/);
+  assert.match(css, /\.html-menu-pane \+ \.html-menu-pane \{[^}]*margin-top: var\(--menu-child-y, 0px\);/);
+  assert.ok(!css.includes('border-inline-start: 1px solid var(--bw-hairline)'), 'the child is not a hairline inside the parent');
   assert.match(css, /\.html-menu-row\.selected:not\(:disabled\),\s*\.html-menu-row\.is-open \{/);
   assert.match(css, /\.html-menu-row\[aria-haspopup="menu"\]\.is-open \.html-menu-trail \{\s*transform: translateX\(2px\);/);
   // No back row and no page-replacing drill animation are left.
@@ -235,6 +246,12 @@ test('the menu view keeps the parent mounted and drives the slide through one cu
   assert.ok(!/html-menu-back|chevron-left|drill/.test(view), 'no back row, no replacing page');
   assert.match(view, /root\.className = 'html-menu is-paned bw-menu-surface'/);
   assert.match(view, /style\.setProperty\('--menu-slide'/);
+  assert.match(view, /--menu-child-in/);
+  assert.match(view, /--menu-child-x/);
+  assert.match(view, /--menu-child-y/);
+  assert.match(view, /tagPanes/);
+  assert.match(view, /flyoutCards/);
+  assert.ok(!view.includes('watchMotion'), 'the clip is not updated every frame');
   assert.match(view, /activateAt\(nav, level, index\)/, 'the parent page stays clickable');
   assert.ok(!/\.style\.(left|right|width|top)\s*=/.test(view), 'the slide moves no layout property');
   assert.ok(!/scrollIntoView/.test(view), 'scrolling is done on the list, never on the clip');

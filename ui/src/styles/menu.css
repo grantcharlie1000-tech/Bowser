@@ -13,11 +13,15 @@
  *
  * The popup is solid, not glass: the overlay tint is painted over the opaque window colour.
  *
- * A submenu opens beside its parent instead of replacing it. The menu is one surface (#app) holding
- * a track of at most two panes, the open page and the page it came from, split by a hairline. The
- * window is widened to fit both and keeps its right edge (html_popup.rs keep_right_edge), so the
- * parent slides left to make room and the submenu lands where the parent was; closing slides the
- * parent back before the window shrinks. The slide is a single transform on .html-menu-slide.
+ * A submenu opens beside its parent instead of replacing it. The menu is one transparent surface
+ * holding a track of at most two panes. Each pane is its own card: its background, border and radius
+ * hug that pane's rows, and the child card is only as tall as its own rows. The view offsets the
+ * child with --menu-child-y so its first row lines up with the parent row that opened it. The window
+ * is widened to fit both and keeps its top and right edge (html_popup.rs keep_right_edge). Only the
+ * parent card translates: it starts shifted right so the growth does not throw it, then eases back
+ * beside the child. The child stays next to that row and fades and nudges in. Closing eases the
+ * parent back, then the window shrinks. Rust clips to the two cards only at rest, so the gap shows
+ * the page and a moving region never cuts a card.
  */
 
 #app.html-menu {
@@ -43,11 +47,16 @@
   outline: none;
 }
 
-/* ---- Panes. The menu view (not the composer) sets .is-paned: the width limits move from the surface
-   to each pane, so two panes can share the surface. ---- */
+/* ---- Panes. The menu view (not the composer) sets .is-paned. The surface stops painting a card so
+   each pane can be its own, and a short submenu is not stretched to the parent's height. ---- */
 #app.html-menu.is-paned {
   min-width: 0;
   max-width: none;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 /* The clip: whatever the slide pushes past the surface is cut here, not painted into the padding. */
@@ -59,19 +68,32 @@
   overflow: hidden;
 }
 
-/* The slide offset is set by the view while a submenu opens or closes; 0 at rest. The duration is
-   --bw-dur-base (167ms) and collapses to 0 under reduced motion, which also snaps the transition
-   (base.css keeps only opacity transitions there), so nothing slides. */
+/* The parent card is the only thing that travels. It starts shifted right, so growing the window on
+   the left does not throw it, then eases back to where it sits beside the child. The child stays
+   next to the row that opened it and only fades and nudges in. The window clip does not follow
+   these transforms: chasing it a frame late eats the edges. */
 .html-menu-slide {
   display: flex;
   flex: none;
-  align-items: stretch;
+  align-items: flex-start;
   min-height: 0;
+}
+
+.html-menu-pane.is-host {
   transform: translateX(var(--menu-slide, 0px));
   transition: transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
-.html-menu-slide.is-snap {
+.html-menu-pane.is-child {
+  opacity: var(--menu-child-in, 1);
+  transform: translateX(var(--menu-child-x, 0px));
+  transform-origin: left center;
+  transition:
+    opacity var(--bw-dur-base) var(--bw-ease-out),
+    transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+.html-menu-slide.is-snap .html-menu-pane {
   transition: none;
 }
 
@@ -83,13 +105,22 @@
   min-width: 190px;
   max-width: 350px;
   min-height: 0;
+  box-sizing: border-box;
+  padding: var(--bw-space-1);
+  overflow: hidden;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+  box-shadow: var(--bw-sh-flyout);
 }
 
-/* The submenu: a hairline between the panes, with the same 4px of room either side. */
+/* The submenu is its own card, a gap away from the parent, dropped so its first row meets the row
+   that opened it. It is never stretched to the parent. A tall child scrolls inside the room below
+   that row instead of growing past the screen. */
 .html-menu-pane + .html-menu-pane {
   margin-inline-start: var(--bw-space-1);
-  padding-inline-start: var(--bw-space-1);
-  border-inline-start: 1px solid var(--bw-hairline);
+  margin-top: var(--menu-child-y, 0px);
+  max-height: calc(100vh - var(--menu-child-y, 0px));
 }
 
 /* ---- Header card (main menu, site information). ---- */
@@ -363,9 +394,9 @@
 }
 
 /* ---- Motion. Open: fade 83ms with the first pane's content dropping 4px from the anchor over 167ms.
-   A submenu opening or closing slides the track (.html-menu-slide, above) over 167ms with ease-out.
-   Close of the window is instant (it hides). Only opacity and transform; input is never blocked
-   while it runs. ---- */
+   A submenu moves only the parent card (.html-menu-pane.is-host) over 167ms with ease-out. The child
+   fades and nudges 8px at its final place. Close of the window is instant (it hides). Only opacity
+   and transform; input is never blocked while it runs. ---- */
 @keyframes html-menu-fade {
   from {
     opacity: 0;

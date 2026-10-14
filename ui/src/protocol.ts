@@ -453,8 +453,27 @@ export function sendSide(a: 'workspace' | 'newtab' | 'collapse'): boolean {
 }
 // --- end vertical sidebar ---
 
-export function sendPopupSize(tok: number, w: number, h: number): boolean {
-  return isInt(tok, 0, MAX_ID) && isInt(w, 1, 4000) && isInt(h, 1, 4000) && send({ v: 1, t: 'size', tok, w, h });
+/** Two menu cards, in CSS pixels of the popup page. Sent only while a submenu is open. */
+export interface PopupCards {
+  px: number;
+  py: number;
+  pw: number;
+  ph: number;
+  cx: number;
+  cy: number;
+  cw: number;
+  ch: number;
+}
+
+export function sendPopupSize(tok: number, w: number, h: number, cards?: PopupCards): boolean {
+  if (!isInt(tok, 0, MAX_ID) || !isInt(w, 1, 4000) || !isInt(h, 1, 4000)) return false;
+  if (!cards) return send({ v: 1, t: 'size', tok, w, h });
+  const { px, py, pw, ph, cx, cy, cw, ch } = cards;
+  if (![px, py, cx, cy].every((n) => isInt(n, 0, 4000))) return false;
+  if (![pw, ph, cw, ch].every((n) => isInt(n, 1, 4000))) return false;
+  // One string keeps the message inside the six-field cap (v, t, tok, w, h, c).
+  const c = `${px},${py},${pw},${ph},${cx},${cy},${cw},${ch}`;
+  return send({ v: 1, t: 'size', tok, w, h, c });
 }
 export function sendPopupPick(tok: number, id: number): boolean {
   return isInt(tok, 0, MAX_ID) && isInt(id, 0, MAX_ID) && send({ v: 1, t: 'pick', tok, id });

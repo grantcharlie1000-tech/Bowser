@@ -63,11 +63,14 @@ test('typed foundation senders enforce wire ranges and field cap', () => {
   assert.equal(sendPanel('hist', { a: 'open', id: 1, parent: 2, before: 3, n: 4, on: true }), false);
   assert.equal(sendPopupSize(1, 4000, 1), true);
   assert.equal(sendPopupSize(1, 4001, 1), false);
+  assert.equal(sendPopupSize(1, 200, 100, { px: 0, py: 0, pw: 120, ph: 100, cx: 124, cy: 40, cw: 76, ch: 48 }), true);
+  assert.equal(sendPopupSize(1, 200, 100, { px: 0, py: 0, pw: 0, ph: 100, cx: 0, cy: 0, cw: 10, ch: 10 }), false);
   assert.equal(sendPopupPick(1, 2), true);
   assert.equal(sendPopupDismiss(1), true);
   assert.deepEqual(wires[0], { v: 1, t: 'hist', a: 'open', id: Number.MAX_SAFE_INTEGER, n: -1 });
   assert.deepEqual(wires.slice(1), [
     { v: 1, t: 'size', tok: 1, w: 4000, h: 1 },
+    { v: 1, t: 'size', tok: 1, w: 200, h: 100, c: '0,0,120,100,124,40,76,48' },
     { v: 1, t: 'pick', tok: 1, id: 2 },
     { v: 1, t: 'dismiss', tok: 1 },
   ]);

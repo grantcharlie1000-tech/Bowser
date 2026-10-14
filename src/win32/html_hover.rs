@@ -398,7 +398,7 @@ fn layer_command(owner: HWND, command: Command) {
                 let _ = host.try_suspend();
             }
         }
-        Command::PopupSize { tok, w, h } => place(owner, tok, w, h),
+        Command::PopupSize { tok, w, h, .. } => place(owner, tok, w, h),
         Command::HoverAct { tok, action } => queue_action(owner, tok, action),
         // --- omnibox suggest ---
         Command::SuggestPick { seq, i } => queue_pick(owner, seq, i),

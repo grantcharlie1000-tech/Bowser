@@ -11,8 +11,8 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            CreateRoundRectRgn, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-            MonitorFromPoint, SetWindowRgn,
+            CombineRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, HGDIOBJ, HRGN,
+            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RGN_OR, SetWindowRgn,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -21,7 +21,7 @@ use windows::{
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetForegroundWindow, HWND_TOP,
                 IsWindow, RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow, SetWindowPos,
-                SWP_NOACTIVATE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_NCCREATE, WM_NCDESTROY,
+                SWP_NOACTIVATE, ShowWindow, WA_INACTIVE, WM_ACTIVATE, WM_ERASEBKGND, WM_NCCREATE, WM_NCDESTROY,
                 WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
             },
         },
@@ -35,7 +35,7 @@ use crate::{
         self,
         host::{Accel, ChromeEnv, ChromeHost, View},
         json::{Json, Object},
-        protocol::{Command, MAX_ACT_CHOICE},
+        protocol::{Command, MenuCards, MAX_ACT_CHOICE},
     },
     win32::menu::{self, Chosen, Entry, Icon, Menu},
 };
@@ -196,6 +196,8 @@ struct Popup {
     dpi: u32,
     work: RECT,
     bounds: RECT,
+    /// Card rectangles from the last `size`, so a later frame can move the clip without moving the window.
+    cards: Option<MenuCards>,
     context: Option<MenuContext>,
 }
 
@@ -295,6 +297,13 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     let Ok(window) = window else {
         return;
     };
+    // The same sheet of glass as the rail flyout: pixels the page leaves transparent (the gap
+    // between the two menu cards, and the room a card crosses while it slides) show the page
+    // behind, instead of a black window fill.
+    let margins = [-1_i32; 4];
+    unsafe {
+        let _ = DwmExtendFrameIntoClientArea(window, margins.as_ptr());
+    }
     super::window::perf_event(owner, "html_popup_prewarm");
     let raw = owner.0 as isize;
     let command = Rc::new(move |command| popup_command(HWND(raw as *mut _), command));
@@ -381,6 +390,7 @@ fn adopt_ready(owner: HWND) {
                     dpi,
                     work,
                     bounds: RECT::default(),
+                    cards: None,
                     context: None,
                 },
             );
@@ -846,9 +856,9 @@ pub(crate) fn run_result(owner: HWND, token: u32, id: Option<u32>, app: &AppRef)
     callback(app, row);
 }
 
-pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
+pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<MenuCards>) {
     let key = owner.0 as isize;
-    let Some((window, host, at, dpi, work, shown, previous)) = POPUPS.with(|p| {
+    let Some((window, host, at, dpi, work, shown, previous, previous_cards)) = POPUPS.with(|p| {
         p.borrow().get(&key).and_then(|popup| {
             (popup.dismiss.is_active() && popup.token == token).then(|| {
                 (
@@ -859,6 +869,7 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
                     popup.work,
                     popup.shown,
                     popup.bounds,
+                    popup.cards,
                 )
             })
         })
@@ -867,44 +878,41 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
     };
     let bounds = page_bounds(at, i32::from(w), i32::from(h), dpi, work);
     let bounds = if shown && matches!(at, Anchor::Point(..)) { keep_right_edge(previous, bounds, work) } else { bounds };
+    let width = bounds.right - bounds.left;
+    let height = bounds.bottom - bounds.top;
+    // Matches the page's 8px overlay radius (--bw-r-overlay).
+    let radius = ((8 * dpi + 48) / 96).max(1) as i32;
     if shown && bounds == previous {
+        // The window stays put while a submenu slides. Only the clip follows the two cards.
+        if cards != previous_cards {
+            POPUPS.with(|p| {
+                if let Some(popup) = p.borrow_mut().get_mut(&key) {
+                    popup.cards = cards;
+                }
+            });
+            set_popup_region(window, width, height, radius, cards, dpi);
+        }
         return;
     }
     POPUPS.with(|p| {
         if let Some(popup) = p.borrow_mut().get_mut(&key) {
             popup.bounds = bounds;
+            popup.cards = cards;
             popup.shown = true;
         }
     });
-    // Matches the page's 8px overlay radius (--bw-r-overlay).
-    let radius = ((8 * dpi + 48) / 96).max(1) as i32;
+    set_popup_region(window, width, height, radius, cards, dpi);
     unsafe {
-        let region = CreateRoundRectRgn(
-            0,
-            0,
-            bounds.right - bounds.left + 1,
-            bounds.bottom - bounds.top + 1,
-            radius * 2,
-            radius * 2,
-        );
-        if !region.is_invalid() {
-            let _ = SetWindowRgn(window, Some(region), true);
-        }
         let _ = SetWindowPos(
             window,
             Some(HWND_TOP),
             bounds.left,
             bounds.top,
-            bounds.right - bounds.left,
-            bounds.bottom - bounds.top,
+            width,
+            height,
             if shown { SWP_NOACTIVATE } else { Default::default() },
         );
-        let _ = host.set_bounds(RECT {
-            left: 0,
-            top: 0,
-            right: bounds.right - bounds.left,
-            bottom: bounds.bottom - bounds.top,
-        });
+        let _ = host.set_bounds(RECT { left: 0, top: 0, right: width, bottom: height });
         // A page that grows or shrinks while open (palette results, site info rows) is only
         // re-bounded: focus stays where the user is typing.
         if shown {
@@ -913,6 +921,77 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16) {
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
         let _ = host.focus();
+    }
+}
+
+/// Clips the popup to one round rectangle, or to the union of the parent card and the child card.
+/// Pixels outside that clip are not part of the window, so the gap between the two menus shows the page.
+fn set_popup_region(window: HWND, width: i32, height: i32, radius: i32, cards: Option<MenuCards>, dpi: u32) {
+    let region = popup_region(width, height, radius, cards, dpi);
+    if region.is_invalid() {
+        return;
+    }
+    unsafe {
+        if SetWindowRgn(window, Some(region), true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(region.0));
+        }
+    }
+}
+
+fn popup_region(width: i32, height: i32, radius: i32, cards: Option<MenuCards>, dpi: u32) -> HRGN {
+    let full = round_region(0, 0, width, height, radius);
+    let Some(cards) = cards else {
+        return full;
+    };
+    let parent = card_device_rect(cards.parent_x, cards.parent_y, cards.parent_w, cards.parent_h, dpi, width, height);
+    let child = card_device_rect(cards.child_x, cards.child_y, cards.child_w, cards.child_h, dpi, width, height);
+    let region = match (parent, child) {
+        (Some(parent), Some(child)) => union_region(round_region(parent.left, parent.top, parent.right, parent.bottom, radius), round_region(child.left, child.top, child.right, child.bottom, radius)),
+        (Some(parent), None) => round_region(parent.left, parent.top, parent.right, parent.bottom, radius),
+        (None, Some(child)) => round_region(child.left, child.top, child.right, child.bottom, radius),
+        (None, None) => full,
+    };
+    if !matches!((parent, child), (None, None)) && !full.is_invalid() {
+        unsafe { let _ = DeleteObject(HGDIOBJ(full.0)); }
+    }
+    region
+}
+
+/// Exclusive device-pixel edges of one card, clipped to the window. `None` when the card misses the window.
+fn card_device_rect(x: u16, y: u16, w: u16, h: u16, dpi: u32, window_w: i32, window_h: i32) -> Option<RECT> {
+    let left = css_px(i32::from(x), dpi);
+    let top = css_px(i32::from(y), dpi);
+    let right = css_px(i32::from(x) + i32::from(w), dpi);
+    let bottom = css_px(i32::from(y) + i32::from(h), dpi);
+    let (left, right) = clip_span(left, right, window_w)?;
+    let (top, bottom) = clip_span(top, bottom, window_h)?;
+    Some(RECT { left, top, right, bottom })
+}
+
+fn css_px(value: i32, dpi: u32) -> i32 {
+    (value * dpi.max(1) as i32 + 48) / 96
+}
+
+fn clip_span(start: i32, end: i32, limit: i32) -> Option<(i32, i32)> {
+    let start = start.max(0);
+    let end = end.min(limit);
+    (end - start >= 1).then_some((start, end))
+}
+
+fn round_region(left: i32, top: i32, right: i32, bottom: i32, radius: i32) -> HRGN {
+    unsafe { CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius * 2, radius * 2) }
+}
+
+fn union_region(base: HRGN, extra: HRGN) -> HRGN {
+    unsafe {
+        if base.is_invalid() {
+            return extra;
+        }
+        if !extra.is_invalid() {
+            let _ = CombineRgn(Some(base), Some(base), Some(extra), RGN_OR);
+            let _ = DeleteObject(HGDIOBJ(extra.0));
+        }
+        base
     }
 }
 
@@ -1132,16 +1211,20 @@ fn popup_bounds(
 }
 
 /// A menu that opens a submenu beside itself reports a wider page, and closing it reports the old
-/// width again. The page slides its panes assuming the window's right edge stays where it is, so a
-/// shown popup that changes width keeps its previous right edge (clamped into the work area) and
-/// grows or shrinks on the left. The top, bottom and width come from `bounds`.
+/// width again. The page slides its panes assuming the window's right edge and top stay where they
+/// are, so a shown popup that changes width keeps that corner (clamped into the work area) and grows
+/// or shrinks on the left and the bottom. An unchanged width leaves placement to `bounds` (a flip
+/// above the anchor included).
 fn keep_right_edge(previous: RECT, bounds: RECT, work: RECT) -> RECT {
     let width = bounds.right - bounds.left;
+    let height = bounds.bottom - bounds.top;
     if width == previous.right - previous.left {
         return bounds;
     }
     let right = previous.right.min(work.right).max(work.left + width);
-    RECT { left: right - width, right, ..bounds }
+    let top = previous.top.clamp(work.top, (work.bottom - 1).max(work.top));
+    let bottom = (top + height).min(work.bottom).max(top + 1);
+    RECT { left: right - width, top, right, bottom }
 }
 
 // --- popup surfaces (lane PP) ---
@@ -1213,6 +1296,11 @@ fn register_class() -> windows::core::Result<()> {
     })
 }
 
+#[link(name = "dwmapi")]
+unsafe extern "system" {
+    fn DwmExtendFrameIntoClientArea(hwnd: HWND, margins: *const i32) -> i32;
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
@@ -1228,6 +1316,9 @@ unsafe extern "system" fn window_proc(
         }) {
             close(owner);
         }
+    }
+    if message == WM_ERASEBKGND {
+        return windows::Win32::Foundation::LRESULT(1);
     }
     if message == WM_NCCREATE {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
@@ -1289,6 +1380,22 @@ mod tests {
         assert_eq!(key(keep_right_edge(rect(100, 100, 300, 400), rect(100, 100, 600, 400), work)), (0, 100, 500, 400));
         // An unchanged width leaves the placement alone (a flip above the anchor included).
         assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(700, 50, 900, 350), work)), (700, 50, 900, 350));
+        // A taller submenu would have been placed higher. The parent stays at its old top and the window grows down.
+        assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(660, 40, 1200, 520), work)), (360, 100, 900, 580));
+    }
+
+    #[test]
+    fn a_submenu_card_is_clipped_to_the_window_and_keeps_its_own_size() {
+        let parent = card_device_rect(0, 0, 200, 400, 96, 320, 400).unwrap();
+        assert_eq!((parent.left, parent.top, parent.right, parent.bottom), (0, 0, 200, 400));
+        // The child sits beside a lower row and is only as tall as its own buttons.
+        let child = card_device_rect(204, 280, 110, 96, 96, 320, 400).unwrap();
+        assert_eq!((child.left, child.top, child.right, child.bottom), (204, 280, 314, 376));
+        assert!(child.bottom - child.top < parent.bottom - parent.top);
+        // 150%: CSS pixels scale the same way the window does, and a card past the right edge is cut.
+        let scaled = card_device_rect(204, 280, 110, 96, 144, 480, 600).unwrap();
+        assert_eq!((scaled.left, scaled.top, scaled.right, scaled.bottom), (306, 420, 471, 564));
+        assert!(card_device_rect(400, 0, 80, 40, 96, 320, 400).is_none());
     }
 
     #[test]
@@ -1486,7 +1593,8 @@ mod tests {
             Ok(Command::PopupSize {
                 tok: 7,
                 w: 240,
-                h: 100
+                h: 100,
+                cards: None,
             })
         ));
         for invalid in [

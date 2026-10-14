@@ -4,12 +4,12 @@ import {
   activateAt, createNav, currentPage, firstVisible, footerVisible, hasLeadColumn, hasTrailColumn, menuKey, onFill, validMenuPayload,
   type MenuBadge, type MenuMessage, type MenuNav, type MenuOutcome, type MenuPage,
 } from './menu-logic';
-import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
+import { sendPopupDismiss, sendPopupPick, sendPopupSize, type PopupCards } from './protocol';
 
 // Markup contract (styling lives in menu.css; keep these names stable):
-//   #app.html-menu.is-paned[role=menu][data-kind][data-page][data-input]   the menu: one surface
-//   .html-menu-track > .html-menu-slide                the clip and the sliding strip (--menu-slide)
-//   .html-menu-pane[data-level].is-active              one page; a submenu's pane sits beside its parent's
+//   #app.html-menu.is-paned[role=menu][data-kind][data-page][data-input]   the transparent surface
+//   .html-menu-track > .html-menu-slide                the clip and the two cards (--menu-slide, --menu-child-y, --menu-child-in, --menu-child-x)
+//   .html-menu-pane[data-level].is-active              one card; a submenu's card sits beside the row that opened it
 //   .html-menu-header > .html-menu-avatar, .html-menu-name, .html-menu-caption   main menu card (level 0)
 //   .html-menu-list.bw-scroll                          the scrolling part (header and footer stay pinned)
 //   .html-menu-section                                 non-interactive heading
@@ -22,11 +22,13 @@ import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
 //   .html-menu-footer                                  muted note under the list (level 0)
 // `--menu-accent` / `--menu-on-accent` on the header and badges carry the accent and its text colour.
 //
-// A submenu opens beside its parent; at most two panes are on screen. The popup window is widened to
-// fit both and keeps its right edge (html_popup.rs keep_right_edge), so the parent slides left and the
-// submenu lands where the parent was; closing slides the parent back and then the window shrinks.
-// Opening starts the slide when the page's resize arrives (the window has grown); closing slides first
-// and swaps the panes when the window has shrunk, so the parent never jumps.
+// A submenu opens beside the row that opened it; at most two cards are on screen, and each card is only
+// as tall as its own rows. The popup window is widened to fit both and keeps its top and right edge
+// (html_popup.rs keep_right_edge). The parent card is pre-shifted right, so the growth does not throw
+// it, then it eases left to sit beside the child. The child stays next to that row and only fades and
+// nudges in. Closing eases the parent back over the child, then the window shrinks and the child pane
+// is dropped. The window clip is the whole window during the move and the two cards only at rest: a
+// region that chases the transform arrives a frame late and cuts the cards.
 
 export interface MenuView {
   /** Shows a `menu` message. False (and nothing changes) when it is not a valid menu payload. */
@@ -103,25 +105,118 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     if (document.activeElement !== root) root.focus({ preventScroll: true });
   };
 
-  // Reports a size; Rust caps it to the monitor work area and flips or clamps the window, and
-  // `.html-menu-list` scrolls inside whatever height it is given.
-  const report = (tok: number, width: number, height: number): void => {
-    sendPopupSize(tok, Math.max(1, Math.ceil(width)), Math.max(1, Math.ceil(height)));
+  // The two cards, in CSS pixels of the surface. Absent when only one menu is open. Sent at rest, not
+  // while a card is moving: the clip would lag the transform and cut the edges.
+  const flyoutCards = (): PopupCards | undefined => {
+    if (!nav || nav.pages.length < 2) return undefined;
+    const parent = panes.get(nav.pages[nav.pages.length - 2]);
+    const child = panes.get(nav.pages[nav.pages.length - 1]);
+    if (!parent || !child) return undefined;
+    const origin = root.getBoundingClientRect();
+    const box = (pane: HTMLElement) => {
+      const rect = pane.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left - origin.left),
+        y: Math.round(rect.top - origin.top),
+        w: Math.max(1, Math.round(rect.width)),
+        h: Math.max(1, Math.round(rect.height)),
+      };
+    };
+    const host = box(parent);
+    const next = box(child);
+    return {
+      px: Math.max(0, host.x),
+      py: Math.max(0, host.y),
+      pw: host.w,
+      ph: host.h,
+      cx: Math.max(0, next.x),
+      cy: Math.max(0, next.y),
+      cw: next.w,
+      ch: next.h,
+    };
   };
 
-  // Measures the natural size and reports it.
+  // Drops the child card so its first row lines up with the parent row that opened it. The offset is
+  // a custom property, not a layout write the slide animates.
+  const placeChild = (): void => {
+    if (!nav || nav.pages.length < 2) {
+      slide.style.removeProperty('--menu-child-y');
+      return;
+    }
+    const parent = panes.get(nav.pages[nav.pages.length - 2]);
+    const child = panes.get(nav.pages[nav.pages.length - 1]);
+    const row = parent?.querySelector<HTMLElement>('.html-menu-row.is-open');
+    if (!parent || !child || !row) return;
+    const style = getComputedStyle(child);
+    const pad = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.borderTopWidth) || 0);
+    const y = Math.round(row.getBoundingClientRect().top - parent.getBoundingClientRect().top - pad);
+    slide.style.setProperty('--menu-child-y', `${Math.max(0, y)}px`);
+  };
+
+  // Reports a size. Rust caps it to the work area. `clip` is the resting two-card window. During a
+  // move the clip stays the whole window: a region that chases the transform arrives a frame late
+  // and cuts the cards.
+  const publish = (tok: number, width: number, height: number, clip: boolean): void => {
+    sendPopupSize(tok, Math.max(1, Math.ceil(width)), Math.max(1, Math.ceil(height)), clip ? flyoutCards() : undefined);
+  };
+
+  // Natural layout size. A transform does not change it, and the temporary max-height lift matches
+  // what measure reports, so a tall menu is capped by Rust rather than by the page.
+  const layoutSize = (): { width: number; height: number } => {
+    root.style.maxHeight = 'none';
+    const width = root.offsetWidth;
+    const height = root.offsetHeight;
+    root.style.maxHeight = '100vh';
+    return { width, height };
+  };
+
+  // Measures the natural size and reports it, clipped to the cards when two are open.
   const measure = (first: boolean): void => {
     if (!message) return;
     const tok = message.tok;
     requestAnimationFrame(() => {
       if (!message || message.tok !== tok) return;
-      root.style.maxHeight = 'none';
-      const rect = root.getBoundingClientRect();
-      root.style.maxHeight = '100vh';
-      report(tok, rect.width, rect.height);
+      const size = layoutSize();
+      publish(tok, size.width, size.height, true);
       // The enter motion starts when the size is reported, which is when the window is shown.
       if (first) root.classList.add('is-entering');
     });
+  };
+
+  // Parent shift and child fade. `snap` applies them with no transition (the position the window
+  // grows into, or a reduced-motion jump).
+  const setMotion = (slidePx: number, childHidden: boolean, snap: boolean): void => {
+    if (snap) slide.classList.add('is-snap');
+    slide.style.setProperty('--menu-slide', `${slidePx}px`);
+    slide.style.setProperty('--menu-child-in', childHidden ? '0' : '1');
+    slide.style.setProperty('--menu-child-x', childHidden ? '8px' : '0px');
+    if (snap) {
+      void slide.offsetWidth;
+      slide.classList.remove('is-snap');
+    }
+  };
+
+  const tagPanes = (): void => {
+    if (!nav) return;
+    const wanted = nav.pages.slice(firstVisible(nav));
+    for (const [page, pane] of panes) {
+      const index = wanted.indexOf(page);
+      pane.classList.toggle('is-host', wanted.length > 1 && index === 0);
+      pane.classList.toggle('is-child', wanted.length > 1 && index === wanted.length - 1);
+    }
+  };
+
+  // Runs `then` when the parent shift and the child fade have finished. Reduced motion leaves no
+  // transform transition, so it runs at once.
+  const afterMotion = (then: () => void): void => {
+    // Flush style so the transitions exist before they are queried. A duration of zero (reduced
+    // motion) leaves nothing running, and `then` runs in this turn.
+    void slide.offsetWidth;
+    const running = [slide, ...slide.querySelectorAll<HTMLElement>('.html-menu-pane')]
+      .flatMap((node) => node.getAnimations())
+      .filter((animation) => animation.playState === 'running' || animation.playState === 'pending');
+    if (running.length === 0) then();
+    else void Promise.allSettled(running.map((animation) => animation.finished)).then(then);
   };
 
   const buildPane = (page: MenuPage, level: number, first: boolean): HTMLElement => {
@@ -284,13 +379,13 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   };
 
   // Puts the strip at rest with the panes of the current pages and reports the size they need.
+  // The child pane is dropped before the shift snaps back, both before the next paint.
   const sync = (): void => {
-    slide.classList.add('is-snap');
-    slide.style.setProperty('--menu-slide', '0px');
     mount(false);
-    void slide.offsetWidth;
-    slide.classList.remove('is-snap');
+    tagPanes();
+    setMotion(0, false, true);
     markSelected();
+    placeChild();
     measure(false);
   };
 
@@ -308,6 +403,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const check = (): void => { if (test(window.innerWidth)) finishWith(ready)(); };
     const timer = window.setTimeout(finishWith(late), RESIZE_WAIT_MS);
     window.addEventListener('resize', check);
+    check();
     return () => {
       done = true;
       window.removeEventListener('resize', check);
@@ -319,41 +415,49 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   // right edge keeps in place. Both rects move with the slide, so their difference does not.
   const reach = (pane: HTMLElement): number => slide.getBoundingClientRect().right - pane.getBoundingClientRect().left;
 
-  // A submenu opened (or another replaced it): the pane beside it is already built. The window grows
-  // on the left, which would throw the parent left; once the page has resized, the strip is set back
-  // by the growth and eases to rest, so the parent slides aside from where it was.
+  // A submenu opened (or another replaced it). The parent is snapped right by the growth before the
+  // size is reported, so the wider window does not throw it; once the page has resized, the parent
+  // eases left and the child fades in beside the row. The clip stays the whole window until rest.
   const openPages = (): void => {
-    if (!nav) return;
+    if (!nav || !message) return;
     const parentPage = nav.pages[nav.pages.length - 2];
     const parent = parentPage ? panes.get(parentPage) : undefined;
     const before = parent ? reach(parent) : 0;
     mount(false);
     markSelected();
+    placeChild();
+    tagPanes();
     const delta = parent ? Math.round(reach(parent) - before) : 0;
-    const target = Math.ceil(root.getBoundingClientRect().width);
-    measure(false);
-    if (!parent || delta <= 0) return;
+    const tok = message.tok;
+    if (!parent || delta <= 0) {
+      setMotion(0, false, true);
+      const size = layoutSize();
+      publish(tok, size.width, size.height, true);
+      return;
+    }
     epoch += 1;
     const mine = epoch;
-    const cancel = awaitWidth(
-      (width) => width >= target - 2,
-      () => {
+    let cancel = (): void => {};
+    abort = () => { cancel(); sync(); };
+    setMotion(delta, true, true);
+    const size = layoutSize();
+    const target = Math.ceil(size.width);
+    publish(tok, size.width, size.height, false);
+    const go = (): void => {
+      if (epoch !== mine) return;
+      setMotion(0, false, false);
+      afterMotion(() => {
         if (epoch !== mine) return;
         abort = null;
-        slide.classList.add('is-snap');
-        slide.style.setProperty('--menu-slide', `${delta}px`);
-        void slide.offsetWidth;
-        slide.classList.remove('is-snap');
-        slide.style.setProperty('--menu-slide', '0px');
-      },
-      () => { if (epoch === mine) abort = null; },
-    );
-    abort = () => { cancel(); sync(); };
+        publish(tok, size.width, size.height, true);
+      });
+    };
+    cancel = awaitWidth((width) => width >= target - 2, go, go);
   };
 
-  // The submenu closed: its pane is still in the strip. The strip slides right until the parent is
-  // where the shrunken window will put it, then the new size is reported and, once the window has
-  // taken it, the pane is dropped and the strip reset in the same frame.
+  // The submenu closed: its pane is still in the strip. The clip opens to the whole window, the
+  // parent eases right onto where the child is, and the child fades. Then the narrower, shorter
+  // size is reported and, once the window has taken it, the pane is dropped and the shift reset.
   const closePages = (): void => {
     if (!nav || !message) return;
     const parent = panes.get(currentPage(nav));
@@ -362,24 +466,25 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const delta = Math.round(slide.getBoundingClientRect().right - parent.getBoundingClientRect().right);
     if (delta <= 0) { sync(); return; }
     const tok = message.tok;
-    const rect = root.getBoundingClientRect();
-    const target = Math.ceil(rect.width) - delta;
+    const size = layoutSize();
+    const parentHeight = Math.max(1, Math.ceil(parent.getBoundingClientRect().height));
+    const target = Math.max(1, Math.ceil(size.width) - delta);
     epoch += 1;
     const mine = epoch;
     let cancel = (): void => {};
     abort = () => { cancel(); sync(); };
-    slide.style.setProperty('--menu-slide', `${delta}px`);
-    void slide.offsetWidth;
-    const afterSlide = (): void => {
+    publish(tok, size.width, size.height, false);
+    setMotion(delta, true, false);
+    afterMotion(() => {
       if (epoch !== mine) return;
-      report(tok, target, rect.height);
-      const swap = (): void => { if (epoch !== mine) return; abort = null; sync(); };
+      publish(tok, target, parentHeight, false);
+      const swap = (): void => {
+        if (epoch !== mine) return;
+        abort = null;
+        sync();
+      };
       cancel = awaitWidth((width) => width <= target + 2, swap, swap);
-    };
-    // Under reduced motion nothing transitions, so there is nothing to wait for.
-    const running = slide.getAnimations();
-    if (running.length === 0) afterSlide();
-    else void Promise.allSettled(running.map((animation) => animation.finished)).then(afterSlide);
+    });
   };
 
   const pagesChanged = (): void => {
@@ -437,6 +542,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       root.replaceChildren(track);
       mount(true);
       markSelected();
+      placeChild();
+      tagPanes();
       measure(true);
       return true;
     },

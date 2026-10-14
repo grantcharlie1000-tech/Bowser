@@ -7553,7 +7553,7 @@ pub(super) fn defer_popup_result(hwnd: HWND, tok: u32, id: Option<u32>) {
 
 pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
     match command {
-        ChromeCommand::PopupSize { tok, w, h } => html_popup::show_sized(hwnd, tok, w, h),
+        ChromeCommand::PopupSize { tok, w, h, cards } => html_popup::show_sized(hwnd, tok, w, h, cards),
         ChromeCommand::PopupPick { tok, id } => {
             if html_popup::valid_pick(hwnd, tok, id) { defer_popup_result(hwnd, tok, Some(id)); }
         }

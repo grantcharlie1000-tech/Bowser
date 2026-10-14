@@ -204,6 +204,21 @@ fn canonical_decimal(digits: &str, max_len: usize) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// The two cards of an open submenu, in CSS pixels of the popup page. The parent card is the menu
+/// that opened the child. The child card is only as tall as its own rows and sits beside the row
+/// that opened it, so the window around them is not one tall rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuCards {
+    pub parent_x: u16,
+    pub parent_y: u16,
+    pub parent_w: u16,
+    pub parent_h: u16,
+    pub child_x: u16,
+    pub child_y: u16,
+    pub child_w: u16,
+    pub child_h: u16,
+}
+
 /// A validated message from the chrome page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -231,7 +246,8 @@ pub enum Command {
     /// `None`. `key` is always a `ws:` or `app:` key.
     RailMove { key: RailKeyWire, before: Option<RailKeyWire> },
     Panel { kind: PanelType, f: PanelFields },
-    PopupSize { tok: u32, w: u16, h: u16 },
+    /// `cards` is set only while a submenu is open beside its parent. Absent, the popup is one card.
+    PopupSize { tok: u32, w: u16, h: u16, cards: Option<MenuCards> },
     PopupPick { tok: u32, id: u32 },
     PopupDismiss { tok: u32 },
     /// An in-place action on an open popup page (a site info toggle): row `id` of the page with
@@ -720,6 +736,48 @@ fn bool_field(fields: &[(String, Value)], name: &'static str) -> Result<bool, Pr
     }
 }
 
+/// Submenu card rectangles, packed as `c` so the message stays within `MAX_FIELDS`. Eight
+/// comma-separated integers: parent x, y, w, h, then child x, y, w, h. Widths and heights are at
+/// least 1; origins may be 0. Absent when the popup is one card.
+fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolError> {
+    let Some(value) = field(fields, "c") else {
+        return Ok(None);
+    };
+    let Value::Str(raw) = value else {
+        return Err(ProtocolError::WrongType("c"));
+    };
+    let mut parts = raw.split(',');
+    let mut values = [0u16; 8];
+    for (index, name) in ["px", "py", "pw", "ph", "cx", "cy", "cw", "ch"].into_iter().enumerate() {
+        let Some(part) = parts.next() else {
+            return Err(ProtocolError::InvalidValue("c"));
+        };
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ProtocolError::InvalidValue("c"));
+        }
+        let value: u32 = part.parse().map_err(|_| ProtocolError::InvalidValue("c"))?;
+        let extent = matches!(name, "pw" | "ph" | "cw" | "ch");
+        let ok = if extent { (1..=4000).contains(&value) } else { value <= 4000 };
+        if !ok {
+            return Err(ProtocolError::InvalidValue("c"));
+        }
+        values[index] = value as u16;
+    }
+    if parts.next().is_some() {
+        return Err(ProtocolError::InvalidValue("c"));
+    }
+    Ok(Some(MenuCards {
+        parent_x: values[0],
+        parent_y: values[1],
+        parent_w: values[2],
+        parent_h: values[3],
+        child_x: values[4],
+        child_y: values[5],
+        child_w: values[6],
+        child_h: values[7],
+    }))
+}
+
 /// A plain integer in `0..=u32::MAX`, read from field `name`.
 fn uint_field(fields: &[(String, Value)], name: &'static str) -> Result<u32, ProtocolError> {
     match field(fields, name) {
@@ -857,7 +915,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // `a` is required; at most three more fields fit beside `v` and `t`.
         "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
-        "size" => &["tok", "w", "h"],
+        "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
         "dismiss" => &["tok"],
         "act" => &["tok", "id", "n"],
@@ -998,7 +1056,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             let h = uint_field(fields, "h")?;
             if !(1..=4000).contains(&w) { return Err(ProtocolError::InvalidValue("w")); }
             if !(1..=4000).contains(&h) { return Err(ProtocolError::InvalidValue("h")); }
-            Command::PopupSize { tok: uint_field(fields, "tok")?, w: w as u16, h: h as u16 }
+            Command::PopupSize { tok: uint_field(fields, "tok")?, w: w as u16, h: h as u16, cards: menu_cards(fields)? }
         }
         "pick" => Command::PopupPick { tok: uint_field(fields, "tok")?, id: uint_field(fields, "id")? },
         "dismiss" => Command::PopupDismiss { tok: uint_field(fields, "tok")? },
@@ -2111,6 +2169,36 @@ mod tests {
     fn parses_ready_and_escape() {
         assert_eq!(ok(r#"{"v":1,"t":"ready"}"#), Command::Ready);
         assert_eq!(ok(r#"{"v":1,"t":"escape"}"#), Command::Escape);
+    }
+
+    #[test]
+    fn size_accepts_a_submenu_as_two_cards_and_rejects_a_partial_one() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"size","tok":7,"w":240,"h":400,"c":"8,0,140,400,152,280,88,92"}"#),
+            Command::PopupSize {
+                tok: 7,
+                w: 240,
+                h: 400,
+                cards: Some(MenuCards {
+                    parent_x: 8,
+                    parent_y: 0,
+                    parent_w: 140,
+                    parent_h: 400,
+                    child_x: 152,
+                    child_y: 280,
+                    child_w: 88,
+                    child_h: 92,
+                }),
+            }
+        );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10}"#),
+            Command::PopupSize { tok: 1, w: 10, h: 10, cards: None }
+        );
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,0,10,0,0,10,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,4001,10,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0,10,10,1"}"#).is_err());
     }
 
     #[test]
