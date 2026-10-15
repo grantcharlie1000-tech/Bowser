@@ -290,13 +290,12 @@ test('the pill text and the row titles share one size and one column', () => {
   assert.match(tokens, /--bw-text-omni: 13px;/);
   assert.match(rule(toolbar, '.omni, .omni-display'), /font-size: var\(--bw-text-omni\);/);
   assert.match(rule(hover, '.bw-suggest'), /font: var\(--bw-text-omni\) \/ var\(--bw-leading-body\) var\(--bw-font\);/);
-  // Site button 8px in + 20px + 6px text inset == list inset 5px + row inset 6px + 16px lead + 8px gap.
-  assert.match(rule(toolbar, '.tb-site'), /margin-left: var\(--bw-space-2\);/);
-  assert.match(rule(toolbar, '.omni, .omni-display'), /padding: 0 var\(--bw-space-2\) 0 var\(--bw-space-1_5\);/);
+  // Site button 4px in (the corner) + 20px + 10px text inset == list inset 5px + row inset 6px + 16px lead + 8px gap.
+  assert.match(rule(toolbar, '.tb-site'), /margin-left: var\(--bw-space-1\);/);
+  assert.match(rule(toolbar, '.omni, .omni-display'), /padding: 0 var\(--bw-space-2\) 0 calc\(var\(--bw-space-1_5\) \+ var\(--bw-space-1\)\);/);
   assert.match(rule(hover, '.bw-suggest-row'), /padding: 0 var\(--bw-space-2\) 0 var\(--bw-space-1_5\);/);
   assert.match(rule(hover, '.bw-suggest-row'), /gap: var\(--bw-space-2\);/);
-  assert.equal(1 + 8 + 20 + 6, 1 + 4 + 6 + 16 + 8, 'the typed text and the titles start at the same x');
-  assert.equal(1 + 8 + 10, 1 + 4 + 6 + 8, "the site glyph and the rows' lead glyphs share a centre");
+  assert.equal(1 + 4 + 20 + 10, 1 + 4 + 6 + 16 + 8, 'the typed text and the titles start at the same x');
 });
 
 // ----- the list's DOM, rendered by the real hover view against a small fake DOM -----

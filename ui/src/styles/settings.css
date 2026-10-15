@@ -290,12 +290,17 @@
   outline: none;
 }
 
+/* The column's own 720px is the limit, so the longest lead (Extensions) stays on one line. */
 .sp-lead {
-  max-width: 60ch;
   margin: var(--bw-space-1) 0 var(--bw-space-6);
   color: var(--bw-text-2);
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
+}
+
+/* Extensions: the Installed card sits right under its lead, there is no long list to introduce. */
+.sp-sec[data-section="extensions"] > .sp-lead {
+  margin-bottom: var(--bw-space-2);
 }
 
 /* A group: its heading, an optional "no effect yet" note, then the card. */
@@ -1354,11 +1359,11 @@
   color: var(--sp-warn);
 }
 
-/* Empty: a compact row (mark, then the words, then the two install buttons under them) rather
-   than a tall centred stack. */
+/* Empty: a compact row (mark, the words, then the two install buttons stacked at the far right)
+   rather than a tall centred stack. */
 .sp-ext-state.is-empty {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: var(--bw-space-2) var(--bw-space-3);
   padding: var(--bw-space-3) var(--sp-row-x);
@@ -1375,8 +1380,15 @@
 
 .sp-ext-state.is-empty > .bw-button,
 .sp-ext-state.is-empty > .sp-ext-state-actions {
-  grid-column: 2;
-  justify-content: flex-start;
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+}
+
+.sp-ext-state.is-empty > .sp-ext-state-actions {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
 }
 
 .sp-ext-state.is-empty .sp-ext-state-mark {

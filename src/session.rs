@@ -69,10 +69,44 @@ pub struct Session {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionSplit {
+    /// The first pane's tab index (left, or top when `stacked`).
     pub left: usize,
+    /// The second pane's tab index (right, or bottom when `stacked`).
     pub right: usize,
     pub focused_left: bool,
     pub ratio: u8,
+    /// Top over bottom instead of side by side. Saved as an optional fifth field (`v`) only when
+    /// set, so a side-by-side pair keeps the four-field line older builds read; a line without it
+    /// (every older file) restores side by side.
+    pub stacked: bool,
+    /// The trail cell's tab index of each half (a layout of three or four panes,
+    /// `split_view::SplitView::trail`); both `None` for a pair.
+    pub trail: [Option<usize>; 2],
+    /// The cross ratio of a divided layout (20..=80).
+    pub cross_ratio: u8,
+    /// The focused pane is the trail cell of the focused half (`focused_left` names the half).
+    pub focused_trail: bool,
+}
+
+impl Default for SessionSplit {
+    /// A side-by-side 50/50 pair of the first two tabs (the cross ratio of a pair is unused, 50).
+    fn default() -> Self {
+        Self { left: 0, right: 1, focused_left: true, ratio: 50, stacked: false, trail: [None, None], cross_ratio: 50, focused_trail: false }
+    }
+}
+
+impl SessionSplit {
+    /// Every tab index the layout names, in tree order.
+    fn indexes(&self) -> impl Iterator<Item = usize> + '_ {
+        [Some(self.left), self.trail[0], Some(self.right), self.trail[1]].into_iter().flatten()
+    }
+    /// The layout names distinct tabs below `tabs`, and a focused trail exists.
+    fn valid(&self, tabs: usize) -> bool {
+        let indexes: Vec<usize> = self.indexes().collect();
+        let distinct = indexes.iter().enumerate().all(|(i, a)| indexes[i + 1..].iter().all(|b| a != b));
+        let focus_ok = !self.focused_trail || self.trail[usize::from(!self.focused_left)].is_some();
+        distinct && focus_ok && indexes.iter().all(|index| *index < tabs)
+    }
 }
 
 /// The URL text to persist, or `None` for anything that must not be stored: non-web schemes,
@@ -148,17 +182,31 @@ impl Session {
             }
             text.push('\n');
         }
-        if let Some(split) = self.split.filter(|split| {
-            split.left < self.tabs.len()
-                && split.right < self.tabs.len()
-                && split.left != split.right
-        }) {
+        if let Some(split) = self.split.filter(|split| split.valid(self.tabs.len())) {
+            // A layout of three or four panes appends `<h|v> <trail1|-> <trail2|-> <cross> <focused
+            // trail 0|1>`: older builds read a fifth field other than `h`/`v` followed by more
+            // fields as unknown and drop the layout (restoring the tabs alone). A pair keeps the
+            // line older builds read.
+            let layout = if split.trail == [None, None] {
+                if split.stacked { " v".to_owned() } else { String::new() }
+            } else {
+                let trail = |index: Option<usize>| index.map_or_else(|| "-".to_owned(), |index| index.to_string());
+                format!(
+                    " {} {} {} {} {}",
+                    if split.stacked { "v" } else { "h" },
+                    trail(split.trail[0]),
+                    trail(split.trail[1]),
+                    split.cross_ratio.clamp(20, 80),
+                    u8::from(split.focused_trail)
+                )
+            };
             text.push_str(&format!(
-                "split {} {} {} {}\n",
+                "split {} {} {} {}{}\n",
                 split.left,
                 split.right,
                 u8::from(split.focused_left),
-                split.ratio.clamp(20, 80)
+                split.ratio.clamp(20, 80),
+                layout
             ));
         }
         text
@@ -192,17 +240,44 @@ impl Session {
                         fields.next(),
                         fields.next().map(str::parse::<u8>),
                     ) {
-                        if fields.next().is_none()
+                        // Optional fifth field: `v` stacked, `h` (or nothing) side by side.
+                        let stacked = match fields.next() {
+                            None | Some("h") => Some(false),
+                            Some("v") => Some(true),
+                            Some(_) => None,
+                        };
+                        // Optional sixth to ninth fields: a layout of three or four panes. Exactly
+                        // four or none; anything else (a newer format) drops the layout.
+                        let rest: Vec<&str> = fields.collect();
+                        let trail = |field: &str| -> Option<Option<usize>> {
+                            if field == "-" { Some(None) } else { field.parse::<usize>().ok().map(Some) }
+                        };
+                        let layout = match rest.as_slice() {
+                            [] => Some(([None, None], 50, false)),
+                            [first, second, cross, focused_trail] => match (trail(first), trail(second), cross.parse::<u8>().ok(), *focused_trail) {
+                                (Some(first), Some(second), Some(cross), "0" | "1") if (20..=80).contains(&cross) && (first.is_some() || second.is_some()) => {
+                                    Some(([first, second], cross, *focused_trail == "1"))
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let (Some(stacked), Some((trail, cross_ratio, focused_trail))) = (stacked, layout)
                             && left != right
                             && matches!(focused, "0" | "1")
                             && (20..=80).contains(&ratio)
                         {
-                            split = Some(SessionSplit {
+                            let candidate = SessionSplit {
                                 left,
                                 right,
                                 focused_left: focused == "1",
                                 ratio,
-                            });
+                                stacked,
+                                trail,
+                                cross_ratio,
+                                focused_trail,
+                            };
+                            split = candidate.valid(usize::MAX).then_some(candidate);
                         }
                     }
                 }
@@ -240,9 +315,7 @@ impl Session {
         if active >= tabs.len() {
             active = 0;
         }
-        if split.is_some_and(|split: SessionSplit| {
-            split.left >= tabs.len() || split.right >= tabs.len()
-        }) {
+        if split.is_some_and(|split: SessionSplit| !split.valid(tabs.len())) {
             split = None;
         }
         Some(Self {
@@ -810,6 +883,8 @@ mod tests {
             right: 1,
             focused_left: false,
             ratio: 63,
+            stacked: false,
+            ..Default::default()
         });
         assert_eq!(Session::parse(&session.serialize()).unwrap(), session);
 
@@ -818,6 +893,8 @@ mod tests {
             right: 1,
             focused_left: true,
             ratio: 99,
+            stacked: false,
+            ..Default::default()
         });
         assert_eq!(
             Session::parse(&session.serialize()).unwrap().split,
@@ -826,6 +903,8 @@ mod tests {
                 right: 1,
                 focused_left: true,
                 ratio: 80,
+                stacked: false,
+                ..Default::default()
             })
         );
         assert!(
@@ -834,6 +913,71 @@ mod tests {
                 .split
                 .is_none()
         );
+    }
+
+    #[test]
+    fn layouts_of_three_and_four_panes_round_trip_and_bad_lines_drop_the_layout() {
+        let mut session = sample();
+        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false };
+        session.tabs = (0..5).map(tab).collect();
+        let quad = SessionSplit {
+            left: 0,
+            right: 1,
+            focused_left: false,
+            ratio: 40,
+            stacked: false,
+            trail: [Some(2), Some(3)],
+            cross_ratio: 65,
+            focused_trail: true,
+        };
+        session.split = Some(quad);
+        let text = session.serialize();
+        assert!(text.contains("split 0 1 0 40 h 2 3 65 1\n"), "{text}");
+        assert_eq!(Session::parse(&text).unwrap().split, Some(quad));
+        let tee = SessionSplit { trail: [None, Some(4)], stacked: true, focused_trail: false, ..quad };
+        session.split = Some(tee);
+        let text = session.serialize();
+        assert!(text.contains("split 0 1 0 40 v - 4 65 0\n"), "{text}");
+        assert_eq!(Session::parse(&text).unwrap().split, Some(tee));
+        // A pair still writes the line older builds read.
+        session.split = Some(SessionSplit { trail: [None, None], ..tee });
+        assert!(session.serialize().contains("split 0 1 0 40 v\n"));
+        let tabs: String = (0..5).map(|n| format!("tab\t0\thttps://t{n}.test/\tT{n}\n")).collect();
+        let parse = |line: &str| Session::parse(&format!("bowser-session 2\nactive 0\n{tabs}{line}\n")).unwrap().split;
+        assert_eq!(parse("split 0 1 1 50 h 2 - 30 0").map(|split| split.trail), Some([Some(2), None]));
+        for bad in [
+            "split 0 1 1 50 h 2 - 30",        // a field short
+            "split 0 1 1 50 h 2 - 30 0 x",    // a newer, longer format
+            "split 0 1 1 50 h - - 30 0",      // no trail at all
+            "split 0 1 1 50 h 1 - 30 0",      // a tab twice
+            "split 0 1 1 50 h 2 - 90 0",      // cross ratio out of range
+            "split 0 1 1 50 h 2 - 30 2",      // focus flag
+            "split 0 1 0 50 h 2 - 30 1",      // focused trail that does not exist
+            "split 0 1 1 50 h 9 - 30 0",      // no such tab
+            "split 0 1 1 50 x 2 - 30 0",      // unknown orientation
+        ] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn stacked_split_round_trips_and_older_split_lines_restore_side_by_side() {
+        let mut session = sample();
+        session.split = Some(SessionSplit { left: 1, right: 0, focused_left: true, ratio: 35, stacked: true, ..Default::default() });
+        let text = session.serialize();
+        assert!(text.contains("split 1 0 1 35 v\n"), "{text}");
+        assert_eq!(Session::parse(&text).unwrap(), session);
+        // A side-by-side pair keeps the four-field line older builds read.
+        session.split = Some(SessionSplit { left: 0, right: 1, focused_left: false, ratio: 50, stacked: false, ..Default::default() });
+        assert!(session.serialize().contains("split 0 1 0 50\n"));
+        // An old file (four fields) restores side by side; `h` is accepted; anything else drops the pair.
+        let tabs = "tab\t0\thttps://a.test/\tA\ntab\t0\thttps://b.test/\tB\n";
+        let parse = |line: &str| Session::parse(&format!("bowser-session 2\nactive 0\n{tabs}{line}\n")).unwrap().split;
+        assert_eq!(parse("split 0 1 0 64"), Some(SessionSplit { left: 0, right: 1, focused_left: false, ratio: 64, stacked: false, ..Default::default() }));
+        assert_eq!(parse("split 0 1 1 64 h"), Some(SessionSplit { left: 0, right: 1, focused_left: true, ratio: 64, stacked: false, ..Default::default() }));
+        assert_eq!(parse("split 0 1 1 64 v").map(|split| split.stacked), Some(true));
+        assert_eq!(parse("split 0 1 1 64 x"), None);
+        assert_eq!(parse("split 0 1 1 64 v v"), None);
     }
 
     #[test]

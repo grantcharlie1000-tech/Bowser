@@ -32,8 +32,9 @@ settings page, Ctrl+F or `/` moves to its search box.
 | Ctrl+Shift+L | Fill saved password | Bound |
 | Ctrl+Shift+Z | Undo tab organisation | Bound (omnibox keeps it for redo while editing) |
 | Ctrl+Shift+\ | Toggle split view | Bound |
-| Ctrl+Shift+Left / Right | Focus split pane | Bound (omnibox keeps them for selection while editing) |
-| Ctrl+Shift+W | Close focused split pane | Bound |
+| Ctrl+Shift+Left / Right | Focus split pane (a pair: left / right, top / bottom when stacked; three or four panes: the neighbouring pane to the left / right) | Bound (omnibox keeps them for selection while editing) |
+| Ctrl+Shift+Up / Down | Focus the top / bottom pane of a stacked split, or the pane above / below in a layout of three or four panes | Bound only while a split with panes above one another is shown; otherwise the page keeps them (paragraph selection) |
+| Ctrl+Shift+W | Close focused split pane (in a layout of three or four panes its sibling expands) | Bound |
 | Ctrl+Shift+K | Command palette | Bound |
 | Ctrl+Shift+N | Notes & Tasks | Bound |
 | Ctrl+D | Add bookmark | Bound (action runs; feedback is a visual concern) |

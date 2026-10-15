@@ -68,6 +68,39 @@ export function verticalSlotShift(centres: readonly number[], index: number, fro
   return (centres[verticalShiftTarget(index, from, destination)] ?? centres[index] ?? 0) - (centres[index] ?? 0);
 }
 
+/** A pinned tile's centre in the 3-up grid (client px). */
+export type TilePoint = readonly [x: number, y: number];
+
+/** Pinned-grid drop slot: the tile slot whose centre is nearest to (x, y). Ties keep the lower slot. */
+export function nearestTile(tiles: readonly TilePoint[], x: number, y: number): number {
+  let best = 0;
+  let bestDistance = Infinity;
+  tiles.forEach(([tx, ty], index) => {
+    const distance = (tx - x) ** 2 + (ty - y) ** 2;
+    if (distance < bestDistance) {
+      best = index;
+      bestDistance = distance;
+    }
+  });
+  return best;
+}
+
+/** Offset (x, y) that moves pinned tile `index` onto the slot it takes while `from` sits at `destination`. */
+export function tileShift(tiles: readonly TilePoint[], index: number, from: number, destination: number): TilePoint {
+  const here = tiles[index];
+  const there = tiles[verticalShiftTarget(index, from, destination)];
+  if (here === undefined || there === undefined) return [0, 0];
+  return [there[0] - here[0], there[1] - here[1]];
+}
+
+/**
+ * `before` id for a pinned tile dropped at `destination` among the other tiles: the tile after the
+ * slot, or the first unpinned tab when it lands last (0 with no unpinned tab), so it stays pinned-first.
+ */
+export function pinnedBeforeId(others: readonly number[], destination: number, firstUnpinned: number): number {
+  return others[destination] ?? firstUnpinned;
+}
+
 /** Workspace glyph id from Rust ("g:code") to an icons.ts name; unknown ids get the generic workspace stack. */
 export function workspaceIconName(glyph: string): string {
   return /^g:(briefcase|home|code|book|cart|game|music|heart|star|bolt|globe|leaf)$/.test(glyph)

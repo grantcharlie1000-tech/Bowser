@@ -20,7 +20,7 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetSystemMetrics, IsWindow,
-            RegisterClassW, SetWindowPos, ShowWindow, HWND_TOP, SM_CXDRAG, SWP_NOACTIVATE,
+            RegisterClassW, SetWindowPos, ShowWindow, HWND_TOP, SM_CXDRAG, SM_CYDRAG, SWP_NOACTIVATE,
             SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
         },
     },
@@ -36,7 +36,7 @@ use crate::{
         protocol::{Command, SplitCommand},
         split::{self as wire, PickClosed, PickTab},
     },
-    split_view::{self, Pane},
+    split_view::{self, Divider, DropZone, Orientation, Pane},
     tabs::TabId,
 };
 
@@ -46,10 +46,12 @@ const CLASS: PCWSTR = w!("BowserSplitPane");
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Shown {
     Hidden,
-    /// The empty side: tab `tab` (no page) in `pane`, at `rect` (client coordinates).
-    Picker { tab: TabId, pane: Pane, rect: RECT },
-    /// The drop-zone card for a dragged tab over `pane`'s half of the page.
-    Drop { pane: Pane, rect: RECT },
+    /// The empty side: tab `tab` (no page) in `pane`, against page edge `side`, at `rect` (client
+    /// coordinates).
+    Picker { tab: TabId, pane: Pane, side: DropZone, rect: RECT },
+    /// The drop-zone card for a dragged tab: `zone` names where it lands (an edge for a half, a
+    /// corner for a quarter) and `rect` is exactly the pane it will take.
+    Drop { zone: DropZone, rect: RECT },
     /// The private landing over blank private tab `tab` (no split), at the whole viewport `rect`.
     Private { tab: TabId, rect: RECT },
 }
@@ -57,7 +59,9 @@ enum Shown {
 #[derive(Clone, Copy, Debug)]
 struct Drag {
     tab: TabId,
-    target: Option<Pane>,
+    target: Option<DropZone>,
+    /// Where this drag came onto the page and whether that edge is offered yet (`drop_intent`).
+    intent: crate::drop_intent::DropIntent,
 }
 
 #[derive(Default)]
@@ -77,8 +81,8 @@ struct Runtime {
     /// The empty tab the picker last took the keyboard for (focus moves there once per side).
     focused_for: Option<TabId>,
     drag: Option<Drag>,
-    /// Divider press: the client x of the press and whether the pointer moved past the drag
-    /// threshold since.
+    /// Divider press: the client coordinate of the press along the split axis (x side by side, y
+    /// stacked) and whether the pointer moved past the drag threshold since.
     press: Option<(i32, bool)>,
     /// Last `pair` message sent to the toolbar and the tab strip, with the host generation.
     pair_sent: [Option<(u64, String)>; 2],
@@ -230,17 +234,46 @@ thread_local! {
 
 /// Queues a page command and posts `WM_SPLIT_COMMAND` so it runs from the window procedure.
 fn queue(owner: HWND, command: SplitCommand) {
-    let full = QUEUE.with(|queue| {
-        let mut queue = queue.borrow_mut();
-        if queue.len() >= 16 {
-            return true;
-        }
-        queue.push((owner.0 as isize, command));
-        false
-    });
+    let full = QUEUE.with(|queue| push_coalesced(&mut queue.borrow_mut(), owner.0 as isize, command));
     if !full {
         crate::win32::post(owner, super::WM_SPLIT_COMMAND, WPARAM(0), LPARAM(0));
     }
+}
+
+/// Adds `command` for `owner` to the queue; `true` when it was refused (the queue is full).
+///
+/// A drag reports `over` every frame. Only the latest one matters, so a newer `over` replaces a
+/// queued one, and a `drop` or `end` supersedes them. A drag's `drop` and `end` are never refused:
+/// a full queue used to swallow them while a busy UI thread fell 16 frames behind, so the drop did
+/// nothing, or the preview stayed up after the drag. Pure apart from the queue it is given.
+fn push_coalesced(queue: &mut Vec<(isize, SplitCommand)>, owner: isize, command: SplitCommand) -> bool {
+    let is_over = |c: &SplitCommand| matches!(c, SplitCommand::DragOver { .. });
+    match command {
+        SplitCommand::DragOver { .. } => {
+            if let Some(slot) = queue.iter_mut().find(|(id, c)| *id == owner && is_over(c)) {
+                slot.1 = command;
+                return false;
+            }
+        }
+        SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. } => {
+            queue.retain(|(id, c)| !(*id == owner && is_over(c)));
+            queue.push((owner, command));
+            return false;
+        }
+        _ => {}
+    }
+    if queue.len() >= 16 {
+        return true;
+    }
+    queue.push((owner, command));
+    false
+}
+
+/// Whether a dragged tab's drop zone is showing in `owner` right now (a release there opens it).
+/// The tab ghost asks when the page reports a release over the page: before the queued `drop` runs.
+pub(crate) fn drop_zone_showing(owner: HWND) -> bool {
+    let queued_end = QUEUE.with(|queue| queue.borrow().iter().any(|(id, c)| *id == owner.0 as isize && matches!(c, SplitCommand::DragEnd { .. })));
+    !queued_end && with(owner, |rt| rt.drag.is_some_and(|drag| drag.target.is_some())).unwrap_or(false)
 }
 
 /// Runs the queued commands for `owner` (from `WM_SPLIT_COMMAND`).
@@ -367,29 +400,43 @@ pub(crate) fn private_page_shown(owner: HWND) -> bool {
     with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. }))).unwrap_or(false)
 }
 
-/// The side a dragged tab would land on, when the HTML card cannot show it (overlay fallback).
-pub(crate) fn drop_fallback(owner: HWND) -> Option<Pane> {
-    with(owner, |rt| {
-        let target = rt.drag.and_then(|drag| drag.target)?;
+/// The rectangle a dragged tab would land in, when the HTML card cannot show it (overlay fallback).
+pub(crate) fn drop_fallback(owner: HWND) -> Option<RECT> {
+    let (tab, zone) = with(owner, |rt| {
+        let drag = rt.drag?;
+        let target = drag.target?;
         let card = rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Drop { .. }));
-        (!card).then_some(target)
+        (!card).then_some((drag.tab, target))
     })
-    .flatten()
+    .flatten()?;
+    let app = super::window::popup_app(owner)?;
+    drop_card(owner, &app, tab, zone).map(|(_, rect)| rect)
+}
+
+/// Where dragging `tab` onto the `zone` of the page would put it: the zone name of its new pane
+/// (for the card's wording) and exactly that pane's rectangle in the planned layout.
+fn drop_card(owner: HWND, app: &AppRef, tab: TabId, zone: DropZone) -> Option<(DropZone, RECT)> {
+    let viewport = super::window::split_viewport(owner)?;
+    let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
+    let px = |dip| super::window::split_px(owner, dip);
+    let (gap, min_w, min_h) = (px(split_view::GAP_DIP), px(split_view::MIN_PANE_DIP), px(split_view::MIN_PANE_HEIGHT_DIP));
+    let (shown, (left, top, right, bottom)) = match drop_plan(app, tab, zone) {
+        Some(plan) => (
+            split_view::drop_target_zone(plan, tab, zone),
+            split_view::drop_target_rect(plan, tab, zone, page, min_w, min_h, gap),
+        ),
+        None => (zone, split_view::drop_rect(page, zone, gap)),
+    };
+    Some((shown, RECT { left, top, right, bottom }))
 }
 
 /// What the host should show now.
 fn wanted(owner: HWND, app: &AppRef) -> Shown {
     let drag = with(owner, |rt| rt.drag).flatten();
-    if let Some(Drag { target: Some(pane), .. }) = drag
-        && let Some(viewport) = super::window::split_viewport(owner)
+    if let Some(Drag { tab, target: Some(zone), .. }) = drag
+        && let Some((zone, rect)) = drop_card(owner, app, tab, zone)
     {
-        let gap = super::window::split_px(owner, split_view::GAP_DIP);
-        let mid = viewport.left + (viewport.right - viewport.left) / 2;
-        let rect = match pane {
-            Pane::Left => RECT { right: mid - gap / 2, ..viewport },
-            Pane::Right => RECT { left: mid + gap - gap / 2, ..viewport },
-        };
-        return Shown::Drop { pane, rect };
+        return Shown::Drop { zone, rect };
     }
     let Some(split) = App::split_view(app) else {
         // A blank private tab gets the private landing; a private tab with a page, or a blank tab
@@ -403,21 +450,26 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
         }
         return Shown::Hidden;
     };
-    for pane in [Pane::Left, Pane::Right] {
-        let tab = split.tab(pane);
+    // One host: the first empty pane (in tree order) gets the picker; any other empty pane keeps
+    // the overlay's opaque fill until this one is filled.
+    for (pane, tab) in split.panes() {
         if !App::tab_is_blank(app, tab) {
             continue;
         }
         let rect = match App::split_bounds(app) {
-            Some((left, right)) => if pane == Pane::Left { left } else { right },
-            // Too narrow for two panes: only the focused side shows, over the whole viewport.
+            // A pane hidden by the collapse rule has no rectangle.
+            Some(bounds) => match bounds.get(pane) {
+                Some(rect) => rect,
+                None => continue,
+            },
+            // Too narrow for two panes: only the focused pane shows, over the whole viewport.
             None if split.focused == pane => match super::window::split_viewport(owner) {
                 Some(viewport) => viewport,
                 None => continue,
             },
             None => continue,
         };
-        return Shown::Picker { tab, pane, rect };
+        return Shown::Picker { tab, pane, side: split.zone_of(pane), rect };
     }
     Shown::Hidden
 }
@@ -479,19 +531,20 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
     let content = match want {
-        Shown::Picker { tab, pane, .. } => {
-            let same_side = matches!(shown, Some(Shown::Picker { tab: old, pane: old_pane, .. }) if old == tab && old_pane == pane);
-            (!same_side || dirty).then(|| pick_content(app, pane))
+        Shown::Picker { tab, side, .. } => {
+            // A turned pair (side by side to stacked) renames the empty side, so `side` counts too.
+            let same_side = matches!(shown, Some(Shown::Picker { tab: old, side: old_side, .. }) if old == tab && old_side == side);
+            (!same_side || dirty).then(|| pick_content(app, side))
         }
-        Shown::Drop { pane, .. } => {
-            let same = matches!(shown, Some(Shown::Drop { pane: old, .. }) if old == pane);
+        Shown::Drop { zone, .. } => {
+            let same = matches!(shown, Some(Shown::Drop { zone: old, .. }) if old == zone);
             (!same).then(|| {
                 let title = with(owner, |rt| rt.drag.map(|drag| drag.tab))
                     .flatten()
                     .and_then(|tab| App::tab_title(app, tab))
                     .filter(|title| !title.trim().is_empty())
                     .unwrap_or_else(|| "New tab".to_owned());
-                wire::drop_json(pane, &title)
+                wire::drop_json(zone, &title)
             })
         }
         // Cheap enough for every paint: the post below is skipped while the text is unchanged.
@@ -539,7 +592,7 @@ fn private_tab_count(app: &AppRef) -> usize {
     App::private_tab_ids(app).len()
 }
 
-fn pick_content(app: &AppRef, pane: Pane) -> String {
+fn pick_content(app: &AppRef, side: DropZone) -> String {
     let pair = App::split_view(app);
     let workspace = App::workspaces(app).active().tabs().to_vec();
     struct Row {
@@ -575,7 +628,7 @@ fn pick_content(app: &AppRef, pane: Pane) -> String {
         })
         .collect();
     let closed: Vec<PickClosed<'_>> = closed_rows.iter().map(|(title, host)| PickClosed { title, host }).collect();
-    wire::pick_json(pane, &tabs, &closed)
+    wire::pick_json(side, &tabs, &closed)
 }
 
 /// A command from the empty side. Only acts while the picker is shown, on its own tab; the private
@@ -633,10 +686,13 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
     match command {
         SplitCommand::DragOver { id, x, y } => {
             let Some(tab) = tab_of_wire(app, id) else { return };
-            let target = drop_target(owner, app, tab, x, y);
+            let (previous, mut intent) = with(owner, |rt| rt.drag.filter(|drag| drag.tab == tab).map(|drag| (drag.target, drag.intent)))
+                .flatten()
+                .unwrap_or_default();
+            let target = drop_target(owner, app, tab, x, y, previous, &mut intent);
             let changed = with(owner, |rt| {
                 let old = rt.drag.and_then(|drag| drag.target);
-                rt.drag = Some(Drag { tab, target });
+                rt.drag = Some(Drag { tab, target, intent });
                 old != target
             })
             .unwrap_or(false);
@@ -647,11 +703,11 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
         SplitCommand::Drop { id } => {
             let drag = with(owner, |rt| rt.drag.take()).flatten();
             super::window::split_ui_invalidate(owner);
-            let (Some(Drag { tab, target: Some(pane) }), Some(dropped)) = (drag, tab_of_wire(app, id)) else { return };
+            let (Some(Drag { tab, target: Some(zone), .. }), Some(dropped)) = (drag, tab_of_wire(app, id)) else { return };
             if tab != dropped {
                 return;
             }
-            drop_tab(owner, app, tab, pane);
+            drop_tab(owner, app, tab, zone);
         }
         SplitCommand::DragEnd { .. } => {
             if with(owner, |rt| rt.drag.take()).flatten().is_some() {
@@ -662,9 +718,10 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
     }
 }
 
-/// The side of the page under the dragged tab, or `None` when the pointer is not over the page
-/// (or the drop would not make sense: the tab already fills that side).
-fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32) -> Option<Pane> {
+/// The edge zone of the page under the dragged tab (`split_view::drop_zone`, which keeps `previous`
+/// near the diagonals and in the middle), or `None` when the pointer is not over the page or the
+/// drop would change nothing (a half dropped where it already is).
+fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32, previous: Option<DropZone>, intent: &mut crate::drop_intent::DropIntent) -> Option<DropZone> {
     if !App::settings(app).split_edge_drop {
         return None;
     }
@@ -675,42 +732,45 @@ fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32) -> Option<
         let _ = ScreenToClient(owner, &mut point);
     }
     let viewport = super::window::split_viewport(owner)?;
-    if point.y < viewport.top || point.y >= viewport.bottom {
-        return None;
-    }
-    let pane = split_view::side_of(viewport.left, viewport.right, point.x)?;
-    match App::split_view(app) {
-        Some(split) if split.tab(pane) == tab => None,
-        _ => Some(pane),
-    }
+    let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
+    // The corners count only over a shown split (where a drop can add or take a pane).
+    let corners = split_view::corners_allowed(App::split_view(app), tab);
+    // Only near the page's edges, and not the edge the tab came in through until it has gone
+    // deeper (`drop_intent`): pulling a tab off the strip no longer flashes a split preview.
+    let zone = crate::drop_intent::intent_zone(page, point.x, point.y, previous, corners, intent)?;
+    drop_plan(app, tab, zone).map(|_| zone)
 }
 
-fn drop_tab(owner: HWND, app: &AppRef, tab: TabId, pane: Pane) {
-    if App::split_view(app).is_some() {
-        let _ = App::set_split_pane(app, pane, tab);
-    } else {
-        let active = App::active_tab_id(app);
-        let bounds = bounds_for_new_split(owner);
-        if active != tab {
-            let (left, right) = match pane {
-                Pane::Left => (tab, active),
-                Pane::Right => (active, tab),
-            };
-            let _ = App::open_split_pair(app, left, right, pane, bounds);
-        } else {
-            // The shown tab itself: it moves to that side and the other side offers a tab.
-            let _ = App::open_split_with_empty(app, tab, pane.other(), bounds);
-        }
-    }
+/// What dropping `tab` on `zone` would do now (`split_view::plan_drop` with the window's state).
+fn drop_plan(app: &AppRef, tab: TabId, zone: DropZone) -> Option<split_view::DropPlan> {
+    let pair = App::split_view(app);
+    let empty = pair.and_then(|pair| pair.tabs().find(|side| App::tab_is_blank(app, *side)));
+    split_view::plan_drop(pair, empty, App::active_tab_id(app), tab, zone)
+}
+
+/// Drops `tab` on the `zone` of the page (`split_view::plan_drop`): an edge's half, or a corner's
+/// quarter of the split.
+fn drop_tab(owner: HWND, app: &AppRef, tab: TabId, zone: DropZone) {
+    let Some(plan) = drop_plan(app, tab, zone) else { return };
+    let bounds = match plan {
+        split_view::DropPlan::Pair { view, .. } | split_view::DropPlan::Layout { view, .. } => super::window::split_rects_for_view(owner, view),
+        split_view::DropPlan::WithEmpty { zone, .. } => bounds_for(owner, zone.orientation(), 50),
+    };
+    let _ = App::apply_split_drop(app, plan, bounds);
     refresh_bounds(owner, app);
     App::focus_page(app);
 }
 
 // ----- bounds and entry points -----
 
-/// The pane rectangles a new 50/50 split would get.
+/// The pane rectangles a new 50/50 side-by-side split would get.
 fn bounds_for_new_split(owner: HWND) -> Option<app_bounds::Bounds> {
-    super::window::split_rects_for_ratio(owner, 50)
+    bounds_for(owner, Orientation::SideBySide, 50)
+}
+
+/// The pane rectangles a split in `orientation` at `ratio` would get.
+fn bounds_for(owner: HWND, orientation: Orientation, ratio: u8) -> Option<app_bounds::Bounds> {
+    super::window::split_rects_for_ratio(owner, orientation, ratio)
 }
 
 mod app_bounds {
@@ -771,39 +831,146 @@ const SEPARATE: usize = 1;
 const SWAP: usize = 2;
 const CLOSE_LEFT: usize = 3;
 const CLOSE_RIGHT: usize = 4;
+const TURN: usize = 5;
+/// Swap the cells of half 0 or 1 (`SWAP_CROSS + half`).
+const SWAP_CROSS: usize = 6;
+/// Close the tab of a pane of a larger layout (`CLOSE_PANE + Pane::index`).
+const CLOSE_PANE: usize = 0x10;
 
-fn arrange_entries() -> Vec<Entry> {
+/// The menu labels and glyphs that name the two sides, per orientation.
+struct SideWords {
+    swap: &'static str,
+    turn: &'static str,
+    turn_glyph: &'static str,
+    close_first: &'static str,
+    close_second: &'static str,
+    first_glyph: &'static str,
+    second_glyph: &'static str,
+}
+
+fn side_words(orientation: Orientation) -> SideWords {
+    match orientation {
+        Orientation::SideBySide => SideWords {
+            swap: "Swap sides",
+            turn: "Stack top and bottom",
+            turn_glyph: "split-stacked",
+            close_first: "Close left tab",
+            close_second: "Close right tab",
+            first_glyph: "split-left",
+            second_glyph: "split-right",
+        },
+        Orientation::Stacked => SideWords {
+            swap: "Swap top and bottom",
+            turn: "Show side by side",
+            turn_glyph: "split",
+            close_first: "Close top tab",
+            close_second: "Close bottom tab",
+            first_glyph: "split-top",
+            second_glyph: "split-bottom",
+        },
+    }
+}
+
+fn arrange_entries(orientation: Orientation) -> Vec<Entry> {
+    let words = side_words(orientation);
     vec![
         Entry::Item(Item::new(SEPARATE, "Separate views", Icon::None).glyph("unsplit").shortcut("Ctrl+Shift+\\")),
-        Entry::Item(Item::new(SWAP, "Swap sides", Icon::None).glyph("swap")),
+        Entry::Item(Item::new(SWAP, words.swap, Icon::None).glyph("swap")),
+        Entry::Item(Item::new(TURN, words.turn, Icon::None).glyph(words.turn_glyph)),
         Entry::Separator,
-        Entry::Item(Item::new(CLOSE_LEFT, "Close left tab", Icon::Close).glyph("split-left")),
-        Entry::Item(Item::new(CLOSE_RIGHT, "Close right tab", Icon::Close).glyph("split-right")),
+        Entry::Item(Item::new(CLOSE_LEFT, words.close_first, Icon::Close).glyph(words.first_glyph)),
+        Entry::Item(Item::new(CLOSE_RIGHT, words.close_second, Icon::Close).glyph(words.second_glyph)),
     ]
 }
 
-/// The split menu at `anchor` (screen): Separate views, Swap sides, Close left tab, Close right tab.
-/// Each pick re-checks that the same pair is still shown.
-pub(crate) fn show_menu(owner: HWND, app: &AppRef, anchor: POINT, placement: menu::Placement, kind: &str) {
+/// The words for where a pane sits ("left", "top-left", ...).
+fn zone_word(zone: DropZone) -> &'static str {
+    match zone {
+        DropZone::Left => "left",
+        DropZone::Right => "right",
+        DropZone::Top => "top",
+        DropZone::Bottom => "bottom",
+        DropZone::TopLeft => "top-left",
+        DropZone::TopRight => "top-right",
+        DropZone::BottomLeft => "bottom-left",
+        DropZone::BottomRight => "bottom-right",
+    }
+}
+
+/// The glyph of a pane's place: the half glyphs, or a quarter of a 2 x 2.
+pub(crate) fn zone_glyph(zone: DropZone) -> &'static str {
+    match zone {
+        DropZone::Left => "split-left",
+        DropZone::Right => "split-right",
+        DropZone::Top => "split-top",
+        DropZone::Bottom => "split-bottom",
+        DropZone::TopLeft => "split-top-left",
+        DropZone::TopRight => "split-top-right",
+        DropZone::BottomLeft => "split-bottom-left",
+        DropZone::BottomRight => "split-bottom-right",
+    }
+}
+
+/// The menu of a layout of three or four panes, for `divider` (`None`: the toolbar button):
+/// Separate views, Swap the two sides of that divider, then Close for each pane beside it (every
+/// pane for the primary divider, the crossing and the toolbar).
+fn layout_entries(view: split_view::SplitView, divider: Option<Divider>) -> Vec<Entry> {
+    let mut entries = vec![Entry::Item(Item::new(SEPARATE, "Separate views", Icon::None).glyph("unsplit").shortcut("Ctrl+Shift+\\"))];
+    let primary_swap = if view.orientation.is_stacked() { "Swap top and bottom" } else { "Swap left and right" };
+    let cross_swap = if view.orientation.is_stacked() { "Swap left and right" } else { "Swap top and bottom" };
+    match divider {
+        Some(Divider::Cross(half)) => entries.push(Entry::Item(Item::new(SWAP_CROSS + half, cross_swap, Icon::None).glyph("swap"))),
+        _ => entries.push(Entry::Item(Item::new(SWAP, primary_swap, Icon::None).glyph("swap"))),
+    }
+    entries.push(Entry::Separator);
+    for (pane, _) in view.panes() {
+        let beside = match divider {
+            Some(Divider::Cross(half)) => pane.half_index() == half,
+            _ => true,
+        };
+        if beside {
+            let zone = view.zone_of(pane);
+            entries.push(Entry::Item(Item::new(CLOSE_PANE + pane.index(), &format!("Close {} tab", zone_word(zone)), Icon::Close).glyph(zone_glyph(zone))));
+        }
+    }
+    entries
+}
+
+/// The split menu at `anchor` (screen). A pair: Separate views, Swap sides, Stack top and bottom
+/// (or Show side by side), Close left/top tab, Close right/bottom tab. A larger layout:
+/// [`layout_entries`] for `divider`. Each pick re-checks that the same layout is still shown.
+pub(crate) fn show_menu(owner: HWND, app: &AppRef, anchor: POINT, placement: menu::Placement, kind: &str, divider: Option<Divider>) {
     let Some(split) = App::split_view(app) else { return };
+    let entries = if split.is_pair() { arrange_entries(split.orientation) } else { layout_entries(split, divider) };
     menu::show(
         owner,
         anchor,
         placement,
-        Menu { header: None, entries: arrange_entries(), footer: "Split view".to_owned() },
+        Menu { header: None, entries, footer: "Split view".to_owned() },
         kind,
         move |app, chosen| {
             let Some(chosen) = chosen else { return };
             let Some(now) = App::split_view(app) else { return };
-            if (now.left, now.right) != (split.left, split.right) {
+            if now.tabs().collect::<Vec<_>>() != split.tabs().collect::<Vec<_>>() {
                 return;
             }
             match chosen.id {
+                id if (SWAP_CROSS..SWAP_CROSS + 2).contains(&id) => {
+                    let _ = App::swap_split_cross(app, id - SWAP_CROSS);
+                }
+                id if (CLOSE_PANE..CLOSE_PANE + 4).contains(&id) => {
+                    if let Some(pane) = Pane::ALL.into_iter().find(|pane| pane.index() == id - CLOSE_PANE) {
+                        let _ = App::close_split_pane(app, pane);
+                    }
+                }
                 SEPARATE => {
                     let _ = App::separate_split(app);
                 }
                 SWAP => {
                     let _ = App::swap_split_panes(app);
+                }
+                TURN => {
+                    let _ = App::turn_split(app, bounds_for(owner, now.orientation.other(), now.ratio));
                 }
                 CLOSE_LEFT => {
                     let _ = App::close_split_pane(app, Pane::Left);
@@ -831,27 +998,33 @@ pub(crate) fn toolbar_button(owner: HWND, app: &AppRef) {
     }
     let half = super::window::split_px(owner, 12);
     let anchor = POINT { x: cursor.x + half, y: cursor.y + half + super::window::split_px(owner, 4) };
-    show_menu(owner, app, anchor, menu::Placement::AboveLeft, "split");
+    show_menu(owner, app, anchor, menu::Placement::AboveLeft, "split", None);
 }
 
-/// The divider menu, beside the grip.
-pub(crate) fn divider_menu(owner: HWND, app: &AppRef, client_y: i32) {
-    let Some(gap) = super::window::split_gap(owner) else { return };
-    let anchor = super::window::screen_point(owner, POINT { x: gap.right + super::window::split_px(owner, 4), y: client_y });
-    show_menu(owner, app, anchor, menu::Placement::BelowLeft, "split-divider");
+/// The menu of the divider at `client`, beside its grip: right of an upright gap at the pointer's
+/// height, below a flat gap at the pointer's x.
+pub(crate) fn divider_menu(owner: HWND, app: &AppRef, client: POINT) {
+    let divider = super::window::split_divider_at_point(owner, client).unwrap_or(Divider::Primary);
+    let Some(gap) = super::window::split_gap(owner, divider) else { return };
+    let nudge = super::window::split_px(owner, 4);
+    let flat = gap.right - gap.left > gap.bottom - gap.top;
+    let point = if flat { POINT { x: client.x, y: gap.bottom + nudge } } else { POINT { x: gap.right + nudge, y: client.y } };
+    let anchor = super::window::screen_point(owner, point);
+    show_menu(owner, app, anchor, menu::Placement::BelowLeft, "split-divider", Some(divider));
 }
 
-/// The divider was pressed at client `x`.
-pub(crate) fn divider_pressed(owner: HWND, x: i32) {
-    let _ = with(owner, |rt| rt.press = Some((x, false)));
+/// The divider was pressed at client coordinate `at` along the split axis.
+pub(crate) fn divider_pressed(owner: HWND, at: i32) {
+    let _ = with(owner, |rt| rt.press = Some((at, false)));
 }
 
-/// The pointer moved to client `x` while the divider is held: true once it counts as a drag.
-pub(crate) fn divider_dragged(owner: HWND, x: i32) -> bool {
-    let threshold = unsafe { GetSystemMetrics(SM_CXDRAG) }.max(2);
+/// The pointer moved to `at` (along the split axis) while the divider is held: true once it counts
+/// as a drag.
+pub(crate) fn divider_dragged(owner: HWND, at: i32) -> bool {
+    let threshold = unsafe { GetSystemMetrics(SM_CXDRAG).max(GetSystemMetrics(SM_CYDRAG)) }.max(2);
     with(owner, |rt| match rt.press.as_mut() {
         Some((start, moved)) => {
-            if !*moved && (x - *start).abs() >= threshold {
+            if !*moved && (at - *start).abs() >= threshold {
                 *moved = true;
             }
             *moved
@@ -875,9 +1048,10 @@ pub(crate) fn tab_menu_entries(app: &AppRef, tab: TabId) -> Vec<Entry> {
     let in_pair = App::split_pair(app).is_some_and(|(split, _)| split.contains(tab));
     if in_pair {
         let shown = App::split_view(app).is_some_and(|split| split.contains(tab));
+        let orientation = App::split_pair(app).map_or(Orientation::SideBySide, |(split, _)| split.orientation);
         return vec![
             Entry::Item(Item::new(TAB_SEPARATE, "Separate views", Icon::None).glyph("unsplit")),
-            Entry::Item(Item::new(TAB_SWAP, "Swap sides", Icon::None).glyph("swap").disabled_if(!shown)),
+            Entry::Item(Item::new(TAB_SWAP, side_words(orientation).swap, Icon::None).glyph("swap").disabled_if(!shown)),
         ];
     }
     let label = if tab == App::active_tab_id(app) { "Add tab to new split view" } else { "New split view with current tab" };
@@ -906,9 +1080,15 @@ pub(crate) fn tab_menu_pick(owner: HWND, app: &AppRef, tab: TabId, id: usize) ->
 
 // ----- the pair broadcast -----
 
-/// The `pair` message for the window's current pair.
+/// The `pair` message for the window's current pair (with `panes` for three or four panes).
 pub(crate) fn pair_message(app: &AppRef) -> String {
-    wire::pair_json(App::split_pair(app).map(|(split, shown)| (wire_id(split.left), wire_id(split.right), split.focused, shown)))
+    let Some((split, shown)) = App::split_pair(app) else { return wire::pair_json(None) };
+    let pair = (wire_id(split.left), wire_id(split.right), split.focused, shown, split.orientation);
+    if split.is_pair() {
+        return wire::pair_json(Some(pair));
+    }
+    let panes: Vec<(u32, DropZone)> = split.panes().map(|(pane, tab)| (wire_id(tab), split.zone_of(pane))).collect();
+    wire::layout_json(pair, &panes, split.focused_zone())
 }
 
 /// Whether `json` still has to be sent to host `index` (0 toolbar, 1 tabs) at `generation`.
@@ -935,10 +1115,67 @@ mod tests {
     }
 
     #[test]
+    fn split_menus_name_the_sides_of_either_orientation() {
+        let labels = |orientation| {
+            arrange_entries(orientation)
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Entry::Item(item) => Some(item.label.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            labels(Orientation::SideBySide),
+            ["Separate views", "Swap sides", "Stack top and bottom", "Close left tab", "Close right tab"]
+        );
+        assert_eq!(
+            labels(Orientation::Stacked),
+            ["Separate views", "Swap top and bottom", "Show side by side", "Close top tab", "Close bottom tab"]
+        );
+    }
+
+    #[test]
     fn tab_menu_ids_do_not_collide_with_the_tab_menu() {
         // show_tab_context_menu uses ids below 100.
         for id in [TAB_SPLIT, TAB_SEPARATE, TAB_SWAP] {
             assert!(id >= 0x100);
         }
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    fn over(x: u32) -> SplitCommand {
+        SplitCommand::DragOver { id: 3, x, y: 400 }
+    }
+
+    #[test]
+    fn a_drop_after_a_backlog_of_moves_is_never_refused() {
+        // Replay: the UI thread falls behind while a tab is dragged over the page (60 `over` a
+        // second), then the tab is released. The old queue refused everything past 16, the drop
+        // included.
+        let mut queue = Vec::new();
+        for x in 0..40 {
+            assert!(!push_coalesced(&mut queue, 1, over(x)));
+        }
+        assert_eq!(queue.len(), 1, "moves coalesce to the latest");
+        assert_eq!(queue[0].1, over(39));
+        assert!(!push_coalesced(&mut queue, 1, SplitCommand::Drop { id: 3 }));
+        assert_eq!(queue, vec![(1, SplitCommand::Drop { id: 3 })], "the drop supersedes the queued move");
+    }
+
+    #[test]
+    fn end_is_kept_even_when_the_queue_is_full_and_other_windows_keep_their_moves() {
+        let mut queue: Vec<(isize, SplitCommand)> = (0..16).map(|i| (100 + i, SplitCommand::Focus)).collect();
+        assert!(push_coalesced(&mut queue, 1, SplitCommand::Close), "picker commands are still capped");
+        assert!(!push_coalesced(&mut queue, 1, SplitCommand::DragEnd { id: 3 }));
+        assert_eq!(queue.last(), Some(&(1, SplitCommand::DragEnd { id: 3 })));
+        let mut two = vec![(2, over(5))];
+        assert!(!push_coalesced(&mut two, 1, over(6)));
+        assert!(!push_coalesced(&mut two, 1, SplitCommand::DragEnd { id: 3 }));
+        assert_eq!(two, vec![(2, over(5)), (1, SplitCommand::DragEnd { id: 3 })]);
     }
 }

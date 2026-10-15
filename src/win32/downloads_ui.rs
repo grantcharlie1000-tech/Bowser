@@ -342,6 +342,26 @@ mod tests {
         assert_eq!(PROGRESS_INTERVAL * 4, Duration::from_secs(1));
     }
 
+    /// The body of the top-level `fn <name>(` in `source`, up to its closing brace in column 0.
+    fn fn_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(&format!("\nfn {name}(")).unwrap_or_else(|| panic!("fn {name} in window.rs"));
+        let rest = &source[start + 1..];
+        &rest[..rest.find("\n}").expect("end of fn")]
+    }
+
+    #[test]
+    fn the_list_observer_is_installed_when_the_toolbar_page_is_ready() {
+        // `install` is what makes the list tell this window about changes; without it no
+        // WM_DOWNLOADS_CHANGED is ever posted, so the button never shows, the bubble never opens and
+        // the downloads page never refreshes. It must run on every toolbar `ready` (html_refresh),
+        // not only when the HTML chrome falls back to GDI. Not unit-testable without WebView2.
+        let window = include_str!("window.rs");
+        assert!(
+            fn_body(window, "html_refresh").contains("super::downloads_ui::install(hwnd, &app);"),
+            "html_refresh must install the downloads observer and send the button's state"
+        );
+    }
+
     #[test]
     fn only_actions_that_leave_for_another_surface_close_the_bubble() {
         let done = DownloadFollowup::None;

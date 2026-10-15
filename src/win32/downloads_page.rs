@@ -307,11 +307,11 @@ fn is_downloads_tab(app: &AppRef, tab: TabId) -> bool {
 fn wanted(owner: HWND, app: &AppRef) -> Option<Shown> {
     let active = App::active_tab_id(app);
     if let Some(split) = App::split_view(app) {
-        let panes = [split.focused, split.focused.other()];
-        let pane = panes.into_iter().find(|pane| is_downloads_tab(app, split.tab(*pane)))?;
+        let pane = split.panes_focus_first().find(|pane| is_downloads_tab(app, split.tab(*pane)))?;
         let tab = split.tab(pane);
         let rect = match App::split_bounds(app) {
-            Some((left, right)) => if pane == Pane::Left { left } else { right },
+            // A pane hidden by the collapse rule shows no page host.
+            Some(bounds) => bounds.get(pane)?,
             None if split.focused == pane => super::window::split_viewport(owner)?,
             None => return None,
         };

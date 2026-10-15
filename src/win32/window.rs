@@ -79,7 +79,7 @@ use windows::{
                 GetParent, GetSystemMenu, GetSystemMetrics, GetWindow, GetWindowLongPtrW, GetWindowRect,
                 GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HICON, HMENU,
                 HTCAPTION, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW,
-                HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, HideCaret, IDC_SIZEWE, IsIconic,
+                HTCLOSE, HTMAXBUTTON, HTMINBUTTON, HWND_TOP, HideCaret, IDC_SIZEALL, IDC_SIZENS, IDC_SIZEWE, IsIconic,
                 IsZoomed, KillTimer, LoadCursorW, MINMAXINFO, MSG, MoveWindow, NCCALCSIZE_PARAMS,
                 PostMessageW, PostQuitMessage, RegisterClassW, SC_CLOSE, SC_KEYMENU, SC_MAXIMIZE,
                 SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SM_CXFRAME, SM_CXICON,
@@ -474,16 +474,25 @@ struct WindowChrome {
     pressed: Hit,
     drag: Option<(TabId, usize)>,
     split_drag_companion: Option<TabId>,
-    split_drop: Option<crate::split_view::Pane>,
+    split_drop: Option<crate::split_view::DropZone>,
     dpi: u32,
     motion: Motion,
     active_tab: Option<TabId>,
     progress: ProgressTransition,
     first_paint_logged: bool,
     split_active: bool,
+    /// The shown pair's orientation: which axis `split_divider` runs along.
+    split_orientation: crate::split_view::Orientation,
+    /// The shown layout (pair, or three or four panes), as last synced from the app.
+    split_layout: Option<crate::split_view::SplitView>,
     split_dragging: bool,
+    /// Which divider the pointer holds (or hovers): the primary gap, a cross gap or the crossing.
+    split_drag_divider: Option<crate::split_view::Divider>,
+    /// The divider gap's leading edge along the split axis: x side by side, y stacked.
     split_divider: i32,
-    pending_split_bounds: Option<(RECT, RECT)>,
+    /// The cross gaps' leading edge along the other axis (a layout of three or four panes).
+    split_cross: i32,
+    pending_split_bounds: Option<crate::app::SplitBounds>,
     /// The HTML toolbar's WebView2 host, once created. Dropped (and closed) on failure.
     html: Option<ChromeHost>,
     /// Set once the HTML toolbar has been started, so it is never started twice.
@@ -665,8 +674,12 @@ impl WindowChrome {
             progress: ProgressTransition::default(),
             first_paint_logged: false,
             split_active: false,
+            split_orientation: crate::split_view::Orientation::SideBySide,
+            split_layout: None,
             split_dragging: false,
+            split_drag_divider: None,
             split_divider: width / 2,
+            split_cross: 0,
             pending_split_bounds: None,
             html: None,
             html_requested: false,
@@ -769,6 +782,8 @@ impl WindowChrome {
         let ids = App::tab_ids(app);
         let active = App::active_tab_id(app);
         self.split_active = App::split_view(app).is_some();
+        self.split_orientation = App::split_view(app).map_or_else(Default::default, |split| split.orientation);
+        self.split_layout = App::split_view(app);
         // A change of active tab moves the collapsed-group representative and the active tab's width,
         // so it re-projects and relays out even when the posting path was not structural. Projection
         // inputs are collected whenever it runs, so both paths reach `project_strip` with real data.
@@ -978,7 +993,16 @@ impl WindowChrome {
             self.html_tabs_layout = None;
             self.html_tabs_workspace = None;
         }
-        self.split_divider = self.layout.viewport.left + self.layout.viewport.width() / 2 - 3;
+        self.split_divider = if self.split_orientation.is_stacked() {
+            self.layout.viewport.top + self.layout.viewport.height() / 2 - 3
+        } else {
+            self.layout.viewport.left + self.layout.viewport.width() / 2 - 3
+        };
+        self.split_cross = if self.split_orientation.is_stacked() {
+            self.layout.viewport.left + self.layout.viewport.width() / 2 - 3
+        } else {
+            self.layout.viewport.top + self.layout.viewport.height() / 2 - 3
+        };
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
@@ -2774,40 +2798,32 @@ unsafe extern "system" fn window_proc(
                             let _ = SetTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER, ANIMATION_FRAME_MS, None);
                         }
                     } else {
-                        let dragging = with_chrome(hwnd, |s| s.split_dragging).unwrap_or(false);
+                        let (dragging, orientation, held) = with_chrome(hwnd, |s| (s.split_dragging, s.split_orientation, s.split_drag_divider)).unwrap_or((false, Default::default(), None));
+                        // --- split view --- the held divider follows the pointer along its axis
+                        // (both axes at a 2 x 2's crossing)
+                        let held = held.unwrap_or(crate::split_view::Divider::Primary);
+                        let along = crate::split_view::axis_coord(divider_axis(orientation, held), p.x, p.y);
                         if dragging
-                            && super::split_ui::divider_dragged(hwnd, p.x) // --- split view ---
-                            && let Some(panes) = split_rects(hwnd, Some(p.x - split_px(hwnd, crate::split_view::GAP_DIP) / 2))
+                            && super::split_ui::divider_dragged(hwnd, along)
                             && let Some(app) = app
+                            && let Some(panes) = drag_split_divider(hwnd, app, held, p)
                         {
-                            let divider = panes.0.right;
-                            let _ = with_chrome(hwnd, |s| s.split_divider = divider);
-                            if let Some(viewport) = with_chrome(hwnd, |s| s.layout.viewport) {
-                                let viewport = adjusted_viewport(hwnd, to_win_rect(viewport), dpi(hwnd));
-                                let gap = with_chrome(hwnd, |s| s.layout.metrics.px(crate::split_view::GAP_DIP)).unwrap_or(8);
-                                let ratio = crate::split_view::ratio_for_divider(viewport.left, viewport.right, divider, gap);
-                                App::set_split_ratio(app, ratio);
-                            }
                             queue_split_bounds(hwnd, panes);
                             repaint(hwnd);
                         } else {
                             let point = frame::point_from_lparam(lparam);
+                            // --- split view --- the native strip's tab drag: the page edge zone
+                            // under the pointer (left, right, top or bottom half).
                             let target = with_chrome(hwnd, |s| {
-                                let dragging_tab = s.drag.is_some();
                                 let viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
-                                let viewport = Rect::new(
-                                    viewport.left,
-                                    viewport.top,
-                                    viewport.right,
-                                    viewport.bottom,
-                                );
-                                (dragging_tab && viewport.contains(point.x, point.y)).then_some(
-                                    if point.x < viewport.left + viewport.width() / 2 {
-                                        crate::split_view::Pane::Left
-                                    } else {
-                                        crate::split_view::Pane::Right
-                                    },
-                                )
+                                s.drag.and_then(|_| {
+                                    crate::split_view::drop_zone(
+                                        (viewport.left, viewport.top, viewport.right, viewport.bottom),
+                                        point.x,
+                                        point.y,
+                                        s.split_drop,
+                                    )
+                                })
                             })
                             .flatten();
                             let changed = with_chrome(hwnd, |s| {
@@ -2831,9 +2847,24 @@ unsafe extern "system" fn window_proc(
                     let p = frame::point_from_lparam(lparam);
                     let h = hit(hwnd, p.x, p.y);
                     if h == Hit::SplitDivider {
-                        let cursor = LoadCursorW(None, IDC_SIZEWE);
-                        if let Ok(cursor) = cursor {
+                        // --- split view --- the divider under the pointer lights its grip
+                        let (divider, orientation, changed) = with_chrome(hwnd, |s| {
+                            let divider = split_divider_at(hwnd, s, p.x, p.y);
+                            let changed = s.split_drag_divider != divider;
+                            s.split_drag_divider = divider;
+                            (divider, s.split_orientation, changed)
+                        })
+                        .unwrap_or((None, Default::default(), false));
+                        let cursor = match divider {
+                            Some(crate::split_view::Divider::Both) => IDC_SIZEALL,
+                            Some(divider) if divider_axis(orientation, divider).is_stacked() => IDC_SIZENS,
+                            _ => IDC_SIZEWE,
+                        };
+                        if let Ok(cursor) = LoadCursorW(None, cursor) {
                             let _ = SetCursor(Some(cursor));
+                        }
+                        if changed {
+                            repaint(hwnd);
                         }
                     }
                     set_hover(hwnd, h);
@@ -3092,8 +3123,14 @@ unsafe extern "system" fn window_proc(
                         let _ = SetCapture(hwnd);
                     }
                     Hit::SplitDivider => {
-                        let _ = with_chrome(hwnd, |s| s.split_dragging = true);
-                        super::split_ui::divider_pressed(hwnd, p.x); // --- split view ---
+                        let (orientation, held) = with_chrome(hwnd, |s| {
+                            s.split_dragging = true;
+                            s.split_drag_divider = split_divider_at(hwnd, s, p.x, p.y);
+                            (s.split_orientation, s.split_drag_divider.unwrap_or(crate::split_view::Divider::Primary))
+                        })
+                        .unwrap_or((Default::default(), crate::split_view::Divider::Primary));
+                        // --- split view ---
+                        super::split_ui::divider_pressed(hwnd, crate::split_view::axis_coord(divider_axis(orientation, held), p.x, p.y));
                         let _ = SetCapture(hwnd);
                     }
                     Hit::SiteInfo => {
@@ -3108,15 +3145,11 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     Hit::Viewport => {
+                        // --- split view --- a click beside a pane (its rim or a gap) focuses the nearest pane
                         if let Some(app) = app
                             && App::split_view(app).is_some()
-                            && let Some((left, _right)) = split_rects(hwnd, None)
+                            && let Some(pane) = split_geometry_now(hwnd).and_then(|panes| panes.pane_near(p.x, p.y))
                         {
-                            let pane = if p.x < left.right {
-                                crate::split_view::Pane::Left
-                            } else {
-                                crate::split_view::Pane::Right
-                            };
                             let _ = App::focus_split_pane(app, pane);
                         }
                     }
@@ -3181,7 +3214,7 @@ unsafe extern "system" fn window_proc(
                         // --- split view ---
                         // A press that never moved is a click on the divider: its menu opens.
                         if super::split_ui::divider_released(hwnd) {
-                            super::split_ui::divider_menu(hwnd, app, p.y);
+                            super::split_ui::divider_menu(hwnd, app, p);
                         } else {
                             App::split_state_changed(app);
                         }
@@ -3222,18 +3255,16 @@ unsafe extern "system" fn window_proc(
                     })
                     .unwrap_or((None, None));
                     if let Some(app) = app {
-                        if let Some(pane) = drop {
+                        if let Some(zone) = drop {
                             let other = companion
                                 .filter(|tab| *tab != id)
                                 .or_else(|| App::tab_ids(app).into_iter().find(|tab| *tab != id));
                             if let Some(other) = other
-                                && let Some(bounds) = split_rects(hwnd, None)
+                                && let Some(view) = crate::split_view::SplitView::at_edge(id, other, zone)
                             {
-                                let (left, right) = match pane {
-                                    crate::split_view::Pane::Left => (id, other),
-                                    crate::split_view::Pane::Right => (other, id),
-                                };
-                                let _ = App::open_split_view(app, left, right, pane, bounds);
+                                // --- split view --- the dragged tab on the zone's half, side by side or stacked
+                                let bounds = split_rects_for_ratio(hwnd, view.orientation, view.ratio);
+                                let _ = App::open_split_arranged(app, view, bounds);
                                 sync_split_ratio(hwnd, App::split_view(app));
                                 if let Some(panes) = split_rects(hwnd, None) {
                                     App::update_split_bounds(app, panes);
@@ -3303,7 +3334,14 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::SplitDivider => {
                         if let Some(app) = app {
-                            App::set_split_ratio(app, 50);
+                            // --- split view --- the divider under the pointer goes back to 50/50
+                            let divider = with_chrome(hwnd, |s| split_divider_at(hwnd, s, p.x, p.y)).flatten();
+                            if divider != Some(crate::split_view::Divider::Cross(0)) && divider != Some(crate::split_view::Divider::Cross(1)) {
+                                App::set_split_ratio(app, 50);
+                            }
+                            if divider.is_some_and(|divider| divider != crate::split_view::Divider::Primary) {
+                                App::set_split_cross_ratio(app, 50);
+                            }
                             App::split_state_changed(app);
                             sync_split_ratio(hwnd, App::split_view(app));
                             if let Some(panes) = split_rects(hwnd, None) {
@@ -3343,7 +3381,7 @@ unsafe extern "system" fn window_proc(
                     match target {
                         Hit::Rail(key) => show_rail_context_menu(hwnd, app, key, p.x, p.y),
                         // --- split view ---
-                        Hit::SplitDivider => super::split_ui::divider_menu(hwnd, app, p.y),
+                        Hit::SplitDivider => super::split_ui::divider_menu(hwnd, app, p),
                         // --- end split view ---
                         Hit::GroupBall(i) => {
                             card::cancel(hwnd);
@@ -4031,19 +4069,7 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 };
             }
         }
-        if hit == Hit::Viewport
-            && s.split_active
-            && layout::split_pane_layout(
-                {
-                    let viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
-                    Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom)
-                },
-                s.split_divider,
-                s.layout.metrics.px(crate::split_view::MIN_PANE_DIP),
-                s.layout.metrics.px(crate::split_view::GAP_DIP),
-            )
-            .is_some_and(|panes| panes.divider.contains(x, y))
-        {
+        if hit == Hit::Viewport && s.split_active && split_divider_at(hwnd, s, x, y).is_some() {
             return Hit::SplitDivider;
         }
         hit
@@ -4309,47 +4335,113 @@ pub(crate) fn copy_text_to_clipboard(hwnd: HWND, text: &str) -> bool {
     }
 }
 
-pub(super) fn split_rects(hwnd: HWND, divider_left: Option<i32>) -> Option<(RECT, RECT)> {
-    let (layout, saved_divider) = with_chrome(hwnd, |state| (state.layout, state.split_divider))?;
-    let divider = divider_left.unwrap_or(saved_divider);
+/// The pane rectangles of the shown layout, with the primary gap's leading edge at `divider` (along
+/// the split axis) or at the saved divider. `None` when too small for two panes.
+pub(super) fn split_rects(hwnd: HWND, divider: Option<i32>) -> Option<crate::app::SplitBounds> {
+    split_rects_at(hwnd, divider, None)
+}
+
+/// [`split_rects`] with the cross gaps' leading edge at `cross` (or the saved one).
+fn split_rects_at(hwnd: HWND, divider: Option<i32>, cross: Option<i32>) -> Option<crate::app::SplitBounds> {
+    let (layout, view, saved_divider, saved_cross, orientation) =
+        with_chrome(hwnd, |state| (state.layout, state.split_layout, state.split_divider, state.split_cross, state.split_orientation))?;
+    // Without a synced layout (a split about to open), a pair in the saved orientation.
+    let view = view.or_else(|| crate::split_view::SplitView::new(TabId(0), TabId(1), crate::split_view::Pane::Left).map(|pair| pair.with_orientation(orientation)))?;
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
-    let panes = layout::split_pane_layout(
-        viewport,
-        divider,
-        layout.metrics.px(crate::split_view::MIN_PANE_DIP),
-        layout.metrics.px(crate::split_view::GAP_DIP),
-    )?;
-    Some((
-        RECT {
-            left: panes.left.left,
-            top: panes.left.top,
-            right: panes.left.right,
-            bottom: panes.left.bottom,
-        },
-        RECT {
-            left: panes.right.left,
-            top: panes.right.top,
-            right: panes.right.right,
-            bottom: panes.right.bottom,
-        },
-    ))
+    let panes = layout::split_panes(viewport, view, divider.unwrap_or(saved_divider), cross.unwrap_or(saved_cross), layout.metrics)?;
+    Some(bounds_of(&panes))
+}
+
+fn bounds_of(panes: &layout::SplitPanes) -> crate::app::SplitBounds {
+    crate::split_view::PaneMap(panes.panes.map(|pane| pane.map(to_win_rect)))
+}
+
+/// The overlay layout of the shown split at the saved dividers, or `None` (no split, or too small).
+fn split_panes_now(hwnd: HWND, s: &WindowChrome) -> Option<layout::SplitPanes> {
+    let view = s.split_layout?;
+    let viewport = adjusted_viewport(hwnd, to_win_rect(s.layout.viewport), s.dpi);
+    let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
+    layout::split_panes(viewport, view, s.split_divider, s.split_cross, s.layout.metrics)
+}
+
+/// The divider under `(x, y)` (client pixels) of the shown split, if any.
+fn split_divider_at(hwnd: HWND, s: &WindowChrome, x: i32, y: i32) -> Option<crate::split_view::Divider> {
+    use crate::split_view::Divider;
+    let panes = split_panes_now(hwnd, s)?;
+    let inside = |rect: Option<Rect>| rect.is_some_and(|rect| rect.contains(x, y));
+    if inside(panes.crossing) {
+        return Some(Divider::Both);
+    }
+    if inside(panes.dividers[0]) {
+        return Some(Divider::Primary);
+    }
+    (0..2).find(|half| inside(panes.dividers[half + 1])).map(Divider::Cross)
+}
+
+/// The axis a divider moves along: the primary split's, or the other one for a cross gap.
+fn divider_axis(orientation: crate::split_view::Orientation, divider: crate::split_view::Divider) -> crate::split_view::Orientation {
+    match divider {
+        crate::split_view::Divider::Cross(_) => orientation.other(),
+        _ => orientation,
+    }
 }
 
 pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::SplitView>) {
     let Some(split) = split else { return };
     let _ = with_chrome(hwnd, |state| {
         let viewport = adjusted_viewport(hwnd, to_win_rect(state.layout.viewport), state.dpi);
-        state.split_divider = crate::split_view::divider_for_ratio(
-            viewport.left,
-            viewport.right,
-            split.ratio,
-            state.layout.metrics.px(crate::split_view::GAP_DIP),
-        );
+        let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
+        state.split_orientation = split.orientation;
+        state.split_layout = Some(split);
+        let (primary, cross) = crate::split_view::dividers_for_ratios(split, page, state.layout.metrics.px(crate::split_view::GAP_DIP));
+        state.split_divider = primary;
+        state.split_cross = cross;
     });
 }
 
-fn queue_split_bounds(hwnd: HWND, bounds: (RECT, RECT)) {
+/// Moves the held divider (or both, at the crossing) to the pointer `p`: the gap positions are
+/// clamped by the layout's minimum pane sizes, stored, and turned into the app's ratios. Returns the
+/// new pane rectangles, or `None` when the layout does not fit.
+fn drag_split_divider(hwnd: HWND, app: &AppRef, held: crate::split_view::Divider, p: POINT) -> Option<crate::app::SplitBounds> {
+    use crate::split_view::{axis_coord, axis_span, ratio_for_divider, Divider, GAP_DIP};
+    let (layout, view, orientation, saved_primary, saved_cross) =
+        with_chrome(hwnd, |s| (s.layout, s.split_layout, s.split_orientation, s.split_divider, s.split_cross))?;
+    let view = view?;
+    let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
+    let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
+    let gap = layout.metrics.px(GAP_DIP);
+    let moves_primary = !matches!(held, Divider::Cross(_));
+    let moves_cross = held != Divider::Primary;
+    let primary_at = if moves_primary { axis_coord(orientation, p.x, p.y) - gap / 2 } else { saved_primary };
+    let cross_at = if moves_cross { axis_coord(orientation.other(), p.x, p.y) - gap / 2 } else { saved_cross };
+    let panes = layout::split_panes(Rect::new(page.0, page.1, page.2, page.3), view, primary_at, cross_at, layout.metrics)?;
+    let primary = panes.dividers[0]?;
+    let primary_edge = if orientation.is_stacked() { primary.top } else { primary.left };
+    let cross_edge = panes.dividers[1].or(panes.dividers[2]).map(|cross| if orientation.is_stacked() { cross.left } else { cross.top });
+    let _ = with_chrome(hwnd, |s| {
+        s.split_divider = primary_edge;
+        if let Some(cross) = cross_edge {
+            s.split_cross = cross;
+        }
+    });
+    if moves_primary {
+        let (start, end) = axis_span(page, orientation);
+        App::set_split_ratio(app, ratio_for_divider(start, end, primary_edge, gap));
+    }
+    if moves_cross && let Some(cross) = cross_edge {
+        let (start, end) = axis_span(page, orientation.other());
+        App::set_split_cross_ratio(app, ratio_for_divider(start, end, cross, gap));
+    }
+    Some(bounds_of(&panes))
+}
+
+/// The divider of the shown split at client point `p`, if any (for the divider menu).
+pub(super) fn split_divider_at_point(hwnd: HWND, p: POINT) -> Option<crate::split_view::Divider> {
+    with_chrome(hwnd, |s| split_divider_at(hwnd, s, p.x, p.y)).flatten()
+}
+
+fn queue_split_bounds(hwnd: HWND, bounds: crate::app::SplitBounds) {
     let should_arm = with_chrome(hwnd, |s| {
         let should_arm = s.pending_split_bounds.is_none();
         s.pending_split_bounds = Some(bounds);
@@ -4462,17 +4554,42 @@ pub(super) fn split_px(hwnd: HWND, dip: i32) -> i32 {
     with_chrome(hwnd, |state| state.layout.metrics.px(dip)).unwrap_or(dip)
 }
 
-/// The divider gap (client coordinates) of the shown split.
-pub(super) fn split_gap(hwnd: HWND) -> Option<RECT> {
-    let (left, right) = split_rects(hwnd, None)?;
-    Some(RECT { left: left.right, top: left.top, right: right.left, bottom: left.bottom })
+/// A divider's gap (client coordinates) of the shown split: a column side by side, a row stacked
+/// (the primary gap for the crossing).
+pub(super) fn split_gap(hwnd: HWND, divider: crate::split_view::Divider) -> Option<RECT> {
+    with_chrome(hwnd, |s| {
+        let panes = split_panes_now(hwnd, s)?;
+        let rect = match divider {
+            crate::split_view::Divider::Cross(half) => panes.dividers[half + 1],
+            _ => panes.dividers[0],
+        };
+        rect.map(to_win_rect)
+    })
+    .flatten()
 }
 
-/// Pane rectangles at `ratio` without moving the divider (for a split about to open).
-pub(super) fn split_rects_for_ratio(hwnd: HWND, ratio: u8) -> Option<(RECT, RECT)> {
+/// Pane rectangles for a split in `orientation` at `ratio`, without moving the divider (for a
+/// pair about to open or turn).
+pub(super) fn split_rects_for_ratio(hwnd: HWND, orientation: crate::split_view::Orientation, ratio: u8) -> Option<crate::app::SplitBounds> {
+    let mut pair = crate::split_view::SplitView::new(TabId(0), TabId(1), crate::split_view::Pane::Left)?.with_orientation(orientation);
+    pair.set_ratio(ratio);
+    split_rects_for_view(hwnd, pair)
+}
+
+/// Pane rectangles for `view` at its own ratios, without moving the dividers (for a layout about
+/// to open, turn or change shape).
+pub(super) fn split_rects_for_view(hwnd: HWND, view: crate::split_view::SplitView) -> Option<crate::app::SplitBounds> {
     let viewport = split_viewport(hwnd)?;
-    let gap = split_px(hwnd, crate::split_view::GAP_DIP);
-    split_rects(hwnd, Some(crate::split_view::divider_for_ratio(viewport.left, viewport.right, ratio, gap)))
+    let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
+    let m = with_chrome(hwnd, |s| s.layout.metrics)?;
+    let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::split_view::GAP_DIP));
+    let panes = layout::split_panes(Rect::new(page.0, page.1, page.2, page.3), view, primary, cross, m)?;
+    Some(bounds_of(&panes))
+}
+
+/// The shown split's overlay geometry and focused pane, for the split host (picker placement).
+pub(super) fn split_geometry_now(hwnd: HWND) -> Option<layout::SplitPanes> {
+    with_chrome(hwnd, |s| split_panes_now(hwnd, s)).flatten()
 }
 
 /// The HTML tab view's screen rectangle and the window DPI, while that view is active.
@@ -4480,6 +4597,39 @@ pub(super) fn tabs_host_screen(hwnd: HWND) -> Option<(RECT, u32)> {
     let (host, dpi) = with_chrome(hwnd, |s| (s.html_tab_region().and(s.html_tabs.clone()), s.dpi))?;
     Some((host?.screen_bounds()?, dpi))
 }
+
+// --- tab ghost ---
+/// What the held tab's native ghost draws for wire tab `raw` (docs/design/tab-drag.md): its title,
+/// favicon and private / pinned state, with the window's DPI and colours. `None` for an unknown tab
+/// or when the HTML tab view is not live.
+pub(super) fn tab_ghost_source(hwnd: HWND, raw: u32) -> Option<super::tab_ghost::Source> {
+    let app = app_of(hwnd)?;
+    let id = chrome_host::tab_from_wire(raw, &App::tab_ids(&app))?;
+    let (title, dpi, palette) = with_chrome(hwnd, |s| {
+        s.html_tab_region()?;
+        let title = s.tabs.iter().find(|tab| tab.id == id).map(|tab| tab.title.clone()).unwrap_or_default();
+        Some((title, s.dpi, s.palette))
+    })
+    .flatten()?;
+    Some(super::tab_ghost::Source {
+        title,
+        favicon: tab_favicon(hwnd, id),
+        private: App::tab_private(&app, id),
+        pinned: App::tab_pinned(&app, id),
+        dpi,
+        window: palette.window,
+        text: palette.tab_text_active,
+        dark: glass::appearance() == crate::theme::Appearance::Dark,
+    })
+}
+
+/// Posts a `tabghost` message to the HTML tab view (if it is up).
+pub(super) fn tab_ghost_post(hwnd: HWND, json: &str) {
+    if let Some(host) = with_chrome(hwnd, |s| s.html_tabs.clone()).flatten() {
+        let _ = host.post_json(json);
+    }
+}
+// --- end tab ghost ---
 
 /// The split view's `state`: the panel state with the window colour made opaque, so the empty
 /// side matches the overlay's opaque fill of a page-less pane and never shows the desktop.
@@ -5966,7 +6116,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
         ),
         Entry::Item(
             Item::new(NEW_PRIVATE_WINDOW, "New private window", Icon::Shield)
-                .glyph("glasses")
+                .glyph("private-window")
                 .described("Open a guest window. Nothing from it is saved."),
         ),
     ];
@@ -7946,6 +8096,11 @@ fn html_refresh(hwnd: HWND) {
     }
     html_sync(hwnd);
     html_refresh_extensions_button(hwnd);
+    // The downloads list reaches the toolbar's download button from here on; a reloaded page gets the
+    // button's current state again.
+    if let Some(app) = app_of(hwnd) {
+        super::downloads_ui::install(hwnd, &app);
+    }
     if let Some((id, text)) = handoff {
         if host.post_json(&set_text_json(&text, false)).is_ok() {
             let current = with_chrome(hwnd, |s| {
@@ -8167,8 +8322,8 @@ fn html_failed(hwnd: HWND) {
             let _ = ShowWindow(edit, SW_SHOW);
         }
     }
-    // The downloads list reaches the toolbar's download button from here on; a reloaded page gets the
-    // button's current state again.
+    // The downloads page keeps following the list after the fallback, even when the toolbar never
+    // became ready (html_refresh installs the observer otherwise).
     if let Some(app) = app_of(hwnd) {
         super::downloads_ui::install(hwnd, &app);
     }
@@ -8339,6 +8494,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         // --- split view ---
         ChromeCommand::Split(_) => {}
         // --- end split view ---
+        ChromeCommand::TabDrag(_) => {} // --- tab ghost --- (the tab view's)
     }
     html_sync(hwnd);
 }
@@ -8680,6 +8836,12 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
             return;
         }
         // --- end split view ---
+        // --- tab ghost --- the held tab's native ghost (docs/design/tab-drag.md)
+        ChromeCommand::TabDrag(command) => {
+            super::tab_ghost::command(hwnd, command);
+            return;
+        }
+        // --- end tab ghost ---
         // The strip sends nothing else. Any other message is ignored.
         _ => return,
     }
@@ -9833,6 +9995,63 @@ fn position_edit(hwnd: HWND) {
         );
     }
 }
+/// `BOWSER_PAINT_LOG` diagnostic for the page overrunning its rounded frame: the client, the
+/// overlay's screen origin against the client origin it was presented at, the island the overlay
+/// frames (`island`, client coordinates) and every visible direct child window (the page and HTML
+/// chrome WebView2 hosts) with its class and client rectangle. `None` when nothing changed since the
+/// last line, so steady repaints add nothing to the log.
+fn changed_page_geometry(hwnd: HWND, overlay: HWND, origin: windows::Win32::Foundation::POINT, island: Rect) -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{GW_CHILD, GW_HWNDNEXT, GetClassNameW, IsWindowVisible};
+    thread_local! {
+        static LAST: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    let mut line = String::new();
+    unsafe {
+        let mut client = RECT::default();
+        let _ = GetClientRect(hwnd, &mut client);
+        let mut shown = RECT::default();
+        let _ = GetWindowRect(overlay, &mut shown);
+        line.push_str(&format!(
+            "geometry client={}x{} zoomed={} client_origin=({},{}) overlay_origin=({},{}) island=({},{},{},{})",
+            client.right,
+            client.bottom,
+            IsZoomed(hwnd).as_bool(),
+            origin.x,
+            origin.y,
+            shown.left,
+            shown.top,
+            island.left,
+            island.top,
+            island.right,
+            island.bottom,
+        ));
+        let mut child = GetWindow(hwnd, GW_CHILD).ok().filter(|child| !child.is_invalid());
+        while let Some(window) = child {
+            if IsWindowVisible(window).as_bool() {
+                let mut buffer = [0u16; 64];
+                let len = GetClassNameW(window, &mut buffer).max(0) as usize;
+                let mut rect = RECT::default();
+                let _ = GetWindowRect(window, &mut rect);
+                line.push_str(&format!(
+                    " | {}=({},{},{},{})",
+                    String::from_utf16_lossy(&buffer[..len.min(buffer.len())]),
+                    rect.left - origin.x,
+                    rect.top - origin.y,
+                    rect.right - origin.x,
+                    rect.bottom - origin.y,
+                ));
+            }
+            child = GetWindow(window, GW_HWNDNEXT).ok().filter(|next| !next.is_invalid());
+        }
+    }
+    LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        (*last != line).then(|| {
+            last.clone_from(&line);
+            line
+        })
+    })
+}
 /// Draws the native chrome. Nothing else: the HTML views and page hosts are synced from
 /// `WM_CHROME_SYNC` (see `mark_chrome_dirty`), so an animation frame reads no files and sends no
 /// state.
@@ -9860,8 +10079,11 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
             let history_pane = super::history_page::pane(hwnd, app);
             let downloads_pane = super::downloads_page::pane(hwnd, app);
             let split_unfilled = split_view.map(|split| {
-                [crate::split_view::Pane::Left, crate::split_view::Pane::Right]
-                    .map(|pane| (!App::tab_has_controller(app, split.tab(pane)) && picker_pane != Some(pane) && settings_pane != Some(pane) && history_pane != Some(pane) && downloads_pane != Some(pane)).then_some(pane))
+                let mut unfilled = [false; 4];
+                for (pane, tab) in split.panes() {
+                    unfilled[pane.index()] = !App::tab_has_controller(app, tab) && picker_pane != Some(pane) && settings_pane != Some(pane) && history_pane != Some(pane) && downloads_pane != Some(pane);
+                }
+                unfilled
             });
             let split_drop_fallback = super::split_ui::drop_fallback(hwnd);
             // --- end split view ---
@@ -9989,23 +10211,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 );
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
-                        layout::split_pane_layout(
-                            sidebar_viewport,
-                            s.split_divider,
-                            s.layout.metrics.px(crate::split_view::MIN_PANE_DIP),
-                            s.layout.metrics.px(crate::split_view::GAP_DIP),
-                        )
-                        .map(|panes| {
-                            (
-                                sidebar_viewport,
-                                Some(panes),
-                                split.focused == crate::split_view::Pane::Left,
-                            )
-                        })
-                        // --- split view --- too narrow for two panes: the focused side alone
-                        .or(Some((sidebar_viewport, None, false)))
+                        layout::split_panes(sidebar_viewport, split, s.split_divider, s.split_cross, s.layout.metrics)
+                            .map(|panes| (sidebar_viewport, Some(panes)))
+                            // --- split view --- too narrow for two panes: the focused pane alone
+                            .or(Some((sidebar_viewport, None)))
                     } else {
-                        Some((sidebar_viewport, None, false))
+                        Some((sidebar_viewport, None))
                     }
                 } else {
                     None
@@ -10018,11 +10229,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 } else {
                     crate::chrome::paint::SplitGrip::Idle
                 };
-                let empty_pane = match (split_unfilled, page_regions.and_then(|(_, panes, _)| panes)) {
-                    (Some([left, right]), Some(panes)) => [left.map(|_| panes.left), right.map(|_| panes.right)],
-                    _ => [None, None],
+                let empty_pane = match (split_unfilled, page_regions.and_then(|(_, panes)| panes)) {
+                    (Some(unfilled), Some(panes)) => std::array::from_fn(|index| panes.panes[index].filter(|_| unfilled[index])),
+                    _ => [None; 4],
                 };
-                let dirty = if s.surface.set_split_chrome(grip, empty_pane) {
+                let grip_divider = (s.split_dragging || s.hover == Hit::SplitDivider).then_some(s.split_drag_divider).flatten();
+                let dirty = if s.surface.set_split_chrome(grip, grip_divider, empty_pane) {
                     dirty.union(sidebar_viewport)
                 } else {
                     dirty
@@ -10055,8 +10267,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         p,
                     );
                 }
-                if let Some(pane) = s.split_drop.or(split_drop_fallback) { // --- split view ---
-                    s.surface.paint_split_drop(sidebar_viewport, pane, p, dirty);
+                // --- split view --- the native strip's half, or the HTML card's fallback rectangle
+                let native_drop = s.split_drop.map(|zone| {
+                    let gap = s.layout.metrics.px(crate::split_view::GAP_DIP);
+                    let (l, t, r, b) = crate::split_view::drop_rect((sidebar_viewport.left, sidebar_viewport.top, sidebar_viewport.right, sidebar_viewport.bottom), zone, gap);
+                    Rect::new(l, t, r, b)
+                });
+                if let Some(target) = native_drop.or(split_drop_fallback.map(|rect| Rect::new(rect.left, rect.top, rect.right, rect.bottom))) {
+                    s.surface.paint_split_drop(target, p, dirty);
                 }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
@@ -10097,6 +10315,11 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                             (t1 - t0).as_micros(),
                             (t2 - t1).as_micros()
                         );
+                        // Page-overrun diagnostic: where the framed island is painted against where
+                        // the page windows really are, logged when either changes.
+                        if let Some(line) = changed_page_geometry(hwnd, s.overlay, origin, sidebar_viewport) {
+                            let _ = writeln!(f, "{line}");
+                        }
                     }
                 }
                 if !s.palette.translucent {
@@ -10410,11 +10633,19 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             App::toggle_picture_in_picture(app, App::active_tab_id(app));
         }
         Command::ToggleSplit => toggle_split(hwnd, app),
+        // --- split view --- the neighbouring pane (a pair: its first / second pane)
         Command::FocusSplitLeft => {
-            let _ = App::focus_split_pane(app, crate::split_view::Pane::Left);
+            let _ = App::focus_split_direction(app, crate::split_view::Direction::Left);
         }
         Command::FocusSplitRight => {
-            let _ = App::focus_split_pane(app, crate::split_view::Pane::Right);
+            let _ = App::focus_split_direction(app, crate::split_view::Direction::Right);
+        }
+        // Bound only while a split has panes above one another (stacked, or divided).
+        Command::FocusSplitUp => {
+            let _ = App::focus_split_direction(app, crate::split_view::Direction::Up);
+        }
+        Command::FocusSplitDown => {
+            let _ = App::focus_split_direction(app, crate::split_view::Direction::Down);
         }
         Command::CloseSplitPane => {
             if let Some(split) = App::split_view(app) {

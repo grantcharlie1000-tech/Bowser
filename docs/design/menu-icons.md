@@ -11,8 +11,12 @@ work areas), 4px radius, 12px icon gap, 8px overlay radius, min 200 / max 360px,
 
 ## Main menu (`main`)
 The menu is short on purpose: what you do on every page, and nothing you set once. Profile card (header) |
-New tab `plus` | New private tab `private` | Close all private tabs `glasses` (only while a private tab is
-open) | History `history` (opens `bowser://history`) | Downloads `download` (opens `bowser://downloads`, Ctrl+J) | Bookmark this page `bookmark` | Workspaces
+New tab `plus` | New window `window` | New private tab `private` | New private window `private-window`
+(the window frame and title bar of `window` wearing the filled shades of `private`, so it reads as a
+private window and stays apart from the hat of `private` and the bare shades of `glasses`; opens a
+guest window; while the row is selected the shades lift 1.5 units and settle back onto the window in
+240ms, nothing under reduced motion, `ui/src/styles/menu.css`) | Close all private tabs `glasses` (only
+while a private tab is open) | History `history` (opens `bowser://history`) | Downloads `download` (opens `bowser://downloads`, Ctrl+J) | Bookmark this page `bookmark` | Workspaces
 `workspace` (submenu) | Block ads & trackers `shield` (check) | Reader view `reader` (check; a capital A beside text lines over a full-width line, so it
 stays apart from the page-shaped `notes` and the book `workspace-book`) | More tools
 `more` (submenu: Notes & Tasks `notes`, Command palette `command`, Saved sessions `folder`, Hide
@@ -49,10 +53,17 @@ Duplicate tab `copy` | Pin tab `pin` (check) | Mute tab `mute` / Unmute tab `vol
 Close tab `close` | Close other tabs `trash` | Close tabs to the left `back` | Close tabs to the right
 `forward` | Close all private tabs `glasses` (private tabs only; docs/design/private-tabs.md).
 
-## Split (`split`)
-Active split: Swap panes `reload` | Close left pane `back` | Close right pane `forward` | Replace pane
-with tab `split` (submenu). Not split: Open split view with a new tab `plus` | Open split view with
-`split` (submenu). Tab rows: favicon, else `workspace-globe`.
+## Split (`split`, `split-divider`)
+Toolbar split button and divider grip (docs/design/split-view.md): Separate views `unsplit` | Swap
+sides `swap` | Stack top and bottom `split-stacked` | Close left tab `split-left` | Close right tab
+`split-right`. A stacked pair reads Swap top and bottom `swap` | Show side by side `split` | Close
+top tab `split-top` | Close bottom tab `split-bottom`. `split-stacked`, `split-top` and
+`split-bottom` are `split` turned on its side: two full-width 17 x 6.75 frames, 2.5 apart, the
+focused one carrying the same 0.75-radius fill inset 2 units as `split-left` / `split-right`.
+A layout of three or four panes reads Separate views `unsplit` | Swap `swap` | Close *place* tab,
+with the place glyph: a half (`split-left` ...) or a quarter, `split-top-left`, `split-top-right`,
+`split-bottom-left`, `split-bottom-right`: four 7.25 x 6.75 frames on the same grid as `split-left`
+and `split-top`, the focused quarter carrying the same 0.75-radius fill inset 2 units.
 
 ## Open tabs overflow (`open-tabs`)
 Every row: the tab's favicon (PNG data URI, gated like the tab strip's, deduplicated in a `favs` list);

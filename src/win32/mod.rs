@@ -49,6 +49,7 @@ mod smooth;
 // --- split view ---
 mod split_ui;
 // --- end split view ---
+mod tab_ghost; // the native ghost of a held tab (docs/design/tab-drag.md)
 mod window;
 
 pub(crate) use window::{

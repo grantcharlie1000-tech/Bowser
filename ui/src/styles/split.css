@@ -189,6 +189,19 @@
   unicode-bidi: isolate;
 }
 
+/* The host is exactly the target half (left, right, top or bottom), so a short top or bottom half of
+   a low window lays the card out in one row instead of clipping the column. */
+@media (max-height: 220px) {
+  .sv-drop { padding: var(--bw-space-2); }
+  .sv-drop-card {
+    flex-direction: row;
+    gap: var(--bw-space-3);
+    padding: var(--bw-space-3) var(--bw-space-4);
+  }
+  .sv-drop-icon { width: 32px; height: 32px; }
+  .sv-drop-title { flex: 0 1 auto; min-width: 0; }
+}
+
 /* ---- The split pair in the horizontal strip: one joined capsule ---- */
 /* The halves touch (the strip's 4px gap is taken back) and share a 1px seam; inner corners are 3px.
    Shown pair: both halves raised, the focused half (.active) the lightest. Widths: shown halves
@@ -199,11 +212,19 @@
   border-right-width: 0;
 }
 
-.strip .tab[data-split="r"] {
+.strip .tab[data-split="r"],
+.strip .tab[data-split="m"] {
   margin-left: calc(-1 * var(--bw-space-1));
   border-top-left-radius: 3px;
   border-bottom-left-radius: 3px;
   border-left-color: var(--bw-hairline);
+}
+
+/* A middle pane of a layout of three or four panes: inner corners on both sides. */
+.strip .tab[data-split="m"] {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+  border-right-width: 0;
 }
 
 .strip .tab[data-pair="shown"] { flex-grow: 1.25; }
@@ -214,7 +235,8 @@
   color: var(--bw-text);
 }
 
-.strip .tab[data-split="r"][data-pair="shown"] { border-left-color: var(--bw-hairline); }
+.strip .tab[data-split="r"][data-pair="shown"],
+.strip .tab[data-split="m"][data-pair="shown"] { border-left-color: var(--bw-hairline); }
 .strip .tab[data-pair="shown"]:not(.active)::before { background: color-mix(in srgb, var(--bw-island) 55%, transparent); }
 :root[data-scheme="light"] .strip .tab[data-pair="shown"]:not(.active)::before { background: color-mix(in srgb, #fff 40%, transparent); }
 
@@ -224,11 +246,17 @@
   border-bottom-left-radius: 3px;
 }
 
-.side-tab[data-split="r"] {
+.side-tab[data-split="r"],
+.side-tab[data-split="m"] {
   margin-top: calc(-1 * var(--bw-space-1) - 1px);
   border-top-left-radius: 3px;
   border-top-right-radius: 3px;
   border-top-color: var(--bw-hairline);
+}
+
+.side-tab[data-split="m"] {
+  border-bottom-right-radius: 3px;
+  border-bottom-left-radius: 3px;
 }
 
 .side-tab[data-pair="shown"]:not(.is-active) {
@@ -236,4 +264,5 @@
   background-color: color-mix(in srgb, var(--bw-island) 55%, transparent);
 }
 
-.side-tab[data-split="r"][data-pair="shown"] { border-top-color: var(--bw-hairline); }
+.side-tab[data-split="r"][data-pair="shown"],
+.side-tab[data-split="m"][data-pair="shown"] { border-top-color: var(--bw-hairline); }

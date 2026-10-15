@@ -49,8 +49,8 @@ Buttons inside the pill use `--bw-text-2` at rest and `--bw-text` on hover, when
 `:focus-visible`. Not-secure and certificate-problem states keep the warm `--tb-warn`. Keyboard
 focus keeps the shared `.bw-focus-inset` ring.
 
-Alignment: the site button sits 8px in. Its glyph centre (1 + 8 + 10 = 19px) is the rows' lead-glyph
-centre (1 + 4 + 6 + 8). The pill text starts at 1 + 8 + 20 + 6 = 35px, the same x as the row titles
+Alignment: the site button sits 4px in, tucked into the corner, the same inset as the last trailing
+button. The pill text starts at 1 + 4 + 20 + 10 = 35px, the same x as the row titles
 (1 + 4 + 6 + 16 + 8). The typed text and the suggestions read as one column.
 
 ## Rows

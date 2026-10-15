@@ -207,67 +207,178 @@ test('menu rows press to 0.98 and submenu chevrons ease, transform only and snap
   );
 });
 
-test('a submenu slides the parent aside with one transform, ease-out, and snaps under reduced motion', () => {
+test('New private window has its own glyph, and its shades settle once on the selected row only', () => {
+  const rust = readFileSync(join(repo, 'src', 'win32', 'window.rs'), 'utf8');
+  assert.match(rust, /"New private window", Icon::Shield\)\s*\.glyph\("private-window"\)/);
+  // The other private rows keep their glyphs.
+  assert.match(rust, /"Close all private tabs", Icon::Close\)\s*\.glyph\("glasses"\)/);
+  assert.match(rust, /"New private tab", Icon::Shield\)\s*\.glyph\("private"\)/);
+  // The CSS moves shapes 3-5: they must be the two filled lenses and the bridge, after frame and bar.
+  const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');
+  const shapes = JSON.parse(gen.match(/^\s*"private-window": (\[.*\]),$/m)[1]);
+  assert.deepEqual(shapes.map(([tag, attrs]) => `${tag}${attrs.fill ? ':' + attrs.fill : ''}`),
+    ['rect', 'path', 'path:currentColor', 'path:currentColor', 'path']);
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8').replace(/\s+/g, ' ');
+  const rule = '.html-menu-row[data-icon="private-window"].selected:not(:disabled) .html-menu-lead svg > :nth-child(n + 3) { animation: html-menu-shades-settle 240ms linear; }';
+  assert.ok(css.includes(`@media (prefers-reduced-motion: no-preference) { ${rule} }`), 'only under no-preference, only while selected');
+  assert.equal(css.split('html-menu-shades-settle').length - 1, 2, 'one use and one definition');
+  const frames = css.match(/@keyframes html-menu-shades-settle \{(.*?\}) \}/)[1];
+  for (const decl of frames.matchAll(/([a-z-]+):/g)) assert.ok(['transform', 'animation-timing-function'].includes(decl[1]), decl[1]);
+  assert.match(frames, /^ 0% \{ transform: translateY\(0\);/, 'starts on the resting glyph');
+  assert.match(frames, /100% \{ transform: translateY\(0\); \}$/, 'ends on the resting glyph');
+  assert.ok(!/infinite/.test(frames));
+});
+
+test('a submenu card slides out from behind the parent, which never moves: one transform, ease-out, snapped under reduced motion', () => {
   const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8').replace(/\r\n/g, '\n');
   const tokens = readFileSync(join(here, '..', 'src', 'styles', 'tokens.css'), 'utf8');
-  const slide = /\.html-menu-slide \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  const host = /\.html-menu-pane\.is-host \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  const child = /\.html-menu-pane\.is-child \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  // Only the parent card travels, and only by a transform. The child fades and nudges in place.
-  assert.ok(!/transform:/.test(slide), 'the strip itself does not travel');
-  assert.match(host, /transform: translateX\(var\(--menu-slide, 0px\)\);/);
-  assert.match(host, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\);/);
-  assert.match(child, /opacity: var\(--menu-child-in, 1\);/);
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const child = rule('.html-menu-pane.is-child');
+  const column = rule('.html-menu-flyout');
+  const track = rule('.html-menu-track');
+  const pane = rule('.html-menu-pane');
+  // Only the child card travels, by one transform on the 167ms ease-out token; it goes back with ease-in.
   assert.match(child, /transform: translateX\(var\(--menu-child-x, 0px\)\);/);
-  assert.ok(!/transition:[^;]*(width|left|margin|padding|height)/.test(host));
-  assert.ok(!/transition:[^;]*(width|left|margin|padding|height)/.test(child));
-  assert.match(css, /\.html-menu-slide\.is-snap \.html-menu-pane \{\s*transition: none;\s*\}/);
-  // --bw-dur-base is the ~160ms token (167ms) and is zeroed under reduced motion, where base.css also
-  // keeps only opacity transitions, so the parent snaps with no travel.
+  assert.match(child, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\);/);
+  assert.ok(!/opacity/.test(child), 'no fade: a half-transparent pixel shows white on Windows 10');
+  assert.match(rule('.html-menu-flyout.is-leaving > .html-menu-pane.is-child'), /transition-timing-function: var\(--bw-ease-in\);/);
+  assert.match(css, /\.html-menu-flyout\.is-snap > \.html-menu-pane \{\s*transition: none;\s*\}/);
+  // The parent card, its box and the page never move: no transform or transition on them, and the
+  // old parent slide (--menu-slide, the strip, the opaque backing) is gone.
+  for (const body of [track, pane, rule('.html-menu-pane.is-host'), rule('#app.html-menu.is-paned'), rule('#app.html-menu.is-paned.has-flyouts')]) {
+    assert.ok(!/transform|transition/.test(body), body);
+  }
+  assert.ok(!/--menu-slide|html-menu-slide|is-moving|--menu-child-in/.test(css));
+  assert.ok(!/transition:[^;]*(width|left|right|margin|padding|height|top)/.test(css), 'no layout property is animated');
+  // The child's column hangs off the parent's side with the gap, dropped to the row that opened it,
+  // and does not size the page; it clips the card only while it moves, so the card shows only past
+  // the parent's edge. On the left it mirrors; pulled over the parent only by --menu-child-overlap.
+  assert.match(track, /position: relative;/);
+  assert.match(column, /position: absolute;/);
+  assert.match(column, /top: var\(--menu-child-y, 0px\);/);
+  assert.match(column, /left: calc\(100% \+ var\(--bw-space-1\) - var\(--menu-child-overlap, 0px\)\);/);
+  assert.match(column, /max-height: calc\(100vh - var\(--menu-child-y, 0px\)\);/);
+  assert.match(rule('.html-menu-flyout.is-left'), /right: calc\(100% \+ var\(--bw-space-1\) - var\(--menu-child-overlap, 0px\)\);\s*left: auto;/);
+  assert.match(rule('.html-menu-flyout.is-sliding'), /overflow: hidden;/);
+  assert.ok(!/overflow/.test(column), 'the resting column does not clip the card');
+  // The room kept on both sides fits the widest card plus the gap.
+  const reserve = rule('#app.html-menu.is-paned.has-flyouts');
+  assert.match(reserve, /--menu-reserve: calc\(350px \+ var\(--bw-space-1\)\);/);
+  assert.match(reserve, /padding-inline: var\(--menu-reserve\);/);
+  assert.match(reserve, /height: 100vh;/);
+  assert.match(pane, /max-width: 350px;/);
+  // Reduced motion: no slide.
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\s*\.html-menu-pane\.is-child \{\s*transition: none;\s*\}\s*\}/);
   assert.match(tokens, /--bw-dur-base: 167ms;/);
   assert.match(tokens, /@media \(prefers-reduced-motion: reduce\)[^]*?--bw-dur-base: 0ms;/);
   assert.match(tokens, /--bw-ease-out: cubic-bezier\(0, 0, 0, 1\);/);
-  // The parent stays on screen. The child is its own card, not a stretched column of the parent:
-  // panes start at the top of their own content, and the child is offset to the row that opened it.
-  assert.match(slide, /align-items: flex-start;/);
+  assert.match(tokens, /--bw-ease-in: cubic-bezier\(0\.4, 0, 1, 1\);/);
+  // Each card hugs its own rows: transparent surface, rounded cards, the open row keeps its tint.
   assert.match(css, /\.html-menu-pane \{[^}]*border-radius: var\(--bw-r-overlay\);/);
   assert.match(css, /#app\.html-menu\.is-paned \{[^}]*background: transparent;/);
-  assert.match(css, /\.html-menu-pane \+ \.html-menu-pane \{[^}]*margin-top: var\(--menu-child-y, 0px\);/);
   assert.ok(!css.includes('border-inline-start: 1px solid var(--bw-hairline)'), 'the child is not a hairline inside the parent');
   assert.match(css, /\.html-menu-row\.selected:not\(:disabled\),\s*\.html-menu-row\.is-open \{/);
   assert.match(css, /\.html-menu-row\[aria-haspopup="menu"\]\.is-open \.html-menu-trail \{\s*transform: translateX\(2px\);/);
-  // No back row and no page-replacing drill animation are left.
   assert.ok(!css.includes('.html-menu-back'));
   assert.ok(!/drill/.test(css));
 });
 
-test('the menu view keeps the parent mounted and drives the slide through one custom property', () => {
+test('a child card opens right when it fits, left when only the left has room, else over the parent edge', () => {
+  // 280 px card + 4 px gap.
+  assert.deepEqual(logic.flyoutSide({ l: 900, r: 284 }, 284), { side: 'right', overlap: 0 });
+  assert.deepEqual(logic.flyoutSide({ l: 900, r: 283 }, 284), { side: 'left', overlap: 0 }, 'the main menu at the right edge');
+  assert.deepEqual(logic.flyoutSide({ l: 0, r: 2000 }, 284), { side: 'right', overlap: 0 });
+  assert.deepEqual(logic.flyoutSide(null, 284), { side: 'right', overlap: 0 }, 'no room reported yet');
+  assert.deepEqual(logic.flyoutSide({ l: 200, r: 250 }, 284), { side: 'right', overlap: 34 });
+  assert.deepEqual(logic.flyoutSide({ l: 250, r: 200 }, 284), { side: 'left', overlap: 34 });
+  assert.deepEqual(logic.flyoutSide({ l: 0, r: 0 }, 284), { side: 'right', overlap: 284 });
+  // Rust's room message.
+  assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: 880, r: 120 }), true);
+  assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: -1, r: 120 }), false);
+  assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: 1.5, r: 120 }), false);
+  assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: 1, r: 4001 }), false);
+  assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: 1, r: 1, x: 0 }), false);
+  assert.equal(logic.validRoom({ v: 1, t: 'menu', tok: 3, l: 1, r: 1 }), false);
+  // Only a menu with a submenu row keeps room beside it.
+  const item = (id, extra = {}) => ({ id, label: `R${id}`, enabled: true, checked: false, ...extra });
+  assert.equal(logic.hasFlyouts([item(1), { separator: true }, item(2, { submenu: [item(3)] })]), true);
+  assert.equal(logic.hasFlyouts([item(1), { section: 'S' }, item(2)]), false);
+});
+
+test('the window clip only ever holds what the sliding child card paints', () => {
+  const out = 'cubic-bezier(0, 0, 0, 1)';
+  const back = 'cubic-bezier(0.4, 0, 1, 1)';
+  // The timing functions match CSS: ends pinned, ease-out front-loaded, ease-in back-loaded, keywords.
+  assert.equal(logic.easeAt(out, 0), 0);
+  assert.equal(logic.easeAt(out, 1), 1);
+  assert.equal(logic.easeAt(out, -0.2), 0);
+  assert.equal(logic.easeAt(out, Number.POSITIVE_INFINITY), 1);
+  assert.ok(Math.abs(logic.easeAt(out, 0.1) - 0.446) < 0.01, 'x = s^3, y = 3s^2 - 2s^3');
+  assert.ok(logic.easeAt(back, 0.5) < 0.5);
+  assert.ok(Math.abs(logic.easeAt('linear', 0.3) - 0.3) < 1e-9);
+  assert.ok(Math.abs(logic.easeAt('ease-out', 0.5) - logic.easeAt('cubic-bezier(0, 0, 0.58, 1)', 0.5)) < 1e-9);
+  // Shift: the whole travel behind the parent's edge at the start of a slide out, 0 at rest.
+  assert.equal(logic.slideShift(284, 167, out, 0, true), 284);
+  assert.equal(logic.slideShift(284, 167, out, 167, true), 0);
+  assert.equal(logic.slideShift(284, 167, back, 0, false), 0);
+  assert.equal(logic.slideShift(284, 167, back, 400, false), 284);
+  assert.equal(logic.slideShift(284, 0, out, 0, true), 0, 'reduced motion: in place at once');
+  // The part that shows starts at the parent's side of the column: from its left edge on the right,
+  // up to its right edge on the left. Rounded inward; nothing while the card is behind the parent.
+  assert.deepEqual(logic.childSlice(0, 280, 0, 'right'), { x: 0, w: 280 });
+  assert.deepEqual(logic.childSlice(0, 280, 100, 'right'), { x: 0, w: 180 });
+  assert.deepEqual(logic.childSlice(0, 280, 100, 'left'), { x: 100, w: 180 });
+  assert.deepEqual(logic.childSlice(649.6, 258.6, 0, 'right'), { x: 650, w: 258 }, 'a column on a half pixel');
+  assert.deepEqual(logic.innerPixels(354.4, 0, 292.3, 462.7), { x: 355, y: 0, w: 291, h: 462 });
+  assert.deepEqual(logic.childSlice(10.5, 280.6, 10.2, 'left'), { x: 21, w: 270 });
+  assert.equal(logic.childSlice(0, 280, 279.5, 'right'), null);
+  assert.equal(logic.childSlice(0, 280, 284, 'left'), null);
+  // The safety property. Coming out the clip uses the shift of 25ms earlier (SLIDE_LAG_MS), going back
+  // that of 50ms later (SLIDE_LEAD_MS). Whether the card on screen is from 25ms before the clip's frame
+  // (the clip landed early) or from 50ms after it (the clip landed late), the clip is never wider than
+  // the card: it can trim the card, never hold a pixel the card has not painted.
+  const width = (timing, at, entering) => logic.childSlice(0, 280, logic.slideShift(284, 167, timing, at, entering), 'right')?.w ?? 0;
+  for (const [entering, timing, bias] of [[true, out, -25], [false, back, 50]]) {
+    for (let t = 0; t <= 260; t += 1) {
+      const clip = width(timing, t + bias, entering);
+      for (let skew = -25; skew <= 50; skew += 1) {
+        const card = width(timing, t + skew, entering);
+        assert.ok(clip <= card, `${entering ? 'out' : 'back'} t=${t} skew=${skew}: clip ${clip} > card ${card}`);
+      }
+    }
+  }
+  // Without the bias the same skew would hold bare pixels: the bias is what makes it safe.
+  assert.ok(width(out, 10, true) > width(out, 10 - 25, true));
+  assert.ok(width(back, 100, false) > width(back, 100 + 50, false));
+});
+
+test('the menu view moves only the child card and the clip, never the window or the parent', () => {
   const view = readFileSync(join(here, '..', 'src', 'menu-view.ts'), 'utf8');
   assert.ok(!/html-menu-back|chevron-left|drill/.test(view), 'no back row, no replacing page');
-  assert.match(view, /root\.className = 'html-menu is-paned bw-menu-surface'/);
-  assert.match(view, /style\.setProperty\('--menu-slide'/);
-  assert.match(view, /--menu-child-in/);
-  assert.match(view, /--menu-child-x/);
+  assert.match(view, /root\.className = 'html-menu is-paned bw-menu-surface';\s*root\.classList\.toggle\('has-flyouts', hasFlyouts\(raw\.entries\)\);/);
+  // One custom property drives the child card; the parent is never given a transform.
+  assert.match(view, /setProperty\('--menu-child-x'/);
   assert.match(view, /--menu-child-y/);
-  assert.match(view, /tagPanes/);
-  assert.match(view, /flyoutCards/);
-  assert.ok(!view.includes('watchMotion'), 'the clip is not updated every frame');
+  assert.match(view, /--menu-child-overlap/);
+  assert.ok(!/--menu-slide|--menu-child-in|is-moving|backingOn|RESIZE_WAIT_MS|awaitWidth|keep_right_edge/.test(view));
+  assert.ok(!/host[^;\n]*\.style\.(transform|setProperty)/.test(view), 'the parent card is never moved');
+  // The size never changes with a submenu: one natural measurement, reported with every clip.
+  assert.equal((view.match(/measureNatural\(\);/g) ?? []).length, 2, 'when a menu is shown and when its parent changes');
+  assert.match(view, /flyoutSide\(room, need\)/);
+  assert.match(view, /const bias = entering \? -SLIDE_LAG_MS : SLIDE_LEAD_MS;/);
+  assert.match(view, /if \(entering\) requestAnimationFrame\(frame\);\s*else frame\(\);/, 'clip after the card coming out, before it going back');
+  // A card that leaves is cut out of the clip before it stops being painted.
+  assert.match(view, /publish\(null\);\s*retire\(card\.wrap\);/);
+  assert.match(view, /slide\(card, false, \(\) => retire\(card\.wrap\)\)/);
+  assert.match(view, /const KEEP_FRAMES = 3;/);
+  assert.match(view, /const SLIDE_LAG_MS = 25;/);
+  assert.match(view, /const SLIDE_LEAD_MS = 50;/);
   assert.match(view, /activateAt\(nav, level, index\)/, 'the parent page stays clickable');
   assert.ok(!/\.style\.(left|right|width|top)\s*=/.test(view), 'the slide moves no layout property');
   assert.ok(!/scrollIntoView/.test(view), 'scrolling is done on the list, never on the clip');
-});
-
-test('the track is painted as one card while the cards move, so no bare pixel shows white', () => {
-  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
-  const view = readFileSync(join(here, '..', 'src', 'menu-view.ts'), 'utf8');
-  const backing = /\.html-menu-track\.is-moving \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(backing, /background: linear-gradient\(var\(--bw-overlay\), var\(--bw-overlay\)\), var\(--bw-window-opaque\);/);
-  assert.match(backing, /border-radius: var\(--bw-r-overlay\);/);
-  // On for the whole open and close motion, and off only after the resting clip is reported (or the
-  // motion is settled), a few frames later so the clip cuts the window before the backing goes.
-  assert.equal((view.match(/backingOn\(\);/g) ?? []).length, 2, 'open and close');
-  assert.match(view, /publish\(tok, size\.width, size\.height, true\);\s*backingOff\(\);/);
-  assert.match(view, /measure\(false\);\s*backingOff\(\);/);
+  // The popup routes Rust's room to the menu view.
+  const popup = readFileSync(join(here, '..', 'src', 'popup.ts'), 'utf8');
+  assert.match(popup, /case 'room': menu\.room\(value\); break;/);
 });
 
 test('disabled rows keep >= 3:1 contrast on the solid dark and light overlays', () => {

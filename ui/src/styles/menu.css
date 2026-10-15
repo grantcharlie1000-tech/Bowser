@@ -13,15 +13,18 @@
  *
  * The popup is solid, not glass: the overlay tint is painted over the opaque window colour.
  *
- * A submenu opens beside its parent instead of replacing it. The menu is one transparent surface
- * holding a track of at most two panes. Each pane is its own card: its background, border and radius
- * hug that pane's rows, and the child card is only as tall as its own rows. The view offsets the
- * child with --menu-child-y so its first row lines up with the parent row that opened it. The window
- * is widened to fit both and keeps its top and right edge (html_popup.rs keep_right_edge). Only the
- * parent card translates: it starts shifted right so the growth does not throw it, then eases back
- * beside the child. The child stays next to that row and fades and nudges in. Closing eases the
- * parent back, then the window shrinks. Rust clips to the two cards only at rest, so the gap shows
- * the page and a moving region never cuts a card.
+ * A submenu opens beside its parent instead of replacing it, and the parent card never moves. The
+ * menu is one transparent surface. Each pane is its own card: its background, border and radius hug
+ * that pane's rows, and the child card is only as tall as its own rows, dropped by --menu-child-y so
+ * its first row lines up with the parent row that opened it. A menu with submenus (.has-flyouts)
+ * keeps --menu-reserve of room on both sides of the parent card and runs to the bottom of the window;
+ * the window is that whole page from the start and Rust anchors the parent card, not the window
+ * (html_popup.rs flyout_bounds), so opening and closing a submenu never resizes or moves the window.
+ * Rust clips the window to the cards (the page reports them), so the gap and the room show the page.
+ * The child card slides out from behind the parent's edge: its column (.html-menu-flyout) clips it
+ * while it moves, so it shows only past that edge, and the window clip follows it every frame without
+ * ever holding a pixel it has not painted (menu-view.ts). It opens right when the work area has room,
+ * left (.is-left) when only that side has, and over the parent's edge without a slide when neither has.
  */
 
 #app.html-menu {
@@ -59,56 +62,81 @@
   box-shadow: none;
 }
 
-/* The clip: whatever the slide pushes past the surface is cut here, not painted into the padding. */
+/* Room for a child card on either side of the parent: the widest card (350px) and the gap. The page
+   is as tall as the window, which Rust runs to the bottom of the work area, so a child dropped to a
+   low row has room below it. */
+#app.html-menu.is-paned.has-flyouts {
+  --menu-reserve: calc(350px + var(--bw-space-1));
+  height: 100vh;
+  padding-inline: var(--menu-reserve);
+}
+
+/* The parent card's box. A child card's column hangs off its side; the parent card itself never
+   moves or transforms. */
 .html-menu-track {
+  position: relative;
   display: flex;
-  flex: 1 1 auto;
-  justify-content: flex-end;
+  flex: 0 1 auto;
+  flex-direction: column;
   min-height: 0;
+}
+
+/* A child card's column: the card at rest, beside the parent with the gap between them. It does not
+   take part in the page's size, so the window does not change when a submenu opens. Pulled over the
+   parent by --menu-child-overlap only when neither side of the screen has room for it. */
+.html-menu-flyout {
+  position: absolute;
+  top: var(--menu-child-y, 0px);
+  left: calc(100% + var(--bw-space-1) - var(--menu-child-overlap, 0px));
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-height: calc(100vh - var(--menu-child-y, 0px));
+}
+
+.html-menu-flyout.is-left {
+  right: calc(100% + var(--bw-space-1) - var(--menu-child-overlap, 0px));
+  left: auto;
+}
+
+/* While the card moves its column clips it, so it shows only past the parent's edge: it comes out
+   from behind the parent and goes back behind it. */
+.html-menu-flyout.is-sliding {
   overflow: hidden;
 }
 
-/* While the cards move the window clip is the whole window, and a pixel the page leaves transparent is
-   not see-through on Windows 10 (the extended frame paints it, white). The track is painted as one card
-   for that time, so the room the parent leaves and the child fades into is never bare. It is removed a
-   few frames after the clip has cut the window down to the two cards. */
-.html-menu-track.is-moving {
-  border-radius: var(--bw-r-overlay);
-  background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
+/* A card that has closed stays painted a few frames, already cut out of the window clip. */
+.html-menu-flyout.is-retired {
+  pointer-events: none;
 }
 
-/* The parent card is the only thing that travels. It starts shifted right, so growing the window on
-   the left does not throw it, then eases back to where it sits beside the child. The child stays
-   next to the row that opened it and only fades and nudges in. The window clip does not follow
-   these transforms: chasing it a frame late eats the edges. */
-.html-menu-slide {
-  display: flex;
-  flex: none;
-  align-items: flex-start;
-  min-height: 0;
-}
-
-.html-menu-pane.is-host {
-  transform: translateX(var(--menu-slide, 0px));
+/* The child card is the only thing that travels: --menu-child-x starts it a gap and its own width
+   toward the parent (wholly behind the parent's edge) and the transition brings it out to 0. Going
+   back it accelerates away (ease-in). */
+.html-menu-pane.is-child {
+  transform: translateX(var(--menu-child-x, 0px));
   transition: transform var(--bw-dur-base) var(--bw-ease-out);
 }
 
-.html-menu-pane.is-child {
-  opacity: var(--menu-child-in, 1);
-  transform: translateX(var(--menu-child-x, 0px));
-  transform-origin: left center;
-  transition:
-    opacity var(--bw-dur-base) var(--bw-ease-out),
-    transform var(--bw-dur-base) var(--bw-ease-out);
+.html-menu-flyout.is-leaving > .html-menu-pane.is-child {
+  transition-timing-function: var(--bw-ease-in);
 }
 
-.html-menu-slide.is-snap .html-menu-pane {
+.html-menu-flyout.is-snap > .html-menu-pane {
   transition: none;
+}
+
+/* Reduced motion: no slide. The card is in its place at once (base.css also keeps only opacity
+   transitions), and the window clip takes it in the next frame. */
+@media (prefers-reduced-motion: reduce) {
+  .html-menu-pane.is-child {
+    transition: none;
+  }
 }
 
 .html-menu-pane {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
   flex-direction: column;
   width: max-content;
   min-width: 190px;
@@ -121,15 +149,6 @@
   border-radius: var(--bw-r-overlay);
   background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   box-shadow: var(--bw-sh-flyout);
-}
-
-/* The submenu is its own card, a gap away from the parent, dropped so its first row meets the row
-   that opened it. It is never stretched to the parent. A tall child scrolls inside the room below
-   that row instead of growing past the screen. */
-.html-menu-pane + .html-menu-pane {
-  margin-inline-start: var(--bw-space-1);
-  margin-top: var(--menu-child-y, 0px);
-  max-height: calc(100vh - var(--menu-child-y, 0px));
 }
 
 /* ---- Header card (main menu, site information). ---- */
@@ -277,6 +296,39 @@
   }
 }
 
+/* New private window: when its row is selected the shades (shapes 3-5 of private-window: both
+   lenses and the bridge, below the frame and title bar) lift 1.5 grid units and drop back onto the
+   window's face with a half-unit settle, once, 240ms. Only the shades move (transform; px are
+   viewBox units on SVG children), the frame stays put, and the glyph rests untouched before and
+   after. Nothing moves under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .html-menu-row[data-icon="private-window"].selected:not(:disabled) .html-menu-lead svg > :nth-child(n + 3) {
+    animation: html-menu-shades-settle 240ms linear;
+  }
+}
+
+/* Up fast and decelerating, a quick fall that dips half a unit past rest, then settle. */
+@keyframes html-menu-shades-settle {
+  0% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1);
+  }
+
+  40% {
+    transform: translateY(-1.5px);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0.6);
+  }
+
+  75% {
+    transform: translateY(0.5px);
+    animation-timing-function: cubic-bezier(0.25, 0.4, 0.5, 1);
+  }
+
+  100% {
+    transform: translateY(0);
+  }
+}
+
 /* The chevron on a submenu row eases 2px toward the flyout it opens while the row is selected: a
    short transform, no layout width animation. Snapped under reduced motion below. */
 .html-menu-row[aria-haspopup="menu"] .html-menu-trail {
@@ -403,9 +455,9 @@
 }
 
 /* ---- Motion. Open: fade 83ms with the first pane's content dropping 4px from the anchor over 167ms.
-   A submenu moves only the parent card (.html-menu-pane.is-host) over 167ms with ease-out. The child
-   fades and nudges 8px at its final place. Close of the window is instant (it hides). Only opacity
-   and transform; input is never blocked while it runs. ---- */
+   A submenu's card slides out from behind the parent over 167ms with ease-out and back with ease-in
+   (.html-menu-pane.is-child above); the parent card never moves. Close of the window is instant (it
+   hides). Only opacity and transform; input is never blocked while it runs. ---- */
 @keyframes html-menu-fade {
   from {
     opacity: 0;
