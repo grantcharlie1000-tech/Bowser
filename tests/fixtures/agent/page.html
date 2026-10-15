@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><title>Agent fixture</title></head>
+<body>
+<main id="agent-fixture-markup">
+<label for="name">Name</label>
+<input id="name" type="text">
+<button id="go" type="button">Save</button>
+<p id="out">waiting</p>
+<a id="next" href="other.html">Next</a>
+</main>
+<script>
+document.getElementById("go").addEventListener("click", function () {
+  var value = document.getElementById("name").value;
+  document.getElementById("out").textContent = "saved:" + value;
+  document.cookie = "agent=yes; path=/";
+  localStorage.setItem("agent", "yes");
+});
+</script>
+</body>
+</html>

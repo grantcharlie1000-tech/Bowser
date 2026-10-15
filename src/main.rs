@@ -26,10 +26,19 @@ fn main() -> ExitCode {
     let options = match LaunchOptions::parse() {
         Ok(options) => options,
         Err(error) => {
+            if agent_argv() {
+                return agent_fail(&error);
+            }
             show_error(&error);
             return ExitCode::FAILURE;
         }
     };
+    if options.agent_call.is_some() {
+        return agent_client(&options);
+    }
+    if bowser::agent::should_listen(options.agent) {
+        return agent_server(options);
+    }
     // The single authoritative app-data root. Installed before anything touches persistent state;
     // benchmark launches always have one (never the real %LOCALAPPDATA%\Bowser).
     if let Some(dir) = &options.data_dir {
@@ -93,6 +102,80 @@ fn main() -> ExitCode {
             show_error(&format!("Bowser could not start: {error}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn agent_client(options: &LaunchOptions) -> ExitCode {
+    let parts = bowser::agent::CallParts {
+        op: options.agent_call.clone().unwrap_or_default(),
+        session: options.agent_session.clone(),
+        url: options.agent_url.clone(),
+        refer: options.agent_ref.clone(),
+        selector: options.agent_selector.clone(),
+        text: options.agent_text.clone(),
+        key: options.agent_key.clone(),
+        expression: options.agent_expression.clone(),
+        format: options.agent_format.clone(),
+    };
+    let command = match bowser::agent::command_from_parts(&parts) {
+        Ok(command) => command,
+        Err(error) => return agent_fail(&error),
+    };
+    let port = options.agent_port.unwrap_or(bowser::agent::DEFAULT_PORT);
+    let addr = match bowser::agent::parse_loopback_bind("127.0.0.1", port) {
+        Ok(addr) => addr,
+        Err(error) => return agent_fail(&error),
+    };
+    match bowser::agent::client_exchange(addr, &command) {
+        Ok(body) => {
+            println!("{body}");
+            if bowser::agent::response_ok(&body) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => agent_fail(&error),
+    }
+}
+
+fn agent_fail(message: &str) -> ExitCode {
+    eprintln!("{}", bowser::agent::err_json(message));
+    ExitCode::FAILURE
+}
+
+fn agent_argv() -> bool {
+    std::env::args().skip(1).any(|arg| {
+        arg == "--agent" || arg == "--agent-call" || arg.starts_with("--agent-call=")
+    })
+}
+
+fn agent_server(options: LaunchOptions) -> ExitCode {
+    let Some(dir) = options.data_dir.clone() else {
+        return agent_fail("--agent requires --data-dir");
+    };
+    if let Err(error) = bowser::profile::set_data_root(dir.clone()) {
+        return agent_fail(&format!("Cannot create the data directory: {error}"));
+    }
+    let host = options.agent_bind_host.as_deref().unwrap_or("127.0.0.1");
+    let port = options.agent_port.unwrap_or(bowser::agent::DEFAULT_PORT);
+    let addr = match bowser::agent::parse_loopback_bind(host, port) {
+        Ok(addr) => addr,
+        Err(error) => return agent_fail(&error),
+    };
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok();
+    if let Err(error) = initialized {
+        return agent_fail(&format!(
+            "Bowser could not initialize its Windows UI thread: {error}"
+        ));
+    }
+    let result = bowser::agent::serve(&dir, addr);
+    unsafe {
+        CoUninitialize();
+    }
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => agent_fail(&error),
     }
 }
 
