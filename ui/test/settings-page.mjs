@@ -410,8 +410,8 @@ test('Translation: two switches and a language select, each its own command, app
   assert.equal(auto.getAttribute('aria-checked'), 'false');
   assert.equal(rowOf('translateOffer').querySelector('.sp-label').textContent, 'Offer to translate pages in other languages');
   assert.equal(rowOf('translateAuto').querySelector('.sp-label').textContent, 'Translate automatically on sites set to always translate');
-  assert.equal(rowOf('translateOffer').querySelector('.sp-desc').textContent, 'Shows a button in the toolbar. Nothing is downloaded or changed until you click it. Translation runs on this device; page text never leaves it.');
-  assert.equal(rowOf('translateAuto').querySelector('.sp-desc').textContent, 'Only once the language files are already on this device.');
+  assert.equal(rowOf('translateOffer').querySelector('.sp-desc').textContent, 'Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.');
+  assert.equal(rowOf('translateAuto').querySelector('.sp-desc').textContent, 'Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.');
 
   sent.length = 0;
   offer.click();
@@ -428,10 +428,11 @@ test('Translation: two switches and a language select, each its own command, app
   assert.equal(select.querySelector('.bw-select-value').textContent, 'My Windows language');
   select.click();
   const options = rowOf('translateTarget').querySelectorAll('[role="option"]');
-  assert.deepEqual(options.map((o) => o.querySelector('.bw-menu-label').textContent),
-    ['My Windows language', 'English', 'German', 'Spanish', 'French', 'Italian', 'Dutch', 'Polish', 'Portuguese', 'Turkish']);
+  const codes = fixture.snap.d.translateTargets;
+  assert.deepEqual(options.map((o) => o.querySelector('.bw-menu-label').textContent).slice(0, 5), ['My Windows language', 'English', 'Spanish', 'French', 'German']);
+  assert.equal(options.length, codes.length + 1, 'one option per language Rust lists');
   sent.length = 0;
-  options[4].click();
+  options[3].click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'translatetarget', text: 'fr' }]);
   assert.equal(select.querySelector('.bw-select-value').textContent, 'French');
   select.click();
@@ -443,11 +444,11 @@ test('Translation: two switches and a language select, each its own command, app
   assert.equal(offer.getAttribute('aria-checked'), 'false');
   assert.equal(auto.getAttribute('aria-checked'), 'true');
   assert.equal(rowOf('translateTarget').querySelector('.bw-select-value').textContent, 'German');
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, translateTarget: 'sv', translateTargets: ['en', 'sv'] } });
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, translateTarget: 'xx', translateTargets: ['en', 'xx'] } });
   const rebuilt = rowOf('translateTarget').querySelector('.bw-select-button');
-  assert.equal(rebuilt.querySelector('.bw-select-value').textContent, 'sv', 'an unknown code shows the code');
+  assert.equal(rebuilt.querySelector('.bw-select-value').textContent, 'xx', 'an unknown code shows the code');
   rebuilt.click();
-  assert.deepEqual(rowOf('translateTarget').querySelectorAll('[role="option"]').map((o) => o.querySelector('.bw-menu-label').textContent), ['My Windows language', 'English', 'sv']);
+  assert.deepEqual(rowOf('translateTarget').querySelectorAll('[role="option"]').map((o) => o.querySelector('.bw-menu-label').textContent), ['My Windows language', 'English', 'xx']);
   rebuilt.click();
 
   // An unreadable settings file disables all three, like the other rows.

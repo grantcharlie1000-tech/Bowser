@@ -1,37 +1,30 @@
-//! On-device page translation: the pure decisions around an on-request page script.
+//! Page translation: the pure decisions around an on-request page script, and Google Translate as the
+//! translator.
 //!
-//! Page text never leaves the machine. Nothing happens until the user asks (the toolbar button, the
-//! main menu or the command palette): Bowser then downloads the language files for that pair once
-//! (`store`), starts a hidden worker page that runs Mozilla's Bergamot translator (`worker.js`) on
-//! those files, and moves the page's text through it in batches: one `ExecuteScript` call collects
-//! a batch from the page (`translate.js`), the worker translates it, and the next call writes it
-//! back and collects the following batch. No script is injected at document creation, no page
-//! observer is installed, and a page that is not being translated costs nothing but the language
-//! tag the reader probe already reports (`crate::reader`).
+//! Nothing happens until the user asks (the toolbar button, the main menu or the command palette).
+//! One `ExecuteScript` call collects a batch of text from the page (`translate.js`), Bowser sends
+//! the batch to Google Translate (`google`, over `net`), and the next call writes the translation
+//! back and collects the following batch. **The page's text is sent to Google** — that is the whole
+//! trade for needing no download, key or account — so it only happens on the user's own command (or
+//! on a site they set to "always translate" with the automatic setting on), and a private tab asks
+//! first. No script is injected at document creation, no page observer is installed, and a page that
+//! is not being translated costs nothing but the language tag the reader probe already reports
+//! (`crate::reader`).
 //!
-//! Everything that comes back from a page or the worker is validated here ([`parse_reply`],
-//! [`parse_worker_message`]) before it is used; see `docs/translate.md`.
+//! Everything that comes back from a page or from Google is validated here or in `google`
+//! ([`parse_reply`], `google::parse_answer`) before it is used; see `docs/translate.md`.
 
+pub mod google;
 pub mod json;
-pub mod manifest;
-pub mod store;
+pub mod net;
 
 use url::Url;
 
 use crate::chrome_host::protocol::json_string;
 use crate::site_prefs::SiteTranslate;
 
-pub use manifest::{File, MANIFEST, Manifest, Pair};
-
 /// The page script: a function expression taking one options object.
 pub const SCRIPT: &str = include_str!("translate.js");
-/// The worker page and its script, written next to the language files when a worker is first needed.
-pub const WORKER_HTML: &str = include_str!("worker.html");
-pub const WORKER_JS: &str = include_str!("worker.js");
-/// The virtual host the worker page is served from: a folder mapping, never the network.
-pub const WORKER_HOST: &str = "bowser-translate.invalid";
-/// How long the worker page may sit unused before it is closed.
-pub const WORKER_IDLE_SECS: u64 = 120;
 
 /// Most strings in one batch, either direction.
 pub const MAX_BATCH_ITEMS: usize = 400;
@@ -39,15 +32,14 @@ pub const MAX_BATCH_ITEMS: usize = 400;
 pub const MAX_ITEM_BYTES: usize = 8 * 1024;
 /// Most text in one batch (UTF-8 bytes).
 pub const MAX_BATCH_BYTES: usize = 96 * 1024;
-/// Longest raw answer read from a page or the worker, in bytes.
+/// Longest raw answer read from a page, in bytes.
 pub const MAX_ANSWER_BYTES: usize = 384 * 1024;
 /// Most batches one translation will run, so a page that keeps producing text ends.
 pub const MAX_BATCHES: usize = 80;
 
-/// Only plain web pages are ever translated. It is the same rule as reader view, and the worker's
-/// own virtual host is never a page.
+/// Only plain web pages are ever translated. It is the same rule as reader view.
 pub fn url_allowed(url: &Url) -> bool {
-    crate::reader::url_allowed(url) && url.host_str() != Some(WORKER_HOST)
+    crate::reader::url_allowed(url)
 }
 
 /// A language reduced to its primary subtag, as lower-case ASCII letters (`en-GB` is `en`). `None`
@@ -138,13 +130,13 @@ fn windows_ui_language() -> Option<String> {
     (!first.is_empty()).then(|| String::from_utf16_lossy(first))
 }
 
-/// The language pages are translated into: the setting when it is a language, else the Windows
-/// display language.
+/// The language pages are translated into: the setting when it is a language Google can translate
+/// into, else the Windows display language when it is one, else English.
 pub fn target_language(setting: &str) -> String {
-    match normalize_lang(setting) {
-        Some(target) => target,
-        None => ui_language().to_owned(),
-    }
+    normalize_lang(setting)
+        .filter(|code| is_supported(code))
+        .or_else(|| Some(ui_language().to_owned()).filter(|code| is_supported(code)))
+        .unwrap_or_else(|| "en".to_owned())
 }
 
 /// What the toolbar button shows.
@@ -174,8 +166,8 @@ pub enum Offer {
     No,
     /// Show the button.
     Offer,
-    /// Show the button and translate now (the site is set to "always translate", the automatic
-    /// setting is on, and the language files are already on disk).
+    /// Show the button and translate now (the site is set to "always translate" and the automatic
+    /// setting is on).
     Auto,
 }
 
@@ -193,108 +185,115 @@ pub struct OfferInput<'a> {
     /// The stored per-site choice, if any.
     pub site: Option<SiteTranslate>,
     pub private: bool,
-    /// The language files for this page's route are already on disk.
-    pub pack_ready: bool,
 }
 
 /// The offer for a page. Pure: no I/O, so it is safe to run for every toolbar refresh.
 ///
-/// A page with no language is never offered (the menu command still works). A page already in the
-/// target language, or in one no route reaches the target from, is not offered. "Never" for a site
-/// hides the offer. A private tab ignores stored per-site choices entirely, so nothing recorded
-/// outside it changes what it does; it still offers, and translating there is always the user's own
-/// click.
+/// A page with no language is never offered (the menu command still works: Google detects the
+/// language). A page already in the target language is not offered. "Never" for a site hides the
+/// offer. A private tab ignores stored per-site choices entirely, so nothing recorded outside it
+/// changes what it does; it still offers, and translating there is always the user's own click.
 pub fn should_offer(input: &OfferInput<'_>) -> Offer {
     if !input.offer_on || input.page_lang.is_none() || input.page_lang.as_str() == input.target {
-        return Offer::No;
-    }
-    if pair_route(input.page_lang.as_str(), input.target).is_none() {
         return Offer::No;
     }
     let site = if input.private { None } else { input.site };
     match site {
         Some(SiteTranslate::Never) => Offer::No,
-        Some(SiteTranslate::Always) if input.auto_on && input.pack_ready => Offer::Auto,
+        Some(SiteTranslate::Always) if input.auto_on => Offer::Auto,
         _ => Offer::Offer,
     }
 }
 
-/// How a pair of languages is translated: one model, or two through English.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Route {
-    pub first: &'static Pair,
-    pub second: Option<&'static Pair>,
+/// The languages Google Translate is asked about, by code, with their English names. Pages may be
+/// translated into any of them (the list Settings offers, in this order), and a page in one of them
+/// names it as the source; a page in another language is sent with the source left for Google to
+/// detect.
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("ru", "Russian"),
+    ("uk", "Ukrainian"),
+    ("tr", "Turkish"),
+    ("ar", "Arabic"),
+    ("he", "Hebrew"),
+    ("fa", "Persian"),
+    ("hi", "Hindi"),
+    ("bn", "Bengali"),
+    ("ur", "Urdu"),
+    ("ta", "Tamil"),
+    ("te", "Telugu"),
+    ("mr", "Marathi"),
+    ("gu", "Gujarati"),
+    ("kn", "Kannada"),
+    ("ml", "Malayalam"),
+    ("pa", "Punjabi"),
+    ("th", "Thai"),
+    ("vi", "Vietnamese"),
+    ("id", "Indonesian"),
+    ("ms", "Malay"),
+    ("fil", "Filipino"),
+    ("zh", "Chinese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("sv", "Swedish"),
+    ("da", "Danish"),
+    ("no", "Norwegian"),
+    ("fi", "Finnish"),
+    ("cs", "Czech"),
+    ("sk", "Slovak"),
+    ("hu", "Hungarian"),
+    ("ro", "Romanian"),
+    ("bg", "Bulgarian"),
+    ("el", "Greek"),
+    ("hr", "Croatian"),
+    ("sr", "Serbian"),
+    ("sl", "Slovenian"),
+    ("lt", "Lithuanian"),
+    ("lv", "Latvian"),
+    ("et", "Estonian"),
+    ("is", "Icelandic"),
+    ("ga", "Irish"),
+    ("cy", "Welsh"),
+    ("sq", "Albanian"),
+    ("ca", "Catalan"),
+    ("eu", "Basque"),
+    ("gl", "Galician"),
+    ("af", "Afrikaans"),
+    ("sw", "Swahili"),
+    ("mk", "Macedonian"),
+    ("be", "Belarusian"),
+    ("ka", "Georgian"),
+    ("hy", "Armenian"),
+    ("az", "Azerbaijani"),
+    ("kk", "Kazakh"),
+];
+
+/// Whether `code` is one of [`LANGUAGES`].
+pub fn is_supported(code: &str) -> bool {
+    LANGUAGES.iter().any(|(known, _)| *known == code)
 }
 
-impl Route {
-    /// The pair ids the worker loads and runs, in order (`fr-en`, then `en-es`).
-    pub fn ids(&self) -> Vec<&'static str> {
-        std::iter::once(self.first.id).chain(self.second.map(|pair| pair.id)).collect()
-    }
-
-    /// Every file the route needs on disk: the engine, then each pair's files.
-    pub fn files(&self) -> Vec<&'static File> {
-        let mut files: Vec<&'static File> = MANIFEST.engine.iter().collect();
-        for pair in std::iter::once(self.first).chain(self.second) {
-            files.extend(pair.files.iter());
-        }
-        files
-    }
-
-    pub fn src(&self) -> &'static str {
-        self.first.src
-    }
-
-    pub fn dst(&self) -> &'static str {
-        self.second.map_or(self.first.dst, |pair| pair.dst)
-    }
-}
-
-/// The route from `src` to `dst`: a direct pair when there is one, else through English (so `fr` to
-/// `es` runs `fr-en` then `en-es`). `None` for the same language, an unknown language, or a
-/// language that has no route.
-pub fn pair_route(src: &str, dst: &str) -> Option<Route> {
-    if src == dst {
-        return None;
-    }
-    if let Some(first) = MANIFEST.pair(src, dst) {
-        return Some(Route { first, second: None });
-    }
-    if src != "en" && dst != "en" {
-        let first = MANIFEST.pair(src, "en")?;
-        let second = MANIFEST.pair("en", dst)?;
-        return Some(Route { first, second: Some(second) });
-    }
-    None
-}
-
-/// The languages a page can be translated into: English, and every language that has an
-/// English-to-language model (anything else reaches English first, then one of these).
+/// The language codes Settings offers as a target, in display order.
 pub fn target_languages() -> Vec<&'static str> {
-    let mut targets = vec!["en"];
-    for pair in MANIFEST.pairs {
-        if pair.src == "en" && !targets.contains(&pair.dst) {
-            targets.push(pair.dst);
-        }
-    }
-    targets
+    LANGUAGES.iter().map(|(code, _)| *code).collect()
 }
 
-/// The English name of a language the manifest covers, for messages.
+/// The English name of a language, for messages; an unlisted code is shown as it is.
 pub fn language_name(code: &str) -> &str {
-    match code {
-        "en" => "English",
-        "de" => "German",
-        "es" => "Spanish",
-        "fr" => "French",
-        "it" => "Italian",
-        "nl" => "Dutch",
-        "pl" => "Polish",
-        "pt" => "Portuguese",
-        "ru" => "Russian",
-        "tr" => "Turkish",
-        _ => code,
-    }
+    LANGUAGES.iter().find(|(known, _)| *known == code).map_or(code, |(_, name)| name)
+}
+
+/// The source language to name in a request: the page's own when it is one Google is known to
+/// handle, else `auto` (Google detects it).
+pub fn source_for(page_lang: Lang) -> &'static str {
+    LANGUAGES.iter().find(|(known, _)| *known == page_lang.as_str()).map_or("auto", |(code, _)| code)
 }
 
 /// Per-tab translation state, owned by the app. The page is the authority (it keeps the originals)
@@ -462,83 +461,6 @@ pub fn parse_reply(raw: &str) -> Option<Reply> {
     Some(Reply { code, token: token.to_owned(), next, total, strings })
 }
 
-// --- worker messages ---
-
-/// Why the worker could not do what was asked. Fixed words, never page text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorkerError {
-    /// The engine files could not be loaded.
-    Engine,
-    /// A language model could not be loaded or is not loaded.
-    Model,
-    /// The engine failed on a batch.
-    Translate,
-    /// The worker did not understand the request.
-    Bad,
-}
-
-/// A validated message from the worker page.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WorkerMessage {
-    Ready,
-    Loaded { id: u32 },
-    Out { id: u32, strings: Vec<String> },
-    Error { id: u32, error: WorkerError },
-}
-
-/// Parses a worker message: a JSON object whose members are exactly those of one of the four
-/// shapes. Anything else is refused.
-pub fn parse_worker_message(raw: &str) -> Option<WorkerMessage> {
-    if raw.len() > MAX_ANSWER_BYTES {
-        return None;
-    }
-    let value = json::parse(raw)?;
-    let mut keys = value.keys();
-    keys.sort_unstable();
-    let id = || u32::try_from(value.get("id")?.as_int()?).ok();
-    match value.get("t")?.as_str()? {
-        "ready" if keys == ["t"] => Some(WorkerMessage::Ready),
-        "loaded" if keys == ["id", "t"] => Some(WorkerMessage::Loaded { id: id()? }),
-        "out" if keys == ["id", "s", "t"] => Some(WorkerMessage::Out { id: id()?, strings: strings_of(value.get("s")?)? }),
-        "error" if keys == ["id", "m", "t"] => {
-            let error = match value.get("m")?.as_str()? {
-                "engine" => WorkerError::Engine,
-                "model" => WorkerError::Model,
-                "translate" => WorkerError::Translate,
-                "bad" => WorkerError::Bad,
-                _ => return None,
-            };
-            Some(WorkerMessage::Error { id: id()?, error })
-        }
-        _ => None,
-    }
-}
-
-/// The message that makes the worker load a route's models.
-pub fn load_message(id: u32, route: &Route) -> String {
-    let pairs: Vec<String> = route.ids().into_iter().map(json_string).collect();
-    format!("{{\"t\":\"load\",\"id\":{id},\"pairs\":[{}]}}", pairs.join(","))
-}
-
-/// The message that makes the worker translate `strings` along a route.
-pub fn translate_message(id: u32, route: &Route, strings: &[String]) -> String {
-    let ids: Vec<String> = route.ids().into_iter().map(json_string).collect();
-    let texts: Vec<String> = strings.iter().map(|text| json_string(text)).collect();
-    format!("{{\"t\":\"tr\",\"id\":{id},\"route\":[{}],\"s\":[{}]}}", ids.join(","), texts.join(","))
-}
-
-/// Whether a worker address belongs to the worker's own virtual host: the only origin the worker
-/// page may load from, navigate to, or send messages from.
-pub fn is_worker_url(url: &Url) -> bool {
-    url.scheme() == "https" && url.host_str() == Some(WORKER_HOST) && url.port().is_none()
-}
-
-/// Checks a model's translations against the batch they answer: the same number of strings, none
-/// over the limits. Returns them, or `None` when the worker's answer cannot be trusted.
-pub fn check_answer(sent: usize, strings: Vec<String>) -> Option<Vec<String>> {
-    (strings.len() == sent).then_some(strings)
-}
-
 /// The text of the toolbar and menu command for a page in `target`.
 pub fn command_label(target: &str, active: bool) -> String {
     if active {
@@ -565,7 +487,6 @@ mod tests {
             auto_on: false,
             site: None,
             private: false,
-            pack_ready: false,
         }
     }
 
@@ -625,26 +546,25 @@ mod tests {
     fn should_offer_truth_table() {
         // A French page offered in English: the base case.
         assert_eq!(should_offer(&offer("fr", "en")), Offer::Offer);
-        // The page's own language, no language, no route, or the whole thing off.
+        // The page's own language, no language, or the whole thing off.
         assert_eq!(should_offer(&offer("en", "en")), Offer::No, "same language");
         assert_eq!(should_offer(&offer("", "en")), Offer::No, "a page with no language is never offered");
-        assert_eq!(should_offer(&offer("ja", "en")), Offer::No, "no pinned route from ja");
-        assert_eq!(should_offer(&offer("fr", "ja")), Offer::No, "no pinned route to ja");
         let mut input = offer("fr", "en");
         input.offer_on = false;
         assert_eq!(should_offer(&input), Offer::No, "global off");
-        // A pivot route counts.
+        // Any language Google handles, in either direction, and one it only detects.
         assert_eq!(should_offer(&offer("fr", "es")), Offer::Offer);
+        assert_eq!(should_offer(&offer("ja", "en")), Offer::Offer);
+        assert_eq!(should_offer(&offer("en", "ja")), Offer::Offer);
+        assert_eq!(should_offer(&offer("xyz", "en")), Offer::Offer, "an unlisted source is detected by Google");
         // A site set to never hides it; always alone only offers.
         let mut input = offer("fr", "en");
         input.site = Some(SiteTranslate::Never);
         assert_eq!(should_offer(&input), Offer::No, "site never");
         input.site = Some(SiteTranslate::Always);
         assert_eq!(should_offer(&input), Offer::Offer, "always does nothing by itself");
-        // Always plus the automatic setting translates, but only with the files already on disk.
+        // Always plus the automatic setting translates.
         input.auto_on = true;
-        assert_eq!(should_offer(&input), Offer::Offer, "never starts a download unasked");
-        input.pack_ready = true;
         assert_eq!(should_offer(&input), Offer::Auto, "site always plus translate_auto");
         // The automatic setting without a site choice does nothing either.
         input.site = None;
@@ -653,7 +573,6 @@ mod tests {
         let mut private = offer("fr", "en");
         private.private = true;
         private.auto_on = true;
-        private.pack_ready = true;
         private.site = Some(SiteTranslate::Always);
         assert_eq!(should_offer(&private), Offer::Offer, "private: always is ignored");
         private.site = Some(SiteTranslate::Never);
@@ -661,44 +580,41 @@ mod tests {
     }
 
     #[test]
-    fn pair_route_is_direct_then_through_english_then_nothing() {
-        let direct = pair_route("fr", "en").unwrap();
-        assert_eq!(direct.ids(), ["fr-en"]);
-        assert_eq!((direct.src(), direct.dst()), ("fr", "en"));
-        let into = pair_route("en", "de").unwrap();
-        assert_eq!(into.ids(), ["en-de"]);
-        let pivot = pair_route("fr", "es").unwrap();
-        assert_eq!(pivot.ids(), ["fr-en", "en-es"]);
-        assert_eq!((pivot.src(), pivot.dst()), ("fr", "es"));
-        assert_eq!(pair_route("en", "en"), None);
-        assert_eq!(pair_route("fr", "fr"), None);
-        assert_eq!(pair_route("ja", "en"), None, "unsupported source");
-        assert_eq!(pair_route("en", "ja"), None, "unsupported target");
-        assert_eq!(pair_route("fr", "ja"), None, "unsupported pivot target");
-        // Russian is pinned into English only: there is no English to Russian model.
-        assert!(pair_route("ru", "en").is_some());
-        assert_eq!(pair_route("en", "ru"), None);
-        assert!(pair_route("ru", "fr").is_some(), "Russian reaches French through English");
-        assert_eq!(pair_route("fr", "ru"), None, "the second hop (en-ru) does not exist");
+    fn the_language_table_is_codes_google_takes_and_settings_can_hold() {
+        let codes = target_languages();
+        assert_eq!(codes[0], "en");
+        assert!(codes.len() <= 64, "the settings page accepts at most 64 targets: {}", codes.len());
+        let mut seen = std::collections::HashSet::new();
+        for (code, name) in LANGUAGES {
+            assert!(seen.insert(*code), "{code} is listed twice");
+            assert_eq!(normalize_lang(code).as_deref(), Some(*code), "{code} is a plain code");
+            assert!(!name.is_empty() && name.chars().all(|c| c.is_ascii_alphabetic()), "{name}");
+            assert!(google::request_path("auto", code).is_some(), "{code}");
+        }
+        assert_eq!(language_name("es"), "Spanish");
+        assert_eq!(language_name("xx"), "xx", "an unknown code shows as itself");
+        assert!(is_supported("fr") && !is_supported("xx") && !is_supported("auto") && !is_supported(""));
     }
 
     #[test]
-    fn a_route_lists_the_engine_and_each_pairs_files() {
-        let direct = pair_route("fr", "en").unwrap().files();
-        assert_eq!(direct.len(), MANIFEST.engine.len() + 3);
-        let pivot = pair_route("fr", "es").unwrap().files();
-        assert_eq!(pivot.len(), MANIFEST.engine.len() + 6);
-        assert_eq!(direct[0].path, MANIFEST.engine[0].path, "the engine comes first");
+    fn the_source_is_named_only_when_it_is_a_language_in_the_table() {
+        assert_eq!(source_for(lang("fr")), "fr");
+        assert_eq!(source_for(lang("zh")), "zh");
+        assert_eq!(source_for(lang("fil")), "fil");
+        assert_eq!(source_for(lang("xyz")), "auto", "unlisted: Google detects it");
+        assert_eq!(source_for(Lang::NONE), "auto", "no language: Google detects it");
     }
 
     #[test]
     fn target_language_prefers_the_setting_and_falls_back_to_the_display_language() {
         assert_eq!(target_language("de"), "de");
         assert_eq!(target_language("en-GB"), "en");
-        // An empty or unreadable setting resolves to the display language, which is always a code.
+        // An empty or unreadable setting resolves to the display language, which is always a language
+        // in the table (English if the display language is not).
         let fallback = target_language("");
-        assert!(normalize_lang(&fallback).is_some(), "{fallback}");
+        assert!(is_supported(&fallback), "{fallback}");
         assert_eq!(target_language("<junk>"), fallback);
+        assert_eq!(target_language("xyz"), fallback, "a language Google has no model for is not a target");
     }
 
     #[test]
@@ -823,46 +739,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_worker_message_knows_four_shapes() {
-        assert_eq!(parse_worker_message(r#"{"t":"ready"}"#), Some(WorkerMessage::Ready));
-        assert_eq!(parse_worker_message(r#"{"t":"loaded","id":3}"#), Some(WorkerMessage::Loaded { id: 3 }));
-        assert_eq!(
-            parse_worker_message(r#"{"t":"out","id":4,"s":["a","b"]}"#),
-            Some(WorkerMessage::Out { id: 4, strings: vec!["a".into(), "b".into()] })
-        );
-        assert_eq!(
-            parse_worker_message(r#"{"t":"error","id":5,"m":"model"}"#),
-            Some(WorkerMessage::Error { id: 5, error: WorkerError::Model })
-        );
-        for bad in [
-            "",
-            "ready",
-            r#"{"t":"ready","x":1}"#,
-            r#"{"t":"loaded"}"#,
-            r#"{"t":"loaded","id":-1}"#,
-            r#"{"t":"loaded","id":4294967296}"#,
-            r#"{"t":"loaded","id":"3"}"#,
-            r#"{"t":"out","id":4}"#,
-            r#"{"t":"out","id":4,"s":"a"}"#,
-            r#"{"t":"out","id":4,"s":[1]}"#,
-            r#"{"t":"error","id":5,"m":"anything the page said"}"#,
-            r#"{"t":"error","id":5}"#,
-            r#"{"t":"nope","id":5}"#,
-            r#"{"id":5}"#,
-            r#"[{"t":"ready"}]"#,
-        ] {
-            assert_eq!(parse_worker_message(bad), None, "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn answers_must_match_the_batch_that_was_sent() {
-        assert_eq!(check_answer(2, vec!["a".into(), "b".into()]).map(|a| a.len()), Some(2));
-        assert_eq!(check_answer(3, vec!["a".into(), "b".into()]), None);
-        assert_eq!(check_answer(1, vec!["a".into(), "b".into()]), None);
-    }
-
-    #[test]
     fn invocation_is_a_call_of_the_script_with_escaped_strings() {
         let call = invocation(&Action::Collect);
         assert!(call.starts_with("((function (o) {"), "{}", &call[..40]);
@@ -886,38 +762,10 @@ mod tests {
     }
 
     #[test]
-    fn worker_messages_are_built_with_escaped_strings_and_parse_back() {
-        let route = pair_route("fr", "es").unwrap();
-        assert_eq!(load_message(7, &route), r#"{"t":"load","id":7,"pairs":["fr-en","en-es"]}"#);
-        let sent = vec!["a \"b\" <i>".to_owned(), "\u{2028}".to_owned()];
-        let message = translate_message(9, &route, &sent);
-        assert!(message.starts_with(r#"{"t":"tr","id":9,"route":["fr-en","en-es"],"s":["#), "{message}");
-        assert!(!message.contains('<') && !message.contains('\u{2028}'));
-        let value = json::parse(&message).unwrap();
-        assert_eq!(strings_of(value.get("s").unwrap()), Some(sent));
-    }
-
-    #[test]
-    fn only_the_workers_own_origin_counts_as_the_worker() {
-        for good in ["https://bowser-translate.invalid/worker.html", "https://bowser-translate.invalid/engine/x.js"] {
-            assert!(is_worker_url(&Url::parse(good).unwrap()), "{good}");
-        }
-        for bad in [
-            "http://bowser-translate.invalid/worker.html",
-            "https://bowser-translate.invalid:8443/worker.html",
-            "https://bowser-translate.invalid.evil.example/",
-            "https://evil.example/bowser-translate.invalid",
-            "https://example.com/",
-            "bowser-ui://app/index.html",
-            "about:blank",
-        ] {
-            assert!(!is_worker_url(&Url::parse(bad).unwrap()), "{bad}");
-        }
-        // A page may never be one of the worker's addresses, so it is never scripted either.
+    fn only_websites_are_translated() {
         assert!(url_allowed(&Url::parse("https://example.com/").unwrap()));
         assert!(!url_allowed(&Url::parse("bowser://settings").unwrap()));
         assert!(!url_allowed(&Url::parse("file:///C:/a.html").unwrap()));
-        assert!(!url_allowed(&Url::parse("https://bowser-translate.invalid/worker.html").unwrap()), "the worker host is never translated");
     }
 
     #[test]
@@ -940,15 +788,6 @@ mod tests {
             "setTimeout", "setInterval",
         ] {
             assert!(!SCRIPT.contains(banned), "translate.js must not contain {banned}");
-        }
-        // The worker page can reach nothing but its own origin.
-        assert!(WORKER_HTML.contains("default-src 'none'"));
-        assert!(WORKER_HTML.contains("script-src 'self' 'wasm-unsafe-eval'"));
-        assert!(WORKER_HTML.contains("connect-src 'self'"));
-        assert!(!WORKER_HTML.contains("unsafe-inline") && !WORKER_HTML.contains("'unsafe-eval'"));
-        assert!(!WORKER_HTML.contains("http:") && !WORKER_HTML.contains("https:"));
-        for banned in ["eval(", "new Function", "innerHTML", "XMLHttpRequest", "sendBeacon", "WebSocket", "http://", "https://", "importScripts", "new Worker"] {
-            assert!(!WORKER_JS.contains(banned), "worker.js must not contain {banned}");
         }
     }
 

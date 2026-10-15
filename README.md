@@ -50,6 +50,35 @@ All persistent state (history, bookmarks, workspaces, tab groups, settings, sess
 
 Benchmark launches (`--benchmark-log` and friends) can never write to the real profile: with no `--data-dir` they use a fresh throwaway directory under `%TEMP%` (`bowser-benchmark-data-<pid>-<nonce>`, deleted on exit), and an explicit `--data-dir` that is or sits inside `%LOCALAPPDATA%\Bowser` is refused.
 
+## Agent interface
+
+`--agent` is an optional loopback API for an agent that needs to read a page as text and run page scripts. A launch without `--agent` does not listen and opens the same window as before. There is no new toolbar, setting, or menu item.
+
+Start a hidden host. It does not open the human browser. `--data-dir` is required and must not be `%LOCALAPPDATA%\Bowser` or `%LOCALAPPDATA%\Bowser-Dev`, so the agent never uses your profile. The process prints one JSON line, `{"event":"listening","addr":"127.0.0.1:47321"}`, and stays up.
+
+    cargo build --locked
+    target\debug\bowser.exe --agent --data-dir C:\temp\bowser-agent
+
+The listener binds to `127.0.0.1` port `47321` (override with `--agent-port` and `--agent-bind`). `--agent-bind` accepts only a loopback IP literal (`127.0.0.1` or `::1`). `0.0.0.0`, LAN addresses, and hostnames are refused. A connection whose peer is not loopback is refused. Do not expose this port past the machine. There is no authentication token: any process on this machine can connect. Anything that can connect can run arbitrary JavaScript in the page as the local user, with that user's cookies and files the page can reach. The release binary is a Windows GUI app, so redirect stdout to read the listening line. A debug build writes it to the console.
+
+Refs live on `window.__bowserAgent` in the page. The page can replace that object, so a ref is only as trustworthy as the page you just snapshotted. `click` and `press` dispatch DOM events. They are not operating-system input, and a site can ignore them when it requires a real user gesture. One command runs at a time. `script` returns when the function returns and does not wait for a Promise. Cookies and `localStorage` stay in the session folder until that `--data-dir` is deleted. The host refuses to start while `WEBVIEW2_USER_DATA_FOLDER` or the other WebView2 override variables are set. A second host cannot open a session folder that is already open.
+
+From another terminal, each command prints one JSON object:
+
+    target\debug\bowser.exe --agent-call navigate --session alpha --url http://127.0.0.1:8765/page.html
+    target\debug\bowser.exe --agent-call snapshot --session alpha
+    target\debug\bowser.exe --agent-call fill --session alpha --ref e1 --text Ada
+    target\debug\bowser.exe --agent-call click --session alpha --ref e2
+    target\debug\bowser.exe --agent-call snapshot --session alpha
+
+A snapshot looks like `{"ok":true,"url":"http://127.0.0.1:8765/page.html","title":"Agent fixture","tree":"http://127.0.0.1:8765/page.html\nAgent fixture\ntextbox \"Name\" e1\nbutton \"Save\" e2"}`. The tree is the URL, the title, and short rows (`role "name" eN`). On the fixture page the name field is `e1` and Save is `e2`, because refs follow document order. Refs are assigned when you snapshot and last until the next snapshot or navigation. Use the refs from the snapshot you just took. `text` returns the main text; add `--format markdown` for a heading plus that text. Other commands: `press --key Enter`, `script --expression document.title`, `back`, and `stop` (shuts the host down). `click` also accepts `--selector` instead of `--ref`.
+
+The same `--session` name keeps cookies, `localStorage`, and back/forward history, because that name is its own WebView2 folder under `<data-dir>\agent-sessions\<name>`. A different name does not see that state. `navigate` runs `location.assign` and `back` runs `history.back()`. `click`, `fill`, `press`, and `script` run in the page. They are not simulated keystrokes.
+
+`script` returns the value once: a string comes back as `"result":"hello"`, a number as `"result":42`. A thrown script is an error when the installed runtime supports `ExecuteScriptWithResult`. On the older `ExecuteScript` fallback, a throw and a real `null` both come back as `"result":null`. `click`, `fill`, and `press` succeed only when the page script returns `{"ok":true}`. A snapshot that comes back null is reported as a failure. Failures are one JSON object on stderr, `{"ok":false,"error":"..."}`, and a non-zero exit. The human browser still uses its normal error dialog.
+
+The same calls can be one JSON object per TCP connection to `127.0.0.1:47321`, answered by one JSON line: `{"op":"snapshot","session":"alpha"}`, `{"op":"fill","session":"alpha","ref":"e2","text":"Ada"}`.
+
 ## Password migration status
 
 `Ctrl+,` opens the themed Passwords & Passkeys panel. It can search by site or username, add and edit entries, delete after confirmation, reveal a password, copy it, generate a password, and preview/commit a user-selected password CSV. Exact duplicates and conflicts are classified before import; new entries are written only after confirmation. The encrypted vault and per-site “Never” choices are stored in the active profile's `Passwords.dat`. Guest profiles do not expose vault access or save prompts.

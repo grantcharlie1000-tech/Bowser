@@ -4320,7 +4320,7 @@ impl App {
             Self::post_tab_changed_kind(hwnd, tab, false, false);
         }
         if probe && changed && result != ReaderResult::Failed {
-            // A site set to "always translate" starts now, when its language files are already here.
+            // A site set to "always translate" starts now, when the automatic setting is on.
             Self::translate_after_probe(app, tab);
         }
         result
@@ -5865,22 +5865,6 @@ impl App {
                 Some(Rc::new(move |event| {
                     if log.enabled() {
                         let _ = log.record(event);
-                    }
-                }))
-            },
-            translate_worker_message: {
-                let worker_app = Rc::downgrade(app);
-                Some(Rc::new(move |text: String| {
-                    if let Some(app) = worker_app.upgrade() {
-                        App::translate_worker_message(&app, &text);
-                    }
-                }))
-            },
-            translate_worker_failed: {
-                let worker_app = Rc::downgrade(app);
-                Some(Rc::new(move || {
-                    if let Some(app) = worker_app.upgrade() {
-                        App::translate_worker_failed(&app);
                     }
                 }))
             },

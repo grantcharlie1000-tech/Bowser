@@ -1491,7 +1491,7 @@ const GITHUB_REPOSITORY: &str = "grantcharlie1000-tech/Bowser";
 const GITHUB_ASSET: &str = "Bowser.exe";
 /// Bump this when publishing `stable/release.json`. A pin with a lower revision is ignored,
 /// so a cached copy of an older pin cannot replace the build that contains this number.
-const PIN_REVISION: u32 = 17;
+const PIN_REVISION: u32 = 18;
 /// GitHub pin checks are quieter than a launch, but a restarted browser still notices a release
 /// within the hour.
 const PIN_CHECK_INTERVAL_SECS: u64 = 60 * 60;
@@ -2119,7 +2119,11 @@ mod tests {
     #[test]
     fn the_shown_version_follows_the_pinned_release() {
         let pin = parse_github_pin(include_str!("../stable/release.json")).unwrap();
-        assert_eq!(pin.tag, format!("v{}", pin.version), "tag and version name one release");
+        // Releases up to v0.0.17 were built as 0.0.1, so their pin keeps that version;
+        // from v0.0.18 on the tag and the version are the same number.
+        if pin.version > Version(0, 0, 1) {
+            assert_eq!(pin.tag, format!("v{}", pin.version), "tag and version name one release");
+        }
         assert!(
             Version::current() >= pin.version,
             "Cargo.toml says {} but stable/release.json pins {}: bump Cargo.toml (and Cargo.lock) with the release",

@@ -173,11 +173,9 @@ pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
 /// Defers the active tab's reader probe until after the page's first paint.
 pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB05E;
-/// The language-file download for a page translation finished (posted from its worker thread);
-/// `WPARAM` is the job id and `LPARAM` a `PACK_*` result code (`app::page_translate`).
-pub(crate) const WM_TRANSLATE_PACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D1;
-/// Closes the hidden translation worker page after it has sat unused.
-pub(crate) const WM_TRANSLATE_IDLE_TIMER: usize = 0xB071;
+/// Google Translate answered a batch (posted from its worker thread); `WPARAM` is the job id and
+/// `LPARAM` the request id whose result is waiting in `app::page_translate`.
+pub(crate) const WM_TRANSLATE_NET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D1;
 /// Fails a translation step that never answered.
 pub(crate) const WM_TRANSLATE_WATCH_TIMER: usize = 0xB072;
 

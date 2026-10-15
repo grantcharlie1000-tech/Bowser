@@ -33,6 +33,22 @@ pub struct LaunchOptions {
     /// `--dev`: a working copy. Its data lives in `%LOCALAPPDATA%\Bowser-Dev` and it never
     /// reads or updates the installed browser's profile.
     pub dev: bool,
+    /// `--agent`: listen on loopback and drive a hidden page. The human window is not opened.
+    pub agent: bool,
+    /// `--agent-bind`: loopback IP literal. The default is `127.0.0.1`.
+    pub agent_bind_host: Option<String>,
+    /// `--agent-port`. The default is [`crate::agent::DEFAULT_PORT`].
+    pub agent_port: Option<u16>,
+    /// `--agent-call`: one command sent to a running agent, then this process exits.
+    pub agent_call: Option<String>,
+    pub agent_session: Option<String>,
+    pub agent_url: Option<String>,
+    pub agent_ref: Option<String>,
+    pub agent_selector: Option<String>,
+    pub agent_text: Option<String>,
+    pub agent_key: Option<String>,
+    pub agent_expression: Option<String>,
+    pub agent_format: Option<String>,
 }
 
 impl LaunchOptions {
@@ -97,6 +113,13 @@ impl LaunchOptions {
                 options.guest = true;
                 continue;
             }
+            if flag == "--agent" {
+                if options.agent {
+                    return Err("Duplicate agent argument".into());
+                }
+                options.agent = true;
+                continue;
+            }
             if !matches!(
                 flag.as_str(),
                 "--benchmark-log"
@@ -107,6 +130,17 @@ impl LaunchOptions {
                     | "--benchmark-memory-pressure"
                     | "--profile"
                     | "--open-url"
+                    | "--agent-bind"
+                    | "--agent-port"
+                    | "--agent-call"
+                    | "--session"
+                    | "--url"
+                    | "--ref"
+                    | "--selector"
+                    | "--text"
+                    | "--key"
+                    | "--expression"
+                    | "--format"
             ) {
                 return Err(format!("Unknown argument: {flag}"));
             }
@@ -182,6 +216,62 @@ impl LaunchOptions {
                     }
                     if options.open_url.replace(url).is_some() {
                         return Err("Duplicate initial URL argument".into());
+                    }
+                }
+                "--agent-bind" => {
+                    if options.agent_bind_host.replace(value).is_some() {
+                        return Err("Duplicate agent bind argument".into());
+                    }
+                }
+                "--agent-port" => {
+                    let port = crate::agent::parse_port(&value)?;
+                    if options.agent_port.replace(port).is_some() {
+                        return Err("Duplicate agent port argument".into());
+                    }
+                }
+                "--agent-call" => {
+                    if options.agent_call.replace(value).is_some() {
+                        return Err("Duplicate agent command".into());
+                    }
+                }
+                "--session" => {
+                    if options.agent_session.replace(value).is_some() {
+                        return Err("Duplicate session argument".into());
+                    }
+                }
+                "--url" => {
+                    if options.agent_url.replace(value).is_some() {
+                        return Err("Duplicate URL argument".into());
+                    }
+                }
+                "--ref" => {
+                    if options.agent_ref.replace(value).is_some() {
+                        return Err("Duplicate ref argument".into());
+                    }
+                }
+                "--selector" => {
+                    if options.agent_selector.replace(value).is_some() {
+                        return Err("Duplicate selector argument".into());
+                    }
+                }
+                "--text" => {
+                    if options.agent_text.replace(value).is_some() {
+                        return Err("Duplicate text argument".into());
+                    }
+                }
+                "--key" => {
+                    if options.agent_key.replace(value).is_some() {
+                        return Err("Duplicate key argument".into());
+                    }
+                }
+                "--expression" => {
+                    if options.agent_expression.replace(value).is_some() {
+                        return Err("Duplicate expression argument".into());
+                    }
+                }
+                "--format" => {
+                    if options.agent_format.replace(value).is_some() {
+                        return Err("Duplicate format argument".into());
                     }
                 }
                 _ => {
@@ -271,6 +361,38 @@ impl LaunchOptions {
             }
             ensure_benchmark_profile(profile)?;
         }
+        if options.agent
+            && let (Some(dir), Some(local)) = (options.data_dir.as_ref(), local_app_data)
+        {
+            let real = local.join("Bowser");
+            let dev = local.join("Bowser-Dev");
+            if profile_contains(&real, dir)? || profile_contains(&dev, dir)? {
+                return Err(
+                    "--agent cannot use the Bowser or Bowser-Dev profile directory".into(),
+                );
+            }
+        }
+        crate::agent::validate_agent_launch(&crate::agent::AgentLaunch {
+            serve: options.agent,
+            call: options.agent_call.clone(),
+            bind_host: options.agent_bind_host.clone(),
+            port: options.agent_port,
+            session: options.agent_session.clone(),
+            url: options.agent_url.clone(),
+            refer: options.agent_ref.clone(),
+            selector: options.agent_selector.clone(),
+            text: options.agent_text.clone(),
+            key: options.agent_key.clone(),
+            expression: options.agent_expression.clone(),
+            format: options.agent_format.clone(),
+            data_dir: options.data_dir.is_some(),
+            dev: options.dev,
+            guest: options.guest,
+            new_window: options.new_window,
+            profile: options.profile.is_some(),
+            open_url: options.open_url.is_some(),
+            benchmark: options.benchmark_log.is_some() || options.benchmark_url.is_some(),
+        })?;
         Ok(options)
     }
 }

@@ -1,21 +1,27 @@
 //! Page translation, the app's side (see `crate::translate` for the pure logic and the design).
 //!
-//! Nothing here runs until the user asks, except one pure decision per toolbar refresh (is this page
-//! offered?) and, for a site set to "always translate" with the automatic setting on and its language
-//! files already on disk, a start after the reader probe. A translation is one job at a time, driven
-//! entirely by completions, never by waiting:
+//! Nothing here runs until the user asks, except one pure decision per toolbar refresh and, for a site
+//! set to "always translate" with the automatic setting on, a start after the reader probe. A
+//! translation is one job at a time, driven entirely by completions, never by waiting:
 //!
-//! 1. the language files are made ready on a background thread (`store::ensure`), only if some are
-//!    missing or not yet checked in this run; `WM_TRANSLATE_PACK` reports back;
-//! 2. the hidden worker page is started (or reused) and asked to load the route's models;
-//! 3. `collect` runs in the page and returns the first batch of text; the worker translates it;
-//!    `apply` writes it back and returns the next batch; repeat until a batch comes back empty.
+//! 1. `collect` runs in the page and returns a batch of text;
+//! 2. the batch goes to Google Translate on a background thread (`translate::google`);
+//!    `WM_TRANSLATE_NET` reports back;
+//! 3. `apply` writes the translation into the page and returns the next batch; repeat until a batch
+//!    comes back empty.
+//!
+//! **The page's text is sent to Google in step 2.** A private tab asks first.
 //!
 //! Every step is checked against the tab's translate epoch, so a navigation, a closed tab or a
-//! reloaded page drops the job silently. A watchdog timer fails a step that never answers, and an
-//! idle timer closes the worker page after [`translate::WORKER_IDLE_SECS`].
+//! reloaded page drops the job silently. A watchdog timer fails a step that never answers.
 
-use std::{collections::HashSet, path::PathBuf, rc::Rc, sync::Mutex};
+use std::{
+    rc::Rc,
+    sync::{
+        Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, WPARAM},
@@ -26,55 +32,47 @@ use super::{App, AppRef};
 use crate::{
     site_prefs::SiteTranslate,
     tabs::TabId,
-    translate::{self, Action, Offer, OfferInput, Pill, ReplyCode, Route, WorkerMessage, store},
+    translate::{self, Action, Offer, OfferInput, Pill, ReplyCode, google::GoogleError},
     win32,
 };
 
-/// The longest one step (loading the models, translating a batch, applying it) may go unanswered.
-const WATCH_MS: u32 = 90_000;
-/// Only one language-file download runs at a time, across windows.
-static DOWNLOAD_LOCK: Mutex<()> = Mutex::new(());
+/// The longest one step (a page script, or a whole request to Google with its retry) may go unanswered.
+const WATCH_MS: u32 = 120_000;
 
 /// What the user should be told. The window turns these into toasts; automatic starts ignore them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
-    /// Language files are being fetched (`bytes` in all), from the user's own request.
-    Downloading { from: String, to: String, bytes: u64 },
-    /// A private tab needs files that are not on disk: ask before fetching anything.
-    NeedsConfirm { from: String, to: String, bytes: u64 },
+    /// Translation has started: the page's text is going to Google Translate.
+    Started,
+    /// A private tab asks before any of its text is sent to Google.
+    NeedsConfirm,
     /// The page is translated.
     Done,
     /// The page is back to its original text.
     Restored,
-    /// Not a web page, no live page, or this tab is already busy.
+    /// Not a web page, or no live page.
     Unavailable,
+    /// This tab is already being translated (or restored).
+    InProgress,
     /// A translation is running in another tab.
     Busy,
-    /// The page does not say what language it is in.
-    NoLanguage,
     /// The page is already in the target language.
     SameLanguage,
-    /// No pinned language files cover this pair.
-    NoRoute { from: String, to: String },
     /// The page has no text worth translating.
     NothingToTranslate,
-    /// The language files could not be downloaded or did not check out.
-    DownloadFailed,
-    /// The worker or the page failed; the page was put back where possible.
+    /// Google Translate could not be reached.
+    NetworkFailed,
+    /// Google is refusing requests from this connection for now.
+    Limited,
+    /// The page or Google's answer was not usable; the page was put back where possible.
     Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    /// Waiting for the language files.
-    Pack,
-    /// Waiting for the worker page to say it is ready.
-    Start,
-    /// Waiting for the worker to load the models.
-    Load,
     /// Waiting for the page's first batch.
     Collect,
-    /// Waiting for the worker to translate a batch.
+    /// Waiting for Google to translate a batch.
     Translate,
     /// Waiting for the page to take a translated batch and give the next.
     Apply,
@@ -84,11 +82,12 @@ pub(in crate::app) struct Job {
     id: u32,
     tab: TabId,
     epoch: u32,
-    route: Route,
-    root: PathBuf,
+    /// The page's language when it is one in the table, else `auto`.
+    source: &'static str,
+    target: String,
     token: String,
     phase: Phase,
-    /// The id of the worker request this job is waiting on.
+    /// The id of the request to Google this job is waiting on.
     request: u32,
     /// How many strings the batch in flight holds.
     sent: usize,
@@ -102,20 +101,29 @@ pub(in crate::app) struct Job {
     notify: Rc<dyn Fn(Notice)>,
 }
 
+type BatchResult = Result<Vec<String>, GoogleError>;
+
+/// Answers from the request threads, waiting for the window thread to take them. Keyed by request
+/// id, which is unique across the process (windows share this list).
+static RESULTS: Mutex<Vec<(u32, BatchResult)>> = Mutex::new(Vec::new());
+static NEXT_REQUEST: AtomicU32 = AtomicU32::new(1);
+
+fn take_result(request: u32) -> Option<BatchResult> {
+    let mut results = RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let position = results.iter().position(|(id, _)| *id == request)?;
+    Some(results.swap_remove(position).1)
+}
+
 /// Everything translation keeps in the app besides each tab's state. Plain data until a translate
 /// command runs.
 #[derive(Default)]
 pub(super) struct Runtime {
     pub(in crate::app) job: Option<Job>,
-    /// Tests point the cache at a temporary folder instead of the profile's.
-    #[cfg(test)]
-    pub(in crate::app) root_override: Option<PathBuf>,
     next_id: u32,
-    /// The worker page has said it is ready (cleared when it closes).
-    pub(in crate::app) worker_ready: bool,
-    /// Manifest paths whose hash was checked in this run, so they are not hashed again.
-    pub(in crate::app) verified: HashSet<&'static str>,
     pub(in crate::app) watch: Option<(u32, u32)>,
+    /// Tests answer for Google instead of making a request.
+    #[cfg(test)]
+    pub(in crate::app) fetch: Option<Rc<dyn Fn(&str, &str, &[String]) -> BatchResult>>,
 }
 
 impl Runtime {
@@ -150,9 +158,8 @@ impl App {
         state.site_prefs.as_ref()?.borrow().translate(&origin)
     }
 
-    /// The offer for `tab`'s page. Pure apart from one `stat` per file, and only for a site set to
-    /// "always translate" with the automatic setting on. The display language is asked of Windows the
-    /// first time a page that names its language gets here, never before.
+    /// The offer for `tab`'s page. Pure. The display language is asked of Windows the first time a page
+    /// that names its language gets here, never before.
     pub fn translate_offer(app: &AppRef, tab: TabId) -> Offer {
         let (page_lang, private, offer_on, auto_on, setting) = {
             let state = app.borrow();
@@ -166,20 +173,7 @@ impl App {
         };
         let target = translate::target_language(&setting);
         let site = Self::translate_site_choice(app, tab);
-        let mut input = OfferInput { page_lang, target: &target, offer_on, auto_on, site, private, pack_ready: false };
-        let offer = translate::should_offer(&input);
-        if offer == Offer::Offer && auto_on && !private && site == Some(SiteTranslate::Always) {
-            input.pack_ready = Self::translate_pack_ready(&target, page_lang);
-            return translate::should_offer(&input);
-        }
-        offer
-    }
-
-    fn translate_pack_ready(target: &str, page_lang: translate::Lang) -> bool {
-        let (Some(route), Some(root)) = (translate::pair_route(page_lang.as_str(), target), store::cache_root()) else {
-            return false;
-        };
-        store::missing(&root, &route.files()).is_empty()
+        translate::should_offer(&OfferInput { page_lang, target: &target, offer_on, auto_on, site, private })
     }
 
     /// The toolbar button for `tab`.
@@ -265,51 +259,31 @@ impl App {
             return notify(Notice::Unavailable);
         };
         if state.busy {
-            return notify(Notice::Unavailable);
+            return notify(Notice::InProgress);
         }
         if app.borrow().translate.job.is_some() {
             return notify(Notice::Busy);
         }
-        if state.page_lang.is_none() {
-            return notify(Notice::NoLanguage);
-        }
         let target = translate::target_language(&setting);
-        let source = state.page_lang.as_str().to_owned();
-        if source == target {
+        if !state.page_lang.is_none() && state.page_lang.as_str() == target {
             return notify(Notice::SameLanguage);
         }
-        let (from, to) = (translate::language_name(&source).to_owned(), translate::language_name(&target).to_owned());
-        let Some(route) = translate::pair_route(&source, &target) else {
-            return notify(Notice::NoRoute { from, to });
-        };
-        #[cfg(test)]
-        let root = app.borrow().translate.root_override.clone().or_else(store::cache_root);
-        #[cfg(not(test))]
-        let root = store::cache_root();
-        let Some(root) = root else {
-            return notify(Notice::Failed);
-        };
-        let files = route.files();
-        let missing = store::missing(&root, &files);
-        let bytes = store::total_bytes(&missing);
-        // A private tab asks before anything is fetched. (Only file names on Bowser's pinned list go
-        // over the network, never page text or addresses, but the user decides.)
-        if private && !missing.is_empty() && !confirmed {
-            return notify(Notice::NeedsConfirm { from, to, bytes });
+        // A private tab asks before any of its text goes to Google.
+        if private && !confirmed {
+            return notify(Notice::NeedsConfirm);
         }
-        let (job_id, unverified) = {
+        {
             let mut guard = app.borrow_mut();
             let runtime = &mut guard.translate;
             let id = runtime.id();
-            let unverified: Vec<&'static translate::File> = files.iter().copied().filter(|file| !runtime.verified.contains(file.path)).collect();
             runtime.job = Some(Job {
                 id,
                 tab,
                 epoch: state.epoch,
-                route,
-                root: root.clone(),
+                source: translate::source_for(state.page_lang),
+                target,
                 token: String::new(),
-                phase: Phase::Pack,
+                phase: Phase::Collect,
                 request: 0,
                 sent: 0,
                 next: 0,
@@ -321,71 +295,9 @@ impl App {
             if let Some(entry) = guard.tabs.iter_mut().find(|entry| entry.id == tab) {
                 entry.translate.busy = true;
             }
-            (id, unverified)
-        };
-        if unverified.is_empty() {
-            return Self::translate_pack_ready_next(app, job_id);
         }
-        if !missing.is_empty() {
-            notify(Notice::Downloading { from, to, bytes });
-        }
-        let window = app.borrow().hwnd.0 as isize;
-        let spawned = std::thread::Builder::new().name("bowser-translate-pack".into()).spawn(move || {
-            let _one_at_a_time = DOWNLOAD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let code = match store::ensure(&root, &unverified) {
-                Ok(()) => PACK_OK,
-                Err(store::StoreError::Network) => PACK_NETWORK,
-                Err(store::StoreError::Hash) => PACK_HASH,
-                Err(store::StoreError::Io) => PACK_IO,
-            };
-            win32::post(HWND(window as *mut _), win32::WM_TRANSLATE_PACK, WPARAM(job_id as usize), LPARAM(code));
-        });
-        if spawned.is_err() {
-            Self::translate_fail(app, Notice::Failed);
-        }
-    }
-
-    /// The pack thread finished (`WM_TRANSLATE_PACK`). `code` is one of the `PACK_*` values.
-    pub fn translate_pack_done(app: &AppRef, job_id: u32, code: isize) {
-        let (files, matches) = {
-            let state = app.borrow();
-            match state.translate.job.as_ref() {
-                Some(job) if job.id == job_id && job.phase == Phase::Pack => (job.route.files(), true),
-                _ => (Vec::new(), false),
-            }
-        };
-        if !matches {
-            return;
-        }
-        if code != PACK_OK {
-            return Self::translate_fail(app, Notice::DownloadFailed);
-        }
-        app.borrow_mut().translate.verified.extend(files.iter().map(|file| file.path));
-        Self::translate_pack_ready_next(app, job_id);
-    }
-
-    /// Files are ready: start the worker page, or reuse it, and ask it to load the models.
-    fn translate_pack_ready_next(app: &AppRef, job_id: u32) {
-        let (tab, epoch, root) = match app.borrow().translate.job.as_ref() {
-            Some(job) if job.id == job_id => (job.tab, job.epoch, job.root.clone()),
-            _ => return,
-        };
-        if !Self::translate_current(app, tab, epoch) {
-            return Self::translate_drop(app);
-        }
-        if store::write_worker_files(&root).is_err() {
-            return Self::translate_fail(app, Notice::Failed);
-        }
-        let started = Self::call_engine(app, |engine| engine.translate_worker_open(&root)).unwrap_or(false);
-        if !started {
-            return Self::translate_fail(app, Notice::Failed);
-        }
-        let ready = app.borrow().translate.worker_ready;
-        if ready {
-            Self::translate_load(app);
-        } else {
-            Self::translate_step(app, Phase::Start);
-        }
+        notify(Notice::Started);
+        Self::translate_collect(app);
     }
 
     /// Records the phase the job is now waiting in and (re)arms the watchdog.
@@ -406,68 +318,6 @@ impl App {
             unsafe {
                 let _ = SetTimer(Some(hwnd), win32::WM_TRANSLATE_WATCH_TIMER, WATCH_MS, None);
             }
-        }
-    }
-
-    fn translate_load(app: &AppRef) {
-        let message = {
-            let mut guard = app.borrow_mut();
-            let runtime = &mut guard.translate;
-            let id = runtime.id();
-            let Some(job) = runtime.job.as_mut() else {
-                return;
-            };
-            job.request = id;
-            translate::load_message(id, &job.route)
-        };
-        Self::translate_step(app, Phase::Load);
-        if !Self::call_engine(app, |engine| engine.translate_worker_post(&message)).unwrap_or(false) {
-            Self::translate_fail(app, Notice::Failed);
-        }
-    }
-
-    /// A message from the worker page (see `EngineEvents::translate_worker_message`).
-    pub fn translate_worker_message(app: &AppRef, text: &str) {
-        let Some(message) = translate::parse_worker_message(text) else {
-            return;
-        };
-        Self::translate_touch(app);
-        match message {
-            WorkerMessage::Ready => {
-                app.borrow_mut().translate.worker_ready = true;
-                let waiting = app.borrow().translate.job.as_ref().is_some_and(|job| job.phase == Phase::Start);
-                if waiting {
-                    Self::translate_load(app);
-                }
-            }
-            WorkerMessage::Loaded { id } => {
-                if Self::translate_expecting(app, id, Phase::Load) {
-                    Self::translate_collect(app);
-                }
-            }
-            WorkerMessage::Out { id, strings } => {
-                if Self::translate_expecting(app, id, Phase::Translate) {
-                    Self::translate_apply(app, strings);
-                }
-            }
-            WorkerMessage::Error { id, .. } => {
-                let ours = app.borrow().translate.job.as_ref().is_some_and(|job| job.request == id && matches!(job.phase, Phase::Load | Phase::Translate));
-                if ours {
-                    Self::translate_fail(app, Notice::Failed);
-                }
-            }
-        }
-    }
-
-    fn translate_expecting(app: &AppRef, id: u32, phase: Phase) -> bool {
-        app.borrow().translate.job.as_ref().is_some_and(|job| job.request == id && job.phase == phase)
-    }
-
-    /// The worker page's process failed or it could not start; it is already closed.
-    pub fn translate_worker_failed(app: &AppRef) {
-        app.borrow_mut().translate.worker_ready = false;
-        if app.borrow().translate.job.is_some() {
-            Self::translate_fail(app, Notice::Failed);
         }
     }
 
@@ -546,27 +396,56 @@ impl App {
         }
     }
 
-    /// Hands one batch to the worker.
+    /// Hands one batch to Google, on a background thread.
     fn translate_send(app: &AppRef, strings: Vec<String>) {
-        let message = {
+        let (job_id, request, source, target) = {
             let mut guard = app.borrow_mut();
-            let runtime = &mut guard.translate;
-            let id = runtime.id();
-            let Some(job) = runtime.job.as_mut() else {
+            let Some(job) = guard.translate.job.as_mut() else {
                 return;
             };
-            job.request = id;
+            let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+            job.request = request;
             job.sent = strings.len();
             job.batches += 1;
-            translate::translate_message(id, &job.route, &strings)
+            (job.id, request, job.source, job.target.clone())
         };
         Self::translate_step(app, Phase::Translate);
-        if !Self::call_engine(app, |engine| engine.translate_worker_post(&message)).unwrap_or(false) {
+        #[cfg(test)]
+        {
+            let fetch = app.borrow().translate.fetch.clone();
+            if let Some(fetch) = fetch {
+                RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((request, fetch(source, &target, &strings)));
+                return Self::translate_net_done(app, job_id, request);
+            }
+        }
+        let window = app.borrow().hwnd.0 as isize;
+        let spawned = std::thread::Builder::new().name("bowser-translate-net".into()).spawn(move || {
+            let result = translate::google::translate(source, &target, &strings);
+            RESULTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((request, result));
+            win32::post(HWND(window as *mut _), win32::WM_TRANSLATE_NET, WPARAM(job_id as usize), LPARAM(request as isize));
+        });
+        if spawned.is_err() {
             Self::translate_fail(app, Notice::Failed);
         }
     }
 
-    /// The worker answered a batch: write it into the page and take the next one.
+    /// A request thread finished (`WM_TRANSLATE_NET`).
+    pub fn translate_net_done(app: &AppRef, job_id: u32, request: u32) {
+        // The result is always taken, so a job that moved on does not leave its answer behind.
+        let result = take_result(request);
+        let ours = app.borrow().translate.job.as_ref().is_some_and(|job| job.id == job_id && job.request == request && job.phase == Phase::Translate);
+        if !ours {
+            return;
+        }
+        match result {
+            Some(Ok(strings)) => Self::translate_apply(app, strings),
+            Some(Err(GoogleError::Network)) | None => Self::translate_fail(app, Notice::NetworkFailed),
+            Some(Err(GoogleError::Limited)) => Self::translate_fail(app, Notice::Limited),
+            Some(Err(GoogleError::Bad)) => Self::translate_fail(app, Notice::Failed),
+        }
+    }
+
+    /// Google answered a batch: write it into the page and take the next one.
     fn translate_apply(app: &AppRef, strings: Vec<String>) {
         let (tab, epoch, token, index, sent) = match app.borrow().translate.job.as_ref() {
             Some(job) => (job.tab, job.epoch, job.token.clone(), job.next, job.sent),
@@ -575,9 +454,9 @@ impl App {
         if !Self::translate_current(app, tab, epoch) {
             return Self::translate_drop(app);
         }
-        let Some(strings) = translate::check_answer(sent, strings) else {
+        if strings.len() != sent {
             return Self::translate_fail(app, Notice::Failed);
-        };
+        }
         Self::translate_step(app, Phase::Apply);
         let script = translate::invocation(&Action::Apply { token: &token, index, strings: &strings });
         let weak = Rc::downgrade(app);
@@ -630,7 +509,6 @@ impl App {
             }
         }
         Self::translate_changed(app, job.tab);
-        Self::translate_touch(app);
         (job.notify)(Notice::Done);
     }
 
@@ -644,7 +522,6 @@ impl App {
         };
         if let Some(job) = job {
             Self::translate_set_busy_if_current(app, job.tab, job.epoch);
-            Self::translate_touch(app);
         }
     }
 
@@ -673,7 +550,6 @@ impl App {
             }
             Self::translate_changed(app, job.tab);
         }
-        Self::translate_touch(app);
         (job.notify)(notice);
     }
 
@@ -683,7 +559,7 @@ impl App {
             return notify(Notice::Unavailable);
         };
         if state.busy {
-            return notify(Notice::Unavailable);
+            return notify(Notice::InProgress);
         }
         Self::translate_set_busy(app, tab, true);
         let epoch = state.epoch;
@@ -699,7 +575,6 @@ impl App {
                     entry.translate.busy = false;
                 }
                 Self::translate_changed(&app, tab);
-                Self::translate_touch(&app);
                 notify(Notice::Restored);
             }),
         );
@@ -712,37 +587,11 @@ impl App {
     }
 
     /// After the reader probe reports the page's language: start translating a site set to "always
-    /// translate", when the automatic setting is on and the files are already on disk.
+    /// translate", when the automatic setting is on.
     pub(super) fn translate_after_probe(app: &AppRef, tab: TabId) {
         if Self::translate_offer(app, tab) == Offer::Auto {
             Self::translate_start(app, tab, false, Rc::new(|_| {}));
         }
-    }
-
-    // --- the worker page's lifetime ---
-
-    /// Notes that translation is in use and (re)arms the idle timer that closes the worker page.
-    fn translate_touch(app: &AppRef) {
-        let hwnd = app.borrow().hwnd;
-        if hwnd.is_invalid() {
-            return;
-        }
-        let running = Self::call_engine(app, |engine| engine.translate_worker_running()).unwrap_or(false);
-        if !running {
-            return;
-        }
-        unsafe {
-            let _ = SetTimer(Some(hwnd), win32::WM_TRANSLATE_IDLE_TIMER, (translate::WORKER_IDLE_SECS * 1000) as u32, None);
-        }
-    }
-
-    /// The idle timer fired: close the worker page unless a job is using it.
-    pub fn translate_idle_timer(app: &AppRef) {
-        if app.borrow().translate.job.is_some() {
-            return Self::translate_touch(app);
-        }
-        app.borrow_mut().translate.worker_ready = false;
-        let _ = Self::call_engine(app, |engine| engine.translate_worker_close());
     }
 
     /// The watchdog fired: a step that has not moved since it was armed fails the job.
@@ -750,21 +599,15 @@ impl App {
         let stalled = {
             let state = app.borrow();
             match (state.translate.watch, state.translate.job.as_ref()) {
-                (Some((id, step)), Some(job)) => job.id == id && job.step == step && job.phase != Phase::Pack,
-                _ => false,
+                (Some((id, step)), Some(job)) if job.id == id && job.step == step => Some(job.phase),
+                _ => None,
             }
         };
-        if stalled {
-            // A worker that stopped answering is not trusted again: close it so the next try starts clean.
-            app.borrow_mut().translate.worker_ready = false;
-            let _ = Self::call_engine(app, |engine| engine.translate_worker_close());
-            Self::translate_fail(app, Notice::Failed);
+        match stalled {
+            // A request that never came back: the thread's late answer, if any, is dropped by id.
+            Some(Phase::Translate) => Self::translate_fail(app, Notice::NetworkFailed),
+            Some(_) => Self::translate_fail(app, Notice::Failed),
+            None => {}
         }
     }
 }
-
-/// `WM_TRANSLATE_PACK` result codes (the message's `LPARAM`).
-pub const PACK_OK: isize = 0;
-pub const PACK_NETWORK: isize = 1;
-pub const PACK_HASH: isize = 2;
-pub const PACK_IO: isize = 3;
