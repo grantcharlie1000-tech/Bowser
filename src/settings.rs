@@ -67,7 +67,10 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # split_edge_drop=true\r\n\
     # block_youtube_video_ads=true\r\n\
     # download_dir=\r\n\
-    # ask_download_location=false\r\n";
+    # ask_download_location=false\r\n\
+    # translate_offer=true\r\n\
+    # translate_auto=false\r\n\
+    # translate_target=\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -270,6 +273,17 @@ pub fn parse_download_dir(value: &str) -> Option<String> {
     valid.then(|| value.to_owned())
 }
 
+/// Parses a `translate_target` value: empty (the Windows display language, resolved when first needed)
+/// or a language tag reduced to its primary subtag, for example `en-GB` to `en`. `None` (keep the
+/// previous value) for anything else.
+pub fn parse_translate_target(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(String::new());
+    }
+    crate::translate::normalize_lang(value)
+}
+
 pub const MIN_DEFAULT_ZOOM: u16 = DEFAULT_ZOOM_MIN;
 pub const MAX_DEFAULT_ZOOM: u16 = DEFAULT_ZOOM_MAX;
 
@@ -466,6 +480,15 @@ pub struct Settings {
     pub download_dir: String,
     /// `ask_download_location` (default false): show a Save dialog for each download first.
     pub ask_download_location: bool,
+    /// `translate_offer` (default true): show the toolbar's translate button on a page in another
+    /// language. It only offers; nothing is downloaded or changed until the user clicks.
+    pub translate_offer: bool,
+    /// `translate_auto` (default false): translate a site automatically when it is set to "Always
+    /// translate this site". Off, that choice only keeps the button offered.
+    pub translate_auto: bool,
+    /// `translate_target` (default empty: the Windows display language): the language pages are
+    /// translated into, as a primary subtag such as `en`.
+    pub translate_target: String,
 }
 
 impl Default for Settings {
@@ -511,6 +534,9 @@ impl Default for Settings {
             block_youtube_video_ads: true,
             download_dir: String::new(),
             ask_download_location: false,
+            translate_offer: true,
+            translate_auto: false,
+            translate_target: String::new(),
         }
     }
 }
@@ -752,6 +778,21 @@ impl Settings {
                         settings.ask_download_location = on;
                     }
                 }
+                "translate_offer" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.translate_offer = on;
+                    }
+                }
+                "translate_auto" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.translate_auto = on;
+                    }
+                }
+                "translate_target" => {
+                    if let Some(target) = parse_translate_target(value) {
+                        settings.translate_target = target;
+                    }
+                }
                 _ => {}
             }
         }
@@ -843,7 +884,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 40] = [
+    let values: [(&str, Option<String>); 43] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         (
@@ -908,8 +949,11 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("block_youtube_video_ads", Some(bool_text(settings.block_youtube_video_ads).to_owned())),
         ("download_dir", Some(settings.download_dir.clone())),
         ("ask_download_location", Some(bool_text(settings.ask_download_location).to_owned())),
+        ("translate_offer", Some(bool_text(settings.translate_offer).to_owned())),
+        ("translate_auto", Some(bool_text(settings.translate_auto).to_owned())),
+        ("translate_target", Some(settings.translate_target.clone())),
     ];
-    let mut written = [false; 40];
+    let mut written = [false; 43];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -1209,6 +1253,9 @@ mod tests {
             block_youtube_video_ads: false,
             download_dir: r"D:\Downloads\Bowser".to_owned(),
             ask_download_location: true,
+            translate_offer: false,
+            translate_auto: true,
+            translate_target: "fr".to_owned(),
         }
     }
 
@@ -1413,7 +1460,8 @@ mod tests {
              default_zoom=125\r\nshow_zoom_indicator=false\r\nnew_tab_beside_active=false\r\nctrl_tab_mru=false\r\n\
              shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
              pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n\
-             download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n"
+             download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n\
+             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }
@@ -1576,5 +1624,36 @@ mod tests {
         create_template_if_missing(&path).unwrap();
         assert!(!Settings::load(&path).sleep_enabled);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn translate_settings_default_to_offer_only_and_round_trip() {
+        let defaults = Settings::default();
+        assert!(defaults.translate_offer, "the pill is on by default");
+        assert!(!defaults.translate_auto, "nothing translates by itself by default");
+        assert_eq!(defaults.translate_target, "", "empty means the Windows display language");
+        let text = render_updated("translate_auto=false\n", &sample());
+        assert_eq!(text.matches("translate_auto").count(), 1);
+        assert!(text.contains("translate_offer=false\n"));
+        assert!(text.contains("translate_auto=true\n"));
+        assert!(text.contains("translate_target=fr\n"));
+        assert_eq!(Settings::parse(&text), sample());
+        assert!(TEMPLATE.contains("# translate_offer=true\r\n"));
+        assert!(TEMPLATE.contains("# translate_auto=false\r\n"));
+        assert_eq!(Settings::parse(TEMPLATE), Settings::default());
+    }
+
+    #[test]
+    fn translate_target_accepts_tags_and_empty_and_ignores_junk() {
+        assert_eq!(Settings::parse("translate_target=en-GB").translate_target, "en");
+        assert_eq!(Settings::parse("translate_target=FR").translate_target, "fr");
+        assert_eq!(Settings::parse("translate_target=").translate_target, "");
+        assert_eq!(Settings::parse("translate_target=fr\ntranslate_target=").translate_target, "");
+        // A bad value keeps the previous one.
+        assert_eq!(Settings::parse("translate_target=de\ntranslate_target=<x>").translate_target, "de");
+        assert_eq!(Settings::parse("translate_target=klingon-ish!").translate_target, "");
+        assert_eq!(parse_translate_target(" es "), Some("es".to_owned()));
+        assert_eq!(parse_translate_target("1234"), None);
+        assert!(Settings::parse("translate_offer=maybe").translate_offer, "an unreadable value keeps the default");
     }
 }

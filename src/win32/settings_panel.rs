@@ -1865,6 +1865,9 @@ fn save_form(hwnd: HWND) {
         // The GDI form has no controls for the download settings either.
         download_dir: current.download_dir,
         ask_download_location: current.ask_download_location,
+        translate_offer: current.translate_offer,
+        translate_auto: current.translate_auto,
+        translate_target: current.translate_target,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

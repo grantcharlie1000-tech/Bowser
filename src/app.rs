@@ -728,6 +728,8 @@ pub struct App {
     /// Reader theme and size as last reported by the page, passed back in on the next use. Session
     /// only.
     reader_prefs: crate::reader::Prefs,
+    /// Page translation's job and worker bookkeeping; plain data until a translate command runs.
+    translate: page_translate::Runtime,
     /// The downloads list (docs/design/downloads.md, `crate::downloads`): fed by the engine's
     /// download events, read by the chrome bridge through the `downloads_*` methods below.
     downloads: crate::downloads::DownloadManager,
@@ -784,6 +786,9 @@ struct AppTab {
     private: bool,
     /// Reader view: whether the page looks like an article and whether reader view is on.
     reader: crate::reader::TabState,
+    /// Page translation: the page's language, whether it is translated, and the epoch that makes
+    /// work for an earlier document stale (`crate::translate`).
+    translate: crate::translate::TabState,
 }
 
 impl AppTab {
@@ -813,9 +818,13 @@ impl AppTab {
             zoom: crate::site_prefs::ZOOM_DEFAULT,
             load: LoadState::Loaded,
             reader: crate::reader::TabState::default(),
+            translate: crate::translate::TabState::default(),
         }
     }
 }
+
+mod page_translate;
+pub use page_translate::Notice as TranslateNotice;
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -3992,6 +4001,27 @@ impl App {
         true
     }
 
+    /// Settings > Translation: offer to translate pages in other languages.
+    pub fn set_translate_offer(app: &AppRef, on: bool) {
+        app.borrow_mut().settings.translate_offer = on;
+        Self::save_settings(app);
+    }
+
+    /// Settings > Translation: translate sites set to "always translate" without asking.
+    pub fn set_translate_auto(app: &AppRef, on: bool) {
+        app.borrow_mut().settings.translate_auto = on;
+        Self::save_settings(app);
+    }
+
+    /// Settings > Translation: the language pages are translated into (empty: the display language).
+    pub fn set_translate_target(app: &AppRef, target: &str) {
+        let Some(target) = crate::settings::parse_translate_target(target) else {
+            return;
+        };
+        app.borrow_mut().settings.translate_target = target;
+        Self::save_settings(app);
+    }
+
     /// Settings > Downloads > "Ask where to save each file".
     pub fn set_ask_download_location(app: &AppRef, on: bool) {
         app.borrow_mut().settings.ask_download_location = on;
@@ -4191,11 +4221,15 @@ impl App {
             if entry.reader.epoch != epoch {
                 return ReaderResult::Unavailable;
             }
-            let before = entry.reader.pill();
+            let before = (entry.reader.pill(), entry.translate.page_lang);
             entry.reader.busy = false;
             let result = match outcome {
                 None => ReaderResult::Failed,
                 Some(outcome) => {
+                    if outcome.code != Code::Failed {
+                        // The page's language is only used to offer translation.
+                        entry.translate.page_lang = outcome.lang;
+                    }
                     if probe {
                         entry.reader.apply_probe(&outcome);
                     } else {
@@ -4208,10 +4242,14 @@ impl App {
                     }
                 }
             };
-            (hwnd, result, before != entry.reader.pill())
+            (hwnd, result, before != (entry.reader.pill(), entry.translate.page_lang))
         };
         if changed {
             Self::post_tab_changed_kind(hwnd, tab, false, false);
+        }
+        if probe && changed && result != ReaderResult::Failed {
+            // A site set to "always translate" starts now, when its language files are already here.
+            Self::translate_after_probe(app, tab);
         }
         result
     }
@@ -4767,6 +4805,7 @@ impl App {
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
             reader_prefs: crate::reader::Prefs::default(),
+            translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
         }
@@ -5324,6 +5363,7 @@ impl App {
             address_changed: Some(Rc::new(move |tab_id, url| {
                 if let Some(app) = events_app.upgrade() {
                     let mut left_reader = false;
+                    let mut left_translate = false;
                     let (edit, log, active, found) = {
                         let mut state = app.borrow_mut();
                         let active = state.tab_model.active() == tab_id;
@@ -5333,6 +5373,10 @@ impl App {
                                 if tab.url.as_ref().is_some_and(|old| *old != url) {
                                     left_reader = tab.reader.active != crate::reader::Active::Off;
                                     tab.reader.reset();
+                                    // A translated page that changes address in place (a single-page app)
+                                    // keeps its translated text; ask it to put the original back.
+                                    left_translate = tab.translate.active;
+                                    tab.translate.reset();
                                 }
                                 tab.url = Some(url.clone());
                                 true
@@ -5352,6 +5396,9 @@ impl App {
                     }
                     if left_reader {
                         Self::reader_run_exit(&app, tab_id);
+                    }
+                    if left_translate {
+                        Self::translate_run_restore(&app, tab_id);
                     }
                     if active {
                         let main = app.borrow().hwnd;
@@ -5507,6 +5554,9 @@ impl App {
                             // Any navigation, including a reload, ends reader view.
                             left_reader = tab.reader.active != crate::reader::Active::Off;
                             tab.reader.reset();
+                            // The document is being replaced: forget the translation state, which also
+                            // makes any translation still running for the old one stale.
+                            tab.translate.reset();
                         }
                         if left_reader {
                             Self::reader_run_exit(&app, tab_id);
@@ -5714,6 +5764,22 @@ impl App {
                 Some(Rc::new(move |event| {
                     if log.enabled() {
                         let _ = log.record(event);
+                    }
+                }))
+            },
+            translate_worker_message: {
+                let worker_app = Rc::downgrade(app);
+                Some(Rc::new(move |text: String| {
+                    if let Some(app) = worker_app.upgrade() {
+                        App::translate_worker_message(&app, &text);
+                    }
+                }))
+            },
+            translate_worker_failed: {
+                let worker_app = Rc::downgrade(app);
+                Some(Rc::new(move || {
+                    if let Some(app) = worker_app.upgrade() {
+                        App::translate_worker_failed(&app);
                     }
                 }))
             },
@@ -6891,6 +6957,8 @@ mod tests {
     use super::*;
     use crate::engine::MemoryUsageTarget;
     use std::{cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
+
+    mod translate_flow;
 
     #[test]
     fn reader_probe_due_table() {
@@ -8796,6 +8864,7 @@ mod tests {
             words: 900,
             link_percent: 8,
             prefs,
+            lang: crate::translate::Lang::NONE,
         };
         let epoch = App::reader_state(&app, private).expect("reader may script a private tab").epoch;
         let result = App::finish_reader_call(&app, private, epoch, Some(outcome), false);
@@ -9104,6 +9173,7 @@ mod tests {
             site_prefs: None,
             denied: crate::permissions::DeniedLog::default(),
             reader_prefs: crate::reader::Prefs::default(),
+            translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
         }))

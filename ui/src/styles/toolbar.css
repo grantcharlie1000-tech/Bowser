@@ -355,6 +355,15 @@ html[data-scheme="dark"] #app {
   display: none;
 }
 
+/* Translate page: shown only for pages in another language, same slot rules as the reader button. */
+.tb-translate {
+  margin-right: var(--bw-space-0_5);
+}
+
+.tb-translate[hidden] {
+  display: none;
+}
+
 /* Security state: the lock stays neutral, a problem is warm. */
 .pill[data-security="notsecure"] .tb-site,
 .pill[data-security="certproblem"] .tb-site {
@@ -400,7 +409,8 @@ html[data-scheme="dark"] #app {
    site button, never the text field. */
 @container (max-width: 190px) {
   .tb-split,
-  .tb-reader {
+  .tb-reader,
+  .tb-translate {
     display: none;
   }
 }

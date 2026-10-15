@@ -623,7 +623,7 @@ pub fn data_root() -> Option<PathBuf> {
 // WinHTTP (HTTPS only, redirects followed manually and re-validated)
 // ---------------------------------------------------------------------------------------------
 
-mod http {
+pub(crate) mod http {
     use std::ffi::c_void;
 
     use url::{Position, Url};

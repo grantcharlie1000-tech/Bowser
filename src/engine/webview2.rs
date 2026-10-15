@@ -112,6 +112,24 @@ fn run_reader_script(
     script: &str,
     done: Box<dyn FnOnce(Option<String>)>,
 ) {
+    run_capped_script(webview, script, READER_RESULT_LIMIT, done);
+}
+
+/// The same for a page-translation script, whose answer is a batch of text.
+fn run_translate_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    run_capped_script(webview, script, crate::translate::MAX_ANSWER_BYTES, done);
+}
+
+fn run_capped_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    limit: usize,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
     if current_web_url(webview).is_none() {
         done(None);
         return;
@@ -122,7 +140,7 @@ fn run_reader_script(
         let answer = status
             .is_ok()
             .then(|| value.to_string())
-            .filter(|text| text.len() <= READER_RESULT_LIMIT);
+            .filter(|text| text.len() <= limit);
         if let Some(done) = completion.borrow_mut().take() {
             done(answer);
         }
@@ -1178,6 +1196,10 @@ struct EngineCore {
     /// The one open Bowser-hosted extension page (popup or options), if any. Opening another
     /// closes it.
     extension_page: Option<super::extension_page::HostedPage>,
+    /// The hidden translation worker page, while one is running (see `translate_worker`).
+    translate_worker: Option<super::translate_worker::Worker>,
+    /// A worker page is being created.
+    translate_worker_starting: bool,
 }
 
 /// Completion for an extension operation. It runs once, on the UI thread.
@@ -2473,6 +2495,8 @@ impl WebView2Engine {
                         permissions: permissions.clone(),
                         chrome_ui_scheme: chrome_ui_scheme_env.get(),
                         extension_page: None,
+                        translate_worker: None,
+                        translate_worker_starting: false,
                     })),
                 };
                 if let Some(f) = completion_env.borrow_mut().take() {
@@ -2871,6 +2895,114 @@ impl EngineAdapter for WebView2Engine {
         match webview {
             Some(webview) => run_reader_script(&webview, script, done),
             None => done(None),
+        }
+    }
+    fn run_translate_script(
+        &mut self,
+        tab: TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_translate_script(&webview, script, done),
+            None => done(None),
+        }
+    }
+    fn translate_worker_open(&mut self, root: &Path) -> bool {
+        let (environment, parent, events) = {
+            let state = self.core.borrow();
+            if state.closed {
+                return false;
+            }
+            if state.translate_worker.is_some() || state.translate_worker_starting {
+                return true;
+            }
+            (state.environment.clone(), state.parent, state.events.clone())
+        };
+        let Some(environment) = environment else {
+            return false;
+        };
+        self.core.borrow_mut().translate_worker_starting = true;
+        let weak = Rc::downgrade(&self.core);
+        let on_message: Rc<dyn Fn(String)> = {
+            let events = events.clone();
+            Rc::new(move |text| {
+                if let Some(callback) = events.translate_worker_message.clone() {
+                    callback(text);
+                }
+            })
+        };
+        let on_failed: Rc<dyn Fn()> = {
+            let (weak, events) = (weak.clone(), events.clone());
+            Rc::new(move || {
+                // A failed worker is closed and forgotten; the app learns of it and stops waiting.
+                let worker = weak.upgrade().and_then(|core| core.borrow_mut().translate_worker.take());
+                if let Some(worker) = worker {
+                    worker.close();
+                }
+                if let Some(callback) = events.translate_worker_failed.clone() {
+                    callback();
+                }
+            })
+        };
+        // A failure that is reported before `open` returns is the caller's `false`, not an event:
+        // the app is mid-call here and must not be re-entered.
+        let in_call = Rc::new(Cell::new(true));
+        let failed_now = Rc::new(Cell::new(false));
+        let failed_to_start = events.translate_worker_failed.clone();
+        let (done_in_call, done_failed_now) = (in_call.clone(), failed_now.clone());
+        super::translate_worker::open(
+            &environment,
+            parent,
+            root,
+            on_message,
+            on_failed,
+            Box::new(move |result| {
+                let Some(core) = weak.upgrade() else {
+                    if let Ok(worker) = result {
+                        worker.close();
+                    }
+                    return;
+                };
+                core.borrow_mut().translate_worker_starting = false;
+                match result {
+                    Ok(worker) if !core.borrow().closed => core.borrow_mut().translate_worker = Some(worker),
+                    Ok(worker) => worker.close(),
+                    Err(_) if done_in_call.get() => done_failed_now.set(true),
+                    Err(_) => {
+                        if let Some(callback) = failed_to_start {
+                            callback();
+                        }
+                    }
+                }
+            }),
+        );
+        in_call.set(false);
+        if failed_now.get() {
+            return false;
+        }
+        true
+    }
+    fn translate_worker_running(&self) -> bool {
+        self.core.borrow().translate_worker.is_some()
+    }
+    fn translate_worker_post(&mut self, json: &str) -> bool {
+        self.core.borrow().translate_worker.as_ref().is_some_and(|worker| worker.post(json))
+    }
+    fn translate_worker_close(&mut self) {
+        let worker = {
+            let mut state = self.core.borrow_mut();
+            state.translate_worker_starting = false;
+            state.translate_worker.take()
+        };
+        if let Some(worker) = worker {
+            worker.close();
         }
     }
     fn picture_in_picture_eligible(&mut self, tab: TabId, done: Box<dyn FnOnce(bool)>) {
@@ -3333,6 +3465,7 @@ impl EngineAdapter for WebView2Engine {
         }
     }
     fn close(&mut self) -> Result<()> {
+        self.translate_worker_close();
         let page = self.core.borrow_mut().extension_page.take();
         if let Some(page) = page {
             page.close();
@@ -6295,6 +6428,8 @@ mod tests {
             permissions: None,
             chrome_ui_scheme: false,
             extension_page: None,
+            translate_worker: None,
+            translate_worker_starting: false,
         }));
         let mut engine = WebView2Engine { core: core.clone() };
         // On minimize, set_visible(false) is called on the engine:

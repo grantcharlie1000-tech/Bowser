@@ -122,6 +122,7 @@ pub fn browser_commands() -> CommandRegistry {
         ("Extensions", "Manage installed extensions", "extensions"),
         ("Reader view", "Read this page without the clutter", "reader"),
         ("Hide distractions", "Hide overlays, cookie banners and sticky bars", "calm"),
+        ("Translate page", "Translate this page on this device, or show the original", "translate"),
     ] {
         commands.register(label, detail, action);
     }

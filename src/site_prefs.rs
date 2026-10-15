@@ -1,5 +1,5 @@
-//! Per-site preferences, keyed by origin like [`crate::permissions`]. Today that is the page zoom;
-//! the line format has a field name so later preferences can share the file.
+//! Per-site preferences, keyed by origin like [`crate::permissions`]. Today that is the page zoom and
+//! the translation choice; the line format has a field name so later preferences can share the file.
 //!
 //! Pure logic and file I/O only. The file is `site-prefs.txt` in the profile directory, one value
 //! per line:
@@ -7,11 +7,12 @@
 //! ```text
 //! https://docs.example zoom 125
 //! http://localhost:8080 zoom 80
+//! https://lemonde.fr translate always
 //! ```
 //!
 //! Each line is `<origin> <field> <value>`. The origin is the page's scheme, host and port (default
 //! port dropped). A zoom of 100 is the default and is never stored. Blank lines, `#` comments,
-//! unknown fields and malformed lines are ignored, and the file is capped at [`MAX_FILE_BYTES`].
+//! unknown fields, unknown values and malformed lines are ignored, and the file is capped at [`MAX_FILE_BYTES`].
 //! Guest sessions use [`SitePrefsStore::in_memory`], which never touches the disk.
 
 use std::{
@@ -38,7 +39,7 @@ pub const ZOOM_STEPS: [u16; 17] = [
 ];
 
 const HEADER: &str = "# Bowser per-site preferences: <origin> <field> <value>.\n\
-# Fields: zoom (percent, 25 to 500). A site without a line uses the defaults.\n";
+# Fields: zoom (percent, 25 to 500), translate (always or never). A site without a line uses the defaults.\n";
 
 /// The next zoom level above `percent`, or the maximum. Works from any value, not just a step.
 pub fn zoom_in(percent: u16) -> u16 {
@@ -95,15 +96,42 @@ pub fn factor_of_percent(percent: u16) -> f64 {
 /// The store shared between the app (zoom commands, navigation commits) and the user interface.
 pub type SitePrefsHandle = std::rc::Rc<std::cell::RefCell<SitePrefsStore>>;
 
+/// A site's page-translation choice. No stored value means "follow the global setting".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteTranslate {
+    /// Translate pages from this site automatically (when the global automatic setting allows it).
+    Always,
+    /// Never offer to translate this site.
+    Never,
+}
+
+impl SiteTranslate {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "always" => Some(Self::Always),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
 /// What is stored for one site. Every field is optional: `None` means the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SitePrefs {
     pub zoom: Option<u16>,
+    pub translate: Option<SiteTranslate>,
 }
 
 impl SitePrefs {
     fn is_default(self) -> bool {
-        self.zoom.is_none()
+        self.zoom.is_none() && self.translate.is_none()
     }
 }
 
@@ -159,15 +187,39 @@ impl SitePrefsStore {
         let wanted = percent
             .map(|value| value.clamp(ZOOM_MIN, ZOOM_MAX))
             .filter(|value| *value != ZOOM_DEFAULT);
+        self.update(origin, |prefs| {
+            let changed = prefs.zoom != wanted;
+            prefs.zoom = wanted;
+            changed
+        })
+    }
+
+    /// The stored translation choice for an origin, or `None` to follow the global setting.
+    pub fn translate(&self, origin: &str) -> Option<SiteTranslate> {
+        self.sites.get(origin)?.translate
+    }
+
+    /// Stores (or with `None` clears) the translation choice for one origin, then saves. On a failed
+    /// save the previous value is restored. The app never calls this for a private tab.
+    pub fn set_translate(&mut self, origin: &str, choice: Option<SiteTranslate>) -> io::Result<()> {
+        self.update(origin, |prefs| {
+            let changed = prefs.translate != choice;
+            prefs.translate = choice;
+            changed
+        })
+    }
+
+    /// Applies `change` to one origin's preferences and saves. `change` returns whether it altered
+    /// anything. A failed save puts the previous value back.
+    fn update(&mut self, origin: &str, change: impl FnOnce(&mut SitePrefs) -> bool) -> io::Result<()> {
         let previous = self.sites.get(origin).copied();
-        if previous.and_then(|prefs| prefs.zoom) == wanted {
+        let mut next = previous.unwrap_or_default();
+        if !change(&mut next) {
             return Ok(());
         }
-        if previous.is_none() && wanted.is_some() && self.sites.len() >= MAX_SITES {
+        if previous.is_none() && !next.is_default() && self.sites.len() >= MAX_SITES {
             return Err(io::Error::other("too many sites with stored preferences"));
         }
-        let mut next = previous.unwrap_or_default();
-        next.zoom = wanted;
         self.write(origin, next);
         if let Err(error) = self.save() {
             match previous {
@@ -236,6 +288,15 @@ fn parse(text: &str) -> Sites {
                 }
                 sites.entry(origin).or_default().zoom = Some(zoom);
             }
+            "translate" => {
+                let Some(choice) = SiteTranslate::parse(value) else {
+                    continue;
+                };
+                if !sites.contains_key(&origin) && sites.len() >= MAX_SITES {
+                    break;
+                }
+                sites.entry(origin).or_default().translate = Some(choice);
+            }
             _ => continue,
         }
     }
@@ -247,6 +308,9 @@ fn serialise(sites: &Sites) -> String {
     for (origin, prefs) in sites {
         if let Some(zoom) = prefs.zoom {
             text.push_str(&format!("{origin} zoom {zoom}\n"));
+        }
+        if let Some(choice) = prefs.translate {
+            text.push_str(&format!("{origin} translate {}\n", choice.key()));
         }
     }
     text
@@ -371,9 +435,9 @@ mod tests {
     #[test]
     fn serialise_round_trips_and_is_sorted() {
         let mut sites = Sites::new();
-        sites.insert("https://z.test".to_owned(), SitePrefs { zoom: Some(80) });
-        sites.insert("https://a.test:8443".to_owned(), SitePrefs { zoom: Some(175) });
-        sites.insert("https://none.test".to_owned(), SitePrefs { zoom: None });
+        sites.insert("https://z.test".to_owned(), SitePrefs { zoom: Some(80), translate: None });
+        sites.insert("https://a.test:8443".to_owned(), SitePrefs { zoom: Some(175), translate: None });
+        sites.insert("https://none.test".to_owned(), SitePrefs { zoom: None, translate: None });
         let text = serialise(&sites);
         assert!(text.ends_with("https://a.test:8443 zoom 175\nhttps://z.test zoom 80\n"), "{text}");
         let parsed = parse(&text);
@@ -475,5 +539,55 @@ mod tests {
         store.set_zoom("https://site0.test", Some(200)).unwrap();
         store.set_zoom("https://site1.test", None).unwrap();
         assert_eq!(store.len(), MAX_SITES - 1);
+    }
+
+    #[test]
+    fn translate_lines_round_trip_and_coexist_with_zoom() {
+        let path = temp_file("translate");
+        {
+            let mut store = SitePrefsStore::load(&path);
+            store.set_translate("https://lemonde.fr", Some(SiteTranslate::Always)).unwrap();
+            store.set_translate("https://a.test", Some(SiteTranslate::Never)).unwrap();
+            store.set_zoom("https://a.test", Some(125)).unwrap();
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("https://lemonde.fr translate always\n"), "{text}");
+        assert!(text.contains("https://a.test translate never\n"), "{text}");
+        let reloaded = SitePrefsStore::load(&path);
+        assert_eq!(reloaded.translate("https://lemonde.fr"), Some(SiteTranslate::Always));
+        assert_eq!(reloaded.translate("https://a.test"), Some(SiteTranslate::Never));
+        assert_eq!(reloaded.zoom("https://a.test"), Some(125));
+        assert_eq!(reloaded.translate("https://other.test"), None);
+        assert_eq!(reloaded.len(), 2);
+    }
+
+    #[test]
+    fn unknown_translate_values_are_ignored_and_clearing_removes_the_line() {
+        let sites = parse(
+            "https://a.test translate maybe\n\
+             https://b.test translate ALWAYS\n\
+             https://c.test translate always extra\n\
+             https://d.test translate never\n",
+        );
+        assert_eq!(sites.len(), 1, "{sites:?}");
+        assert_eq!(sites["https://d.test"].translate, Some(SiteTranslate::Never));
+
+        let mut store = SitePrefsStore::in_memory();
+        store.set_translate("https://a.test", Some(SiteTranslate::Always)).unwrap();
+        store.set_translate("https://a.test", None).unwrap();
+        assert!(store.is_empty());
+        // Clearing one field keeps the other.
+        store.set_zoom("https://a.test", Some(150)).unwrap();
+        store.set_translate("https://a.test", Some(SiteTranslate::Never)).unwrap();
+        store.set_zoom("https://a.test", None).unwrap();
+        assert_eq!(store.translate("https://a.test"), Some(SiteTranslate::Never));
+    }
+
+    #[test]
+    fn an_in_memory_store_never_writes_translate_choices_either() {
+        let mut store = SitePrefsStore::in_memory();
+        store.set_translate("https://a.test", Some(SiteTranslate::Always)).unwrap();
+        assert!(!store.persists());
+        assert_eq!(store.translate("https://a.test"), Some(SiteTranslate::Always));
     }
 }

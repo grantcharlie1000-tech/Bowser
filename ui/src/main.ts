@@ -103,6 +103,7 @@ function startToolbar(root: HTMLElement): void {
   view.split.addEventListener('click', () => open('split'));
   view.zoom.addEventListener('click', () => open('zoomreset'));
   view.reader.addEventListener('click', () => open('reader'));
+  view.translate.addEventListener('click', () => open('translate'));
   view.menu.addEventListener('click', () => open('menu'));
   view.downloads.button.addEventListener('click', () => { sendDownloadToggle(view.downloads.button.getBoundingClientRect()); });
   view.extensions.button.addEventListener('click', () => { sendExtensionsButton(view.extensions.button.getBoundingClientRect()); });

@@ -176,7 +176,13 @@
   var th = TH.indexOf(o.t) < 0 ? 'auto' : o.t, fs = Math.min(30, Math.max(14, (o.s | 0) || 19));
   if (!(cur && (cur.m === 'reader' || cur.m === 'calm') && typeof cur.fs === 'number')) cur = null;
   if (cur) { th = cur.th; fs = cur.fs; }
-  function res(code, st, w, l) { return 'r1|' + code + '|' + (st ? st.m : 'off') + '|' + (w | 0) + '|' + (l | 0) + '|' + th + '|' + fs; }
+  // The page's language, for offering translation: lang (or the content-language meta) cut to 2-3 letters.
+  function lang() {
+    var l = at(de, 'lang'), m = !l && q(D, 'meta[http-equiv=content-language]')[0];
+    l = (l || (m ? at(m, 'content') : '')).split(/[-_,\s]/)[0].toLowerCase();
+    return /^[a-z]{2,3}$/.test(l) ? l : '';
+  }
+  function res(code, st, w, l) { return 'r2|' + code + '|' + (st ? st.m : 'off') + '|' + (w | 0) + '|' + (l | 0) + '|' + th + '|' + fs + '|' + lang(); }
   try {
     if (a === 'test') return { find: find, words: words, bad: bad };
     if (a === 'probe') {

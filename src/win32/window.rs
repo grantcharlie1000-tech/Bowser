@@ -3795,6 +3795,26 @@ unsafe extern "system" fn window_proc(
                 if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
                 LRESULT(0)
             }
+            super::WM_TRANSLATE_PACK => {
+                if let Some(app) = app {
+                    App::translate_pack_done(app, wparam.0 as u32, lparam.0);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == super::WM_TRANSLATE_IDLE_TIMER => {
+                let _ = KillTimer(Some(hwnd), super::WM_TRANSLATE_IDLE_TIMER);
+                if let Some(app) = app {
+                    App::translate_idle_timer(app);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == super::WM_TRANSLATE_WATCH_TIMER => {
+                let _ = KillTimer(Some(hwnd), super::WM_TRANSLATE_WATCH_TIMER);
+                if let Some(app) = app {
+                    App::translate_watch_timer(app);
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == super::WM_READER_PROBE_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_READER_PROBE_TIMER);
                 if let Some(app) = app {
@@ -4496,6 +4516,7 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         show_zoom: false,
         private: false,
         reader: crate::reader::Pill::Hidden,
+        translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
         theme: chrome_host::theme_tokens(&palette),
@@ -5896,6 +5917,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const TAB_GROUPS_MENU: usize = 5045;
     const ZOOM_MENU: usize = 5046;
     const DOWNLOADS: usize = 5047;
+    const TRANSLATE: usize = 5048;
+    const TRANSLATE_ALWAYS_SITE: usize = 5049;
+    const TRANSLATE_NEVER_SITE: usize = 5050;
 
     let profiles = ProfileMenu::load(hwnd);
     let recent: Vec<(String, String)> = App::recently_closed(app)
@@ -6042,11 +6066,21 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             .checked(reading == crate::reader::Active::Reader)
             .disabled_if(!readable),
     ));
+    // Translation reads the display language (once) only because a person opened this menu.
+    let translatable = App::translate_available(app, reading_tab);
+    let translated = App::translate_active(app, reading_tab);
+    let translate_private = App::tab_private(app, reading_tab);
+    let translate_site = App::translate_site_choice(app, reading_tab);
+    entries.push(Entry::Item(
+        Item::new(TRANSLATE, App::translate_command_label(app, reading_tab), Icon::Info)
+            .glyph("translate")
+            .checked(translated)
+            .disabled_if(!translatable),
+    ));
     // Page tools and rarely used windows live one level down so the menu stays short. Settings
     // (the profile, import, privacy dashboard and update rows) is the page they moved to.
     let guest = crate::profile::active().is_ok_and(|profile| profile.is_guest());
-    entries.push(Entry::Item(
-        Item::new(MORE_TOOLS, "More tools", Icon::Grid).glyph("more").submenu_with(vec![
+    let mut more_tools = vec![
             Entry::Item(Item::new(NOTES, "Notes & Tasks…", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
             Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
             Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check).glyph("folder").disabled_if(guest)),
@@ -6060,7 +6094,23 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
             Entry::Item(Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key).glyph("key").shortcut("Ctrl+,").disabled_if(guest)),
             Entry::Item(Item::new(DEVTOOLS, "Developer tools", Icon::Info).glyph("workspace-code").shortcut("F12")),
-        ]),
+    ];
+    if !translate_private {
+        more_tools.push(Entry::Separator);
+        more_tools.push(Entry::Item(
+            Item::new(TRANSLATE_ALWAYS_SITE, "Always translate this site", Icon::None)
+                .glyph("translate")
+                .checked(translate_site == Some(crate::site_prefs::SiteTranslate::Always))
+                .disabled_if(!translatable),
+        ));
+        more_tools.push(Entry::Item(
+            Item::new(TRANSLATE_NEVER_SITE, "Never offer to translate this site", Icon::None)
+                .checked(translate_site == Some(crate::site_prefs::SiteTranslate::Never))
+                .disabled_if(!translatable),
+        ));
+    }
+    entries.push(Entry::Item(
+        Item::new(MORE_TOOLS, "More tools", Icon::Grid).glyph("more").submenu_with(more_tools),
     ));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
@@ -6188,6 +6238,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             WORKSPACES => show_workspaces_menu(hwnd, app),
             READER => run_reader(hwnd, app, crate::reader::Mode::Reader),
             CALM => run_reader(hwnd, app, crate::reader::Mode::Calm),
+            TRANSLATE => run_translate(hwnd, app, TranslateAction::Toggle),
+            TRANSLATE_ALWAYS_SITE => run_translate(hwnd, app, TranslateAction::Site(crate::site_prefs::SiteTranslate::Always)),
+            TRANSLATE_NEVER_SITE => run_translate(hwnd, app, TranslateAction::Site(crate::site_prefs::SiteTranslate::Never)),
             EXTENSIONS => show_extensions_menu(hwnd, app),
             DEVTOOLS => App::open_dev_tools(app),
             PASSWORDS => {
@@ -6492,6 +6545,7 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
         "extensions" => show_extensions_menu(hwnd, app),
         "reader" => run_reader(hwnd, app, crate::reader::Mode::Reader),
         "calm" => run_reader(hwnd, app, crate::reader::Mode::Calm),
+        "translate" => run_translate(hwnd, app, TranslateAction::Toggle),
         _ => {}
     }
 }
@@ -6538,6 +6592,112 @@ fn run_reader(hwnd: HWND, app: &AppRef, mode: crate::reader::Mode) {
             html_sync(hwnd);
         }),
     );
+}
+
+/// What a translate command asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranslateAction {
+    /// Translate the active page, or show its original if it is translated.
+    Toggle,
+    /// Set (or, if already set, clear) the site's "always" or "never" choice.
+    Site(crate::site_prefs::SiteTranslate),
+}
+
+/// A passive message in the same place reader view uses.
+fn show_translate_toast(hwnd: HWND, message: String) {
+    menu::show(
+        hwnd,
+        screen_point(hwnd, main_menu_anchor(hwnd)),
+        menu::Placement::AboveLeft,
+        Menu {
+            header: None,
+            entries: vec![Entry::Item(Item::new(0, message, Icon::Info).glyph("translate").disabled())],
+            footer: "Translate".into(),
+        },
+        "translate-toast",
+        |_, _| {},
+    );
+}
+
+/// The words for what a translation did, when it deserves any. A finished translation, and showing
+/// the original, are visible on the page and need none.
+fn translate_message(notice: &crate::app::TranslateNotice, available: bool) -> Option<String> {
+    use crate::app::TranslateNotice as N;
+    let megabytes = |bytes: u64| bytes.div_ceil(1024 * 1024);
+    match notice {
+        N::Downloading { from, to, bytes } => Some(format!("Downloading {from} to {to} language files (about {} MB)…", megabytes(*bytes))),
+        N::Unavailable if !available => Some("Translation works on web pages".to_owned()),
+        N::Unavailable => Some("Translation is already working on this page".to_owned()),
+        N::Busy => Some("Another page is being translated".to_owned()),
+        N::NoLanguage => Some("This page does not say what language it is in".to_owned()),
+        N::SameLanguage => Some("This page is already in your language".to_owned()),
+        N::NoRoute { from, to } => Some(format!("Translating {from} to {to} is not available yet")),
+        N::NothingToTranslate => Some("No text to translate on this page".to_owned()),
+        N::DownloadFailed => Some("The language files could not be downloaded. Try again later".to_owned()),
+        N::Failed => Some("This page could not be translated".to_owned()),
+        N::NeedsConfirm { .. } | N::Done | N::Restored => None,
+    }
+}
+
+/// Starts or reverses translation of the active page. Shared by the toolbar button, the main menu and
+/// the command palette. It runs on request only. A private tab is asked before language files are
+/// downloaded; text from the page never leaves the machine either way.
+fn run_translate(hwnd: HWND, app: &AppRef, action: TranslateAction) {
+    let tab = App::active_tab_id(app);
+    match action {
+        TranslateAction::Toggle => start_translate(hwnd, app, tab, false),
+        TranslateAction::Site(choice) => {
+            // Choosing again clears it. Nothing is stored from a private tab, which has no such menu row.
+            let wanted = (App::translate_site_choice(app, tab) != Some(choice)).then_some(choice);
+            if !App::translate_set_site(app, tab, wanted) {
+                show_translate_toast(hwnd, "This choice could not be saved".to_owned());
+                return;
+            }
+            if wanted == Some(crate::site_prefs::SiteTranslate::Always) && !App::translate_active(app, tab) {
+                start_translate(hwnd, app, tab, false);
+            }
+            let _ = with_chrome(hwnd, |s| s.refresh(app, false));
+            html_sync(hwnd);
+        }
+    }
+}
+
+fn start_translate(hwnd: HWND, app: &AppRef, tab: TabId, confirmed: bool) {
+    use crate::app::TranslateNotice as N;
+    let app_handle = app.clone();
+    let notify: std::rc::Rc<dyn Fn(N)> = std::rc::Rc::new(move |notice| {
+        if let N::NeedsConfirm { from, to, bytes } = &notice {
+            // A private tab asks first. Only file names on Bowser's own list go over the network.
+            let label = format!("Download {from} to {to} language files (about {} MB)", bytes.div_ceil(1024 * 1024));
+            let again = app_handle.clone();
+            menu::show(
+                hwnd,
+                screen_point(hwnd, main_menu_anchor(hwnd)),
+                menu::Placement::AboveLeft,
+                Menu {
+                    header: None,
+                    entries: vec![
+                        Entry::Item(Item::new(1, label, Icon::Check).glyph("download")),
+                        Entry::Item(Item::new(0, "Not now", Icon::None)),
+                    ],
+                    footer: "Translate privately on this device".into(),
+                },
+                "translate-confirm",
+                move |_, selected| {
+                    if selected.is_some_and(|item| item.id == 1) {
+                        start_translate(hwnd, &again, tab, true);
+                    }
+                },
+            );
+            return;
+        }
+        if let Some(message) = translate_message(&notice, App::translate_available(&app_handle, tab)) {
+            show_translate_toast(hwnd, message);
+        }
+        let _ = with_chrome(hwnd, |s| s.refresh(&app_handle, false));
+        html_sync(hwnd);
+    });
+    App::translate_toggle(app, tab, confirmed, notify);
 }
 
 fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
@@ -7875,6 +8035,7 @@ fn html_sync(hwnd: HWND) {
         show_zoom: settings.show_zoom_indicator,
         private: App::tab_private(&app, id),
         reader: App::active_reader_pill(&app),
+        translate: App::active_translate_pill(&app),
         font_scale: settings.font_size.scale_percent(),
         ui_font: settings.ui_font.clone(),
         theme: chrome_host::theme_tokens(&palette),
@@ -8157,6 +8318,12 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 App::focus_page(&app);
             }
         }
+        ChromeCommand::Open(OpenTarget::Translate) => {
+            // The toolbar button: translates the page, or shows the original. It opens no menu.
+            if let Some(app) = app_of(hwnd) {
+                run_translate(hwnd, &app, TranslateAction::Toggle);
+            }
+        }
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
@@ -8266,6 +8433,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         show_zoom: false,
         private: false,
         reader: crate::reader::Pill::Hidden,
+        translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
         theme: chrome_host::theme_tokens(&palette),
@@ -8711,6 +8879,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         show_zoom: settings.show_zoom_indicator,
         private: App::tab_private(&app, id),
         reader: crate::reader::Pill::Hidden,
+        translate: crate::translate::Pill::Hidden,
         font_scale: settings.font_size.scale_percent(),
         ui_font: settings.ui_font.clone(),
         theme: chrome_host::theme_tokens(&palette),

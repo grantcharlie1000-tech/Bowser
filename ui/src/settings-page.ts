@@ -17,7 +17,7 @@ import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SECTIONS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
-  saveText, sleepOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
+  saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SearchEngine, type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
 } from './settings-page-logic';
 
@@ -527,6 +527,37 @@ export function startSettingsPage(root: HTMLElement): void {
   const zoomIndicator = switchControl((on) => change((d) => { d.showZoomIndicator = on; }));
   row(zoomCard, 'showZoomIndicator', zoomIndicator.root);
 
+  // Translation: each control is its own command, applied at once and never part of `save`.
+  const translateCard = card('appearance', 'Translation');
+  const translateOffer = switchControl((on) => { if (cmd({ a: 'translateoffer', on })) pending += 1; });
+  row(translateCard, 'translateOffer', translateOffer.root);
+  const translateAuto = switchControl((on) => { if (cmd({ a: 'translateauto', on })) pending += 1; });
+  row(translateCard, 'translateAuto', translateAuto.root);
+  const translateHost = el('div', 'sp-select-host');
+  let translateSelect: SelectField<string> | null = null;
+  let translateChoices = '';
+  const paintTranslateSelect = (target: string, codes: readonly string[]): void => {
+    const key = codes.join(',');
+    if (!translateSelect || key !== translateChoices) {
+      translateChoices = key;
+      translateSelect?.close();
+      translateSelect = selectField<string>({
+        options: translateTargetOptions(codes),
+        value: target,
+        label: 'Translate into',
+        placeholder: 'Translate into',
+        onChange: (next) => { if (cmd({ a: 'translatetarget', text: next })) pending += 1; },
+      });
+      const rowNode = rows.get('translateTarget');
+      translateSelect.button.setAttribute('aria-labelledby', 'sp-l-translateTarget');
+      if (rowNode?.desc) translateSelect.button.setAttribute('aria-describedby', rowNode.desc.id);
+      translateHost.replaceChildren(translateSelect.root);
+    } else {
+      translateSelect.set(target);
+    }
+  };
+  row(translateCard, 'translateTarget', translateHost);
+
   // Shortcuts
   const shortcutsCard = card('appearance', 'Shortcuts');
   const shiftRightClick = switchControl((on) => change((d) => { d.shiftRightClickContext = on; }));
@@ -892,6 +923,9 @@ export function startSettingsPage(root: HTMLElement): void {
     customNote.hidden = !(d.searchEngine === null && s.searchFallback === 'custom');
     downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Your Downloads folder';
     downloadAsk.set(s.downloadAsk);
+    translateOffer.set(s.translateOffer);
+    translateAuto.set(s.translateAuto);
+    paintTranslateSelect(s.translateTarget, s.translateTargets);
     autoUpdate.set(s.autoUpdate);
     autoUpdate.disable(s.update === 'unavailable');
     const view = updateView(s);
@@ -917,6 +951,9 @@ export function startSettingsPage(root: HTMLElement): void {
       ...toolbarSwitches.values(),
     ]) control.disable(!s.readable);
     downloadAsk.disable(!s.readable);
+    translateOffer.disable(!s.readable);
+    translateAuto.disable(!s.readable);
+    translateSelect?.button.toggleAttribute('disabled', !s.readable);
     downloadChange.disabled = !s.readable;
     width.disabled = !s.readable;
     allowInput.disabled = !s.readable;

@@ -1,5 +1,5 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
-import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken } from './protocol';
+import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken, type TranslatePill } from './protocol';
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
@@ -16,6 +16,8 @@ export interface View {
   readonly zoom: HTMLButtonElement;
   /** Reader view: shown only when the page looks like an article, pressed while it is on. */
   readonly reader: HTMLButtonElement;
+  /** Translate page: shown only when the page is in another language, pressed while the translation is on. */
+  readonly translate: HTMLButtonElement;
   readonly input: HTMLInputElement;
   /** Unfocused URL rendering with the host emphasised; visual only, aria-hidden. */
   readonly display: HTMLElement;
@@ -117,6 +119,8 @@ export function buildView(root: HTMLElement): View {
   zoom.hidden = true;
   const reader = iconButton('Reader view', 'reader', 'tb-reader bw-focus-inset is-round', 'Reader view (Ctrl+Alt+R)');
   reader.hidden = true;
+  const translate = iconButton('Translate page', 'translate', 'tb-translate bw-focus-inset is-round', 'Translate this page');
+  translate.hidden = true;
 
   const input = el('input', 'omni');
   input.type = 'text';
@@ -148,7 +152,7 @@ export function buildView(root: HTMLElement): View {
   privateChip.append(icon('private', { size: 14 }), privateText);
 
   const pill = el('div', 'pill');
-  pill.append(site, field, privateChip, zoom, reader, split, progress);
+  pill.append(site, field, privateChip, zoom, reader, translate, split, progress);
 
   // Three dots (menu-dots, drawn at 24px by toolbar.css .tb-menu); each is its own <circle>, so
   // they can ripple.
@@ -174,7 +178,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, reader, input, display, pill, progress, privateChip, menu, downloads, extensions };
+  return { back, forward, reload, site, split, zoom, reader, translate, input, display, pill, progress, privateChip, menu, downloads, extensions };
 }
 
 // ---- Extensions button (docs/extensions.md "Managing extensions", styles in toolbar.css) ----
@@ -406,6 +410,14 @@ export function applyReader(button: HTMLButtonElement, pill: ReaderPill): void {
   else label(button, 'Reader view', 'Reader view (Ctrl+Alt+R)');
 }
 
+/** Shows the translate button only when the page can be translated (or while the translation is on). */
+export function applyTranslate(button: HTMLButtonElement, pill: TranslatePill): void {
+  button.hidden = pill === 'none';
+  button.setAttribute('aria-pressed', String(pill === 'on'));
+  if (pill === 'on') label(button, 'Show original', 'Show the original page');
+  else label(button, 'Translate page', 'Translate this page');
+}
+
 /** The menu button while the main menu is up (Rust `menuOpen`): the pressed bubble and spread dots. */
 export function applyMenuOpen(button: HTMLButtonElement, open: boolean): void {
   button.setAttribute('aria-expanded', String(open));
@@ -444,6 +456,7 @@ export function applyState(view: View, state: StateMsg): void {
   }
   if (state.split !== undefined) view.split.setAttribute('aria-pressed', String(state.split)); // --- omnibox suggest ---
   applyReader(view.reader, state.reader ?? 'none');
+  applyTranslate(view.translate, state.translate ?? 'none');
   view.back.disabled = !state.back;
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);

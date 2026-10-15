@@ -652,6 +652,18 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             App::set_ask_download_location(app, on);
             answer(owner, Ok(()));
         }
+        Action::TranslateOffer(on) => {
+            App::set_translate_offer(app, on);
+            answer(owner, Ok(()));
+        }
+        Action::TranslateAuto(on) => {
+            App::set_translate_auto(app, on);
+            answer(owner, Ok(()));
+        }
+        Action::TranslateTarget(target) => {
+            App::set_translate_target(app, &target);
+            answer(owner, Ok(()));
+        }
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.

@@ -1,6 +1,7 @@
 pub mod download;
 pub mod web_app;
 mod extension_page;
+mod translate_worker;
 mod webview2;
 #[cfg(test)]
 mod extension_probe_live;
@@ -82,6 +83,34 @@ pub trait EngineAdapter {
     ) {
         done(None);
     }
+    /// Runs one page-translation script (see `crate::translate`) in a tab and hands back its raw
+    /// result, under the same rules as `run_reader_script` (http(s) pages only, checked at the moment
+    /// of the call) but with a larger answer limit, because the answer carries a batch of text.
+    fn run_translate_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Starts the hidden translation worker page from the folder `root` (which already holds
+    /// `worker.html`), unless it is running or starting. `false` when it cannot be started at all.
+    /// The worker's messages arrive through `EngineEvents::translate_worker_message`. Only a
+    /// translate command ever calls this.
+    fn translate_worker_open(&mut self, _root: &std::path::Path) -> bool {
+        false
+    }
+    /// Whether the worker page is running and can take a message.
+    fn translate_worker_running(&self) -> bool {
+        false
+    }
+    /// Sends one JSON message to the worker page. `false` when there is no running worker.
+    fn translate_worker_post(&mut self, _json: &str) -> bool {
+        false
+    }
+    /// Closes the worker page and its renderer. Safe when there is none.
+    fn translate_worker_close(&mut self) {}
     /// Checks for a visible, currently playing video without installing page scripts or polling.
     fn picture_in_picture_eligible(
         &mut self,
@@ -339,6 +368,11 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    /// A message from the translation worker page (raw JSON text, already limited to the worker's
+    /// own origin and size; see `crate::translate::parse_worker_message`).
+    pub translate_worker_message: Option<std::rc::Rc<dyn Fn(String)>>,
+    /// The translation worker page's process failed (it is already closed) or could not start.
+    pub translate_worker_failed: Option<std::rc::Rc<dyn Fn()>>,
     /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
