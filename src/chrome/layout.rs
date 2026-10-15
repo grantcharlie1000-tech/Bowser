@@ -438,6 +438,96 @@ pub fn split_pane_layout(
     })
 }
 
+/// The stacked form of [`split_pane_layout`]: `left` is the top page, `right` the bottom page and
+/// `divider` the horizontal gap between them, whose top edge is `divider_top` clamped so both pages
+/// keep at least `min_pane_height` pixels. `None` when the content is too short for two pages.
+pub fn split_pane_layout_stacked(
+    content: Rect,
+    divider_top: i32,
+    min_pane_height: i32,
+    divider_height: i32,
+) -> Option<SplitPaneLayout> {
+    let min_pane_height = min_pane_height.max(1);
+    let divider_height = divider_height.max(1);
+    let min_top = content.top.saturating_add(min_pane_height);
+    let max_top = content
+        .bottom
+        .saturating_sub(min_pane_height.saturating_add(divider_height));
+    if max_top < min_top || content.right <= content.left {
+        return None;
+    }
+    let divider_top = divider_top.clamp(min_top, max_top);
+    let divider_bottom = divider_top.saturating_add(divider_height);
+    Some(SplitPaneLayout {
+        left: Rect::new(content.left, content.top, content.right, divider_top),
+        divider: Rect::new(content.left, divider_top, content.right, divider_bottom),
+        right: Rect::new(content.left, divider_bottom, content.right, content.bottom),
+    })
+}
+
+/// A shown split of two to four panes as the overlay draws it (`split_view::geometry` in [`Rect`]s).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SplitPanes {
+    /// Each shown pane by `split_view::Pane::index`; a pane hidden by the collapse rule has none.
+    pub panes: [Option<Rect>; 4],
+    /// The focused pane's index.
+    pub focused: usize,
+    /// The gaps: `[primary, cross of the first half, cross of the second half]`.
+    pub dividers: [Option<Rect>; 3],
+    /// Where the primary gap meets the cross gaps' line (a 2 x 2's centre, or a T's junction).
+    pub crossing: Option<Rect>,
+}
+
+impl SplitPanes {
+    pub fn from_geometry(geometry: &crate::split_view::Geometry, view: crate::split_view::SplitView) -> Self {
+        let rect = |(l, t, r, b): crate::split_view::Bounds| Rect::new(l, t, r, b);
+        let primary = rect(geometry.primary);
+        let crossing = geometry.cross.iter().flatten().next().map(|&(l, t, r, b)| match view.orientation {
+            crate::split_view::Orientation::SideBySide => Rect::new(primary.left, t, primary.right, b),
+            crate::split_view::Orientation::Stacked => Rect::new(l, primary.top, r, primary.bottom),
+        });
+        Self {
+            panes: geometry.panes.0.map(|pane| pane.map(rect)),
+            focused: view.focused.index(),
+            dividers: [Some(primary), geometry.cross[0].map(rect), geometry.cross[1].map(rect)],
+            crossing,
+        }
+    }
+    /// The pane at `(x, y)`, or the nearest shown pane (a click in a gap or on a pane's rim).
+    pub fn pane_near(&self, x: i32, y: i32) -> Option<crate::split_view::Pane> {
+        let mut map = crate::split_view::PaneMap::default();
+        for pane in crate::split_view::Pane::ALL {
+            map.set(pane, self.panes[pane.index()].map(|r| (r.left, r.top, r.right, r.bottom)));
+        }
+        crate::split_view::Geometry { panes: map, ..Default::default() }.pane_near(x, y)
+    }
+}
+
+/// The overlay layout of `view` inside `content`: the primary gap's leading edge at `primary_at`,
+/// the cross gaps' at `cross_at`, minimum pane sizes and the gap from `split_view`, scaled by `m`.
+/// `None` when the content cannot hold two panes (the focused pane then shows alone).
+pub fn split_panes(content: Rect, view: crate::split_view::SplitView, primary_at: i32, cross_at: i32, m: Metrics) -> Option<SplitPanes> {
+    use crate::split_view::{geometry, GAP_DIP, MIN_PANE_DIP, MIN_PANE_HEIGHT_DIP};
+    let page = (content.left, content.top, content.right, content.bottom);
+    let geometry = geometry(view, page, primary_at, cross_at, m.px(MIN_PANE_DIP), m.px(MIN_PANE_HEIGHT_DIP), m.px(GAP_DIP))?;
+    Some(SplitPanes::from_geometry(&geometry, view))
+}
+
+/// [`split_pane_layout`] or [`split_pane_layout_stacked`] for `orientation`. `divider` is the gap's
+/// leading edge along the split axis (x side by side, y stacked); `min_pane` is that axis' minimum.
+pub fn split_pane_layout_oriented(
+    content: Rect,
+    orientation: crate::split_view::Orientation,
+    divider: i32,
+    min_pane: i32,
+    gap: i32,
+) -> Option<SplitPaneLayout> {
+    match orientation {
+        crate::split_view::Orientation::SideBySide => split_pane_layout(content, divider, min_pane, gap),
+        crate::split_view::Orientation::Stacked => split_pane_layout_stacked(content, divider, min_pane, gap),
+    }
+}
+
 /// Computes the chrome for a client area of `client_w` x `client_h` physical pixels.
 ///
 /// Any compensation for the invisible frame belongs to the Win32 layer, which supplies `client_w`
@@ -2725,6 +2815,202 @@ mod tests {
     }
 
     #[test]
+    fn stacked_split_panes_share_the_height_with_the_gap_between_them() {
+        use crate::split_view::{divider_for_ratio, Orientation, GAP_DIP, MIN_PANE_HEIGHT_DIP};
+        for dpi in [96, 120, 144, 192] {
+            let m = Metrics::new(dpi);
+            let content = content_rect(TabLayout::ToolbarTop, 1200 * dpi as i32 / 96, 800 * dpi as i32 / 96, dpi, false);
+            let gap = m.px(GAP_DIP);
+            let min = m.px(MIN_PANE_HEIGHT_DIP);
+            let divider = divider_for_ratio(content.top, content.bottom, 50, gap);
+            let panes = split_pane_layout_oriented(content, Orientation::Stacked, divider, min, gap).expect("fits two pages");
+            // Full width, one above the other, the gap exactly between them.
+            for pane in [panes.left, panes.right, panes.divider] {
+                assert_eq!((pane.left, pane.right), (content.left, content.right), "dpi {dpi}");
+            }
+            assert_eq!(panes.left.top, content.top);
+            assert_eq!(panes.left.bottom, panes.divider.top);
+            assert_eq!(panes.divider.height(), gap);
+            assert_eq!(panes.right.top, panes.divider.bottom);
+            assert_eq!(panes.right.bottom, content.bottom);
+            assert!((panes.left.height() - panes.right.height()).abs() <= 1, "50/50 at dpi {dpi}");
+            // The side-by-side form of the same call is the old layout.
+            let side = split_pane_layout_oriented(content, Orientation::SideBySide, content.left + 300, m.px(240), gap).unwrap();
+            assert_eq!(Some(side), split_pane_layout(content, content.left + 300, m.px(240), gap));
+        }
+    }
+
+    /// The rectangles of a 1280 x 820 window's split layouts, drop halves and drop-zone map, as JSON.
+    /// Written to `BOWSER_SPLIT_LAYOUT_DUMP` when set (the layout diagram in the split view
+    /// screenshots draws exactly these); otherwise only checks that every rect is inside the page.
+    #[test]
+    fn split_layout_diagram_rects_stay_inside_the_page() {
+        use crate::split_view::{axis_span, divider_for_ratio, drop_rect, drop_zone, DropZone, Orientation, GAP_DIP};
+        let l = compute_in_frame(1280, 820, 96, 6, 2, false);
+        let m = l.metrics;
+        let page = l.viewport;
+        let gap = m.px(GAP_DIP);
+        let tuple = (page.left, page.top, page.right, page.bottom);
+        let json_rect = |r: Rect| format!("[{},{},{},{}]", r.left, r.top, r.right, r.bottom);
+        let panes = |orientation: Orientation, ratio: u8| {
+            let (start, end) = axis_span(tuple, orientation);
+            let divider = divider_for_ratio(start, end, ratio, gap);
+            let panes = split_pane_layout_oriented(page, orientation, divider, m.px(orientation.min_pane_dip()), gap).unwrap();
+            for pane in [panes.left, panes.divider, panes.right] {
+                assert!(pane.left >= page.left && pane.right <= page.right && pane.top >= page.top && pane.bottom <= page.bottom);
+            }
+            format!("{{\"first\":{},\"gap\":{},\"second\":{}}}", json_rect(panes.left), json_rect(panes.divider), json_rect(panes.right))
+        };
+        let drops: Vec<String> = DropZone::ALL
+            .iter()
+            .map(|zone| {
+                let (a, b, c, d) = drop_rect(tuple, *zone, gap);
+                format!("\"{zone:?}\":[{a},{b},{c},{d}]")
+            })
+            .collect();
+        let step = 8;
+        let mut zones = Vec::new();
+        for y in (page.top..page.bottom).step_by(step) {
+            for x in (page.left..page.right).step_by(step) {
+                let zone = drop_zone(tuple, x, y, None).expect("every point of the page has a zone");
+                zones.push((DropZone::ALL.iter().position(|z| *z == zone).unwrap()).to_string());
+            }
+        }
+        let json = format!(
+            "{{\"window\":[1280,820],\"strip\":{},\"tabRow\":{},\"page\":{},\"gap\":{gap},\"radius\":{},\"grip\":[{},{}],\"sideBySide\":{},\"stacked\":{},\"stacked35\":{},\"drop\":{{{}}},\"zoneStep\":{step},\"zones\":\"{}\"}}\n",
+            json_rect(l.strip),
+            json_rect(l.tab_row),
+            json_rect(page),
+            m.px(9),
+            m.px(4),
+            m.px(32),
+            panes(Orientation::SideBySide, 50),
+            panes(Orientation::Stacked, 50),
+            panes(Orientation::Stacked, 35),
+            drops.join(","),
+            zones.concat(),
+        );
+        if let Some(path) = std::env::var_os("BOWSER_SPLIT_LAYOUT_DUMP") {
+            std::fs::write(path, json).expect("write the split layout dump");
+        }
+    }
+
+    /// The rectangles of a 1280 x 820 window's layouts of three and four panes, every corner drop's
+    /// preview card and the corner drop-zone map, as JSON (the quad split diagrams). Written to
+    /// `BOWSER_QUAD_LAYOUT_DUMP` when set; always checks that every rect stays inside the page.
+    #[test]
+    fn quad_layout_diagram_rects_stay_inside_the_page() {
+        use crate::split_view::{
+            drop_target_rect, drop_target_zone, drop_zone_cornered, plan_drop, DropPlan, DropZone, Orientation, Pane, SplitView, GAP_DIP,
+            MIN_PANE_DIP, MIN_PANE_HEIGHT_DIP,
+        };
+        use crate::tabs::TabId;
+        let l = compute_in_frame(1280, 820, 96, 6, 2, false);
+        let m = l.metrics;
+        let page = l.viewport;
+        let (gap, min_w, min_h) = (m.px(GAP_DIP), m.px(MIN_PANE_DIP), m.px(MIN_PANE_HEIGHT_DIP));
+        let tuple = (page.left, page.top, page.right, page.bottom);
+        let inside = |r: (i32, i32, i32, i32)| r.0 >= page.left && r.2 <= page.right && r.1 >= page.top && r.3 <= page.bottom && r.0 < r.2 && r.1 < r.3;
+        let json_box = |r: (i32, i32, i32, i32)| format!("[{},{},{},{}]", r.0, r.1, r.2, r.3);
+        let json_rect = |r: Rect| json_box((r.left, r.top, r.right, r.bottom));
+        let zone_name = |zone: DropZone| crate::chrome_host::split::edge(zone);
+        let layout_json = |view: SplitView| {
+            let (primary, cross) = crate::split_view::dividers_for_ratios(view, tuple, gap);
+            let panes = split_panes(page, view, primary, cross, m).expect("the layout fits a 1280 x 820 window");
+            let list: Vec<String> = view
+                .panes()
+                .map(|(pane, tab)| {
+                    let rect = panes.panes[pane.index()].expect("every pane shows");
+                    assert!(inside((rect.left, rect.top, rect.right, rect.bottom)));
+                    format!("{{\"id\":{},\"at\":\"{}\",\"rect\":{},\"focused\":{}}}", tab.0, zone_name(view.zone_of(pane)), json_rect(rect), pane == view.focused)
+                })
+                .collect();
+            let dividers: Vec<String> = panes.dividers.iter().flatten().map(|r| json_rect(*r)).collect();
+            format!(
+                "{{\"panes\":[{}],\"dividers\":[{}],\"crossing\":{}}}",
+                list.join(","),
+                dividers.join(","),
+                panes.crossing.map_or("null".to_owned(), json_rect)
+            )
+        };
+        let t = TabId;
+        let pair = SplitView::new(t(3), t(2), Pane::Left).unwrap();
+        let drop_layout = |view: SplitView, dragged: u32, zone: DropZone| match plan_drop(Some(view), None, view.focused_tab(), t(dragged), zone) {
+            Some(DropPlan::Layout { view, .. }) => view,
+            other => panic!("{other:?}"),
+        };
+        let tee = drop_layout(pair, 4, DropZone::BottomLeft); // [3 / 4 | 2]
+        let quad = drop_layout(tee, 5, DropZone::BottomRight); // [3 2 / 4 5]
+        let mut quad_focus = quad;
+        quad_focus.focus(Pane::Left);
+        let mut previews = Vec::new();
+        for (name, view) in [("none", None), ("pair", Some(pair)), ("tee", Some(tee)), ("quad", Some(quad_focus))] {
+            for zone in DropZone::CORNERS {
+                let corners = crate::split_view::corners_allowed(view, t(9));
+                // The pointer near the corner: the zone the real function gives there.
+                let (x, y) = match zone {
+                    DropZone::TopLeft => (page.left + 40, page.top + 40),
+                    DropZone::TopRight => (page.right - 40, page.top + 40),
+                    DropZone::BottomLeft => (page.left + 40, page.bottom - 40),
+                    _ => (page.right - 40, page.bottom - 40),
+                };
+                let hit = drop_zone_cornered(tuple, x, y, None, corners).unwrap();
+                let plan = plan_drop(view, None, t(3), t(9), hit).unwrap();
+                let rect = drop_target_rect(plan, t(9), hit, tuple, min_w, min_h, gap);
+                assert!(inside(rect), "{name} {zone:?}");
+                previews.push(format!(
+                    "\"{name}-{}\":{{\"zone\":\"{}\",\"lands\":\"{}\",\"rect\":{},\"point\":[{x},{y}]}}",
+                    zone_name(zone),
+                    zone_name(hit),
+                    zone_name(drop_target_zone(plan, t(9), hit)),
+                    json_box(rect)
+                ));
+            }
+        }
+        let step = 8;
+        let mut zones = String::new();
+        let order = [DropZone::Left, DropZone::Right, DropZone::Top, DropZone::Bottom, DropZone::TopLeft, DropZone::TopRight, DropZone::BottomLeft, DropZone::BottomRight];
+        for y in (page.top..page.bottom).step_by(step) {
+            for x in (page.left..page.right).step_by(step) {
+                let zone = drop_zone_cornered(tuple, x, y, None, true).expect("every point has a zone");
+                zones.push_str(&order.iter().position(|z| *z == zone).unwrap().to_string());
+            }
+        }
+        let stacked_tee = drop_layout(pair.with_orientation(Orientation::Stacked), 4, DropZone::TopRight);
+        let json = format!(
+            "{{\"window\":[1280,820],\"strip\":{},\"tabRow\":{},\"page\":{},\"gap\":{gap},\"radius\":{},\"grip\":[{},{}],\"pair\":{},\"tee\":{},\"stackedTee\":{},\"quad\":{},\"quadFocusTl\":{},\"previews\":{{{}}},\"zoneStep\":{step},\"zones\":\"{zones}\"}}\n",
+            json_rect(l.strip),
+            json_rect(l.tab_row),
+            json_rect(page),
+            m.px(9),
+            m.px(4),
+            m.px(32),
+            layout_json(pair),
+            layout_json(tee),
+            layout_json(stacked_tee),
+            layout_json(quad),
+            layout_json(quad_focus),
+            previews.join(","),
+        );
+        if let Some(path) = std::env::var_os("BOWSER_QUAD_LAYOUT_DUMP") {
+            std::fs::write(path, json).expect("write the quad layout dump");
+        }
+    }
+
+    #[test]
+    fn stacked_split_panes_clamp_to_the_minimum_height_and_collapse_below_it() {
+        let content = Rect::new(10, 100, 810, 600); // 500 tall
+        let panes = split_pane_layout_stacked(content, -50, 160, 8).unwrap();
+        assert_eq!(panes.left.height(), 160, "dragged past the top: the top page keeps its minimum");
+        let panes = split_pane_layout_stacked(content, 5000, 160, 8).unwrap();
+        assert_eq!(panes.right.height(), 160, "dragged past the bottom: the bottom page keeps its minimum");
+        // Exactly 2 x 160 + 8 fits; one pixel less collapses to the focused page.
+        assert!(split_pane_layout_stacked(Rect::new(0, 0, 800, 328), 160, 160, 8).is_some());
+        assert!(split_pane_layout_stacked(Rect::new(0, 0, 800, 327), 160, 160, 8).is_none());
+        assert!(split_pane_layout_stacked(Rect::new(0, 0, 0, 900), 400, 160, 8).is_none(), "no width, no pages");
+    }
+
+    #[test]
     fn content_rect_keeps_consistent_physical_pixel_margins() {
         for dpi in [96, 120, 144, 192] {
             let rect = content_rect(TabLayout::ToolbarTop, 1200, 800, dpi, false);
@@ -3200,5 +3486,33 @@ mod tests {
                 assert!(l.viewport.width() >= 0 && l.viewport.height() >= 0);
             }
         }
+    }
+
+    /// Page-overrun report (left rail + top strip, maximised 1920 x 1079 at 96 DPI): the page host
+    /// bounds the app gives WebView2 (`content_rect` right of the rail, as `chrome_viewport_bounds`
+    /// builds them) must be exactly the island the overlay frames and masks (`Layout::viewport`),
+    /// clear of the rail and every chrome row, restored or maximised, at every DPI.
+    #[test]
+    fn page_bounds_are_the_framed_island_beside_the_rail() {
+        for variant in HORIZONTAL_FAMILY {
+            for dpi in DPIS {
+                for (w, h) in [(1920, 1079), (1904, 1041), (1280, 720), (2560, 1400)] {
+                    for maximised in [false, true] {
+                        let context = format!("{variant:?} {w}x{h} dpi {dpi} maximised {maximised}");
+                        let l = compute_in_frame_for_with(variant, w, h, dpi, 5, 0, maximised, true);
+                        let inset = left_rail_inset(dpi);
+                        let page = content_rect(variant, w - inset, h, dpi, maximised).shifted_right(inset);
+                        assert_eq!(page, l.viewport, "{context}");
+                        assert!(page.left >= l.rail.right, "{context}: page {page:?} under the rail {:?}", l.rail);
+                        assert!(page.top >= l.strip.bottom && page.top >= l.tab_row.bottom, "{context}: page {page:?} under a row");
+                        assert_eq!(page.bottom, if maximised { h } else { h - Metrics::new(dpi).px(Metrics::RESIZE_RIM) }, "{context}");
+                    }
+                }
+            }
+        }
+        // The configuration in the report: a 1920 x 1079 maximised client at 96 DPI.
+        let l = compute_in_frame_for_with(TabLayout::ToolbarTop, 1920, 1079, 96, 5, 0, true, true);
+        assert_eq!(l.viewport, Rect::new(30, 63, 1920, 1079));
+        assert_eq!(l.rail, Rect::new(2, 2, 28, 1077));
     }
 }

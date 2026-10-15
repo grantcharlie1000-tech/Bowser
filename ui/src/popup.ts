@@ -7,8 +7,9 @@ import { createDownloadsView } from './downloads-bubble';
 
 // The popup host shows one page at a time on #app, chosen by the message type: `menu` (menu-view),
 // `palette` (command palette), `siteinfo` (site information), `composer` (anchored name and
-// address form on the menu surface) and `downloads` (the download bubble). Each view validates its
-// own payload; anything else is ignored.
+// address form on the menu surface) and `downloads` (the download bubble). `room` is not a page: Rust
+// sends it once a menu with submenus is placed, saying how much screen there is beside it. Each view
+// validates its own payload; anything else is ignored.
 export function startPopup(root: HTMLElement): void {
   startShell(root, 'popup');
   root.tabIndex = -1;
@@ -25,6 +26,7 @@ export function startPopup(root: HTMLElement): void {
     if (typeof value !== 'object' || value === null) return;
     switch ((value as { t?: unknown }).t) {
       case 'menu': menu.show(value); break;
+      case 'room': menu.room(value); break;
       case 'palette': palette.show(value); break;
       case 'siteinfo': siteinfo.show(value); break;
       case 'composer': composer.show(value); break;

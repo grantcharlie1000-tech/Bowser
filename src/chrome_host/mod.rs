@@ -16,6 +16,7 @@ pub mod extensions_page; // the settings page's Extensions section and the toolb
 // --- split view ---
 pub mod split;
 // --- end split view ---
+pub mod tab_drag; // the native ghost of a held tab (docs/design/tab-drag.md)
 // --- panel host (lane P) ---
 pub mod panels;
 // --- end panel host ---

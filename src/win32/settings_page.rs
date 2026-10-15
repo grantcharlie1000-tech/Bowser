@@ -332,11 +332,11 @@ pub(crate) fn close(owner: HWND) {
 fn wanted(owner: HWND, app: &AppRef) -> Option<Shown> {
     let active = App::active_tab_id(app);
     if let Some(split) = App::split_view(app) {
-        let panes = [split.focused, split.focused.other()];
-        let pane = panes.into_iter().find(|pane| App::internal_page(app, split.tab(*pane)).is_some_and(InternalPage::is_settings))?;
+        let pane = split.panes_focus_first().find(|pane| App::internal_page(app, split.tab(*pane)).is_some_and(InternalPage::is_settings))?;
         let tab = split.tab(pane);
         let rect = match App::split_bounds(app) {
-            Some((left, right)) => if pane == Pane::Left { left } else { right },
+            // A pane hidden by the collapse rule shows no page host.
+            Some(bounds) => bounds.get(pane)?,
             None if split.focused == pane => super::window::split_viewport(owner)?,
             None => return None,
         };

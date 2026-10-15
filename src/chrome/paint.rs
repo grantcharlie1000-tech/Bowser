@@ -157,14 +157,16 @@ pub struct ChromeSurface {
     /// when the omnibox is not focused.
     caret_rect: Rect,
     last_presented: Option<PresentedSurface>,
-    page_regions: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
+    page_regions: Option<(Rect, Option<layout::SplitPanes>)>,
     /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
     /// it never shows the desktop through the glass. `None` while a page is on screen.
     empty_viewport: Option<Rect>,
     // --- split view ---
     /// How the divider grip is drawn, and the empty side's pane when no HTML surface covers it.
     split_grip: SplitGrip,
-    split_empty: [Option<Rect>; 2],
+    /// The divider the grip state applies to (the others stay idle).
+    split_grip_divider: Option<crate::split_view::Divider>,
+    split_empty: [Option<Rect>; 4],
     // --- end split view ---
     /// Press and active motion of the left rail's buttons, advanced as the rail paints.
     rail_motion: RailMotion,
@@ -257,7 +259,8 @@ impl ChromeSurface {
             page_regions: None,
             empty_viewport: None,
             split_grip: SplitGrip::Idle,
-            split_empty: [None, None],
+            split_grip_divider: None,
+            split_empty: [None; 4],
             rail_motion: RailMotion::new(false),
             rail_icons: IconCache::default(),
             html_toolbar: false,
@@ -322,19 +325,18 @@ impl ChromeSurface {
     }
 
     /// Sets the content edges painted above the WebView2 surface.
-    pub fn set_page_regions(
-        &mut self,
-        content: Option<(Rect, Option<layout::SplitPaneLayout>, bool)>,
-    ) {
+    pub fn set_page_regions(&mut self, content: Option<(Rect, Option<layout::SplitPanes>)>) {
         self.page_regions = content;
     }
 
     // --- split view ---
-    /// Sets the divider grip state and the panes that have no page yet (painted as an opaque themed
-    /// surface where no HTML surface covers them). Returns whether anything changed.
-    pub fn set_split_chrome(&mut self, grip: SplitGrip, empty: [Option<Rect>; 2]) -> bool {
-        let changed = self.split_grip != grip || self.split_empty != empty;
+    /// Sets the divider grip state (for `divider`, the hovered or dragged one), and the panes that
+    /// have no page yet (painted as an opaque themed surface where no HTML surface covers them).
+    /// Returns whether anything changed.
+    pub fn set_split_chrome(&mut self, grip: SplitGrip, divider: Option<crate::split_view::Divider>, empty: [Option<Rect>; 4]) -> bool {
+        let changed = self.split_grip != grip || self.split_grip_divider != divider || self.split_empty != empty;
         self.split_grip = grip;
+        self.split_grip_divider = divider;
         self.split_empty = empty;
         changed
     }
@@ -380,27 +382,12 @@ impl ChromeSurface {
         self.html_pending[index] = pending;
     }
 
-    /// Paints a themed viewport-half target while a tab is being dragged into split view (the
-    /// native chrome's drop target, and the HTML chrome's fallback before its card is ready): the
-    /// half the new pane will take, inset by the page gap, with an accent wash and edge.
-    pub fn paint_split_drop(
-        &mut self,
-        viewport: Rect,
-        pane: crate::split_view::Pane,
-        palette: &Palette,
-        dirty: Rect,
-    ) {
+    /// Paints a themed drop target while a tab is being dragged into split view (the native
+    /// chrome's drop target, and the HTML chrome's fallback before its card is ready): `target` is
+    /// the rectangle the new pane will take (a half, a quarter, or a pane it replaces), with an
+    /// accent wash and edge.
+    pub fn paint_split_drop(&mut self, target: Rect, palette: &Palette, dirty: Rect) {
         let m = Metrics::new(self.dpi);
-        let gap = m.px(crate::split_view::GAP_DIP);
-        let mid = viewport.left + viewport.width() / 2;
-        let target = match pane {
-            crate::split_view::Pane::Left => {
-                Rect::new(viewport.left, viewport.top, mid - gap / 2, viewport.bottom)
-            }
-            crate::split_view::Pane::Right => {
-                Rect::new(mid + gap - gap / 2, viewport.top, viewport.right, viewport.bottom)
-            }
-        };
         let radius = m.px(9);
         let tint = Rgba {
             a: if palette.translucent { 58 } else { 40 },
@@ -657,7 +644,7 @@ impl ChromeSurface {
     }
 
     fn paint_page_boundary(&mut self, view: &ChromeView<'_>, dirty: Rect) {
-        let Some((content, panes, focused_left)) = self.page_regions else {
+        let Some((content, panes)) = self.page_regions else {
             return;
         };
         let m = view.layout.metrics;
@@ -665,40 +652,100 @@ impl ChromeSurface {
         let colour = view.palette.omnibox_border;
         if let Some(panes) = panes {
             // --- split view ---
-            // Two separate rounded pages with a gap between them (Chrome's split): every corner
-            // is rounded, the gap takes the window colour like the margins, a pill grip marks the
-            // divider and the focused page carries a 2 DIP accent edge.
-            self.fill_rect(panes.divider, view.palette.window, dirty);
-            self.mask_rounded(view.palette.window, panes.left, radius, dirty, true, true);
-            self.mask_rounded(view.palette.window, panes.right, radius, dirty, true, true);
+            // Separate rounded pages (two to four) with gaps between them (Chrome's split): every
+            // corner is rounded, the gaps take the window colour like the margins, a pill grip
+            // marks each divider and the focused page carries a 2 DIP accent edge.
+            for divider in panes.dividers.into_iter().flatten() {
+                self.fill_rect(divider, view.palette.window, dirty);
+            }
+            for pane in panes.panes.into_iter().flatten() {
+                self.mask_rounded(view.palette.window, pane, radius, dirty, true, true);
+            }
             for empty in self.split_empty.into_iter().flatten() {
                 self.round(empty, radius, Rgba { a: 255, ..view.palette.window }, dirty);
             }
-            let (focus, other) = if focused_left {
-                (panes.left, panes.right)
-            } else {
-                (panes.right, panes.left)
-            };
-            self.border(other, radius, 1.0, colour, dirty);
-            self.border(focus, radius, m.px(2) as f32, view.palette.omnibox_focus_border, dirty);
-            let grip_w = m.px(4).min(panes.divider.width()).max(1);
-            let grip_h = m.px(32).min(panes.divider.height()).max(1);
-            let x = panes.divider.left + (panes.divider.width() - grip_w) / 2;
-            let y = panes.divider.top + (panes.divider.height() - grip_h) / 2;
-            let grip = Rect::new(x, y, x + grip_w, y + grip_h);
-            let text = view.palette.tab_text_active;
-            let fill = match self.split_grip {
-                SplitGrip::Idle => Rgba { a: 56, ..text },
-                SplitGrip::Hover => Rgba { a: 153, ..text },
-                SplitGrip::Drag => view.palette.omnibox_focus_border,
-            };
-            self.round(grip, grip_w / 2, fill, dirty);
+            for (index, pane) in panes.panes.into_iter().enumerate() {
+                if let Some(pane) = pane.filter(|_| index != panes.focused) {
+                    self.border(pane, radius, 1.0, colour, dirty);
+                }
+            }
+            if let Some(focus) = panes.panes[panes.focused] {
+                self.border(focus, radius, m.px(2) as f32, view.palette.omnibox_focus_border, dirty);
+            }
+            self.paint_split_grips(view, &panes, dirty);
             // --- end split view ---
         } else {
             self.mask_rounded(view.palette.window, content, radius, dirty, true, true);
             self.border(content, radius, 1.0, colour, dirty);
         }
     }
+
+    // --- split view ---
+    /// A 4 x 32 DIP pill centred in each divider (upright between side-by-side pages, lying flat
+    /// between stacked ones). The primary gap of a divided layout gets one pill per segment on
+    /// either side of the crossing, and the crossing itself a small square that moves both
+    /// dividers. The hovered or dragged divider's pills take the grip state; the rest stay idle.
+    fn paint_split_grips(&mut self, view: &ChromeView<'_>, panes: &layout::SplitPanes, dirty: Rect) {
+        use crate::split_view::Divider;
+        let m = view.layout.metrics;
+        let text = view.palette.tab_text_active;
+        let fill_for = |divider: Divider, grip: SplitGrip, target: Option<Divider>| {
+            let lit = match target {
+                Some(Divider::Both) => true,
+                Some(Divider::Cross(_)) => matches!(divider, Divider::Cross(_)),
+                Some(Divider::Primary) => divider == Divider::Primary,
+                None => false,
+            };
+            match if lit { grip } else { SplitGrip::Idle } {
+                SplitGrip::Idle => Rgba { a: 56, ..text },
+                SplitGrip::Hover => Rgba { a: 153, ..text },
+                SplitGrip::Drag => view.palette.omnibox_focus_border,
+            }
+        };
+        let (thin, long) = (m.px(4), m.px(32));
+        let mut pills: Vec<(Rect, Divider)> = Vec::new();
+        let mut segments: Vec<(Rect, Divider)> = Vec::new();
+        if let Some(primary) = panes.dividers[0] {
+            match panes.crossing {
+                Some(crossing) if primary.height() > primary.width() => {
+                    segments.push((Rect::new(primary.left, primary.top, primary.right, crossing.top), Divider::Primary));
+                    segments.push((Rect::new(primary.left, crossing.bottom, primary.right, primary.bottom), Divider::Primary));
+                }
+                Some(crossing) => {
+                    segments.push((Rect::new(primary.left, primary.top, crossing.left, primary.bottom), Divider::Primary));
+                    segments.push((Rect::new(crossing.right, primary.top, primary.right, primary.bottom), Divider::Primary));
+                }
+                None => segments.push((primary, Divider::Primary)),
+            }
+        }
+        for half in 0..2 {
+            if let Some(cross) = panes.dividers[half + 1] {
+                segments.push((cross, Divider::Cross(half)));
+            }
+        }
+        for (gap, divider) in segments {
+            if gap.width() <= 0 || gap.height() <= 0 {
+                continue;
+            }
+            let (grip_w, grip_h) = if gap.width() > gap.height() { (long, thin) } else { (thin, long) };
+            let grip_w = grip_w.min(gap.width()).max(1);
+            let grip_h = grip_h.min(gap.height()).max(1);
+            let x = gap.left + (gap.width() - grip_w) / 2;
+            let y = gap.top + (gap.height() - grip_h) / 2;
+            pills.push((Rect::new(x, y, x + grip_w, y + grip_h), divider));
+        }
+        for (grip, divider) in pills {
+            self.round(grip, grip.width().min(grip.height()) / 2, fill_for(divider, self.split_grip, self.split_grip_divider), dirty);
+        }
+        if let Some(crossing) = panes.crossing {
+            let side = m.px(6).min(crossing.width()).min(crossing.height()).max(1);
+            let x = crossing.left + (crossing.width() - side) / 2;
+            let y = crossing.top + (crossing.height() - side) / 2;
+            let fill = fill_for(Divider::Both, self.split_grip, self.split_grip_divider.filter(|divider| *divider == Divider::Both));
+            self.round(Rect::new(x, y, x + side, y + side), m.px(2), fill, dirty);
+        }
+    }
+    // --- end split view ---
 
     /// Covers only the pixels outside the page's rounded outer corners. The WebView remains a
     /// rectangular controller; this small themed mask is painted in the owned chrome overlay.

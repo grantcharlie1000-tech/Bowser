@@ -111,6 +111,26 @@
    to the tab's own through the base box-shadow transition; transform shares that 167ms ease-out. */
 .strip .tab.landing { z-index: 5; }
 
+/* Lifted (docs/design/tab-drag.md): the native ghost carries the tab off the strip, so the tab's own
+   copy is invisible and its box is the gap the neighbours open and close around. Instant both ways:
+   the ghost covers the copy at the moment it is hidden and again when it is shown. */
+.strip .tab.lifted,
+.side-tab.lifted {
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--bw-dur-base) var(--bw-ease-out);
+}
+
+/* Drag announcements (tab-drag.ts): spoken, never seen. */
+.tab-drag-live {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* A closed tab fades where it stood while its neighbours slide into the gap. */
 .strip .tab.ghost,
 .strip .tab.pinned.ghost {

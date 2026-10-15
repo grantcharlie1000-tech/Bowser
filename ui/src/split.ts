@@ -3,8 +3,8 @@
 // (private-page.ts). Rust owns every model (see src/win32/split_ui.rs); this page renders and
 // reports intent. Page-controlled text is written with textContent only.
 import { onInbound, send, type SplitCommand, type SplitDropMsg, type SplitPickMsg } from './protocol';
-import { validSplitCommand, type PickClosed, type PickTab } from './split-protocol';
-import { filterPick, moveSelection, pickHeading } from './split-logic';
+import { validSplitCommand, type PickClosed, type PickTab, type SplitAt } from './split-protocol';
+import { dropCard, filterPick, moveSelection, pickHeading } from './split-logic';
 import { applyTheme } from './view';
 import { el, icon } from './dom';
 import { installTooltips } from './tooltip';
@@ -200,14 +200,22 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
   };
 }
 
+const EDGE_CLASS = { l: 'is-left', r: 'is-right', t: 'is-top', b: 'is-bottom', tl: 'is-top-left', tr: 'is-top-right', bl: 'is-bottom-left', br: 'is-bottom-right' } as const;
+
+/**
+ * The drop-zone card. Rust sizes the host to exactly the pane the dragged tab will take: a half
+ * (left, right, top or bottom) or a quarter (`tl` ... `br`).
+ */
 function buildDrop(msg: SplitDropMsg): HTMLElement {
-  const zone = el('div', `sv-drop bw-enter is-scale is-${msg.side === 'l' ? 'left' : 'right'}`);
+  const words = dropCard(msg.side);
+  const zone = el('div', `sv-drop bw-enter is-scale ${EDGE_CLASS[msg.side]}`);
+  zone.dataset.side = msg.side;
   const card = el('div', 'sv-drop-card');
   const badge = el('span', 'sv-drop-icon');
   badge.setAttribute('aria-hidden', 'true');
-  badge.append(icon(msg.side === 'l' ? 'split-left' : 'split-right', { size: 24 }));
+  badge.append(icon(words.glyph, { size: 24 }));
   const label = el('strong', 'sv-drop-label');
-  label.textContent = msg.side === 'l' ? 'Open on the left' : 'Open on the right';
+  label.textContent = words.label;
   const name = el('span', 'sv-drop-title');
   name.dir = 'auto';
   name.textContent = msg.title;
@@ -229,7 +237,7 @@ export function startSplit(root: HTMLElement): void {
     if (mode === 'private') privatePage.hidden();
     root.classList.remove('is-private');
   };
-  let side: 'l' | 'r' | null = null;
+  let side: SplitAt | null = null;
   // Any press inside the empty side makes it the focused side (the toolbar then follows it).
   root.addEventListener('pointerdown', () => {
     if (mode === 'pick') sendSplit({ v: 1, t: 'split', a: 'focus' });

@@ -1023,8 +1023,9 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
-            || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. })),
+            || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
+            || matches!(command, Command::TabDrag(_)), // --- tab ghost ---
         View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. } | Command::DownloadsAct { .. }),

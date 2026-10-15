@@ -259,7 +259,7 @@ test('tabs.ts: one landing flag, an honest shift and a single 167ms ease-out (no
   const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
   assert.doesNotMatch(ts, /settling|settleTimer/, 'the settling flag and its timer are replaced by landing');
   assert.match(ts, /let landing: Landing \| null/);
-  assert.match(ts, /d\.node\.shift = dx;/, 'the dragged tab tracks its transform in shift');
+  assert.match(ts, /d\.node\.shift = d\.dx;/, 'the dragged tab tracks its transform in shift');
   assert.match(ts, /n\.root\.style\.transform === ''/, 'setShift(n, 0) clears the dragged tab even when shift was 0');
   assert.match(ts, /landingPhase\(landing\?\.signature \?\? null, nextSignature\)/, 'a stale render never touches transforms');
   assert.match(ts, /classList\.add\('landing'\);\s*d\.node\.root\.classList\.remove\('dragging'\);/, '.dragging hands over to .landing, never both dropped');

@@ -2113,6 +2113,21 @@ mod tests {
         assert!(Version::current() >= Version(0, 0, 1));
     }
 
+    /// The version the About page shows is `CARGO_PKG_VERSION`, so it has to move with every
+    /// release: the pin names the release by tag, its `version` is that tag's number, and the
+    /// source being released never carries a lower number than the pin it follows.
+    #[test]
+    fn the_shown_version_follows_the_pinned_release() {
+        let pin = parse_github_pin(include_str!("../stable/release.json")).unwrap();
+        assert_eq!(pin.tag, format!("v{}", pin.version), "tag and version name one release");
+        assert!(
+            Version::current() >= pin.version,
+            "Cargo.toml says {} but stable/release.json pins {}: bump Cargo.toml (and Cargo.lock) with the release",
+            Version::current(),
+            pin.version
+        );
+    }
+
     #[test]
     fn signed_manifest_verifies() {
         let key = cng::TestKey::generate();

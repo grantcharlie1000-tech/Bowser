@@ -32,8 +32,8 @@ export const MENU_ICONS: readonly string[] = [
   'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
   'file', 'file-text', 'find', 'folder', 'folder-download', 'folder-open', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'image', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'package', 'pause', 'pencil', 'person',
-  'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
-  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'translate', 'trash', 'unlock', 'unsplit',
+  'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'private-window', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
+  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-bottom', 'split-bottom-left', 'split-bottom-right', 'split-left', 'split-right', 'split-stacked', 'split-top', 'split-top-left', 'split-top-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'translate', 'trash', 'unlock', 'unsplit',
   'video', 'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',
@@ -239,6 +239,94 @@ export function menuKey(nav: MenuNav, key: string, mods: KeyMods, now: number): 
     ? typeahead(page.entries, page.selected, ch, true)
     : typeahead(page.entries, page.selected, nav.typed, nav.typed.length === 1);
   return move(found);
+}
+
+// ---- Submenu cards (menu-view.ts slides them; menu.css lays them out). ----
+
+/** Whether any row of the menu opens a submenu: only then does the page keep room for a child card. */
+export function hasFlyouts(entries: readonly MenuEntry[]): boolean {
+  return entries.some(entry => 'id' in entry && entry.submenu !== undefined);
+}
+
+/** Rust's `room` message: CSS px of work area past the parent card's left (`l`) and right (`r`) edges. */
+export interface FlyoutRoom { l: number; r: number }
+
+export function validRoom(value: unknown): value is { v: 1; t: 'room'; tok: number; l: number; r: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const msg = value as Record<string, unknown>;
+  const px = (n: unknown): boolean => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 4000;
+  return Object.keys(msg).every(key => ['v', 't', 'tok', 'l', 'r'].includes(key)) && msg.v === 1 && msg.t === 'room' &&
+    Number.isSafeInteger(msg.tok) && (msg.tok as number) >= 0 && (msg.tok as number) <= 0xffffffff && px(msg.l) && px(msg.r);
+}
+
+/**
+ * The side a child card opens on. `need` is the gap plus the card's width. Right whenever it fits
+ * there, else left when it fits there. When neither side has room the card goes on the roomier side
+ * and is pulled over the parent by what it lacks (`overlap`); it is then shown without a slide. With
+ * no room reported yet it opens right.
+ */
+export function flyoutSide(room: FlyoutRoom | null, need: number): { side: 'right' | 'left'; overlap: number } {
+  if (!room || room.r >= need) return { side: 'right', overlap: 0 };
+  if (room.l >= need) return { side: 'left', overlap: 0 };
+  const side = room.r >= room.l ? 'right' : 'left';
+  return { side, overlap: Math.min(need, need - Math.max(0, side === 'right' ? room.r : room.l)) };
+}
+
+const EASE_KEYWORDS: Record<string, readonly [number, number, number, number]> = {
+  ease: [0.25, 0.1, 0.25, 1],
+  'ease-in': [0.42, 0, 1, 1],
+  'ease-out': [0, 0, 0.58, 1],
+  'ease-in-out': [0.42, 0, 0.58, 1],
+};
+
+/** A CSS timing function (`cubic-bezier(...)` or a keyword) at `x` (time, 0..1). Anything else is linear. */
+export function easeAt(timing: string, x: number): number {
+  if (!(x > 0)) return 0;
+  if (x >= 1) return 1;
+  const match = /^cubic-bezier\(\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*,\s*([-\d.e]+)\s*\)$/.exec(timing.trim());
+  const points = match ? match.slice(1).map(Number) : EASE_KEYWORDS[timing.trim()];
+  if (!points || points.some(n => !Number.isFinite(n))) return x;
+  const [x1, y1, x2, y2] = points as [number, number, number, number];
+  const curve = (a: number, b: number, s: number): number => 3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s;
+  // x(s) is monotonic for x1, x2 in [0, 1]: bisect for the parameter, then read y there.
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 30; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (curve(x1, x2, mid) < x) lo = mid;
+    else hi = mid;
+  }
+  return curve(y1, y2, (lo + hi) / 2);
+}
+
+/**
+ * How far a sliding child card still is from its place, in px: `travel` (gap plus its width) when it
+ * is wholly behind the parent's edge, 0 at rest. `elapsed` is ms into a slide of `duration` ms with
+ * timing function `timing`; `entering` slides out to rest, otherwise back behind the parent.
+ */
+export function slideShift(travel: number, duration: number, timing: string, elapsed: number, entering: boolean): number {
+  const done = duration > 0 ? easeAt(timing, elapsed / duration) : 1;
+  return entering ? travel * (1 - done) : travel * done;
+}
+
+/**
+ * The part of a child card that shows past the parent's edge while it is `shift` px from its place.
+ * `left` and `width` are its column (the card at rest); the card enters the column from the parent's
+ * side. Whole pixels, rounded inward, so a clip built from it never takes in a pixel the card does not
+ * paint. Null when none of it shows.
+ */
+export function childSlice(left: number, width: number, shift: number, side: 'right' | 'left'): { x: number; w: number } | null {
+  const hidden = Math.max(0, shift);
+  const start = Math.ceil(side === 'left' ? left + hidden : left);
+  const end = Math.floor(side === 'left' ? left + width : left + width - hidden);
+  return end - start >= 1 ? { x: start, w: end - start } : null;
+}
+
+/** A rectangle's whole pixels, rounded inward (the clip of a card never holds a pixel it leaves bare). */
+export function innerPixels(x: number, y: number, w: number, h: number): { x: number; y: number; w: number; h: number } {
+  const left = Math.ceil(x);
+  const top = Math.ceil(y);
+  return { x: left, y: top, w: Math.max(1, Math.floor(x + w) - left), h: Math.max(1, Math.floor(y + h) - top) };
 }
 
 function validBadge(value: unknown): value is MenuBadge {

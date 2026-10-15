@@ -6,6 +6,10 @@ import { validZoom } from './zoom-logic';
 import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
 export type { PairMsg, PrivatePageMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
 // --- end split view ---
+// --- tab ghost (docs/design/tab-drag.md) ---
+import { parseTabGhost, type TabDragCommand, type TabGhostMsg } from './tab-drag-protocol';
+export type { TabDragCommand, TabGhostMsg } from './tab-drag-protocol';
+// --- end tab ghost ---
 
 export const PROTOCOL_VERSION = 1;
 // Raised from 2048 so the settings page's `save` payload (every profile setting) fits; mirrors
@@ -111,8 +115,9 @@ export type Command =
   | { v: 1; t: 'dlact'; tok: number; id: number; n: number }
   // --- end downloads ---
   // --- split view ---
-  | SplitCommand;
+  | SplitCommand
   // --- end split view ---
+  | TabDragCommand; // --- tab ghost ---
 
 // --- hover layer ---
 /** Longest tooltip text Rust accepts, in code points. */
@@ -415,6 +420,7 @@ export type Inbound =
   | SplitInbound
   // --- end split view ---
   | SettingsGoMsg // --- settings page ---
+  | TabGhostMsg // --- tab ghost ---
   | SnapshotMsg;
 
 interface WebViewLike {
@@ -498,25 +504,32 @@ export function sendSide(a: 'workspace' | 'newtab' | 'collapse'): boolean {
 }
 // --- end vertical sidebar ---
 
-/** Two menu cards, in CSS pixels of the popup page. Sent only while a submenu is open. */
+/**
+ * The cards of a menu that has submenus, in CSS pixels of the popup page: the parent card (Rust
+ * anchors it and clips the window to it), and the part of a child card that shows, while there is one.
+ */
 export interface PopupCards {
   px: number;
   py: number;
   pw: number;
   ph: number;
-  cx: number;
-  cy: number;
-  cw: number;
-  ch: number;
+  cx?: number;
+  cy?: number;
+  cw?: number;
+  ch?: number;
 }
 
 export function sendPopupSize(tok: number, w: number, h: number, cards?: PopupCards): boolean {
   if (!isInt(tok, 0, MAX_ID) || !isInt(w, 1, 4000) || !isInt(h, 1, 4000)) return false;
   if (!cards) return send({ v: 1, t: 'size', tok, w, h });
   const { px, py, pw, ph, cx, cy, cw, ch } = cards;
-  if (![px, py, cx, cy].every((n) => isInt(n, 0, 4000))) return false;
-  if (![pw, ph, cw, ch].every((n) => isInt(n, 1, 4000))) return false;
-  // One string keeps the message inside the six-field cap (v, t, tok, w, h, c).
+  if (![px, py].every((n) => isInt(n, 0, 4000)) || ![pw, ph].every((n) => isInt(n, 1, 4000))) return false;
+  // One string keeps the message inside the six-field cap (v, t, tok, w, h, c): the parent alone, or
+  // the parent and then the child.
+  if (cx === undefined && cy === undefined && cw === undefined && ch === undefined) {
+    return send({ v: 1, t: 'size', tok, w, h, c: `${px},${py},${pw},${ph}` });
+  }
+  if (![cx, cy].every((n) => isInt(n, 0, 4000)) || ![cw, ch].every((n) => isInt(n, 1, 4000))) return false;
   const c = `${px},${py},${pw},${ph},${cx},${cy},${cw},${ch}`;
   return send({ v: 1, t: 'size', tok, w, h, c });
 }
@@ -937,6 +950,8 @@ export function parseInbound(data: unknown): Inbound | null {
     case 'privatepage':
       return parseSplitInbound(raw);
     // --- end split view ---
+    case 'tabghost': // --- tab ghost ---
+      return parseTabGhost(raw);
     // --- settings page ---
     case 'settingsgo': {
       if (!hasOnlyKeys(raw, ['v', 't', 's']) || raw.v !== 1 || !(raw.s === '' || isOneOf(raw.s, SETTINGS_SECTIONS))) return null;

@@ -208,9 +208,10 @@ fn canonical_decimal(digits: &str, max_len: usize) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// The two cards of an open submenu, in CSS pixels of the popup page. The parent card is the menu
-/// that opened the child. The child card is only as tall as its own rows and sits beside the row
-/// that opened it, so the window around them is not one tall rectangle.
+/// The cards of a menu that has submenus, in CSS pixels of the popup page. The parent card is the
+/// menu itself: Rust anchors it, and the page around it is room for a child card. The child card is
+/// the part of an open submenu that shows (only as tall as its own rows, beside the row that opened
+/// it); `child_w == 0` when no child card shows. The window is clipped to these cards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MenuCards {
     pub parent_x: u16,
@@ -250,7 +251,8 @@ pub enum Command {
     /// `None`. `key` is always a `ws:` or `app:` key.
     RailMove { key: RailKeyWire, before: Option<RailKeyWire> },
     Panel { kind: PanelType, f: PanelFields },
-    /// `cards` is set only while a submenu is open beside its parent. Absent, the popup is one card.
+    /// `cards` is set by a menu that has submenus (the parent card, and a child card while one shows).
+    /// Absent, the popup is one card and the window is the whole page.
     PopupSize { tok: u32, w: u16, h: u16, cards: Option<MenuCards> },
     PopupPick { tok: u32, id: u32 },
     PopupDismiss { tok: u32 },
@@ -296,6 +298,8 @@ pub enum Command {
     /// The split view's empty side (`View::Split`) or a tab dragged out of the strip (`View::Tabs`).
     Split(SplitCommand),
     // --- end split view ---
+    /// The native ghost of a held tab (`View::Tabs`, docs/design/tab-drag.md).
+    TabDrag(super::tab_drag::TabDragCommand), // --- tab ghost ---
 }
 
 // --- split view ---
@@ -370,6 +374,81 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
     })
 }
 // --- end split view ---
+
+// --- tab ghost ---
+/// `count` comma-separated decimal integers, each at most `max` (packed so a message stays within
+/// `MAX_FIELDS`).
+fn packed_uints(raw: &str, count: usize, max: u32, name: &'static str) -> Result<Vec<u32>, ProtocolError> {
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != count {
+        return Err(ProtocolError::InvalidValue(name));
+    }
+    parts
+        .into_iter()
+        .map(|part| {
+            if part.is_empty() || part.len() > 5 || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(ProtocolError::InvalidValue(name));
+            }
+            let value: u32 = part.parse().map_err(|_| ProtocolError::InvalidValue(name))?;
+            if value > max { Err(ProtocolError::InvalidValue(name)) } else { Ok(value) }
+        })
+        .collect()
+}
+
+/// The `a` of a `tabdrag` message, with exactly the fields that action takes (docs/design/tab-drag.md):
+/// `start` packs `r` = "w,h,gx,gy,c" (c 0 or 1), `end` with `m` = "settle" or "drop" packs `p` = "x,y".
+fn tab_drag_command(fields: &[(String, Value)]) -> Result<super::tab_drag::TabDragCommand, ProtocolError> {
+    use super::tab_drag::{valid_start, GhostEnd, GhostKind, TabDragCommand, MAX_GHOST_COORD, MAX_GHOST_SIDE};
+    let a = str_field(fields, "a")?;
+    let mode = if a == "end" { Some(str_field(fields, "m")?) } else { None };
+    let wanted: &[&str] = match (a, mode) {
+        ("start", _) => &["id", "k", "r"],
+        ("move", _) => &["id", "f"],
+        ("end", Some("settle" | "drop")) => &["id", "m", "p"],
+        ("end", Some("none")) => &["id", "m"],
+        ("end", _) => return Err(ProtocolError::InvalidValue("m")),
+        _ => return Err(ProtocolError::InvalidValue("a")),
+    };
+    for name in ["id", "k", "r", "f", "m", "p"] {
+        if field(fields, name).is_some() != wanted.contains(&name) {
+            return Err(ProtocolError::UnknownKey(name.to_owned()));
+        }
+    }
+    let id = uint_field(fields, "id")?;
+    if id == 0 {
+        return Err(ProtocolError::InvalidValue("id"));
+    }
+    Ok(match (a, mode) {
+        ("start", _) => {
+            let kind = match str_field(fields, "k")? {
+                "tab" => GhostKind::Tab,
+                "row" => GhostKind::Row,
+                "tile" => GhostKind::Tile,
+                _ => return Err(ProtocolError::InvalidValue("k")),
+            };
+            let Some(Value::Str(raw)) = field(fields, "r") else { return Err(ProtocolError::WrongType("r")) };
+            let r = packed_uints(raw, 5, MAX_GHOST_SIDE, "r")?;
+            let (w, h, gx, gy, c) = (r[0], r[1], r[2], r[3], r[4]);
+            if !valid_start(w, h, gx, gy) || c > 1 {
+                return Err(ProtocolError::InvalidValue("r"));
+            }
+            TabDragCommand::Start { id, kind, w, h, gx, gy, close: c == 1 }
+        }
+        ("move", _) => TabDragCommand::Move { id, floating: bool_field(fields, "f")? },
+        (_, Some("settle")) => {
+            let Some(Value::Str(raw)) = field(fields, "p") else { return Err(ProtocolError::WrongType("p")) };
+            let p = packed_uints(raw, 2, MAX_GHOST_COORD, "p")?;
+            TabDragCommand::End { id, end: GhostEnd::Settle { x: p[0], y: p[1] } }
+        }
+        (_, Some("drop")) => {
+            let Some(Value::Str(raw)) = field(fields, "p") else { return Err(ProtocolError::WrongType("p")) };
+            let p = packed_uints(raw, 2, MAX_GHOST_COORD, "p")?;
+            TabDragCommand::End { id, end: GhostEnd::Drop { x: p[0], y: p[1] } }
+        }
+        _ => TabDragCommand::End { id, end: GhostEnd::None },
+    })
+}
+// --- end tab ghost ---
 
 // --- hover layer ---
 /// Largest coordinate or size accepted in a hover rectangle, in CSS pixels.
@@ -749,9 +828,9 @@ fn bool_field(fields: &[(String, Value)], name: &'static str) -> Result<bool, Pr
     }
 }
 
-/// Submenu card rectangles, packed as `c` so the message stays within `MAX_FIELDS`. Eight
-/// comma-separated integers: parent x, y, w, h, then child x, y, w, h. Widths and heights are at
-/// least 1; origins may be 0. Absent when the popup is one card.
+/// Menu card rectangles, packed as `c` so the message stays within `MAX_FIELDS`. Four
+/// comma-separated integers (parent x, y, w, h) while no child card shows, or eight (then child x, y,
+/// w, h). Widths and heights are at least 1; origins may be 0. Absent when the menu has no submenus.
 fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolError> {
     let Some(value) = field(fields, "c") else {
         return Ok(None);
@@ -759,9 +838,13 @@ fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolE
     let Value::Str(raw) = value else {
         return Err(ProtocolError::WrongType("c"));
     };
+    let count = raw.split(',').count();
+    if count != 4 && count != 8 {
+        return Err(ProtocolError::InvalidValue("c"));
+    }
     let mut parts = raw.split(',');
     let mut values = [0u16; 8];
-    for (index, name) in ["px", "py", "pw", "ph", "cx", "cy", "cw", "ch"].into_iter().enumerate() {
+    for (index, name) in ["px", "py", "pw", "ph", "cx", "cy", "cw", "ch"].into_iter().enumerate().take(count) {
         let Some(part) = parts.next() else {
             return Err(ProtocolError::InvalidValue("c"));
         };
@@ -950,6 +1033,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // --- split view ---
         "split" => &["a", "id", "n", "text", "x", "y"],
         // --- end split view ---
+        "tabdrag" => &["a", "id", "k", "r", "f", "m", "p"], // --- tab ghost ---
         other => return Err(ProtocolError::UnknownType(other.to_string())),
     };
     if let Some((key, _)) = fields
@@ -1156,6 +1240,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "suggestEnd" => Command::SuggestEnd,
         // --- split view ---
         "split" => Command::Split(split_command(fields)?),
+        "tabdrag" => Command::TabDrag(tab_drag_command(fields)?), // --- tab ghost ---
         // --- end split view ---
         _ => return Err(ProtocolError::UnknownType(kind.to_string())),
     })
@@ -2295,7 +2380,28 @@ mod tests {
         );
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,0,10,0,0,10,10"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,4001,10,10"}"#).is_err());
-        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10"}"#).is_err());
+        // The parent card alone (a menu with submenus, none open): the child is absent, width 0.
+        assert_eq!(
+            ok(r#"{"v":1,"t":"size","tok":1,"w":718,"h":300,"c":"354,0,280,300"}"#),
+            Command::PopupSize {
+                tok: 1,
+                w: 718,
+                h: 300,
+                cards: Some(MenuCards {
+                    parent_x: 354,
+                    parent_y: 0,
+                    parent_w: 280,
+                    parent_h: 300,
+                    child_x: 0,
+                    child_y: 0,
+                    child_w: 0,
+                    child_h: 0,
+                }),
+            }
+        );
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,0,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0,10,10,1"}"#).is_err());
     }
 

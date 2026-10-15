@@ -43,6 +43,10 @@ pub enum Command {
     ToggleSplit,
     FocusSplitLeft,
     FocusSplitRight,
+    /// Ctrl+Shift+Up / Down focus the top / bottom pane. Only bound while a stacked split is shown
+    /// (see [`GatedChords`]); otherwise the page keeps the chords.
+    FocusSplitUp,
+    FocusSplitDown,
     CloseSplitPane,
     ShowCommandPalette,
     ToggleNotes,
@@ -95,6 +99,8 @@ pub struct GatedChords {
     pub copy_link: bool,
     /// `ctrl_s_vertical_tabs` while the vertical tab layout is active.
     pub toggle_sidebar: bool,
+    /// A stacked (top/bottom) split is shown: Ctrl+Shift+Up / Down focus its panes.
+    pub stacked_split: bool,
 }
 
 impl GatedChords {
@@ -102,7 +108,14 @@ impl GatedChords {
         Self {
             copy_link,
             toggle_sidebar: ctrl_s_vertical_tabs && vertical_layout,
+            stacked_split: false,
         }
+    }
+
+    /// The same chords plus Ctrl+Shift+Up / Down while a stacked split is shown.
+    pub fn with_stacked_split(mut self, stacked: bool) -> Self {
+        self.stacked_split = stacked;
+        self
     }
 }
 
@@ -111,7 +124,9 @@ const VK_ESCAPE: u32 = 0x1B;
 const VK_PRIOR: u32 = 0x21;
 const VK_NEXT: u32 = 0x22;
 const VK_LEFT: u32 = 0x25;
+const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
+const VK_DOWN: u32 = 0x28;
 const VK_1: u32 = 0x31;
 const VK_8: u32 = 0x38;
 const VK_9: u32 = 0x39;
@@ -218,6 +233,8 @@ pub fn command_for_gated(
     command_for(key, ctrl, shift, alt).or(match (key, ctrl, shift, alt) {
         (VK_C, true, true, false) if gated.copy_link => Some(Command::CopyLink),
         (VK_S, true, false, false) if gated.toggle_sidebar => Some(Command::ToggleSidebar),
+        (VK_UP, true, true, false) if gated.stacked_split => Some(Command::FocusSplitUp),
+        (VK_DOWN, true, true, false) if gated.stacked_split => Some(Command::FocusSplitDown),
         _ => None,
     })
 }
@@ -514,8 +531,25 @@ mod tests {
     }
 
     #[test]
+    fn split_up_down_chords_are_bound_only_while_a_stacked_split_is_shown() {
+        let stacked = GatedChords::default().with_stacked_split(true);
+        assert_eq!(command_for_gated(VK_UP, true, true, false, stacked), Some(Command::FocusSplitUp));
+        assert_eq!(command_for_gated(VK_DOWN, true, true, false, stacked), Some(Command::FocusSplitDown));
+        // Side by side or no split: the page keeps Ctrl+Shift+Up / Down (paragraph selection).
+        assert_eq!(command_for(VK_UP, true, true, false), None);
+        assert_eq!(command_for(VK_DOWN, true, true, false), None);
+        assert_eq!(command_for_gated(VK_UP, true, true, false, GatedChords::new(true, true, true)), None);
+        // Neighbours stay with the page: Ctrl+Up, Shift+Up, Ctrl+Shift+Alt+Down.
+        for (key, ctrl, shift, alt) in [(VK_UP, true, false, false), (VK_UP, false, true, false), (VK_DOWN, true, true, true)] {
+            assert_eq!(command_for_gated(key, ctrl, shift, alt, stacked), None);
+        }
+        // Left / Right stay bound in either orientation.
+        assert_eq!(command_for_gated(VK_LEFT, true, true, false, stacked), Some(Command::FocusSplitLeft));
+    }
+
+    #[test]
     fn gated_lookup_leaves_every_fixed_binding_alone() {
-        let all = GatedChords::new(true, true, true);
+        let all = GatedChords::new(true, true, true).with_stacked_split(true);
         for key in 0..=0xFF_u32 {
             for modifiers in 0..8_u8 {
                 let (ctrl, shift, alt) =

@@ -936,14 +936,24 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<
     }) else {
         return;
     };
-    let bounds = page_bounds(at, i32::from(w), i32::from(h), dpi, work);
-    let bounds = if shown && matches!(at, Anchor::Point(..)) { keep_right_edge(previous, bounds, work) } else { bounds };
+    // A menu with submenus reports its cards: Rust anchors the parent card, and the page around it
+    // (room for a child card on both sides) hangs off it, so a submenu only ever moves the clip.
+    let (bounds, room) = match (at, cards) {
+        (Anchor::Point(..), Some(cards)) => {
+            let parent = page_bounds(at, i32::from(cards.parent_w), i32::from(cards.parent_h), dpi, work);
+            (flyout_bounds(parent, cards, i32::from(w), dpi, work), Some(flyout_room(parent, work, dpi)))
+        }
+        _ => {
+            let bounds = page_bounds(at, i32::from(w), i32::from(h), dpi, work);
+            (if shown && matches!(at, Anchor::Point(..)) { keep_right_edge(previous, bounds, work) } else { bounds }, None)
+        }
+    };
     let width = bounds.right - bounds.left;
     let height = bounds.bottom - bounds.top;
     // Matches the page's 8px overlay radius (--bw-r-overlay).
     let radius = ((8 * dpi + 48) / 96).max(1) as i32;
     if shown && bounds == previous {
-        // The window stays put while a submenu slides. Only the clip follows the two cards.
+        // The window stays put while a submenu opens, slides and closes. Only the clip follows the cards.
         if cards != previous_cards {
             POPUPS.with(|p| {
                 if let Some(popup) = p.borrow_mut().get_mut(&key) {
@@ -962,6 +972,10 @@ pub(super) fn show_sized(owner: HWND, token: u32, w: u16, h: u16, cards: Option<
         }
     });
     set_popup_region(window, width, height, radius, cards, dpi);
+    // Where a child card has room: the page picks its side from this before any submenu can open.
+    if let Some((left, right)) = room {
+        let _ = host.post_json(&room_json(token, left, right));
+    }
     unsafe {
         let _ = SetWindowPos(
             window,
@@ -1277,11 +1291,10 @@ fn popup_bounds(
     }
 }
 
-/// A menu that opens a submenu beside itself reports a wider page, and closing it reports the old
-/// width again. The page slides its panes assuming the window's right edge and top stay where they
-/// are, so a shown popup that changes width keeps that corner (clamped into the work area) and grows
-/// or shrinks on the left and the bottom. An unchanged width leaves placement to `bounds` (a flip
-/// above the anchor included).
+/// A shown anchored page without cards (`c`) that reports a new width keeps its top and right edge
+/// (clamped into the work area) and grows or shrinks on the left and the bottom, like a menu hung
+/// from a right-aligned button. An unchanged width leaves placement to `bounds` (a flip above the
+/// anchor included). Menus with submenus never get here: `flyout_bounds` anchors their parent card.
 fn keep_right_edge(previous: RECT, bounds: RECT, work: RECT) -> RECT {
     let width = bounds.right - bounds.left;
     let height = bounds.bottom - bounds.top;
@@ -1292,6 +1305,38 @@ fn keep_right_edge(previous: RECT, bounds: RECT, work: RECT) -> RECT {
     let top = previous.top.clamp(work.top, (work.bottom - 1).max(work.top));
     let bottom = (top + height).min(work.bottom).max(top + 1);
     RECT { left: right - width, top, right, bottom }
+}
+
+/// The window of a menu that has submenus. The page is the parent card with room for a child card on
+/// both sides, and `cards` says where the parent card sits in it. `parent` is the parent card placed
+/// as if it were the whole menu (anchor, flip, work-area clamp), so the window hangs off it: the
+/// parent's screen rectangle depends only on the parent card, and a child opening, sliding or closing
+/// (which changes only the child card) never moves it. The window runs from the parent's top to the
+/// bottom of the work area, so a child dropped to a low row has room, and may run past the work area
+/// on the sides: that room is clipped away, and the page opens a child only on a side `flyout_room`
+/// says is on screen.
+fn flyout_bounds(parent: RECT, cards: MenuCards, width_css: i32, dpi: u32, work: RECT) -> RECT {
+    let left = parent.left - css_px(i32::from(cards.parent_x), dpi);
+    let top = parent.top - css_px(i32::from(cards.parent_y), dpi);
+    let width = css_px(width_css, dpi).max(css_px(i32::from(cards.parent_x) + i32::from(cards.parent_w), dpi)).max(1);
+    let bottom = work.bottom.max(parent.bottom).max(top + 1);
+    RECT { left, top, right: left + width, bottom }
+}
+
+/// CSS pixels of work area past the parent card's left and right edges (Rust -> page `room`).
+fn flyout_room(parent: RECT, work: RECT, dpi: u32) -> (u32, u32) {
+    let css = |device: i32| (i64::from(device.max(0)) * 96 / i64::from(dpi.max(1))).min(4000) as u32;
+    (css(parent.left - work.left), css(work.right - parent.right))
+}
+
+fn room_json(tok: u32, left: u32, right: u32) -> String {
+    Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "room");
+        out.uint("tok", u64::from(tok));
+        out.uint("l", u64::from(left));
+        out.uint("r", u64::from(right));
+    })
 }
 
 // --- popup surfaces (lane PP) ---
@@ -1470,6 +1515,77 @@ mod tests {
         assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(700, 50, 900, 350), work)), (700, 50, 900, 350));
         // A taller submenu would have been placed higher. The parent stays at its old top and the window grows down.
         assert_eq!(key(keep_right_edge(rect(700, 100, 900, 400), rect(660, 40, 1200, 520), work)), (360, 100, 900, 580));
+    }
+
+    /// The parent card's screen rectangle: the window origin plus its card in the clip.
+    fn parent_on_screen(window: RECT, cards: MenuCards, dpi: u32) -> RECT {
+        let card = card_device_rect(cards.parent_x, cards.parent_y, cards.parent_w, cards.parent_h, dpi, window.right - window.left, window.bottom - window.top).unwrap();
+        RECT { left: window.left + card.left, top: window.top + card.top, right: window.left + card.right, bottom: window.top + card.bottom }
+    }
+
+    fn child_on_screen(window: RECT, cards: MenuCards, dpi: u32) -> Option<RECT> {
+        let card = card_device_rect(cards.child_x, cards.child_y, cards.child_w, cards.child_h, dpi, window.right - window.left, window.bottom - window.top)?;
+        Some(RECT { left: window.left + card.left, top: window.top + card.top, right: window.left + card.right, bottom: window.top + card.bottom })
+    }
+
+    #[test]
+    fn a_submenu_opening_sliding_and_closing_never_moves_the_parent_card_on_either_side() {
+        let key = |r: RECT| (r.left, r.top, r.right, r.bottom);
+        let work = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+        // The page: the parent card (280 x 600 CSS px) with 354 px of room on both sides (718 + 280 wide).
+        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 280, parent_h: 600, child_x: 0, child_y: 0, child_w: 0, child_h: 0 };
+        let with_child = |x: u16, w: u16| MenuCards { child_x: x, child_y: 120, child_w: w, child_h: 200, ..parent_only };
+        for dpi in [96, 120, 144, 192] {
+            for (at, side) in [
+                // The main menu hangs right-aligned from the menu button at the right of the screen: no
+                // room on the right, so its submenus open to the left.
+                (Anchor::Point(POINT { x: 1900, y: 80 }, Placement::BelowRight), "left"),
+                // A tab's context menu at the pointer on the left of the screen: room on the right.
+                (Anchor::Point(POINT { x: 300, y: 80 }, Placement::BelowLeft), "right"),
+                // Near the bottom: the parent flips above the anchor, the child still never moves it.
+                (Anchor::Point(POINT { x: 300, y: 1000 }, Placement::AboveLeft), "right"),
+            ] {
+                let place = |cards: MenuCards| {
+                    let parent = page_bounds(at, i32::from(cards.parent_w), i32::from(cards.parent_h), dpi, work);
+                    flyout_bounds(parent, cards, 988, dpi, work)
+                };
+                let shut = place(parent_only);
+                let parent = parent_on_screen(shut, parent_only, dpi);
+                // The parent card is where the anchor put it, as if it were the whole menu.
+                let alone = page_bounds(at, 280, 600, dpi, work);
+                assert_eq!((parent.left, parent.top), (alone.left, alone.top), "{side} at {dpi}");
+                assert!(parent.bottom <= work.bottom && parent.left >= work.left && parent.right <= work.right);
+                // The side the page will pick from `room` (a 280 px child needs 284 px).
+                let (left, right) = flyout_room(alone, work, dpi);
+                let picked = if right >= 284 { "right" } else if left >= 284 { "left" } else { "neither" };
+                assert_eq!(picked, side, "room {left} {right} at {dpi}");
+                // The child's column at rest, then part way out of the parent's edge, then gone again.
+                let (rest, part) = if side == "right" { (with_child(638, 280), with_child(638, 120)) } else { (with_child(70, 280), with_child(230, 120)) };
+                for cards in [part, rest, part, parent_only] {
+                    let window = place(cards);
+                    assert_eq!(key(window), key(shut), "the window never moves or resizes ({side} at {dpi})");
+                    assert_eq!(key(parent_on_screen(window, cards, dpi)), key(parent), "the parent never moves ({side} at {dpi})");
+                }
+                // The child shows beside the parent on its side, with the gap between them, below its top.
+                let child = child_on_screen(place(rest), rest, dpi).unwrap();
+                if side == "right" { assert!(child.left > parent.right) } else { assert!(child.right < parent.left) }
+                assert!(child.top > parent.top && child.right <= work.right && child.left >= work.left);
+                // The window runs to the bottom of the work area so a low child has room.
+                assert_eq!(shut.bottom, work.bottom);
+            }
+        }
+    }
+
+    #[test]
+    fn room_beside_the_parent_card_is_reported_in_css_pixels_inside_the_work_area() {
+        let work = RECT { left: -1920, top: 0, right: 0, bottom: 1040 };
+        let parent = RECT { left: -600, top: 40, right: -180, bottom: 940 };
+        assert_eq!(flyout_room(parent, work, 96), (1320, 180));
+        // 150%: 180 device px is 120 CSS px; a parent touching the edge has none.
+        assert_eq!(flyout_room(parent, work, 144), (880, 120));
+        assert_eq!(flyout_room(RECT { left: -1920, ..parent }, work, 96).0, 0);
+        let json = room_json(9, 880, 120);
+        assert_eq!(json, r#"{"v":1,"t":"room","tok":9,"l":880,"r":120}"#);
     }
 
     #[test]

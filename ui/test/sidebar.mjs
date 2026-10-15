@@ -40,6 +40,25 @@ test('sidebar group headers derive label, colour, collapse and count from the le
   );
 });
 
+test('pinned tiles drop on the nearest grid slot and neighbours step to the slot they take', () => {
+  // A 3-up grid of 32px tiles, 4px apart: two rows.
+  const tiles = [[16, 16], [52, 16], [88, 16], [16, 52], [52, 52]];
+  assert.equal(logic.nearestTile(tiles, 20, 18), 0);
+  assert.equal(logic.nearestTile(tiles, 80, 20), 2);
+  assert.equal(logic.nearestTile(tiles, 50, 60), 4);
+  // Tile 0 dragged onto slot 2: tiles 1 and 2 step back one slot; the second row stays.
+  assert.deepEqual(logic.tileShift(tiles, 1, 0, 2), [-36, 0]);
+  assert.deepEqual(logic.tileShift(tiles, 2, 0, 2), [-36, 0]);
+  assert.deepEqual(logic.tileShift(tiles, 3, 0, 2), [0, 0]);
+  // Tile 4 dragged onto slot 1: tile 2 wraps down to the start of the second row, tile 3 steps right.
+  assert.deepEqual(logic.tileShift(tiles, 2, 4, 1), [-72, 36]);
+  assert.deepEqual(logic.tileShift(tiles, 3, 4, 1), [36, 0]);
+  // Landing last among the pins means "before the first unpinned tab", so it stays pinned-first.
+  assert.equal(logic.pinnedBeforeId([11, 12], 0, 30), 11);
+  assert.equal(logic.pinnedBeforeId([11, 12], 2, 30), 30);
+  assert.equal(logic.pinnedBeforeId([11, 12], 2, 0), 0);
+});
+
 test('scroll-into-view delta is zero for visible rows and minimal for clipped rows', () => {
   assert.equal(logic.scrollIntoViewDelta(20, 100, 40, 20), 0);
   assert.equal(logic.scrollIntoViewDelta(20, 100, 10, 20), -10);

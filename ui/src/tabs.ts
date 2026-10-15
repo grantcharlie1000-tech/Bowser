@@ -12,6 +12,10 @@ import { validSplitCommand, type PairMsg, type SplitCommand } from './split-prot
 // --- vertical sidebar (lane S) ---
 import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
+// --- tab ghost (docs/design/tab-drag.md) ---
+import { announce, GhostSession, routeGhostMessage } from './tab-drag';
+import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, nextPhase, stripBand, type DragPhase } from './tab-drag-logic';
+// --- end tab ghost ---
 import {
   beforeSlotId,
   groupColourIndex,
@@ -27,7 +31,6 @@ import {
   privateTabName,
   pruneFavs,
   rememberFav,
-  slotShift,
   stepMoveBefore,
   scrollDeltaForWheel,
   type Entry,
@@ -46,7 +49,6 @@ const ISLAND: readonly string[] = [
   'var(--bw-group-7)',
 ];
 const ACCENT = 'var(--bw-accent)';
-const DRAG_START_PX = 4;
 /** Above this many tabs, position animations are skipped (each one costs a measured layout). */
 const FLIP_MAX_TABS = 80;
 /** Scale of the held tab; it rides inside the landing transform and reaches 1 as the tab arrives. */
@@ -100,6 +102,19 @@ interface Drag {
   dest: number;
   /** Pointer travel since the drag started (px). */
   dx: number;
+  // --- tab ghost ---
+  readonly startY: number;
+  readonly pointerType: string;
+  /** Home (unshifted) left edge and width of every tab in `order`, for the gap offsets. */
+  lefts: readonly number[];
+  readonly widths: readonly number[];
+  /** Attached to the strip (reorders) or floating off it (follows the pointer over the page). */
+  phase: DragPhase;
+  /** The native ghost, when Rust shows one (mouse drags). */
+  ghost: GhostSession | null;
+  lastX: number;
+  lastY: number;
+  // --- end tab ghost ---
 }
 
 function colourOf(index: number): string {
@@ -294,7 +309,6 @@ export function startTabs(strip: HTMLElement): void {
   // --- split view ---
   // The window's split pair (joined capsule) and a tab drag that left the strip for the page.
   let pair: PairMsg | null = null;
-  let splitStartY = 0;
   let splitOut = false;
   let splitFrame = 0;
   let splitPoint: { x: number; y: number } | null = null;
@@ -463,6 +477,12 @@ export function startTabs(strip: HTMLElement): void {
     }
     place(strip, top);
     strip.append(...ghosts);
+    // --- tab ghost --- the host has laid out the released tab's slot: the ghost glides there.
+    if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
+      const r = ghostLand.node.root.getBoundingClientRect();
+      ghostLand.session.retarget(r.left, r.top);
+    }
+    // --- end tab ghost ---
 
     if (animate) {
       // FLIP "last, invert, play": jump each moved tab back to where it was, then release.
@@ -557,11 +577,140 @@ export function startTabs(strip: HTMLElement): void {
       landTransition(l.node);
       return;
     }
+    snapHome();
+  };
+
+  /** Ends a landing at once: every tab jumps to its slot with no transition and `.landing` is dropped. */
+  const snapHome = (): void => {
     strip.classList.add('settle');
-    for (const n of nodes) setShift(n, 0);
+    for (const n of tabNodes.values()) setShift(n, 0);
     void strip.offsetWidth;
     strip.classList.remove('settle');
     endLanding();
+  };
+
+  // ----- tab ghost (docs/design/tab-drag.md) -----
+
+  /** The released ghost still gliding to its slot, and the tab it stands for. */
+  let ghostLand: { readonly session: GhostSession; readonly node: TabNode } | null = null;
+
+  /** Gap between neighbouring tabs (the strip's flex gap). */
+  const stripGap = (): number => {
+    const gap = parseFloat(getComputedStyle(strip).columnGap);
+    return Number.isFinite(gap) ? gap : 4;
+  };
+
+  /** Home (unshifted) centres, left edges and widths of `order`: shifts and the lift scale removed. */
+  const measureHome = (order: readonly TabNode[]): { centers: number[]; lefts: number[]; widths: number[] } => {
+    const centers: number[] = [];
+    const lefts: number[] = [];
+    const widths: number[] = [];
+    for (const n of order) {
+      const r = n.root.getBoundingClientRect();
+      const width = n.root.offsetWidth || r.width;
+      const centre = r.left + r.width / 2 - n.shift;
+      centers.push(centre);
+      lefts.push(centre - width / 2);
+      widths.push(width);
+    }
+    return { centers, lefts, widths };
+  };
+
+  const titleOf = (n: TabNode): string => n.root.getAttribute('aria-label') ?? n.title.textContent ?? '';
+
+  const ghostHooks = (node: TabNode): { shown(): void; lost(): void; reveal(): void } => ({
+    shown: () => {
+      const d = drag;
+      if (!d || d.node !== node) return;
+      // The ghost has the tab now: its own copy turns into the gap, wherever the slot is.
+      node.root.classList.add('lifted');
+      setShift(node, 0);
+      layoutDrag(d);
+    },
+    lost: () => {
+      node.root.classList.remove('lifted');
+      const d = drag;
+      if (d && d.node === node) layoutDrag(d);
+    },
+    reveal: () => {
+      node.root.classList.remove('lifted');
+      if (ghostLand?.node === node) ghostLand = null;
+    },
+  });
+
+  /**
+   * Lays the strip out for the held tab at the last pointer position: attached, the neighbours open
+   * the gap under the pointer (the ghost, or the tab itself without one, rides above); floating, the
+   * gap closes and, over the page, Rust shows the split drop zone.
+   */
+  const layoutDrag = (d: Drag): void => {
+    const x = d.lastX;
+    const y = d.lastY;
+    const ghosted = d.ghost?.live === true;
+    const box = strip.getBoundingClientRect();
+    const phase = nextPhase(d.phase, stripBand(box), x, y);
+    if (phase !== d.phase) {
+      d.phase = phase;
+      d.ghost?.phase(phase === 'floating');
+      announce(dragAnnouncement(phase === 'floating' ? 'float' : 'attach', titleOf(d.node)));
+    }
+    d.dx = x - d.startX;
+    if (!ghosted) {
+      // No ghost (touch, pen, or no native layer): the tab itself slides along the strip.
+      // shift tracks the transform, so a later setShift(n, 0) clears the dragged tab like any other.
+      d.node.shift = d.dx;
+      d.node.root.style.transform = reduced() ? `translateX(${d.dx}px)` : `translateX(${d.dx}px) scale(${LIFT_SCALE})`;
+    }
+    // --- split view ---
+    // Off the strip and below it the tab is over the page: the strip keeps its order and Rust shows
+    // where the tab would open (one report per frame); back on the strip the reorder resumes.
+    const out = phase === 'floating' && overPage(y, box.bottom);
+    if (out !== splitOut) {
+      splitOut = out;
+      strip.classList.toggle('split-out', out);
+      if (!out) {
+        cancelAnimationFrame(splitFrame);
+        splitFrame = 0;
+        sendSplit({ v: 1, t: 'split', a: 'end', id: d.node.id });
+      }
+    }
+    if (out) {
+      splitPoint = wirePoint(x, y);
+      if (splitFrame === 0) {
+        splitFrame = requestAnimationFrame(() => {
+          splitFrame = 0;
+          if (splitOut && splitPoint && drag) sendSplit({ v: 1, t: 'split', a: 'over', id: drag.node.id, x: splitPoint.x, y: splitPoint.y });
+        });
+      }
+    }
+    // --- end split view ---
+    if (phase === 'floating') {
+      // Off the strip: no slot. With a ghost the gap closes up behind it; without one the tab stays
+      // under the pointer and its neighbours go home.
+      d.dest = d.from;
+      const closed = ghosted ? gapShifts(d.lefts, d.widths, stripGap(), d.from, d.from, true) : null;
+      d.order.forEach((n, i) => {
+        if (i !== d.from) setShift(n, closed?.[i] ?? 0);
+      });
+      return;
+    }
+    const edgeDelta = dragScrollDelta(x, box.left, box.right);
+    if (edgeDelta !== 0) {
+      strip.scrollLeft += edgeDelta;
+      updateEdges();
+      const home = measureHome(d.order);
+      d.centers = home.centers;
+      d.lefts = home.lefts;
+    }
+    // The slot comes from the pointer, not from the dragged tab's centre: grabbing a wide tab by its edge
+    // must not shift the drop by the grab offset.
+    d.dest = dropIndex(d.centers, d.from, x);
+    const shifts = gapShifts(d.lefts, d.widths, stripGap(), d.from, d.dest, false);
+    d.order.forEach((n, i) => {
+      if (i !== d.from) setShift(n, shifts[i] ?? 0);
+    });
+    // The hidden copy sits in the gap, so a release can glide the ghost straight into it.
+    if (ghosted) setShift(d.node, shifts[d.from] ?? 0);
   };
 
   const endDrag = (commit: boolean): void => {
@@ -572,6 +721,22 @@ export function startTabs(strip: HTMLElement): void {
     try { if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
     if (!d.active) return;
     ignoreClick = true;
+    const ghost = d.ghost;
+    const outcome = dropOutcome(commit, d.phase, splitOut, d.from, d.dest);
+    const title = titleOf(d.node);
+    announce(outcome === 'reorder'
+      ? dragAnnouncement('drop', title, d.dest + 1, d.order.length)
+      : outcome === 'settle' ? dragAnnouncement('drop', title) : dragAnnouncement(outcome, title));
+    const homeX = d.lefts[d.from] ?? 0;
+    const homeY = d.node.root.getBoundingClientRect().top;
+    // The ghost glides to the slot (or home), fades on a split drop, or just goes with reduced motion.
+    const releaseGhost = (slotX: number): void => {
+      if (!ghost) return;
+      if (ghost.live) ghostLand = { session: ghost, node: d.node };
+      if (reduced()) ghost.end('none');
+      else if (outcome === 'split') ghost.end('drop', homeX, homeY);
+      else ghost.end('settle', slotX, homeY);
+    };
     // --- split view ---
     // Released over the page: Rust opens the split if it showed a drop target there.
     if (splitOut) {
@@ -584,6 +749,7 @@ export function startTabs(strip: HTMLElement): void {
       d.node.root.style.transform = '';
       d.node.shift = 0;
       for (const n of d.order) setShift(n, 0);
+      releaseGhost(homeX);
       schedule();
       return;
     }
@@ -594,6 +760,7 @@ export function startTabs(strip: HTMLElement): void {
     d.node.root.classList.remove('dragging');
     endLanding();
     landing = { node: d.node, signature, timer: 0, off: null };
+    releaseGhost(outcome === 'reorder' ? homeX + d.node.shift : homeX);
     if (commit && d.dest !== d.from) {
       // The host's reorder then arrives and render() makes one FLIP from the release point to the
       // slot; if it never comes, the tab eases back to its origin.
@@ -619,7 +786,7 @@ export function startTabs(strip: HTMLElement): void {
 
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
-    if (ev.button !== 0 || drag !== null || landing !== null || !(ev.target instanceof Element)) return;
+    if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
     if (ev.target.closest('.close, .audio, .ball')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
@@ -628,73 +795,44 @@ export function startTabs(strip: HTMLElement): void {
     }
     const node = tabNodes.get(Number(tab.dataset.id));
     if (!node) return;
+    // A press while the last drop is still landing (its ease, or up to REFUSE_MS waiting for the host)
+    // takes over: the landing ends where it is going and this press can lift a tab straight away.
+    ghostLand?.session.abandon(); // --- tab ghost ---
+    if (landing !== null) snapHome();
     const order = visibleTabs();
     const from = order.indexOf(node);
     if (from < 0) return;
-    const centers = order.map((n) => {
-      const r = n.root.getBoundingClientRect();
-      return r.left + r.width / 2;
-    });
-    drag = { pointerId: ev.pointerId, startX: ev.clientX, node, order, centers, from, active: false, dest: from, dx: 0 };
-    splitStartY = ev.clientY; // --- split view ---
+    const home = measureHome(order);
+    drag = {
+      pointerId: ev.pointerId, startX: ev.clientX, node, order, centers: home.centers, from, active: false, dest: from, dx: 0,
+      startY: ev.clientY, pointerType: ev.pointerType, lefts: home.lefts, widths: home.widths, phase: 'attached', ghost: null,
+      lastX: ev.clientX, lastY: ev.clientY,
+    };
     try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
 
   const onPointerMove = (ev: PointerEvent): void => {
     const d = drag;
     if (!d || ev.pointerId !== d.pointerId) return;
-    const dx = ev.clientX - d.startX;
     if (!d.active) {
-      // --- split view --- a drag straight down (onto the page) starts a drag too
-      if (Math.abs(dx) < DRAG_START_PX && Math.abs(ev.clientY - splitStartY) < DRAG_START_PX) return;
+      // Either axis lifts the tab: along the strip to reorder, down onto the page to split.
+      if (Math.abs(ev.clientX - d.startX) < DRAG_START_PX && Math.abs(ev.clientY - d.startY) < DRAG_START_PX) return;
       d.active = true;
       d.node.root.classList.add('dragging');
       window.addEventListener('keydown', onDragKey, true);
+      // --- tab ghost --- Rust lifts a native copy off the strip; the point grabbed stays under the cursor.
+      const r = d.node.root.getBoundingClientRect();
+      const { gx, gy } = grabOffset(d.startX, d.startY, r);
+      const pinned = d.node.root.classList.contains('pinned');
+      // The close button shows on the hovered tab unless the tab is too narrow for it (tabs.css).
+      const close = !pinned && (d.node.root.classList.contains('active') || d.node.root.offsetWidth >= 123);
+      d.ghost = GhostSession.start(d.node.id, 'tab', r.width, r.height, gx, gy, close, d.pointerType, ghostHooks(d.node));
+      announce(dragAnnouncement('lift', titleOf(d.node)));
+      // --- end tab ghost ---
     }
-    d.dx = dx;
-    // shift tracks the transform, so a later setShift(n, 0) clears the dragged tab like any other.
-    d.node.shift = dx;
-    d.node.root.style.transform = reduced() ? `translateX(${dx}px)` : `translateX(${dx}px) scale(${LIFT_SCALE})`;
-    const edgeDelta = dragScrollDelta(ev.clientX, strip.getBoundingClientRect().left, strip.getBoundingClientRect().right);
-    if (edgeDelta !== 0) {
-      strip.scrollLeft += edgeDelta;
-      updateEdges();
-      d.centers = d.order.map((n) => { const r = n.root.getBoundingClientRect(); return r.left + r.width / 2; });
-    }
-    // --- split view ---
-    // Below the strip the tab is over the page: the strip keeps its order and Rust shows where the
-    // tab would open (one report per frame); back over the strip the reorder resumes.
-    const out = overPage(ev.clientY, strip.getBoundingClientRect().bottom);
-    if (out !== splitOut) {
-      splitOut = out;
-      strip.classList.toggle('split-out', out);
-      if (!out) {
-        cancelAnimationFrame(splitFrame);
-        splitFrame = 0;
-        sendSplit({ v: 1, t: 'split', a: 'end', id: d.node.id });
-      }
-    }
-    if (out) {
-      splitPoint = wirePoint(ev.clientX, ev.clientY);
-      if (splitFrame === 0) {
-        splitFrame = requestAnimationFrame(() => {
-          splitFrame = 0;
-          if (splitOut && splitPoint && drag) sendSplit({ v: 1, t: 'split', a: 'over', id: drag.node.id, x: splitPoint.x, y: splitPoint.y });
-        });
-      }
-      d.dest = d.from;
-      d.order.forEach((n, i) => {
-        if (i !== d.from) setShift(n, 0);
-      });
-      return;
-    }
-    // --- end split view ---
-    // The slot comes from the pointer, not from the dragged tab's centre: grabbing a wide tab by its edge
-    // must not shift the drop by the grab offset.
-    d.dest = dropIndex(d.centers, d.from, ev.clientX);
-    d.order.forEach((n, i) => {
-      if (i !== d.from) setShift(n, slotShift(d.centers, i, d.from, d.dest));
-    });
+    d.lastX = ev.clientX;
+    d.lastY = ev.clientY;
+    layoutDrag(d);
   };
 
   const onPointerEnd = (ev: PointerEvent, commit: boolean): void => {
@@ -876,6 +1014,9 @@ export function startTabs(strip: HTMLElement): void {
         schedule();
         break;
       // --- end split view ---
+      case 'tabghost': // --- tab ghost ---
+        routeGhostMessage(msg);
+        break;
     }
   });
 

@@ -2,7 +2,7 @@
 //! See docs/design/split-view.md and the "Split view" section of docs/html-chrome-protocol.md.
 //!
 //! - `pair` goes to the tab strip and the toolbar: which two tabs form the window's pair, which side
-//!   is focused and whether the pair is shown.
+//!   is focused, whether the pair is shown and whether it is side by side or stacked.
 //! - `splitpick` fills the empty side (`View::Split`): the open tabs it can take and recently closed
 //!   pages; `splitdrop` turns the same view into the drop-zone card while a tab is dragged;
 //!   `splithide` clears it.
@@ -11,7 +11,7 @@
 
 use super::json::{capped, Json};
 use super::protocol::{favicon_data_uri, MAX_TAB_TITLE_CHARS};
-use crate::split_view::Pane;
+use crate::split_view::{DropZone, Orientation, Pane};
 
 /// Most open tabs listed on the empty side.
 pub const MAX_PICK_TABS: usize = 100;
@@ -22,17 +22,34 @@ pub const MAX_HOST_CHARS: usize = 253;
 /// Total base64 favicon text one `splitpick` message may carry; rows past it get no favicon.
 pub const PICK_FAVICON_BUDGET: usize = 192 * 1024;
 
+/// The pair half a pane belongs to: `l` (first) or `r` (second).
 fn side(pane: Pane) -> &'static str {
-    match pane {
+    match pane.half() {
         Pane::Left => "l",
-        Pane::Right => "r",
+        _ => "r",
     }
 }
 
-/// `{"v":1,"t":"pair","l":..,"r":..,"f":"l"|"r","shown":..}` with wire ids (`TabId + 1`), or
-/// `l` and `r` both `0` when the window has no pair.
-pub fn pair_json(pair: Option<(u32, u32, Pane, bool)>) -> String {
-    let (l, r, focused, shown) = pair.unwrap_or((0, 0, Pane::Left, false));
+/// The wire name of a page edge (`l`, `r`, `t`, `b`) or corner (`tl`, `tr`, `bl`, `br`). The same
+/// names say where a pane of a larger layout sits.
+pub fn edge(zone: DropZone) -> &'static str {
+    match zone {
+        DropZone::Left => "l",
+        DropZone::Right => "r",
+        DropZone::Top => "t",
+        DropZone::Bottom => "b",
+        DropZone::TopLeft => "tl",
+        DropZone::TopRight => "tr",
+        DropZone::BottomLeft => "bl",
+        DropZone::BottomRight => "br",
+    }
+}
+
+/// `{"v":1,"t":"pair","l":..,"r":..,"f":"l"|"r","shown":..,"o":"h"|"v"}` with wire ids
+/// (`TabId + 1`), or `l` and `r` both `0` when the window has no pair. `l` and `r` are the first
+/// and second tab: left and right side by side (`o` `h`), top and bottom stacked (`o` `v`).
+pub fn pair_json(pair: Option<(u32, u32, Pane, bool, Orientation)>) -> String {
+    let (l, r, focused, shown, orientation) = pair.unwrap_or((0, 0, Pane::Left, false, Orientation::SideBySide));
     Json::object(|o| {
         o.int("v", 1);
         o.string("t", "pair");
@@ -40,6 +57,34 @@ pub fn pair_json(pair: Option<(u32, u32, Pane, bool)>) -> String {
         o.uint("r", u64::from(r));
         o.string("f", side(focused));
         o.bool("shown", shown);
+        o.string("o", if orientation.is_stacked() { "v" } else { "h" });
+    })
+}
+
+/// The `pair` message of a layout of three or four panes: the pair fields as [`pair_json`] (`l` and
+/// `r` the halves' lead tabs, `f` the focused half, `o` the primary split) plus `panes`, every pane
+/// in tree order as `{"id":..,"at":..}` with `at` an edge (`l`, `r`, `t`, `b`: a whole half) or a
+/// corner (`tl`, `tr`, `bl`, `br`: a quarter), and `fp`, the focused pane's `at`. A pair never
+/// carries `panes`, so its message is unchanged.
+pub fn layout_json(pair: (u32, u32, Pane, bool, Orientation), panes: &[(u32, DropZone)], focused: DropZone) -> String {
+    let (l, r, f, shown, orientation) = pair;
+    Json::object(|o| {
+        o.int("v", 1);
+        o.string("t", "pair");
+        o.uint("l", u64::from(l));
+        o.uint("r", u64::from(r));
+        o.string("f", side(f));
+        o.bool("shown", shown);
+        o.string("o", if orientation.is_stacked() { "v" } else { "h" });
+        o.array("panes", |a| {
+            for (id, at) in panes.iter().take(4) {
+                a.object(|o| {
+                    o.uint("id", u64::from(*id));
+                    o.string("at", edge(*at));
+                });
+            }
+        });
+        o.string("fp", edge(focused));
     })
 }
 
@@ -60,14 +105,15 @@ pub struct PickClosed<'a> {
 }
 
 /// `{"v":1,"t":"splitpick","side":..,"tabs":[{id,title,host,fav,private}],"closed":[{n,title,host}]}`.
-/// Lists are capped, text is capped on character boundaries and favicons pass the PNG gate and the
-/// message budget (a row without one gets `""`).
-pub fn pick_json(pane: Pane, tabs: &[PickTab<'_>], closed: &[PickClosed<'_>]) -> String {
+/// `side` is the page edge the empty pane sits against (`l`, `r`, `t` or `b`). Lists are capped,
+/// text is capped on character boundaries and favicons pass the PNG gate and the message budget (a
+/// row without one gets `""`).
+pub fn pick_json(side: DropZone, tabs: &[PickTab<'_>], closed: &[PickClosed<'_>]) -> String {
     let mut budget = PICK_FAVICON_BUDGET;
     Json::object(|o| {
         o.int("v", 1);
         o.string("t", "splitpick");
-        o.string("side", side(pane));
+        o.string("side", edge(side));
         o.array("tabs", |a| {
             for tab in tabs.iter().take(MAX_PICK_TABS) {
                 let fav = tab
@@ -97,12 +143,13 @@ pub fn pick_json(pane: Pane, tabs: &[PickTab<'_>], closed: &[PickClosed<'_>]) ->
     })
 }
 
-/// `{"v":1,"t":"splitdrop","side":..,"title":..}`: the drop-zone card for a dragged tab.
-pub fn drop_json(pane: Pane, title: &str) -> String {
+/// `{"v":1,"t":"splitdrop","side":..,"title":..}`: the drop-zone card for a dragged tab over the
+/// `side` half of the page (`l`, `r`, `t` or `b`).
+pub fn drop_json(side: DropZone, title: &str) -> String {
     Json::object(|o| {
         o.int("v", 1);
         o.string("t", "splitdrop");
-        o.string("side", side(pane));
+        o.string("side", edge(side));
         o.string("title", capped(title, MAX_TAB_TITLE_CHARS));
     })
 }
@@ -159,10 +206,32 @@ mod tests {
     #[test]
     fn pair_message_names_both_halves_and_the_focused_side() {
         assert_eq!(
-            pair_json(Some((3, 8, Pane::Right, true))),
-            r#"{"v":1,"t":"pair","l":3,"r":8,"f":"r","shown":true}"#
+            pair_json(Some((3, 8, Pane::Right, true, Orientation::SideBySide))),
+            r#"{"v":1,"t":"pair","l":3,"r":8,"f":"r","shown":true,"o":"h"}"#
         );
-        assert_eq!(pair_json(None), r#"{"v":1,"t":"pair","l":0,"r":0,"f":"l","shown":false}"#);
+        assert_eq!(
+            pair_json(Some((3, 8, Pane::Left, false, Orientation::Stacked))),
+            r#"{"v":1,"t":"pair","l":3,"r":8,"f":"l","shown":false,"o":"v"}"#
+        );
+        assert_eq!(pair_json(None), r#"{"v":1,"t":"pair","l":0,"r":0,"f":"l","shown":false,"o":"h"}"#);
+    }
+
+    #[test]
+    fn layout_message_lists_every_pane_and_the_focused_one() {
+        let panes = [(3, DropZone::TopLeft), (5, DropZone::BottomLeft), (8, DropZone::Right)];
+        assert_eq!(
+            layout_json((3, 8, Pane::LeftTrail, true, Orientation::SideBySide), &panes, DropZone::BottomLeft),
+            r#"{"v":1,"t":"pair","l":3,"r":8,"f":"l","shown":true,"o":"h","panes":[{"id":3,"at":"tl"},{"id":5,"at":"bl"},{"id":8,"at":"r"}],"fp":"bl"}"#
+        );
+        assert_eq!(DropZone::CORNERS.map(edge), ["tl", "tr", "bl", "br"]);
+        assert_eq!(drop_json(DropZone::TopRight, "x"), r#"{"v":1,"t":"splitdrop","side":"tr","title":"x"}"#);
+    }
+
+    #[test]
+    fn split_edges_name_all_four_sides() {
+        assert_eq!(DropZone::ALL.map(edge), ["l", "r", "t", "b"]);
+        assert_eq!(drop_json(DropZone::Bottom, "x"), r#"{"v":1,"t":"splitdrop","side":"b","title":"x"}"#);
+        assert!(pick_json(DropZone::Top, &[], &[]).contains(r#""side":"t""#));
     }
 
     #[test]
@@ -173,14 +242,14 @@ mod tests {
             .map(|id| PickTab { id: id + 1, title: &long, host: "example.com", png: Some(&icon), private: false })
             .collect();
         let closed: Vec<PickClosed<'_>> = (0..12).map(|_| PickClosed { title: "Old", host: "old.test" }).collect();
-        let json = pick_json(Pane::Left, &tabs, &closed);
+        let json = pick_json(DropZone::Left, &tabs, &closed);
         assert_eq!(json.matches("\"id\":").count(), MAX_PICK_TABS);
         assert_eq!(json.matches("\"n\":").count(), MAX_PICK_CLOSED);
         assert!(!json.contains(&"x".repeat(MAX_TAB_TITLE_CHARS + 1)));
         assert!(json.contains("data:image/png;base64,"));
         let bad = [0u8; 40];
         let one = [PickTab { id: 1, title: "<b>", host: "h", png: Some(&bad), private: true }];
-        let json = pick_json(Pane::Right, &one, &[]);
+        let json = pick_json(DropZone::Right, &one, &[]);
         assert_eq!(
             json,
             r#"{"v":1,"t":"splitpick","side":"r","tabs":[{"id":1,"title":"\u003cb>","host":"h","fav":"","private":true}],"closed":[]}"#
@@ -193,7 +262,7 @@ mod tests {
         let tabs: Vec<PickTab<'_>> = (0..40)
             .map(|id| PickTab { id: id + 1, title: "t", host: "h", png: Some(&icon), private: false })
             .collect();
-        let json = pick_json(Pane::Left, &tabs, &[]);
+        let json = pick_json(DropZone::Left, &tabs, &[]);
         let favs = json.matches("data:image/png;base64,").count();
         assert!(favs > 0 && favs < 40, "{favs} favicons");
         assert!(json.len() < PICK_FAVICON_BUDGET + 40 * 200);
@@ -265,11 +334,22 @@ mod tests {
         ];
         let closed = [PickClosed { title: "Old page 😀", host: "old.example" }];
         let content = format!(
-            "{{\"pair\":{},\"pairNone\":{},\"pick\":{},\"drop\":{},\"hide\":{},\"private\":{}}}\n",
-            pair_json(Some((3, 8, Pane::Right, true))),
+            "{{\"pair\":{},\"pairStacked\":{},\"pairNone\":{},\"quad\":{},\"tee\":{},\"pick\":{},\"pickTop\":{},\"pickCorner\":{},\"drop\":{},\"dropBottom\":{},\"dropCorner\":{},\"hide\":{},\"private\":{}}}\n",
+            pair_json(Some((3, 8, Pane::Right, true, Orientation::SideBySide))),
+            pair_json(Some((3, 8, Pane::Left, true, Orientation::Stacked))),
             pair_json(None),
-            pick_json(Pane::Right, &tabs, &closed),
-            drop_json(Pane::Left, "Example"),
+            layout_json(
+                (3, 8, Pane::RightTrail, true, Orientation::SideBySide),
+                &[(3, DropZone::TopLeft), (5, DropZone::BottomLeft), (8, DropZone::TopRight), (9, DropZone::BottomRight)],
+                DropZone::BottomRight
+            ),
+            layout_json((3, 8, Pane::Left, false, Orientation::Stacked), &[(3, DropZone::TopLeft), (5, DropZone::TopRight), (8, DropZone::Bottom)], DropZone::TopLeft),
+            pick_json(DropZone::Right, &tabs, &closed),
+            pick_json(DropZone::Top, &[], &[]),
+            pick_json(DropZone::BottomLeft, &[], &[]),
+            drop_json(DropZone::Left, "Example"),
+            drop_json(DropZone::Bottom, "Below"),
+            drop_json(DropZone::TopRight, "Corner"),
             hide_json(),
             private_json(4, 2),
         );

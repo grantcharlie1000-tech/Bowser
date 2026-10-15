@@ -166,9 +166,17 @@ dialog host accepts `panel` and its own family (`notes`, `priv`, `ren`); only th
 accepts `hpage`.
 
 The popup host alone accepts `{v:1,t:"size",tok,w,h}` (`tok` unsigned u32; `w` and `h` whole CSS
-pixels from 1 to 4000). A submenu adds `c`, eight comma-separated integers `px,py,pw,ph,cx,cy,cw,ch`
-(parent card, then child card, CSS pixels; widths and heights 1 to 4000, origins 0 to 4000) so the
-window can clip to those two cards. Still six keys at most. Also `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
+pixels from 1 to 4000). A menu that has submenus adds `c`: four comma-separated integers `px,py,pw,ph`
+(the parent card) while no child card shows, or eight, `px,py,pw,ph,cx,cy,cw,ch` (then the part of
+the child card that shows), CSS pixels; widths and heights 1 to 4000, origins 0 to 4000. Still six
+keys at most. With `c`, Rust places the parent card (`pw`,`ph`) as if it were the whole menu (anchor,
+flip, work-area clamp) and the window around it: `w` wide, its top `py` above the parent's, running to
+the bottom of the work area (`html_popup.rs` `flyout_bounds`). The page keeps room for a child card on
+both sides of the parent, so `w` and the parent card never change while submenus open and close; the
+window is clipped to the cards, and the page moves that clip every frame while a child card slides.
+Once placed, Rust posts `{v:1,t:"room",tok,l,r}`: CSS pixels of work area past the parent card's left
+and right edges (0 to 4000). The page opens a child card on the right when it fits there, on the left
+when only the left has room. Also `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
 `{v:1,t:"dismiss",tok}` (`tok` unsigned u32). Toolbar, tab-strip and rail hosts reject all panel,
 dialog and popup command families before dispatch. `ready` is accepted by every host.
 
@@ -416,6 +424,52 @@ a tab or workspace switch, on owner move or size, and when the same rail button 
 confirmation the flyout asked for is up, its deactivation is ignored. Opening a page in the current
 tab closes the flyout and focuses the page; opening one in a new tab keeps it open. The panel
 state's `solid` is `false`: the page paints its own opaque surface.
+
+## Split view (`pair`, `?view=split`, `View::Split`)
+
+Behaviour is in docs/design/split-view.md. Builders: `src/chrome_host/split.rs`; parsers:
+`ui/src/split-protocol.ts`, tested against `ui/test/fixtures/split-messages.json`, which Rust's own
+test writes. Tab ids are wire ids (`TabId + 1`). A pair has a *first* and a *second* slot (`l`,
+`r`): left and right side by side, top and bottom when stacked.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> toolbar, tabs | `{v:1,t:"pair",l,r,f,shown,o}` | exactly these keys. `l`, `r`: the first and second tab, both `0` with no pair (then `shown` is `false`); `f`: `l` or `r`, the focused slot; `shown`: one of the pair is the active tab; `o`: `h` side by side or `v` stacked (required; added with stacked split) |
+| Rust -> toolbar, tabs | `{v:1,t:"pair",l,r,f,shown,o,panes,fp}` | a layout of three or four panes (a pair never carries `panes`, so its message is unchanged). `l`, `r`, `f`, `shown`, `o` as above for the two halves' lead tabs and the primary split; `panes`: 3 or 4 `{id,at}` in tree order (the strip's capsule order), distinct ids including `l` and `r`, whose places tile the page exactly once; `at` is `l`/`r`/`t`/`b` for a whole half or `tl`/`tr`/`bl`/`br` for a quarter; `fp`: the focused pane's `at` |
+| Rust -> split | `{v:1,t:"splitpick",side,tabs,closed}` | the empty side; `side` is the place it covers: `l`, `r`, `t` or `b` (`t`/`b` only for a stacked pair), or a quarter `tl`, `tr`, `bl`, `br` in a layout of three or four panes. `tabs` <= 100 `{id,title,host,fav,private}`, `closed` <= 8 `{n,title,host}` |
+| Rust -> split | `{v:1,t:"splitdrop",side,title}` | the drop-zone card while a tab is dragged over the page; `side` is where the tab would open: a half `l`, `r`, `t`, `b` or (corner drops over a shown split) a quarter `tl`, `tr`, `bl`, `br`. Rust sizes the host to exactly the pane the tab will get in the planned layout (`split_view::drop_target_rect`); the drag messages from the strip (`over` with `x`,`y`, `drop`, `end`) are unchanged |
+| Rust -> split | `{v:1,t:"splithide"}` / `{v:1,t:"privatepage",id,n}` | clear; the private landing (docs/design/private-tabs.md) |
+| tabs -> Rust | `{v:1,t:"split",a:"over",id,x,y}` | the dragged tab `id` is off the strip (below it) or off the vertical sidebar (right of it); `x`, `y` integers 0 to 16384, CSS px in the tabs view (clamped by the page). Rust maps the point to the page and picks the edge zone (`split_view::drop_zone`). At most one per animation frame |
+| tabs -> Rust | `{v:1,t:"split",a:"drop"\|"end",id}` | released over the page / dragged back onto the strip or cancelled. A `drop` acts only on the zone Rust last showed for that tab; with none it does nothing |
+| split -> Rust | `{v:1,t:"split",a:"pick",id}` / `a:"reopen",n` / `a:"go",text` / `a:"close"` / `a:"focus"` / `a:"closeprivate"` | the empty side's commands, each with exactly its fields |
+
+The tabs host may send only `over`, `drop` and `end`; the split host only the others. Commands are
+queued and run from `WM_SPLIT_COMMAND`.
+
+## Tab drag ghost (`tabdrag` / `tabghost`, `View::Tabs`)
+
+A held tab is drawn by a native layered window that follows the cursor in screen coordinates
+(docs/design/tab-drag.md). Mouse drags only. All coordinates are CSS px of the tab view; `id` is the
+wire tab id (at least 1). Each message stays within six fields.
+
+| Page to Rust | Meaning |
+| --- | --- |
+| `{"v":1,"t":"tabdrag","a":"start","id":N,"k":"tab"\|"row"\|"tile","r":"w,h,gx,gy,c"}` | The tab is lifted. It is `w` x `h` (1 to 4096), grabbed at (`gx` ≤ w, `gy` ≤ h). `c` is 1 when its close glyph shows. |
+| `{"v":1,"t":"tabdrag","a":"move","id":N,"f":bool}` | Floating (`true`) or attached. Sent when the phase changes and as a keepalive every 500 ms. |
+| `{"v":1,"t":"tabdrag","a":"end","id":N,"m":"settle","p":"x,y"}` | Released: glide to the slot whose top-left is (x, y) (0 to 16384). A second one re-aims the glide. |
+| `{"v":1,"t":"tabdrag","a":"end","id":N,"m":"drop","p":"x,y"}` | Released over the page. The ghost fades if a split drop zone is showing; otherwise it glides home to (x, y). |
+| `{"v":1,"t":"tabdrag","a":"end","id":N,"m":"none"}` | Released with no animation: the ghost vanishes. |
+
+| Rust to page | Meaning |
+| --- | --- |
+| `{"v":1,"t":"tabghost","a":"shown","id":N}` | The ghost is up: the page hides its copy and the slot becomes the gap. |
+| `{"v":1,"t":"tabghost","a":"land","id":N}` | The ghost has arrived: the page shows its copy. The ghost goes 34 ms later. |
+| `{"v":1,"t":"tabghost","a":"gone","id":N}` | The ghost was taken down without landing (watchdog, unknown tab). Mid-drag, the page drags its own copy again. |
+
+Rust takes a held ghost down after 2 s of silence, after 300 ms with the primary button up and no
+`end`, or when the window is no longer the active, visible window. The page shows its copy 600 ms
+after a release if no `land` comes. Fixture: `ui/test/fixtures/tab-drag-messages.json`. It is
+written by `tab_drag_messages_match_committed_fixture` and read by `ui/test/tab-drag.mjs`.
 
 ## Settings page (`?view=settings`, `View::Settings`)
 

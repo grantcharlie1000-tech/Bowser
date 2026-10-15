@@ -10,9 +10,17 @@ import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
 import {
-  buildSidebarEntries, dropIndexVertical, rovingTarget, scrollIntoViewDelta, verticalSlotShift,
-  workspaceIconName,
+  buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, rovingTarget, scrollIntoViewDelta, tileShift,
+  verticalSlotShift, workspaceIconName, type TilePoint,
 } from './sidebar-logic';
+// --- split view ---
+import { overPageBeside, wirePoint } from './split-logic';
+import { validSplitCommand, type SplitCommand } from './split-protocol';
+// --- end split view ---
+// --- tab ghost (docs/design/tab-drag.md) ---
+import { announce, GhostSession } from './tab-drag';
+import { DRAG_START_PX, dragAnnouncement, dropOutcome, grabOffset, nextPhase, sidebarBand, type DragPhase } from './tab-drag-logic';
+// --- end tab ghost ---
 
 const ISLAND = [
   'var(--bw-group-0)', 'var(--bw-group-1)', 'var(--bw-group-2)', 'var(--bw-group-3)',
@@ -41,13 +49,26 @@ interface SidebarGroupNode {
 }
 interface SidebarDrag {
   readonly pointerId: number;
+  readonly startX: number;
   readonly startY: number;
   readonly node: SidebarTabNode;
   readonly order: readonly SidebarTabNode[];
   centers: readonly number[];
+  /** Pinned tiles only: every tile's centre in the grid; the tile moves in both axes. Null for list rows. */
+  readonly tiles: readonly TilePoint[] | null;
   readonly from: number;
   active: boolean;
   destination: number;
+  // --- tab ghost ---
+  readonly pointerType: string;
+  /** Home left edge (client px) and size of the held row or tile. */
+  readonly homeLeft: number;
+  readonly size: readonly [number, number];
+  phase: DragPhase;
+  ghost: GhostSession | null;
+  lastX: number;
+  lastY: number;
+  // --- end tab ghost ---
 }
 export interface SidebarWorkspace { readonly name: string; readonly icon: string }
 
@@ -158,6 +179,16 @@ export function createSidebarRenderer(root: HTMLElement): {
   let pendingRender: { readonly msg: TabsMsg; readonly favs: ReadonlyMap<number, string>; readonly workspace: SidebarWorkspace } | null = null;
   let ignoreClick = false;
   let rendered = false;
+  // --- split view ---
+  // A row or tile dragged out of the sidebar to the right is over the page: Rust shows which half
+  // (left, right, top or bottom) it would open in, as for a tab dragged below the horizontal strip.
+  let splitOut = false;
+  let splitFrame = 0;
+  let splitPoint: { x: number; y: number } | null = null;
+  const sendSplit = (cmd: SplitCommand): void => {
+    if (validSplitCommand(cmd)) send(cmd);
+  };
+  // --- end split view ---
 
   // Fixed top region: workspace switcher and new-tab row.
   const header = el('button', 'side-workspace bw-focus-inset');
@@ -232,6 +263,7 @@ export function createSidebarRenderer(root: HTMLElement): {
 
   const rowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving), .side-group'));
   const tabRowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving):not(.pinned)'));
+  const pinTilesOf = (): HTMLElement[] => Array.from(pinGrid.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)'));
 
   const updateFades = (): void => {
     list.classList.toggle('can-up', list.scrollTop > 1);
@@ -354,15 +386,172 @@ export function createSidebarRenderer(root: HTMLElement): {
     rendered = true;
     reveal(activeRow);
     updateFades();
+    // --- tab ghost --- the host has laid out the released row's slot: the ghost glides there.
+    if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
+      const slot = ghostLand.node.root.getBoundingClientRect();
+      ghostLand.session.retarget(slot.left, slot.top);
+    }
+    // --- end tab ghost ---
+  };
+
+  // ----- tab ghost (docs/design/tab-drag.md) -----
+
+  /** The released ghost still gliding to its slot, and the row it stands for. */
+  let ghostLand: { readonly session: GhostSession; readonly node: SidebarTabNode } | null = null;
+
+  const rowTitle = (node: SidebarTabNode): string => node.root.getAttribute('aria-label') ?? node.title.textContent ?? '';
+
+  const moveNode = (node: SidebarTabNode, x: number, y: number): void => {
+    node.shift = y;
+    node.root.style.transform = x === 0 && y === 0 ? '' : x === 0 ? `translateY(${y}px)` : `translate(${x}px, ${y}px)`;
+  };
+
+  const ghostHooks = (node: SidebarTabNode): { shown(): void; lost(): void; reveal(): void } => ({
+    shown: () => {
+      const current = drag;
+      if (!current || current.node !== node) return;
+      node.root.classList.add('lifted');
+      moveNode(node, 0, 0);
+      layoutDrag(current);
+    },
+    lost: () => {
+      node.root.classList.remove('lifted');
+      const current = drag;
+      if (current && current.node === node) layoutDrag(current);
+    },
+    reveal: () => {
+      node.root.classList.remove('lifted');
+      if (ghostLand?.node === node) ghostLand = null;
+    },
+  });
+
+  /** Where the held row's (hidden) slot sits relative to its home: its destination's offset. */
+  const slotOffset = (current: SidebarDrag): TilePoint => {
+    if (current.tiles !== null) {
+      const home = current.tiles[current.from] ?? [0, 0];
+      const there = current.tiles[current.destination] ?? home;
+      return [there[0] - home[0], there[1] - home[1]];
+    }
+    return [0, (current.centers[current.destination] ?? 0) - (current.centers[current.from] ?? 0)];
+  };
+
+  /**
+   * Lays the sidebar out for the held row at the last pointer position: attached, the rows (or
+   * tiles) open the gap under the pointer; floating, the gap closes and, right of the sidebar, Rust
+   * shows the split drop zone.
+   */
+  const layoutDrag = (current: SidebarDrag): void => {
+    const dx = current.lastX - current.startX;
+    const dy = current.lastY - current.startY;
+    const ghosted = current.ghost?.live === true;
+    const box = root.getBoundingClientRect();
+    const phase = nextPhase(current.phase, sidebarBand(box), current.lastX, current.lastY);
+    if (phase !== current.phase) {
+      current.phase = phase;
+      current.ghost?.phase(phase === 'floating');
+      announce(dragAnnouncement(phase === 'floating' ? 'float' : 'attach', rowTitle(current.node)));
+    }
+    // --- split view ---
+    // Off the sidebar to the right the tab is over the page: the rows keep their order and Rust shows
+    // where the tab would open (one report per frame); back on the sidebar the reorder resumes.
+    const out = phase === 'floating' && overPageBeside(current.lastX, box.right);
+    if (out !== splitOut) {
+      splitOut = out;
+      root.classList.toggle('split-out', out);
+      if (!out) {
+        cancelAnimationFrame(splitFrame);
+        splitFrame = 0;
+        sendSplit({ v: 1, t: 'split', a: 'end', id: current.node.item.id });
+      }
+    }
+    if (out) {
+      splitPoint = wirePoint(current.lastX, current.lastY);
+      if (splitFrame === 0) {
+        splitFrame = requestAnimationFrame(() => {
+          splitFrame = 0;
+          if (splitOut && splitPoint && drag) sendSplit({ v: 1, t: 'split', a: 'over', id: drag.node.item.id, x: splitPoint.x, y: splitPoint.y });
+        });
+      }
+    }
+    // --- end split view ---
+    if (phase === 'floating') {
+      current.destination = current.from;
+      const last = current.order.length - 1;
+      current.order.forEach((tab, index) => {
+        if (index === current.from) return;
+        if (!ghosted) { moveNode(tab, 0, 0); return; }
+        // The ghost is off the sidebar: the rows after it close the gap (tiles reflow in grid order).
+        if (current.tiles !== null) {
+          const [x, y] = tileShift(current.tiles, index, current.from, last);
+          moveNode(tab, x, y);
+        } else {
+          moveNode(tab, 0, verticalSlotShift(current.centers, index, current.from, last));
+        }
+      });
+      if (!ghosted) current.node.root.style.transform = `translate(${dx}px, ${dy}px)`;
+      return;
+    }
+    if (current.tiles !== null) {
+      const tiles = current.tiles;
+      const home = tiles[current.from] ?? [0, 0];
+      current.destination = nearestTile(tiles, ghosted ? current.lastX : home[0] + dx, ghosted ? current.lastY : home[1] + dy);
+      current.order.forEach((tab, index) => {
+        if (index === current.from) return;
+        const [x, y] = tileShift(tiles, index, current.from, current.destination);
+        moveNode(tab, x, y);
+      });
+      if (ghosted) moveNode(current.node, ...slotOffset(current));
+      else current.node.root.style.transform = `translate(${dx}px, ${dy}px)`;
+      return;
+    }
+    if (!ghosted) current.node.root.style.transform = `translateY(${dy}px)`;
+    const rect = list.getBoundingClientRect();
+    const edge = dragScrollDelta(current.lastY, rect.top, rect.bottom);
+    if (edge !== 0) {
+      const before = list.scrollTop;
+      list.scrollTop += edge;
+      // Everything in the list moved by what actually scrolled (shifts and the lift are unaffected).
+      const moved = list.scrollTop - before;
+      current.centers = current.centers.map((centre) => centre - moved);
+    }
+    // With a ghost the slot follows the pointer; without one, the row's own centre (as before).
+    const probe = ghosted ? current.lastY : (current.centers[current.from] ?? 0) + dy;
+    current.destination = dropIndexVertical(current.centers, current.from, probe);
+    current.order.forEach((tab, index) => {
+      if (index === current.from) return;
+      moveNode(tab, 0, verticalSlotShift(current.centers, index, current.from, current.destination));
+    });
+    if (ghosted) moveNode(current.node, ...slotOffset(current));
   };
 
   const endDrag = (commit: boolean): void => {
     const current = drag;
     if (!current) return;
     drag = null;
+    window.removeEventListener('keydown', onDragKey, true);
     try { if (current.node.root.hasPointerCapture(current.pointerId)) current.node.root.releasePointerCapture(current.pointerId); } catch { /* capture may have ended */ }
     if (!current.active) return;
     ignoreClick = true;
+    // --- tab ghost ---
+    const ghost = current.ghost;
+    const outcome = dropOutcome(commit, current.phase, splitOut, current.from, current.destination);
+    const title = rowTitle(current.node);
+    announce(outcome === 'reorder'
+      ? dragAnnouncement('drop', title, current.destination + 1, current.order.length)
+      : outcome === 'settle' ? dragAnnouncement('drop', title) : dragAnnouncement(outcome, title));
+    const home = current.tiles !== null
+      ? { x: (current.tiles[current.from]?.[0] ?? 0) - current.size[0] / 2, y: (current.tiles[current.from]?.[1] ?? 0) - current.size[1] / 2 }
+      : { x: current.homeLeft, y: (current.centers[current.from] ?? 0) - current.size[1] / 2 };
+    const [ox, oy] = outcome === 'reorder' ? slotOffset(current) : [0, 0];
+    if (ghost) {
+      if (ghost.live) ghostLand = { session: ghost, node: current.node };
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) ghost.end('none');
+      else if (outcome === 'split') ghost.end('drop', home.x, home.y);
+      else ghost.end('settle', home.x + ox, home.y + oy);
+    }
+    // The hidden copy goes home without a transition, so its slot can be measured when the host re-lays it.
+    current.node.root.style.transition = 'none';
+    // --- end tab ghost ---
     current.node.root.classList.remove('dragging');
     current.node.root.style.transform = '';
     list.classList.remove('is-dragging');
@@ -370,15 +559,35 @@ export function createSidebarRenderer(root: HTMLElement): {
       node.shift = 0;
       node.root.style.transform = '';
     }
+    void current.node.root.offsetWidth; // --- tab ghost ---
+    current.node.root.style.transition = ''; // --- tab ghost ---
+    // --- split view --- released over the page: Rust opens the split if it showed a drop target.
+    if (splitOut) {
+      splitOut = false;
+      cancelAnimationFrame(splitFrame);
+      splitFrame = 0;
+      root.classList.remove('split-out');
+      sendSplit({ v: 1, t: 'split', a: commit ? 'drop' : 'end', id: current.node.item.id });
+    } else // --- end split view ---
     if (commit && current.destination !== current.from) {
       const others = current.order.filter((node) => node !== current.node).map((node) => node.item.id);
-      send({ v: 1, t: 'tabmove', id: current.node.item.id, before: beforeId(others, current.destination) });
+      const before = current.tiles !== null
+        ? pinnedBeforeId(others, current.destination, Number(tabRowsOf()[0]?.dataset.id ?? 0))
+        : beforeId(others, current.destination);
+      send({ v: 1, t: 'tabmove', id: current.node.item.id, before });
     }
     if (pendingRender) {
       const pending = pendingRender;
       pendingRender = null;
       render(pending.msg, pending.favs, pending.workspace);
     }
+  };
+
+  const onDragKey = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    endDrag(false);
   };
 
   const toggleGroup = (row: HTMLElement): void => { send({ v: 1, t: 'group', a: 'toggle', key: Number(row.dataset.key) }); };
@@ -426,40 +635,48 @@ export function createSidebarRenderer(root: HTMLElement): {
     ignoreClick = false;
     if (event.button !== 0 || !(event.target instanceof Element) || event.target.closest('.side-close, .side-group, .side-workspace, .side-newtab')) return;
     const row = event.target.closest<HTMLElement>('.side-tab');
-    if (!row || row.classList.contains('pinned')) return; // pinned tiles are a grid: no vertical drag
+    if (!row) return;
+    // Pinned tiles are a 3-up grid: they reorder among themselves and move in both axes.
+    const pinned = row.classList.contains('pinned');
     const node = tabs.get(Number(row.dataset.id));
-    const order = tabRowsOf().map((element) => tabs.get(Number(element.dataset.id))).filter((value): value is SidebarTabNode => value !== undefined);
+    const order = (pinned ? pinTilesOf() : tabRowsOf()).map((element) => tabs.get(Number(element.dataset.id))).filter((value): value is SidebarTabNode => value !== undefined);
     if (!node) return;
     const from = order.indexOf(node);
     if (from < 0) return;
-    const centers = order.map((tab) => { const rect = tab.root.getBoundingClientRect(); return rect.top + rect.height / 2; });
-    drag = { pointerId: event.pointerId, startY: event.clientY, node, order, centers, from, active: false, destination: from };
+    const rects = order.map((tab) => tab.root.getBoundingClientRect());
+    const centers = rects.map((rect) => rect.top + rect.height / 2);
+    const tiles = pinned ? rects.map((rect): TilePoint => [rect.left + rect.width / 2, rect.top + rect.height / 2]) : null;
+    ghostLand?.session.abandon(); // --- tab ghost --- a new press ends the last landing at once
+    const own = rects[from];
+    drag = {
+      pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, node, order, centers, tiles, from, active: false, destination: from,
+      pointerType: event.pointerType, homeLeft: own?.left ?? 0, size: [own?.width ?? 0, own?.height ?? 0], phase: 'attached', ghost: null,
+      lastX: event.clientX, lastY: event.clientY,
+    };
     try { node.root.setPointerCapture(event.pointerId); } catch { /* window listeners still end the drag */ }
   });
   root.addEventListener('pointermove', (event) => {
     const current = drag;
     if (!current || current.pointerId !== event.pointerId) return;
+    const dx = event.clientX - current.startX;
     const dy = event.clientY - current.startY;
     if (!current.active) {
-      if (Math.abs(dy) < 4) return;
+      if (Math.abs(dy) < DRAG_START_PX && Math.abs(dx) < DRAG_START_PX) return;
       current.active = true;
       current.node.root.classList.add('dragging');
       list.classList.add('is-dragging');
+      window.addEventListener('keydown', onDragKey, true);
+      // --- tab ghost --- Rust lifts a native copy of the row (or tile) off the sidebar.
+      const rect = current.node.root.getBoundingClientRect();
+      const { gx, gy } = grabOffset(current.startX, current.startY, rect);
+      const tile = current.tiles !== null;
+      current.ghost = GhostSession.start(current.node.item.id, tile ? 'tile' : 'row', rect.width, rect.height, gx, gy, !tile, current.pointerType, ghostHooks(current.node));
+      announce(dragAnnouncement('lift', rowTitle(current.node)));
+      // --- end tab ghost ---
     }
-    current.node.root.style.transform = `translateY(${dy}px)`;
-    const rect = list.getBoundingClientRect();
-    const edge = dragScrollDelta(event.clientY, rect.top, rect.bottom);
-    if (edge !== 0) {
-      list.scrollTop += edge;
-      current.centers = current.order.map((tab) => { const bounds = tab.root.getBoundingClientRect(); return bounds.top + bounds.height / 2; });
-    }
-    current.destination = dropIndexVertical(current.centers, current.from, (current.centers[current.from] ?? 0) + dy);
-    current.order.forEach((tab, index) => {
-      if (index === current.from) return;
-      const shift = verticalSlotShift(current.centers, index, current.from, current.destination);
-      tab.shift = shift;
-      tab.root.style.transform = shift === 0 ? '' : `translateY(${shift}px)`;
-    });
+    current.lastX = event.clientX;
+    current.lastY = event.clientY;
+    layoutDrag(current);
   });
   root.addEventListener('pointerup', (event) => { if (drag?.pointerId === event.pointerId) endDrag(true); });
   root.addEventListener('pointercancel', (event) => { if (drag?.pointerId === event.pointerId) endDrag(false); });

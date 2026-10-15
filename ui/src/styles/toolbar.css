@@ -224,15 +224,15 @@ html[data-scheme="dark"] #app {
   height: 100%;
 }
 
-/* 13px text (the suggestion titles below use the same size), starting 6px after the site button:
-   the same x as the titles in the list (hover.css .bw-suggest-row), so the typed text and the rows
-   line up as one column. */
+/* 13px text (the suggestion titles below use the same size), starting 10px after the site button
+   (which sits 4px in, in the corner): the same x as the titles in the list (hover.css
+   .bw-suggest-row), so the typed text and the rows line up as one column. */
 .omni,
 .omni-display {
   position: absolute;
   inset: 0;
   margin: 0;
-  padding: 0 var(--bw-space-2) 0 var(--bw-space-1_5);
+  padding: 0 var(--bw-space-2) 0 calc(var(--bw-space-1_5) + var(--bw-space-1));
   font: inherit;
   font-size: var(--bw-text-omni);
 }
@@ -287,8 +287,8 @@ html[data-scheme="dark"] #app {
 
 /* ---- Buttons inside the pill: 20px, round, 16px glyph ----
    Quiet at rest (secondary colour), primary under the pointer or when pressed. The site button sits
-   8px in, so its glyph centres on the same x as the suggestion rows' lead icons below it; the last
-   trailing button sits 4px in, the pill's own end inset. Keyboard focus keeps the shared inset ring
+   4px in, tucked into the corner, the same inset as the last trailing button (the pill's own end
+   inset). Keyboard focus keeps the shared inset ring
    (.bw-focus-inset), drawn inside the button so the pill's clip never cuts it. */
 .pill .bw-icon-btn {
   color: var(--bw-text-2);
@@ -304,7 +304,7 @@ html[data-scheme="dark"] #app {
 }
 
 .tb-site {
-  margin-left: var(--bw-space-2);
+  margin-left: var(--bw-space-1);
 }
 
 .tb-split {

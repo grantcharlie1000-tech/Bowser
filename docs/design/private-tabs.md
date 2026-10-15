@@ -27,6 +27,9 @@ Only selectors keyed on `data-private`, `.tb-private` or the landing (`.pm-*`) m
 crown, left lens, right lens, bridge. The lenses are filled (solid shades), which is what keeps the
 mark legible at 14-16px where outlined lenses close up. `glasses.svg` is the shades alone (filled,
 no stroke) for the 8px favicon badge; `glint.svg` is two parallel strokes used only by the landing.
+`private-window.svg` (main menu "New private window") is a window wearing the shades: shapes, in
+source order, frame, title bar, left lens, right lens, bridge; the lenses are the same filled and
+stroked half-ovals, narrower so they clear the frame at 16px.
 The landing addresses the shapes through `MARK_PARTS` (`ui/src/private-logic.ts`); a test fails if
 the drawing and the indices drift.
 
@@ -73,6 +76,7 @@ chip and the landing just fade in), nothing in native paint.
 |---|---|---|---|
 | Chip pop (scale .6 → 1.08 → 1) and shades drop (3 units) | the chip appears | 240ms | one small element |
 | Strip mark: shades settle | a private tab enters the strip | 240ms | 16px SVG |
+| Main menu "New private window": shades lift 1.5 units and settle back (0.5-unit dip) | the row is selected | 240ms | 16px SVG |
 | Landing: hat rises, shades slide on with a 0.6-unit settle | first show for a tab | 320ms + 560ms | 80px SVG, main thread |
 | Landing: glint across both lenses (clipped to the lens fills) | after the shades land, and once more at ~7s | 900ms each | same SVG |
 | Landing: text and cards rise 8px | first show for a tab | 250ms | compositor |
