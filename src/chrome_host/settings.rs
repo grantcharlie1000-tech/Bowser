@@ -142,6 +142,10 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.string("defaultBrowser", s.default_browser);
         out.string("downloadDir", capped(s.download_dir, MAX_DOWNLOAD_DIR_CHARS));
         out.bool("downloadAsk", s.download_ask);
+        out.bool("translateOffer", settings.translate_offer);
+        out.bool("translateAuto", settings.translate_auto);
+        out.string("translateTarget", &settings.translate_target);
+        out.array("translateTargets", |items| for code in crate::translate::target_languages() { items.string(code); });
     })
     .expect("settings is a panel token")
 }
@@ -173,6 +177,13 @@ pub enum Action {
     DownloadAsk(bool),
     /// "Change" the download folder: Bowser shows the native folder picker and keeps the choice.
     DownloadFolder,
+    /// "Offer to translate pages in other languages": applied at once.
+    TranslateOffer(bool),
+    /// "Translate automatically on sites set to always translate": applied at once.
+    TranslateAuto(bool),
+    /// The language pages are translated into: empty (the Windows display language) or one of
+    /// [`crate::translate::target_languages`]. Anything else is refused here.
+    TranslateTarget(String),
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -196,6 +207,12 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "autoupdate" if on_only => Action::AutoUpdate(f.on?),
         "history" if on_only => Action::History(f.on?),
         "downloadask" if on_only => Action::DownloadAsk(f.on?),
+        "translateoffer" if on_only => Action::TranslateOffer(f.on?),
+        "translateauto" if on_only => Action::TranslateAuto(f.on?),
+        "translatetarget" if text_only => {
+            let text = f.text.as_deref()?;
+            (text.is_empty() || crate::translate::target_languages().contains(&text)).then(|| Action::TranslateTarget(text.to_owned()))?
+        }
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
@@ -443,6 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn translate_commands_carry_exactly_their_own_field() {
+        let mut offer = fields("translateoffer");
+        assert_eq!(map_command(&offer), None, "needs its switch");
+        offer.on = Some(false);
+        assert_eq!(map_command(&offer), Some(Action::TranslateOffer(false)));
+        offer.text = Some("x".into());
+        assert_eq!(map_command(&offer), None);
+        let mut auto = fields("translateauto");
+        auto.on = Some(true);
+        assert_eq!(map_command(&auto), Some(Action::TranslateAuto(true)));
+        let mut target = fields("translatetarget");
+        assert_eq!(map_command(&target), None, "needs its text");
+        for (text, expected) in [("", Some("")), ("en", Some("en")), ("fr", Some("fr")), ("EN", None), ("en-GB", None), ("ru", None), ("xx", None), ("<b>", None), ("fr ", None)] {
+            target.text = Some(text.into());
+            assert_eq!(map_command(&target), expected.map(|e| Action::TranslateTarget(e.into())), "{text:?}");
+        }
+        target.on = Some(true);
+        assert_eq!(map_command(&target), None, "a language carries no switch");
+    }
+
+    #[test]
+    fn the_snapshot_reports_the_translate_settings_and_the_languages_to_pick_from() {
+        let mut settings = Settings::default();
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""translateOffer":true,"translateAuto":false,"translateTarget":"","translateTargets":["en","#), "{json}");
+        settings.translate_target = "fr".into();
+        settings.translate_auto = true;
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
+        assert!(json.ends_with(r#"]}}"#), "{json}");
+    }
+
+    #[test]
     fn the_snapshot_reports_every_field_and_guests_never_record_history() {
         let mut settings = Settings::default();
         settings.blocker_allow = vec!["example.com".into()];
@@ -450,7 +500,7 @@ mod tests {
         assert!(json.starts_with(r#"{"v":1,"t":"snap","p":"settings","d":{"tabLayout":"horizontal","sidebarWidth":260,"#), "{json}");
         assert!(json.contains(r#""searchEngine":null,"searchFallback":"default""#), "{json}");
         assert!(json.contains(r#""profile":"Work \"\u003cb>\"""#), "{json}");
-        assert!(json.ends_with(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes","downloadDir":"C:\\Users\\Work\\Downloads","downloadAsk":false}}"#), "{json}");
+        assert!(json.contains(r#""ack":"saved","error":"","readable":true,"defaultBrowser":"yes","downloadDir":"C:\\Users\\Work\\Downloads","downloadAsk":false,"translateOffer":true,"#), "{json}");
         let guest = Snapshot { guest: true, ..sample(&settings) };
         assert!(snapshot_json(&guest).contains(r#""historyEnabled":false,"guest":true"#));
         let custom = Snapshot { custom_search: true, ..sample(&settings) };

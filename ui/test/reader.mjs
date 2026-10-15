@@ -28,7 +28,7 @@ const skip = EDGE ? false : 'Microsoft Edge is not installed';
 // Rust's thresholds for showing the toolbar button (src/reader/mod.rs: MIN_ARTICLE_WORDS, MAX_LINK_PERCENT).
 const MIN_WORDS = 250;
 const MAX_LINK = 35;
-const RESULT = /^r1\|(ok|none|err)\|(off|reader|calm)\|\d{1,7}\|\d{1,3}\|(auto|light|sepia|dark)\|\d{2}$/;
+const RESULT = /^r2\|(ok|none|err)\|(off|reader|calm)\|\d{1,7}\|\d{1,3}\|(auto|light|sepia|dark)\|\d{2}\|[a-z]{0,3}$/;
 
 const DRIVER = `
 (function () {
@@ -285,6 +285,6 @@ test('the script holds to its safety rules', () => {
   assert.doesNotMatch(SCRIPT, /\beval\s*\(|new\s+Function|innerHTML|outerHTML|insertAdjacentHTML|document\.write|fetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket|localStorage|sessionStorage|document\.cookie|postMessage|import\s*\(/);
   assert.doesNotMatch(CSS + BAR, /@import|url\(|expression\(|javascript:/i);
   // The only output is the fixed-shape string.
-  assert.match(SCRIPT, /'r1\|'/);
-  assert.ok(SCRIPT.length < 11000, `script is ${SCRIPT.length} bytes`);
+  assert.match(SCRIPT, /'r2\|'/);
+  assert.ok(SCRIPT.length < 11500, `script is ${SCRIPT.length} bytes`);
 });

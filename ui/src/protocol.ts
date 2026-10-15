@@ -27,9 +27,11 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader' | 'translate';
 /** The reader view button: hidden, offered (the page looks like an article) or on. */
 export type ReaderPill = 'none' | 'available' | 'on';
+/** The translate button: hidden, offered (the page is in another language) or on (showing the translation). */
+export type TranslatePill = 'none' | 'available' | 'on';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
@@ -204,6 +206,8 @@ export interface StateMsg {
   readonly private?: boolean;
   /** The reader view button. Absent in older hosts, which means hidden. */
   readonly reader?: ReaderPill;
+  /** The translate button. Absent in older hosts, which means hidden. */
+  readonly translate?: TranslatePill;
   /** `font_size`, as a percentage of the default chrome font size. Absent in older hosts, which
    * means 100. */
   readonly fontScale?: number;
@@ -462,6 +466,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 }
 
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
+const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
 const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
@@ -945,13 +950,14 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'fontScale', 'uiFont', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'theme'])) return null;
       if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
       if ('showZoom' in raw && !isBool(raw.showZoom)) return null;
       if ('private' in raw && !isBool(raw.private)) return null;
       if ('reader' in raw && !isOneOf(raw.reader, READER_PILL)) return null;
+      if ('translate' in raw && !isOneOf(raw.translate, TRANSLATE_PILL)) return null;
       if ('fontScale' in raw && !isInt(raw.fontScale, 50, 200)) return null;
       if ('uiFont' in raw && !isStr(raw.uiFont, 64)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
@@ -985,6 +991,7 @@ export function parseInbound(data: unknown): Inbound | null {
         ...(isBool(raw.showZoom) ? { showZoom: raw.showZoom } : {}),
         ...(isBool(raw.private) ? { private: raw.private } : {}),
         ...(isOneOf(raw.reader, READER_PILL) ? { reader: raw.reader } : {}),
+        ...(isOneOf(raw.translate, TRANSLATE_PILL) ? { translate: raw.translate } : {}),
         ...(isInt(raw.fontScale, 50, 200) ? { fontScale: raw.fontScale } : {}),
         ...(isStr(raw.uiFont, 64) ? { uiFont: raw.uiFont } : {}),
         theme: parseTheme(raw.theme),

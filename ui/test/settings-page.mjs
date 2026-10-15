@@ -402,6 +402,64 @@ test('Downloads: the location and Change, the ask switch, each its own command',
   }
 });
 
+test('Translation: two switches and a language select, each its own command, applied at once', () => {
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const offer = rowOf('translateOffer').querySelector('[role="switch"]');
+  const auto = rowOf('translateAuto').querySelector('[role="switch"]');
+  assert.equal(offer.getAttribute('aria-checked'), 'true');
+  assert.equal(auto.getAttribute('aria-checked'), 'false');
+  assert.equal(rowOf('translateOffer').querySelector('.sp-label').textContent, 'Offer to translate pages in other languages');
+  assert.equal(rowOf('translateAuto').querySelector('.sp-label').textContent, 'Translate automatically on sites set to always translate');
+  assert.equal(rowOf('translateOffer').querySelector('.sp-desc').textContent, 'Shows a button in the toolbar. Nothing is downloaded or changed until you click it. Translation runs on this device; page text never leaves it.');
+  assert.equal(rowOf('translateAuto').querySelector('.sp-desc').textContent, 'Only once the language files are already on this device.');
+
+  sent.length = 0;
+  offer.click();
+  auto.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'translateoffer', on: false }, { v: 1, t: 'set', a: 'translateauto', on: true }]);
+  offer.click();
+  assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'translateoffer', on: true });
+  assert.ok(!sent.some((m) => m.a === 'save'), 'never part of save');
+
+  // The select: "My Windows language" first, then one option per code with its English name.
+  const select = rowOf('translateTarget').querySelector('.bw-select-button');
+  assert.equal(select.getAttribute('aria-label'), 'Translate into');
+  assert.equal(select.getAttribute('aria-labelledby'), 'sp-l-translateTarget');
+  assert.equal(select.querySelector('.bw-select-value').textContent, 'My Windows language');
+  select.click();
+  const options = rowOf('translateTarget').querySelectorAll('[role="option"]');
+  assert.deepEqual(options.map((o) => o.querySelector('.bw-menu-label').textContent),
+    ['My Windows language', 'English', 'German', 'Spanish', 'French', 'Italian', 'Dutch', 'Polish', 'Portuguese', 'Turkish']);
+  sent.length = 0;
+  options[4].click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'translatetarget', text: 'fr' }]);
+  assert.equal(select.querySelector('.bw-select-value').textContent, 'French');
+  select.click();
+  rowOf('translateTarget').querySelectorAll('[role="option"]')[0].click();
+  assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'translatetarget', text: '' }, 'the Windows language sends an empty text');
+
+  // The next snapshot is the truth: it moves every control, and a new list of codes rebuilds the select.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, translateOffer: false, translateAuto: true, translateTarget: 'de' } });
+  assert.equal(offer.getAttribute('aria-checked'), 'false');
+  assert.equal(auto.getAttribute('aria-checked'), 'true');
+  assert.equal(rowOf('translateTarget').querySelector('.bw-select-value').textContent, 'German');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, translateTarget: 'sv', translateTargets: ['en', 'sv'] } });
+  const rebuilt = rowOf('translateTarget').querySelector('.bw-select-button');
+  assert.equal(rebuilt.querySelector('.bw-select-value').textContent, 'sv', 'an unknown code shows the code');
+  rebuilt.click();
+  assert.deepEqual(rowOf('translateTarget').querySelectorAll('[role="option"]').map((o) => o.querySelector('.bw-menu-label').textContent), ['My Windows language', 'English', 'sv']);
+  rebuilt.click();
+
+  // An unreadable settings file disables all three, like the other rows.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
+  assert.equal(offer.disabled, true);
+  assert.equal(auto.disabled, true);
+  assert.equal(rowOf('translateTarget').querySelector('.bw-select-button').disabled, true);
+  deliver(fixture.snap);
+  assert.equal(offer.disabled, false);
+  assert.equal(rowOf('translateTarget').querySelector('.bw-select-button').disabled, false);
+});
+
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);

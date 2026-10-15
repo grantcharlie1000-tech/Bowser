@@ -768,6 +768,7 @@ fn theme_json(like_toolbar: bool) -> String {
         show_zoom: false,
         private: false,
         reader: crate::reader::Pill::Hidden,
+        translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
         theme: chrome_host::theme_tokens(palette),

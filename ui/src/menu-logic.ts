@@ -33,7 +33,7 @@ export const MENU_ICONS: readonly string[] = [
   'file', 'file-text', 'find', 'folder', 'folder-download', 'folder-open', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'image', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'package', 'pause', 'pencil', 'person',
   'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
-  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'trash', 'unlock', 'unsplit',
+  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-left', 'split-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'translate', 'trash', 'unlock', 'unsplit',
   'video', 'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',

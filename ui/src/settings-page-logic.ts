@@ -142,6 +142,14 @@ export interface SettingsSnapshot {
   downloadDir: string;
   /** "Ask where to save each file before downloading"; its own command, never part of `save`. */
   downloadAsk: boolean;
+  /** "Offer to translate pages in other languages"; its own command, never part of `save`. */
+  translateOffer: boolean;
+  /** "Translate automatically on sites set to always translate"; its own command. */
+  translateAuto: boolean;
+  /** `''` means the Windows display language, else a 2-3 letter lower-case code. Its own command. */
+  translateTarget: string;
+  /** The codes `translateTarget` may be set to, in the order the page lists them. */
+  translateTargets: string[];
 }
 
 type RecordValue = Record<string, unknown>;
@@ -155,7 +163,24 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame', 'showHomeButton',
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
-  'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk'];
+  'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets'];
+/** A language code the translation settings carry: two or three lower-case letters. */
+const LANGUAGE_RE = /^[a-z]{2,3}$/;
+/** The most target languages Rust may list. */
+export const MAX_TRANSLATE_TARGETS = 64;
+/** English names of the languages Bowser can translate into; a code not listed here shows as itself. */
+const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
+  en: 'English', de: 'German', es: 'Spanish', fr: 'French', it: 'Italian', nl: 'Dutch', pl: 'Polish', pt: 'Portuguese', tr: 'Turkish',
+};
+export const TRANSLATE_TARGET_SYSTEM_LABEL = 'My Windows language';
+export function languageName(code: string): string {
+  return Object.hasOwn(LANGUAGE_NAMES, code) ? LANGUAGE_NAMES[code]! : code;
+}
+/** The "Translate into" options: the Windows language (value `''`) first, then one per code. */
+export function translateTargetOptions(codes: readonly string[]): Array<{ value: string; label: string }> {
+  return [{ value: '', label: TRANSLATE_TARGET_SYSTEM_LABEL }, ...codes.map((code) => ({ value: code, label: languageName(code) }))];
+}
 /** The longest download folder Rust sends (`MAX_PATH`). */
 export const MAX_DOWNLOAD_DIR = 260;
 /** A site the blocker skips: no whitespace, no controls, no comma (the file separator). */
@@ -193,6 +218,10 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!oneOf(v.defaultBrowser, DEFAULT_BROWSER_STATES)) return null;
   // A display path: no control characters (it is drawn as text, never used as one).
   if (!isStrUpTo(v.downloadDir, MAX_DOWNLOAD_DIR * 2) || /[\u0000-\u001f\u007f]/.test(v.downloadDir) || typeof v.downloadAsk !== 'boolean') return null;
+  if (typeof v.translateOffer !== 'boolean' || typeof v.translateAuto !== 'boolean') return null;
+  if (typeof v.translateTarget !== 'string' || !(v.translateTarget === '' || LANGUAGE_RE.test(v.translateTarget))) return null;
+  if (!Array.isArray(v.translateTargets) || v.translateTargets.length > MAX_TRANSLATE_TARGETS) return null;
+  if (!v.translateTargets.every((code) => typeof code === 'string' && LANGUAGE_RE.test(code))) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -248,6 +277,10 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     defaultBrowser: v.defaultBrowser,
     downloadDir: v.downloadDir,
     downloadAsk: v.downloadAsk,
+    translateOffer: v.translateOffer,
+    translateAuto: v.translateAuto,
+    translateTarget: v.translateTarget,
+    translateTargets: [...(v.translateTargets as string[])],
   };
 }
 
@@ -339,7 +372,7 @@ export function saveText(draft: Draft): string | null {
 export interface SectionSpec { readonly key: SettingsSection; readonly title: string; readonly nav: string; readonly lead: string }
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
-  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs and text size.' },
+  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs, text size and page translation.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
@@ -404,6 +437,9 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
   { id: 'defaultZoom', section: 'appearance', label: 'Default zoom', description: 'The starting zoom for new pages, not the current page’s own zoom, which is set separately.', keywords: 'zoom default starting percent' },
   { id: 'showZoomIndicator', section: 'appearance', label: 'Show the zoom indicator', description: 'Shows the zoom level in the toolbar when it isn’t 100%.', keywords: 'zoom indicator toolbar percent' },
+  { id: 'translateOffer', section: 'appearance', label: 'Offer to translate pages in other languages', description: 'Shows a button in the toolbar. Nothing is downloaded or changed until you click it. Translation runs on this device; page text never leaves it.', keywords: 'translate translation language foreign page' },
+  { id: 'translateAuto', section: 'appearance', label: 'Translate automatically on sites set to always translate', description: 'Only once the language files are already on this device.', keywords: 'translate translation language foreign page automatic always' },
+  { id: 'translateTarget', section: 'appearance', label: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows' },
   { id: 'shiftRightClickContext', section: 'appearance', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system', notYet: true },
   { id: 'ctrlShiftCCopyLink', section: 'appearance', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut', notYet: true },
   { id: 'blocker', section: 'privacy', label: 'Block ads and trackers', description: 'Stops known ad and tracking requests before they load.', keywords: 'adblock ad blocker shield trackers', restart: true },

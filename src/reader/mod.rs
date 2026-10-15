@@ -7,7 +7,7 @@
 //!
 //! The script (`reader.js`) restyles the live document in place and reverses cleanly, so the address
 //! and history are untouched. It makes no request, and the only thing it returns is the fixed-shape
-//! string `r1|code|state|words|link|theme|size`, which [`parse_result`] validates strictly: anything
+//! string `r2|code|state|words|link|theme|size|lang`, which [`parse_result`] validates strictly: anything
 //! else (including anything a hostile page could have put there) is discarded. See
 //! `docs/reader.md`.
 
@@ -29,7 +29,7 @@ pub const MIN_ARTICLE_WORDS: u32 = 250;
 /// not qualify).
 pub const MAX_LINK_PERCENT: u32 = 35;
 /// Longest result string accepted back from a page.
-const MAX_RESULT_LEN: usize = 48;
+const MAX_RESULT_LEN: usize = 56;
 
 pub const MIN_SIZE: u8 = 14;
 pub const MAX_SIZE: u8 = 30;
@@ -231,6 +231,9 @@ pub struct Outcome {
     pub words: u32,
     pub link_percent: u32,
     pub prefs: Prefs,
+    /// The page's declared language (2 to 3 lower-case letters), or none. Used only to offer
+    /// translation (`crate::translate`).
+    pub lang: crate::translate::Lang,
 }
 
 fn digits(text: &str, max_len: usize) -> Option<u32> {
@@ -241,7 +244,7 @@ fn digits(text: &str, max_len: usize) -> Option<u32> {
 }
 
 /// Parses what `ExecuteScript` returned: a JSON string literal holding
-/// `r1|code|state|words|link|theme|size`. Strict on purpose. The text came from a page's world, so
+/// `r2|code|state|words|link|theme|size|lang`. Strict on purpose. The text came from a page's world, so
 /// any other shape, length or character is refused rather than interpreted.
 pub fn parse_result(raw: &str) -> Option<Outcome> {
     let text = raw.trim().strip_prefix('"')?.strip_suffix('"')?;
@@ -249,7 +252,8 @@ pub fn parse_result(raw: &str) -> Option<Outcome> {
         return None;
     }
     let mut parts = text.split('|');
-    let (version, code, state, words, link, theme, size) = (
+    let (version, code, state, words, link, theme, size, lang) = (
+        parts.next()?,
         parts.next()?,
         parts.next()?,
         parts.next()?,
@@ -258,7 +262,7 @@ pub fn parse_result(raw: &str) -> Option<Outcome> {
         parts.next()?,
         parts.next()?,
     );
-    if parts.next().is_some() || version != "r1" {
+    if parts.next().is_some() || version != "r2" {
         return None;
     }
     let code = match code {
@@ -275,6 +279,7 @@ pub fn parse_result(raw: &str) -> Option<Outcome> {
         words: digits(words, 7)?,
         link_percent,
         prefs: Prefs { theme: Theme::parse(theme)?, size: size as u8 },
+        lang: crate::translate::parse_lang(lang)?,
     })
 }
 
@@ -401,7 +406,7 @@ mod tests {
 
     #[test]
     fn result_parser_accepts_exactly_the_documented_shape() {
-        let outcome = parse_result("\"r1|ok|reader|1234|7|sepia|19\"").unwrap();
+        let outcome = parse_result("\"r2|ok|reader|1234|7|sepia|19|fr\"").unwrap();
         assert_eq!(
             outcome,
             Outcome {
@@ -410,11 +415,14 @@ mod tests {
                 words: 1234,
                 link_percent: 7,
                 prefs: Prefs { theme: Theme::Sepia, size: 19 },
+                lang: crate::translate::Lang::new("fr").unwrap(),
             }
         );
-        assert_eq!(parse_result("  \"r1|none|off|12|0|auto|14\"  ").unwrap().code, Code::None);
-        assert_eq!(parse_result("\"r1|err|off|0|0|dark|30\"").unwrap().code, Code::Failed);
-        assert_eq!(parse_result("\"r1|ok|calm|0|100|light|22\"").unwrap().state, Active::Calm);
+        assert_eq!(parse_result("  \"r2|none|off|12|0|auto|14|\"  ").unwrap().code, Code::None);
+        assert!(parse_result("\"r2|none|off|12|0|auto|14|\"").unwrap().lang.is_none(), "a page with no language");
+        assert_eq!(parse_result("\"r2|err|off|0|0|dark|30|de\"").unwrap().code, Code::Failed);
+        assert_eq!(parse_result("\"r2|ok|calm|0|100|light|22|fil\"").unwrap().state, Active::Calm);
+        assert_eq!(parse_result("\"r2|ok|off|1|1|auto|19|zh\"").unwrap().lang.as_str(), "zh");
     }
 
     #[test]
@@ -423,34 +431,45 @@ mod tests {
             "",
             "null",
             "undefined",
-            "r1|ok|off|1|1|auto|19",
-            "'r1|ok|off|1|1|auto|19'",
-            "\"r1|ok|off|1|1|auto|19",
+            "r2|ok|off|1|1|auto|19|fr",
+            "'r2|ok|off|1|1|auto|19|fr'",
+            "\"r2|ok|off|1|1|auto|19|fr",
+            // The previous version (no language) is not accepted: the script and the parser ship together.
+            "\"r1|ok|off|1|1|auto|19\"",
+            "\"r3|ok|off|1|1|auto|19|fr\"",
             "\"r2|ok|off|1|1|auto|19\"",
-            "\"r1|ok|off|1|1|auto\"",
-            "\"r1|ok|off|1|1|auto|19|x\"",
-            "\"r1|maybe|off|1|1|auto|19\"",
-            "\"r1|ok|paused|1|1|auto|19\"",
-            "\"r1|ok|off|1|1|neon|19\"",
-            "\"r1|ok|off|1|101|auto|19\"",
-            "\"r1|ok|off|-1|1|auto|19\"",
-            "\"r1|ok|off|1.5|1|auto|19\"",
-            "\"r1|ok|off|12345678|1|auto|19\"",
-            "\"r1|ok|off||1|auto|19\"",
-            "\"r1|ok|off|1|1|auto|13\"",
-            "\"r1|ok|off|1|1|auto|31\"",
-            "\"r1|ok|off|1|1|auto|190\"",
-            "\"r1|ok|off|1|1|auto|19\\n\"",
-            "\"r1|ok|off|1|1|auto|19 \"",
-            "\"r1|ok|off|1|1|auto|1\u{0661}\"",
+            "\"r2|ok|off|1|1|auto|19|fr|x\"",
+            "\"r2|maybe|off|1|1|auto|19|fr\"",
+            "\"r2|ok|paused|1|1|auto|19|fr\"",
+            "\"r2|ok|off|1|1|neon|19|fr\"",
+            "\"r2|ok|off|1|101|auto|19|fr\"",
+            "\"r2|ok|off|-1|1|auto|19|fr\"",
+            "\"r2|ok|off|1.5|1|auto|19|fr\"",
+            "\"r2|ok|off|12345678|1|auto|19|fr\"",
+            "\"r2|ok|off||1|auto|19|fr\"",
+            "\"r2|ok|off|1|1|auto|13|fr\"",
+            "\"r2|ok|off|1|1|auto|31|fr\"",
+            "\"r2|ok|off|1|1|auto|190|fr\"",
+            "\"r2|ok|off|1|1|auto|19|fr\\n\"",
+            "\"r2|ok|off|1|1|auto|19|fr \"",
+            "\"r2|ok|off|1|1|auto|1\u{0661}|fr\"",
+            // The language field takes a code or nothing: not a tag, not upper case, not markup.
+            "\"r2|ok|off|1|1|auto|19|FR\"",
+            "\"r2|ok|off|1|1|auto|19|f\"",
+            "\"r2|ok|off|1|1|auto|19|frxx\"",
+            "\"r2|ok|off|1|1|auto|19|fr-FR\"",
+            "\"r2|ok|off|1|1|auto|19|f1\"",
+            "\"r2|ok|off|1|1|auto|19|<s\"",
             "{\"ok\":true}",
-            "\"r1|ok|off|1|1|auto|19|https://evil.example/?q=page-text\"",
+            "\"r2|ok|off|1|1|auto|19|https://evil.example/?q=page-text\"",
         ] {
             assert_eq!(parse_result(bad), None, "{bad:?}");
         }
         // Page text smuggled into an otherwise valid field never gets through.
-        let long = format!("\"r1|ok|off|1|1|auto|{}\"", "9".repeat(60));
+        let long = format!("\"r2|ok|off|1|1|auto|{}|fr\"", "9".repeat(60));
         assert_eq!(parse_result(&long), None);
+        let long_lang = format!("\"r2|ok|off|1|1|auto|19|{}\"", "a".repeat(60));
+        assert_eq!(parse_result(&long_lang), None);
     }
 
     #[test]
@@ -515,7 +534,7 @@ mod tests {
     fn tab_state_shows_the_button_only_for_articles_and_while_reading() {
         let mut state = TabState::default();
         assert_eq!(state.pill(), Pill::Hidden);
-        let article = Outcome { code: Code::Ok, state: Active::Off, words: 900, link_percent: 8, prefs: Prefs::default() };
+        let article = Outcome { code: Code::Ok, state: Active::Off, words: 900, link_percent: 8, prefs: Prefs::default(), lang: crate::translate::Lang::NONE };
         state.apply_probe(&article);
         assert!(state.probed);
         assert_eq!(state.pill(), Pill::Available);
@@ -557,7 +576,7 @@ mod tests {
     #[test]
     fn a_failed_call_never_leaves_the_button_pressed() {
         let mut state = TabState { article: true, probed: true, active: Active::Reader, busy: false, epoch: 0 };
-        state.apply_toggle(&Outcome { code: Code::Failed, state: Active::Off, words: 0, link_percent: 0, prefs: Prefs::default() });
+        state.apply_toggle(&Outcome { code: Code::Failed, state: Active::Off, words: 0, link_percent: 0, prefs: Prefs::default(), lang: crate::translate::Lang::NONE });
         assert_eq!(state.active, Active::Off);
         assert_eq!(state.pill(), Pill::Available);
     }

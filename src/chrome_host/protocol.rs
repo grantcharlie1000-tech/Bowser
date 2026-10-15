@@ -63,6 +63,8 @@ pub enum OpenTarget {
     ZoomReset,
     /// Toggles reader view for the active page, the same action as Ctrl+Alt+R.
     Reader,
+    /// Translates the active page on this device, or shows its original (`crate::translate`).
+    Translate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -985,6 +987,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "split" => OpenTarget::Split,
             "zoomreset" => OpenTarget::ZoomReset,
             "reader" => OpenTarget::Reader,
+            "translate" => OpenTarget::Translate,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -1266,6 +1269,8 @@ pub struct ViewState {
     pub private: bool,
     /// The reader view button: hidden, offered (the page looks like an article) or on.
     pub reader: crate::reader::Pill,
+    /// The translate button: hidden, offered (the page is in another language) or on.
+    pub translate: crate::translate::Pill,
     /// `font_size`, as a percentage of the default chrome font size. The page scales its root
     /// font-size by this.
     pub font_scale: u32,
@@ -1302,6 +1307,7 @@ impl ViewState {
             show_zoom: false,
             private: false,
             reader: crate::reader::Pill::Hidden,
+            translate: crate::translate::Pill::Hidden,
             font_scale: self.font_scale,
             ui_font: self.ui_font.clone(),
             theme: self.theme.clone(),
@@ -1346,6 +1352,8 @@ impl ViewState {
         out.push_str(if self.private { "true" } else { "false" });
         out.push_str(",\"reader\":");
         out.push_str(&json_string(self.reader.as_str()));
+        out.push_str(",\"translate\":");
+        out.push_str(&json_string(self.translate.as_str()));
         out.push_str(",\"fontScale\":");
         out.push_str(&self.font_scale.clamp(50, 200).to_string());
         out.push_str(",\"uiFont\":");
@@ -1814,7 +1822,7 @@ pub fn is_popup_command(command: &Command) -> bool {
         command,
         Command::BeginDrag
             | Command::Caption(_)
-            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader)
+            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader | OpenTarget::Translate)
             | Command::DownloadsToggle { .. }
             | Command::ExtensionsButton { .. }
             | Command::Tab { action: TabAction::Menu, .. }
@@ -2071,6 +2079,7 @@ mod tests {
             show_zoom: true,
             private: false,
             reader: crate::reader::Pill::Hidden,
+            translate: crate::translate::Pill::Hidden,
             font_scale: 100,
             ui_font: String::new(),
             theme: Vec::new(),
@@ -2358,7 +2367,32 @@ mod tests {
         for (pill, wire) in [(Pill::Hidden, "none"), (Pill::Available, "available"), (Pill::On, "on")] {
             let mut state = sample_state();
             state.reader = pill;
-            assert!(state.to_json().contains(&format!(r#""reader":"{wire}","fontScale""#)), "{wire}");
+            assert!(state.to_json().contains(&format!(r#""reader":"{wire}","translate":"none","fontScale""#)), "{wire}");
+        }
+    }
+
+    #[test]
+    fn open_translate_is_exact_and_strict() {
+        assert_eq!(ok(r#"{"v":1,"t":"open","a":"translate"}"#), Command::Open(OpenTarget::Translate));
+        for raw in [
+            r#"{"v":1,"t":"open","a":"Translate"}"#,
+            r#"{"v":1,"t":"open","a":"translate "}"#,
+            r#"{"v":1,"t":"open","a":"translation"}"#,
+            r#"{"v":1,"t":"open","a":"translate","lang":"fr"}"#,
+            r#"{"v":1,"t":"open","a":"translate","id":1}"#,
+        ] {
+            assert!(parse_command(raw).is_err(), "{raw}");
+        }
+        assert!(is_popup_command(&Command::Open(OpenTarget::Translate)), "rate limited like the other toolbar buttons");
+    }
+
+    #[test]
+    fn state_translate_button_wire_values() {
+        use crate::translate::Pill;
+        for (pill, wire) in [(Pill::Hidden, "none"), (Pill::Available, "available"), (Pill::On, "on")] {
+            let mut state = sample_state();
+            state.translate = pill;
+            assert!(state.to_json().contains(&format!(r#""translate":"{wire}","fontScale""#)), "{wire}");
         }
     }
 
@@ -3077,6 +3111,7 @@ mod tests {
             show_zoom: true,
             private: true,
             reader: crate::reader::Pill::Available,
+            translate: crate::translate::Pill::On,
             font_scale: 115,
             ui_font: "Consolas".to_string(),
             theme: vec![
@@ -3086,14 +3121,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","fontScale":115,"uiFont":"Consolas","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","fontScale":100,"uiFont":"","theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","translate":"none","fontScale":100,"uiFont":"","theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
