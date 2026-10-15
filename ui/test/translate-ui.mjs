@@ -1,4 +1,4 @@
-// On-device page translation, the HTML-chrome half: the toolbar `translate` pill in the state
+// Page translation, the HTML-chrome half: the toolbar `translate` pill in the state
 // message, the `translate` open target, the Translate button (hidden / offered / on, its names and
 // what a click sends), the `translate` glyph, and the translation members of the settings snapshot.
 // The Settings page's own controls are exercised in test/settings-page.mjs (it owns the fake page).
@@ -236,7 +236,9 @@ test('settings snapshot: the Rust fixture carries the translate members after do
   assert.deepEqual(keys.slice(from, from + 5), ['downloadAsk', 'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets']);
   const s = logic.parseSettingsSnapshot(d);
   assert.deepEqual([s.translateOffer, s.translateAuto, s.translateTarget], [true, false, '']);
-  assert.deepEqual(s.translateTargets, ['en', 'de', 'es', 'fr', 'it', 'nl', 'pl', 'pt', 'tr']);
+  assert.deepEqual(s.translateTargets.slice(0, 4), ['en', 'es', 'fr', 'de']);
+  assert.ok(s.translateTargets.length > 40 && s.translateTargets.length <= 64, String(s.translateTargets.length));
+  for (const code of s.translateTargets) assert.notEqual(logic.languageName(code), code, code + ' has an English name');
   assert.ok(logic.parseSettingsSnapshot(settingsFixture.guest.d));
   assert.ok(logic.parseSettingsSnapshot({ ...d, translateTarget: 'fr', translateAuto: true, translateOffer: false }));
   assert.ok(logic.parseSettingsSnapshot({ ...d, translateTargets: [] }));
@@ -275,9 +277,9 @@ test('settings snapshot: the translate settings never ride in the Save-all text'
 test('settings rows: three translation rows with the agreed words, in a real section, searchable', () => {
   const byId = (id) => logic.ROWS.find((row) => row.id === id);
   assert.equal(byId('translateOffer').label, 'Offer to translate pages in other languages');
-  assert.equal(byId('translateOffer').description, 'Shows a button in the toolbar. Nothing is downloaded or changed until you click it. Translation runs on this device; page text never leaves it.');
+  assert.equal(byId('translateOffer').description, 'Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.');
   assert.equal(byId('translateAuto').label, 'Translate automatically on sites set to always translate');
-  assert.equal(byId('translateAuto').description, 'Only once the language files are already on this device.');
+  assert.equal(byId('translateAuto').description, 'Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.');
   assert.equal(byId('translateTarget').label, 'Translate into');
   for (const id of ['translateOffer', 'translateAuto', 'translateTarget']) {
     assert.ok(logic.isSection(byId(id).section), id);
@@ -287,14 +289,13 @@ test('settings rows: three translation rows with the agreed words, in a real sec
 });
 
 test('settings: "Translate into" options are the Windows language first, then each code with its English name', () => {
-  const options = logic.translateTargetOptions(['en', 'de', 'es', 'fr', 'it', 'nl', 'pl', 'pt', 'tr']);
+  const options = logic.translateTargetOptions(['en', 'es', 'fr', 'de', 'ja', 'fil', 'zh']);
   assert.deepEqual(options, [
     { value: '', label: 'My Windows language' },
-    { value: 'en', label: 'English' }, { value: 'de', label: 'German' }, { value: 'es', label: 'Spanish' }, { value: 'fr', label: 'French' },
-    { value: 'it', label: 'Italian' }, { value: 'nl', label: 'Dutch' }, { value: 'pl', label: 'Polish' }, { value: 'pt', label: 'Portuguese' },
-    { value: 'tr', label: 'Turkish' },
+    { value: 'en', label: 'English' }, { value: 'es', label: 'Spanish' }, { value: 'fr', label: 'French' }, { value: 'de', label: 'German' },
+    { value: 'ja', label: 'Japanese' }, { value: 'fil', label: 'Filipino' }, { value: 'zh', label: 'Chinese' },
   ]);
-  assert.deepEqual(logic.translateTargetOptions(['sv', 'fil']).slice(1), [{ value: 'sv', label: 'sv' }, { value: 'fil', label: 'fil' }], 'an unknown code shows the code');
+  assert.deepEqual(logic.translateTargetOptions(['xx', 'qqq']).slice(1), [{ value: 'xx', label: 'xx' }, { value: 'qqq', label: 'qqq' }], 'an unknown code shows the code');
   assert.deepEqual(logic.translateTargetOptions([]), [{ value: '', label: 'My Windows language' }]);
   assert.equal(logic.languageName('constructor'), 'constructor', 'prototype names are not languages');
 });

@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(map_command(&auto), Some(Action::TranslateAuto(true)));
         let mut target = fields("translatetarget");
         assert_eq!(map_command(&target), None, "needs its text");
-        for (text, expected) in [("", Some("")), ("en", Some("en")), ("fr", Some("fr")), ("EN", None), ("en-GB", None), ("ru", None), ("xx", None), ("<b>", None), ("fr ", None)] {
+        for (text, expected) in [("", Some("")), ("en", Some("en")), ("fr", Some("fr")), ("ja", Some("ja")), ("fil", Some("fil")), ("EN", None), ("en-GB", None), ("xx", None), ("auto", None), ("<b>", None), ("fr ", None)] {
             target.text = Some(text.into());
             assert_eq!(map_command(&target), expected.map(|e| Action::TranslateTarget(e.into())), "{text:?}");
         }

@@ -63,7 +63,7 @@ pub enum OpenTarget {
     ZoomReset,
     /// Toggles reader view for the active page, the same action as Ctrl+Alt+R.
     Reader,
-    /// Translates the active page on this device, or shows its original (`crate::translate`).
+    /// Translates the active page with Google Translate, or shows its original (`crate::translate`).
     Translate,
 }
 

@@ -40,7 +40,7 @@ Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` mu
 | `submit` | `text` string <= 2048 | Enter in omnibox; Rust normalises (never raw navigate) |
 | `escape` | - | Esc in omnibox: Rust restores text and returns focus to tab |
 | `focus` | `on` bool | omnibox gained/lost focus |
-| `open` | `a`: `menu`/`site`/`newtab`/`split`/`zoomreset`/`reader`/`translate` | open native menu / site-info / new tab / toggle split view (same action as Ctrl+Shift+\) / reset the active page's zoom to 100% (the toolbar zoom chip; same as Ctrl+0; not a popup command, so it is not throttled) / toggle reader view (same action as Ctrl+Alt+R; counts toward the 250 ms popup-command limit) / translate the active page on this device, or show its original (`docs/translate.md`; counts toward the same limit) |
+| `open` | `a`: `menu`/`site`/`newtab`/`split`/`zoomreset`/`reader`/`translate` | open native menu / site-info / new tab / toggle split view (same action as Ctrl+Shift+\) / reset the active page's zoom to 100% (the toolbar zoom chip; same as Ctrl+0; not a popup command, so it is not throttled) / toggle reader view (same action as Ctrl+Alt+R; counts toward the 250 ms popup-command limit) / translate the active page with Google Translate, or show its original (`docs/translate.md`; counts toward the same limit) |
 | `drag` | - | left mousedown on an empty toolbar area (drag surface only, never a button, input or pill); Rust begins a native window move |
 | `caption` | `a`: `toggleMaximize`/`systemMenu` | double-click (`toggleMaximize`) or right-click (`systemMenu`) on an empty toolbar area |
 

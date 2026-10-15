@@ -1,8 +1,8 @@
 (function (o) {
   'use strict';
   /* Bowser page translation: on demand only, run through ExecuteScript in the page's world. It makes no
-     request and keeps nothing outside this document: Rust fetches the text, a local worker translates
-     it, and this script only reads text nodes and writes translated strings back.
+     request and keeps nothing outside this document: Rust sends the text to Google Translate and
+     hands the answer back, and this script only reads text nodes and writes translated strings back.
      o = {a: collect|apply|restore, k: token, i: first index, s: [translated strings]}, built and validated
      by Rust. The result is a plain object, validated again by Rust (translate::parse_reply). */
   var W = window, D = document, E = Element.prototype, P = W.performance;

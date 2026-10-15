@@ -2,23 +2,19 @@
 // Edge is not installed):
 //   1. src/translate/translate.js against a fixture page (what it collects, skips, applies and restores);
 //   2. the reader probe's new language field (src/reader/reader.js);
-//   3. src/translate/worker.html + worker.js with the real engine and models, when BOWSER_TRANSLATE_CACHE
-//      points at a folder laid out like Bowser's cache (engine/, models/<src>-<dst>/{model.bin,lex.bin,vocab.spm}).
-//      It checks the worker's messages, a pivot route, and that its content policy blocks other origins.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = join(here, '..', '..', 'src');
 const SCRIPT = readFileSync(join(src, 'translate', 'translate.js'), 'utf8');
 const READER = readFileSync(join(src, 'reader', 'reader.js'), 'utf8');
-const WORKER_HTML = readFileSync(join(src, 'translate', 'worker.html'), 'utf8');
 
 const EDGE = [
   process.env.BOWSER_TEST_EDGE,
@@ -240,151 +236,5 @@ test('reader probe: reports the page language as 2 to 3 letters or nothing', { s
   for (const { open, want, probe } of results) {
     assert.match(probe, /^r2\|(ok|none)\|off\|\d+\|\d+\|auto\|19\|[a-z]{0,3}$/, `${open}: ${probe}`);
     assert.equal(probe.split('|')[7], want, open);
-  }
-});
-
-// --- the worker page with the real engine ---
-
-/** Opens `url` in headless Edge through the DevTools protocol and returns the page title once it starts with OUT
- *  (the page's report), or what it was when `timeoutMs` ran out. Real time, so async work such as WebAssembly
- *  compilation completes, which `--virtual-time-budget` with `--dump-dom` does not wait for. */
-async function runInEdge(url, timeoutMs) {
-  const { spawn } = await import('node:child_process');
-  const dir = mkdtempSync(join(tmpdir(), 'bowser-translate-cdp-'));
-  const child = spawn(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${dir}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore' });
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  try {
-    const portFile = join(dir, 'DevToolsActivePort');
-    for (let i = 0; i < 150 && !existsSync(portFile); i++) await sleep(100);
-    const port = readFileSync(portFile, 'utf8').split(/\r?\n/)[0].trim();
-    let target;
-    for (let i = 0; i < 50 && !target; i++) {
-      target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
-      if (!target) await sleep(100);
-    }
-    const socket = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
-    let next = 0;
-    const pending = new Map();
-    socket.onmessage = (event) => { const message = JSON.parse(event.data); pending.get(message.id)?.(message); pending.delete(message.id); };
-    const call = (method, params = {}) => new Promise((resolve) => { const id = ++next; pending.set(id, resolve); socket.send(JSON.stringify({ id, method, params })); });
-    await call('Page.navigate', { url });
-    const deadline = Date.now() + timeoutMs;
-    let title = '';
-    while (Date.now() < deadline) {
-      title = (await call('Runtime.evaluate', { expression: 'document.title', returnByValue: true })).result?.result?.value ?? '';
-      if (title.startsWith('OUT')) break;
-      await sleep(250);
-    }
-    if (!title.startsWith('OUT')) {
-      const log = (await call('Runtime.evaluate', { expression: 'JSON.stringify(window.__log || null)', returnByValue: true })).result?.result?.value;
-      title = `${title} (timed out; worker log: ${String(log).slice(0, 1500)})`;
-    }
-    socket.close();
-    return title;
-  } finally {
-    // Edge starts helper processes that keep the profile folder open; end the whole tree.
-    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    else child.kill();
-    await sleep(500);
-    try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch { /* a temp folder, cleaned up by the OS later */ }
-  }
-}
-
-const CACHE = process.env.BOWSER_TRANSLATE_CACHE;
-const haveCache = Boolean(CACHE) && existsSync(join(CACHE, 'engine', 'bergamot-translator-worker.wasm')) && existsSync(join(CACHE, 'models', 'fr-en', 'model.bin'));
-const MIME = { '.js': 'text/javascript', '.html': 'text/html', '.wasm': 'application/wasm', '.bin': 'application/octet-stream', '.spm': 'application/octet-stream' };
-
-const SHIM = `
-(function () {
-  window.__log = []; window.__handler = null;
-  window.chrome = { webview: { postMessage: function (m) { window.__log.push(JSON.parse(m)); if (window.__wake) window.__wake(); }, addEventListener: function (t, f) { window.__handler = f; } } };
-})();`;
-
-const DRIVER = `
-(function () {
-  function wait(pred) { return new Promise(function (res) { var tick = function () { if (pred()) res(); else window.__wake = tick; }; tick(); }); }
-  function send(o) { window.__handler({ data: o }); }
-  function last(t) { return window.__log.filter(function (m) { return m.t === t; }); }
-  var out = { errors: [], notes: {} };
-  (async function () {
-    try {
-      await wait(function () { return last('ready').length === 1; });
-      send({ t: 'tr', id: 1, route: ['fr-en'], s: ['Bonjour'] });             // before anything is loaded
-      send({ t: 'load', id: 2, pairs: ['xx-yy'] });                            // files that do not exist
-      send({ t: 'load', id: 3, pairs: ['../evil'] });                           // not a pair name
-      send({ t: 'tr', id: 4, route: ['fr-en'], s: [1] });                       // not strings
-      await wait(function () { return window.__log.filter(function (m) { return m.t === 'error'; }).length >= 4; });
-      send({ t: 'load', id: 5, pairs: ['fr-en'] });
-      await wait(function () { return last('loaded').length === 1; });
-      send({ t: 'tr', id: 6, route: ['fr-en'], s: ['Le chat dort sur le canapé.', 'Bonjour, comment allez-vous ?', ''] });
-      await wait(function () { return last('out').length === 1; });
-      send({ t: 'load', id: 7, pairs: ['fr-en', 'en-es'] });
-      await wait(function () { return last('loaded').length === 2; });
-      send({ t: 'tr', id: 8, route: ['fr-en', 'en-es'], s: ['Le chat dort sur le canapé.'] });
-      await wait(function () { return last('out').length === 2; });
-      // The content policy: nothing may reach another origin.
-      try { await fetch(window.__other + '/secret'); out.notes.fetch = 'reached'; } catch (e) { out.notes.fetch = 'blocked'; }
-      try { var x = new XMLHttpRequest(); x.open('GET', window.__other + '/xhr', false); x.send(); out.notes.xhr = 'reached'; } catch (e) { out.notes.xhr = 'blocked'; }
-      var img = new Image(); img.src = window.__other + '/img';
-      var ws = null; try { ws = new WebSocket(window.__other.replace('http', 'ws') + '/ws'); out.notes.ws = 'created'; } catch (e) { out.notes.ws = 'blocked'; }
-      await new Promise(function (r) { setTimeout(r, 1500); });
-    } catch (e) { out.errors.push(String(e && e.stack || e)); }
-    out.log = window.__log;
-    document.title = 'OUT' + encodeURIComponent(JSON.stringify(out));
-  })();
-})();`;
-
-test('worker page: loads models, translates through one model and a pivot, refuses bad requests, reaches no other origin', { skip: skip || (haveCache ? false : 'set BOWSER_TRANSLATE_CACHE to a folder laid out like the cache'), timeout: 300000 }, async () => {
-  const hits = [];
-  const other = createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'access-control-allow-origin': '*' }); res.end('x'); });
-  await new Promise((resolve) => other.listen(0, '127.0.0.1', resolve));
-  const otherUrl = `http://127.0.0.1:${other.address().port}`;
-  const page = WORKER_HTML.replace('<script src="worker.js"></script>', '<script src="shim.js"></script><script src="worker.js"></script><script src="driver.js"></script>');
-  const serve = createServer((req, res) => {
-    const path = new URL(req.url, 'http://x').pathname;
-    const send = (type, body) => { res.writeHead(200, { 'content-type': type }); res.end(body); };
-    if (path === '/t.html') return send('text/html', page);
-    if (path === '/shim.js') return send('text/javascript', `${SHIM}\nwindow.__other = ${JSON.stringify(otherUrl)};`);
-    if (path === '/driver.js') return send('text/javascript', DRIVER);
-    if (path === '/worker.js') return send('text/javascript', readFileSync(join(src, 'translate', 'worker.js')));
-    const file = normalize(join(CACHE, path));
-    if (!file.startsWith(normalize(CACHE)) || !existsSync(file) || !statSync(file).isFile()) { res.writeHead(404); return res.end(); }
-    return send(MIME[extname(file)] ?? 'application/octet-stream', readFileSync(file));
-  });
-  await new Promise((resolve) => serve.listen(0, '127.0.0.1', resolve));
-  try {
-    const title = await runInEdge(`http://127.0.0.1:${serve.address().port}/t.html`, 60000);
-    const match = /^OUT(.*)$/.exec(title);
-    assert.ok(match, `no report: ${title}`);
-    const report = JSON.parse(decodeURIComponent(match[1]));
-    assert.deepEqual(report.errors, []);
-    const log = report.log;
-    assert.deepEqual(log[0], { t: 'ready' });
-    const byId = (id) => log.find((m) => m.id === id);
-    for (const id of [1, 3, 4]) assert.equal(byId(id).t, 'error', `request ${id} is refused`);
-    assert.equal(byId(1).m, 'model', 'translating before loading');
-    assert.equal(byId(3).m, 'bad', 'a path-like pair name');
-    assert.equal(byId(4).m, 'bad', 'non-string text');
-    assert.equal(byId(2).t, 'error', 'missing files');
-    assert.equal(byId(5).t, 'loaded');
-    const direct = byId(6);
-    assert.equal(direct.t, 'out');
-    assert.equal(direct.s.length, 3, 'one answer per string, in order');
-    assert.match(direct.s[0], /cat/i);
-    assert.match(direct.s[0], /sofa|couch/i);
-    assert.match(direct.s[1], /hello|how are you/i);
-    assert.equal(direct.s[2], '', 'an empty string stays empty');
-    assert.equal(byId(7).t, 'loaded');
-    const pivot = byId(8);
-    assert.equal(pivot.t, 'out');
-    assert.match(pivot.s[0], /gato/i, `pivot fr to es: ${pivot.s[0]}`);
-    assert.deepEqual(Object.keys(byId(6)).sort(), ['id', 's', 't'], 'answers carry only their documented members');
-    // The content policy held: every probe at another origin failed and none arrived.
-    assert.equal(report.notes.fetch, 'blocked');
-    assert.equal(report.notes.xhr, 'blocked');
-    assert.equal(hits.length, 0, `the other origin saw ${hits.join(', ')}`);
-  } finally {
-    serve.close(); other.close();
   }
 });
