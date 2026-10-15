@@ -3795,16 +3795,9 @@ unsafe extern "system" fn window_proc(
                 if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
                 LRESULT(0)
             }
-            super::WM_TRANSLATE_PACK => {
+            super::WM_TRANSLATE_NET => {
                 if let Some(app) = app {
-                    App::translate_pack_done(app, wparam.0 as u32, lparam.0);
-                }
-                LRESULT(0)
-            }
-            WM_TIMER if wparam.0 == super::WM_TRANSLATE_IDLE_TIMER => {
-                let _ = KillTimer(Some(hwnd), super::WM_TRANSLATE_IDLE_TIMER);
-                if let Some(app) = app {
-                    App::translate_idle_timer(app);
+                    App::translate_net_done(app, wparam.0 as u32, lparam.0 as u32);
                 }
                 LRESULT(0)
             }
@@ -6623,25 +6616,24 @@ fn show_translate_toast(hwnd: HWND, message: String) {
 /// the original, are visible on the page and need none.
 fn translate_message(notice: &crate::app::TranslateNotice, available: bool) -> Option<String> {
     use crate::app::TranslateNotice as N;
-    let megabytes = |bytes: u64| bytes.div_ceil(1024 * 1024);
     match notice {
-        N::Downloading { from, to, bytes } => Some(format!("Downloading {from} to {to} language files (about {} MB)…", megabytes(*bytes))),
+        N::Started => Some("Translating with Google Translate…".to_owned()),
         N::Unavailable if !available => Some("Translation works on web pages".to_owned()),
-        N::Unavailable => Some("Translation is already working on this page".to_owned()),
+        N::Unavailable => Some("Translation is not available on this page".to_owned()),
+        N::InProgress => Some("This page is already being translated".to_owned()),
         N::Busy => Some("Another page is being translated".to_owned()),
-        N::NoLanguage => Some("This page does not say what language it is in".to_owned()),
         N::SameLanguage => Some("This page is already in your language".to_owned()),
-        N::NoRoute { from, to } => Some(format!("Translating {from} to {to} is not available yet")),
         N::NothingToTranslate => Some("No text to translate on this page".to_owned()),
-        N::DownloadFailed => Some("The language files could not be downloaded. Try again later".to_owned()),
+        N::NetworkFailed => Some("Google Translate could not be reached. Check your connection and try again".to_owned()),
+        N::Limited => Some("Google Translate is limiting requests from this connection. Try again later".to_owned()),
         N::Failed => Some("This page could not be translated".to_owned()),
-        N::NeedsConfirm { .. } | N::Done | N::Restored => None,
+        N::NeedsConfirm | N::Done | N::Restored => None,
     }
 }
 
 /// Starts or reverses translation of the active page. Shared by the toolbar button, the main menu and
-/// the command palette. It runs on request only. A private tab is asked before language files are
-/// downloaded; text from the page never leaves the machine either way.
+/// the command palette. It runs on request only, and it sends the page's text to Google Translate; a
+/// private tab is asked first.
 fn run_translate(hwnd: HWND, app: &AppRef, action: TranslateAction) {
     let tab = App::active_tab_id(app);
     match action {
@@ -6666,9 +6658,8 @@ fn start_translate(hwnd: HWND, app: &AppRef, tab: TabId, confirmed: bool) {
     use crate::app::TranslateNotice as N;
     let app_handle = app.clone();
     let notify: std::rc::Rc<dyn Fn(N)> = std::rc::Rc::new(move |notice| {
-        if let N::NeedsConfirm { from, to, bytes } = &notice {
-            // A private tab asks first. Only file names on Bowser's own list go over the network.
-            let label = format!("Download {from} to {to} language files (about {} MB)", bytes.div_ceil(1024 * 1024));
+        if notice == N::NeedsConfirm {
+            // A private tab asks first: its text is about to go to Google.
             let again = app_handle.clone();
             menu::show(
                 hwnd,
@@ -6677,10 +6668,10 @@ fn start_translate(hwnd: HWND, app: &AppRef, tab: TabId, confirmed: bool) {
                 Menu {
                     header: None,
                     entries: vec![
-                        Entry::Item(Item::new(1, label, Icon::Check).glyph("download")),
+                        Entry::Item(Item::new(1, "Send this page's text to Google Translate", Icon::Check).glyph("translate")),
                         Entry::Item(Item::new(0, "Not now", Icon::None)),
                     ],
-                    footer: "Translate privately on this device".into(),
+                    footer: "Translate with Google".into(),
                 },
                 "translate-confirm",
                 move |_, selected| {
