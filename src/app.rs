@@ -920,6 +920,19 @@ fn extension_records(
     Some((known, ids_file))
 }
 
+/// --- wave-1 integration --- `App::save_settings` writes the in-memory settings, but these keys are
+/// saved by the settings page straight to the file and read at startup or from the file, so memory
+/// holds their startup value. Without this, any later save (a Tabs option, a sidebar drag, the
+/// translate or download settings) put the old value back in the file.
+fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::settings::Settings) {
+    settings.automatic_tab_grouping = file.automatic_tab_grouping;
+    settings.tracking_prevention = file.tracking_prevention;
+    settings.block_youtube_video_ads = file.block_youtube_video_ads;
+    settings.side_panel_position = file.side_panel_position;
+    settings.frameless = file.frameless;
+    settings.search_engine = file.search_engine;
+}
+
 impl App {
     /// Loads an installed extension into the running profile, or unloads it when `enabled` is
     /// false. The outcome goes to the extension status list, which the extension menu shows.
@@ -1149,8 +1162,10 @@ impl App {
     pub fn save_settings(app: &AppRef) {
         if let Ok(profile) = crate::profile::active() {
             let mut settings = app.borrow().settings.clone();
-            settings.side_panel_width =
-                crate::settings::Settings::load(&profile.settings_file()).side_panel_width;
+            let file = crate::settings::Settings::load(&profile.settings_file());
+            settings.side_panel_width = file.side_panel_width;
+            // --- wave-1 integration --- keys the running app never changes itself keep the file's value.
+            keep_file_owned_keys(&mut settings, &file);
             if let Err(error) = crate::settings::save(&profile.settings_file(), &settings) {
                 win32::show_error_message(&format!("Settings could not be saved: {error}"));
             }
@@ -6771,6 +6786,15 @@ impl App {
             // --- end tab options ---
             (state.hwnd, state.edit)
         };
+        // --- wave-1 integration --- the Tabs options as the file has them (Reset settings, the GDI form):
+        // the strip, the audio rule and the tick follow at once.
+        let tabs_before = {
+            let mut state = app.borrow_mut();
+            (state.settings.tabs != settings.tabs).then(|| std::mem::replace(&mut state.settings.tabs, settings.tabs.clone()))
+        };
+        if let Some(before) = tabs_before {
+            Self::tab_options_changed(app, &before);
+        }
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         // The address field's own font follows font_size and ui_font (the painted chrome and the

@@ -90,7 +90,7 @@ impl App {
 
     /// What changing the options must redo: the audio rule, the tick that serves it, and the strip,
     /// which draws from the options.
-    fn tab_options_changed(app: &AppRef, before: &tab_options::TabOptions) {
+    pub(crate) fn tab_options_changed(app: &AppRef, before: &tab_options::TabOptions) {
         let (hwnd, active, mute_changed) = {
             let state = app.borrow();
             (state.hwnd, state.tab_model.active(), state.settings.tabs.mute_mode != before.mute_mode)

@@ -178,6 +178,39 @@ fn the_new_tab_page_option_decides_what_a_fresh_tab_opens() {
     assert_eq!(App::tab_committed_url(&app, id).as_ref().map(url::Url::as_str), Some("https://start.example/home"));
 }
 
+/// Integration: a later save from memory keeps the keys the page wrote straight to the file
+/// (grouping, tracking, YouTube ads, side panel, frameless, legacy engine) instead of reverting them.
+#[test]
+fn a_save_from_memory_keeps_the_keys_only_the_file_holds() {
+    let defaults = crate::settings::Settings::default();
+    let file = crate::settings::Settings {
+        automatic_tab_grouping: !defaults.automatic_tab_grouping,
+        block_youtube_video_ads: !defaults.block_youtube_video_ads,
+        frameless: !defaults.frameless,
+        tracking_prevention: crate::settings::TrackingLevel::Strict,
+        ..crate::settings::Settings::default()
+    };
+    // What memory owns stays.
+    let mut memory = crate::settings::Settings { sidebar_width: defaults.sidebar_width + 20, ..defaults };
+    let width = memory.sidebar_width;
+    crate::app::keep_file_owned_keys(&mut memory, &file);
+    assert_eq!(memory.automatic_tab_grouping, file.automatic_tab_grouping);
+    assert_eq!(memory.block_youtube_video_ads, file.block_youtube_video_ads);
+    assert_eq!(memory.frameless, file.frameless);
+    assert_eq!(memory.tracking_prevention, crate::settings::TrackingLevel::Strict);
+    assert_eq!(memory.sidebar_width, width);
+}
+
+/// Integration: Reset settings (and any whole-file apply) puts the Tabs options into the running app.
+#[test]
+fn applying_the_file_settings_applies_the_tabs_options_live() {
+    let (app, _shared) = fixture();
+    set(&app, |tabs| tabs.keep_window = false);
+    let defaults = crate::settings::Settings::default();
+    App::apply_live_settings(&app, &defaults);
+    assert!(App::tab_options(&app).keep_window, "the reset value is live");
+}
+
 /// Integration (T2 engine editor, T3 private window): a search typed in a private tab uses the
 /// engine chosen "for private windows"; a normal tab keeps the default.
 #[test]
