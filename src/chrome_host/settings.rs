@@ -146,9 +146,33 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.bool("translateAuto", settings.translate_auto);
         out.string("translateTarget", &settings.translate_target);
         out.array("translateTargets", |items| for code in crate::translate::target_languages() { items.string(code); });
+        // --- start page --- one object, so the strict key list of the snapshot grows by one
+        out.object("start", |start| start_snapshot(&settings.start, start));
+        // --- end start page ---
     })
     .expect("settings is a panel token")
 }
+
+// --- start page ---
+/// The `start` object of the snapshot: every start-page and startup setting (docs/design/start-page.md).
+fn start_snapshot(start: &crate::start_page::StartSettings, out: &mut super::json::Object<'_>) {
+    out.string("groupReopen", start.group_reopen.key());
+    out.string("titles", start.titles.key());
+    out.bool("addButton", start.add_button);
+    out.uint("columns", u64::from(start.columns));
+    out.uint("thumbSize", u64::from(start.thumb_size));
+    out.bool("dragReorder", start.drag_reorder);
+    out.string("homepage", &start.homepage);
+    out.string("startup", start.startup.key());
+    out.array("startupPages", |items| for page in &start.startup_pages { items.string(page); });
+    out.bool("widgets", start.widgets);
+    out.uint("widgetColumns", u64::from(start.widget_columns));
+    out.string("widgetHeight", start.widget_height.key());
+    out.string("widgetBg", start.widget_bg.key());
+    out.string("widgetColor", &start.widget_color);
+    out.bool("widgetDrag", start.widget_drag);
+}
+// --- end start page ---
 
 /// A validated command from the settings page.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,6 +297,9 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             "pin_new_tab_groups" => settings.pin_new_tab_groups = match value { "true" => true, "false" => false, _ => return false },
             "split_edge_drop" => settings.split_edge_drop = match value { "true" => true, "false" => false, _ => return false },
             "block_youtube_video_ads" => settings.block_youtube_video_ads = match value { "true" => true, "false" => false, _ => return false },
+            // --- start page --- optional: a payload without them leaves the start page settings as they are
+            key if crate::start_page::SETTING_KEYS.contains(&key) => { if settings.start.apply_strict(key, value).is_none() { return false; } }
+            // --- end start page ---
             _ => return false,
         }
     }
@@ -489,7 +516,77 @@ mod tests {
         settings.translate_auto = true;
         let json = snapshot_json(&sample(&settings));
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
-        assert!(json.ends_with(r#"]}}"#), "{json}");
+        assert!(json.ends_with(r##""widgetColor":"#1f2933","widgetDrag":true}}}"##), "{json}");
+    }
+
+    #[test]
+    fn the_snapshot_and_save_carry_the_start_page_settings_and_old_payloads_still_apply() {
+        let mut settings = Settings::default();
+        settings.start.columns = 9;
+        settings.start.startup = crate::start_page::Startup::Homepage;
+        settings.start.homepage = "https://home.example/".into();
+        settings.start.startup_pages = vec!["https://a.example/".into()];
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""start":{"groupReopen":"last","titles":"always","addButton":true,"columns":9,"thumbSize":3,"dragReorder":true,"homepage":"https://home.example/","startup":"homepage","startupPages":["https://a.example/"],"widgets":false,"#), "{json}");
+
+        // The page's save text carries the start keys; Rust applies them.
+        let required = "tab_layout=horizontal
+sidebar_width=260
+sleep_enabled=true
+sleep_after_secs=300
+blocker_enabled=true
+blocker_allow=
+automatic_tab_grouping=true
+efficiency_mode=auto
+tracking_prevention=balanced
+theme=helium
+theme_accent=
+toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader
+centred_address_bar=true
+minimal_url=true
+show_load_progress=true
+frameless=false
+rounded_content_frame=true
+show_home_button=true
+bookmarks_bar=never
+bookmarks_bar_tab_groups=false
+side_panel_position=left
+tab_preview_images=true
+tab_preview_memory=true
+font_size=medium
+ui_font=
+default_zoom=100
+show_zoom_indicator=true
+new_tab_beside_active=true
+ctrl_tab_mru=true
+shift_right_click_context=false
+ctrl_shift_c_copy_link=true
+ctrl_s_vertical_tabs=false
+pin_new_tab_groups=false
+split_edge_drop=true
+block_youtube_video_ads=true".to_owned();
+        let tuned = format!("{required}\nstart_columns=3\nstart_titles=never\nhomepage=https://x.example/\nstartup=last_session\nstartup_pages=\nstart_widgets=true\nstart_widget_columns=4");
+        let mut applied = Settings::default();
+        assert!(apply_settings_text(&mut applied, &tuned), "{tuned}");
+        assert_eq!(applied.start.columns, 3);
+        assert_eq!(applied.start.titles, crate::start_page::TitleMode::Never);
+        assert_eq!(applied.start.homepage, "https://x.example/");
+        assert_eq!(applied.start.startup, crate::start_page::Startup::LastSession);
+        assert!(applied.start.widgets);
+        assert_eq!(applied.start.widget_columns, 4);
+        // Without the start keys (an older page, another thread's test payload) the settings stay as they were.
+        let mut before = Settings::default();
+        before.start.columns = 7;
+        assert!(apply_settings_text(&mut before, &required));
+        assert_eq!(before.start.columns, 7);
+        // A value that does not parse refuses the whole payload.
+        for bad in ["start_columns=13", "start_columns=0", "start_titles=Never", "homepage=ftp://x.example/", "startup=restore", "startup_pages=https://a.example/ nope", "start_widget_color=red", "start_widgets=yes"] {
+            let mut target = Settings::default();
+            assert!(!apply_settings_text(&mut target, &format!("{required}\n{bad}")), "{bad}");
+            assert_eq!(target.start, crate::start_page::StartSettings::default(), "a refused payload changes nothing: {bad}");
+        }
+        // And a repeated key is refused like any other.
+        assert!(!apply_settings_text(&mut Settings::default(), &format!("{required}\nstart_columns=3\nstart_columns=4")));
     }
 
     #[test]

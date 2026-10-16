@@ -2002,6 +2002,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             app.borrow().log.record("input_ready").ok();
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
+        let launch_decided = App::launch_has_target(&app); // --- start page ---
         App::restore_pending_session(&app);
         sync_split_ratio(hwnd, App::split_view(&app));
         if App::split_view(&app).is_some()
@@ -2010,6 +2011,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             App::update_split_bounds(&app, panes);
         }
         App::submit_initial_url(&app);
+        App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
         // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
         App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
@@ -4879,7 +4881,16 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
     }
     // --- end rail flyouts ---
     match key {
-        RailKey::Home => { App::new_tab(app); focus_omni(hwnd, app, true); }
+        // --- start page --- Home opens the homepage when one is set, else a new tab (the start page)
+        RailKey::Home => {
+            if let Some(url) = App::settings(app).start.home_target() {
+                App::navigate_current(app, &url);
+            } else {
+                App::new_tab(app);
+                focus_omni(hwnd, app, true);
+            }
+        }
+        // --- end start page ---
         RailKey::Customize | RailKey::Menu => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
         RailKey::Workspace(id) => { let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id as u32)); }
         // A composer below the button; nothing is created until it is confirmed.

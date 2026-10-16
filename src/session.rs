@@ -601,6 +601,13 @@ impl SessionStore {
     /// Inspects the previous run. `None` when another live Bowser holds the lock: this process
     /// then neither restores nor writes session files.
     pub fn open(dir: &Path) -> Option<(Self, Option<Offer>)> {
+        Self::open_with(dir, false)
+    }
+
+    /// [`open`](Self::open), and with `restore_clean` the tabs of a run that ended cleanly come back
+    /// too, without asking (the start page settings' "continue where you left off"). A crash is offered
+    /// as always.
+    pub fn open_with(dir: &Path, restore_clean: bool) -> Option<(Self, Option<Offer>)> {
         fs::create_dir_all(dir).ok()?;
         let Ok(prior) = read_lock_marker(dir) else {
             return None; // held open by a live instance
@@ -614,7 +621,7 @@ impl SessionStore {
         };
         let restart = take_restart_marker(dir);
         let offer = match decide_start(prior) {
-            StartDecision::Clean if restart => store.read_session().map(|session| Offer {
+            StartDecision::Clean if restart || restore_clean => store.read_session().map(|session| Offer {
                 session,
                 consecutive: 0,
                 ask: false,
@@ -1055,6 +1062,31 @@ mod tests {
             Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()),
             Some(sample())
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continue_where_you_left_off_restores_a_clean_exit_without_asking_and_only_when_asked_to() {
+        let dir = temp_dir("restore-clean");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        let snapshot = Session {
+            tabs: vec![SessionTab { url: "https://a.test/".to_owned(), title: "A".to_owned(), pinned: false }],
+            active: 0,
+            split: None,
+        };
+        store.finish(Some(&snapshot));
+        drop(store);
+        // The default start: a clean exit is not restored.
+        let (store, offer) = SessionStore::open_with(&dir, false).unwrap();
+        assert!(offer.is_none());
+        drop(store);
+        // "Continue where you left off": the tabs come back, with no question.
+        let (_, offer) = SessionStore::open_with(&dir, true).unwrap();
+        let offer = offer.expect("the last session is offered");
+        assert!(!offer.ask, "a clean exit is restored without the crash prompt");
+        assert_eq!(offer.session.tabs.len(), 1);
+        assert_eq!(offer.session.tabs[0].url, "https://a.test/");
         let _ = fs::remove_dir_all(&dir);
     }
 

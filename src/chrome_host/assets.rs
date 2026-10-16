@@ -45,6 +45,31 @@ pub const RESPONSE_HEADERS: &str = concat!(
     "Cache-Control: no-store",
 );
 
+// --- start page ---
+/// Headers for the split host's own document (`SPLIT_START_URL`) only. The start page's webpage widget
+/// embeds an http(s) address in a sandboxed frame (docs/design/start-page.md), so this one document may
+/// frame http(s); `frame-src` is the only difference from [`RESPONSE_HEADERS`]. Scripts, styles, images,
+/// connections, forms and objects stay as locked down as in every other view.
+pub const SPLIT_RESPONSE_HEADERS: &str = concat!(
+    "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src https: http:; object-src 'none'; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'; trusted-types 'none'\r\n",
+    "X-Content-Type-Options: nosniff\r\n",
+    "Cache-Control: no-store",
+);
+
+/// The headers to answer a request for `uri` (the full request URI) with: [`SPLIT_RESPONSE_HEADERS`] for
+/// exactly the split host's document, [`RESPONSE_HEADERS`] for everything else.
+pub fn response_headers_for(uri: &str) -> &'static str {
+    if uri == SPLIT_START_URL { SPLIT_RESPONSE_HEADERS } else { RESPONSE_HEADERS }
+}
+
+/// Whether a subframe of the split host may navigate to `uri`: an http(s) address with a host and no
+/// user info (the webpage widget). Every other host cancels all subframe navigation.
+pub fn split_frame_may_navigate(uri: &str) -> bool {
+    let Ok(url) = url::Url::parse(uri) else { return false };
+    matches!(url.scheme(), "http" | "https") && url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+}
+// --- end start page ---
+
 /// Maps a request path (as seen after the scheme and host) to an embedded asset.
 ///
 /// A leading slash is optional, and any query or fragment is ignored. The empty path and
@@ -76,6 +101,11 @@ pub fn lookup(path: &str) -> Option<Asset> {
         }),
         "history-page.js" => Some(Asset {
             bytes: include_bytes!("../../ui/dist/history-page.js"),
+            mime: JS,
+        }),
+        // The start page, which the split view's host imports only when a blank tab shows it.
+        "start-page.js" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/start-page.js"),
             mime: JS,
         }),
         _ => None,
@@ -223,6 +253,50 @@ mod tests {
         assert_eq!(lookup("/index.html?view=toolbar"), Some(page));
         assert_eq!(lookup("/index.html?view=rail"), Some(page));
     }
+
+    // --- start page ---
+    #[test]
+    fn only_the_split_document_may_frame_http_and_every_other_response_keeps_frame_src_none() {
+        assert_eq!(response_headers_for(SPLIT_START_URL), SPLIT_RESPONSE_HEADERS);
+        assert!(SPLIT_RESPONSE_HEADERS.contains("frame-src https: http:;"));
+        for url in [
+            START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL,
+            SETTINGS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL,
+            "bowser-ui://app/index.html?view=split&x=1", "bowser-ui://app/index.html?view=Split", "bowser-ui://app/app.js", "bowser-ui://app/start-page.js", "",
+        ] {
+            assert_eq!(response_headers_for(url), RESPONSE_HEADERS, "{url}");
+        }
+        assert!(RESPONSE_HEADERS.contains("frame-src 'none';"));
+        // The one difference is frame-src: everything else about the policy is the same text.
+        assert_eq!(SPLIT_RESPONSE_HEADERS.replace("frame-src https: http:;", "frame-src 'none';"), RESPONSE_HEADERS);
+        let lines: Vec<&str> = SPLIT_RESPONSE_HEADERS.split("\r\n").collect();
+        assert!(lines[0].starts_with("Content-Security-Policy: default-src 'none';"));
+        assert!(SPLIT_RESPONSE_HEADERS.contains("script-src 'self'") && SPLIT_RESPONSE_HEADERS.contains("connect-src 'none'") && SPLIT_RESPONSE_HEADERS.contains("trusted-types 'none'"));
+        assert!(!SPLIT_RESPONSE_HEADERS.contains("unsafe-"), "no unsafe source");
+    }
+
+    #[test]
+    fn a_subframe_of_the_split_host_may_load_an_http_or_https_address_and_nothing_else() {
+        for ok in ["https://example.com/", "http://example.com:8080/clock?x=1", "https://sub.example.co.uk/a#b"] {
+            assert!(split_frame_may_navigate(ok), "{ok}");
+        }
+        for no in [
+            "", "about:blank", "javascript:alert(1)", "data:text/html,x", "file:///c:/x", "blob:https://example.com/1", "ftp://example.com/",
+            "bowser-ui://app/index.html?view=split", "bowser://settings", "https://user:pw@example.com/", "https://", "chrome://settings",
+            "view-source:https://example.com/", "//example.com/",
+        ] {
+            assert!(!split_frame_may_navigate(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn the_start_page_bundle_is_served_and_is_not_the_page() {
+        let bundle = lookup("/start-page.js").expect("start-page.js");
+        assert_eq!(bundle.mime, JS);
+        assert_eq!(bundle.bytes, include_bytes!("../../ui/dist/start-page.js"));
+        assert_ne!(Some(bundle), lookup("/app.js"));
+    }
+    // --- end start page ---
 
     #[test]
     fn rail_start_url_is_the_rail_view_only() {

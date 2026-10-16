@@ -77,7 +77,22 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # history_retention=3m\r\n\
     # website_appearance=auto\r\n\
     # force_dark_websites=false\r\n\
-    # private_theme=follow\r\n";
+    # private_theme=follow\r\n\
+    # start_group_reopen=last\r\n\
+    # start_titles=always\r\n\
+    # start_add_button=true\r\n\
+    # start_columns=6\r\n\
+    # start_thumb_size=3\r\n\
+    # start_drag_reorder=true\r\n\
+    # homepage=\r\n\
+    # startup=start_page\r\n\
+    # startup_pages=\r\n\
+    # start_widgets=false\r\n\
+    # start_widget_columns=2\r\n\
+    # start_widget_height=regular\r\n\
+    # start_widget_bg=translucent\r\n\
+    # start_widget_color=#1f2933\r\n\
+    # start_widget_drag=true\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -511,6 +526,10 @@ pub struct Settings {
     /// `private_theme` (default follow): the light or dark look while a private tab is shown.
     pub private_theme: PrivateTheme,
     // --- end privacy, history and website appearance ---
+    // --- start page ---
+    /// The start page, speed dials, dashboard widgets, homepage and startup (`src/start_page.rs`).
+    pub start: crate::start_page::StartSettings,
+    // --- end start page ---
 }
 
 impl Default for Settings {
@@ -565,6 +584,7 @@ impl Default for Settings {
             website_appearance: WebsiteAppearance::Auto,
             force_dark_websites: false,
             private_theme: PrivateTheme::Follow,
+            start: crate::start_page::StartSettings::default(),
         }
     }
 }
@@ -853,7 +873,11 @@ impl Settings {
                     }
                 }
                 // --- end privacy, history and website appearance ---
-                _ => {}
+                // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
+                _ => {
+                    settings.start.parse_key(key, value);
+                }
+                // --- end start page ---
             }
         }
         settings
@@ -1021,6 +1045,10 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("private_theme", Some(settings.private_theme.key().to_owned())),
         // --- end privacy, history and website appearance ---
     ];
+    // --- start page ---
+    let mut values = Vec::from(values);
+    values.extend(settings.start.pairs().into_iter().map(|(key, value)| (key, Some(value))));
+    // --- end start page ---
     let mut written = vec![false; values.len()];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
@@ -1330,6 +1358,23 @@ mod tests {
             website_appearance: WebsiteAppearance::Dark,
             force_dark_websites: true,
             private_theme: PrivateTheme::Dark,
+            start: crate::start_page::StartSettings {
+                group_reopen: crate::start_page::GroupReopen::First,
+                titles: crate::start_page::TitleMode::Auto,
+                add_button: false,
+                columns: 9,
+                thumb_size: 5,
+                drag_reorder: false,
+                homepage: "https://home.example/".to_owned(),
+                startup: crate::start_page::Startup::SpecificPages,
+                startup_pages: vec!["https://a.example/".to_owned(), "https://b.example/".to_owned()],
+                widgets: true,
+                widget_columns: 4,
+                widget_height: crate::start_page::WidgetHeight::Tall,
+                widget_bg: crate::start_page::WidgetBackground::Custom,
+                widget_color: "#336699".to_owned(),
+                widget_drag: false,
+            },
         }
     }
 
@@ -1510,6 +1555,21 @@ mod tests {
     }
 
     #[test]
+    fn start_page_keys_load_from_the_file_and_a_bad_value_keeps_the_default() {
+        let settings = Settings::parse("start_columns=4\nstart_titles=never\nhomepage=https://home.example/\nstartup=homepage\nstart_widgets=true\nstart_widget_bg=transparent\nstart_thumb_size=banana\nstartup_pages=javascript:alert(1)\n");
+        assert_eq!(settings.start.columns, 4);
+        assert_eq!(settings.start.titles, crate::start_page::TitleMode::Never);
+        assert_eq!(settings.start.homepage, "https://home.example/");
+        assert_eq!(settings.start.startup, crate::start_page::Startup::Homepage);
+        assert!(settings.start.widgets);
+        assert_eq!(settings.start.widget_bg, crate::start_page::WidgetBackground::Transparent);
+        assert_eq!(settings.start.thumb_size, crate::start_page::DEFAULT_THUMB_SIZE, "a value that does not parse is ignored");
+        assert!(settings.start.startup_pages.is_empty(), "a non-web address never becomes a startup page");
+        assert_eq!(Settings::parse(&render_updated("", &settings)).start, settings.start);
+        assert_eq!(Settings::default().start, crate::start_page::StartSettings::default());
+    }
+
+    #[test]
     fn render_into_empty_text_roundtrips() {
         let text = render_updated("", &sample());
         assert_eq!(Settings::parse(&text), sample());
@@ -1537,7 +1597,11 @@ mod tests {
              download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n\
              translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n\
              blocker_level=trackers\r\ncookie_notices=true\r\nhistory_retention=1w\r\n\
-             website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n"
+             website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n\
+             start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
+             start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
+             startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
+             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

@@ -35,6 +35,7 @@
 @import "./settings.css" layer(surfaces);
 @import "./history.css" layer(surfaces);
 @import "./downloads.css" layer(surfaces);
+@import "./start.css" layer(surfaces);
 
 /* Utilities only, no preflight (base.css is the reset). `source(none)` turns off automatic
    detection: only the files listed below are scanned for `tw:` class names, so the build never

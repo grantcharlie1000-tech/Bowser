@@ -14,6 +14,7 @@ import { mountPrivacyDashboard } from './panels/privacy';
 import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
 import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
+import { mountStartSection } from './settings-start'; // --- start page ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
@@ -27,6 +28,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'link', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
+  startpage: 'home', // --- start page ---
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -718,6 +720,17 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   row(memoryCard, 'sleepAfter', sleepHost);
 
+  // --- start page --- the Start page section builds its own rows through this page's helpers
+  const startSection = mountStartSection({
+    card: (section, heading) => card(section, heading),
+    row: (into, id, control, options) => row(into, id, control, options),
+    change: (edit) => change((d) => edit(d.start)),
+    switchControl,
+    segmentedControl,
+    toast: (text, ok) => showToast(text, ok),
+  });
+  // --- end start page ---
+
   // Search engine
   const searchCard = card('search');
   const engines: ReadonlyArray<readonly [SearchEngine, string, string]> = [
@@ -997,6 +1010,7 @@ export function startSettingsPage(root: HTMLElement): void {
     toolbarReset.disabled = !s.readable;
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
+    startSection.apply(d.start, s.readable); // --- start page ---
     if (query !== '') filter();
   };
 

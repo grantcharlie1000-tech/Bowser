@@ -50,6 +50,7 @@ mod site_info;
 mod smooth;
 // --- split view ---
 mod split_ui;
+pub(crate) mod start_ui; // the start page over a blank new tab (docs/design/start-page.md)
 // --- end split view ---
 mod tab_ghost; // the native ghost of a held tab (docs/design/tab-drag.md)
 mod window;

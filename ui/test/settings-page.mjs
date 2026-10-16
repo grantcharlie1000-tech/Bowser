@@ -174,7 +174,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -368,8 +368,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 12);
-  assert.equal(app.querySelectorAll('section').length, 12);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13);
+  assert.equal(app.querySelectorAll('section').length, 13);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row);
@@ -493,7 +493,7 @@ test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
   assert.deepEqual(sent[1], { v: 1, t: 'set', a: 'history', on: false });
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical', ack: 'saved' } });
   assert.equal(app.querySelector('.sp-toast').textContent, 'Saved');
-  const nav = app.querySelectorAll('.sp-nav-item')[2];
+  const nav = app.querySelectorAll('.sp-nav-item')[3];
   sent.length = 0;
   nav.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'privacy' }]);
@@ -652,7 +652,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(4, 8), ['search', 'keyboard', 'commands', 'downloads']);
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(5, 9), ['search', 'keyboard', 'commands', 'downloads']);
   assert.equal(keyboard().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(quick().querySelector('.sp-chains').dataset.row, 'chains');
   deliver(commandsSnap());
@@ -942,3 +942,145 @@ test('a bad commands snapshot is dropped and leaves the sections as they were', 
   assert.equal(app.querySelectorAll('.sp-kb-row').length, before);
 });
 // --- end keyboard and quick commands ---
+
+// ---- the Start page section (docs/design/start-page.md) ----
+
+test('the Start page section: the snapshot parses, every row exists once and the keys are the ones Rust owns', () => {
+  const s = logic.parseSettingsSnapshot(fixture.snap.d);
+  assert.ok(s, 'the Rust snapshot carries the start object');
+  assert.equal(s.start.columns, 6);
+  assert.equal(s.start.startup, 'start_page');
+  const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
+  assert.deepEqual(ids, [
+    'startGroupReopen', 'startTitles', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder', 'startHomepage', 'startupMode',
+    'startupPages', 'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
+  ]);
+  for (const row of logic.ROWS.filter((r) => r.section === 'startpage')) {
+    assert.ok(!row.notYet, `${row.id} acts, so it carries no "no effect yet" note`);
+    assert.ok(!row.restart, `${row.id} applies at once`);
+  }
+  // The page's save text carries every start key once, with Rust's own key names.
+  const text = logic.saveText(logic.draftOf(s));
+  const rustKeys = [...read(join(root, 'src', 'start_page.rs')).matchAll(/^    "([a-z_]+)",$/gm)].map((m) => m[1]);
+  for (const key of rustKeys) assert.equal(text.split('\n').filter((l) => l.startsWith(`${key}=`)).length, 1, key);
+  assert.ok(rustKeys.length === 15);
+  // A start object that Rust would never write is refused.
+  const { start } = fixture.snap.d;
+  for (const bad of [{ ...start, columns: 13 }, { ...start, columns: 0 }, { ...start, thumbSize: 6 }, { ...start, titles: 'sometimes' },
+    { ...start, startup: 'restore' }, { ...start, homepage: 'ftp://x.example/' }, { ...start, startupPages: ['not a url'] },
+    { ...start, startupPages: Array.from({ length: 9 }, (_, i) => `https://p${i}.example/`) }, { ...start, widgetColor: 'red' },
+    { ...start, widgetColumns: 5 }, { ...start, extra: 1 }, { ...start, widgetDrag: 'yes' }]) {
+    assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, start: bad }), null, JSON.stringify(bad).slice(0, 100));
+  }
+  const { widgetDrag: _drop, ...missing } = start;
+  assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, start: missing }), null);
+});
+
+test('the Start page section: each control saves its own key, and a snapshot moves the controls', () => {
+  deliver(fixture.snap);
+  const row = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const lastSave = () => sent.filter((m) => m.t === 'set' && m.a === 'save').at(-1).text.split('\n');
+  const value = (key) => lastSave().find((l) => l.startsWith(`${key}=`));
+  const radios = (id) => row(id).querySelectorAll('[role="radio"]');
+  const flip = (id, key, expected) => {
+    sent.length = 0;
+    row(id).querySelector('[role="switch"]').click();
+    assert.equal(value(key), `${key}=${expected}`, id);
+    assert.equal(sent.length, 1, `${id} sends one save`);
+    deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  };
+  // Switches (the page starts from the Rust fixture: add button on, drag on, widgets off, widget drag on).
+  flip('startAddButton', 'start_add_button', 'false');
+  flip('startDragReorder', 'start_drag_reorder', 'false');
+  flip('startWidgets', 'start_widgets', 'true');
+  // The widget rows follow the widgets switch once Bowser answers with it on.
+  const widgetsOn = { ...fixture.snap.d, start: { ...fixture.snap.d.start, widgets: true } };
+  assert.equal(radios('startWidgetColumns').every((b) => b.disabled), true, 'off while widgets are off');
+  deliver({ ...fixture.snap, d: widgetsOn });
+  assert.equal(radios('startWidgetColumns').every((b) => b.disabled), false);
+  flip('startWidgetDrag', 'start_widget_drag', 'false');
+  deliver({ ...fixture.snap, d: widgetsOn });
+
+  // Segmented controls: titles (always / when needed / never), group reopen, tile size, widget columns / height / background.
+  const pick = (id, index, key, expected) => {
+    sent.length = 0;
+    radios(id)[index].click();
+    assert.equal(value(key), `${key}=${expected}`, id);
+    deliver({ ...fixture.snap, d: widgetsOn });
+  };
+  assert.deepEqual(radios('startTitles').map((b) => b.textContent), ['Always', 'When needed', 'Never']);
+  pick('startTitles', 1, 'start_titles', 'auto');
+  pick('startTitles', 2, 'start_titles', 'never');
+  pick('startGroupReopen', 1, 'start_group_reopen', 'first');
+  assert.deepEqual(radios('startThumbSize').map((b) => b.textContent), ['Tiny', 'Small', 'Medium', 'Large', 'Huge'], 'five thumbnail sizes');
+  for (const [i, size] of [[0, '1'], [1, '2'], [3, '4'], [4, '5']]) pick('startThumbSize', i, 'start_thumb_size', size);
+  for (const [i, n] of [[0, '1'], [2, '3'], [3, '4']]) pick('startWidgetColumns', i, 'start_widget_columns', n);
+  pick('startWidgetHeight', 1, 'start_widget_height', 'tall');
+  assert.deepEqual(radios('startWidgetBg').map((b) => b.textContent), ['Solid', 'Semi-transparent', 'Transparent', 'Custom']);
+  for (const [i, bg] of [[0, 'solid'], [2, 'transparent'], [3, 'custom']]) pick('startWidgetBg', i, 'start_widget_bg', bg);
+
+  // The custom colour only matters (and only enables) while the background is Custom.
+  assert.equal(row('startWidgetColor').querySelector('input').disabled, true);
+  deliver({ ...fixture.snap, d: { ...widgetsOn, start: { ...widgetsOn.start, widgetBg: 'custom' } } });
+  const colour = row('startWidgetColor').querySelector('input');
+  assert.equal(colour.disabled, false);
+  sent.length = 0;
+  colour.value = '#336699';
+  colour.dispatch('change');
+  assert.equal(value('start_widget_color'), 'start_widget_color=#336699');
+
+  // Homepage: an address is normalised and saved; nonsense is refused with the toast and nothing is sent.
+  const home = row('startHomepage').querySelector('input');
+  sent.length = 0;
+  home.value = 'example.com/start';
+  home.dispatch('change');
+  assert.equal(value('homepage'), 'homepage=https://example.com/start');
+  assert.equal(home.value, 'https://example.com/start');
+  sent.length = 0;
+  home.value = 'javascript:alert(1)';
+  home.dispatch('change');
+  assert.equal(sent.length, 0, 'refused');
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Enter an http or https address.');
+  sent.length = 0;
+  home.value = '';
+  home.dispatch('change');
+  assert.equal(value('homepage'), 'homepage=');
+
+  // Specific pages: only while that startup mode is chosen; one address per line, at most eight.
+  const pages = row('startupPages').querySelector('textarea');
+  assert.equal(pages.disabled, true, 'greyed unless startup is "specific pages"');
+  deliver({ ...fixture.snap, d: { ...widgetsOn, start: { ...widgetsOn.start, startup: 'specific_pages' } } });
+  assert.equal(pages.disabled, false);
+  sent.length = 0;
+  pages.value = 'https://a.example/\n\n b.example \n';
+  pages.dispatch('change');
+  assert.equal(value('startup_pages'), 'startup_pages=https://a.example/ https://b.example');
+  sent.length = 0;
+  pages.value = Array.from({ length: 9 }, (_, i) => `https://p${i}.example/`).join('\n');
+  pages.dispatch('change');
+  assert.equal(sent.length, 0, 'nine pages are refused');
+  pages.value = 'ftp://nope.example/';
+  pages.dispatch('change');
+  assert.equal(sent.length, 0);
+
+  // The rows are found by search.
+  for (const [query, id] of [['speed dial columns', 'startColumns'], ['homepage', 'startHomepage'], ['where you left off', 'startupMode'], ['sticky note', 'startWidgets'], ['widget background', 'startWidgetBg']]) {
+    assert.ok(logic.matchRows(query).has(id), query);
+  }
+  deliver(fixture.snap);
+});
+
+test('the Start page section follows the snapshot: values, the startup mode and the unreadable-file lock', () => {
+  const tuned = { ...fixture.snap.d, start: { ...fixture.snap.d.start, columns: 9, startup: 'homepage', homepage: 'https://home.example/', widgets: true, widgetBg: 'custom', widgetColor: '#336699' } };
+  deliver({ ...fixture.snap, d: tuned });
+  const row = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  assert.equal(row('startColumns').querySelector('.bw-select-button').textContent, '9');
+  assert.equal(row('startupMode').querySelector('.bw-select-button').textContent, 'Open the homepage');
+  assert.equal(row('startHomepage').querySelector('input').value, 'https://home.example/');
+  assert.equal(row('startWidgetColor').querySelector('input').value, '#336699');
+  assert.equal(row('startWidgetBg').querySelector('[role="radio"][aria-checked="true"]').textContent, 'Custom');
+  deliver({ ...fixture.snap, d: { ...tuned, readable: false } });
+  for (const id of ['startAddButton', 'startWidgets']) assert.equal(row(id).querySelector('[role="switch"]').disabled, true, id);
+  assert.equal(row('startHomepage').querySelector('input').disabled, true);
+  deliver(fixture.snap);
+});

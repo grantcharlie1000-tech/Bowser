@@ -1876,6 +1876,8 @@ fn save_form(hwnd: HWND) {
         force_dark_websites: current.force_dark_websites,
         private_theme: current.private_theme,
         // --- end privacy, history and website appearance ---
+        // The GDI form has no start page controls; the file's values are kept.
+        start: current.start,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

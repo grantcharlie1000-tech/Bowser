@@ -1,0 +1,4 @@
+before: blank new tab (nothing to draw): first page built median 0.1 ms (p90 0.2, max 0.4) from the host's message, of which start-page.js fetch 0.0 ms; 20 cold page loads
+after: start page, empty profile: first page built median 81.5 ms (p90 636.7, max 1129.2) from the host's message, of which start-page.js fetch 46.4 ms; second blank tab in the same window (code already loaded) median 2.4 ms, p90 3.1; 20 cold page loads
+after: start page, 3 dials + 6 widgets: first page built median 102.8 ms (p90 136.3, max 484.2) from the host's message, of which start-page.js fetch 16.8 ms; second blank tab in the same window (code already loaded) median 15.1 ms, p90 42.3; 20 cold page loads
+after: start page, 120 dials + 6 widgets: first page built median 215.8 ms (p90 408.0, max 436.5) from the host's message, of which start-page.js fetch 20.5 ms; second blank tab in the same window (code already loaded) median 61.1 ms, p90 101.6; 20 cold page loads
