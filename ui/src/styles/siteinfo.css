@@ -124,6 +124,20 @@
   flex: none;
 }
 
+/* The blocking level has three long choices: they sit on their own line under the label. */
+.bw-siteinfo-row.is-wide {
+  flex-wrap: wrap;
+}
+
+.bw-siteinfo-row.is-wide > .bw-siteinfo-levels {
+  flex: 1 1 100%;
+  margin-inline-start: calc(16px + var(--bw-space-3));
+}
+
+.bw-siteinfo-levels > button {
+  flex: 1;
+}
+
 .bw-siteinfo .bw-separator {
   margin: var(--bw-space-1) 0;
 }

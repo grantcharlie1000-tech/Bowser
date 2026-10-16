@@ -670,6 +670,41 @@
   gap: var(--bw-space-2);
 }
 
+/* Blocking, history and website appearance (protection.ts): the blocks reuse the dashboard's rows.
+   Only the add forms (a field, a choice and a button in one row), a list that is switched off and
+   an inline problem need their own rules. */
+.pg-protect-add {
+  flex-wrap: wrap;
+}
+
+.pg-protect-input {
+  flex: 1 1 160px;
+  width: 200px;
+  min-width: 0;
+}
+
+.pg-protect-site-controls,
+.pg-protect-source {
+  flex-wrap: wrap;
+}
+
+.pg-protect .pg-row.is-off .pg-label {
+  color: var(--bw-text-2);
+}
+
+.pg-protect-error {
+  margin: 0;
+  padding: var(--bw-space-1) var(--bw-space-2);
+  color: var(--sp-warn, var(--bw-group-1));
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.pg-seg-host {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 640px) {
   .pg-row {
     flex-wrap: wrap;

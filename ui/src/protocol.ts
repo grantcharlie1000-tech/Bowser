@@ -42,7 +42,7 @@ export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
 export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -474,7 +474,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;

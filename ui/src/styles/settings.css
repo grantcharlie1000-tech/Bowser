@@ -1110,7 +1110,8 @@
 }
 
 .sp-card .pg-bar,
-.sp-card .pg-confirm {
+.sp-card .pg-confirm,
+.sp-card .pg-protect-error {
   padding-inline: var(--sp-row-x);
   border-bottom-color: var(--sp-rule);
 }

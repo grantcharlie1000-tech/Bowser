@@ -17,7 +17,9 @@ use std::{
 pub const MAX_NOTES_BYTES: usize = 64 * 1024;
 pub const MAX_TASKS: usize = 500;
 pub const MAX_SESSIONS: usize = 32;
-pub const MAX_HISTORY: usize = 500;
+/// Most visits kept. History retention (Settings) drops older ones first; this cap only matters for
+/// a very busy profile that keeps history "forever".
+pub const MAX_HISTORY: usize = 5_000;
 pub const MAX_BOOKMARKS: usize = 500;
 const MAX_FILE_BYTES: usize = 256 * 1024;
 
@@ -795,7 +797,7 @@ pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
 
 /// Largest history file that is read at all. The file is capped at `MAX_HISTORY` lines of at most
 /// a couple of kilobytes each, so this is only a guard against a foreign file.
-const MAX_HISTORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_HISTORY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// History for display. An unreadable file shows as empty; mutators use [`read_history_strict`] so
 /// that never turns into a rewrite.

@@ -24,6 +24,7 @@ use std::{
 };
 
 use crate::navigation::SearchEngine;
+pub use crate::settings_privacy::{BlockerLevel, HistoryRetention, PrivateTheme, WebsiteAppearance};
 use crate::site_prefs::{ZOOM_MAX as DEFAULT_ZOOM_MAX, ZOOM_MIN as DEFAULT_ZOOM_MIN};
 
 pub const FILE_NAME: &str = "settings.txt";
@@ -70,7 +71,13 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # ask_download_location=false\r\n\
     # translate_offer=true\r\n\
     # translate_auto=false\r\n\
-    # translate_target=\r\n";
+    # translate_target=\r\n\
+    # blocker_level=ads\r\n\
+    # cookie_notices=false\r\n\
+    # history_retention=3m\r\n\
+    # website_appearance=auto\r\n\
+    # force_dark_websites=false\r\n\
+    # private_theme=follow\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -489,6 +496,21 @@ pub struct Settings {
     /// `translate_target` (default empty: the Windows display language): the language pages are
     /// translated into, as a primary subtag such as `en`.
     pub translate_target: String,
+    // --- privacy, history and website appearance (thread T3) ---
+    /// `blocker_level` (default ads): what the blocker stops while `blocker_enabled` is on.
+    pub blocker_level: BlockerLevel,
+    /// `cookie_notices` (default false): hide cookie-consent banners with the bundled and added
+    /// cookie lists, with or without the ad blocker. A site can switch it off on its own.
+    pub cookie_notices: bool,
+    /// `history_retention` (default 3m): how long the history list keeps a visit.
+    pub history_retention: HistoryRetention,
+    /// `website_appearance` (default auto): the colour scheme sites are told the browser prefers.
+    pub website_appearance: WebsiteAppearance,
+    /// `force_dark_websites` (default false): darken pages that have no dark theme of their own.
+    pub force_dark_websites: bool,
+    /// `private_theme` (default follow): the light or dark look while a private tab is shown.
+    pub private_theme: PrivateTheme,
+    // --- end privacy, history and website appearance ---
 }
 
 impl Default for Settings {
@@ -537,6 +559,12 @@ impl Default for Settings {
             translate_offer: true,
             translate_auto: false,
             translate_target: String::new(),
+            blocker_level: BlockerLevel::Ads,
+            cookie_notices: false,
+            history_retention: HistoryRetention::Months3,
+            website_appearance: WebsiteAppearance::Auto,
+            force_dark_websites: false,
+            private_theme: PrivateTheme::Follow,
         }
     }
 }
@@ -793,6 +821,38 @@ impl Settings {
                         settings.translate_target = target;
                     }
                 }
+                // --- privacy, history and website appearance (thread T3) ---
+                "blocker_level" => {
+                    if let Some(level) = BlockerLevel::parse(value) {
+                        settings.blocker_level = level;
+                    }
+                }
+                "cookie_notices" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.cookie_notices = on;
+                    }
+                }
+                "history_retention" => {
+                    if let Some(retention) = HistoryRetention::parse(value) {
+                        settings.history_retention = retention;
+                    }
+                }
+                "website_appearance" => {
+                    if let Some(appearance) = WebsiteAppearance::parse(value) {
+                        settings.website_appearance = appearance;
+                    }
+                }
+                "force_dark_websites" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.force_dark_websites = on;
+                    }
+                }
+                "private_theme" => {
+                    if let Some(theme) = PrivateTheme::parse(value) {
+                        settings.private_theme = theme;
+                    }
+                }
+                // --- end privacy, history and website appearance ---
                 _ => {}
             }
         }
@@ -884,7 +944,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 43] = [
+    let values: [(&str, Option<String>); _] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         (
@@ -952,8 +1012,16 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("translate_offer", Some(bool_text(settings.translate_offer).to_owned())),
         ("translate_auto", Some(bool_text(settings.translate_auto).to_owned())),
         ("translate_target", Some(settings.translate_target.clone())),
+        // --- privacy, history and website appearance (thread T3) ---
+        ("blocker_level", Some(settings.blocker_level.key().to_owned())),
+        ("cookie_notices", Some(bool_text(settings.cookie_notices).to_owned())),
+        ("history_retention", Some(settings.history_retention.key().to_owned())),
+        ("website_appearance", Some(settings.website_appearance.key().to_owned())),
+        ("force_dark_websites", Some(bool_text(settings.force_dark_websites).to_owned())),
+        ("private_theme", Some(settings.private_theme.key().to_owned())),
+        // --- end privacy, history and website appearance ---
     ];
-    let mut written = [false; 43];
+    let mut written = vec![false; values.len()];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -1256,6 +1324,12 @@ mod tests {
             translate_offer: false,
             translate_auto: true,
             translate_target: "fr".to_owned(),
+            blocker_level: BlockerLevel::Trackers,
+            cookie_notices: true,
+            history_retention: HistoryRetention::Week,
+            website_appearance: WebsiteAppearance::Dark,
+            force_dark_websites: true,
+            private_theme: PrivateTheme::Dark,
         }
     }
 
@@ -1461,7 +1535,9 @@ mod tests {
              shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
              pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n\
              download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n\
-             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n"
+             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n\
+             blocker_level=trackers\r\ncookie_notices=true\r\nhistory_retention=1w\r\n\
+             website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n"
         );
         assert_eq!(Settings::parse(&text), sample());
     }

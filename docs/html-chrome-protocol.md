@@ -360,6 +360,46 @@ blocked (the default). An allow never widens the scheme gate: `javascript:`, `da
 `about:`, `blob:` and `bowser-ui:` targets stay blocked. A blocked script popup is logged to the denied
 list and sets `permblocked` like a refused permission request.
 
+### Blocking, history and website appearance (`protection`, `priv`, `src/chrome_host/panels/protection.rs`)
+
+The Privacy and security section's blocking level, cookie notices, per-site choices, rule lists, history
+retention, Delete Browsing Data and the website-appearance rows are driven by their own snapshot, so their size
+never counts against the permissions table's 4096-key budget. It is sent with every `privacy` snapshot (the
+settings page and the dashboard window) and carries the same exact-key discipline:
+
+`{v:1,t:"snap",p:"protection",d:{level,cookieNotices,retention,websiteAppearance,forceDark,privateTheme,readable,guest,current,sites,allow,sources,blocked,result,busy}}`
+
+- `level` `none|trackers|ads` is `blocker_enabled` and `blocker_level` read together (`none` is the old switch off);
+  `retention` is `session|1d|1w|1m|3m|6m|1y|forever`; `websiteAppearance` is `auto|light|dark`; `privateTheme` is
+  `follow|light|dark`. `readable` is false when `settings.txt` could not be read (every control is then disabled).
+- `current` is the active normal tab's site `{host,level,cookies,private}` or `null`. `sites` is the saved per-site
+  choices (<= 200 shown, `{site,level:none|trackers|ads|default,cookies:show|hide|default}`); `allow` the
+  `blocker_allow` sites (<= 100 shown).
+- `sources` (<= 24) are the rule lists: `{id,name,kind:trackers|ads|cookies,enabled,origin:builtin|filters|file|url,url,rules,removable}`;
+  `url` is non-empty exactly when `origin` is `url` and is always `https://`.
+- `result` is `null` or `{seq,ok,text}`: how the last command went, kept until the next one, with a sequence number
+  so the page shows each result once. `busy` is true while a list is being fetched.
+
+Commands (`{v:1,t:"priv",...}`, validated in `panels::protection::map_command`; each carries exactly its own fields):
+
+| `a` | fields | meaning |
+|---|---|---|
+| `blocklevel` | `text` `none`/`trackers`/`ads` | the global level (`none` writes `blocker_enabled=false` and keeps the chosen level) |
+| `cookienotices` | `on` | hide cookie-consent banners, with or without blocking |
+| `site-level` | `text` site, `n` 0 none / 1 trackers / 2 trackers and ads / 3 follow the global level | a site's own level |
+| `site-cookies` | `text` site, `n` 0 show / 1 hide / 2 follow | a site's cookie-notice choice |
+| `site-remove` | `text` site | forget a site's choices |
+| `src-toggle` / `src-update` / `src-remove` | `text` list id (`on` for the switch) | switch a list, fetch it again, remove one the user added |
+| `src-add-url` | `url` https address, `text` kind | fetch a list once, now (a worker thread; HTTPS only, <= 3 redirects, <= 8 MB, 60 s, public host names only, content checked before it is kept) |
+| `src-add-file` | `text` kind | Bowser opens its own file picker; the page never names a file |
+| `retention` | `text` | history retention |
+| `webappearance`, `forcedark`, `privatetheme` | `text` / `on` | the colour scheme sites are asked for, forced dark mode, the private-tab look |
+| `delete-data` | `id` kinds bitmask (bit order `browsing_data::DataKind::ALL`), `n` period 0..=4 (`Range::ALL`), `on` | Delete Browsing Data. Saved logins are in the mask only with `on:true`, and Rust asks natively as well |
+
+Nothing here fetches a list by itself: a list is fetched only by `src-add-url` or `src-update`, never at start-up or
+on a timer. The site information page's `blocker` object carries `level` and `notices` too, and `act 11` now picks a
+level (`n` 0..=2) while `act 14` hides or shows cookie notices (`n` 1 / 0).
+
 ### Private tabs: `tabs[].private`, `state.private`
 
 A private (InPrivate) tab is an ordinary tab whose controller Rust creates with

@@ -1868,6 +1868,14 @@ fn save_form(hwnd: HWND) {
         translate_offer: current.translate_offer,
         translate_auto: current.translate_auto,
         translate_target: current.translate_target,
+        // --- privacy, history and website appearance (thread T3): kept as the file has them ---
+        blocker_level: current.blocker_level,
+        cookie_notices: current.cookie_notices,
+        history_retention: current.history_retention,
+        website_appearance: current.website_appearance,
+        force_dark_websites: current.force_dark_websites,
+        private_theme: current.private_theme,
+        // --- end privacy, history and website appearance ---
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

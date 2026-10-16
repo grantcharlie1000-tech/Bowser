@@ -32,6 +32,10 @@ pub mod reader;
 pub mod translate;
 pub mod session;
 pub mod settings;
+pub mod settings_privacy; // blocker level, history retention, website appearance, private theme (T3)
+pub mod browsing_data; // Delete Browsing Data: kinds, ranges and the plan (T3)
+pub mod history_retention; // drops visits older than the retention setting (T3)
+pub mod website_look; // the colour scheme sites are told, and forced dark mode (T3)
 pub mod shortcuts;
 pub mod sidebar;
 pub mod site_prefs;

@@ -73,8 +73,7 @@ test('privacy parser rejects malformed sites and denied rows', () => {
 
 test('privacy commands are limited to explicit flat panel fields', () => {
   assert.deepEqual(logic.privacyCommand('clear-stats'), { a: 'clear-stats' });
-  assert.deepEqual(logic.privacyCommand('clear-data', { n: 2, id: 3 }), { a: 'clear-data', n: 2, id: 3 });
-  assert.equal(logic.privacyCommand('clear-data', { n: 4 }), null);
+  assert.equal(logic.privacyCommand('clear-data', { n: 2, id: 3 }), null, 'the per-kind clear is replaced by Delete Browsing Data (protection-logic.ts)');
   assert.equal(logic.privacyCommand('anything'), null);
   assert.equal(logic.privacyCommand('permission', { id: 0, n: 2 }), null, 'the index-based command is gone');
   assert.equal(logic.privacyCommand('clear-stats', { id: 1 }), null);

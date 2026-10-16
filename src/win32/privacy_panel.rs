@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     app::{App, AppRef},
-    engine::{BrowsingDataKind, BrowsingDataRange},
+    browsing_data::{self, DataKind, DeleteReport, Range, Selection},
     permissions::{Decision, Permission},
     privacy_stats::PrivacyStats,
     site_security::SiteSecurity,
@@ -27,6 +27,8 @@ use crate::{
 
 const CLEAR_STATS: usize = 8_800;
 const CLEAR_DATA_BASE: usize = 8_900;
+/// Ranges per kind in the menu ids (`browsing_data::Range::ALL` has five).
+const CLEAR_RANGES: usize = 8;
 const PERMISSION_BASE: usize = 10_000;
 const PERMISSION_CHOICES: [Option<Decision>; 3] =
     [Some(Decision::Allow), Some(Decision::Block), None];
@@ -304,27 +306,33 @@ fn panel(snapshot: &Snapshot) -> Menu {
         }
     }
 
-    entries.push(Entry::SectionHeader("Clear browsing data".to_owned()));
-    for (kind_index, label) in ["Cookies and site data", "Cached files", "Browsing history"]
-        .into_iter()
-        .enumerate()
-    {
-        let ranges = [
-            (BrowsingDataRange::LastHour, "Last hour"),
-            (BrowsingDataRange::LastDay, "Last 24 hours"),
-            (BrowsingDataRange::LastSevenDays, "Last 7 days"),
-            (BrowsingDataRange::AllTime, "All time"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(range_index, (_, range_label))| {
-            Entry::Item(Item::new(
-                CLEAR_DATA_BASE + kind_index * 4 + range_index,
-                range_label,
-                Icon::Reset,
-            ))
-        })
-        .collect();
+    entries.push(Entry::SectionHeader("Delete browsing data".to_owned()));
+    for (kind_index, kind) in DataKind::ALL.into_iter().enumerate() {
+        let ranges = Range::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(range_index, range)| {
+                let label = match range {
+                    Range::Hour => "Past hour",
+                    Range::Day => "Past day",
+                    Range::Week => "Past week",
+                    Range::FourWeeks => "Past 4 weeks",
+                    Range::Everything => "Everything",
+                };
+                Entry::Item(Item::new(
+                    CLEAR_DATA_BASE + kind_index * CLEAR_RANGES + range_index,
+                    label,
+                    Icon::Reset,
+                ))
+            })
+            .collect();
+        let label = {
+            let mut text = kind.label().to_owned();
+            if let Some(first) = text.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            text
+        };
         entries.push(Entry::Item(
             Item::new(0, label, Icon::Cookie).submenu_with(ranges),
         ));
@@ -389,84 +397,59 @@ pub(crate) fn apply(hwnd: HWND, app: &AppRef, snapshot: &Snapshot, id: usize) ->
             }
         };
     }
-    if (CLEAR_DATA_BASE..CLEAR_DATA_BASE + 12).contains(&id) {
+    if (CLEAR_DATA_BASE..CLEAR_DATA_BASE + DataKind::ALL.len() * CLEAR_RANGES).contains(&id) {
         let offset = id - CLEAR_DATA_BASE;
-        let kind = [
-            BrowsingDataKind::SiteData,
-            BrowsingDataKind::Cache,
-            BrowsingDataKind::History,
-        ][offset / 4];
-        let range = [
-            BrowsingDataRange::LastHour,
-            BrowsingDataRange::LastDay,
-            BrowsingDataRange::LastSevenDays,
-            BrowsingDataRange::AllTime,
-        ][offset % 4];
+        let kind = DataKind::ALL[offset / CLEAR_RANGES];
+        let Some(range) = Range::ALL.get(offset % CLEAR_RANGES).copied() else {
+            return false;
+        };
         return clear_data(hwnd, app, kind, range);
     }
     false
 }
 
-fn clear_data(hwnd: HWND, app: &AppRef, kind: BrowsingDataKind, range: BrowsingDataRange) -> bool {
-    let label = match kind {
-        BrowsingDataKind::SiteData => "cookies and site data",
-        BrowsingDataKind::Cache => "cached files",
-        BrowsingDataKind::History => "browsing history",
+fn clear_data(hwnd: HWND, app: &AppRef, kind: DataKind, range: Range) -> bool {
+    let Some(selection) = Selection::from_bits(u32::from(kind.bit())) else {
+        return false;
     };
-    let range_label = match range {
-        BrowsingDataRange::LastHour => "the last hour",
-        BrowsingDataRange::LastDay => "the last 24 hours",
-        BrowsingDataRange::LastSevenDays => "the last 7 days",
-        BrowsingDataRange::AllTime => "all time",
+    let passwords = kind == DataKind::Passwords;
+    let message = if passwords {
+        "Delete every saved password in this profile? Passwords have no dates, so the time range does not apply. This cannot be undone."
+            .to_owned()
+    } else {
+        format!(
+            "Delete {} from {} in this profile? Saved passwords are not included.",
+            kind.label(),
+            range.label()
+        )
     };
-    if !confirm(
-        hwnd,
-        "Clear browsing data?",
-        &format!(
-            "Clear {label} from {range_label} in this profile? Saved passwords are not included."
-        ),
-    ) {
+    if !confirm(hwnd, "Delete browsing data?", &message) {
         return false;
     }
-    // Any non-private tab with a page reaches the profile; the active tab may be the settings page,
-    // which has none.
-    let Some(tab) = App::profile_page_tab(app) else {
-        show_result(
-            hwnd,
-            "Could not start",
-            "Open a web page before clearing this profile's browser data.",
-        );
-        return false;
+    // The same plan the settings page runs; the explicit confirmation above is the one the plan asks
+    // for when saved passwords are chosen.
+    let plan = match browsing_data::plan(selection, range, passwords) {
+        Ok(plan) => plan,
+        Err(error) => {
+            show_result(hwnd, "Could not start", &error.to_string());
+            return false;
+        }
     };
     let result = Rc::new(RefCell::new(None));
     let completion = result.clone();
-    let started = App::call_engine(app, |engine| {
-        engine.clear_browsing_data(
-            tab,
-            kind,
-            range,
-            Box::new(move |outcome| {
-                *completion.borrow_mut() = Some(outcome);
-            }),
-        );
-    });
-    if started.is_none() {
-        show_result(hwnd, "Could not start", "The browser engine is not ready.");
-        return false;
-    }
-    show_result(
-        hwnd,
-        "Clear request started",
-        "Waiting for WebView2's completion response. Saved passwords are not included.",
+    App::delete_browsing_data(
+        app,
+        plan,
+        Box::new(move |report| {
+            *completion.borrow_mut() = Some(report);
+        }),
     );
-    let outcome = wait_for_result(&result, Duration::from_secs(60));
-    match outcome {
-        Some(Ok(())) => show_result(
+    match wait_for_result(&result, Duration::from_secs(60)) {
+        Some(report) => show_result(
             hwnd,
-            "Browsing data cleared",
-            &format!("Cleared {label} from {range_label}."),
+            if report.ok { "Browsing data deleted" } else { "Could not delete everything" },
+            &report.text,
         ),
-        Some(Err(error)) => show_result(hwnd, "Could not clear browsing data", &error),
         None => show_result(
             hwnd,
             "Still working",
@@ -515,9 +498,9 @@ fn show_result(hwnd: HWND, title: &str, message: &str) {
 }
 
 fn wait_for_result(
-    result: &Rc<RefCell<Option<std::result::Result<(), String>>>>,
+    result: &Rc<RefCell<Option<DeleteReport>>>,
     timeout: Duration,
-) -> Option<std::result::Result<(), String>> {
+) -> Option<DeleteReport> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Some(result) = result.borrow_mut().take() {

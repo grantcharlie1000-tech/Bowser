@@ -67,6 +67,9 @@ struct Runtime {
     /// Last Privacy dashboard snapshot sent (the dashboard is a section of the page).
     privacy: Option<String>,
     privacy_due: bool,
+    /// Last `protection` snapshot sent (the Privacy section's blocking, history and appearance
+    /// controls; thread T3). It is read afresh whenever the Privacy dashboard is.
+    protection: Option<String>,
     /// Last Extensions section snapshot sent, whether a fresh one is due, the extension being
     /// removed (the engine answers later) and how the last extension command went.
     extensions: Option<String>,
@@ -272,6 +275,7 @@ fn ensure_host(owner: HWND) {
                     rt.privacy = None;
                     rt.commands = None;
                     crate::commands::set_capturing(false); // a reloaded page is not waiting for a key
+                    rt.protection = None;
                     rt.dirty = true;
                     // A reloaded page starts at the top: show the tab's section again.
                     if rt.go.is_none() {
@@ -445,6 +449,13 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 let _ = with(owner, |rt| rt.privacy = Some(privacy));
             }
         }
+        // The blocking, history and appearance controls beside it (thread T3).
+        if let Some(protection) = super::html_dialog::protection_snapshot_json(app) {
+            let fresh = with(owner, |rt| rt.protection.as_deref() != Some(protection.as_str())).unwrap_or(false);
+            if fresh && host.post_json(&protection).is_ok() {
+                let _ = with(owner, |rt| rt.protection = Some(protection));
+            }
+        }
     }
     // The Extensions section: read afresh with the page or after a change, sent when it changed or
     // carries an answer.
@@ -580,6 +591,10 @@ fn answer(owner: HWND, result: Result<(), String>) {
 /// Runs the queued commands for `owner` (from `WM_SETTINGS_COMMAND`). A command acts only while
 /// the page is shown over a settings tab; anything else is dropped.
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
+    // A filter list a worker fetched for the Privacy section is stored first (thread T3).
+    if super::protection::apply_fetched(app, owner) {
+        let _ = with(owner, |rt| rt.dirty = true);
+    }
     let commands: Vec<Queued> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);

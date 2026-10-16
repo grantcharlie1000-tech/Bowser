@@ -11,6 +11,7 @@ import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
 import { textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
+import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
 import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
@@ -361,6 +362,22 @@ export function startSettingsPage(root: HTMLElement): void {
     return result;
   };
 
+  /** A titled group of rows inside a card: the shape the Privacy dashboard and the protection blocks share. */
+  const dashSection = (title: string): PageSection => {
+    const root = el('div', 'sp-group');
+    const heading = el('h3', 'sp-group-h');
+    heading.textContent = title;
+    const box = el('div', 'sp-card');
+    const body = el('div', 'pg-rows');
+    box.append(body);
+    root.append(heading, box);
+    return { root, body };
+  };
+  // Blocking level, history retention and website appearance (thread T3). Rust sends their snapshot
+  // as `protection`; their controls sit in the rows below and their blocks follow the Privacy rows.
+  // The level is a saved setting too, so the page's own draft is kept in step with it.
+  const protection = mountProtection({ toast: showToast, section: dashSection, onLevel: (value) => { if (draft) draft.blockerEnabled = value !== 'none'; } });
+
   // You and Bowser
   const profileCard = card('profile');
   const avatar = el('span', 'sp-avatar');
@@ -412,6 +429,13 @@ export function startSettingsPage(root: HTMLElement): void {
   const accentWrap = el('div', 'sp-reset');
   accentWrap.append(accentInput, accentReset);
   row(themeCard, 'themeAccent', accentWrap);
+
+  // Website appearance and the private tab theme (thread T3)
+  const websiteCard = card('appearance', 'Website appearance');
+  row(websiteCard, 'websiteAppearance', protection.websiteAppearance.root);
+  row(websiteCard, 'forceDark', protection.forceDark.root);
+  const privateCard = card('appearance', 'Private tabs');
+  row(privateCard, 'privateTheme', protection.privateTheme.root);
 
   // Toolbar
   const TOOLBAR_LABELS: Readonly<Record<ToolbarButton, string>> = {
@@ -568,8 +592,9 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Privacy and security
   const blockCard = card('privacy', 'Blocking');
-  const blocker = switchControl((on) => change((d) => { d.blockerEnabled = on; }));
-  row(blockCard, 'blocker', blocker.root);
+  // The old on/off switch is the "None" choice of the blocking level (blocker_enabled=false).
+  row(blockCard, 'blocker', protection.level.root);
+  row(blockCard, 'cookieNotices', protection.cookieNotices.root);
   const blockYoutube = switchControl((on) => change((d) => { d.blockYoutubeVideoAds = on; }));
   row(blockCard, 'blockYoutubeVideoAds', blockYoutube.root);
   const allowList = el('ul', 'sp-sites');
@@ -629,6 +654,17 @@ export function startSettingsPage(root: HTMLElement): void {
   row(trackCard, 'tracking', tracking.root);
   const history = switchControl((on) => { if (cmd({ a: 'history', on })) pending += 1; });
   const historyRow = row(trackCard, 'history', history.root);
+  row(trackCard, 'historyRetention', protection.retention.root);
+
+  // The blocks of the protection controls (thread T3): per-site choices, the rule lists and Delete
+  // Browsing Data. Each is one block, so search treats it as one row.
+  for (const [id, block] of [['siteRules', protection.sites], ['blockLists', protection.lists], ['deleteData', protection.deleteData]] as const) {
+    const host = el('div', 'sp-dash');
+    host.dataset.row = id;
+    host.append(block);
+    sectionNodes.get('privacy')?.append(host);
+    rows.set(id, { spec: ROWS.find((r) => r.id === id)!, root: host, label: el('span'), desc: null, card: host, flag: null, target: null });
+  }
 
   // The Privacy dashboard lives here, not in a window of its own: Rust sends its `privacy` snapshots
   // to this page and takes its `priv` commands. Search treats the whole block as the `dashboard` row.
@@ -640,16 +676,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const dashColumn = el('div', 'sp-dash-col');
   dashHost.append(dashStatus, dashColumn);
   sectionNodes.get('privacy')?.append(dashHost);
-  const dashSection = (title: string): PageSection => {
-    const root = el('div', 'sp-group');
-    const heading = el('h3', 'sp-group-h');
-    heading.textContent = title;
-    const box = el('div', 'sp-card');
-    const body = el('div', 'pg-rows');
-    box.append(body);
-    root.append(heading, box);
-    return { root, body };
-  };
   const dashboardSpec = ROWS.find((r) => r.id === 'dashboard')!;
   rows.set('dashboard', { spec: dashboardSpec, root: dashHost, label: el('span'), desc: null, card: dashHost, flag: null, target: null });
   const receiveDashboard = mountPrivacyDashboard({ column: dashColumn, status: dashStatus, scroll: main, section: dashSection });
@@ -917,7 +943,6 @@ export function startSettingsPage(root: HTMLElement): void {
     blockYoutube.set(d.blockYoutubeVideoAds);
     defaultBrowserStatus.textContent = s.defaultBrowser === 'yes' ? 'Bowser is your default browser.'
       : s.defaultBrowser === 'no' ? 'Bowser is not your default browser.' : 'Bowser could not check whether it is the default browser.';
-    blocker.set(d.blockerEnabled);
     paintSites();
     tracking.set(d.trackingPrevention);
     history.set(s.historyEnabled);
@@ -954,7 +979,7 @@ export function startSettingsPage(root: HTMLElement): void {
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
     for (const control of [
-      layout, grouping, blocker, tracking, efficiency, sleep, engine,
+      layout, grouping, tracking, efficiency, sleep, engine,
       previewImages, previewMemory, besideActive, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
       rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
@@ -1135,6 +1160,7 @@ export function startSettingsPage(root: HTMLElement): void {
       return;
     }
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
+    if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') { commandSections.receive(message); return; }
     if (message.t !== 'snap' || message.p !== 'settings') return;

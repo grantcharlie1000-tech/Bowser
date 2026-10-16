@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validSiteInfoPayload, cookieText, blockerText, blockedNoticeText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, PRIVATE_SITE_NOTE } from '../src/siteinfo-logic.ts';
+import { validSiteInfoPayload, cookieText, blockerText, noticesText, blockedNoticeText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_NOTICES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, PRIVATE_SITE_NOTE, SHIELD_LEVELS } from '../src/siteinfo-logic.ts';
 import * as esbuild from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -85,7 +85,9 @@ test('Rust site info page passes the strict site info contract', () => {
   const camera = page.perms.find((p) => p.k === 'camera');
   assert.deepEqual(fixture.act, { v: 1, t: 'act', tok: page.tok, id: camera.id, n: CHOICES.indexOf('allow') });
   assert.equal(camera.id, 2, 'ids follow Permission::ALL (microphone, camera, location, notifications, popups)');
-  assert.deepEqual([ACT_CLEAR_COOKIES, ACT_BLOCKER, ACT_RESET, ACT_ZOOM_RESET], [10, 11, 12, 13]);
+  assert.deepEqual([ACT_CLEAR_COOKIES, ACT_BLOCKER, ACT_RESET, ACT_ZOOM_RESET, ACT_NOTICES], [10, 11, 12, 13, 14]);
+  assert.deepEqual([...SHIELD_LEVELS], ['none', 'trackers', 'ads'], 'the order of n in the blocker act (Rust: SHIELD_LEVELS)');
+  assert.deepEqual(page.blocker, { state: 'on', n: 3, level: 'ads', notices: false });
   assert.equal(page.zoom, 125, 'the fixture page is zoomed, so the zoom row shows');
   for (const bad of [
     { ...page, perms: [{ ...page.perms[0], state: 'ask' }] },
@@ -99,10 +101,18 @@ test('Rust site info page passes the strict site info contract', () => {
     { ...page, perms: [{ id: 5, k: 'popups', label: 'Popups', state: 'ask' }] },
     { ...page, perms: [{ id: 5, k: 'bluetooth', label: 'Bluetooth', state: 'allow' }] },
     { ...page, blocker: { state: 'on' } },
+    { ...page, blocker: { state: 'on', n: 3 } },
+    { ...page, blocker: { ...page.blocker, level: 'everything' } },
+    { ...page, blocker: { ...page.blocker, notices: 'yes' } },
+    { ...page, blocker: { ...page.blocker, extra: 1 } },
     (({ blockedHere, ...rest }) => rest)(page),
   ]) assert.equal(validSiteInfoPayload(bad), false);
   assert.equal(cookieText({ state: 'count', n: 1, clear: true }), '1 cookie sent to this site');
-  assert.equal(blockerText({ state: 'on', n: 3 }), 'On · 3 requests blocked here');
+  assert.equal(blockerText({ state: 'on', n: 3, level: 'ads', notices: false }), 'Trackers and ads · 3 requests blocked here');
+  assert.equal(blockerText({ state: 'on', n: 1, level: 'trackers', notices: false }), 'Trackers · 1 request blocked here');
+  assert.equal(blockerText({ state: 'off', n: 0, level: 'none', notices: false }), 'Off for this site');
+  assert.equal(noticesText({ state: 'on', n: 0, level: 'ads', notices: true }), 'Hidden on this site');
+  assert.equal(noticesText({ state: 'on', n: 0, level: 'ads', notices: false }), 'Shown on this site');
 });
 
 test('site info accepts an optional strict boolean private flag and nothing else extra', () => {
@@ -115,9 +125,10 @@ test('site info accepts an optional strict boolean private flag and nothing else
   for (const bad of [1, 0, 'true', null, [], {}]) assert.equal(validSiteInfoPayload({ ...priv, private: bad }), false, JSON.stringify(bad));
   assert.equal(validSiteInfoPayload({ ...priv, incognito: true }), false);
   assert.equal(validSiteInfoPayload((({ blockedHere, ...rest }) => rest)(priv)), false, 'private does not stand in for a required key');
-  assert.equal(blockerText({ state: 'on', n: 3 }, true), 'Always on · 3 requests blocked here');
-  assert.equal(blockerText({ state: 'on', n: 1 }, true), 'Always on · 1 request blocked here');
-  assert.equal(blockerText({ state: 'on', n: 3 }, false), 'On · 3 requests blocked here');
+  const on = { state: 'on', n: 3, level: 'ads', notices: false };
+  assert.equal(blockerText(on, true), 'Always on · 3 requests blocked here');
+  assert.equal(blockerText({ ...on, n: 1 }, true), 'Always on · 1 request blocked here');
+  assert.equal(blockerText(on, false), 'Trackers and ads · 3 requests blocked here');
   assert.equal(PRIVATE_SITE_NOTE, 'Private tab: every permission request is blocked and nothing about this site is saved.');
   assert.doesNotMatch(blockedNoticeText(true), /Allow it below/);
   assert.match(blockedNoticeText(false), /Allow it below/);

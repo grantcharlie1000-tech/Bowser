@@ -160,7 +160,8 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   for (const section of logic.SETTINGS_SECTIONS) assert.ok(logic.ROWS.some((row) => row.section === section), `${section} has rows`);
   // The restart notes match what Rust applies live (chrome_host/settings.rs, settings_page.rs run()).
   const restart = logic.ROWS.filter((row) => row.restart).map((row) => row.id).sort();
-  assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'sidePanelPosition', 'tracking']);
+  // The blocking level and the sites it skips apply at once (App::apply_live_settings reaches the blocker).
+  assert.deepEqual(restart, ['grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
   assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'frameless', 'pinNewTabGroups', 'tabPreviewImages', 'tabPreviewMemory']);
@@ -466,7 +467,8 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
-  assert.equal(flagOf('blocker').textContent, logic.RESTART_NOTE);
+  assert.equal(flagOf('grouping').textContent, logic.RESTART_NOTE);
+  assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
   assert.equal(flagOf('centredAddressBar'), null);
   // The Bookmarks bar holds only such rows: one note under the heading, none on the rows. Shortcuts now act, so it has no note.
   for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
@@ -588,11 +590,12 @@ test('an unreadable settings file disables the new controls too, except the setd
 test('the Privacy dashboard is part of the page: its snapshot fills the section and its commands go out as priv', () => {
   globalThis.CSS ??= { escape: (value) => String(value) };
   const privacy = JSON.parse(readFileSync(join(here, 'fixtures', 'privacy-snapshot.json'), 'utf8'));
-  const dash = app.querySelector('.sp-dash');
+  const dash = app.querySelector('.sp-dash[data-row="dashboard"]');
   assert.equal(dash.dataset.row, 'dashboard');
   deliver(privacy);
   const headings = dash.querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  for (const title of ['This site', 'Site permissions', 'Blocked requests', 'Clear browsing data']) assert.ok(headings.includes(title), title);
+  for (const title of ['This site', 'Site permissions', 'Blocked requests']) assert.ok(headings.includes(title), title);
+  assert.ok(!headings.includes('Clear browsing data'), 'Delete browsing data has its own block above the dashboard');
   assert.equal(dash.querySelectorAll('.sp-card').length, headings.length, 'every dashboard group is a settings card');
   const clear = dash.querySelectorAll('button').find((b) => b.textContent.includes('Clear statistics'));
   assert.ok(clear, 'the statistics button is on the page');

@@ -823,6 +823,8 @@ impl AppTab {
 
 mod page_translate;
 pub use page_translate::Notice as TranslateNotice;
+mod privacy; // privacy, history and website appearance (thread T3)
+pub use privacy::DeleteReport;
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -1028,6 +1030,9 @@ impl App {
             .unwrap_or("");
         if blocker.borrow().site_allowed(host) {
             " [blocker off for this site]".to_owned()
+        } else if !blocker.borrow().is_blocking(host, false) {
+            // Blocking is off everywhere (level none): nothing was blocked, so nothing to say.
+            String::new()
         } else if tab.blocked > 0 {
             format!(" [{} blocked]", tab.blocked)
         } else {
@@ -1054,7 +1059,8 @@ impl App {
             .find(|tab| tab.id == state.tab_model.active())
             .and_then(|tab| tab.url.as_ref())
             .and_then(|url| url.host_str())?;
-        Some(!blocker.borrow().site_allowed(host))
+        // At any level above none (thread T3); a site at none, or global none, reads as off.
+        Some(blocker.borrow().is_blocking(host, false))
     }
 
     pub fn tab_layout(app: &AppRef) -> crate::settings::TabLayout {
@@ -4739,6 +4745,10 @@ impl App {
             Some(profile.tab_groups_file()),
         );
         app.settings = settings;
+        // Retention and the website look are read by code that runs before any window setting is
+        // applied (the history load, the first tab), so they are set here (thread T3).
+        crate::history_retention::set_current(app.settings.history_retention);
+        crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -4747,12 +4757,14 @@ impl App {
                 crate::downloads::DownloadManager::open(&profile.downloads_file())
             };
         }
-        if track_privacy && app.settings.blocker_enabled {
+        if track_privacy {
+            // Always built, even with blocking off: cookie-notice hiding and per-site levels work
+            // without the global switch (thread T3). A "none" level adds no request work.
             let mut state = crate::blocker::BlockerState::load(
                 &profile.blocker_dir(),
                 &app.settings.blocker_allow,
             );
-            state.enabled = true;
+            state.apply_settings(&app.settings);
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
         if allow_private_tabs {
@@ -6439,6 +6451,8 @@ impl App {
     /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
     /// and takes effect on the next start, matching the page's "Applies after restart" rows.
     pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        // The blocker, retention and website-look settings take effect without a restart.
+        Self::apply_privacy_settings(app, settings);
         let (hwnd, edit) = {
             let mut state = app.borrow_mut();
             state.settings.theme = settings.theme;
