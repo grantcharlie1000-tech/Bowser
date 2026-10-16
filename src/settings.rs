@@ -489,6 +489,11 @@ pub struct Settings {
     /// `translate_target` (default empty: the Windows display language): the language pages are
     /// translated into, as a primary subtag such as `en`.
     pub translate_target: String,
+    // --- address bar, search and bookmarks (src/address_settings.rs) ---
+    /// The address bar, drop-down, search field, scoped nickname and bookmark options. Stored as
+    /// further `key=value` lines of this file; changed one key at a time by the settings page.
+    pub address: crate::address_settings::AddressSettings,
+    // --- end address bar, search and bookmarks ---
 }
 
 impl Default for Settings {
@@ -537,6 +542,7 @@ impl Default for Settings {
             translate_offer: true,
             translate_auto: false,
             translate_target: String::new(),
+            address: crate::address_settings::AddressSettings::default(),
         }
     }
 }
@@ -793,7 +799,8 @@ impl Settings {
                         settings.translate_target = target;
                     }
                 }
-                _ => {}
+                // Address bar, search and bookmark options (src/address_settings.rs).
+                _ => settings.address.parse_line(key, value),
             }
         }
         settings
@@ -983,7 +990,8 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             out.push_str(&format!("{name}={value}{newline}"));
         }
     }
-    out
+    // Address bar, search and bookmark options (src/address_settings.rs).
+    settings.address.render_into(&out, newline)
 }
 
 /// Reads the file as text, refusing anything over `MAX_FILE_BYTES` or not valid UTF-8. Unlike
@@ -1256,6 +1264,7 @@ mod tests {
             translate_offer: false,
             translate_auto: true,
             translate_target: "fr".to_owned(),
+            address: crate::address_settings::AddressSettings::default(),
         }
     }
 

@@ -1868,6 +1868,8 @@ fn save_form(hwnd: HWND) {
         translate_offer: current.translate_offer,
         translate_auto: current.translate_auto,
         translate_target: current.translate_target,
+        // Address bar, search and bookmark options have no GDI controls; the file's values are kept.
+        address: current.address,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {
