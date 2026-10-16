@@ -7,7 +7,7 @@
 // build was sent, so the same scenarios can be shot before and after a change. Names are
 // `<before|after>-<scenario>-<dark|light>-<100|150>.png`. Never launches Bowser and never reads a
 // Bowser profile.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -36,6 +36,8 @@ if (before) {
   const unpack = spawnSync('tar', ['-xf', tar, '-C', work], { encoding: 'utf8' });
   if (unpack.status !== 0) throw new Error(`tar failed: ${unpack.stderr}`);
   srcDir = join(work, 'ui', 'src');
+  // tailwind resolves `tailwindcss/...` from the sources' folder, so give it this checkout's packages.
+  symlinkSync(realpathSync(join(ui, 'node_modules')), join(work, 'ui', 'node_modules'), 'junction');
 }
 
 await esbuild.build({ entryPoints: [join(srcDir, 'main.ts')], bundle: true, format: 'iife', platform: 'browser', target: 'chrome110', outfile: join(dist, 'app.js'), logLevel: 'warning' });
@@ -138,4 +140,5 @@ const shoot = async (worker) => {
 };
 await Promise.all(Array.from({ length: POOL }, (_, worker) => shoot(worker)));
 server.close();
+try { rmdirSync(join(work, 'ui', 'node_modules')); } catch { /* the link only; never the packages */ }
 try { rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }); } catch { /* a lingering Edge process; the folder is in the temp directory */ }

@@ -4,24 +4,36 @@
 //! or presses update on one, never at startup and never on a timer. Nothing here knows a list
 //! address: the URL always comes from the user's own input.
 //!
-//! The request is HTTPS only, follows at most three redirects (each one checked again), refuses
+//! The request is HTTPS only, follows at most three redirects (each hop checked again), refuses
 //! addresses that are not public hosts (IP literals, `localhost`, single-label and local names),
 //! stops after [`MAX_LIST_BYTES`] bytes or [`TOTAL_SECONDS`] seconds, and never sends cookies or
 //! credentials. The answer must then pass [`validate_list`] before anything is stored. Meant for a
 //! background thread: it blocks until the answer is in.
+//!
+//! Network targets are checked twice, so a name that points at a private machine cannot be used to
+//! reach it. Before each hop the host is resolved here and every address must be public
+//! ([`is_public_ip`]: no loopback, private, link-local, carrier-grade NAT, unique-local, metadata,
+//! documentation, multicast or reserved range, v4 or v6, including v4-mapped, NAT64 and 6to4
+//! forms). Then WinHTTP reports each address it really resolves and connects to, and a
+//! non-public one makes the hop fail and its answer is thrown away, which catches a name that
+//! changes its answer between the two lookups (DNS rebinding). The connection is direct, never
+//! through a proxy, so the peer WinHTTP reports is the server itself.
 
 use std::{
     ffi::c_void,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
 use url::Url;
 use windows::{
     Win32::Networking::WinHttp::{
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE,
+        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER, WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER,
+        WINHTTP_CALLBACK_STATUS_NAME_RESOLVED, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE,
         WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE,
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
-        WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
+        WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetStatusCallback, WinHttpSetTimeouts,
     },
     core::{HSTRING, PCWSTR, w},
 };
@@ -47,6 +59,8 @@ pub enum FetchError {
     TooLarge,
     /// A redirect went somewhere Bowser will not follow.
     BadRedirect,
+    /// The host resolves, or connected, to an address that is not on the public internet.
+    PrivateAddress,
 }
 
 impl std::fmt::Display for FetchError {
@@ -57,7 +71,98 @@ impl std::fmt::Display for FetchError {
             Self::Status(code) => write!(f, "The server answered {code}, not a list."),
             Self::TooLarge => f.write_str("That list is larger than Bowser keeps (8 MB)."),
             Self::BadRedirect => f.write_str("That address redirects somewhere Bowser will not follow."),
+            Self::PrivateAddress => f.write_str("That address points at a machine that is not on the public internet, so Bowser did not fetch it."),
         }
+    }
+}
+
+/// Whether `ip` is an address on the public internet: not loopback, private, link-local, shared
+/// (carrier-grade NAT), unique-local, cloud metadata, documentation, benchmarking, multicast,
+/// broadcast, unspecified or otherwise reserved. An IPv6 address that carries an IPv4 one (v4-mapped
+/// `::ffff:a.b.c.d`, the deprecated v4-compatible form, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`,
+/// Teredo) is judged by the IPv4 address inside it.
+pub fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => is_public_v6(v6),
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    !(a == 0                                   // "this network", incl. 0.0.0.0
+        || a == 10                             // private
+        || a == 127                            // loopback
+        || (a == 100 && (64..=127).contains(&b)) // carrier-grade NAT 100.64/10
+        || (a == 169 && b == 254)              // link-local, incl. 169.254.169.254 metadata
+        || (a == 172 && (16..=31).contains(&b)) // private
+        || (a == 192 && b == 0 && (c == 0 || c == 2)) // IETF protocol assignments, TEST-NET-1
+        || (a == 192 && b == 88 && c == 99)    // 6to4 relay anycast
+        || (a == 192 && b == 168)              // private
+        || (a == 198 && (b == 18 || b == 19))  // benchmarking
+        || (a == 198 && b == 51 && c == 100)   // TEST-NET-2
+        || (a == 203 && b == 0 && c == 113)    // TEST-NET-3
+        || a >= 224)                           // multicast, reserved, broadcast
+}
+
+fn is_public_v6(ip: Ipv6Addr) -> bool {
+    let s = ip.segments();
+    // Forms that carry an IPv4 address: judge that address.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_public_v4(v4);
+    }
+    if s[..6] == [0, 0, 0, 0, 0, 0] {
+        // ::/96 (unspecified, loopback and the deprecated v4-compatible range): never public.
+        return false;
+    }
+    if s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
+        return is_public_v4(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8)); // NAT64
+    }
+    if s[0] == 0x2002 {
+        return is_public_v4(Ipv4Addr::new((s[1] >> 8) as u8, s[1] as u8, (s[2] >> 8) as u8, s[2] as u8)); // 6to4
+    }
+    if s[0] == 0x2001 && s[1] == 0 {
+        return false; // Teredo
+    }
+    !((s[0] & 0xfe00) == 0xfc00                 // unique-local fc00::/7 (also fd00:ec2::254, the AWS v6 metadata address)
+        || (s[0] & 0xffc0) == 0xfe80            // link-local
+        || (s[0] & 0xffc0) == 0xfec0            // deprecated site-local
+        || (s[0] & 0xff00) == 0xff00            // multicast
+        || (s[0] == 0x2001 && s[1] == 0x0db8)   // documentation
+        || (s[0] == 0x0100 && s[1..4] == [0, 0, 0]) // discard-only 100::/64
+        || (s[0] & 0xe000) != 0x2000)           // only global unicast 2000::/3 is public
+}
+
+/// Resolves `host` and returns its addresses only if every one is public.
+fn resolve_public(host: &str) -> Result<(), FetchError> {
+    let mut any = false;
+    for address in (host, 443).to_socket_addrs().map_err(|_| FetchError::Network)? {
+        any = true;
+        if !is_public_ip(address.ip()) {
+            return Err(FetchError::PrivateAddress);
+        }
+    }
+    if any { Ok(()) } else { Err(FetchError::Network) }
+}
+
+/// The address text WinHTTP hands its status callback ("93.184.216.34", "2606:4700::1", possibly with a
+/// trailing NUL or a `[...]` wrapper or a zone id), as an address. `None` for anything else.
+pub fn peer_address(text: &[u8]) -> Option<IpAddr> {
+    let text = std::str::from_utf8(text).ok()?.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let text = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).unwrap_or(text);
+    let text = text.split('%').next()?;
+    text.parse().ok()
+}
+
+/// Called by WinHTTP, on the calling thread, as it resolves and connects. `context` is the address of
+/// the hop's [`AtomicBool`]; an address that is not public (or not readable) sets it.
+unsafe extern "system" fn peer_watch(_handle: *mut c_void, context: usize, status: u32, info: *mut c_void, length: u32) {
+    if context == 0 || !matches!(status, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED | WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER | WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER) {
+        return;
+    }
+    let bytes = if info.is_null() || length == 0 || length > 128 { &[][..] } else { unsafe { std::slice::from_raw_parts(info as *const u8, length as usize) } };
+    if !peer_address(bytes).is_some_and(is_public_ip) {
+        unsafe { &*(context as *const AtomicBool) }.store(true, Ordering::SeqCst);
     }
 }
 
@@ -147,15 +252,28 @@ enum Reply {
 
 fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
     let host = url.host_str().ok_or(FetchError::Network)?;
+    // First check: every address the name resolves to must be public.
+    resolve_public(host)?;
+    // Second check, below: every address WinHTTP actually resolves and connects to.
+    let refused = AtomicBool::new(false);
     let mut path = url.path().to_owned();
     if let Some(query) = url.query() {
         path.push('?');
         path.push_str(query);
     }
     let agent = HSTRING::from(concat!("Bowser/", env!("CARGO_PKG_VERSION")));
-    let session = Handle(unsafe { WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0) });
+    let session = Handle(unsafe { WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_NO_PROXY, PCWSTR::null(), PCWSTR::null(), 0) });
     if session.0.is_null() {
         return Err(FetchError::Network);
+    }
+    unsafe {
+        let _ = WinHttpSetStatusCallback(
+            session.0,
+            Some(peer_watch),
+            // WINHTTP_CALLBACK_FLAG_RESOLVE_NAME (0x3) | WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER (0xc).
+            0x0000_000f,
+            0,
+        );
     }
     unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 15_000, 30_000) }.map_err(|_| FetchError::Network)?;
     let connection = Handle(unsafe { WinHttpConnect(session.0, &HSTRING::from(host), 443, 0) });
@@ -172,8 +290,18 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
     unsafe { WinHttpSetOption(Some(request.0 as *const c_void), WINHTTP_OPTION_DISABLE_FEATURE, Some(&disable.to_ne_bytes())) }
         .map_err(|_| FetchError::Network)?;
     let headers: Vec<u16> = "Accept: text/plain, */*;q=0.5\r\n".encode_utf16().collect();
-    unsafe { WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0) }.map_err(|_| FetchError::Network)?;
-    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }.map_err(|_| FetchError::Network)?;
+    let context = &refused as *const AtomicBool as usize;
+    let sent = unsafe { WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, context) };
+    // A non-public peer ends the hop whatever else happened; its answer is never read.
+    if refused.load(Ordering::SeqCst) {
+        return Err(FetchError::PrivateAddress);
+    }
+    sent.map_err(|_| FetchError::Network)?;
+    let received = unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) };
+    if refused.load(Ordering::SeqCst) {
+        return Err(FetchError::PrivateAddress);
+    }
+    received.map_err(|_| FetchError::Network)?;
     let mut status = 0u32;
     let mut size = 4u32;
     unsafe {
@@ -272,6 +400,65 @@ pub fn validate_list(bytes: &[u8], cookie_list: bool) -> Result<String, ListErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_public_addresses_are_refused_in_v4_and_v6() {
+        for text in [
+            "0.0.0.0", "10.1.2.3", "127.0.0.1", "127.8.8.8", "100.64.0.1", "100.127.255.254", "169.254.169.254",
+            "172.16.0.1", "172.31.255.255", "192.168.1.1", "192.0.0.1", "192.0.2.1", "198.18.0.1", "198.51.100.1",
+            "203.0.113.9", "224.0.0.1", "240.0.0.1", "255.255.255.255", "::", "::1", "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1", "::ffff:169.254.169.254", "::127.0.0.1", "fd00:ec2::254", "fc00::1", "fe80::1",
+            "ff02::1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "2002:7f00:1::", "2002:a00:1::", "2001:db8::1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2", "fec0::1", "100::1",
+        ] {
+            assert!(!is_public_ip(text.parse().unwrap()), "{text} must be refused");
+        }
+    }
+
+    #[test]
+    fn public_addresses_are_accepted() {
+        for text in ["93.184.216.34", "8.8.8.8", "172.32.0.1", "100.63.0.1", "100.128.0.1", "1.1.1.1", "2606:4700::1111", "2a00:1450:4009::65", "::ffff:8.8.8.8", "2002:808:808::"] {
+            assert!(is_public_ip(text.parse().unwrap()), "{text} must be accepted");
+        }
+    }
+
+    #[test]
+    fn peer_addresses_parse_in_the_forms_winhttp_reports() {
+        assert_eq!(peer_address(b"93.184.216.34\0"), Some("93.184.216.34".parse().unwrap()));
+        assert_eq!(peer_address(b"  2606:4700::1111 "), Some("2606:4700::1111".parse().unwrap()));
+        assert_eq!(peer_address(b"[::1]"), Some("::1".parse().unwrap()));
+        assert_eq!(peer_address(b"fe80::1%12"), Some("fe80::1".parse().unwrap()));
+        assert_eq!(peer_address(b"example.com"), None);
+        assert_eq!(peer_address(b""), None);
+        assert_eq!(peer_address(&[0xff, 0xfe]), None);
+    }
+
+    #[test]
+    fn the_peer_callback_flags_private_or_unreadable_peers_only() {
+        let flag = AtomicBool::new(false);
+        let context = &flag as *const AtomicBool as usize;
+        let mut public = *b"93.184.216.34\0";
+        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER, public.as_mut_ptr().cast(), public.len() as u32) };
+        assert!(!flag.load(Ordering::SeqCst));
+        // Other notifications are ignored.
+        let mut private = *b"10.0.0.1\0";
+        unsafe { peer_watch(std::ptr::null_mut(), context, 0x0000_0001, private.as_mut_ptr().cast(), private.len() as u32) };
+        assert!(!flag.load(Ordering::SeqCst));
+        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED, private.as_mut_ptr().cast(), private.len() as u32) };
+        assert!(flag.load(Ordering::SeqCst));
+        flag.store(false, Ordering::SeqCst);
+        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER, std::ptr::null_mut(), 0) };
+        assert!(flag.load(Ordering::SeqCst), "an unreadable peer is refused");
+    }
+
+    #[test]
+    fn names_that_resolve_to_this_machine_are_refused_without_a_network() {
+        assert!(matches!(resolve_public("localhost"), Err(FetchError::PrivateAddress)));
+        assert!(matches!(resolve_public("127.0.0.1"), Err(FetchError::PrivateAddress)));
+        assert!(matches!(resolve_public("169.254.169.254"), Err(FetchError::PrivateAddress)));
+        assert!(matches!(resolve_public("[::1]"), Err(_)));
+        assert!(matches!(resolve_public("::ffff:10.0.0.1"), Err(FetchError::PrivateAddress)));
+    }
 
     #[test]
     fn only_public_https_addresses_are_accepted() {
