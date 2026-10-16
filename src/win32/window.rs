@@ -4775,6 +4775,15 @@ pub(super) fn tab_ghost_post(hwnd: HWND, json: &str) {
 pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
+    // --- wave-1 integration --- the hosts that use this state (the bookmarks bar, the private landing,
+    // the start page) take T3's private theme while a private tab is shown, like the toolbar does.
+    let system_look = glass::appearance();
+    let private_theme = app_of(hwnd).map(|app| (App::private_theme(&app), App::active_tab_private(&app)));
+    let (palette, dark) = match private_theme {
+        Some((theme, private)) => private_host_look(theme, private, system_look, palette),
+        None => (palette, system_look == crate::theme::Appearance::Dark),
+    };
+    // --- end wave-1 integration ---
     let mut palette = crate::theme::with_accent(palette, accent);
     palette.window.a = 255;
     ViewState {
@@ -4783,7 +4792,7 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         pillw: 0,
         menux: 0,
         solid: true,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        dark,
         back: false,
         forward: false,
         loading: false,
@@ -4804,6 +4813,19 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         theme: chrome_host::theme_tokens(&palette),
     }
     .to_json()
+}
+
+/// The palette and dark flag a page host takes: the window's own, or the private theme's light or
+/// dark look while a private tab is shown (the same rule as `html_sync`).
+fn private_host_look(
+    theme: crate::settings::PrivateTheme,
+    private: bool,
+    system: crate::theme::Appearance,
+    palette: &'static crate::theme::Palette,
+) -> (&'static crate::theme::Palette, bool) {
+    let look = theme.appearance(private, system);
+    let palette = if look == system { palette } else { crate::theme::palette(look, true) };
+    (palette, look == crate::theme::Appearance::Dark)
 }
 
 pub(super) fn html_split_accelerator(hwnd: HWND, accel: Accel) -> bool {
@@ -6779,6 +6801,12 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
         notes,
         history,
         commands: crate::commands::palette_commands(&live),
+        // T2's bookmark nicknames (cached, re-read only when a bookmark file changed); none for a guest.
+        nicknames: if productive {
+            super::html_suggest::marks().iter().filter(|(_, _, nick)| !nick.is_empty()).map(|(url, _, nick)| (url.clone(), nick.clone())).collect()
+        } else {
+            Vec::new()
+        },
     };
     // --- popup surfaces (lane PP) ---
     if html_popup::page_ready(hwnd) {
@@ -7254,6 +7282,32 @@ fn tab_options_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize, ta
     }
     true
 }
+
+/// --- wave-1 integration --- the "Reload this tab every…" registry command: the tab menu's reload
+/// presets for the tab in front, as a menu under the main menu button.
+pub(crate) fn show_periodic_reload_menu(hwnd: HWND, app: &AppRef) {
+    let id = App::active_tab_id(app);
+    let url = App::tab_committed_url(app, id);
+    if !url.as_ref().is_some_and(|url| matches!(url.scheme(), "http" | "https")) {
+        show_toast(hwnd, "Periodic reload works on web pages", "Periodic reload");
+        return;
+    }
+    // The tab menu's own rows, so both menus offer the same presets and stop rows.
+    let entries = tab_options_menu_entries(app, id, url.as_ref(), 1)
+        .into_iter()
+        .find_map(|entry| match entry {
+            Entry::Item(item) if item.id == TAB_RELOAD_PARENT => item.submenu_entries,
+            _ => None,
+        })
+        .unwrap_or_default();
+    let menu = Menu { header: None, entries, footer: "Reload this tab every".to_owned() };
+    menu::show(hwnd, screen_point(hwnd, main_menu_anchor(hwnd)), menu::Placement::BelowLeft, menu, "tabreload", move |app, chosen| {
+        if let Some(chosen) = chosen {
+            let _ = tab_options_menu_pick(hwnd, app, id, chosen.id, &[]);
+        }
+    });
+}
+// --- end wave-1 integration ---
 
 /// "Rename tab": asks for a name. An empty name goes back to the page's title.
 fn rename_tab_prompt(hwnd: HWND, app: &AppRef, id: TabId) {
@@ -11621,6 +11675,24 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// Integration (T2 bookmarks bar, T3 private theme): the page hosts beside the toolbar take the
+    /// private look while a private tab is shown, and the window's own look otherwise.
+    #[test]
+    fn page_hosts_take_the_private_theme_while_a_private_tab_is_shown() {
+        use crate::{settings::PrivateTheme, theme::Appearance};
+        let light = crate::theme::palette(Appearance::Light, true);
+        let (palette, dark) = private_host_look(PrivateTheme::Dark, true, Appearance::Light, light);
+        assert!(dark);
+        assert!(std::ptr::eq(palette, crate::theme::palette(Appearance::Dark, true)));
+        let (palette, dark) = private_host_look(PrivateTheme::Dark, false, Appearance::Light, light);
+        assert!(!dark, "a normal tab keeps the window's look");
+        assert!(std::ptr::eq(palette, light));
+        let (_, dark) = private_host_look(PrivateTheme::Follow, true, Appearance::Dark, crate::theme::palette(Appearance::Dark, true));
+        assert!(dark, "follow keeps the window's dark look");
+        let (_, dark) = private_host_look(PrivateTheme::Light, true, Appearance::Dark, crate::theme::palette(Appearance::Dark, true));
+        assert!(!dark);
+    }
 
     #[test]
     fn shift_right_click_shows_the_system_menu_only_with_the_setting_on_shift_held_and_a_bowser_menu_under_the_pointer() {

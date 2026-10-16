@@ -117,9 +117,122 @@ pub(crate) fn toggle_site(store: &mut Store, host: &str) -> bool {
     }
 }
 
+// --- wave-1 integration: registry commands for T1's periodic reload, T3's privacy tools and T2's
+// address bar, so Quick Commands, the cheat sheet, the keyboard editor and chains reach them ---
+
+/// "Reload this tab every…": the periodic reload presets for the tab in front (T1).
+pub(crate) fn run_periodic_reload(cx: &Context) {
+    super::window::show_periodic_reload_menu(cx.hwnd, cx.app);
+}
+
+/// "Stop reloading all tabs" (T1).
+pub(crate) fn run_stop_all_reloads(cx: &Context) {
+    let stopped = App::disable_all_reloads(cx.app);
+    let message = match stopped {
+        0 => "No tab is reloading on a timer".to_owned(),
+        1 => "Stopped reloading 1 tab".to_owned(),
+        n => format!("Stopped reloading {n} tabs"),
+    };
+    super::window::show_toast(cx.hwnd, &message, "Periodic reload");
+}
+
+/// "Delete browsing data": Settings > Privacy, where T3's Delete browsing data block is.
+pub(crate) fn run_delete_browsing_data(cx: &Context) {
+    super::settings_page::open(cx.hwnd, cx.app, Some(Section::Privacy), false);
+}
+
+/// The words the toast uses for a blocking level.
+fn level_words(level: crate::blocker::Level) -> &'static str {
+    match level {
+        crate::blocker::Level::None => "no blocking",
+        crate::blocker::Level::Trackers => "block trackers",
+        crate::blocker::Level::Ads => "block trackers and ads",
+    }
+}
+
+/// "Next blocking level for this site": none, trackers, trackers and ads, then none again (T3's
+/// per-site level, the same choice the shield makes).
+pub(crate) fn run_cycle_blocking_level(cx: &Context) {
+    use crate::blocker::SiteChoice;
+    let Some((host, site)) = App::active_web_site(cx.app) else {
+        super::window::show_toast(cx.hwnd, "Blocking levels are set per web page", "Blocking");
+        return;
+    };
+    let current = App::blocker_state_for(cx.app, &host, false).map_or(crate::blocker::Level::Ads, |(level, _)| level);
+    let next = current.next();
+    match App::choose_site_level(cx.app, next) {
+        SiteChoice::Saved => super::window::show_toast(cx.hwnd, &format!("{site}: {}", level_words(next)), "Blocking"),
+        SiteChoice::ConfiguredInSettings => super::window::show_toast(cx.hwnd, &format!("{site} is on the list of sites the blocker skips"), "Blocking"),
+        SiteChoice::NoSite => super::window::show_toast(cx.hwnd, "This page has no site to set a level for", "Blocking"),
+    }
+}
+
+/// "QR code for this page" (T2's address bar dialog).
+pub(crate) fn run_qr_code(cx: &Context) {
+    match App::tab_committed_url(cx.app, App::active_tab_id(cx.app)).filter(|url| matches!(url.scheme(), "http" | "https")) {
+        Some(url) => super::address_dialog::show_qr(cx.hwnd, cx.app, url.as_str()),
+        None => super::window::show_toast(cx.hwnd, "A QR code needs a web page", "QR code"),
+    }
+}
+
+/// Flips T2's `address_bar_show`. Returns the new value.
+pub(crate) fn toggle_address_bar_setting(settings: &mut crate::settings::Settings) -> bool {
+    let show = !settings.address.bar_show;
+    let _ = settings.address.set("address_bar_show", if show { "true" } else { "false" });
+    settings.address.bar_show
+}
+
+/// "Show or hide the address bar" (T2's Address bar > Show the address bar), saved like the page's switch.
+pub(crate) fn run_toggle_address_bar(cx: &Context) {
+    let Ok(profile) = crate::profile::active() else { return };
+    let path = profile.settings_file();
+    let Ok(mut settings) = crate::settings::read_strict(&path) else {
+        super::show_error_message("settings.txt could not be read, so the address bar was not changed.");
+        return;
+    };
+    toggle_address_bar_setting(&mut settings);
+    match crate::settings::save(&path, &settings) {
+        Ok(()) => App::apply_live_settings(cx.app, &settings),
+        Err(error) => super::show_error_message(&format!("Settings could not be saved: {error}")),
+    }
+}
+// --- end wave-1 integration ---
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_address_bar_command_flips_the_saved_switch_and_it_survives_a_reload() {
+        let mut settings = crate::settings::Settings::default();
+        let before = settings.address.bar_show;
+        assert_eq!(toggle_address_bar_setting(&mut settings), !before);
+        let text = crate::settings::render_updated("", &settings);
+        assert_eq!(crate::settings::Settings::parse(&text).address.bar_show, !before, "{text}");
+        assert_eq!(toggle_address_bar_setting(&mut settings), before);
+    }
+
+    #[test]
+    fn the_new_commands_are_registered_where_the_palette_cheat_sheet_and_chains_find_them() {
+        use crate::commands::registry::{builtin, Handler, PaletteKind};
+        for id in [
+            "reopen-tab", "closed-tabs", "save-all-session", "open-session", "periodic-reload", "stop-all-reloads",
+            "delete-browsing-data", "cycle-blocking-level", "qr-code", "toggle-address-bar",
+        ] {
+            let def = builtin(id).unwrap_or_else(|| panic!("{id} is not registered"));
+            assert_ne!(def.palette, PaletteKind::Hidden, "{id} shows in Quick commands");
+            assert!(matches!(def.handler, Handler::Run(_) | Handler::Action(_) | Handler::Key(_)));
+        }
+        // Chains name commands by id: each of them is a step a chain may hold.
+        let live = crate::commands::Live::new(crate::commands::store::Store::default());
+        let listed: Vec<String> = crate::commands::palette_commands(&live).into_iter().map(|c| c.id).collect();
+        for id in ["periodic-reload", "delete-browsing-data", "cycle-blocking-level", "qr-code", "toggle-address-bar", "reopen-tab"] {
+            assert!(listed.iter().any(|listed| listed == id), "{id} reaches the palette");
+            let chain = crate::commands::chains::Chain { id: 1, name: "x".into(), steps: vec![crate::commands::chains::Step { delay_ms: 0, command: id.into() }] };
+            let known = |id: &str| builtin(id).is_some();
+            assert_eq!(crate::commands::chains::validate(&chain, &[], known), Ok(()), "{id} can be a chain step");
+        }
+    }
 
     #[test]
     fn toggling_a_site_adds_it_and_then_removes_it_with_any_parent_that_covered_it() {

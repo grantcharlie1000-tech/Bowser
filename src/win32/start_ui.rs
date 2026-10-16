@@ -56,10 +56,10 @@ const LAUNCH_DELAY: Duration = Duration::from_millis(1500);
 static WAKING: AtomicBool = AtomicBool::new(false);
 static WAKE: AtomicBool = AtomicBool::new(false);
 
-/// Whether a blank normal tab shows the start page. The "new tab page" choice (start page, homepage,
-/// blank or an address) belongs to the tabs settings; it gates the page here when it lands.
-pub(crate) fn enabled(_app: &AppRef) -> bool {
-    true
+/// Whether a blank normal tab shows the start page. The "new tab page" choice of Settings > Tabs
+/// (start page, homepage, blank or an address) gates it: only "Blank page" turns it off.
+pub(crate) fn enabled(app: &AppRef) -> bool {
+    crate::tab_options::start_page_shown(&App::tab_options(app))
 }
 
 /// How long this process has been running.

@@ -63,8 +63,8 @@ export const MAX_PAGE_URL = 2048;
 
 /** Every option, in the order the page lists them. The Rust table lists the same keys (plus the position). */
 export const TAB_OPTIONS: readonly TabOptionSpec[] = [
-  choice('tabs_new_tab_page', 'new', 'start', [['start', 'Start page'], ['url', 'Specific page']], 'New tab page',
-    'What a new tab opens. Homepage and blank page join when Bowser has a start page and a homepage setting.', 'new tab page start homepage blank url'),
+  choice('tabs_new_tab_page', 'new', 'start', [['start', 'Start page'], ['homepage', 'Homepage'], ['blank', 'Blank page'], ['url', 'Specific page']], 'New tab page',
+    'What a new tab opens. Homepage is the one set in Start page; while none is set, the start page shows. Blank page shows nothing, not even the start page.', 'new tab page start homepage blank url speed dial'),
   {
     kind: 'text', key: 'tabs_new_tab_url', card: 'new', default: '', max: MAX_PAGE_URL, placeholder: 'https://example.com', when: ['tabs_new_tab_page', 'url'],
     label: 'Address of the new tab page', description: 'Opened by every new tab while the page above is a specific page.', keywords: 'new tab address url website',

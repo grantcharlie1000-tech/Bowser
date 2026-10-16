@@ -178,6 +178,54 @@ fn the_new_tab_page_option_decides_what_a_fresh_tab_opens() {
     assert_eq!(App::tab_committed_url(&app, id).as_ref().map(url::Url::as_str), Some("https://start.example/home"));
 }
 
+/// Integration (T2 engine editor, T3 private window): a search typed in a private tab uses the
+/// engine chosen "for private windows"; a normal tab keeps the default.
+#[test]
+fn a_private_tab_searches_with_the_private_window_engine() {
+    let mut engines = crate::search_engines::EngineStore::default();
+    engines.set_private("duckduckgo").unwrap();
+    engines.set_default("bing").unwrap();
+    crate::address_runtime::set_test_engines(Some(engines));
+    let (app, shared) = fixture();
+    App::new_private_tab(&app);
+    assert!(App::active_tab_private(&app));
+    App::submit(&app, "rust ownership");
+    let searched = calls(&shared);
+    assert!(searched.iter().any(|call| call.contains("duckduckgo.com") && call.contains("rust")), "{searched:?}");
+    shared.borrow_mut().calls.clear();
+    let _ = App::new_tab(&app);
+    assert!(!App::active_tab_private(&app));
+    App::submit(&app, "rust ownership");
+    let searched = calls(&shared);
+    assert!(searched.iter().any(|call| call.contains("bing.com")), "{searched:?}");
+    assert!(!searched.iter().any(|call| call.contains("duckduckgo.com")));
+    crate::address_runtime::set_test_engines(None);
+}
+
+/// Integration: Tabs' "new tab page" reads T5's `homepage` key (one key set) and gates T5's start page.
+#[test]
+fn the_new_tab_page_homepage_and_blank_choices_use_the_start_page_settings() {
+    let (app, shared) = fixture();
+    // Homepage with none set: the tab stays empty and the start page shows over it.
+    set(&app, |tabs| tabs.new_tab_page = NewTabPage::Homepage);
+    let id = App::open_new_tab(&app);
+    assert!(App::tab_is_blank(&app, id));
+    assert!(crate::win32::start_ui::enabled(&app));
+    // Homepage set in Settings > Start page: a new tab opens it.
+    app.borrow_mut().settings.start.homepage = "https://home.example/".to_owned();
+    shared.borrow_mut().calls.clear();
+    let id = App::open_new_tab(&app);
+    assert!(!App::tab_is_blank(&app, id));
+    assert_eq!(App::tab_committed_url(&app, id).as_ref().map(url::Url::as_str), Some("https://home.example/"));
+    // Blank page: nothing loads and the start page is not drawn over the empty tab.
+    set(&app, |tabs| tabs.new_tab_page = NewTabPage::Blank);
+    let id = App::open_new_tab(&app);
+    assert!(App::tab_is_blank(&app, id));
+    assert!(!crate::win32::start_ui::enabled(&app), "blank turns the start page off");
+    set(&app, |tabs| tabs.new_tab_page = NewTabPage::Start);
+    assert!(crate::win32::start_ui::enabled(&app));
+}
+
 #[test]
 fn closing_the_active_tab_activates_the_tab_the_option_names() {
     for (activation, expected_index) in [(CloseActivation::Right, 3), (CloseActivation::Left, 1)] {

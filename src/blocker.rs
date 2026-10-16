@@ -103,6 +103,16 @@ impl Level {
         }
     }
 
+    /// The level after this one, for the "next blocking level for this site" command: none, trackers,
+    /// trackers and ads, then none again.
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::Trackers,
+            Self::Trackers => Self::Ads,
+            Self::Ads => Self::None,
+        }
+    }
+
     /// The global level the settings describe: `blocker_enabled=false` is "none".
     pub fn from_settings(enabled: bool, level: crate::settings::BlockerLevel) -> Self {
         match (enabled, level) {
@@ -1551,6 +1561,20 @@ mod tests {
         matcher.add_list(list);
         let allow: Vec<String> = allow.iter().map(|s| (*s).to_owned()).collect();
         BlockerState::new(matcher, &allow)
+    }
+
+    /// Integration (the "next blocking level" registry command): the cycle visits every level, and the
+    /// chosen level is what the site then gets.
+    #[test]
+    fn the_blocking_level_command_cycles_through_every_level_for_the_site() {
+        assert_eq!([Level::None.next(), Level::Trackers.next(), Level::Ads.next()], [Level::Trackers, Level::Ads, Level::None]);
+        let mut blocker = state("||ads.example^\n", &[]);
+        let mut level = blocker.level_for("news.example", false);
+        for _ in 0..3 {
+            level = level.next();
+            assert_eq!(blocker.choose_level_for_page("news.example", level), SiteChoice::Saved);
+            assert_eq!(blocker.level_for("news.example", false), level);
+        }
     }
 
     #[test]

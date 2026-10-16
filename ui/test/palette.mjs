@@ -162,7 +162,7 @@ const items = [
   { id: 4, s: 'history', label: 'News', detail: 'https://set.example/' },
 ];
 const message = (patch = {}) => ({
-  v: 1, t: 'palette', tok: 7, kind: 'palette', placeholder: 'Search', mode: 'palette', types: [...logic.DEFAULT_TYPES], ranked: true, limit: 12, keep: false, items, ...patch,
+  v: 1, t: 'palette', tok: 7, kind: 'palette', placeholder: 'Search', mode: 'palette', types: [...logic.DEFAULT_TYPES], ranked: true, limit: 12, keep: false, autonick: false, items, ...patch,
 });
 const root = new Node('div');
 const view = createPaletteView(root);
@@ -301,6 +301,57 @@ test('the last typed text is kept only when asked, and comes back selected', () 
   type('tea');
   view.show(message({ keep: true }));
   assert.equal(input().value, 'tea');
+});
+
+// ---- bookmark nicknames (T2) in Quick Commands (T4) ----
+
+test('the Rust page sends a bookmark nickname and the open-on-match option', () => {
+  const page = fixture.palette;
+  assert.equal(page.autonick, true, 'on by default');
+  const docs = page.items.find((item) => item.s === 'bookmark' && item.label === 'Docs');
+  assert.equal(docs.k, 'dx');
+  assert.ok(page.items.filter((item) => item.s !== 'bookmark').every((item) => item.k === undefined));
+  const bad = (patch) => logic.validPalettePayload({ ...page, ...patch });
+  assert.equal(bad({ autonick: 'yes' }), false);
+  assert.equal(bad({ autonick: undefined }), false);
+  assert.equal(bad({ items: [{ id: 0, s: 'tab', label: 'A', detail: '', k: 'a' }] }), false, 'only bookmarks have nicknames');
+  assert.equal(bad({ items: [{ id: 0, s: 'bookmark', label: 'A', detail: '', k: ' ' }] }), false);
+  assert.equal(bad({ items: [{ id: 0, s: 'bookmark', label: 'A', detail: '', k: 'x'.repeat(25) }] }), false);
+});
+
+test('a nickname typed whole matches its bookmark first and, with the option on, opens it at once', () => {
+  const marks = [
+    ...items,
+    { id: 5, s: 'bookmark', label: 'Rust language', detail: 'https://rust.example/', k: 'rl' },
+    { id: 6, s: 'bookmark', label: 'Shared one', detail: 'https://a.example/', k: 'dup' },
+    { id: 7, s: 'bookmark', label: 'Shared two', detail: 'https://b.example/', k: 'DUP' },
+  ];
+  const all = [...logic.DEFAULT_TYPES];
+  assert.equal(logic.nicknameMatch(marks, 'RL', true, all)?.id, 5, 'case aside');
+  assert.equal(logic.nicknameMatch(marks, '  bkm: rl ', true, all)?.id, 5, 'after the bookmark prefix');
+  assert.equal(logic.nicknameMatch(marks, 'tab: rl', true, all), null, 'another prefix opens nothing');
+  assert.equal(logic.nicknameMatch(marks, 'r', true, all), null, 'only the whole nickname');
+  assert.equal(logic.nicknameMatch(marks, 'rl', false, all), null, 'off');
+  assert.equal(logic.nicknameMatch(marks, 'rl', true, ['tab', 'command']), null, 'bookmarks hidden');
+  assert.equal(logic.nicknameMatch(marks, 'dup', true, all), null, 'a shared nickname is ambiguous');
+  assert.equal(logic.flatten(logic.filterPalette(marks, 'dup'))[0].s, 'bookmark', 'still ranked first');
+
+  // The page: off, typing the nickname only ranks it first; on, it is picked without Enter.
+  view.show(message({ items: marks, tok: 21 }));
+  sent.length = 0;
+  type('rl');
+  assert.equal(labels()[0], 'Rust language');
+  assert.deepEqual(sent.filter((m) => m.t === 'pick'), []);
+  view.show(message({ items: marks, tok: 22, autonick: true }));
+  sent.length = 0;
+  type('r');
+  assert.deepEqual(sent.filter((m) => m.t === 'pick'), [], 'part of a nickname waits');
+  type('rl');
+  assert.deepEqual(sent.filter((m) => m.t === 'pick'), [{ v: 1, t: 'pick', tok: 22, id: 5 }]);
+  // A kept query that is a nickname does not open anything when the palette opens.
+  view.show(message({ items: marks, tok: 23, autonick: true, keep: true }));
+  assert.equal(input().value, 'rl');
+  assert.deepEqual(sent.filter((m) => m.t === 'pick' && m.tok === 23), []);
 });
 
 test('the cheat sheet filters, groups, and nothing in it can be picked', () => {

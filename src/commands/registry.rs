@@ -204,6 +204,14 @@ pub static BUILTINS: &[CommandDef] = &[
     def("save-all-session", "Save All Tabs as Session", "Save every open tab as a named session", C::Tabs, &[], Cmd, Action("save-all-session")),
     def("open-session", "Open Saved Session", "Open a saved session in this window", C::Tabs, &[], Cmd, Action("open-session")),
     // --- end tab options ---
+    // --- wave-1 integration: T1 periodic reload, T3 privacy tools, T2 address bar (win32/command_actions.rs) ---
+    def("periodic-reload", "Reload this tab every…", "Reload the page in front on a timer, or stop", C::Tabs, &[], Page, Run(crate::win32::run_periodic_reload)),
+    def("stop-all-reloads", "Stop reloading all tabs", "Stop every periodic reload", C::Tabs, &[], Cmd, Run(crate::win32::run_stop_all_reloads)),
+    def("delete-browsing-data", "Delete browsing data", "Delete history, cookies, cache and more for a period you choose", C::Privacy, &[], Cmd, Run(crate::win32::run_delete_browsing_data)),
+    def("cycle-blocking-level", "Next blocking level for this site", "None, trackers, or trackers and ads for the site in front", C::Privacy, &[], Page, Run(crate::win32::run_cycle_blocking_level)),
+    def("qr-code", "QR code for this page", "Show the page's address as a QR code", C::Page, &[], Page, Run(crate::win32::run_qr_code)),
+    def("toggle-address-bar", "Show or hide the address bar", "Turn Settings > Address bar > Show the address bar on or off", C::Navigation, &[], Cmd, Run(crate::win32::run_toggle_address_bar)),
+    // --- end wave-1 integration ---
 ];
 
 /// The command with this id, if it is a built-in.

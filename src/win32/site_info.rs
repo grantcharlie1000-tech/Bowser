@@ -875,6 +875,7 @@ mod tests {
             notes: vec![(5, "Shopping".into(), "milk and tea".into())],
             history: vec![(1, "https://news.example/".into(), "News".into())],
             commands: crate::commands::palette_commands(&crate::commands::Live::new(crate::commands::store::Store::default())),
+            nicknames: vec![("https://docs.example/".into(), "dx".into())],
         };
         let palette_options = crate::commands::store::Options::default();
         let palette_items = super::super::command_palette::html_items(&palette_data, &palette_options);

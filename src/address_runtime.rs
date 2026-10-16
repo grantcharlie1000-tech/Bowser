@@ -35,8 +35,24 @@ thread_local! {
     static TYPED: RefCell<Option<(PathBuf, TypedHistory)>> = const { RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests drive the app with an engine list of their own instead of a profile's file.
+    static TEST_ENGINES: RefCell<Option<Rc<EngineStore>>> = const { RefCell::new(None) };
+}
+
+/// Tests only: the list [`engines`] returns on this thread (`None`: back to the profile's).
+#[cfg(test)]
+pub fn set_test_engines(store: Option<EngineStore>) {
+    TEST_ENGINES.with(|cell| *cell.borrow_mut() = store.map(Rc::new));
+}
+
 /// The active profile's engines. With no profile, the built-in list.
 pub fn engines() -> Rc<EngineStore> {
+    #[cfg(test)]
+    if let Some(store) = TEST_ENGINES.with(|cell| cell.borrow().clone()) {
+        return store;
+    }
     let Ok(profile) = crate::profile::active() else {
         return Rc::new(EngineStore::default());
     };
@@ -117,6 +133,21 @@ pub fn record_typed(text: &str, search: bool, private: bool) {
 /// A copy of what was typed before, oldest first. Empty for a guest or with history off.
 pub fn typed() -> TypedHistory {
     with_typed(|history| history.clone()).unwrap_or_default()
+}
+
+/// Forgets everything typed in the profile at `root`, whatever its history switch says: Delete
+/// Browsing Data (T3) calls this with History ticked. The list keeps no times, so every range clears
+/// it all. The cached copy is dropped too, so the next drop-down reads the empty file.
+pub fn clear_typed_in(root: &Path) -> std::io::Result<()> {
+    TYPED.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut() {
+            *slot = None;
+        }
+    });
+    if !root.join(crate::address_suggest::TYPED_FILE).exists() {
+        return Ok(());
+    }
+    TypedHistory::default().save(root)
 }
 
 /// Forgets everything typed (the history is being cleared).

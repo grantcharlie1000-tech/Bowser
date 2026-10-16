@@ -29,7 +29,7 @@ pub struct MarkSource<'a> {
 
 pub const TYPED_LIMIT: usize = 200;
 const MAX_TYPED_CHARS: usize = 512;
-const TYPED_FILE: &str = "typed-history.txt";
+pub(crate) const TYPED_FILE: &str = "typed-history.txt";
 
 /// One thing typed into the address field and submitted.
 #[derive(Clone, Debug, Eq, PartialEq)]

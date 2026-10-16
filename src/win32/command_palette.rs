@@ -65,6 +65,8 @@ pub(crate) struct PaletteData {
     /// Time, address and title, oldest first as the file stores them.
     pub history: Vec<(u64, String, String)>,
     pub commands: Vec<PaletteCommand>,
+    /// Bookmark nicknames (T2's bookmark dialog) as (address, nickname); empty nicknames are left out.
+    pub nicknames: Vec<(String, String)>,
 }
 
 impl PaletteData {
@@ -85,7 +87,9 @@ impl PaletteData {
             items.push(Item { kind, label: command.label.clone(), detail: command.detail.clone(), action: command.id.clone() });
         }
         for (title, url, folder) in &self.bookmarks {
-            items.push(Item { kind: ResultType::Bookmark, label: title.clone(), detail: format!("{url} {folder}"), action: format!("url:{url}") });
+            // The native fallback finds a bookmark by its nickname too (it is part of the searched text).
+            let nick = self.nickname_of(url).map_or_else(String::new, |nick| format!(" {nick}"));
+            items.push(Item { kind: ResultType::Bookmark, label: title.clone(), detail: format!("{url} {folder}{nick}"), action: format!("url:{url}") });
         }
         for (id, title, body) in &self.notes {
             items.push(Item { kind: ResultType::Note, label: note_label(title, body), detail: note_detail(body), action: format!("note:{id}") });
@@ -95,7 +99,15 @@ impl PaletteData {
         }
         items
     }
+
+    /// The nickname of the bookmark at `url`, if it has one.
+    fn nickname_of(&self, url: &str) -> Option<&str> {
+        self.nicknames.iter().find(|(address, nick)| address == url && !nick.is_empty()).map(|(_, nick)| nick.as_str())
+    }
 }
+
+/// Longest nickname sent with a bookmark row (T2's dialog caps nicknames at 24 characters).
+pub(crate) const HTML_MAX_NICK: usize = 24;
 
 fn tab_count(count: usize) -> String {
     format!("{count} tab{}", if count == 1 { "" } else { "s" })
@@ -684,6 +696,9 @@ pub(crate) struct HtmlItem {
     pub fav: Option<String>,
     /// The cheat sheet's group heading (a command category); unused by the palette.
     pub group: Option<&'static str>,
+    /// A bookmark row's nickname: typing it matches the row first, and opens it when
+    /// `palette_open_nickname` is on.
+    pub nick: Option<String>,
 }
 
 fn cap_utf16(text: &str, max: usize) -> String {
@@ -725,6 +740,7 @@ pub(crate) fn html_items_with_favicons(
         action,
         fav: None,
         group: None,
+        nick: None,
     };
     let mut fixed = Vec::new();
     for kind in &options.palette_types {
@@ -762,7 +778,9 @@ pub(crate) fn html_items_with_favicons(
             .take(HTML_MAX_BOOKMARKS)
             .map(|(title, url, folder)| {
                 let detail = if folder.is_empty() { url.clone() } else { format!("{url}  ·  {folder}") };
-                row("bookmark", if title.trim().is_empty() { url } else { title }, &detail, None, format!("url:{url}"))
+                let mut item = row("bookmark", if title.trim().is_empty() { url } else { title }, &detail, None, format!("url:{url}"));
+                item.nick = data.nickname_of(url).map(|nick| nick.chars().take(HTML_MAX_NICK).collect());
+                item
             })
             .collect()
     } else {
@@ -856,11 +874,12 @@ fn is_web_url(text: &str) -> bool {
 pub(crate) fn html_page(items: &[HtmlItem], options: &Options) -> super::html_popup::Page {
     let rows: Vec<HtmlItem> = items.to_vec();
     let count = rows.len();
-    let (types, ranked, limit, keep) = (
+    let (types, ranked, limit, keep, autonick) = (
         options.palette_types.iter().map(|kind| kind.key()).collect::<Vec<_>>(),
         options.palette_ranked(),
         u64::from(options.palette_max_results),
         options.palette_keep_last,
+        options.palette_open_nickname,
     );
     let mut page = super::html_popup::Page::new("palette", move |out| {
         out.string("placeholder", "Search tabs, bookmarks, notes, history and commands");
@@ -869,6 +888,7 @@ pub(crate) fn html_page(items: &[HtmlItem], options: &Options) -> super::html_po
         out.bool("ranked", ranked);
         out.uint("limit", limit);
         out.bool("keep", keep);
+        out.bool("autonick", autonick);
         write_items(out, &rows);
     });
     for index in 0..count {
@@ -893,6 +913,9 @@ fn write_items(out: &mut crate::chrome_host::json::Object<'_>, rows: &[HtmlItem]
                 }
                 if let Some(group) = item.group {
                     row.string("g", group);
+                }
+                if let Some(nick) = &item.nick {
+                    row.string("k", nick);
                 }
             });
         }
@@ -919,6 +942,7 @@ pub(crate) fn shortcuts_items(live: &crate::commands::Live) -> Vec<HtmlItem> {
                 action: entry.id.clone(),
                 fav: None,
                 group: Some(category.label()),
+                nick: None,
             });
         }
     }
@@ -935,6 +959,7 @@ pub(crate) fn shortcuts_page(items: &[HtmlItem], shortcuts_on: bool) -> super::h
         out.bool("ranked", true);
         out.uint("limit", 0);
         out.bool("keep", false);
+        out.bool("autonick", false);
         write_items(out, &rows);
     })
 }
@@ -961,7 +986,38 @@ mod tests {
                 (4, "javascript:alert(1)".into(), "Bad".into()),
             ],
             commands: palette_commands(&live),
+            nicknames: vec![("https://plan.example/".into(), "zq".into())],
         }
+    }
+
+    /// Integration: T2 raised the address drop-down to 20 rows; the wire carries that many, and Quick
+    /// Commands' own limit (3 to 30, its page's MAX_LIMIT) still reaches past it.
+    #[test]
+    fn the_palette_and_drop_down_result_caps_agree() {
+        use crate::{address_settings::MAX_DROPDOWN_RESULTS, chrome_host::protocol::MAX_SUGGEST_ITEMS, commands::store::MAX_RESULTS};
+        assert_eq!(usize::from(MAX_DROPDOWN_RESULTS), MAX_SUGGEST_ITEMS, "every row the setting allows can be sent");
+        assert!(MAX_RESULTS >= MAX_DROPDOWN_RESULTS);
+        let page = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src/palette-logic.ts")).unwrap();
+        assert!(page.contains(&format!("export const MAX_LIMIT = {MAX_RESULTS};")), "the page's limit matches the store's");
+    }
+
+    /// Integration (T2 bookmark nicknames, T4 Quick Commands): a bookmark row carries its nickname,
+    /// the page is told whether a nickname match opens at once, and the native fallback finds it.
+    #[test]
+    fn bookmark_nicknames_travel_with_their_rows_and_the_option_with_the_page() {
+        let mut options = Options::default();
+        assert!(options.palette_open_nickname, "on by default, as in Vivaldi");
+        let items = html_items(&data(), &options);
+        let plan = items.iter().find(|item| item.action == "url:https://plan.example/").unwrap();
+        assert_eq!(plan.nick.as_deref(), Some("zq"));
+        assert!(items.iter().filter(|item| item.section != "bookmark").all(|item| item.nick.is_none()));
+        let json = super::super::html_popup::Page::debug_json(html_page(&items, &options), 2);
+        assert!(json.contains("\"k\":\"zq\"") && json.contains("\"autonick\":true"), "{json}");
+        options.palette_open_nickname = false;
+        let json = super::super::html_popup::Page::debug_json(html_page(&items, &options), 2);
+        assert!(json.contains("\"autonick\":false"));
+        let found = search("zq", &data().items(), &options);
+        assert!(found.iter().any(|item| item.action == "url:https://plan.example/"), "the fallback searches nicknames too");
     }
 
     fn sections(items: &[HtmlItem]) -> Vec<&'static str> {

@@ -23,7 +23,7 @@ const MAX_ID_CHARS: usize = 40;
 const MAX_TEXT_CHARS: usize = 4096;
 
 /// The on/off options the page may set, by their file names.
-pub const FLAGS: [&str; 7] = [
+pub const FLAGS: [&str; 8] = [
     "shortcuts_enabled",
     "single_key_shortcuts",
     "alt_opens_menu",
@@ -31,6 +31,7 @@ pub const FLAGS: [&str; 7] = [
     "palette_keep_last",
     "palette_open_new_tab",
     "palette_notes_in_panel",
+    "palette_open_nickname",
 ];
 
 /// How Bowser answered the page's last command. Sent once, with the next snapshot.
@@ -88,6 +89,7 @@ pub fn snapshot_json(status: Status<'_>, store: &Store) -> String {
         out.bool("paletteKeepLast", options.palette_keep_last);
         out.bool("paletteNewTab", options.palette_open_new_tab);
         out.bool("paletteNotesInPanel", options.palette_notes_in_panel);
+        out.bool("paletteOpenNickname", options.palette_open_nickname);
         out.uint("paletteMax", u64::from(options.palette_max_results));
         out.array("paletteTypes", |list| for kind in &options.palette_types { list.string(kind.key()); });
         out.bool("paletteDefaultOrder", options.palette_types == store::ResultType::DEFAULT_ORDER);
@@ -297,6 +299,7 @@ fn set_flag(options: &mut store::Options, name: &str, on: bool) {
         "palette_keep_last" => options.palette_keep_last = on,
         "palette_open_new_tab" => options.palette_open_new_tab = on,
         "palette_notes_in_panel" => options.palette_notes_in_panel = on,
+        "palette_open_nickname" => options.palette_open_nickname = on,
         _ => {}
     }
 }
@@ -438,6 +441,7 @@ mod tests {
             ("palette_keep_last", "paletteKeepLast", false),
             ("palette_open_new_tab", "paletteNewTab", false),
             ("palette_notes_in_panel", "paletteNotesInPanel", true),
+            ("palette_open_nickname", "paletteOpenNickname", true),
         ];
         assert_eq!(keys.map(|(name, _, _)| name), FLAGS, "the test covers every flag the page can send");
         let mut store = Store::default();

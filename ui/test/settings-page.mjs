@@ -656,13 +656,13 @@ test('Keyboard and Quick commands are two sections whose controls land where Rus
   deliver(commandsSnap());
   const on = (root, id) => rowIn(root, id).querySelector('[role="switch"]').getAttribute('aria-checked');
   assert.deepEqual(['kbEnabled', 'kbSingleKey', 'kbAltMenu', 'kbFocusCycling'].map((id) => on(keyboard(), id)), ['true', 'false', 'false', 'false']);
-  assert.deepEqual(['qcKeepLast', 'qcNewTab', 'qcNotesPanel'].map((id) => on(quick(), id)), ['false', 'false', 'true']);
+  assert.deepEqual(['qcKeepLast', 'qcNewTab', 'qcNotesPanel', 'qcNickname'].map((id) => on(quick(), id)), ['false', 'false', 'true', 'true']);
   assert.equal(rowIn(quick(), 'qcMax').querySelector('input').value, '9');
   // Every option sends its own flag name and the new state.
   for (const [root, id, name] of [
     [keyboard(), 'kbEnabled', 'shortcuts_enabled'], [keyboard(), 'kbSingleKey', 'single_key_shortcuts'], [keyboard(), 'kbAltMenu', 'alt_opens_menu'],
     [keyboard(), 'kbFocusCycling', 'focus_cycling'], [quick(), 'qcKeepLast', 'palette_keep_last'], [quick(), 'qcNewTab', 'palette_open_new_tab'],
-    [quick(), 'qcNotesPanel', 'palette_notes_in_panel'],
+    [quick(), 'qcNotesPanel', 'palette_notes_in_panel'], [quick(), 'qcNickname', 'palette_open_nickname'],
   ]) {
     sent.length = 0;
     const control = rowIn(root, id).querySelector('[role="switch"]');

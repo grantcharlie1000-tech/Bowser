@@ -439,6 +439,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   addFlagIn(resultsGroup.card, 'qcKeepLast', 'palette_keep_last', (s) => s.paletteKeepLast);
   addFlagIn(resultsGroup.card, 'qcNewTab', 'palette_open_new_tab', (s) => s.paletteNewTab);
   addFlagIn(resultsGroup.card, 'qcNotesPanel', 'palette_notes_in_panel', (s) => s.paletteNotesInPanel);
+  addFlagIn(resultsGroup.card, 'qcNickname', 'palette_open_nickname', (s) => s.paletteOpenNickname); // bookmark nicknames (T2)
   function addFlagIn(card: HTMLElement, id: string, flag: FlagName, read: (s: CommandsSnapshot) => boolean): void {
     const control = switchControl(specOf(id).label, (on) => { send(flagCommand(flag, on)); });
     row(card, id, control.root);

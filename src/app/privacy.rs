@@ -129,11 +129,7 @@ impl App {
                 // A guest keeps no history list, so there is nothing of Bowser's to delete.
                 None => progress.borrow_mut().done.push(DataKind::History),
                 Some(profile) => {
-                    let path = profile.history_file();
-                    let result = match plan.range.seconds() {
-                        None => crate::productivity::clear_history(&path),
-                        Some(seconds) => crate::productivity::delete_history_range(&path, now.saturating_sub(seconds), u64::MAX).map(|_| ()),
-                    };
+                    let result = delete_own_history(&profile.history_file(), profile.root(), plan.range.seconds(), now);
                     match result {
                         Ok(()) => progress.borrow_mut().done.push(DataKind::History),
                         Err(error) => progress.borrow_mut().problems.push(format!("History could not be deleted: {error}")),
@@ -248,5 +244,42 @@ impl App {
     /// Requests the blocker stopped in all this session, for the Privacy section.
     pub fn session_blocked(app: &AppRef) -> u64 {
         app.borrow().privacy_session_blocked
+    }
+}
+
+/// Deletes Bowser's own history for Delete Browsing Data: the visits in the range (`None`: all of
+/// them) and the address bar's typed history (T2's `typed-history.txt`, which keeps no times, so any
+/// range forgets it all rather than leave typed text behind).
+fn delete_own_history(history: &std::path::Path, root: &std::path::Path, seconds: Option<u64>, now: u64) -> std::io::Result<()> {
+    match seconds {
+        None => crate::productivity::clear_history(history)?,
+        Some(seconds) => {
+            crate::productivity::delete_history_range(history, now.saturating_sub(seconds), u64::MAX)?;
+        }
+    }
+    crate::address_runtime::clear_typed_in(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::address_suggest::TypedHistory;
+
+    #[test]
+    fn deleting_history_also_forgets_what_was_typed_in_the_address_bar() {
+        for seconds in [None, Some(3600)] {
+            let root = std::env::temp_dir().join(format!("bowser-delete-typed-{}-{}", std::process::id(), seconds.is_some()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let mut typed = TypedHistory::default();
+            typed.record("secret search", true);
+            typed.record("example.com/private", false);
+            typed.save(&root).unwrap();
+            assert_eq!(TypedHistory::load(&root).len(), 2);
+            let history = root.join("history.tsv");
+            std::fs::write(&history, b"").unwrap();
+            super::delete_own_history(&history, &root, seconds, 10_000).unwrap();
+            assert!(TypedHistory::load(&root).is_empty(), "range {seconds:?}: the typed list is empty");
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

@@ -108,7 +108,11 @@ impl App {
     /// it opens.
     pub fn open_new_tab(app: &AppRef) -> TabId {
         let id = Self::new_tab(app);
-        let target = tab_options::new_tab_address(&app.borrow().settings.tabs);
+        let target = {
+            let state = app.borrow();
+            // "Homepage" opens the start page settings' homepage (one key set: T5's `homepage`).
+            tab_options::new_tab_address(&state.settings.tabs, state.settings.start.home_target())
+        };
         if let NewTabTarget::Page(url) = target {
             Self::submit_url(app, url, None);
         }

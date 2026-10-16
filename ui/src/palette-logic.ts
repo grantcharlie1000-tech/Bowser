@@ -21,6 +21,8 @@ export interface PaletteItem {
   readonly fav?: string;
   /** The cheat sheet's group heading. */
   readonly g?: string;
+  /** A bookmark row's nickname (T2's bookmark dialog). */
+  readonly k?: string;
 }
 
 export interface PaletteMessage {
@@ -37,6 +39,8 @@ export interface PaletteMessage {
   readonly limit: number;
   /** Keep the last typed text when the palette opens again. */
   readonly keep: boolean;
+  /** Typing a bookmark's nickname opens it at once (`palette_open_nickname`). */
+  readonly autonick: boolean;
   readonly items: readonly PaletteItem[];
 }
 
@@ -67,6 +71,8 @@ export const MAX_PALETTE_LABEL = 128;
 export const MAX_PALETTE_DETAIL = 256;
 export const MAX_PALETTE_ACCEL = 96;
 export const MAX_PALETTE_GROUP = 64;
+/** command_palette.rs HTML_MAX_NICK. */
+export const MAX_PALETTE_NICK = 24;
 export const MAX_QUERY = 256;
 /** Rows shown for a typed query unless the setting says otherwise (src/commands/store.rs DEFAULT_RESULTS). */
 export const MAX_RESULTS = 12;
@@ -78,8 +84,8 @@ export const EMPTY_QUERY_LIMIT: Readonly<Record<ResultType, number>> = {
 };
 
 const MAX_ID = 0xffffffff;
-const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc', 'fav', 'g'];
-const MESSAGE_KEYS = ['v', 't', 'tok', 'kind', 'placeholder', 'items', 'mode', 'types', 'ranked', 'limit', 'keep'];
+const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc', 'fav', 'g', 'k'];
+const MESSAGE_KEYS = ['v', 't', 'tok', 'kind', 'placeholder', 'items', 'mode', 'types', 'ranked', 'limit', 'keep', 'autonick'];
 /** Same gate as the other favicon fields (protocol.ts MAX_FAV_URI): a small PNG data: URI. */
 const FAV_PREFIX = 'data:image/png;base64,';
 const MAX_FAV = 24 * 1024;
@@ -100,7 +106,7 @@ export function validPalettePayload(raw: unknown): raw is PaletteMessage {
   if (!Object.keys(raw).every(key => MESSAGE_KEYS.includes(key))) return false;
   if (!isInt(raw.tok, 0, MAX_ID) || !isStr(raw.kind, 32) || raw.kind === '' || !isStr(raw.placeholder, MAX_PALETTE_LABEL)) return false;
   if (raw.mode !== 'palette' && raw.mode !== 'shortcuts') return false;
-  if (typeof raw.ranked !== 'boolean' || typeof raw.keep !== 'boolean' || !isInt(raw.limit, 0, MAX_LIMIT)) return false;
+  if (typeof raw.ranked !== 'boolean' || typeof raw.keep !== 'boolean' || typeof raw.autonick !== 'boolean' || !isInt(raw.limit, 0, MAX_LIMIT)) return false;
   if (!Array.isArray(raw.types) || raw.types.length > DEFAULT_TYPES.length) return false;
   if (new Set(raw.types as unknown[]).size !== raw.types.length || !(raw.types as unknown[]).every(type => typeof type === 'string' && (DEFAULT_TYPES as readonly string[]).includes(type))) return false;
   if (!Array.isArray(raw.items) || raw.items.length > MAX_PALETTE_ITEMS) return false;
@@ -114,6 +120,8 @@ export function validPalettePayload(raw: unknown): raw is PaletteMessage {
     if (!isStr(item.label, MAX_PALETTE_LABEL) || !isStr(item.detail, MAX_PALETTE_DETAIL)) return false;
     if (item.acc !== undefined && !isStr(item.acc, MAX_PALETTE_ACCEL)) return false;
     if (item.g !== undefined && !isStr(item.g, MAX_PALETTE_GROUP)) return false;
+    // Only a bookmark has a nickname, and an empty one is never sent.
+    if (item.k !== undefined && !(item.s === 'bookmark' && isStr(item.k, MAX_PALETTE_NICK) && item.k.trim() !== '')) return false;
     if (item.fav !== undefined && !(isStr(item.fav, MAX_FAV) && item.fav.startsWith(FAV_PREFIX) && /^[A-Za-z0-9+/=]*$/.test(item.fav.slice(FAV_PREFIX.length)))) return false;
   }
   return true;
@@ -140,6 +148,8 @@ export function subsequenceGap(needle: string, hay: string): number {
  */
 export function scoreItem(item: PaletteItem, needle: string): number {
   if (needle === '') return 0;
+  // A bookmark's nickname typed whole beats every other match (T2's nicknames).
+  if (item.k !== undefined && item.k.toLocaleLowerCase() === needle) return 3500;
   const label = item.label.toLocaleLowerCase();
   const detail = item.detail.toLocaleLowerCase();
   if (label === needle) return 3000;
@@ -252,6 +262,21 @@ export function filterShortcuts(items: readonly PaletteItem[], query: string): P
   return groups;
 }
 
+/**
+ * The bookmark whose nickname is the whole typed text (ignoring case, and after a `bookmark:` /
+ * `bkm:` prefix), when "open bookmark automatically on nickname match" is on and bookmarks are a
+ * shown type. Any other prefix, or a nickname two bookmarks share, opens nothing.
+ */
+export function nicknameMatch(items: readonly PaletteItem[], query: string, autonick: boolean, types: readonly ResultType[]): PaletteItem | null {
+  if (!autonick || !types.includes('bookmark')) return null;
+  const { kinds, text } = parsePrefix(query.slice(0, MAX_QUERY));
+  if (kinds !== null && !kinds.includes('bookmark')) return null;
+  const needle = text.trim().toLocaleLowerCase();
+  if (needle === '') return null;
+  const hits = items.filter(item => item.s === 'bookmark' && item.k !== undefined && item.k.toLocaleLowerCase() === needle);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
 /** Rows in display order, for keyboard movement. */
 export function flatten(groups: readonly PaletteGroup[]): PaletteItem[] {
   return groups.flatMap(group => group.items);
@@ -299,6 +324,17 @@ const COMMAND_GLYPH: Readonly<Record<string, string>> = {
   'reader view': 'reader',
   'translate page': 'translate',
   'keyboard shortcuts': 'command',
+  // Wave-1 commands (T1 tabs, T2 address bar, T3 privacy), all from the existing icon set.
+  'reopen closed tab': 'reset',
+  'closed tabs': 'clock',
+  'save all tabs as session': 'save',
+  'open saved session': 'folder-open',
+  'reload this tab every…': 'reload',
+  'stop reloading all tabs': 'reload',
+  'delete browsing data': 'trash',
+  'next blocking level for this site': 'shield',
+  'qr code for this page': 'qr-code',
+  'show or hide the address bar': 'search',
 };
 
 export function commandGlyph(label: string): string {

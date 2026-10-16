@@ -83,7 +83,7 @@ test('the option snapshot is refused unless it is whole and every value is legal
   assert.equal(options.parseTabOptions(null), null);
   assert.equal(options.parseTabOptions([]), null);
   const bad = {
-    tabs_new_tab_page: 'homepage', tabs_double_click: 'minimise', tabs_close_activation: 'Right', tabs_mute_mode: true, tabs_load_indicator: 'ring',
+    tabs_new_tab_page: 'speeddial', tabs_double_click: 'minimise', tabs_close_activation: 'Right', tabs_mute_mode: true, tabs_load_indicator: 'ring',
     tabs_confirm_close: 100, tabs_active_min_width: 401, tabs_inactive_days: 366, tabs_keep_window: 'yes', tabs_pinned_close: 'stack',
     tabs_new_tab_url: 'javascript:alert(1)', tabs_scroll: 1, tabs_new_tab_position: 'stack',
   };
@@ -125,6 +125,18 @@ test('the new tab address only matters while the new tab page is a specific page
   const url = options.TAB_OPTIONS.find((s) => s.key === 'tabs_new_tab_url');
   assert.equal(options.textApplies(url, { tabs_new_tab_page: 'start' }), false);
   assert.equal(options.textApplies(url, { tabs_new_tab_page: 'url' }), true);
+  assert.equal(options.textApplies(url, { tabs_new_tab_page: 'homepage' }), false, 'the homepage is set in Start page');
+  assert.equal(options.textApplies(url, { tabs_new_tab_page: 'blank' }), false);
+});
+
+test('the new tab page offers the four choices, and homepage and blank are legal values the page sends', () => {
+  const spec = options.TAB_OPTIONS.find((s) => s.key === 'tabs_new_tab_page');
+  assert.deepEqual(spec.choices.map(([value]) => value), ['start', 'homepage', 'blank', 'url']);
+  const good = { ...settingsFixture.snap.d.tabOptions };
+  for (const value of ['homepage', 'blank']) {
+    assert.ok(options.parseTabOptions({ ...good, tabs_new_tab_page: value }), value);
+    assert.equal(options.assignmentText('tabs_new_tab_page', value), `tabs_new_tab_page=${value}`);
+  }
 });
 
 // ---- the strip's marks and inputs ----

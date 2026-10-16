@@ -18,7 +18,7 @@
 import { icon, type IconName } from './icons';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
 import {
-  CALC_ID, commandGlyph, completion, filterPalette, filterShortcuts, flatten, moveSelection, MAX_QUERY, rowLabel, validPalettePayload,
+  CALC_ID, commandGlyph, completion, filterPalette, filterShortcuts, flatten, moveSelection, MAX_QUERY, nicknameMatch, rowLabel, validPalettePayload,
   type FilterOptions, type PaletteGroup, type PaletteItem, type PaletteMessage, type ResultType,
 } from './palette-logic';
 
@@ -260,7 +260,16 @@ export function createPaletteView(root: HTMLElement): PageView {
     if (message?.mode === 'palette') lastQuery = input.value;
   };
 
-  input.addEventListener('input', () => { remember(); render(); });
+  input.addEventListener('input', () => {
+    remember();
+    render();
+    // A bookmark's nickname typed whole opens it at once when the option is on (only on typing:
+    // a kept query shown on opening never opens anything by itself).
+    if (message?.mode !== 'palette') return;
+    const hit = nicknameMatch(message.items, input.value, message.autonick, message.types);
+    const at = hit ? rows.indexOf(hit) : -1;
+    if (at >= 0) pick(at);
+  });
   page.addEventListener('keydown', (event) => {
     if (event.isComposing) return;
     if (event.key === 'Shift') shiftTap = !event.repeat;

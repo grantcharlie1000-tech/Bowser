@@ -110,9 +110,9 @@ macro_rules! choice {
 }
 
 choice! {
-    /// What a new tab shows. "Homepage" and "Blank page" join when the start page and the homepage
-    /// setting exist: until then an empty tab is already blank, and there is no homepage to open.
-    NewTabPage { Start = "start", Url = "url" }
+    /// What a new tab shows: the start page (T5's speed dials), the homepage of Settings > Start page
+    /// (`homepage`), a blank page with no start page over it, or the address in `tabs_new_tab_url`.
+    NewTabPage { Start = "start", Homepage = "homepage", Blank = "blank", Url = "url" }
 }
 choice! {
     /// Where a duplicated tab goes.
@@ -349,15 +349,25 @@ pub fn render_into(text: &str, options: &TabOptions, newline: &str) -> String {
 
 // ---- decisions ----
 
-/// What the new tab page is, for the address a fresh tab should open.
-pub fn new_tab_address(options: &TabOptions) -> NewTabTarget {
+/// What the new tab page is, for the address a fresh tab should open. `homepage` is the start page
+/// settings' homepage (`StartSettings::home_target`), None while it is empty.
+pub fn new_tab_address(options: &TabOptions, homepage: Option<url::Url>) -> NewTabTarget {
     match options.new_tab_page {
-        NewTabPage::Start => NewTabTarget::Nothing,
+        NewTabPage::Start | NewTabPage::Blank => NewTabTarget::Nothing,
+        // With no homepage set a new tab falls back to the start page, as the Home button does.
+        NewTabPage::Homepage => homepage.map_or(NewTabTarget::Nothing, NewTabTarget::Page),
         NewTabPage::Url => match url::Url::parse(&options.new_tab_url.0) {
             Ok(url) => NewTabTarget::Page(url),
             Err(_) => NewTabTarget::Nothing,
         },
     }
+}
+
+/// Whether a blank normal tab shows the start page (`win32::start_ui::enabled`). Only "Blank page"
+/// turns it off; the homepage and address choices load a page, and while theirs is not set the start
+/// page is what an empty tab shows.
+pub fn start_page_shown(options: &TabOptions) -> bool {
+    options.new_tab_page != NewTabPage::Blank
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -539,8 +549,11 @@ mod tests {
         assert!(options.set("tabs_new_tab_page", "url"));
         assert_eq!(options.new_tab_page, NewTabPage::Url);
         assert!(!options.set("tabs_new_tab_page", "URL"), "keys are exact");
-        assert!(!options.set("tabs_new_tab_page", "homepage"), "no homepage option until one exists");
-        assert!(!options.set("tabs_new_tab_page", "blank"), "an empty tab is already blank until the start page exists");
+        assert!(options.set("tabs_new_tab_page", "homepage"), "the start page settings' homepage");
+        assert_eq!(options.new_tab_page, NewTabPage::Homepage);
+        assert!(options.set("tabs_new_tab_page", "blank"), "a blank page without the start page");
+        assert_eq!(options.new_tab_page, NewTabPage::Blank);
+        assert!(!options.set("tabs_new_tab_page", "speeddial"));
         assert!(options.set("tabs_confirm_close", "5"));
         assert_eq!(options.confirm_close.0, 5);
         assert!(!options.set("tabs_confirm_close", "100"));
@@ -604,12 +617,21 @@ mod tests {
 
     #[test]
     fn a_new_tab_page_choice_decides_what_a_fresh_tab_opens() {
+        let home = || Some(url::Url::parse("https://home.example/").unwrap());
         let mut options = TabOptions::default();
-        assert_eq!(new_tab_address(&options), NewTabTarget::Nothing);
+        assert_eq!(new_tab_address(&options, home()), NewTabTarget::Nothing, "the start page");
+        assert!(start_page_shown(&options));
         options.new_tab_page = NewTabPage::Url;
-        assert_eq!(new_tab_address(&options), NewTabTarget::Nothing, "no address typed yet");
+        assert_eq!(new_tab_address(&options, home()), NewTabTarget::Nothing, "no address typed yet");
         options.new_tab_url = PageUrl("https://example.com/".into());
-        assert_eq!(new_tab_address(&options), NewTabTarget::Page(url::Url::parse("https://example.com/").unwrap()));
+        assert_eq!(new_tab_address(&options, home()), NewTabTarget::Page(url::Url::parse("https://example.com/").unwrap()));
+        assert!(start_page_shown(&options), "an address choice still shows the start page on a blank tab");
+        options.new_tab_page = NewTabPage::Homepage;
+        assert_eq!(new_tab_address(&options, home()), home().map(NewTabTarget::Page).unwrap());
+        assert_eq!(new_tab_address(&options, None), NewTabTarget::Nothing, "no homepage set: the start page shows");
+        options.new_tab_page = NewTabPage::Blank;
+        assert_eq!(new_tab_address(&options, home()), NewTabTarget::Nothing);
+        assert!(!start_page_shown(&options), "blank: no start page over the empty tab");
     }
 
     #[test]

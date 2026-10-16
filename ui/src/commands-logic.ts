@@ -71,6 +71,7 @@ export interface CommandsSnapshot {
   readonly paletteKeepLast: boolean;
   readonly paletteNewTab: boolean;
   readonly paletteNotesInPanel: boolean;
+  readonly paletteOpenNickname: boolean;
   readonly paletteMax: number;
   readonly paletteTypes: readonly ResultTypeKey[];
   readonly paletteDefaultOrder: boolean;
@@ -87,7 +88,7 @@ const ID_RE = /^[a-z0-9:-]{1,40}$/;
 const SITE_RE = /^[a-z0-9.-]{1,253}$/;
 const ACKS: readonly CommandsAck[] = ['none', 'saved', 'failed', 'conflict', 'ran'];
 const KEYS = ['ack', 'error', 'conflictChord', 'conflictId', 'conflictLabel', 'shortcutsEnabled', 'singleKey', 'altMenu', 'focusCycling', 'paletteKeepLast',
-  'paletteNewTab', 'paletteNotesInPanel', 'paletteMax', 'paletteTypes', 'paletteDefaultOrder', 'sites', 'commands', 'chains'];
+  'paletteNewTab', 'paletteNotesInPanel', 'paletteOpenNickname', 'paletteMax', 'paletteTypes', 'paletteDefaultOrder', 'sites', 'commands', 'chains'];
 const COMMAND_KEYS = ['id', 'label', 'category', 'chords', 'defaults', 'changed', 'priority', 'chain'];
 
 function chordList(v: unknown): string[] | null {
@@ -112,7 +113,7 @@ export function parseCommandsSnapshot(value: unknown): CommandsSnapshot | null {
   if (typeof v.ack !== 'string' || !(ACKS as readonly string[]).includes(v.ack)) return null;
   if (!isStr(v.error, 240) || !isStr(v.conflictChord, 40) || !isStr(v.conflictId, 40) || !isStr(v.conflictLabel, 64)) return null;
   if ((v.ack === 'conflict') !== (v.conflictChord !== '' && v.conflictId !== '')) return null;
-  for (const key of ['shortcutsEnabled', 'singleKey', 'altMenu', 'focusCycling', 'paletteKeepLast', 'paletteNewTab', 'paletteNotesInPanel', 'paletteDefaultOrder'] as const) {
+  for (const key of ['shortcutsEnabled', 'singleKey', 'altMenu', 'focusCycling', 'paletteKeepLast', 'paletteNewTab', 'paletteNotesInPanel', 'paletteOpenNickname', 'paletteDefaultOrder'] as const) {
     if (typeof v[key] !== 'boolean') return null;
   }
   if (!isInt(v.paletteMax, MIN_RESULTS, MAX_RESULTS)) return null;
@@ -159,6 +160,7 @@ export function parseCommandsSnapshot(value: unknown): CommandsSnapshot | null {
     paletteKeepLast: v.paletteKeepLast as boolean,
     paletteNewTab: v.paletteNewTab as boolean,
     paletteNotesInPanel: v.paletteNotesInPanel as boolean,
+    paletteOpenNickname: v.paletteOpenNickname as boolean,
     paletteMax: v.paletteMax,
     paletteTypes: [...(v.paletteTypes as ResultTypeKey[])],
     paletteDefaultOrder: v.paletteDefaultOrder as boolean,
@@ -170,7 +172,7 @@ export function parseCommandsSnapshot(value: unknown): CommandsSnapshot | null {
 
 // ---- commands the page sends (each maps to one arm of chrome_host::commands_page::map_command) ----
 
-export type FlagName = 'shortcuts_enabled' | 'single_key_shortcuts' | 'alt_opens_menu' | 'focus_cycling' | 'palette_keep_last' | 'palette_open_new_tab' | 'palette_notes_in_panel';
+export type FlagName = 'shortcuts_enabled' | 'single_key_shortcuts' | 'alt_opens_menu' | 'focus_cycling' | 'palette_keep_last' | 'palette_open_new_tab' | 'palette_notes_in_panel' | 'palette_open_nickname';
 export const assignCommand = (id: string, chord: string, take: boolean): PanelFields => ({ a: 'kbassign', text: `${id}\t${chord}`, on: take });
 export const removeChordCommand = (id: string, chord: string): PanelFields => ({ a: 'kbremove', text: `${id}\t${chord}` });
 export const clearCommand = (id: string): PanelFields => ({ a: 'kbclear', text: id });

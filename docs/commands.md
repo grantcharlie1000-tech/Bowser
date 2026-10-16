@@ -81,7 +81,10 @@ and page actions (the registry) and the calculator (`src/commands/calc.rs`, `ui/
 Settings (Settings > Quick commands): which result types show and their order (reset restores the default,
 where the best match leads; any other order groups results by it), rows shown for a typed search (3 to 30),
 keep the last typed search, open bookmarks and history in a new tab, open notes in the Notes panel (off copies
-the note's text).
+the note's text), and open a bookmark when its whole nickname is typed (`palette_open_nickname`, on by
+default; nicknames are set in T2's bookmark dialog, a nickname typed whole also ranks its bookmark first, and
+a nickname two bookmarks share opens neither). The native fallback palette searches nicknames but does not
+open on a match.
 
 ## Keyboard
 
@@ -97,8 +100,6 @@ Y), Esc, Alt+F4, Shift+F10 and Ctrl+Alt with a typing key (AltGr) cannot be assi
 - **Access keys**: Bowser's menus are HTML popups with no `&` mnemonics, so there is nothing for Alt+letter to
   reach. A switch would do nothing.
 - **Space fast-forward**: there is no fast-forward feature, and Space scrolling belongs to the page.
-- **Open bookmark automatically on a nickname match**: bookmarks have no nickname field yet (T2 adds
-  nicknames). The palette can take the matching rule when the field exists.
 - **Include English search terms**: Bowser's interface is English only; there is no other language to add
   English terms to.
 

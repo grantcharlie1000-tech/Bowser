@@ -111,6 +111,8 @@ pub struct Options {
     pub palette_max_results: u8,
     pub palette_open_new_tab: bool,
     pub palette_notes_in_panel: bool,
+    /// Typing a bookmark's nickname (set in T2's bookmark dialog) opens that bookmark at once.
+    pub palette_open_nickname: bool,
 }
 
 impl Default for Options {
@@ -125,6 +127,7 @@ impl Default for Options {
             palette_max_results: DEFAULT_RESULTS,
             palette_open_new_tab: false,
             palette_notes_in_panel: true,
+            palette_open_nickname: true,
         }
     }
 }
@@ -164,6 +167,7 @@ impl Options {
             }
             "palette_open_new_tab" => self.palette_open_new_tab = flag().unwrap_or(self.palette_open_new_tab),
             "palette_notes_in_panel" => self.palette_notes_in_panel = flag().unwrap_or(self.palette_notes_in_panel),
+            "palette_open_nickname" => self.palette_open_nickname = flag().unwrap_or(self.palette_open_nickname),
             _ => {}
         }
     }
@@ -179,6 +183,7 @@ impl Options {
             ("palette_max_results", self.palette_max_results.to_string()),
             ("palette_open_new_tab", self.palette_open_new_tab.to_string()),
             ("palette_notes_in_panel", self.palette_notes_in_panel.to_string()),
+            ("palette_open_nickname", self.palette_open_nickname.to_string()),
         ]
     }
 }
