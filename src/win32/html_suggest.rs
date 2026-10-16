@@ -11,7 +11,7 @@ use url::Url;
 use crate::{
     bookmarks::{BookmarkKind, BookmarkStore},
     chrome_host::protocol::SuggestItem,
-    omnibox::{self, Completion, History, SuggestKind, SuggestSource, Suggestion},
+    omnibox::{Completion, History, SuggestKind, SuggestSource, Suggestion},
     tabs::TabId,
 };
 
@@ -40,27 +40,6 @@ pub(crate) struct Row {
 
 /// An open tab offered to the dropdown: id, full address and title.
 pub(crate) type TabSource = (TabId, String, String);
-
-/// Rows for `typed`: the default row first, then up to seven matches. `tabs` must not hold the
-/// active tab. Pure.
-pub(crate) fn rows(
-    history: &History,
-    completion: Option<&Completion>,
-    typed: &str,
-    typed_url: Option<&Url>,
-    tabs: &[TabSource],
-    bookmarks: &[(String, String)],
-) -> Vec<Row> {
-    let tab_sources: Vec<SuggestSource<'_>> =
-        tabs.iter().map(|(_, url, title)| SuggestSource { url, title }).collect();
-    let mark_sources: Vec<SuggestSource<'_>> =
-        bookmarks.iter().map(|(url, title)| SuggestSource { url, title }).collect();
-    let first = omnibox::default_suggestion(typed, completion, typed_url);
-    omnibox::suggest(history, &mark_sources, &tab_sources, typed, first)
-        .into_iter()
-        .filter_map(|row| to_row(row, tabs))
-        .collect()
-}
 
 fn to_row(row: Suggestion, tabs: &[TabSource]) -> Option<Row> {
     let target = match (row.kind, row.tab) {
@@ -232,12 +211,6 @@ fn url_set(links: &[(String, String)]) -> HashSet<String> {
     links.iter().map(|(url, _)| url.clone()).collect()
 }
 
-/// Every bookmarked page as (address, title). The list is kept until the bookmark file's time or
-/// size changes, so a keystroke costs one `stat`, not a parse. Empty in a guest profile.
-pub(crate) fn bookmarks() -> Rc<Vec<(String, String)>> {
-    refreshed().map(|(links, _)| links).unwrap_or_default()
-}
-
 /// Re-reads the bookmark file if it changed since the cache was filled, and reports whether the set
 /// of bookmarked addresses changed. Called where bookmarks may have been edited (`WM_RAIL_CHANGED`,
 /// which every bookmark editor in the window posts), not per paint. Nothing is read while nothing
@@ -289,6 +262,15 @@ pub(crate) fn is_bookmarked(url: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// [`rows_for`] under the default options and engines.
+    fn rows_with_defaults(history: &History, completion: Option<&Completion>, typed: &str, typed_url: Option<&Url>, tabs: &[TabSource], marks: &[Mark]) -> Vec<Row> {
+        let settings = crate::address_settings::AddressSettings::default();
+        let engines = crate::search_engines::EngineStore::default();
+        let typed_history = crate::address_suggest::TypedHistory::default();
+        let env = Env { settings: &settings, engines: &engines, typed_history: &typed_history, engine_suggestions: &[], private: false };
+        rows_for(history, completion, typed, typed_url, tabs, marks, &env)
+    }
+
     fn history(entries: &[(&str, &str)]) -> History {
         let mut history = History::default();
         for (url, title) in entries {
@@ -302,7 +284,8 @@ mod tests {
         let history = history(&[("https://docs.example.com/guide", "Guide")]);
         let tabs = vec![(TabId(7), "https://docs.example.com/guide".to_owned(), "Guide".to_owned())];
         let marks = vec![("https://example.org/".to_owned(), "Example".to_owned())];
-        let rows = rows(&history, None, "exa", None, &tabs, &marks);
+        let marks: Vec<Mark> = marks.into_iter().map(|(url, title)| (url, title, String::new())).collect();
+        let rows = rows_with_defaults(&history, None, "exa", None, &tabs, &marks);
         assert_eq!(rows[0].item.kind, "search");
         assert_eq!(rows[0].target, Target::Search("exa".into()));
         assert!(rows[0].fav_url.is_empty());
@@ -315,7 +298,7 @@ mod tests {
     #[test]
     fn a_typed_address_is_the_default_row_and_hosts_find_their_tab() {
         let url = Url::parse("https://example.com/").unwrap();
-        let rows = rows(&History::default(), None, "example.com", Some(&url), &[], &[]);
+        let rows = rows_with_defaults(&History::default(), None, "example.com", Some(&url), &[], &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].item.kind, "url");
         assert_eq!(rows[0].target, Target::Navigate("https://example.com/".into()));

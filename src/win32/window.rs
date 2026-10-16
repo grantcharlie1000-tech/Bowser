@@ -9914,7 +9914,7 @@ fn html_suggest_compute(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: 
         App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
     let rows = with_chrome(hwnd, |s| {
         let history = loaded_history(&mut s.history, &mut s.history_load);
-        super::address_bar::rows(hwnd, app, history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, seq, forced)
+        super::address_bar::rows(hwnd, app, history, s.completion.as_ref(), &super::address_bar::Query { text, typed_url: typed_url.as_ref(), tabs: &tabs, seq, forced })
     })?;
     let mut rows = rows;
     // A favicon is known for a row's page only through an open tab on the same site.

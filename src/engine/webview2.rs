@@ -4364,7 +4364,7 @@ unsafe fn configure_controller(
                         }
                         at
                     };
-                    let mut add = |label: &str, pick: super::ContextSearchPick, after: &[&str]| -> windows::core::Result<()> {
+                    let add = |label: &str, pick: super::ContextSearchPick, after: &[&str]| -> windows::core::Result<()> {
                         let wide = HSTRING::from(label);
                         let item = environment9.CreateContextMenuItem(PCWSTR(wide.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
                         let picked = picked.clone();

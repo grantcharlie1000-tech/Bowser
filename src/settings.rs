@@ -1470,7 +1470,9 @@ mod tests {
              shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
              pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n\
              download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n\
-             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n"
+             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n".to_owned()
+                // The address bar, search and bookmark options follow, one line each (address_settings.rs).
+                + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")
         );
         assert_eq!(Settings::parse(&text), sample());
     }

@@ -294,7 +294,7 @@ fn scoped(scope: Scope, rest: &str, ctx: &Context<'_>, max: usize) -> Vec<Sugges
                     base.map(|score| (score + recency + visits.min(20) * 15, url, title))
                 })
                 .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            scored.sort_by_key(|row| std::cmp::Reverse(row.0));
             for (_, url, title) in scored.into_iter().take(max) {
                 rows.push(page_row(SuggestKind::History, url, title, None));
             }
@@ -368,7 +368,7 @@ fn source_rows(source: Source, ctx: &Context<'_>, needle: &str, max: usize) -> V
                     omnibox::match_score(url, title, needle).map(|score| (score + recency + visits.min(20) * 15, url, title))
                 })
                 .collect();
-            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            scored.sort_by_key(|row| std::cmp::Reverse(row.0));
             for (_, url, title) in scored.into_iter().take(max) {
                 rows.push(page_row(SuggestKind::History, url, title, None));
             }

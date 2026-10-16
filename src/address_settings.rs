@@ -791,9 +791,7 @@ mod tests {
 
     #[test]
     fn render_replaces_in_place_appends_and_keeps_everything_else() {
-        let mut settings = AddressSettings::default();
-        settings.max_results = 12;
-        settings.search_field = SearchField::Button;
+        let settings = AddressSettings { max_results: 12, search_field: SearchField::Button, ..AddressSettings::default() };
         let existing = "# c\r\ntab_layout=vertical\r\ndd_max_results=3\r\nsearch_field=off\r\nunknown=x\r\ndd_max_results=5\r\n";
         let text = settings.render_into(existing, "\r\n");
         assert!(text.starts_with("# c\r\ntab_layout=vertical\r\ndd_max_results=12\r\nsearch_field=button\r\nunknown=x\r\n"));

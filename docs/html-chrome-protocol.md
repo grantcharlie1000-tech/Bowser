@@ -575,3 +575,41 @@ recorded path or address of the id).
 - **Limits.** Bubble message <= 240 KiB (`html_popup::MAX_PAGE_BYTES`), five rows; page snapshot <= 240 KiB
   (`downloads::MAX_SNAPSHOT_BYTES`, oldest rows dropped with `more: true`); search text <= 256 characters;
   `downloadDir` <= 260 characters. Chrome webviews keep cancelling their own downloads.
+
+## Address bar, search and bookmarks (`addr`, `sfield`, `?view=bar`, `View::BookmarkBar`, `View::DialogAddress`)
+
+Options live as extra `key=value` lines of the profile's `settings.txt` (`src/address_settings.rs`, one
+`AddressSettings` in `Settings.address`; changed one key at a time, never part of the exact-match
+`save`). The engine list is `search-engines.txt` (`src/search_engines.rs`), typed history is
+`typed-history.txt`, bookmark nicknames and descriptions are `bookmark-extras.txt` (so
+`bookmarks-v2.txt` keeps its format). Everything below is validated in `src/chrome_host/address_page.rs`.
+
+### Rust -> JS
+
+- `{"t":"addr","show","full","select","encoded","qr","hbtn","typed","typing","badge","strip","highlight","base"}`
+  (toolbar): the address field's options, twelve required fields, eleven booleans and `base` (the shown page's
+  registrable domain, at most 253 characters). Sent at start, after a reload of the page and when they change.
+- `{"t":"sfield","mode","icon","nick","suggest","keep","engine","engines":[{"n","k"}]}` (toolbar): the search
+  field's mode (`off`, `field`, `button`) and engine list (at most 40). `engine` indexes `engines`.
+- `{"t":"snap","p":"address","d":{"s":{<key>:<value>},"engines":[..],"def","priv","img","folders":[..],"guest","ack","error"}}`
+  (settings page): every option typed (booleans, integers, strings), the engines, the default, private-window
+  and image engine ids and the bookmark folders.
+- `{"t":"snap","p":"addressdlg","d":{"kind":"qr"|"bookmark",..}}` (`View::DialogAddress`) and
+  `{"t":"snap","p":"bookmarkbar","d":{"display","items":[..],"groups":[..]}}` (`View::BookmarkBar`).
+- `suggest` rows may carry kind `calc` and an optional `"bd":true` (always show the badge); a list holds up to 20 rows.
+
+### JS -> Rust (`{"t":"addr","a":...}`, the flat panel family)
+
+Toolbar: `submit` (`text`, `n` 0 plain, 1 new tab for Alt/Shift+Enter, 2 domain expansion for Ctrl+Enter), `typed`
+(`n` seq), `suggest` (`text`, `n` seq), `qr`, `search` (`text`, `id` engine index, `n` new tab), `sedit` (`text`,
+`id`, `n` seq), `engines` (`text` rect). Settings page, through `set`: `addrset` (`text` `key=value`) and `engine`
+(`text` the operation and tab-separated fields: `add`, `update`, `remove`, `move`, `default`, `private`, `image`,
+`restore`). Dialogs: `qrcopy`, `bmsave` (`text` `name\tnickname\tdescription`, `parent` folder), `bmremove`. Bar:
+`baropen`, `barfolder`, `barctx`, `bargroup`, `bargctx`, `baroverflow`. Each action takes exactly its own fields.
+
+### Behaviour that is not on the wire
+
+The bookmarks bar takes its row from `Layout.viewport` in `window::relayout` (`bookmark_bar::reserved_viewport`),
+so the page, split panes and side panels end where the bar begins and `--bw-toolbar-h` is untouched. Search
+suggestions are fetched only for an engine nickname typed in the address field, or in the search field, from
+the engine's own suggestions address through `translate::net::get_https`; never in a private tab.

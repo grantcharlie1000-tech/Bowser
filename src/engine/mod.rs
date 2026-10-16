@@ -373,11 +373,14 @@ pub struct EngineEvents {
     // --- address bar, search and bookmarks ---
     /// The page context menu is about to open on a selection or an image: the labels of the search
     /// items to add (none for nothing to add).
-    pub context_search: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, &ContextSearchInfo) -> ContextSearchLabels>>,
+    pub context_search: Option<ContextSearchLabelsFn>,
     /// One of those items was picked.
     pub context_search_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, ContextSearchPick)>>,
     // --- end address bar, search and bookmarks ---
 }
+
+/// Asks for the labels of the search items a page context menu gets.
+pub type ContextSearchLabelsFn = std::rc::Rc<dyn Fn(crate::tabs::TabId, &ContextSearchInfo) -> ContextSearchLabels>;
 
 /// What the page context menu was opened on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

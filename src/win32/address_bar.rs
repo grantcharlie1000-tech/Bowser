@@ -183,6 +183,19 @@ pub(super) fn suggestions_ready(hwnd: HWND) {
     }
 }
 
+/// The text whose rows are wanted, with what the window knows about it.
+#[derive(Clone, Copy)]
+pub(super) struct Query<'a> {
+    pub text: &'a str,
+    /// The address `text` would navigate to, when it is one.
+    pub typed_url: Option<&'a url::Url>,
+    /// Open tabs other than the shown one.
+    pub tabs: &'a [html_suggest::TabSource],
+    pub seq: u32,
+    /// Typing alone would not open the list, but the user asked for it.
+    pub forced: bool,
+}
+
 /// Rows for the address field under the options. `history`, `completion` and `tabs` come from the
 /// window (they are its state); the rest is read here.
 pub(super) fn rows(
@@ -190,12 +203,9 @@ pub(super) fn rows(
     app: &AppRef,
     history: &crate::omnibox::History,
     completion: Option<&crate::omnibox::Completion>,
-    text: &str,
-    typed_url: Option<&url::Url>,
-    tabs: &[html_suggest::TabSource],
-    seq: u32,
-    forced: bool,
+    query: &Query<'_>,
 ) -> Vec<Row> {
+    let Query { text, typed_url, tabs, seq, forced } = *query;
     let settings = App::settings(app);
     let address = &settings.address;
     if !address.dropdown_while_typing && !forced {

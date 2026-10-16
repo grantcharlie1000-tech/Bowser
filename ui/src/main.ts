@@ -388,13 +388,13 @@ function startToolbar(root: HTMLElement): void {
         list = null; // --- omnibox suggest ---
         input.value = msg.text;
         edited = false;
-        if (msg.select) input.select();
+        if (msg.select && flags.select) input.select();
         showDisplay();
         syncSiteIcon(view);
         break;
       case 'focusOmnibox':
         input.focus();
-        if (msg.select) input.select();
+        if (msg.select && flags.select) input.select();
         break;
       case 'completion':
         acceptCompletion(msg);

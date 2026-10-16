@@ -4446,10 +4446,11 @@ mod tests {
     fn suggest_commands_parse_with_exact_fields() {
         let ok = |text: &str| parse_command(text).unwrap();
         assert_eq!(ok(r#"{"v":1,"t":"suggestPick","seq":9,"i":7}"#), Command::SuggestPick { seq: 9, i: 7 });
+        assert_eq!(ok(r#"{"v":1,"t":"suggestPick","seq":9,"i":19}"#), Command::SuggestPick { seq: 9, i: 19 }, "the drop-down holds up to twenty rows");
         assert_eq!(ok(r#"{"v":1,"t":"suggestPreview","seq":0,"i":0}"#), Command::SuggestPreview { seq: 0, i: 0 });
         assert_eq!(ok(r#"{"v":1,"t":"suggestEnd"}"#), Command::SuggestEnd);
         for bad in [
-            r#"{"v":1,"t":"suggestPick","seq":9,"i":8}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":20}"#,
             r#"{"v":1,"t":"suggestPick","seq":9,"i":-1}"#,
             r#"{"v":1,"t":"suggestPick","seq":9,"i":"1"}"#,
             r#"{"v":1,"t":"suggestPick","seq":9}"#,
@@ -4525,14 +4526,14 @@ mod tests {
 
     #[test]
     fn suggest_json_caps_rows_clamps_selection_and_width() {
-        let rows: Vec<SuggestItem> = (0..12).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
+        let rows: Vec<SuggestItem> = (0..25).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
         let json = suggest_json(1, 2, 999_999, 40, &"q".repeat(600), &rows);
         assert_eq!(json.matches(r#""k":"hist""#).count(), MAX_SUGGEST_ITEMS);
         assert!(json.contains(&format!(r#""w":{MAX_SUGGEST_WIDTH},"sel":{}"#, MAX_SUGGEST_ITEMS - 1)), "{json}");
         assert!(json.contains(&format!(r#""q":"{}""#, "q".repeat(MAX_SUGGEST_TEXT_CHARS * 2))), "the query is capped");
         let empty = suggest_json(0, 5, 0, 3, "", &[]);
         assert_eq!(empty, r#"{"v":1,"t":"suggest","tok":0,"seq":5,"w":0,"sel":0,"q":"","items":[]}"#);
-        assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":7}"#);
+        assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":19}"#);
     }
 
     #[test]

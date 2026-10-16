@@ -42,11 +42,14 @@ const CLASS: PCWSTR = w!("BowserAddressDialog");
 const QR_SIZE: (i32, i32) = (360, 470);
 const BOOKMARK_SIZE: (i32, i32) = (400, 520);
 
+/// Takes the page's declared title and description (when it could be read).
+pub(crate) type MetadataDone = Box<dyn FnOnce(Option<(String, String)>)>;
+
 /// What the open dialog is about.
 #[derive(Clone, Debug)]
 enum Page {
     Qr { url: String },
-    Bookmark { tab: TabId, url: String, title: String, description: String },
+    Bookmark { url: String, title: String, description: String },
 }
 
 struct Runtime {
@@ -373,9 +376,7 @@ fn save_bookmark(app: &AppRef, owner: HWND, url: &str, name: &str, folder: u64, 
         }
         None => {
             let id = store.add_bookmark(parent, name, url).map_err(|error| error.to_string())?;
-            if let Err(message) = extras.set(id, nickname, description) {
-                return Err(message);
-            }
+            extras.set(id, nickname, description)?;
             id
         }
     };
@@ -419,7 +420,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
     let app_handle = app.clone();
     let url_text = url.as_str().to_owned();
     if !fetch {
-        open(owner, app, Page::Bookmark { tab, url: url_text, title, description: String::new() });
+        open(owner, app, Page::Bookmark { url: url_text, title, description: String::new() });
         return;
     }
     fetch_metadata(app, tab, Box::new(move |meta| {
@@ -431,7 +432,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
             Some((meta_title, description)) => (better_title(&title, &meta_title), description),
             None => (title, String::new()),
         };
-        open(owner, &app_handle, Page::Bookmark { tab, url: url_text, title, description });
+        open(owner, &app_handle, Page::Bookmark { url: url_text, title, description });
     }));
 }
 
@@ -505,7 +506,7 @@ pub(crate) fn better_title(tab_title: &str, meta_title: &str) -> String {
 
 /// Reads the title and description the page declares (`og:title`, `description`), once, with the
 /// page's own script world. `done` always runs, with `None` when the page cannot be read.
-pub(crate) fn fetch_metadata(app: &AppRef, tab: TabId, done: Box<dyn FnOnce(Option<(String, String)>)>) {
+pub(crate) fn fetch_metadata(app: &AppRef, tab: TabId, done: MetadataDone) {
     const SCRIPT: &str = "(()=>{const m=n=>{const e=document.querySelector(n);return e?String(e.getAttribute('content')||'').trim():''};return JSON.stringify({t:(m('meta[property=\"og:title\"]')||m('meta[name=\"twitter:title\"]')||'').slice(0,200),d:(m('meta[name=\"description\"]')||m('meta[property=\"og:description\"]')).slice(0,400)})})()";
     let done = Rc::new(RefCell::new(Some(done)));
     let early = Rc::new(RefCell::new(None::<Option<(String, String)>>));

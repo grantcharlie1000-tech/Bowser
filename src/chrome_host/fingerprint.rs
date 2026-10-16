@@ -25,7 +25,7 @@ pub fn tree_fingerprint(root: &Path) -> io::Result<u64> {
     files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut hash = OFFSET;
     for (relative, path) in files {
-        for byte in relative.bytes().chain(std::iter::once(0)).chain(fs::read(path)?.into_iter()) {
+        for byte in relative.bytes().chain(std::iter::once(0)).chain(fs::read(path)?) {
             hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
         }
     }

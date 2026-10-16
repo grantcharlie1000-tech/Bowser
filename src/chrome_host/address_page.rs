@@ -568,6 +568,42 @@ mod tests {
         assert!(json.contains(r#""ack":"saved","error":"a b""#));
     }
 
+    /// Every option, changed as the page changes it: command -> `set` -> settings.txt -> parse -> snapshot.
+    #[test]
+    fn every_option_survives_the_page_command_the_file_and_the_snapshot() {
+        let changes: [(&str, &str); 42] = [
+            ("address_bar_show", "false"), ("address_autocomplete", "false"), ("address_show_full", "true"), ("address_select_on_activate", "false"),
+            ("address_copy_encoded", "false"), ("address_qr_button", "true"), ("dd_show_while_typing", "false"), ("dd_always_badge", "true"),
+            ("dd_typed_history", "true"), ("dd_typed_include_searches", "false"), ("dd_history_button", "true"), ("dd_max_results", "13"),
+            ("dd_prioritise_bookmarks", "true"), ("dd_prioritise_direct", "false"), ("dd_sources", "calculator,history"), ("sec_always_https", "true"),
+            ("sec_strip_js", "false"), ("sec_highlight_base", "true"), ("domain_expansion_suffix", "co.uk"), ("search_field", "button"),
+            ("search_show_nickname", "false"), ("search_new_tab", "true"), ("search_show_icon", "false"), ("search_in_address", "false"),
+            ("search_keep_engine", "true"), ("search_keep_text", "true"), ("search_selection_background", "true"), ("search_suggest_address", "false"),
+            ("search_suggest_field", "false"), ("search_last_engine", "bing"), ("nick_bookmarks", "marks"), ("nick_history", "past"),
+            ("nick_tabs", "t"), ("bm_open_new_tab", "true"), ("bm_panel_single_click", "false"), ("bm_confirm_open", "7"),
+            ("bm_fetch_metadata", "false"), ("bm_always_dialog", "true"), ("bm_bar_folder", "4"), ("bm_bar_position", "bottom"),
+            ("bm_bar_display", "bookmark-icon"), ("bar_groups", "a.example,b.example"),
+        ];
+        assert_eq!(changes.len(), KEYS.len(), "a row was added without a case here");
+        for (key, value) in changes {
+            let fields = PanelFields { a: "addrset".into(), text: Some(format!("{key}={value}")), ..PanelFields::default() };
+            let Some(Action::Set { key: sent, value: sent_value }) = map_command(&fields) else { panic!("{key}: not a command") };
+            let mut settings = crate::settings::Settings::default();
+            assert!(settings.address.set(&sent, &sent_value), "{key}={value} refused");
+            let text = crate::settings::render_updated("", &settings);
+            let back = crate::settings::Settings::parse(&text);
+            assert_eq!(back.address.get(key).as_deref(), Some(value), "{key} did not survive the file");
+            assert_ne!(back.address, AddressSettings::default(), "{key} changed nothing");
+            let snapshot = snapshot_json(&Snapshot { settings: &back.address, engines: &EngineStore::default(), folders: &[], guest: false, ack: Ack::None, error: "" });
+            let wanted = match KEYS.iter().find(|(name, _)| *name == key).map(|(_, kind)| *kind) {
+                Some(Kind::Bool) => format!("\"{key}\":{value}"),
+                Some(Kind::Int) => format!("\"{key}\":{value}"),
+                _ => format!("\"{key}\":\"{value}\""),
+            };
+            assert!(snapshot.contains(&wanted), "{key}: {wanted} not in the snapshot");
+        }
+    }
+
     #[test]
     fn address_settings_commands_name_a_known_key() {
         assert_eq!(map_command(&text("addrset", "dd_max_results=12")), Some(Action::Set { key: "dd_max_results".into(), value: "12".into() }));
