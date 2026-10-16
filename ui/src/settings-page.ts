@@ -31,7 +31,7 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'link', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
-  address: 'link', bookmarks: 'bookmark',
+  address: 'workspace-globe', bookmarks: 'bookmark', // --- wave-1 integration --- 'link' is Quick commands' glyph
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
