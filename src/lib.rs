@@ -1,7 +1,13 @@
 pub mod agent;
 pub mod app;
 pub mod blocker;
+pub mod bookmark_extras;
 pub mod bookmarks;
+pub mod address_input;
+pub mod address_runtime;
+pub mod address_settings;
+pub mod address_suggest;
+pub mod calc;
 pub mod chrome;
 pub mod chrome_host;
 pub mod commands;
@@ -30,6 +36,7 @@ pub mod productivity;
 pub mod profile;
 pub mod reader;
 pub mod translate;
+pub mod search_engines;
 pub mod session;
 pub mod settings;
 pub mod settings_privacy; // blocker level, history retention, website appearance, private theme (T3)

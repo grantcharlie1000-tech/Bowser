@@ -530,6 +530,11 @@ pub struct Settings {
     /// The start page, speed dials, dashboard widgets, homepage and startup (`src/start_page.rs`).
     pub start: crate::start_page::StartSettings,
     // --- end start page ---
+    // --- address bar, search and bookmarks (src/address_settings.rs) ---
+    /// The address bar, drop-down, search field, scoped nickname and bookmark options. Stored as
+    /// further `key=value` lines of this file; changed one key at a time by the settings page.
+    pub address: crate::address_settings::AddressSettings,
+    // --- end address bar, search and bookmarks ---
 }
 
 impl Default for Settings {
@@ -585,6 +590,7 @@ impl Default for Settings {
             force_dark_websites: false,
             private_theme: PrivateTheme::Follow,
             start: crate::start_page::StartSettings::default(),
+            address: crate::address_settings::AddressSettings::default(),
         }
     }
 }
@@ -874,8 +880,11 @@ impl Settings {
                 }
                 // --- end privacy, history and website appearance ---
                 // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
+                // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
-                    settings.start.parse_key(key, value);
+                    if !settings.start.parse_key(key, value) {
+                        settings.address.parse_line(key, value);
+                    }
                 }
                 // --- end start page ---
             }
@@ -1079,7 +1088,8 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             out.push_str(&format!("{name}={value}{newline}"));
         }
     }
-    out
+    // Address bar, search and bookmark options (src/address_settings.rs).
+    settings.address.render_into(&out, newline)
 }
 
 /// Reads the file as text, refusing anything over `MAX_FILE_BYTES` or not valid UTF-8. Unlike
@@ -1375,6 +1385,7 @@ mod tests {
                 widget_color: "#336699".to_owned(),
                 widget_drag: false,
             },
+            address: crate::address_settings::AddressSettings::default(),
         }
     }
 
@@ -1601,7 +1612,9 @@ mod tests {
              start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
-             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n"
+             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n".to_owned()
+                // The address bar, search and bookmark options follow, one line each (address_settings.rs).
+                + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")
         );
         assert_eq!(Settings::parse(&text), sample());
     }

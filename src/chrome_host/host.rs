@@ -36,7 +36,7 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, RESPONSE_HEADERS, SCHEME,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME,
         SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
@@ -182,6 +182,10 @@ pub enum View {
     DialogNotes,
     DialogPrivacy,
     DialogRename,
+    /// The address bar's QR code and bookmark dialogs (src/win32/address_dialog.rs).
+    DialogAddress,
+    /// The bookmarks bar under the toolbar (src/win32/bookmark_bar.rs).
+    BookmarkBar,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
     // --- split view ---
@@ -211,6 +215,8 @@ impl View {
             Self::DialogNotes => NOTES_DIALOG_START_URL,
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
             Self::DialogRename => RENAME_DIALOG_START_URL,
+            Self::DialogAddress => ADDRESS_DIALOG_START_URL,
+            Self::BookmarkBar => BOOKMARK_BAR_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
@@ -1038,7 +1044,7 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
+        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
         View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
@@ -1051,6 +1057,8 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
+        View::DialogAddress => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Address, .. }),
+        View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. } | Command::Tip { .. } | Command::TipOff),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
         View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))

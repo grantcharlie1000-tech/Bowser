@@ -4,7 +4,9 @@ import {
   onInbound,
   send,
   sendDownloadToggle,
+  sendAddr,
   sendExtensionsButton,
+  rectWire,
   sendSuggestEnd,
   sendSuggestPick,
   sendSuggestPreview,
@@ -12,8 +14,13 @@ import {
   type CompletionMsg,
   type NavAction,
   type OpenTarget,
+  type SearchFieldMsg,
   type SuggestMsg,
 } from './protocol';
+// --- address bar, search and bookmarks ---
+import { DEFAULT_ADDR, clipboardText, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
+import { engineLabel, monogram } from './address-settings-logic';
+// --- end address bar, search and bookmarks ---
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
 import { applyMenuOpen, applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
 import { startTabs } from './tabs';
@@ -21,6 +28,7 @@ import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+import { startBookmarkBar } from './bookmark-bar'; // --- address bar, search and bookmarks ---
 // Types only: the settings and history pages are separate bundles (see loadPage).
 import type { startSettingsPage } from './settings-page';
 import type { startHistoryPage } from './history-page';
@@ -56,6 +64,11 @@ function startToolbar(root: HTMLElement): void {
   let list: SuggestMsg | null = null;
   let listSel = 0;
   // --- end omnibox suggest ---
+  // --- address bar, search and bookmarks ---
+  let flags: AddrFlags = DEFAULT_ADDR;
+  let sfield: SearchFieldMsg | null = null;
+  const searchInput = view.search.input;
+  // --- end address bar, search and bookmarks ---
 
   // At most one edit per animation frame, each with a fresh seq.
   const flush = (): void => {
@@ -69,6 +82,38 @@ function startToolbar(root: HTMLElement): void {
     latestText = text;
     send({ v: 1, t: 'edit', seq: latestSeq, text });
   };
+
+  // --- address bar, search and bookmarks ---
+  /** The list of the other field is stale the moment this one is edited: only the latest edit counts. */
+  const newEdit = (text: string): number => {
+    latestSeq = nextSeq;
+    nextSeq += 1;
+    latestText = text;
+    list = null;
+    return latestSeq;
+  };
+  const flushSearch = (): void => {
+    const text = searchInput.value;
+    if (!sfield || text.length > MAX_TEXT) return;
+    const seq = newEdit(text);
+    sendAddr({ a: 'sedit', text, id: sfield.engine, n: seq });
+  };
+  let searchFrame = 0;
+  const showSearch = (): void => {
+    const visible = sfield !== null && sfield.mode !== 'off';
+    view.search.root.hidden = !visible;
+    if (!sfield || !visible) return;
+    view.search.root.classList.toggle('is-button', sfield.mode === 'button');
+    const engine = sfield.engines[sfield.engine];
+    const label = engine ? engineLabel({ name: engine.n, nick: engine.k }, sfield.nick) : 'Search';
+    searchInput.placeholder = engine ? `Search ${engine.n}` : 'Search';
+    searchInput.setAttribute('aria-label', `Search with ${label}`);
+    view.search.engine.setAttribute('aria-label', `Search engine: ${label}`);
+    view.search.engine.setAttribute('data-tip', `Search engine: ${label}`);
+    view.search.tile.textContent = engine ? monogram(engine.n) : '?';
+    view.search.tile.hidden = !sfield.icon;
+  };
+  // --- end address bar, search and bookmarks ---
 
   const nav = (a: NavAction): void => {
     send({ v: 1, t: 'nav', a });
@@ -140,7 +185,23 @@ function startToolbar(root: HTMLElement): void {
       sendSuggestPreview(list.seq, listSel);
       return;
     }
-    if (ev.key === 'Enter' && list && listSel > 0 && !pending && list.seq === latestSeq) {
+    // --- address bar, search and bookmarks ---
+    if (ev.key === 'ArrowDown' && !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey && list === null && !pending) {
+      // The list is closed: Down opens the typed history on an empty field, or the drop-down for what
+      // is typed when typing alone does not open it.
+      if (input.value.trim() === '' && flags.typed) {
+        ev.preventDefault();
+        sendAddr({ a: 'typed', n: newEdit('') });
+        return;
+      }
+      if (input.value.trim() !== '' && !flags.typing) {
+        ev.preventDefault();
+        sendAddr({ a: 'suggest', text: input.value, n: newEdit(input.value) });
+        return;
+      }
+    }
+    // --- end address bar, search and bookmarks ---
+    if (ev.key === 'Enter' && list && listSel > 0 && !pending && list.seq === latestSeq && submitKind(ev) === 'plain') {
       ev.preventDefault();
       const seq = list.seq;
       list = null;
@@ -158,17 +219,103 @@ function startToolbar(root: HTMLElement): void {
     // --- end omnibox suggest ---
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      if (input.value.length <= MAX_TEXT) send({ v: 1, t: 'submit', text: input.value });
+      if (input.value.length > MAX_TEXT) return;
+      // Alt+Enter and Shift+Enter open a new tab, Ctrl+Enter expands a single word to a domain.
+      const kind = submitKind(ev);
+      if (kind === 'plain') send({ v: 1, t: 'submit', text: input.value });
+      else sendAddr({ a: 'submit', text: input.value, n: kind === 'newtab' ? 1 : 2 });
     } else if (ev.key === 'Escape') {
       ev.preventDefault();
       send({ v: 1, t: 'escape' });
     }
   });
 
+  // --- address bar, search and bookmarks ---
+  // A pasted `javascript:` prefix is removed, so a pasted script is plain text, not an address.
+  input.addEventListener('paste', (ev) => {
+    if (!flags.strip) return;
+    const pasted = ev.clipboardData?.getData('text') ?? '';
+    const cleaned = stripPastedJavascript(pasted);
+    if (cleaned === pasted) return;
+    ev.preventDefault();
+    input.setRangeText(cleaned, input.selectionStart ?? 0, input.selectionEnd ?? 0, 'end');
+    input.dispatchEvent(new InputEvent('input', { inputType: 'insertFromPaste', bubbles: true }));
+  });
+  // Copying or cutting the whole address puts its percent-encoded form on the clipboard.
+  const encodedClipboard = (ev: ClipboardEvent, cut: boolean): void => {
+    const text = clipboardText({ enabled: flags.encoded, value: input.value, selStart: input.selectionStart ?? 0, selEnd: input.selectionEnd ?? 0 });
+    if (text === null || !ev.clipboardData) return;
+    ev.clipboardData.setData('text/plain', text);
+    ev.preventDefault();
+    if (cut) {
+      input.setRangeText('', 0, input.value.length, 'end');
+      input.dispatchEvent(new InputEvent('input', { inputType: 'deleteByCut', bubbles: true }));
+    }
+  };
+  input.addEventListener('copy', (ev) => encodedClipboard(ev, false));
+  input.addEventListener('cut', (ev) => encodedClipboard(ev, true));
+  view.history.addEventListener('click', () => {
+    input.focus();
+    sendAddr({ a: 'typed', n: newEdit('') });
+  });
+  view.qr.addEventListener('click', () => { sendAddr({ a: 'qr' }); });
+
+  // The search field: its own text, its own list, and the engine button.
+  searchInput.addEventListener('input', (ev) => {
+    if (ev instanceof InputEvent && ev.isComposing) return;
+    if (searchFrame === 0) searchFrame = requestAnimationFrame(() => { searchFrame = 0; flushSearch(); });
+  });
+  searchInput.addEventListener('compositionend', () => { flushSearch(); });
+  searchInput.addEventListener('keydown', (ev) => {
+    if (ev.isComposing || ev.keyCode === 229) return;
+    if ((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey && list && list.seq === latestSeq) {
+      ev.preventDefault();
+      listSel = moveSuggestSelection(listSel, list.items.length, ev.key);
+      const row = list.items[listSel];
+      if (!row) return;
+      searchInput.value = suggestPreviewText(latestText, listSel, row.text);
+      searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+      sendSuggestPreview(list.seq, listSel);
+      return;
+    }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      if (!sfield || searchInput.value.trim() === '' || searchInput.value.length > MAX_TEXT) return;
+      // Alt+Enter and Shift+Enter search in a new tab.
+      sendAddr({ a: 'search', text: searchInput.value, id: sfield.engine, n: submitKind(ev) === 'newtab' ? 1 : 0 });
+      list = null;
+      if (!sfield.keep) searchInput.value = '';
+      if (sfield.mode === 'button') view.search.root.classList.remove('is-open');
+      return;
+    }
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      if (list) { list = null; sendSuggestEnd(); return; }
+      if (sfield?.mode === 'button') view.search.root.classList.remove('is-open');
+      send({ v: 1, t: 'escape' });
+    }
+  });
+  searchInput.addEventListener('focus', () => { send({ v: 1, t: 'focus', on: true }); });
+  searchInput.addEventListener('blur', () => {
+    list = null;
+    send({ v: 1, t: 'focus', on: false });
+    if (sfield?.mode === 'button' && searchInput.value === '') view.search.root.classList.remove('is-open');
+  });
+  view.search.engine.addEventListener('click', () => {
+    if (sfield?.mode === 'button' && !view.search.root.classList.contains('is-open')) {
+      view.search.root.classList.add('is-open');
+      searchInput.focus();
+      return;
+    }
+    const text = rectWire(view.search.engine.getBoundingClientRect());
+    if (text !== null) sendAddr({ a: 'engines', text });
+  });
+  // --- end address bar, search and bookmarks ---
+
   // Unfocused, a URL shows host-emphasised (view.display); focused, the real input text shows.
   // Updated on setText and blur only, never while typing.
   const showDisplay = (): void => {
-    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value));
+    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value, flags));
   };
 
   // A click on the address selects all of it while it is still the untouched address, as in every
@@ -184,7 +331,7 @@ function startToolbar(root: HTMLElement): void {
   });
   input.addEventListener('pointerdown', () => {
     pointerIsDown = true;
-    selectOnUp = !edited || document.activeElement !== input || !document.hasFocus();
+    selectOnUp = flags.select && (!edited || document.activeElement !== input || !document.hasFocus()); // --- address bar options
   });
   input.addEventListener('pointerup', () => {
     pointerIsDown = false;
@@ -195,8 +342,17 @@ function startToolbar(root: HTMLElement): void {
   input.addEventListener('focus', () => {
     view.pill.classList.remove('is-display');
     // A press that is still down is what moved the focus here: select now as well as on release.
-    if (pointerIsDown && input.selectionStart === input.selectionEnd) input.select();
+    if (flags.select && pointerIsDown && input.selectionStart === input.selectionEnd) input.select();
     send({ v: 1, t: 'focus', on: true });
+    // --- address bar, search and bookmarks ---
+    // An empty field (or one whose whole text is selected) lists what was typed before.
+    queueMicrotask(() => {
+      const allSelected = input.value !== '' && input.selectionStart === 0 && input.selectionEnd === input.value.length;
+      if (document.activeElement === input && list === null && showsTypedHistoryOnFocus({ enabled: flags.typed, value: input.value, allSelected })) {
+        sendAddr({ a: 'typed', n: newEdit('') });
+      }
+    });
+    // --- end address bar, search and bookmarks ---
   });
   input.addEventListener('blur', () => {
     edited = false;
@@ -232,13 +388,13 @@ function startToolbar(root: HTMLElement): void {
         list = null; // --- omnibox suggest ---
         input.value = msg.text;
         edited = false;
-        if (msg.select) input.select();
+        if (msg.select && flags.select) input.select();
         showDisplay();
         syncSiteIcon(view);
         break;
       case 'focusOmnibox':
         input.focus();
-        if (msg.select) input.select();
+        if (msg.select && flags.select) input.select();
         break;
       case 'completion':
         acceptCompletion(msg);
@@ -262,6 +418,21 @@ function startToolbar(root: HTMLElement): void {
       case 'dlbtn':
         view.downloads.apply(msg);
         break;
+      // --- address bar, search and bookmarks ---
+      case 'addr': {
+        const { t: _t, ...next } = msg;
+        flags = next;
+        view.pill.dataset.hidden = String(!flags.show);
+        view.history.hidden = !flags.hbtn;
+        view.qr.hidden = !flags.qr;
+        showDisplay();
+        break;
+      }
+      case 'sfield':
+        sfield = msg;
+        showSearch();
+        break;
+      // --- end address bar, search and bookmarks ---
       case 'extbtn':
         view.extensions.apply(msg);
         break;
@@ -328,6 +499,7 @@ function start(): void {
   }
   else if (view === 'panel') startPanel(root);
   else if (view === 'popup') startPopup(root);
+  else if (view === 'bar') startBookmarkBar(root); // --- address bar, search and bookmarks ---
   else if (view === 'dialog') startDialog(root);
   else if (view === 'hover') startHover(root); // --- hover layer ---
   else if (view === 'split') startSplit(root); // --- split view ---

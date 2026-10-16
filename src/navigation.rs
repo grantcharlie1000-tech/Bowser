@@ -48,7 +48,7 @@ impl SearchEngine {
         }
     }
 
-    fn image_template(self) -> &'static str {
+    pub fn image_template(self) -> &'static str {
         match self {
             Self::Optimised | Self::Google => "https://www.google.com/search?tbm=isch&q={query}",
             Self::DuckDuckGo => "https://duckduckgo.com/?q={query}&iax=images&ia=images",
@@ -120,6 +120,15 @@ impl SearchProvider {
             template,
             image_template,
         }
+    }
+
+    /// A provider with these templates (each `{query}` once, https only), or `None` when either is
+    /// not valid. Used by the address bar, whose engine list holds `%s` templates.
+    pub fn from_templates(template: &str, image_template: &str) -> Option<Self> {
+        (valid_template(template) && valid_template(image_template)).then(|| Self {
+            template: template.to_owned(),
+            image_template: image_template.to_owned(),
+        })
     }
 
     /// True when searches go to the built-in Optimised template.
@@ -196,7 +205,7 @@ pub fn resolve_input(
 }
 
 /// Image search is explicit: one recognized token must be followed by a space and non-empty text.
-fn parse_image_prefix(input: &str) -> (String, bool) {
+pub fn parse_image_prefix(input: &str) -> (String, bool) {
     for prefix in ["!img ", "images ", "!i ", "img "] {
         if input
             .get(..prefix.len())

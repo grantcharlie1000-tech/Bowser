@@ -1255,6 +1255,9 @@ struct EngineCore {
     prewarm_waiting: Option<TabId>,
     waiting_controllers: VecDeque<TabId>,
     pending: HashMap<TabId, Url>,
+    /// Form fields to POST to the `pending` address of a tab whose controller is still being made
+    /// (a search with an engine that posts its query).
+    pending_post: HashMap<TabId, String>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     closed: bool,
@@ -1633,6 +1636,7 @@ impl WebView2Engine {
                         (None, MemoryUsageTarget::Low, false)
                     }
                 };
+                let pending_post = core.borrow_mut().pending_post.remove(&tab_id);
                 if !still_open {
                     let mut tab = tab;
                     let _ = EngineAdapter::close(&mut tab);
@@ -1677,12 +1681,16 @@ impl WebView2Engine {
                         .get(&tab_id)
                         .map(|tab| (tab.webview.clone(), tab.allowed_file.clone()));
                     if let Some((webview, allowed_file)) = handles
-                        && let Err(error) = navigate_with_timing(
-                            &completion_events,
-                            webview.as_ref(),
-                            allowed_file.as_ref(),
-                            &url,
-                        )
+                        && let Err(error) = match pending_post.as_deref() {
+                            // A search that posts its query: the same request the page would send.
+                            Some(body) => post_webview(webview.as_ref(), Some(&controller_environment), &url, body),
+                            None => navigate_with_timing(
+                                &completion_events,
+                                webview.as_ref(),
+                                allowed_file.as_ref(),
+                                &url,
+                            ),
+                        }
                         && let Some(failed) = completion_events.failed.as_ref()
                     {
                         failed(error);
@@ -2564,6 +2572,7 @@ impl WebView2Engine {
                         prewarm_waiting: None,
                         waiting_controllers: VecDeque::new(),
                         pending: HashMap::new(),
+                        pending_post: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
                         closed: false,
@@ -2953,6 +2962,22 @@ impl EngineAdapter for WebView2Engine {
             exit_native_picture_in_picture(&webview);
         }
         self.navigate_tab_internal(tab, url)
+    }
+    fn navigate_tab_post(&mut self, tab: TabId, url: &Url, body: &str) -> Result<()> {
+        let live = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab).map(|tab| (tab.webview.clone(), tab.environment.clone()))
+        };
+        if let Some((webview, environment)) = live {
+            return post_webview(webview.as_ref(), environment.as_ref(), url, body);
+        }
+        // No controller yet: it is made as for any navigation, and the POST is sent when it is ready.
+        self.navigate_tab_internal(tab, url)?;
+        let mut state = self.core.borrow_mut();
+        if state.pending.contains_key(&tab) {
+            state.pending_post.insert(tab, body.to_owned());
+        }
+        Ok(())
     }
     fn execute_script_for_origin(
         &mut self,
@@ -3562,6 +3587,31 @@ fn navigate_webview(
             .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
             .Navigate(*url.as_ref().as_pcwstr())
     }
+}
+
+/// Navigates a webview with a POST of form fields (`body`, already percent-encoded) to an https
+/// address: a search with an engine that takes its query that way.
+fn post_webview(
+    webview: Option<&ICoreWebView2>,
+    environment: Option<&ICoreWebView2Environment>,
+    url: &Url,
+    body: &str,
+) -> Result<()> {
+    if url.scheme() != "https" {
+        return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+    }
+    let webview: ICoreWebView2_2 = webview.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let environment: ICoreWebView2Environment2 =
+        environment.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let stream = unsafe { windows::Win32::UI::Shell::SHCreateMemStream(Some(body.as_bytes())) }
+        .ok_or_else(|| Error::from(windows::Win32::Foundation::E_OUTOFMEMORY))?;
+    let uri = HSTRING::from(url.as_str());
+    let headers = HSTRING::from("Content-Type: application/x-www-form-urlencoded
+");
+    let request = unsafe {
+        environment.CreateWebResourceRequest(PCWSTR(uri.as_ptr()), w!("POST"), &stream, PCWSTR(headers.as_ptr()))?
+    };
+    unsafe { webview.NavigateWithWebResourceRequest(&request) }
 }
 
 fn navigate_with_timing(
@@ -4366,6 +4416,88 @@ unsafe fn configure_controller(
             )?;
         }
         // --- end split view ---
+
+        // --- address bar, search and bookmarks ---
+        // "Search <engine> for <selection>" and "Search for this image with <engine>" in the page's
+        // context menu. The labels and the action come from the window (it knows the engines).
+        if let (Some(labels), Some(picked), Ok(webview11), Ok(environment9)) = (
+            events.context_search.clone(),
+            events.context_search_pick.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut has_selection = BOOL::default();
+                    target.HasSelection(&mut has_selection)?;
+                    let mut selection = None;
+                    if has_selection.as_bool() {
+                        let mut text = PWSTR::null();
+                        target.SelectionText(&mut text)?;
+                        let text = CoTaskMemPWSTR::from(text).to_string();
+                        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let text: String = text.chars().take(256).collect();
+                        if !text.is_empty() {
+                            selection = Some(text);
+                        }
+                    }
+                    let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+                    target.Kind(&mut kind)?;
+                    let mut image = None;
+                    if kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE {
+                        let mut source = PWSTR::null();
+                        target.SourceUri(&mut source)?;
+                        image = Url::parse(&CoTaskMemPWSTR::from(source).to_string()).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
+                    }
+                    let info = super::ContextSearchInfo { selection, image };
+                    if info.selection.is_none() && info.image.is_none() {
+                        return Ok(());
+                    }
+                    let names = labels(tab_id, &info);
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let position = |wanted: &[&str], fallback: u32| {
+                        let mut at = fallback;
+                        for index in 0..count {
+                            let mut name = PWSTR::null();
+                            if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok()
+                                && wanted.contains(&CoTaskMemPWSTR::from(name).to_string().as_str())
+                            {
+                                at = index + 1;
+                            }
+                        }
+                        at
+                    };
+                    let add = |label: &str, pick: super::ContextSearchPick, after: &[&str]| -> windows::core::Result<()> {
+                        let wide = HSTRING::from(label);
+                        let item = environment9.CreateContextMenuItem(PCWSTR(wide.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                        let picked = picked.clone();
+                        let mut item_token = 0i64;
+                        item.add_CustomItemSelected(
+                            &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                                picked(tab_id, pick.clone());
+                                Ok(())
+                            })),
+                            &mut item_token,
+                        )?;
+                        let at = position(after, 0);
+                        items.InsertValueAtIndex(at, &item)
+                    };
+                    if let (Some(label), Some(text)) = (names.selection, info.selection) {
+                        add(&label, super::ContextSearchPick::Selection(text), &["copy"])?;
+                    }
+                    if let (Some(label), Some(url)) = (names.image, info.image) {
+                        add(&label, super::ContextSearchPick::Image(url), &["copyImage", "saveImageAs", "copyImageLocation"])?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end address bar, search and bookmarks ---
 
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();
@@ -6425,6 +6557,7 @@ mod tests {
             prewarm_waiting: None,
             waiting_controllers: VecDeque::new(),
             pending: HashMap::new(),
+            pending_post: HashMap::new(),
             hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
             closed: false,

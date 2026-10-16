@@ -444,7 +444,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
         }
         PanelId::Bookmarks => {
             let store = profile_dir.as_deref().and_then(|dir| BookmarkStore::load(dir).ok()).unwrap_or_default();
-            chrome_host::panels::bookmarks::snapshot(&store, &query)
+            chrome_host::panels::bookmarks::snapshot(&store, &query, crate::app::App::settings(&app).address.panel_single_click)
         }
         PanelId::Customize => {
             let Some(dir) = profile_dir.as_deref() else { return; };
@@ -582,11 +582,18 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                     if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_query = query; }
                 }
                 chrome_host::panels::bookmarks::Action::Open { url, new_tab } => {
+                    // "Open bookmarks in a new tab" (bm_open_new_tab).
+                    let new_tab = new_tab || crate::app::App::settings(&app).address.bookmark_new_tab;
                     let _ = execute_history_action(&app, owner, Action::Open { url, new_tab });
                     if !new_tab {
                         dismiss_runtime(runtime, Dismissal::FocusPage);
                         return;
                     }
+                }
+                chrome_host::panels::bookmarks::Action::OpenAll(urls) => {
+                    // Asks first from "confirm when opening N or more bookmarks" (bm_confirm_open).
+                    holding(runtime, || super::address_bar::open_many(owner, &app, &urls));
+                    return;
                 }
                 chrome_host::panels::bookmarks::Action::Delete(id) => { store.delete(id); }
                 chrome_host::panels::bookmarks::Action::Rename { id, title } => { let _ = store.rename(id, &title); }

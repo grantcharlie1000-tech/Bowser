@@ -164,7 +164,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   assert.deepEqual(restart, ['grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'frameless', 'pinNewTabGroups', 'tabPreviewImages', 'tabPreviewMemory']);
+  assert.deepEqual(notYet, ['frameless', 'tabPreviewImages', 'tabPreviewMemory']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -190,7 +190,7 @@ test('search matches every word across label, description, keywords and section;
   const sleep = logic.matchRows('sleep');
   for (const id of ['sleep', 'sleepAfter', 'efficiency']) assert.ok(sleep.has(id), id);
   assert.ok(!sleep.has('engine'));
-  assert.deepEqual([...logic.matchRows('duckduckgo')], ['engine']);
+  assert.deepEqual([...logic.matchRows('duckduckgo')], ['searchDefault']);
   assert.ok(logic.matchRows('TAB layout').has('layout'));
   assert.ok(logic.matchRows('privacy cookies').has('dashboard'), 'section title plus keyword');
   assert.ok(logic.matchRows('netflix').has('media'));
@@ -368,8 +368,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13);
-  assert.equal(app.querySelectorAll('section').length, 13);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 15);
+  assert.equal(app.querySelectorAll('section').length, 15);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row);
@@ -466,15 +466,13 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
-  assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('grouping').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
   assert.equal(flagOf('centredAddressBar'), null);
-  // The Bookmarks bar holds only such rows: one note under the heading, none on the rows. Shortcuts now act, so it has no note.
-  for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
-  const notes = app.querySelectorAll('.sp-group-note');
-  assert.equal(notes.length, 1);
-  assert.ok(notes.every((note) => note.textContent === logic.NOT_YET_GROUP_NOTE));
+  // The bookmarks bar rows (T2) and the shortcut rows (T4) act now: no note on any of them.
+  for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'pinNewTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
+  // With both of those groups acting, no group is left made only of such rows, so no group note shows.
+  assert.equal(app.querySelectorAll('.sp-group-note').length, 0);
   const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
   assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless sp-f-frameless', 'the note is read with the control');
   assert.ok(app.querySelectorAll('.sp-flag').every((flag) => !/Applies after restart/.test(flag.textContent) || !logic.ROWS.find((r) => `sp-f-${r.id}` === flag.id)?.notYet));
@@ -505,7 +503,7 @@ test('search hides what does not match and settingsgo moves without echoing', ()
   input.value = 'img';
   input.dispatch('input');
   const shown = app.querySelectorAll('.sp-row').filter((row) => !row.hidden).map((row) => row.dataset.row);
-  assert.deepEqual(shown, ['engine']);
+  assert.deepEqual(shown, ['searchDefault']);
   assert.ok(app.querySelector('mark'), 'the hit is marked');
   assert.equal(app.querySelector('.sp-sr').textContent, '1 setting found');
   input.value = '';
@@ -652,7 +650,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(5, 9), ['search', 'keyboard', 'commands', 'downloads']);
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(6, 11), ['search', 'bookmarks', 'keyboard', 'commands', 'downloads']);
   assert.equal(keyboard().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(quick().querySelector('.sp-chains').dataset.row, 'chains');
   deliver(commandsSnap());
@@ -1083,4 +1081,145 @@ test('the Start page section follows the snapshot: values, the startup mode and 
   for (const id of ['startAddButton', 'startWidgets']) assert.equal(row(id).querySelector('[role="switch"]').disabled, true, id);
   assert.equal(row('startHomepage').querySelector('input').disabled, true);
   deliver(fixture.snap);
+});
+
+// ---- Address bar, search engine and bookmark sections (src/address-section.ts) ----
+
+const addressFixture = JSON.parse(readFileSync(join(here, 'fixtures', 'address-messages.json'), 'utf8'));
+
+test('Address bar section: every switch sends one addrset command, never part of save', () => {
+  deliver(addressFixture.snap);
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  const full = rowOf('addrFull').querySelector('[role="switch"]');
+  assert.equal(full.getAttribute('aria-checked'), 'false');
+  assert.equal(rowOf('addrAutocomplete').querySelector('[role="switch"]').getAttribute('aria-checked'), 'true');
+  sent.length = 0;
+  full.click();
+  rowOf('ddTyping').querySelector('[role="switch"]').click();
+  rowOf('secHttps').querySelector('[role="switch"]').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'addrset', text: 'address_show_full=true' },
+    { v: 1, t: 'set', a: 'addrset', text: 'dd_show_while_typing=false' },
+    { v: 1, t: 'set', a: 'addrset', text: 'sec_always_https=true' },
+  ]);
+  assert.ok(!sent.some((m) => m.a === 'save'));
+  // Numbers and text are checked before they are sent.
+  const max = rowOf('ddMax').querySelector('input');
+  assert.equal(max.value, '8');
+  sent.length = 0;
+  max.value = '12';
+  max.dispatch('change');
+  max.value = '99';
+  max.dispatch('change');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'addrset', text: 'dd_max_results=12' }], 'out of range is refused on the page');
+  assert.equal(max.value, '12', 'and the field goes back to the last good value');
+  const suffix = rowOf('addrExpansion').querySelector('input');
+  sent.length = 0;
+  suffix.value = '.co.uk';
+  suffix.dispatch('change');
+  suffix.value = 'bad suffix';
+  suffix.dispatch('change');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'addrset', text: 'domain_expansion_suffix=co.uk' }]);
+});
+
+test('The suggestion sources list in order, turn off and move with one command each', () => {
+  deliver(addressFixture.snap);
+  const items = app.querySelectorAll('.ad-source');
+  assert.deepEqual(items.map((i) => i.dataset.source), ['bookmarks', 'history', 'direct', 'nicknames', 'search', 'search-history', 'calculator']);
+  assert.deepEqual(items.map((i) => i.classList.contains('is-off')), [false, false, true, true, true, true, true]);
+  sent.length = 0;
+  items[1].querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'dd_sources=bookmarks' });
+  items[2].querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'dd_sources=bookmarks,history,direct' });
+  items[1].querySelector('[aria-label="Move History and open tabs up"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'dd_sources=history,bookmarks' });
+  assert.equal(items[0].querySelector('[aria-label="Move Bookmarks up"]').disabled, true, 'the first cannot go up');
+  assert.equal(items[2].querySelector('[aria-label="Move Direct match up"]').disabled, true, 'a source that is off has nothing to move');
+});
+
+test('The engine list shows every engine with its badges, and each action is one engine command', () => {
+  deliver(addressFixture.snap);
+  const items = app.querySelectorAll('.ad-engine');
+  assert.equal(items.length, 7);
+  assert.equal(items[0].dataset.engine, 'optimised');
+  assert.deepEqual(items[0].querySelectorAll('.sp-pill').map((b) => b.textContent), ['Default']);
+  assert.deepEqual(app.querySelector('.ad-engine[data-engine="duckduckgo"]').querySelectorAll('.sp-pill').map((b) => b.textContent), ['Private']);
+  assert.deepEqual(app.querySelector('.ad-engine[data-engine="google"]').querySelectorAll('.sp-pill').map((b) => b.textContent), ['Images']);
+  assert.equal(items[0].querySelector('.sp-label').textContent, 'Optimised (opt)');
+  assert.equal(items[0].querySelector('[aria-label="Remove Optimised"]').disabled, true, 'the default engine stays');
+  assert.equal(items[0].querySelector('[aria-label="Move Optimised up"]').disabled, true);
+  sent.length = 0;
+  app.querySelector('.ad-engine[data-engine="bing"]').querySelector('[aria-label="Remove Bing"]').click();
+  items[1].querySelector('[aria-label="Move Google down"]').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'engine', text: 'remove\tbing' },
+    { v: 1, t: 'set', a: 'engine', text: 'move\tgoogle\t2' },
+  ]);
+  const restore = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Restore default engines');
+  sent.length = 0;
+  restore.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'engine', text: 'restore' }]);
+});
+
+test('Adding an engine checks the form first, then sends one add command; editing prefills it', () => {
+  deliver(addressFixture.snap);
+  const form = app.querySelector('.ad-form');
+  assert.equal(form.hidden, true);
+  const add = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Add a search engine');
+  add.click();
+  assert.equal(form.hidden, false);
+  const fields = form.querySelectorAll('input');
+  assert.equal(fields.length, 7);
+  const [name, nick, url] = fields;
+  sent.length = 0;
+  name.value = 'Mine';
+  nick.value = 'g'; // Google's
+  url.value = 'https://mine.example/?q=%s';
+  form.dispatch('submit');
+  assert.deepEqual(sent, [], 'a taken nickname is refused on the page');
+  assert.match(form.querySelector('.sp-field-error').textContent, /already used by Google/);
+  nick.value = 'mn';
+  form.dispatch('submit');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'engine', text: 'add\tMine\tmn\thttps://mine.example/?q=%s\t\t\t\t' }]);
+  assert.equal(form.hidden, true, 'the form closes once the change is sent');
+  app.querySelector('.ad-engine[data-engine="bing"]').querySelector('[aria-label="Edit Bing"]').click();
+  assert.equal(form.hidden, false);
+  assert.equal(form.querySelector('.ad-form-title').textContent, 'Edit Bing');
+  assert.equal(form.querySelectorAll('input')[2].value, 'https://www.bing.com/search?q=%s');
+  assert.match(form.querySelectorAll('input')[6].placeholder, /img=%s/);
+});
+
+test('Search field, scoped nicknames and bookmark rows send their own keys; bar rows join the bookmarks bar card', () => {
+  deliver(addressFixture.snap);
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  sent.length = 0;
+  rowOf('searchField').querySelectorAll('[role="radio"]')[2].click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'search_field=button' });
+  rowOf('searchNewTab').querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'search_new_tab=true' });
+  const scope = rowOf('nickTabs');
+  assert.equal(scope.querySelector('[role="switch"]').getAttribute('aria-checked'), 'true');
+  scope.querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'nick_tabs=' }, 'a scope turns off with an empty word');
+  const word = scope.querySelector('input');
+  word.value = '@t';
+  word.dispatch('change');
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'nick_tabs=t' });
+  const confirmCount = rowOf('bmConfirm').querySelector('input');
+  confirmCount.value = '1';
+  confirmCount.dispatch('change');
+  assert.deepEqual(sent, [], 'one is not a count that asks');
+  confirmCount.value = '5';
+  confirmCount.dispatch('change');
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_confirm_open=5' });
+  rowOf('bmBarDisplay').querySelectorAll('[role="radio"]')[3].click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_bar_display=bookmark-icon' });
+  rowOf('bmBarPosition').querySelectorAll('[role="radio"]')[1].click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_bar_position=bottom' });
+  assert.equal(rowOf('bmBarDisplay').parent.parent, rowOf('bookmarksBar').parent.parent, 'one card with the page\'s bookmarks bar rows');
+  assert.equal(rowOf('bmBarFolder').querySelector('.bw-select-button') !== null, true);
+  // A bad snapshot is dropped and leaves the page as it was.
+  deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
+  assert.equal(app.querySelectorAll('.ad-engine').length, 7);
 });

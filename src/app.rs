@@ -19,6 +19,9 @@ use crate::{
 thread_local! {
     static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The form fields of a search with an engine that POSTs its query, for the one navigation to
+    /// that address that follows (see `App::open_destination`).
+    static POST_BODY: std::cell::RefCell<Option<(url::Url, String)>> = const { std::cell::RefCell::new(None) };
 }
 
 use windows::{
@@ -4720,6 +4723,9 @@ impl App {
         }
         crate::profile::set_active(profile.clone());
         let settings = crate::settings::Settings::load(&profile.settings_file());
+        // Address bar options read wherever an address is shown or completed.
+        crate::omnibox::set_show_full_address(settings.address.show_full);
+        crate::omnibox::set_autocomplete(settings.address.autocomplete);
         let provider =
             SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
@@ -5231,6 +5237,11 @@ impl App {
     }
 
     pub fn submit(app: &AppRef, input: &str) {
+        Self::submit_with(app, input, crate::address_input::Options::default());
+    }
+
+    /// [`App::submit`] with how the text was submitted (new tab, domain expansion, the search field).
+    pub fn submit_with(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
@@ -5244,25 +5255,111 @@ impl App {
             }
             return;
         }
-        let target = {
+        // Address bar, search and bookmark options (src/address_input.rs): scoped nicknames, engine
+        // nicknames, the private-window engine, HTTPS upgrade, domain expansion, new-tab searches.
+        let address = {
             let mut state = app.borrow_mut();
             state.refresh_search_provider();
-            match resolve_input(input, &state.provider) {
-                Ok(target) => target,
-                Err(error) => {
-                    drop(state);
-                    win32::show_error_message(&format!(
-                        "This address or search could not be used: {error}"
-                    ));
-                    return;
+            state.settings.address.clone()
+        };
+        let private = Self::active_tab_private(app);
+        let engines = crate::address_runtime::engines();
+        let options = crate::address_input::Options { private, ..options };
+        match crate::address_input::resolve(input, &address, &engines, options) {
+            crate::address_input::Outcome::Empty => {}
+            crate::address_input::Outcome::Refused(message) => {
+                win32::show_error_message(&format!("This address or search could not be used: {message}"));
+            }
+            crate::address_input::Outcome::Scoped { scope, rest } => {
+                let hwnd = app.borrow().hwnd;
+                win32::address_scoped_submit(hwnd, app, scope, &rest);
+            }
+            crate::address_input::Outcome::Open { destination, new_tab } => {
+                Self::open_destination(app, input, destination, new_tab, private);
+            }
+        }
+    }
+
+    /// The search items a page's context menu gets for a selection or an image: the default engine
+    /// (the private-window one in a private tab) searching for the selection, the image engine
+    /// searching for the image. Nothing is offered when no engine can.
+    fn context_search_labels(app: &AppRef, tab: TabId, info: &engine::ContextSearchInfo) -> engine::ContextSearchLabels {
+        let Ok(state) = app.try_borrow() else { return Default::default() };
+        let private = state.tabs.iter().any(|candidate| candidate.id == tab && candidate.private);
+        let show_nickname = state.settings.address.show_nickname;
+        drop(state);
+        let engines = crate::address_runtime::engines();
+        let selection = info.selection.as_ref().map(|text| {
+            let engine = engines.effective(private);
+            let shown: String = if text.chars().count() > 28 { format!("{}…", text.chars().take(28).collect::<String>()) } else { text.clone() };
+            let _ = show_nickname;
+            format!("Search {} for “{shown}”", engine.name)
+        });
+        let image = info.image.as_ref().and_then(|url| {
+            let engine = engines.image_engine()?;
+            engine.image_request(url.as_str())?;
+            Some(format!("Search for this image with {}", engine.name))
+        });
+        engine::ContextSearchLabels { selection, image }
+    }
+
+    /// A search item of a page's context menu was picked.
+    fn context_search_run(app: &AppRef, pick: engine::ContextSearchPick) {
+        use crate::address_input::Destination;
+        let (private, background) = {
+            let state = app.borrow();
+            (state.tabs.iter().any(|tab| tab.id == state.tab_model.active() && tab.private), state.settings.address.selection_background)
+        };
+        let engines = crate::address_runtime::engines();
+        match pick {
+            engine::ContextSearchPick::Selection(text) => {
+                let before = app.borrow().tab_model.active();
+                let options = crate::address_input::Options { new_tab: true, from_search_field: true, ..Default::default() };
+                Self::submit_with(app, &text, options);
+                // "Search for selected text in a background tab": the page you were reading stays shown.
+                if background {
+                    let _ = Self::select_tab(app, before);
                 }
             }
-        };
-        let url = match target {
-            NavigationTarget::Empty => return,
-            NavigationTarget::Web(url) | NavigationTarget::Search { url, .. } => url,
-        };
-        Self::submit_url(app, url, None);
+            engine::ContextSearchPick::Image(url) => {
+                let Some(engine) = engines.image_engine() else { return };
+                let Some(request) = engine.image_request(url.as_str()) else { return };
+                let destination = Destination::Search { request, query: url.to_string(), engine: engine.id.clone() };
+                Self::open_destination(app, "", destination, true, private);
+            }
+        }
+    }
+
+    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers the typed text.
+    fn open_destination(app: &AppRef, typed: &str, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
+        use crate::address_input::Destination;
+        crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        if new_tab {
+            if private {
+                Self::new_private_tab(app);
+            } else {
+                Self::new_tab(app);
+            }
+        }
+        match destination {
+            Destination::Navigate { url, upgraded_from } => {
+                let tab = app.borrow().tab_model.active();
+                match upgraded_from {
+                    Some(original) => crate::address_runtime::note_upgrade(tab, original),
+                    None => crate::address_runtime::forget_upgrade(tab),
+                }
+                Self::submit_url(app, url, None)
+            }
+            Destination::Search { request, .. } => {
+                match request.post {
+                    Some(body) => POST_BODY.with(|slot| *slot.borrow_mut() = Some((request.url.clone(), body))),
+                    None => POST_BODY.with(|slot| *slot.borrow_mut() = None),
+                }
+                Self::submit_url(app, request.url, None);
+                // Whatever did not reach the engine this time must not ride on a later navigation.
+                POST_BODY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
     }
 
     pub fn submit_benchmark_url(app: &AppRef, url: url::Url) {
@@ -5821,6 +5918,22 @@ impl App {
                 }))
             },
             // --- end split view ---
+            // --- address bar, search and bookmarks ---
+            context_search: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, info: &engine::ContextSearchInfo| {
+                    search_app.upgrade().map(|app| App::context_search_labels(&app, tab, info)).unwrap_or_default()
+                }))
+            },
+            context_search_pick: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |_tab, pick| {
+                    if let Some(app) = search_app.upgrade() {
+                        App::context_search_run(&app, pick);
+                    }
+                }))
+            },
+            // --- end address bar, search and bookmarks ---
             render_process_failed: {
                 let crash_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -5855,6 +5968,19 @@ impl App {
                 let failed_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, certificate| {
                     if let Some(app) = failed_app.upgrade() {
+                        // "Always use HTTPS": a site that cannot be reached securely is tried once over
+                        // plain http (never after a certificate problem, which must not be bypassed).
+                        if !certificate {
+                            if let Some(original) = crate::address_runtime::take_upgrade(tab_id) {
+                                // Only when the page that failed is the one that was upgraded.
+                                let same_site = app.borrow().tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| tab.url.as_ref())
+                                    .is_some_and(|shown| shown.scheme() == "https" && shown.host_str() == original.host_str());
+                                if same_site {
+                                    Self::navigate_tab(&app, tab_id, &original);
+                                    return;
+                                }
+                            }
+                        }
                         let found = {
                             let mut state = app.borrow_mut();
                             match state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -6129,7 +6255,18 @@ impl App {
         let Some(mut engine) = engine.take() else {
             return;
         };
-        let result = engine.navigate_tab(tab_id, url);
+        // A search with an engine that posts its query goes out as that POST, once.
+        let post = POST_BODY.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.as_ref() {
+                Some((target, _)) if target == url => slot.take().map(|(_, body)| body),
+                _ => None,
+            }
+        });
+        let result = match post {
+            Some(body) => engine.navigate_tab_post(tab_id, url, &body),
+            None => engine.navigate_tab(tab_id, url),
+        };
         let mut state = app.borrow_mut();
         if state.tab_model.active() == tab_id {
             state.page_loaded = false;
@@ -6521,6 +6658,12 @@ impl App {
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
             state.settings.start = settings.start.clone(); // --- start page ---
+            // Address bar, search and bookmark options (src/address_settings.rs).
+            state.settings.address = settings.address.clone();
+            crate::omnibox::set_show_full_address(settings.address.show_full);
+            crate::omnibox::set_autocomplete(settings.address.autocomplete);
+            state.settings.bookmarks_bar = settings.bookmarks_bar;
+            state.settings.bookmarks_bar_tab_groups = settings.bookmarks_bar_tab_groups;
             (state.hwnd, state.edit)
         };
         let bounds = app.borrow_mut().latest_viewport_bounds();

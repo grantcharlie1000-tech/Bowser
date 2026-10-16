@@ -167,7 +167,7 @@ test('toolbar pill: data-private and the private chip follow state.private', () 
   assert.equal(view.privateChip.find('tb-private-label').textContent, 'Private');
   // The chips and the reader button sit between the address field and the split button, never next to the site button.
   const at = (name) => view.pill.children.findIndex((c) => c.classList.contains(name));
-  assert.deepEqual(['tb-site', 'omni-field', 'tb-private', 'tb-zoom', 'tb-reader', 'tb-translate', 'tb-split'].map(at), [0, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(['tb-site', 'omni-field', 'tb-hist', 'tb-qr', 'omni-search', 'tb-private', 'tb-zoom', 'tb-reader', 'tb-translate', 'tb-split'].map(at), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
   ui.applyState(view, { ...STATE, private: true });
   assert.equal(view.pill.dataset.private, 'true');

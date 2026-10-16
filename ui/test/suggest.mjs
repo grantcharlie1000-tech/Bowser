@@ -71,9 +71,9 @@ test('malformed suggest messages are rejected', () => {
     { ...fixture.suggest, v: 2 },
     { ...fixture.suggest, w: 4001 },
     { ...fixture.suggest, seq: -1 },
-    { ...fixture.suggest, sel: 8 },
+    { ...fixture.suggest, sel: 20 },
     { ...fixture.suggest, sel: 5 },
-    { ...fixture.suggest, items: Array.from({ length: 9 }, () => row) },
+    { ...fixture.suggest, items: Array.from({ length: 21 }, () => row) },
     { ...fixture.suggest, items: [{ ...row, k: 'weird' }] },
     { ...fixture.suggest, items: [{ ...row, extra: 1 }] },
     { ...fixture.suggest, items: [{ k: 'url', text: 'a', title: 'a' }] },
@@ -83,7 +83,7 @@ test('malformed suggest messages are rejected', () => {
     { ...fixture.suggest, q: 1 },
     { ...fixture.suggest, q: 'q'.repeat(513) },
     (({ q, ...rest }) => rest)(fixture.suggest),
-    { ...fixture.sel, sel: 8 },
+    { ...fixture.sel, sel: 20 },
     { ...fixture.sel, extra: true },
   ]) {
     assert.equal(parseInbound(bad), null, JSON.stringify(bad).slice(0, 120));
@@ -140,7 +140,7 @@ test('outbound suggest commands are validated', () => {
     { v: 1, t: 'suggestPreview', seq: 0, i: 0 },
     { v: 1, t: 'suggestEnd' },
   ]);
-  for (const [seq, i] of [[1, 8], [1, -1], [1, 1.5], [-1, 0], [0x80000000, 0]]) {
+  for (const [seq, i] of [[1, 20], [1, -1], [1, 1.5], [-1, 0], [0x80000000, 0]]) {
     assert.equal(sendSuggestPick(seq, i), false);
     assert.equal(sendSuggestPreview(seq, i), false);
   }

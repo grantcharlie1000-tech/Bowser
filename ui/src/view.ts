@@ -5,6 +5,7 @@ import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
 import { buttonLabel, buttonTip, ringMode, ringOffset } from './downloads-logic';
 import { extButtonText } from './extensions-logic';
+import { splitHost, type AddrFlags } from './address-logic'; // --- address bar, search and bookmarks ---
 
 export interface View {
   readonly back: HTMLButtonElement;
@@ -30,6 +31,22 @@ export interface View {
   readonly downloads: DownloadButton;
   /** The extensions button, left of the download button's slot (docs/extensions.md). */
   readonly extensions: ExtensionsButton;
+  // --- address bar, search and bookmarks (docs/html-chrome-protocol.md `addr`, `sfield`) ---
+  /** Opens the typed-history list; shown only with "typed history button". */
+  readonly history: HTMLButtonElement;
+  /** Shows the QR code of the page; shown only with "QR code button". */
+  readonly qr: HTMLButtonElement;
+  readonly search: SearchBox;
+  // --- end address bar, search and bookmarks ---
+}
+
+/** The search field next to the address field. */
+export interface SearchBox {
+  readonly root: HTMLElement;
+  /** The engine button: its tile and chevron; opens the engine list. */
+  readonly engine: HTMLButtonElement;
+  readonly tile: HTMLElement;
+  readonly input: HTMLInputElement;
 }
 
 /** Accessible name and tooltip of the pill's private-tab chip. */
@@ -95,14 +112,14 @@ export interface UrlParts {
 }
 
 /** Null when `text` is not a plain http(s) URL (search text, other schemes, user-info, partial input). */
-export function splitUrl(text: string): UrlParts | null {
+export function splitUrl(text: string, keepHttps = false): UrlParts | null {
   if (text.length > MAX_TEXT || /\s/.test(text)) return null;
   const m = /^(https?):\/\/([^/?#@]+)(.*)$/i.exec(text);
   if (!m) return null;
   const scheme = (m[1] ?? '').toLowerCase();
   const rest = m[3] ?? '';
   return {
-    scheme: scheme === 'https' ? '' : `${scheme}://`,
+    scheme: scheme === 'https' && !keepHttps ? '' : `${scheme}://`,
     host: m[2] ?? '',
     rest: rest === '/' ? '' : rest,
   };
@@ -141,6 +158,30 @@ export function buildView(root: HTMLElement): View {
   const field = el('div', 'omni-field');
   field.append(input, display);
 
+  // --- address bar, search and bookmarks ---
+  const history = iconButton('Typed history', 'chevron-down', 'tb-hist bw-focus-inset is-round', 'Typed history');
+  history.hidden = true;
+  history.setAttribute('aria-haspopup', 'listbox');
+  const qr = iconButton('QR code for this page', 'qr-code', 'tb-qr bw-focus-inset is-round', 'QR code for this page');
+  qr.hidden = true;
+  const searchEngine = el('button', 'omni-search-engine');
+  searchEngine.type = 'button';
+  searchEngine.setAttribute('aria-haspopup', 'menu');
+  const searchTile = el('span', 'tb-tile');
+  searchTile.setAttribute('aria-hidden', 'true');
+  searchEngine.append(searchTile, icon('chevron-down', { size: 12, fine: true }));
+  const searchInput = el('input', 'omni-search-input');
+  searchInput.type = 'text';
+  searchInput.spellcheck = false;
+  searchInput.autocomplete = 'off';
+  searchInput.dir = 'auto';
+  searchInput.maxLength = MAX_TEXT;
+  const searchRoot = el('div', 'omni-search');
+  searchRoot.hidden = true;
+  searchRoot.append(searchEngine, searchInput);
+  const search: SearchBox = { root: searchRoot, engine: searchEngine, tile: searchTile, input: searchInput };
+  // --- end address bar, search and bookmarks ---
+
   // Private tab: a compact chip after the address (flex: none, so a long URL truncates before it).
   const privateChip = el('span', 'tb-private');
   privateChip.hidden = true;
@@ -152,7 +193,7 @@ export function buildView(root: HTMLElement): View {
   privateChip.append(icon('private', { size: 14 }), privateText);
 
   const pill = el('div', 'pill');
-  pill.append(site, field, privateChip, zoom, reader, translate, split, progress);
+  pill.append(site, field, history, qr, searchRoot, privateChip, zoom, reader, translate, split, progress);
 
   // Three dots (menu-dots, drawn at 24px by toolbar.css .tb-menu); each is its own <circle>, so
   // they can ripple.
@@ -178,7 +219,7 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, reader, translate, input, display, pill, progress, privateChip, menu, downloads, extensions };
+  return { back, forward, reload, site, split, zoom, reader, translate, input, display, pill, progress, privateChip, menu, downloads, extensions, history, qr, search };
 }
 
 // ---- Extensions button (docs/extensions.md "Managing extensions", styles in toolbar.css) ----
@@ -367,28 +408,32 @@ function buildDownloadButton(root: HTMLElement): DownloadButton {
 
 /**
  * Renders `text` into the unfocused display and reports whether it is a URL worth emphasising.
- * Called on setText and blur only, never per keystroke.
+ * Called on setText and blur only, never per keystroke. `flags` (the address bar options) can keep
+ * `https://` visible (`full`) and emphasise only the base domain (`highlight`).
  */
-export function renderDisplay(view: View, text: string): boolean {
-  const parts = splitUrl(text);
+export function renderDisplay(view: View, text: string, flags?: Pick<AddrFlags, 'full' | 'highlight' | 'base'>): boolean {
+  const parts = splitUrl(text, flags?.full === true);
   if (!parts) {
     view.display.replaceChildren();
     return false;
   }
-  const host = el('span', 'u-host');
-  host.textContent = parts.host;
   const nodes: Node[] = [];
-  if (parts.scheme !== '') {
-    const scheme = el('span', 'u-rest');
-    scheme.textContent = parts.scheme;
-    nodes.push(scheme);
+  const add = (className: string, value: string): void => {
+    if (value === '') return;
+    const span = el('span', className);
+    span.textContent = value;
+    nodes.push(span);
+  };
+  add('u-rest', parts.scheme);
+  if (flags?.highlight === true) {
+    const host = splitHost(parts.host, flags.base);
+    add('u-rest', host.before);
+    add('u-host', host.base);
+    add('u-rest', host.after);
+  } else {
+    add('u-host', parts.host);
   }
-  nodes.push(host);
-  if (parts.rest !== '') {
-    const rest = el('span', 'u-rest');
-    rest.textContent = parts.rest;
-    nodes.push(rest);
-  }
+  add('u-rest', parts.rest);
   view.display.replaceChildren(...nodes);
   return true;
 }

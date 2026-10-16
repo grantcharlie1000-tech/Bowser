@@ -18,7 +18,20 @@ test('bookmark snapshot validation accepts folders, links and search paths', () 
     { id: 1, parent: null, title: 'Reading', kind: 'folder' },
     { id: 2, parent: 1, title: 'Spec', kind: 'link', url: 'https://example.test', folderPath: ['Reading'] },
   ], query: 'spec', currentFolder: 1 };
-  assert.deepEqual(logic.validateBookmarkSnapshot(snapshot), snapshot);
+  assert.deepEqual(logic.validateBookmarkSnapshot(snapshot), { ...snapshot, singleClick: true }, 'an older host that does not say keeps single click');
+});
+
+test('the single-click option comes from Rust and must be a boolean', () => {
+  const base = { items: [], query: '', currentFolder: null };
+  assert.equal(logic.validateBookmarkSnapshot({ ...base, singleClick: true }).singleClick, true);
+  assert.equal(logic.validateBookmarkSnapshot({ ...base, singleClick: false }).singleClick, false);
+  assert.equal(logic.validateBookmarkSnapshot({ ...base, singleClick: 'no' }), null);
+});
+
+test('open-all is a bookmark action that names one folder id', () => {
+  assert.deepEqual(logic.bookmarkActionCommand('openall', 4), { v: 1, t: 'bm', a: 'openall', id: 4 });
+  assert.equal(logic.bookmarkActionCommand('openall'), null);
+  assert.equal(logic.bookmarkActionCommand('openall', 0), null);
 });
 test('bookmark snapshot validation rejects unsafe or malformed identifiers and records', () => {
   assert.equal(logic.validateBookmarkSnapshot({ items: [{ id: 0, parent: null, title: 'bad', kind: 'folder' }], query: '', currentFolder: null }), null);

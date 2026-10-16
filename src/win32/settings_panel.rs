@@ -1878,6 +1878,8 @@ fn save_form(hwnd: HWND) {
         // --- end privacy, history and website appearance ---
         // The GDI form has no start page controls; the file's values are kept.
         start: current.start,
+        // Address bar, search and bookmark options have no GDI controls; the file's values are kept.
+        address: current.address,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

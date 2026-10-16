@@ -5,6 +5,9 @@ import { MAX_TEXT, SETTINGS_SECTIONS, type SettingsSection } from './protocol';
 // --- start page ---
 import { parseStartSettings, startSaveLines, type StartSettings } from './start-page-logic';
 // --- end start page ---
+// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
+import { ADDRESS_ROWS } from './address-settings-logic';
+// --- end address bar, search and bookmarks ---
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -397,7 +400,9 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
-  { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
+  { key: 'address', title: 'Address bar', nav: 'Address bar', lead: 'How the address field behaves, what its drop-down suggests, and how it protects you.' },
+  { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'The engines the address bar and the search field search with.' },
+  { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: 'How bookmarks open and how new ones are saved.' },
   { key: 'keyboard', title: 'Keyboard', nav: 'Keyboard', lead: 'Shortcuts for every command, and how the keyboard behaves.' },
   { key: 'commands', title: 'Quick commands', nav: 'Quick commands', lead: 'What the command palette searches, and chains of commands to run with one shortcut.' },
   { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: 'Where files are saved, and whether Bowser asks first.' },
@@ -453,12 +458,13 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
   { id: 'tabPreviewImages', section: 'appearance', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image', notYet: true },
   { id: 'tabPreviewMemory', section: 'appearance', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover', notYet: true },
-  { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'New tab groups are pinned to the bookmarks bar.', keywords: 'pin tab groups bookmarks bar', notYet: true },
+  { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'appearance', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
   { id: 'frameless', section: 'appearance', label: 'Frameless window', description: 'Hides the browser’s toolbar and tabs until the pointer nears the top of the window.', keywords: 'frameless hide toolbar tabs immersive', notYet: true },
-  { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never', notYet: true },
-  { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups appear alongside bookmarks in the bar.', keywords: 'tab groups bookmarks bar islands', notYet: true },
+  { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
+  { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
+  ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
   { id: 'sidePanelPosition', section: 'appearance', label: 'Side panel position', description: 'Which edge the side panels (history, bookmarks, notes and more) are docked to.', keywords: 'side panel left right dock position helium', restart: true },
   { id: 'fontSize', section: 'appearance', label: 'Font size', description: 'The base text size across Bowser’s own pages.', keywords: 'font size small medium large text' },
   { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
@@ -500,7 +506,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'efficiency', section: 'performance', label: 'Efficiency mode', description: 'Auto saves power on battery or in Battery Saver: hidden tabs sleep sooner and background tabs use less memory.', keywords: 'battery power eco energy saver laptop' },
   { id: 'sleep', section: 'performance', label: 'Sleep hidden tabs', description: 'Hidden tabs are put to sleep after a delay to free memory, sooner under memory pressure.', keywords: 'memory discard suspend hibernate inactive' },
   { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: 'How long a tab stays hidden before it sleeps.', keywords: 'delay timeout minutes memory' },
-  { id: 'engine', section: 'search', label: 'Search engine', description: 'Used for searches typed in the address bar. Type img before a query for images.', keywords: 'google duckduckgo optimised default address bar omnibox images' },
+  ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
   // --- keyboard and quick commands (docs/commands.md) ---
   { id: 'kbEnabled', section: 'keyboard', label: 'Keyboard shortcuts', description: 'Turns the browser’s shortcuts on or off. Quick commands (Ctrl+Shift+K) keeps working, so you can always turn them back on.', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys' },
   { id: 'kbSingleKey', section: 'keyboard', label: 'Allow single-key shortcuts', description: 'Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.', keywords: 'single key shortcuts letter number plain keys' },
