@@ -33,7 +33,7 @@ use crate::{
     chrome_host::{
         self,
         host::{Accel, AccelHandler, ChromeHost, View},
-        protocol::{Command, SplitCommand},
+        protocol::{Command, PanelType, SplitCommand},
         split::{self as wire, PickClosed, PickTab},
     },
     split_view::{self, Divider, DropZone, Orientation, Pane},
@@ -54,6 +54,11 @@ enum Shown {
     Drop { zone: DropZone, rect: RECT },
     /// The private landing over blank private tab `tab` (no split), at the whole viewport `rect`.
     Private { tab: TabId, rect: RECT },
+    // --- start page ---
+    /// The start page over blank normal tab `tab` (no split), at the whole viewport `rect`
+    /// (docs/design/start-page.md, `start_ui.rs`).
+    Start { tab: TabId, rect: RECT },
+    // --- end start page ---
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -192,6 +197,10 @@ fn ensure_host(owner: HWND) {
         }
         if let Command::Split(split) = command {
             queue(owner, split);
+        // --- start page --- the start page's own `spage` family
+        } else if let Command::Panel { kind: PanelType::StartPage, f } = command {
+            super::start_ui::queue(owner, f);
+        // --- end start page ---
         }
     });
     let on_failed: Rc<dyn Fn()> = Rc::new(move || {
@@ -278,6 +287,7 @@ pub(crate) fn drop_zone_showing(owner: HWND) -> bool {
 
 /// Runs the queued commands for `owner` (from `WM_SPLIT_COMMAND`).
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
+    super::start_ui::run_queued(owner, app); // --- start page ---
     let commands: Vec<SplitCommand> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
@@ -394,10 +404,10 @@ pub(crate) fn picker_pane(owner: HWND) -> Option<Pane> {
     .flatten()
 }
 
-/// Whether the private landing covers the viewport right now (the overlay then frames it like a
-/// page instead of painting the opaque new-tab surface over it).
+/// Whether the private landing or the start page covers the viewport right now (the overlay then
+/// frames it like a page instead of painting the opaque new-tab surface over it).
 pub(crate) fn private_page_shown(owner: HWND) -> bool {
-    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. }))).unwrap_or(false)
+    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. } | Shown::Start { .. }))).unwrap_or(false)
 }
 
 /// The rectangle a dragged tab would land in, when the HTML card cannot show it (overlay fallback).
@@ -448,6 +458,16 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
         {
             return Shown::Private { tab, rect };
         }
+        // --- start page --- a blank normal tab shows the start page (not before the window has settled)
+        if !App::tab_private(app, tab)
+            && App::tab_is_blank(app, tab)
+            && super::start_ui::enabled(app)
+            && super::start_ui::ready(owner)
+            && let Some(rect) = super::window::split_viewport(owner)
+        {
+            return Shown::Start { tab, rect };
+        }
+        // --- end start page ---
         return Shown::Hidden;
     };
     // One host: the first empty pane (in tree order) gets the picker; any other empty pane keeps
@@ -522,7 +542,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.suspended = false);
     }
     let rect = match want {
-        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } => rect,
+        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } | Shown::Start { rect, .. } => rect,
         Shown::Hidden => return,
     };
     // Theme first, then content, then show: the page never appears unthemed or stale.
@@ -549,8 +569,21 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         }
         // Cheap enough for every paint: the post below is skipped while the text is unchanged.
         Shown::Private { tab, .. } => Some(wire::private_json(wire_id(tab), private_tab_count(app))),
+        // --- start page --- a snapshot only when what the page shows changed (start_ui::due reads no file otherwise)
+        Shown::Start { tab, .. } => {
+            let appeared = !matches!(shown, Some(Shown::Start { tab: old, .. }) if old == tab);
+            super::start_ui::due(owner, app, tab, appeared)
+        }
+        // --- end start page ---
         Shown::Hidden => None,
     };
+    // --- start page --- an identical snapshot is not posted twice, and then the page is as delivered as it gets
+    if matches!(want, Shown::Start { .. })
+        && content.as_ref().is_some_and(|c| with(owner, |rt| rt.content.as_deref() == Some(c.as_str())).unwrap_or(false))
+    {
+        super::start_ui::settled(owner);
+    }
+    // --- end start page ---
     if let Some(content) = content
         && with(owner, |rt| rt.content.as_deref() != Some(content.as_str())).unwrap_or(false)
         && host.post_json(&content).is_ok()
@@ -559,6 +592,11 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.content = Some(content);
             rt.dirty = false;
         });
+        // --- start page --- the chosen images follow the page, each in its own message
+        if matches!(want, Shown::Start { .. }) {
+            super::start_ui::posted(owner, &host);
+        }
+        // --- end start page ---
     }
     let moved = !matches!(shown, Some(old) if old == want);
     if moved {

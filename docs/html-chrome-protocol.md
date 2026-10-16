@@ -446,6 +446,22 @@ test writes. Tab ids are wire ids (`TabId + 1`). A pair has a *first* and a *sec
 The tabs host may send only `over`, `drop` and `end`; the split host only the others. Commands are
 queued and run from `WM_SPLIT_COMMAND`.
 
+## Start page (`spage`, `?view=split`, shown over a blank normal tab)
+
+Behaviour is in docs/design/start-page.md. The split host shows the page the way it shows the private
+landing; the page code is the lazily imported bundle `start-page.js`. Rust writes it
+(`src/chrome_host/start_page.rs`); `ui/src/start-page-logic.ts` parses it strictly, against
+`ui/test/fixtures/start-page-messages.json`, which Rust's own test writes.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> page | `{v:1,t:"snap",p:"startpage",d:{kind:"page",...}}` | exactly the keys `kind guest settings groups group folder path dials more pickable folders widgets favs ack error`. `settings`: the display settings (`columns thumbSize titles addButton dragReorder widgets widgetColumns widgetHeight widgetBg widgetColor widgetDrag`); `groups` `{id,title,n}`; `path` `{id,title}` from the group down to `folder`; `dials` `{id,title,kind,url,host,n,thumb}` (`kind` `link` with an http(s) `url`, or `folder` with `n` entries; `thumb`: a chosen image exists); `pickable` bookmark folders that could become a group, `folders` every bookmark folder (both `{id,path}` / `{id,title}`, at most 200); `widgets` (`[]` unless the dashboard is on) each `{id,kind,...}` with its data (`topsites` `sites`, `bookmarks` `folder view links` with `{id,title,url,host,thumb}`, `notes` `text`, `date`, `privacy` `today total topHost topCount`, `webpage` `url`); `favs` host -> PNG data URI (at most 80 hosts, 100 KiB); `ack` `none` or `failed` with `error` (<= 200 characters), sent once. Under 200 KiB |
+| Rust -> page | `{v:1,t:"snap",p:"startpage",d:{kind:"thumbs",thumbs:{"<id>":"data:image/jpeg;base64,..."}}}` | chosen images, at most 100 per message and 160 KiB; sent after the page |
+| page -> Rust | `{v:1,t:"spage",a,...}` | the panel family's fields (`id parent before n on text url`, at most four with `a`), each action only with exactly its own: `open` (`id`, optional `on` = new tab), `openurl` (`url`, optional `on`), `show` (`id`), `addgroup` (`text`), `flaggroup` (`id`), `renamegroup` (`id`,`text`), `removegroup` (`id`), `movegroup` (`id`, optional `before`), `add` (`parent`,`url`, optional `text`), `addfolder` (`parent`,`text`), `edit` (`id`,`text`, optional `url`), `remove` (`id`), `move` (`id`, optional `before`), `movein` (`id`,`parent`), `thumb` (`id`), `thumbclear` (`id`), `wadd` (`text` = widget kind), `wremove` (`id`), `wmove` (`id`, optional `before`), `wfolder` (`id`,`parent`), `wview` (`id`,`text` `list`/`tiles`), `wurl` (`id`,`url`, empty clears), `wnote` (`id`,`text`), `wsavenote` (`id`), bare `settings`, `refresh`. Only `View::Split` accepts `spage` |
+
+The split host's document alone is served with `frame-src http: https:` and lets a subframe navigate to
+an http(s) address (the webpage widget's sandboxed frame); see the Security notes of the design doc.
+
 ## Tab drag ghost (`tabdrag` / `tabghost`, `View::Tabs`)
 
 A held tab is drawn by a native layered window that follows the cursor in screen coordinates
@@ -481,9 +497,9 @@ holds for its whole life. It accepts `ready` and the `set` family only (no `pane
 | Direction | Message | Meaning |
 |---|---|---|
 | Rust -> page | `state` | the split host's state: opaque window colour, `solid: true` |
-| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | every key required, including `downloadDir` (display path, <= 260) and `downloadAsk` (bool) (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
-| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance privacy performance search downloads media updates about`; sent when Bowser moves the tab, never as an echo |
-| page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`) |
+| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | every key required, including `downloadDir` (display path, <= 260), `downloadAsk` (bool) and `start` (an object of the 15 start page and startup settings, `start-page-logic.ts` `parseStartSettings`) (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
+| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance startpage privacy performance search downloads media extensions updates about`; sent when Bowser moves the tab, never as an echo |
+| page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`); the 15 start page keys (`start_*`, `homepage`, `startup`, `startup_pages`) are optional in the payload |
 | page -> Rust | `{v:1,t:"set",a:"autoupdate"\|"history"\|"downloadask",on}` | install-wide update switch; the profile's history switch (never for a guest); "Ask where to save each file before downloading" |
 | page -> Rust | `{v:1,t:"set",a:"downloadfolder"}` | no other field: Rust shows the native folder picker, then sends the next snapshot (`downloadDir`) |
 | page -> Rust | `{v:1,t:"set",a:"section",text}` | the page moved to a section; the tab's address follows |

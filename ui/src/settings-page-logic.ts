@@ -2,6 +2,9 @@
 // contract, the exact-match save payload, the section and row index the nav and the search use,
 // and the words that depend on state. No DOM here; test/settings-page.mjs covers all of it.
 import { MAX_TEXT, SETTINGS_SECTIONS, type SettingsSection } from './protocol';
+// --- start page ---
+import { parseStartSettings, startSaveLines, type StartSettings } from './start-page-logic';
+// --- end start page ---
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -150,6 +153,10 @@ export interface SettingsSnapshot {
   translateTarget: string;
   /** The codes `translateTarget` may be set to, in the order the page lists them. */
   translateTargets: string[];
+  // --- start page ---
+  /** The start page, speed dial, widget, homepage and startup settings (`start_*` keys of settings.txt). */
+  start: StartSettings;
+  // --- end start page ---
 }
 
 type RecordValue = Record<string, unknown>;
@@ -164,7 +171,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start'];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -228,6 +235,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (typeof v.translateTarget !== 'string' || !(v.translateTarget === '' || LANGUAGE_RE.test(v.translateTarget))) return null;
   if (!Array.isArray(v.translateTargets) || v.translateTargets.length > MAX_TRANSLATE_TARGETS) return null;
   if (!v.translateTargets.every((code) => typeof code === 'string' && LANGUAGE_RE.test(code))) return null;
+  const start = parseStartSettings(v.start); // --- start page ---
+  if (start === null) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -287,6 +296,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateAuto: v.translateAuto,
     translateTarget: v.translateTarget,
     translateTargets: [...(v.translateTargets as string[])],
+    start,
   };
 }
 
@@ -296,7 +306,7 @@ export type Draft = Pick<SettingsSnapshot,
   | 'efficiencyMode' | 'trackingPrevention' | 'theme' | 'themeAccent' | 'toolbarButtons' | 'centredAddressBar' | 'minimalUrl' | 'showLoadProgress'
   | 'frameless' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
-  | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds'
+  | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
 >;
 
 export function draftOf(snapshot: SettingsSnapshot): Draft {
@@ -305,14 +315,14 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
-    blockYoutubeVideoAds,
+    blockYoutubeVideoAds, start,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
     efficiencyMode, trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless,
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
-    splitEdgeDrop, blockYoutubeVideoAds,
+    splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
   };
 }
 
@@ -369,6 +379,11 @@ export function saveText(draft: Draft): string | null {
     `split_edge_drop=${draft.splitEdgeDrop}`,
     `block_youtube_video_ads=${draft.blockYoutubeVideoAds}`,
   );
+  // --- start page --- the start page and startup settings ride in the same payload
+  const startLines = startSaveLines(draft.start);
+  if (startLines === null) return null;
+  lines.push(...startLines);
+  // --- end start page ---
   const text = lines.join('\n');
   return text.length <= MAX_TEXT ? text : null;
 }
@@ -379,6 +394,7 @@ export interface SectionSpec { readonly key: SettingsSection; readonly title: st
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs, text size and page translation.' },
+  { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'What the address bar searches with.' },
@@ -448,6 +464,23 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'translateTarget', section: 'appearance', label: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows' },
   { id: 'shiftRightClickContext', section: 'appearance', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system', notYet: true },
   { id: 'ctrlShiftCCopyLink', section: 'appearance', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut', notYet: true },
+  // --- start page --- (docs/design/start-page.md)
+  { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
+  { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },
+  { id: 'startAddButton', section: 'startpage', label: 'Show the add button', description: 'A tile at the end of each group for adding a site.', keywords: 'speed dial add button plus tile new site' },
+  { id: 'startColumns', section: 'startpage', label: 'Maximum columns', description: 'The most speed dials in a row. Fewer show when the window is narrow.', keywords: 'speed dial columns row grid width' },
+  { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: 'How large each speed dial tile is.', keywords: 'speed dial thumbnail size tiny small medium large huge tiles' },
+  { id: 'startDragReorder', section: 'startpage', label: 'Drag to reorder', description: 'Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.', keywords: 'speed dial drag drop reorder move sort' },
+  { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: 'The Home button opens this address. Leave it empty to open a new tab instead.', keywords: 'home page homepage address url' },
+  { id: 'startupMode', section: 'startpage', label: 'When Bowser starts', description: 'What the first window opens with.', keywords: 'startup launch open start page last session where you left off homepage specific pages restore' },
+  { id: 'startupPages', section: 'startpage', label: 'Pages to open at startup', description: 'One address per line, up to eight. Used when Bowser starts with specific pages.', keywords: 'startup pages specific urls tabs launch' },
+  { id: 'startWidgets', section: 'startpage', label: 'Show the dashboard', description: 'Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.', keywords: 'widgets dashboard top sites sticky note date privacy statistics webpage' },
+  { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: 'The most widgets in a row, 1 to 4.', keywords: 'widgets columns row dashboard' },
+  { id: 'startWidgetHeight', section: 'startpage', label: 'Widget height', description: 'Regular or tall widgets.', keywords: 'widgets height tall regular dashboard' },
+  { id: 'startWidgetBg', section: 'startpage', label: 'Widget background', description: 'How a widget is filled: solid, semi-transparent, transparent or a colour you choose.', keywords: 'widgets background solid transparent translucent custom colour' },
+  { id: 'startWidgetColor', section: 'startpage', label: 'Custom widget colour', description: 'Used when the widget background is Custom.', keywords: 'widgets colour color custom background' },
+  { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange widgets', description: 'Drag a widget by its handle, or press Alt and an arrow key on it.', keywords: 'widgets drag rearrange reorder move' },
+  // --- end start page ---
   { id: 'blocker', section: 'privacy', label: 'Block ads and trackers', description: 'Stops known ad and tracking requests before they load.', keywords: 'adblock ad blocker shield trackers', restart: true },
   { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'Block YouTube video ads', description: 'Skips in-video ads on YouTube.', keywords: 'youtube video ads block skip' },
   { id: 'allow', section: 'privacy', label: 'Sites the blocker skips', description: 'The blocker never blocks on these sites.', keywords: 'allow list exceptions whitelist adblock', restart: true },

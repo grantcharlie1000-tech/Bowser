@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod settings;
 pub mod history_page; // bowser://history (docs/design/history-page.md)
 pub mod downloads_page; // bowser://downloads (docs/design/downloads.md)
+pub mod start_page; // the new-tab start page's wire (docs/design/start-page.md)
 pub mod extensions_page; // the settings page's Extensions section and the toolbar button (docs/extensions.md)
 // --- split view ---
 pub mod split;

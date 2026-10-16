@@ -9,6 +9,12 @@ import { applyTheme } from './view';
 import { el, icon } from './dom';
 import { installTooltips } from './tooltip';
 import { buildPrivatePage } from './private-page';
+// --- start page ---
+// The start page is its own bundle (dist/start-page.js), fetched the first time a blank tab shows it, so
+// no other view and no other tab pays for it. Types only here.
+import type { buildStartPage } from './start-page';
+import { parseStartMessage, type StartMessage } from './start-page-logic';
+// --- end start page ---
 
 function sendSplit(cmd: SplitCommand): boolean {
   return validSplitCommand(cmd) && send(cmd);
@@ -226,16 +232,64 @@ function buildDrop(msg: SplitDropMsg): HTMLElement {
   return zone;
 }
 
+// --- start page ---
+type StartPageHandle = ReturnType<typeof buildStartPage>;
+
+/** Imports the start page bundle (a variable specifier, so esbuild leaves the import() to the browser). */
+function loadStartPage(): Promise<{ buildStartPage: typeof buildStartPage }> {
+  const file = './start-page.js' as string;
+  return (import(file) as Promise<{ buildStartPage: typeof buildStartPage }>).catch((err: unknown) => {
+    document.title = 'page-load-failed';
+    throw err;
+  });
+}
+// --- end start page ---
+
 export function startSplit(root: HTMLElement): void {
   root.classList.add('split-view');
   root.setAttribute('role', 'region');
   installTooltips(root);
   const picker = buildPicker(root);
   const privatePage = buildPrivatePage(() => sendSplit({ v: 1, t: 'split', a: 'closeprivate' }));
-  let mode: 'none' | 'pick' | 'drop' | 'private' = 'none';
+  let mode: 'none' | 'pick' | 'drop' | 'private' | 'start' = 'none';
+  // --- start page ---
+  let startPage: StartPageHandle | null = null;
+  let startLoading = false;
+  let startQueue: StartMessage[] = [];
+  const leaveStart = (): void => {
+    if (mode === 'start') startPage?.hidden();
+    root.classList.remove('is-start');
+  };
+  const showStart = (message: StartMessage): void => {
+    if (startPage) {
+      if (mode !== 'start') {
+        leavePrivate();
+        mode = 'start';
+        side = null;
+        root.classList.add('is-start');
+        root.setAttribute('aria-label', 'Start page');
+        root.replaceChildren(startPage.root);
+      }
+      startPage.show(message);
+      return;
+    }
+    // Messages that arrive while the bundle loads are kept, in order, and shown once it is in.
+    startQueue.push(message);
+    if (startLoading) return;
+    startLoading = true;
+    void loadStartPage().then((page) => {
+      startPage = page.buildStartPage();
+      const queued = startQueue;
+      startQueue = [];
+      // A hide that arrived meanwhile cancels the show.
+      if (mode === 'none') for (const next of queued) showStart(next);
+    }).catch(() => { startLoading = false; });
+  };
+  // --- end start page ---
   const leavePrivate = (): void => {
     if (mode === 'private') privatePage.hidden();
     root.classList.remove('is-private');
+    leaveStart(); // --- start page ---
   };
   let side: SplitAt | null = null;
   // Any press inside the empty side makes it the focused side (the toolbar then follows it).
@@ -282,8 +336,17 @@ export function startSplit(root: HTMLElement): void {
         leavePrivate();
         mode = 'none';
         side = null;
+        startQueue = []; // --- start page ---
         root.replaceChildren();
         break;
+      // --- start page --- a `snap` with p "startpage": the speed dials and widgets over a blank new tab
+      case 'snap': {
+        if (msg.p !== 'startpage') break;
+        const message = parseStartMessage(msg.d);
+        if (message) showStart(message);
+        break;
+      }
+      // --- end start page ---
       default:
         break;
     }

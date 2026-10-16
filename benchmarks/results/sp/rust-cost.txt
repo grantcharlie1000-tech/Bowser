@@ -1,0 +1,18 @@
+Start page, UI-thread cost of a new tab (Rust side). Source: the test
+start_page::service::tests::a_new_tab_costs_little_on_the_ui_thread_even_with_a_large_profile, run as
+  CARGO_PROFILE_TEST_OPT_LEVEL=3 cargo test --locked --lib a_new_tab_costs -- --nocapture
+The profile is near the store's ceiling: 24 groups of 40 dials, 3000 other bookmarks in 60 folders, 500 history
+lines, six widgets (4000 bookmark items, a 300 KB file). Two runs on a quiet machine (an optimised test build):
+
+run 1: first build 102.7 ms (the file was written a moment before, so this is the system scanning it), rebuild 18.8 ms, stamp check 0.59 ms, snapshot 12101 bytes
+run 2: load of the three files 81.8 ms (the same first read), dial_view 0.48 ms, history 1.1 ms, first build 15.2 ms, rebuild 26.0 ms, stamp check 0.65 ms
+
+What a new tab does with an unchanged profile: the stamp check (five file metadata reads, at most every 750 ms)
+and the settings comparison, then posts the snapshot it already holds: well under 1 ms. A rebuild (a command ran,
+a file changed, the settings changed) is the "rebuild" figure above for 4000 bookmark items; for a typical
+profile (a few hundred bookmarks) it is a millisecond or two. Before this change the BookmarkStore parse was
+quadratic in the number of items (a linear scan per line for a repeated id); it is now a hash set.
+
+The first start page of a window also creates the split host's WebView2 if it does not exist yet, not before the
+process is 1.5 s old (a cold launch finishes the toolbar and tab strip first). The host exists already after the
+first private landing, split picker or start page, and closes after three minutes hidden, as before.

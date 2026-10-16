@@ -11,11 +11,12 @@ import { RULES, findViolations } from '../lint-rules.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
 // Every script build.mjs writes: app.js (classic, every view) and the pages it imports on demand.
-const BUNDLES = ['app.js', 'settings-page.js', 'history-page.js'];
+const BUNDLES = ['app.js', 'settings-page.js', 'history-page.js', 'start-page.js'];
 // Text only each page's own code holds, so its absence shows the page left app.js.
 const PAGE_MARKERS = {
   'settings-page': ['sp-search-input', 'Settings sections'],
   'history-page': ['hp-search-input', 'hp-empty-title'],
+  'start-page': ['sp-widget-grid', 'Speed dial groups'],
 };
 // protocol.ts imports the rail grammar from rail-logic.ts, so it is bundled rather than transpiled alone.
 const bundled = esbuild.buildSync({

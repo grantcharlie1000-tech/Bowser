@@ -733,6 +733,10 @@ fn install_handlers(
         }));
 
         // Subframes never navigate: each frame created gets a NavigationStarting that cancels.
+        // --- start page --- The split host alone lets a frame load an http(s) address: the start
+        // page's webpage widget (a sandboxed iframe). Every other host, and every other scheme, cancels.
+        let frames_allowed = view == View::Split;
+        // --- end start page ---
         let webview4: ICoreWebView2_4 = webview.cast()?;
         webview4.add_FrameCreated(
             &FrameCreatedEventHandler::create(Box::new(move |_sender, args| {
@@ -743,7 +747,13 @@ fn install_handlers(
                         &FrameNavigationStartingEventHandler::create(Box::new(
                             move |_frame, args| {
                                 if let Some(args) = args {
-                                    args.SetCancel(true)?;
+                                    let mut uri = PWSTR::null();
+                                    let allowed = frames_allowed
+                                        && args.Uri(&mut uri).is_ok()
+                                        && assets::split_frame_may_navigate(&CoTaskMemPWSTR::from(uri).to_string());
+                                    if !allowed {
+                                        args.SetCancel(true)?;
+                                    }
                                 }
                                 Ok(())
                             },
@@ -919,7 +929,7 @@ fn install_handlers(
                     })
                     .unwrap_or_default();
                 let asset = request_path(&uri).and_then(|path| assets::lookup(&path));
-                respond(&env, &args, asset)
+                respond(&env, &args, asset, assets::response_headers_for(&uri))
             })),
             &mut token,
         )?;
@@ -944,8 +954,9 @@ fn respond(
     environment: &ICoreWebView2Environment,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     asset: Option<Asset>,
+    headers: &str,
 ) -> Result<()> {
-    let found = asset.and_then(|asset| asset_response(environment, asset).ok());
+    let found = asset.and_then(|asset| asset_response(environment, asset, headers).ok());
     let response = match found {
         Some(response) => response,
         None => {
@@ -967,11 +978,12 @@ fn respond(
 fn asset_response(
     environment: &ICoreWebView2Environment,
     asset: Asset,
+    response_headers: &str,
 ) -> Result<ICoreWebView2WebResourceResponse> {
     // SHCreateMemStream copies the bytes, so the embedded slice is not referenced afterwards.
     let stream = unsafe { SHCreateMemStream(Some(asset.bytes)) }
         .ok_or_else(|| fail("Could not create the asset stream"))?;
-    let headers = wide(&format!("Content-Type: {}\r\n{RESPONSE_HEADERS}", asset.mime));
+    let headers = wide(&format!("Content-Type: {}\r\n{response_headers}", asset.mime));
     let reason = wide("OK");
     unsafe {
         environment.CreateWebResourceResponse(
@@ -1035,7 +1047,9 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
-        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate)),
+        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
+            // --- start page --- the start page's own family (`spage`), nothing else of the panel family
+            || matches!(command, Command::Panel { kind: PanelType::StartPage, .. }),
         // --- end split view ---
         // No `panel` family (dismiss): the page is a tab, closed like one.
         // The Privacy dashboard is a section of the page, so its `priv` family reaches this host too.
@@ -1257,6 +1271,56 @@ mod tests {
         let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
         assert!(view_accepts_command(View::Settings, &privacy));
         assert!(view_accepts_command(View::Settings, &Command::Ready));
+    }
+
+    // --- start page (docs/design/start-page.md) ---
+    #[test]
+    fn the_start_page_family_reaches_only_the_split_host_and_is_trusted_only_from_its_exact_url() {
+        let url = View::Split.start_url();
+        assert!(is_trusted_message(View::Split, url, url));
+        // A frame inside the page (the webpage widget) posts from its own address: dropped.
+        for foreign in ["https://widget.example/", "https://evil.example/index.html?view=split", "about:blank", "", "bowser-ui://app/index.html?view=split#x", "bowser-ui://app/index.html?view=settings"] {
+            assert!(!is_trusted_message(View::Split, foreign, url), "sender {foreign}");
+            assert!(!is_trusted_message(View::Split, url, foreign), "message {foreign}");
+        }
+        let commands = [
+            r#"{"v":1,"t":"spage","a":"open","id":3}"#,
+            r#"{"v":1,"t":"spage","a":"add","parent":1,"text":"A","url":"https://a.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"wurl","id":2,"url":"https://widget.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"refresh"}"#,
+        ];
+        for text in commands {
+            let command = parse_command(text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            assert!(view_accepts_command(View::Split, &command), "{text}");
+            for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogPrivacy, View::DialogRename, View::Hover, View::Settings, View::HistoryPage, View::DownloadsPage] {
+                assert!(!view_accepts_command(view, &command), "{view:?} accepted {text}");
+            }
+        }
+        // The split host takes the start page's family and its own, not another page's.
+        for foreign in [
+            r#"{"v":1,"t":"hpage","a":"open","id":1}"#,
+            r#"{"v":1,"t":"dpage","a":"refresh"}"#,
+            r#"{"v":1,"t":"set","a":"reset"}"#,
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1}"#,
+            r#"{"v":1,"t":"notes","a":"add-note"}"#,
+            r#"{"v":1,"t":"nav","a":"back"}"#,
+        ] {
+            let command = parse_command(foreign).unwrap();
+            assert!(!view_accepts_command(View::Split, &command), "{foreign}");
+        }
+        assert!(view_accepts_command(View::Split, &parse_command(r#"{"v":1,"t":"split","a":"close"}"#).unwrap()));
+        // Strictness of the family's grammar: a fifth field, a bad type or a number where text goes.
+        for bad in [
+            r#"{"v":1,"t":"spage"}"#,
+            r#"{"v":1,"t":"spage","a":"Open","id":1}"#,
+            r#"{"v":1,"t":"spage","a":"open","id":-1}"#,
+            r#"{"v":1,"t":"spage","a":"add","parent":1,"text":5,"url":"https://a.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"open","id":1,"extra":1}"#,
+            r#"{"v":2,"t":"spage","a":"refresh"}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
     }
 
     // --- history page (docs/design/history-page.md) ---

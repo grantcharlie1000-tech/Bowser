@@ -4893,7 +4893,11 @@ impl App {
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
-        let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
+        // --- start page --- "continue where you left off": a clean exit's tabs come back too, unless the
+        // launch carries an address of its own.
+        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession && self.initial_url.is_none();
+        // --- end start page ---
+        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
             return false; // another Bowser is running; leave its files alone
         };
         let accepted = offer.filter(|offer| {
@@ -5259,6 +5263,48 @@ impl App {
             Self::submit_url(app, url, None);
         }
     }
+
+    // --- start page ---
+    /// The start page settings alone (a window syncs this often; cloning every setting for it would not be cheap).
+    pub fn start_settings(app: &AppRef) -> crate::start_page::StartSettings {
+        app.borrow().settings.start.clone()
+    }
+
+    /// Whether the launch already decided what the first window shows: a session to restore, an address
+    /// on the command line or a benchmark URL. Read before any of them is taken.
+    pub fn launch_has_target(app: &AppRef) -> bool {
+        let state = app.borrow();
+        state.pending_restore.is_some() || state.initial_url.is_some() || state.benchmark_url.is_some()
+    }
+
+    /// The `startup` setting's plan for the first window (docs/design/start-page.md): the homepage, or
+    /// the specific pages, one tab each. The start page itself needs nothing here (the first tab is
+    /// blank and shows it) and "continue where you left off" is the session restore.
+    pub fn apply_startup_plan(app: &AppRef, launch_decided: bool) {
+        use crate::start_page::StartupPlan;
+        let plan = crate::start_page::startup_plan(&app.borrow().settings.start, launch_decided);
+        match plan {
+            StartupPlan::ShowStartPage => {}
+            StartupPlan::Homepage(url) => Self::navigate_current(app, &url),
+            StartupPlan::Pages(urls) => {
+                let mut first = None;
+                for (index, url) in urls.iter().enumerate() {
+                    if index == 0 {
+                        Self::navigate_current(app, url);
+                        first = Some(Self::active_tab_id(app));
+                    } else {
+                        Self::new_tab(app);
+                        Self::navigate_current(app, url);
+                    }
+                }
+                // The first page stays the one shown.
+                if let Some(first) = first {
+                    let _ = Self::select_tab(app, first);
+                }
+            }
+        }
+    }
+    // --- end start page ---
 
     fn submit_url(app: &AppRef, url: url::Url, allowed_file: Option<url::Url>) {
         // An internal address (a restored settings tab; the engine never produces one) never
@@ -6460,6 +6506,7 @@ impl App {
             state.settings.ctrl_s_vertical_tabs = settings.ctrl_s_vertical_tabs;
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
+            state.settings.start = settings.start.clone(); // --- start page ---
             (state.hwnd, state.edit)
         };
         let bounds = app.borrow_mut().latest_viewport_bounds();
@@ -6475,6 +6522,7 @@ impl App {
         }
         Self::notify_rail_changed(app);
         Self::post_tab_changed(hwnd, active);
+        win32::start_ui::settings_changed(hwnd); // --- start page --- a shown start page redraws with the new settings
     }
 
     /// Applies a changed `efficiency_mode` setting without a restart.
@@ -7043,6 +7091,7 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
 
     mod translate_flow;
+    mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
 
     #[test]
     fn reader_probe_due_table() {

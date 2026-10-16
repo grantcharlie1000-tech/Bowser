@@ -40,6 +40,8 @@ pub const DOWNLOADS_FAVICON: &[u8] = include_bytes!("../icons/downloads-favicon.
 pub enum Section {
     Profile,
     Appearance,
+    /// The start page, speed dials, homepage and startup (docs/design/start-page.md).
+    StartPage,
     Privacy,
     Performance,
     Search,
@@ -51,9 +53,10 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Profile,
         Self::Appearance,
+        Self::StartPage,
         Self::Privacy,
         Self::Performance,
         Self::Search,
@@ -69,6 +72,7 @@ impl Section {
         match self {
             Self::Profile => "profile",
             Self::Appearance => "appearance",
+            Self::StartPage => "startpage",
             Self::Privacy => "privacy",
             Self::Performance => "performance",
             Self::Search => "search",
@@ -246,7 +250,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 10);
+        assert_eq!(Section::ALL.len(), 11);
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
