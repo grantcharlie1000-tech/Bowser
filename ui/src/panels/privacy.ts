@@ -2,6 +2,7 @@ import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../
 import { el } from '../dom';
 import { CHOICES, CHOICE_LABEL, KINDS, KIND_LABEL, PRIVATE_TABS_NOTE, PRIVATE_TABS_TITLE, deniedText, filterSites, hasStored, parsePrivacySnapshot, privacyCommand, setPermissionCommand, storedCount, type Choice, type Kind, type PrivacySnapshot, type SiteRow } from './privacy-logic';
 import { emptyState, enter, pageSection, panelHeader, searchField, segmented, settingRow, textButton, type PageSection } from './kit';
+import { mountProtection } from './protection';
 
 type Fields = { id?: number; n?: number; text?: string };
 function emit(a: string, fields: Fields = {}): void {
@@ -17,8 +18,6 @@ const SECURITY: Record<PrivacySnapshot['security'], string> = {
   unknown: 'Unknown',
   none: 'No active site',
 };
-const RANGES = [['0', 'Last hour'], ['1', 'Last day'], ['2', '7 days'], ['3', 'All time']] as const;
-const CLEAR_KINDS = ['Site data', 'Cache', 'History'] as const;
 const CHOICE_OPTIONS = CHOICES.map((choice) => [choice, CHOICE_LABEL[choice]] as const);
 /** Sites listed before "Show more": a full table is thousands of controls. */
 const SITE_PAGE = 20;
@@ -33,6 +32,8 @@ export interface DashboardParts {
   readonly scroll: HTMLElement;
   /** How a titled group of rows looks; the dialog's plain sections by default. */
   readonly section?: (title: string) => PageSection;
+  /** Sections shown above the dashboard's own, for a host that has no rows for them (the dialog window). */
+  readonly extra?: () => HTMLElement[];
 }
 
 export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void {
@@ -46,15 +47,20 @@ export function startPrivacyPanel(root: HTMLElement): (message: Inbound) => void
   host.append(header.root, status, scroll);
   enter(host);
   root.replaceChildren(host);
-  return mountPrivacyDashboard({ column, status, scroll });
+  // Blocking, history, website appearance and Delete Browsing Data (thread T3) come with the
+  // `protection` snapshot; this window has no settings rows, so it shows them as sections.
+  const protection = mountProtection({ toast: (text) => { status.hidden = false; status.textContent = text; } });
+  const dashboard = mountPrivacyDashboard({ column, status, scroll, extra: protection.sections });
+  return (message: Inbound): void => {
+    protection.receive(message);
+    dashboard(message);
+  };
 }
 
 /** Draws the dashboard into `parts` and returns the handler for Rust's `privacy` snapshots. */
-export function mountPrivacyDashboard({ column, status, scroll, section = pageSection }: DashboardParts): (message: Inbound) => void {
+export function mountPrivacyDashboard({ column, status, scroll, section = pageSection, extra }: DashboardParts): (message: Inbound) => void {
   let snapshot: PrivacySnapshot | null = null;
   let issue = '';
-  const ranges: string[] = ['0', '0', '0'];
-  let confirming: number | null = null;
   let query = '';
   let shown = SITE_PAGE;
   let confirmingAll = false;
@@ -219,29 +225,8 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
     for (const [label, text] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, text));
     sections.push(privateTabs.root);
 
-    const clear = section('Clear browsing data');
-    CLEAR_KINDS.forEach((kind, kindIndex) => {
-      const run = textButton('Clear', () => {
-        if (confirming !== kindIndex) { confirming = kindIndex; paintRun(); return; }
-        confirming = null;
-        paintRun();
-        emit('clear-data', { id: kindIndex, n: Number(ranges[kindIndex] ?? '0') });
-      }, { aria: `Clear ${kind}` });
-      const paintRun = (): void => {
-        const on = confirming === kindIndex;
-        run.replaceChildren(document.createTextNode(on ? 'Confirm' : 'Clear'));
-        run.classList.toggle('is-primary', on);
-        run.setAttribute('aria-label', on ? `Confirm clearing ${kind}` : `Clear ${kind}`);
-      };
-      run.addEventListener('blur', () => { if (confirming === kindIndex) { confirming = null; paintRun(); } });
-      const range = segmented(RANGES, (ranges[kindIndex] ?? '0') as '0', (value) => { ranges[kindIndex] = value; if (confirming === kindIndex) { confirming = null; paintRun(); } }, `${kind} time range`);
-      const control = el('div', 'pg-pair');
-      control.append(range, run);
-      clear.body.append(settingRow(kind, null, control));
-    });
-    sections.push(clear.root);
-
-    column.replaceChildren(...sections);
+    // A host with no rows of its own (the dashboard window) shows the protection blocks first.
+    column.replaceChildren(...(extra ? extra() : []), ...sections);
     scroll.scrollTop = keep;
     // A snapshot rebuilds the page; put keyboard focus back on the same control.
     const key = wantFocus ?? focusKey;

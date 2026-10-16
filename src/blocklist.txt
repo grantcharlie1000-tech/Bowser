@@ -5,18 +5,23 @@
 ! site's own domain when written that way. Add your own rules in filters.txt (profile directory).
 !
 ! --- Google advertising and measurement ---
+! @kind ads
 ||doubleclick.net^
 ||googlesyndication.com^
 ||googleadservices.com^
+! @kind trackers
 ||google-analytics.com^
 ||googletagmanager.com^
+! @kind ads
 ||googletagservices.com^
 ||adservice.google.com^
 ||2mdn.net^
 ||admob.com^
 ||adsense.com^
+! @kind trackers
 ||app-measurement.com^
 ||analytics.google.com^
+! @kind ads
 ||fundingchoicesmessages.google.com^
 ||sodar.google.com^
 ||adsensecustomsearchads.com^
@@ -24,18 +29,23 @@
 ||google.com/ads/
 ||google.com/doubleclick/
 ||google.com/adsense/
+! @kind trackers
 ||google.com/analytics/
+! @kind ads
 ||youtube.com/pagead/
 ||youtube.com/api/stats/ads
+! @kind trackers
 ||youtube.com/ptracking
 ||youtube.com/api/stats/atr
 ! --- Amazon ---
+! @kind ads
 ||amazon-adsystem.com^
 ||adsystem.amazon.com^
 ||mads.amazon.com^
 ||advertising.amazon.com^
 ||fls-na.amazon.com^
 ! --- Microsoft / Bing ---
+! @kind trackers
 ||bat.bing.com^
 ||bat.r.msn.com^
 ||clarity.ms^
@@ -75,6 +85,7 @@
 ||adsymptotic.com^
 ||analytics.line.me^
 ! --- Yahoo / AOL / Verizon Media ---
+! @kind ads
 ||ads.yahoo.com^
 ||analytics.yahoo.com^
 ||udc.yahoo.com^
@@ -342,6 +353,7 @@
 ||ad-maven.com^
 ||admaven.com^
 ! --- Verification, viewability and audience measurement ---
+! @kind trackers
 ||moatads.com^
 ||moat.com^
 ||doubleverify.com^
@@ -708,6 +720,7 @@
 ||bluecava.com^
 ||id5-sync.com^
 ! --- Common ad serving path patterns (match first- and third-party requests alike) ---
+! @kind ads
 /pagead/ads?
 /pagead/gen_204
 /adserver/banner.
@@ -728,17 +741,25 @@
 ! the engine instead (src/blocker/youtube.rs).
 youtube.com/pagead/
 youtube.com/api/stats/ads
+! @kind trackers
 youtube.com/api/stats/atr
+! @kind ads
 youtube.com/api/stats/*el=adunit
+! @kind trackers
 youtube.com/ptracking
 youtube.com/pcs/activeview
+! @kind ads
 youtube.com/get_midroll_info
 youtube.com/youtubei/v1/player/ad_break
+! @kind trackers
 youtube.com/youtubei/v1/log_event
 youtube.com/csi_204
+! @kind ads
 youtube-nocookie.com/pagead/
 youtube-nocookie.com/api/stats/ads
+! @kind trackers
 ||play.google.com/log?
+! @kind ads
 youtube.com###masthead-ad
 youtube.com###player-ads
 ! --- Cosmetic rules ---
@@ -752,17 +773,23 @@ adblock.turtlecute.org##.textads
 ! hotjar.io, mouseflow.com, googlesyndication.com, bugsnag.com, ad.xiaomi.com, tracking.miui.com,
 ! 2o7.net, ...) is left out to avoid duplication.
 ||adtago.s3.amazonaws.com^
+! @kind trackers
 ||analyticsengine.s3.amazonaws.com^
 ||analytics.s3.amazonaws.com^
+! @kind ads
 ||advice-ads.s3.amazonaws.com^
+! @kind trackers
 ||click.googleanalytics.com^
 ||freshmarketer.com^
 ||claritybt.freshmarketer.com^
 ||fwtracks.freshmarketer.com^
+! @kind ads
 ||stats.wp.com^
 ||browser.sentry-cdn.com^
 ||app.getsentry.com^
+! @kind trackers
 ||analytics.pointdrive.linkedin.com^
+! @kind ads
 ||log.pinterest.com^
 ||events.reddit.com^
 ||ads.youtube.com^
@@ -781,12 +808,14 @@ adblock.turtlecute.org##.textads
 ||ngfts.lge.com^
 ||g.jwpsrv.com^
 ||widgets.pinterest.com^
+! @kind trackers
 ||static.klaviyo.com/|
 ||static.klaviyo.com/favicon.ico|
 ||static.klaviyo.com/robots.txt|
 ! These hosts also carry traffic a page can need: the Facebook SDK and Graph API, Instagram
 ! APIs, Google ad-insertion streams, chat widgets, feature-flag streams and consent managers.
 ! Only their root, favicon and robots.txt URLs, which no page uses, are failed.
+! @kind ads
 ||connect.facebook.net/|
 ||connect.facebook.net/favicon.ico|
 ||connect.facebook.net/robots.txt|
@@ -808,9 +837,11 @@ adblock.turtlecute.org##.textads
 ||js.driftt.com/|
 ||js.driftt.com/favicon.ico|
 ||js.driftt.com/robots.txt|
+! @kind trackers
 ||clientstream.launchdarkly.com/|
 ||clientstream.launchdarkly.com/favicon.ico|
 ||clientstream.launchdarkly.com/robots.txt|
+! @kind ads
 ||privacyportal.onetrust.com/|
 ||privacyportal.onetrust.com/favicon.ico|
 ||privacyportal.onetrust.com/robots.txt|
@@ -822,9 +853,13 @@ adblock.turtlecute.org##.textads
 ||vk.com/rtrg?
 ||ads-api.tiktok.com^
 ||ads-sg.tiktok.com^
+! @kind trackers
 ||analytics-sg.tiktok.com^
+! @kind ads
 ||udcm.yahoo.com^
+! @kind trackers
 ||analytics.query.yahoo.com^
+! @kind ads
 ||partnerads.ysm.yahoo.com^
 ||log.fc.yahoo.com^
 ||gemini.yahoo.com^
@@ -845,13 +880,17 @@ adblock.turtlecute.org##.textads
 ||data.mistat.india.xiaomi.com^
 ||data.mistat.rus.xiaomi.com^
 ||sdkconfig.ad.intl.xiaomi.com^
+! @kind trackers
 ||tracking.rus.miui.com^
+! @kind ads
 ||adsfs.oppomobile.com^
 ||adx.ads.oppomobile.com^
 ||ck.ads.oppomobile.com^
 ||data.ads.oppomobile.com^
+! @kind trackers
 ||metrics.data.hicloud.com^
 ||metrics2.data.hicloud.com^
+! @kind ads
 ||grs.hicloud.com^
 ||logservice.hicloud.com^
 ||logservice1.hicloud.com^
@@ -859,16 +898,20 @@ adblock.turtlecute.org##.textads
 ||click.oneplus.cn^
 ||open.oneplus.net^
 ||samsungads.com^
+! @kind trackers
 ||smetrics.samsung.com^
 ||nmetrics.samsung.com^
 ||analytics-api.samsunghealthcn.com^
 ||metrics.icloud.com^
 ||metrics.mzstatic.com^
+! @kind ads
 ||api-adservices.apple.com^
+! @kind trackers
 ||books-analytics-events.apple.com^
 ||weather-analytics-events.apple.com^
 ||notes-analytics-events.apple.com^
 ! --- Super Adblock Test host gaps (2026-08-10 probe list) ---
+! @kind ads
 ||advertising-api-eu.amazon.com^
 ||aan.amazon.com^
 ||bingads.microsoft.com^
@@ -884,15 +927,19 @@ adblock.turtlecute.org##.textads
 ||smartyads.com^
 ||ad.gt^
 ||tagmanager.google.com^
+! @kind trackers
 ||analytics.adobe.io^
 ||metrics.adobe.com^
+! @kind ads
 ||quantcast.com/|
 ||quantcast.com/favicon.ico|
 ||quantcast.com/robots.txt|
 ||cloudflareinsights.com^
 ||us.i.posthog.com^
 ||rudderlabs.com^
+! @kind trackers
 ||snowplowanalytics.com^
+! @kind ads
 ||fingerprintjs.com/|
 ||fingerprintjs.com/favicon.ico|
 ||fingerprintjs.com/robots.txt|
@@ -918,16 +965,24 @@ adblock.turtlecute.org##.textads
 ||statdynamic.com^
 ||tr.facebook.com^
 ||ads.snapchat.com^
+! @kind trackers
 ||sc-analytics.appspot.com^
+! @kind ads
 ||ads-api.x.com^
+! @kind trackers
 ||analytics.x.com^
+! @kind ads
 ||ads.x.com^
+! @kind trackers
 ||pixel.redditmedia.com^
+! @kind ads
 ||d.reddit.com^
 ||mon.byteoversea.com^
 ||mcs-va.tiktokv.com^
 ||mon.tiktokv.com^
+! @kind trackers
 ||pixel.quora.com^
+! @kind ads
 ||qevents.quora.com^
 ||px.srvcs.tumblr.com^
 ||ads.vk.com^
@@ -945,17 +1000,23 @@ adblock.turtlecute.org##.textads
 ||settings-win.data.microsoft.com^
 ||vortex.data.microsoft.com^
 ||vortex-win.data.microsoft.com^
+! @kind trackers
 ||telemetry.microsoft.com^
+! @kind ads
 ||browser.events.data.msn.com^
+! @kind trackers
 ||device-metrics-us.amazon.com^
 ||device-metrics-us-2.amazon.com^
+! @kind ads
 ||mads-eu.amazon.com^
 ||logs.roku.com^
 ||ads.roku.com^
 ||amoeba.web.roku.com^
 ||ads.vizio.com^
 ||tvinteractive.tv^
+! @kind trackers
 ||tvpixel.com^
+! @kind ads
 ||firebase-settings.crashlytics.com^
 ||cookielaw.org/|
 ||cookielaw.org/favicon.ico|
@@ -979,6 +1040,7 @@ adblock.turtlecute.org##.textads
 ||cmp.osano.com/favicon.ico|
 ||cmp.osano.com/robots.txt|
 ||impactradius-event.com^
+! @kind trackers
 ||partnerstack.com^
 ||refersion.com^
 ||pepperjamnetwork.com^
@@ -991,6 +1053,8 @@ adblock.turtlecute.org##.textads
 ||a.klaviyo.com/favicon.ico|
 ||a.klaviyo.com/robots.txt|
 ||customer.io^
+! @kind ads
 ||jwpltx.com^
 ||connatix.com^
+! @kind trackers
 ||metrics.brightcove.com^

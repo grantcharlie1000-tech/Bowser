@@ -78,7 +78,6 @@ export function privacyCommand(a: string, fields: Fields = {}): ({ a: string } &
   const only = (...names: (keyof Fields)[]): boolean => Object.keys(fields).every(k => (names as string[]).includes(k)) && names.every(k => fields[k] !== undefined);
   if (a === 'clear-stats') return Object.keys(fields).length ? null : { a };
   if (a === 'perm-reset-all' || a === 'denied-clear') return Object.keys(fields).length ? null : { a };
-  if (a === 'clear-data' && Number.isInteger(fields.id) && (fields.id as number) >= 0 && Number.isInteger(fields.n) && (fields.n as number) >= 0 && fields.on === undefined && fields.text === undefined) return { a, ...fields };
   if (a === 'perm-set' && only('id', 'n', 'text') && Number.isInteger(fields.id) && (fields.id as number) >= 0 && (fields.id as number) < KINDS.length && Number.isInteger(fields.n) && (fields.n as number) >= 0 && (fields.n as number) < CHOICES.length && validOrigin(fields.text)) return { a, id: fields.id, n: fields.n, text: fields.text };
   if (a === 'perm-reset' && only('text') && validOrigin(fields.text)) return { a, text: fields.text };
   return null;

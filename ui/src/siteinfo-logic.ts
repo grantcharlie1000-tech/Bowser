@@ -22,7 +22,8 @@ export interface SiteInfoMessage {
   readonly summary: string;
   readonly perms: readonly SitePermission[];
   readonly cookies: { readonly state: 'count' | 'unavailable' | 'none'; readonly n: number; readonly clear: boolean };
-  readonly blocker: { readonly state: 'on' | 'off' | 'unavailable'; readonly n: number };
+  /** `level` is the blocking level in force on the site; `notices` says cookie notices are hidden there. */
+  readonly blocker: { readonly state: 'on' | 'off' | 'unavailable'; readonly n: number; readonly level: BlockingLevel; readonly notices: boolean };
   readonly tracking: string;
   /** Page zoom in percent (25 to 500); 100 shows no zoom row. */
   readonly zoom: number;
@@ -44,6 +45,12 @@ export const ACT_BLOCKER = 11;
 export const ACT_RESET = 12;
 /** Rust: ACT_ZOOM_RESET. Declared only while the page is zoomed. */
 export const ACT_ZOOM_RESET = 13;
+/** Rust: ACT_NOTICES. Cookie notices on this site: n 0 shows them, n 1 hides them (the wanted state). */
+export const ACT_NOTICES = 14;
+/** The blocking levels the shield offers, in the order of `ACT_BLOCKER`'s n (Rust: SHIELD_LEVELS). */
+export const SHIELD_LEVELS = ['none', 'trackers', 'ads'] as const;
+export type BlockingLevel = typeof SHIELD_LEVELS[number];
+export const SHIELD_LEVEL_LABELS: Readonly<Record<BlockingLevel, string>> = { none: 'None', trackers: 'Trackers', ads: 'Trackers and ads' };
 /** Page zoom limits in percent (Rust: site_prefs::ZOOM_MIN, ZOOM_MAX; zoom-logic.ts). */
 const ZOOM_MIN = 25;
 const ZOOM_MAX = 500;
@@ -92,8 +99,9 @@ export function validSiteInfoPayload(raw: unknown): raw is SiteInfoMessage {
   if (!isRecord(cookies) || !onlyKeys(cookies, ['state', 'n', 'clear'])) return false;
   if (!isOneOf(cookies.state, ['count', 'unavailable', 'none'] as const) || !isInt(cookies.n, 0, Number.MAX_SAFE_INTEGER) || typeof cookies.clear !== 'boolean') return false;
   const blocker = raw.blocker;
-  if (!isRecord(blocker) || !onlyKeys(blocker, ['state', 'n'])) return false;
-  return isOneOf(blocker.state, ['on', 'off', 'unavailable'] as const) && isInt(blocker.n, 0, 0xffffffff);
+  if (!isRecord(blocker) || !onlyKeys(blocker, ['state', 'n', 'level', 'notices'])) return false;
+  return isOneOf(blocker.state, ['on', 'off', 'unavailable'] as const) && isInt(blocker.n, 0, 0xffffffff)
+    && isOneOf(blocker.level, SHIELD_LEVELS) && typeof blocker.notices === 'boolean';
 }
 
 /** Caption under "Cookies". */
@@ -109,7 +117,8 @@ export function cookieText(cookies: SiteInfoMessage['cookies']): string {
 export function blockerText(blocker: SiteInfoMessage['blocker'], priv = false): string {
   switch (blocker.state) {
     case 'on': {
-      const lead = priv ? 'Always on' : 'On';
+      // A private tab is always at the full level; a normal tab says which level it is at.
+      const lead = priv ? 'Always on' : SHIELD_LEVEL_LABELS[blocker.level];
       return blocker.n === 1 ? `${lead} · 1 request blocked here` : `${lead} · ${blocker.n} requests blocked here`;
     }
     case 'off': return 'Off for this site';
@@ -122,4 +131,9 @@ export function blockedNoticeText(priv: boolean): string {
   return priv
     ? 'This page asked for a permission and was blocked. Private tabs block every request.'
     : 'This page asked for a permission and was blocked. Allow it below to use it here.';
+}
+
+/** Caption under "Cookie notices": whether this page hides the cookie-consent banner. */
+export function noticesText(blocker: SiteInfoMessage['blocker']): string {
+  return blocker.notices ? 'Hidden on this site' : 'Shown on this site';
 }

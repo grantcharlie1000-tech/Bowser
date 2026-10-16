@@ -747,7 +747,12 @@ impl WindowChrome {
         let worker = path.clone();
         match std::thread::Builder::new()
             .name("history-load".into())
-            .spawn(move || read_suggestion_history(&worker))
+            .spawn(move || {
+                // Visits older than the retention setting are dropped before the list is read, so
+                // suggestions never offer them (thread T3).
+                let _ = crate::history_retention::prune_now(&worker);
+                read_suggestion_history(&worker)
+            })
         {
             Ok(handle) => self.history_load = Some(handle),
             Err(_) => self.history = read_suggestion_history(&path),
@@ -1569,6 +1574,8 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
         let _ = App::privacy_stats_save_now(app);
     }
     crate::productivity::flush_pending_history();
+    // A session-only history ends with the session (thread T3).
+    crate::history_retention::finish_at_exit();
     App::session_finish(app);
 }
 
@@ -8155,15 +8162,25 @@ fn html_sync(hwnd: HWND) {
     let site = App::site_security(&app);
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
-    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
     let settings = App::settings(&app);
+    // While a private tab is shown, the chrome takes its own light or dark look when the private
+    // theme asks for one (thread T3); otherwise it follows the normal appearance.
+    let system_look = glass::appearance();
+    let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
+    let palette = if look == system_look {
+        palette
+    } else {
+        crate::theme::palette(look, glass::backdrop_mode() == glass::BackdropMode::Solid)
+    };
+    let dark = look == crate::theme::Appearance::Dark;
+    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
     let state = ViewState {
         scale: dpi as f32 / 96.0,
         pillx,
         pillw,
         menux,
         solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
         loading: App::tab_loading(&app, id),
@@ -10690,9 +10707,14 @@ fn persist_profile_history(url: String, title: String) -> bool {
     let Ok(profile) = crate::profile::active() else {
         return false;
     };
-    crate::productivity::profile_allows_productivity(&profile)
+    let kept = crate::productivity::profile_allows_productivity(&profile)
         && profile.history_enabled()
-        && crate::productivity::add_history_entry(&profile.history_file(), &url, &title).is_ok()
+        && crate::productivity::add_history_entry(&profile.history_file(), &url, &title).is_ok();
+    if kept {
+        // Expired visits are dropped every few hours while Bowser stays open (thread T3).
+        crate::history_retention::after_visit(&profile.history_file());
+    }
+    kept
 }
 
 unsafe extern "system" fn edit_subclass(

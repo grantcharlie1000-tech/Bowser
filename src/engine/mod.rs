@@ -40,6 +40,16 @@ pub enum BrowsingDataKind {
     SiteData,
     Cache,
     History,
+    // --- Delete Browsing Data (thread T3) ---
+    /// Cookies alone.
+    Cookies,
+    /// Local storage, IndexedDB and the other DOM storage, service workers and cache storage.
+    Storage,
+    /// Form autofill entries (names, addresses and the like) the browser engine saved.
+    Autofill,
+    /// The engine's per-site settings (its own saved permissions and content settings).
+    SiteSettings,
+    // --- end Delete Browsing Data ---
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,7 +57,23 @@ pub enum BrowsingDataRange {
     LastHour,
     LastDay,
     LastSevenDays,
+    // --- Delete Browsing Data (thread T3) ---
+    LastFourWeeks,
+    // --- end Delete Browsing Data ---
     AllTime,
+}
+
+impl BrowsingDataRange {
+    /// How far back the range reaches, in seconds, or `None` for everything.
+    pub fn seconds(self) -> Option<u64> {
+        match self {
+            Self::LastHour => Some(60 * 60),
+            Self::LastDay => Some(24 * 60 * 60),
+            Self::LastSevenDays => Some(7 * 24 * 60 * 60),
+            Self::LastFourWeeks => Some(28 * 24 * 60 * 60),
+            Self::AllTime => None,
+        }
+    }
 }
 
 pub trait EngineAdapter {
@@ -276,6 +302,22 @@ pub trait EngineAdapter {
             "This browser engine cannot clear browsing data.".to_owned()
         ));
     }
+    /// Clears several categories in one request (Delete Browsing Data). Saved passwords are never
+    /// part of it: they live in Bowser's own vault.
+    fn clear_browsing_data_set(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _kinds: &[BrowsingDataKind],
+        _range: BrowsingDataRange,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err(
+            "This browser engine cannot clear browsing data.".to_owned()
+        ));
+    }
+    /// Applies the website look (`website_look::current`: the colour scheme sites are told and
+    /// forced dark mode) to every open tab. Tabs created later start with it.
+    fn apply_website_look(&mut self) {}
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {

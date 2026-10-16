@@ -233,6 +233,21 @@ impl SitePrefsStore {
         Ok(())
     }
 
+    /// Forgets every site's stored zoom and translation choice (Delete Browsing Data, site
+    /// settings), then saves. Returns how many sites had one. A failed save puts them back.
+    pub fn clear_all(&mut self) -> io::Result<usize> {
+        if self.sites.is_empty() {
+            return Ok(0);
+        }
+        let previous = std::mem::take(&mut self.sites);
+        let count = previous.len();
+        if let Err(error) = self.save() {
+            self.sites = previous;
+            return Err(error);
+        }
+        Ok(count)
+    }
+
     /// Number of sites with at least one stored preference.
     pub fn len(&self) -> usize {
         self.sites.len()
@@ -348,6 +363,22 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join(FILE_NAME)
+    }
+
+    #[test]
+    fn clear_all_forgets_every_site_on_disk() {
+        let path = temp_file("clear-all");
+        let mut store = SitePrefsStore::load(&path);
+        assert_eq!(store.clear_all().unwrap(), 0);
+        store.set_zoom("https://a.test", Some(150)).unwrap();
+        store.set_translate("https://b.test", Some(SiteTranslate::Never)).unwrap();
+        assert_eq!(store.clear_all().unwrap(), 2);
+        assert!(store.is_empty());
+        assert!(SitePrefsStore::load(&path).is_empty(), "the file is empty too");
+        // In-memory stores (guests) clear too, with nothing to write.
+        let mut guest = SitePrefsStore::in_memory();
+        guest.set_zoom("https://a.test", Some(150)).unwrap();
+        assert_eq!(guest.clear_all().unwrap(), 1);
     }
 
     #[test]

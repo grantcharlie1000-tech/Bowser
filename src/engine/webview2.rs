@@ -487,7 +487,7 @@ impl std::fmt::Display for RuntimeUnavailable {
 struct TabBlockState {
     top_host: RefCell<String>,
     count: Cell<u32>,
-    doc_filter: RefCell<Option<(String, bool, bool)>>,
+    doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
     /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
     fetch_listener: Cell<bool>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
@@ -618,6 +618,66 @@ fn call_devtools(webview: &ICoreWebView2, method: &str, params: &str) {
     let _ = unsafe {
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
+}
+
+/// The WebView2 data kinds `kinds` stand for, all in one mask (Delete Browsing Data). Saved
+/// passwords are not a kind here: they live in Bowser's own vault.
+fn browsing_data_mask(kinds: &[BrowsingDataKind]) -> COREWEBVIEW2_BROWSING_DATA_KINDS {
+    let mut mask = COREWEBVIEW2_BROWSING_DATA_KINDS(0);
+    for kind in kinds {
+        mask |= match kind {
+            BrowsingDataKind::SiteData => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES | COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE
+            }
+            BrowsingDataKind::Cache => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
+            }
+            BrowsingDataKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
+            BrowsingDataKind::Cookies => COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES,
+            BrowsingDataKind::Storage => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE | COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS
+            }
+            BrowsingDataKind::Autofill => COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL,
+            BrowsingDataKind::SiteSettings => COREWEBVIEW2_BROWSING_DATA_KINDS_SETTINGS,
+        };
+    }
+    mask
+}
+
+/// Tells the browsing profile which colour scheme sites should be shown (`prefers-color-scheme`).
+fn apply_preferred_colour_scheme(webview: &ICoreWebView2, appearance: crate::settings::WebsiteAppearance) {
+    use crate::settings::WebsiteAppearance;
+    let scheme = match appearance {
+        WebsiteAppearance::Auto => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO,
+        WebsiteAppearance::Light => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT,
+        WebsiteAppearance::Dark => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+    };
+    let _ = unsafe {
+        webview
+            .cast::<ICoreWebView2_13>()
+            .and_then(|webview| webview.Profile())
+            .and_then(|profile| profile.SetPreferredColorScheme(scheme))
+    };
+}
+
+/// Gives a new tab the website look in force: the profile's colour scheme, and Chromium's automatic
+/// dark mode for the page when `force_dark_websites` is on. A look at its defaults sends nothing, so
+/// a profile that never changed it pays no cost.
+fn start_website_look(webview: &ICoreWebView2) {
+    let look = crate::website_look::current();
+    if look != crate::website_look::WebsiteLook::default() {
+        apply_preferred_colour_scheme(webview, look.appearance);
+        call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+    }
+}
+
+/// Sent again for each document: forced dark mode is a per-page override, and a navigation to a new
+/// process must not lose it. Nothing is sent while the option is off.
+fn refresh_force_dark(webview: &ICoreWebView2) {
+    let look = crate::website_look::current();
+    if look.force_dark {
+        call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+    }
 }
 
 /// `Network.enable` keeps almost no response bytes. The domain is on only so
@@ -1017,13 +1077,16 @@ fn refresh_blocked_urls(
     let stored_host = block.top_host.borrow().clone();
     let top_host = page_host.unwrap_or(&stored_host);
     let state = blocker.borrow();
-    let blocking = state.is_blocking(top_host, private);
+    // The level and the rule generation decide the patterns: a change of either (a level chosen
+    // for the site, a list switched on or off) is sent even on the same site.
+    let (level, generation) = state.filter_signature(top_host, private);
     // Only a YouTube page pauses player responses; anywhere else Fetch.enable pauses nothing.
     let responses = state.response_patterns(top_host, private);
     let signature = (
         crate::blocker::registrable_domain(top_host).to_owned(),
-        blocking,
+        level,
         !responses.is_empty(),
+        generation,
     );
     if block.doc_filter.borrow().as_ref() == Some(&signature) {
         return;
@@ -2710,6 +2773,35 @@ impl EngineAdapter for WebView2Engine {
         range: BrowsingDataRange,
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
+        self.clear_browsing_data_set(tab, &[kind], range, done);
+    }
+
+    fn apply_website_look(&mut self) {
+        let look = crate::website_look::current();
+        let webviews: Vec<ICoreWebView2> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        // The preferred colour scheme belongs to the browsing profile, so one tab's call covers
+        // them all; the dark-mode override is per page.
+        if let Some(first) = webviews.first() {
+            apply_preferred_colour_scheme(first, look.appearance);
+        }
+        for webview in &webviews {
+            call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+        }
+    }
+
+    fn clear_browsing_data_set(
+        &mut self,
+        tab: TabId,
+        kinds: &[BrowsingDataKind],
+        range: BrowsingDataRange,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
         let webview = self
             .core
             .borrow()
@@ -2735,17 +2827,11 @@ impl EngineAdapter for WebView2Engine {
                 return;
             }
         };
-        let kinds = match kind {
-            BrowsingDataKind::SiteData => {
-                COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE
-            }
-            BrowsingDataKind::Cache => {
-                COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
-            }
-            BrowsingDataKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
-        };
+        let kinds = browsing_data_mask(kinds);
+        if kinds.0 == 0 {
+            done(Ok(()));
+            return;
+        }
         let completion = Rc::new(RefCell::new(Some(done)));
         let callback = completion.clone();
         let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |status| {
@@ -2755,20 +2841,15 @@ impl EngineAdapter for WebView2Engine {
             Ok(())
         }));
         let result = unsafe {
-            if range == BrowsingDataRange::AllTime {
-                profile.ClearBrowsingData(kinds, &handler)
-            } else {
-                let end = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64();
-                let seconds = match range {
-                    BrowsingDataRange::LastHour => 60 * 60,
-                    BrowsingDataRange::LastDay => 24 * 60 * 60,
-                    BrowsingDataRange::LastSevenDays => 7 * 24 * 60 * 60,
-                    BrowsingDataRange::AllTime => unreachable!(),
-                } as f64;
-                profile.ClearBrowsingDataInTimeRange(kinds, (end - seconds).max(0.0), end, &handler)
+            match range.seconds() {
+                None => profile.ClearBrowsingData(kinds, &handler),
+                Some(seconds) => {
+                    let end = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    profile.ClearBrowsingDataInTimeRange(kinds, (end - seconds as f64).max(0.0), end, &handler)
+                }
             }
         };
         if let Err(error) = result {
@@ -3754,6 +3835,7 @@ unsafe fn configure_controller(
             )?;
         }
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
+        start_website_look(&webview);
         if let Some(level) = tracking_policy.level {
             let verified = apply_tracking_prevention(
                 &webview,
@@ -3892,6 +3974,7 @@ unsafe fn configure_controller(
             &ContentLoadingEventHandler::create(Box::new(move |sender, args| {
                 if let Some(sender) = sender.as_ref() {
                     sync_top_host(sender, &content_block_tab);
+                    refresh_force_dark(sender);
                     if let Some(blocker) = content_blocker.as_ref() {
                         refresh_blocked_urls(sender, &content_block_tab, blocker, private, None);
                         apply_cosmetic_css(sender, &content_block_tab, blocker, private);

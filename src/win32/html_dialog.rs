@@ -275,6 +275,10 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
     let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
+    if kind == Kind::Privacy {
+        let app = runtime.try_borrow().ok().map(|state| state.app.clone());
+        if let Some(snapshot) = app.and_then(|app| protection_snapshot_json(&app)) { let _ = host.post_json(&snapshot); }
+    }
 }
 
 fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
@@ -319,6 +323,14 @@ pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
     })
 }
 
+/// The Privacy section's `protection` snapshot (blocking, cookie notices, history retention,
+/// website appearance, Delete Browsing Data; thread T3), for the settings page and the dashboard
+/// window. It has its own snapshot, so its size never counts against the permissions table's.
+pub(crate) fn protection_snapshot_json(app: &AppRef) -> Option<String> {
+    let view = super::protection::gather(app);
+    protocol::snap_json("protection", |out| panels::protection::write(out, &view))
+}
+
 fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
     if run_privacy_command(&app, owner, &f) { send_current(runtime); }
@@ -333,12 +345,15 @@ pub(crate) fn run_privacy_command(app: &AppRef, owner: HWND, f: &PanelFields) ->
         apply_permission_action(app, action);
         return true;
     }
-    let no_extra = f.parent.is_none() && f.before.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none();
+    // Blocking, cookie notices, history retention, website appearance and Delete Browsing Data
+    // (thread T3) are validated in `panels::protection::map_command`. The answer to a command
+    // arrives in the next `protection` snapshot, which the page is always sent after one.
+    if let Some(action) = panels::protection::map_command(f) {
+        super::protection::run(app, owner, action);
+        return true;
+    }
     let id = match f.a.as_str() {
         "clear-stats" if empty_fields(f, false) => Some(8_800),
-        "clear-data" if no_extra && f.id.is_some_and(|kind| kind <= 2) && f.n.is_some_and(|range| (0..=3).contains(&range)) => {
-            Some(8_900 + f.id.unwrap_or_default() as usize * 4 + f.n.unwrap_or_default() as usize)
-        }
         _ => None,
     };
     let Some(id) = id else { return false; };
