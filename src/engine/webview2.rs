@@ -198,6 +198,7 @@ impl ShortcutForward {
 /// Only mapped chords are returned, so typing, clipboard and other page keys always reach the page.
 /// Escape is excluded: it stops a load only while the tab is loading, which this handler cannot see,
 /// so it is left to the page. A setting-gated chord (`gated`) is mapped only while its setting is on.
+#[cfg_attr(not(test), allow(dead_code))]
 fn shortcut_forward(
     key: u32,
     kind: COREWEBVIEW2_KEY_EVENT_KIND,
@@ -206,10 +207,33 @@ fn shortcut_forward(
     alt: bool,
     gated: shortcuts::GatedChords,
 ) -> Option<ShortcutForward> {
+    shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || None)
+}
+
+/// [`shortcut_forward`] for a page whose host `page_host` reads only when a site list exists: a site
+/// that prioritises its own shortcuts keeps every key but the browser priority list
+/// (`crate::commands`), and a typing key is never a shortcut from a page.
+fn shortcut_forward_on_page(
+    key: u32,
+    kind: COREWEBVIEW2_KEY_EVENT_KIND,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    gated: shortcuts::GatedChords,
+    page_host: impl Fn() -> Option<String>,
+) -> Option<ShortcutForward> {
     if !is_key_down(kind) || key == u32::from(VK_ESCAPE.0) {
         return None;
     }
-    shortcuts::command_for_gated(key, ctrl, shift, alt, gated)?;
+    let live = crate::commands::live();
+    let host = if live.store.sites.is_empty() { None } else { page_host() };
+    let context = crate::commands::ResolveContext {
+        gated,
+        source: crate::commands::Source::Page,
+        typing: false,
+        host: host.as_deref(),
+    };
+    crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
     Some(ShortcutForward {
         key,
         ctrl,
@@ -4405,6 +4429,7 @@ unsafe fn configure_controller(
         }
 
         let escape_pressed = events.escape_pressed.clone();
+        let key_webview = webview.clone();
         controller.add_AcceleratorKeyPressed(
             &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -4421,12 +4446,11 @@ unsafe fn configure_controller(
                     {
                         callback(tab_id);
                     }
-                    let gated = if ctrl {
-                        win32::gated_chords(parent)
-                    } else {
-                        shortcuts::GatedChords::default()
-                    };
-                    if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt, gated) {
+                    // A user can bind a gated command to any chord, so the gates are read for every key.
+                    let gated = win32::gated_chords(parent);
+                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
+                        current_web_url(&key_webview).and_then(|url| url.host_str().map(str::to_owned))
+                    }) {
                         win32::post(
                             parent,
                             win32::WM_SHORTCUT_KEY,
@@ -5983,7 +6007,9 @@ mod tests {
                         (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                     let expected = if is_key_down(kind)
                         && key != u32::from(VK_ESCAPE.0)
-                        && shortcuts::command_for(key, ctrl, shift, alt).is_some()
+                        // Ctrl+F1 (the cheat sheet) is the one chord the command registry adds.
+                        && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
+                            || (key, ctrl, shift, alt) == (0x70, true, false, false))
                     {
                         forward(key, ctrl, shift, alt)
                     } else {

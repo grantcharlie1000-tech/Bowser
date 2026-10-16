@@ -1556,3 +1556,292 @@
     transform: none;
   }
 }
+
+/* ---- Keyboard and Quick commands (docs/commands.md; built by ui/src/commands-section.ts) ----
+   The option rows are ordinary .sp-row rows. The shortcut list, the result types and the chain editor are
+   blocks of their own, made from the same card, rule, pill and field surfaces as the allow list above. */
+.sp-cmd-note {
+  margin: var(--bw-space-2) 0 0;
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb,
+.sp-chains {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-kb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+  margin-bottom: var(--bw-space-2);
+}
+
+.sp-kb-head > .sp-group-h {
+  margin: 0;
+}
+
+.sp-kb-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+}
+
+.sp-kb-lead {
+  margin: 0 0 var(--bw-space-3);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb-filter {
+  width: 100%;
+  margin-bottom: var(--bw-space-4);
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-kb-cat + .sp-kb-cat {
+  margin-top: var(--bw-space-4);
+}
+
+.sp-kb-cat > .sp-card-h {
+  margin: 0 0 var(--bw-space-1_5);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2) var(--bw-space-4);
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-kb-row + .sp-kb-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-kb-name {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.sp-kb-keylist {
+  display: flex;
+  flex: 0 1 auto;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--bw-space-1_5);
+}
+
+.sp-kb-none {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-kb-chip,
+.sp-kb-capture {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  height: 28px;
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--sp-field);
+}
+
+.sp-kb-keys {
+  font: inherit;
+  font-size: var(--bw-text-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sp-kb-capture {
+  border-style: dashed;
+  border-color: var(--bw-accent);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  outline: none;
+}
+
+.sp-kb-rowtools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-0_5);
+}
+
+.sp-kb-rowtools:empty {
+  display: none;
+}
+
+.sp-kb-priority:not([aria-pressed="true"]) {
+  opacity: 0.55;
+}
+
+.sp-kb-conflict {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2);
+  color: var(--sp-warn);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-kb-empty {
+  margin: 0;
+  padding: var(--bw-space-3) var(--bw-space-0_5);
+}
+
+/* Quick commands: result types, each with a switch and move buttons. */
+.sp-qc-types {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sp-qc-type {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  padding: var(--bw-space-2) 0;
+}
+
+.sp-qc-type + .sp-qc-type {
+  border-top: 1px solid var(--sp-rule);
+}
+
+.sp-qc-type.is-off .sp-label {
+  color: var(--bw-text-2);
+}
+
+.sp-qc-type-text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+/* Command chains: the list, then the editor under it. */
+.sp-chain-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-6);
+  min-height: 56px;
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-chain-line + .sp-chain-line::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-chain-line.is-tight {
+  min-height: 48px;
+  padding-block: var(--bw-space-2);
+}
+
+.sp-chain-line.is-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--bw-space-3);
+  padding-block: var(--bw-space-4);
+}
+
+.sp-chain-tools {
+  gap: var(--bw-space-1);
+}
+
+.sp-chain-editor {
+  margin-top: var(--bw-space-3);
+}
+
+.sp-chain-name {
+  width: 240px;
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-chain-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sp-chain-step {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.sp-chain-step > .bw-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sp-chain-num {
+  flex: none;
+  width: 20px;
+  color: var(--bw-text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.sp-chain-delay {
+  flex: none;
+  width: 88px;
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-chain-lead,
+.sp-chain-none {
+  margin: 0;
+}
+
+.sp-chain-footer {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+}
+
+.sp-chain-actions {
+  display: flex;
+  gap: var(--bw-space-2);
+  margin-inline-start: auto;
+}
+
+@media (max-width: 879px) {
+  .sp-chain-name {
+    width: 100%;
+  }
+
+  .sp-chain-line {
+    flex-wrap: wrap;
+    gap: var(--bw-space-3);
+  }
+}

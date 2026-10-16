@@ -1905,6 +1905,13 @@ pub fn run(app: App) -> windows::core::Result<()> {
     let _ = std::thread::Builder::new()
         .name("text-prewarm".into())
         .spawn(move || paint::prewarm_text(dpi));
+    // The shortcut and chain files (`crate::commands`) are read off the UI thread, so the first key press
+    // and the first palette find them loaded.
+    let _ = std::thread::Builder::new()
+        .name("commands-prewarm".into())
+        .spawn(|| {
+            let _ = crate::commands::live();
+        });
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
         let big_icon = app_icon(instance, GetSystemMetrics(SM_CXICON));
@@ -2451,6 +2458,16 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // Alt pressed and released on its own (or F10): Bowser's main menu when the "Alt opens the
+            // menu" option is on; otherwise nothing, instead of Windows' hidden system-menu mode.
+            WM_SYSCOMMAND if (wparam.0 & 0xFFF0) == SC_KEYMENU as usize && lparam.0 == 0 => {
+                if crate::commands::live().store.options.alt_opens_menu {
+                    if let Some(app) = app {
+                        show_main_menu(hwnd, app);
+                    }
+                }
+                LRESULT(0)
+            }
             WM_SYSCOMMAND
                 if (wparam.0 & 0xFFF0) == SC_KEYMENU as usize
                     && (lparam.0 as u16) == u16::from(b' ') =>
@@ -2580,6 +2597,13 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     super::settings_page::run_queued(hwnd, app);
                     mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
+            // One step of a running command chain (`command_actions`): its delay has passed.
+            super::WM_CHAIN_STEP => {
+                if let Some(app) = app {
+                    super::command_actions::chain_step(hwnd, app, wparam.0 as u32, lparam.0 as usize);
                 }
                 LRESULT(0)
             }
@@ -2753,8 +2777,14 @@ unsafe extern "system" fn window_proc(
                     let handled = dispatch(hwnd, app, key, ctrl, shift, alt);
                     if handled
                         && m & (SHORTCUT_FROM_CHROME as u8) != 0
-                        && shortcuts::command_for(key, ctrl, shift, alt)
-                            .is_some_and(changes_active_tab)
+                        && crate::commands::resolve(
+                            key,
+                            ctrl,
+                            shift,
+                            alt,
+                            &crate::commands::ResolveContext { gated: App::gated_chords(app), ..Default::default() },
+                        )
+                        .is_some_and(changes_active_tab)
                     {
                         App::focus_page(app);
                     }
@@ -3373,7 +3403,11 @@ unsafe extern "system" fn window_proc(
                 let p = frame::point_from_lparam(lparam);
                 if let Some(app) = app {
                     let target = hit(hwnd, p.x, p.y);
-                    if opens_bowser_menu(target) && system_menu_requested(app) {
+                    if right_click_shows_system_menu(
+                        target,
+                        App::shift_right_click_context(app),
+                        GetKeyState(VK_SHIFT.0 as i32) < 0,
+                    ) {
                         card::cancel(hwnd);
                         html_system_menu(hwnd);
                         return LRESULT(0);
@@ -4672,6 +4706,11 @@ pub(super) fn html_split_accelerator(hwnd: HWND, accel: Accel) -> bool {
 }
 
 pub(super) fn html_settings_accelerator(hwnd: HWND, accel: Accel) -> bool {
+    // The keyboard editor is waiting for a new shortcut: the page gets the key, so Ctrl+T is captured
+    // as a shortcut instead of opening a tab.
+    if crate::commands::capturing() {
+        return false;
+    }
     html_accelerator(hwnd, accel, View::Settings)
 }
 
@@ -6569,6 +6608,8 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
+    let live = crate::commands::live();
+    let options = live.store.options.clone();
     let tabs: Vec<_> = App::tab_ids(app)
         .into_iter()
         .map(|id| {
@@ -6579,33 +6620,44 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
             )
         })
         .collect();
-    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) {
+    let productive = crate::productivity::profile_allows_productivity(&profile);
+    let bookmarks = if !productive {
         Vec::new()
     } else {
         crate::productivity::read_bookmarks(&profile.bookmarks_file())
     };
-    let history = if !crate::productivity::profile_allows_productivity(&profile)
-        || !profile.history_enabled()
-    {
+    let history = if !productive || !profile.history_enabled() {
         Vec::new()
     } else {
         crate::productivity::read_history(&profile.history_file())
     };
-    let commands = crate::productivity::browser_commands();
+    // Every result type reads a store that already exists; nothing is cached for the palette.
+    let notes = if !productive {
+        Vec::new()
+    } else {
+        crate::productivity::read_note_list(&profile.notes_file()).into_iter().map(|note| (note.id, note.title, note.body)).collect()
+    };
+    let data = command_palette::PaletteData {
+        tabs,
+        closed: App::recently_closed(app).into_iter().map(|closed| (closed.title, closed.url)).collect(),
+        workspaces: App::workspace_entries(app).into_iter().map(|(id, name, _, _, count, _)| (id.0, name, count)).collect(),
+        bookmarks,
+        notes,
+        history,
+        commands: crate::commands::palette_commands(&live),
+    };
     // --- popup surfaces (lane PP) ---
     if html_popup::page_ready(hwnd) {
         if html_popup::is_active(hwnd) {
             html_popup::cancel(hwnd, app);
         }
         let items = command_palette::html_items_with_favicons(
-            &tabs,
-            &bookmarks,
-            &history,
-            &commands,
+            &data,
+            &options,
             |id| App::tab_favicon(app, TabId(id)),
             |host| crate::favicon::load_favicon_bytes(host).ok().flatten(),
         );
-        let page = command_palette::html_page(&items);
+        let page = command_palette::html_page(&items, &options);
         let mut window = RECT::default();
         unsafe {
             let _ = GetWindowRect(hwnd, &mut window);
@@ -6632,65 +6684,109 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     }
     // NATIVE FALLBACK: HTML chrome off, or the popup host is not ready yet.
     // --- end popup surfaces ---
-    let Some(item) = command_palette::show(hwnd, tabs, bookmarks, history, commands) else {
+    let Some(item) = command_palette::show(hwnd, data, options) else {
         return;
     };
     run_palette_item(hwnd, app, &item.action);
 }
 
-/// Runs one palette result: a tab id that is still open, an http(s) address, or a command.
+/// Shows the keyboard cheat sheet (Ctrl+F1): the palette page in `shortcuts` mode.
+pub(crate) fn show_shortcuts_sheet(hwnd: HWND, app: &AppRef) {
+    let live = crate::commands::live();
+    if !html_popup::page_ready(hwnd) {
+        // No HTML popup host (the GDI chrome): the Keyboard section of Settings lists the same
+        // shortcuts and lets the user change them.
+        super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Keyboard), false);
+        return;
+    }
+    if html_popup::is_active(hwnd) {
+        html_popup::cancel(hwnd, app);
+    }
+    let items = command_palette::shortcuts_items(&live);
+    let page = command_palette::shortcuts_page(&items, live.store.options.shortcuts_enabled);
+    let mut window = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut window);
+    }
+    let _ = html_popup::show_page(
+        hwnd,
+        html_popup::Anchor::TopCenter(window),
+        "shortcuts",
+        popup_context(hwnd),
+        page,
+        Box::new(|_, _| {}),
+        None,
+    );
+}
+
+/// Runs one palette result: a tab id that is still open, an http(s) address, a closed tab, a
+/// workspace, a note, a calculator result, or a command.
 fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
+    let options = crate::commands::live().store.options.clone();
+    let web = |text: &str| url::Url::parse(text).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
     if let Some(id) = action.strip_prefix("tab:").and_then(|s| s.parse::<u32>().ok()) {
         if App::tab_ids(app).contains(&TabId(id)) {
             let _ = App::select_tab(app, TabId(id));
         }
-    } else if let Some(url) = action
-        .strip_prefix("url:")
-        .and_then(|s| url::Url::parse(s).ok())
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-    {
+    } else if let Some(url) = action.strip_prefix("url:").and_then(|s| web(s)) {
+        // "Open links in a new tab" decides between a new tab and the current one.
+        if options.palette_open_new_tab {
+            App::new_tab(app);
+        }
         App::navigate_current(app, &url);
-    } else {
+    } else if let Some(url) = action.strip_prefix("reopen:").and_then(|s| web(s)) {
+        // A closed tab always comes back in a tab of its own.
+        App::new_tab(app);
+        App::navigate_current(app, &url);
+    } else if let Some(id) = action.strip_prefix("workspace:").and_then(|s| s.parse::<u32>().ok()) {
+        let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id));
+    } else if let Some(id) = action.strip_prefix("note:").and_then(|s| s.parse::<u64>().ok()) {
+        if options.palette_notes_in_panel {
+            notes_panel::open(hwnd);
+            apply_sidebar_bounds(hwnd, app);
+        } else if let Ok(profile) = crate::profile::active() {
+            // Off: the note's text goes to the clipboard to paste where it is wanted.
+            if let Some(note) = crate::productivity::read_note_list(&profile.notes_file()).into_iter().find(|note| note.id == id) {
+                let text = if note.title.trim().is_empty() { note.body } else { format!("{}\n{}", note.title, note.body) };
+                let _ = copy_text_to_clipboard(hwnd, text.trim_end());
+            }
+        }
+    } else if let Some(text) = action.strip_prefix("copy:") {
+        let _ = copy_text_to_clipboard(hwnd, text);
+    } else if !run_registered(hwnd, app, action) {
         run_palette_command(hwnd, app, action);
     }
 }
 
+/// The registry's `Handler::Action` commands: the ones with no chord-dispatched `Command` of their
+/// own. Everything else a registry command can do runs through `run_key_command`.
 fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
     match action {
-        "new-tab" => {
-            App::new_tab(app);
-            focus_omni(hwnd, app, true);
-        }
-        "new-private-tab" => {
-            App::new_private_tab(app);
-            focus_omni(hwnd, app, true);
-        }
         "close-private-tabs" => {
             App::close_private_tabs(app);
         }
-        "close-tab" => {
-            let _ = App::close_tab(app, App::active_tab_id(app));
-        }
         "settings" => super::settings_page::open(hwnd, app, None, false),
-        "toggle-sidebar" => {
-            notes_panel::open(hwnd);
-            apply_sidebar_bounds(hwnd, app);
-        }
-        "passwords" => {
-            let _ = passwords_panel::open(hwnd);
-        }
-        "profiles" => show_profile_menu(hwnd),
         "save-session" | "sessions" => show_sessions(hwnd, app),
-        "add-bookmark" => add_current_bookmark(hwnd, app),
-        "reload" => App::reload(app),
-        "back" => navigate_back_for_focused_pane(app),
-        "forward" => navigate_forward_for_focused_pane(app),
-        "extensions" => show_extensions_menu(hwnd, app),
-        "reader" => run_reader(hwnd, app, crate::reader::Mode::Reader),
         "calm" => run_reader(hwnd, app, crate::reader::Mode::Calm),
         "translate" => run_translate(hwnd, app, TranslateAction::Toggle),
         _ => {}
     }
+}
+
+/// A passive one-line message in the same toast the reader and bookmark commands use.
+pub(crate) fn show_toast(hwnd: HWND, message: &str, footer: &str) {
+    menu::show(
+        hwnd,
+        screen_point(hwnd, main_menu_anchor(hwnd)),
+        menu::Placement::AboveLeft,
+        Menu {
+            header: None,
+            entries: vec![Entry::Item(Item::new(0, message, Icon::Info).glyph("command").disabled())],
+            footer: footer.into(),
+        },
+        "command-toast",
+        |_, _| {},
+    );
 }
 
 /// Reader view or distraction hiding for the active page. Shared by Ctrl+Alt+R, the toolbar button,
@@ -10558,7 +10654,18 @@ fn opens_bowser_menu(hit: Hit) -> bool {
 /// `shift_right_click_context`: with the setting on and Shift held, a right click shows the window's
 /// system menu instead of Bowser's own tab and rail menus. Off, or without Shift, nothing changes.
 fn system_menu_requested(app: &AppRef) -> bool {
-    App::shift_right_click_context(app) && unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }
+    system_menu_wanted(App::shift_right_click_context(app), unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 })
+}
+
+/// The decision behind `system_menu_requested`: the setting is on and Shift is held.
+fn system_menu_wanted(setting: bool, shift_held: bool) -> bool {
+    setting && shift_held
+}
+
+/// Whether a right click over `hit` shows the window's system menu instead of one of Bowser's own:
+/// only over something that has a Bowser menu, with the setting on and Shift held.
+fn right_click_shows_system_menu(hit: Hit, setting: bool, shift_held: bool) -> bool {
+    opens_bowser_menu(hit) && system_menu_wanted(setting, shift_held)
 }
 
 /// The setting-gated chords bound for this window, for the key filters that decide whether a chord
@@ -10576,16 +10683,33 @@ fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {
     dispatch(hwnd, app, key, c, s, a)
 }
 fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bool) -> bool {
-    let Some(cmd) =
-        shortcuts::command_for_gated(key, ctrl, shift, alt, App::gated_chords(app))
-    else {
+    // The key filters upstream (page, chrome) already decided who owns the key; this resolves it
+    // once more against the same live keymap (`crate::commands`).
+    let context = crate::commands::ResolveContext {
+        gated: App::gated_chords(app),
+        typing: edit_focused(hwnd) || omnibox_focused(hwnd),
+        ..Default::default()
+    };
+    let Some(cmd) = crate::commands::resolve(key, ctrl, shift, alt, &context) else {
         return false;
     };
     // While the address field has focus, the field's own redo keeps Ctrl+Shift+Z.
     if cmd == Command::UndoTabOrganisation && edit_focused(hwnd) {
         return false;
     }
+    run_key_command(hwnd, app, cmd, key);
+    true
+}
+
+/// Runs one command and refreshes the chrome. `key` is the key that triggered it (0 when a menu, the
+/// palette or a chain did), which F6 focus cycling needs.
+fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
     match cmd {
+        Command::Registered(handle) => {
+            if let Some(id) = crate::commands::id_of(handle) {
+                run_registered(hwnd, app, &id);
+            }
+        }
         Command::NewTab => {
             App::new_tab(app);
             focus_omni(hwnd, app, true)
@@ -10613,6 +10737,14 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             if let Some(id) = App::tab_ids(app).last() {
                 let _ = App::select_tab(app, *id);
             }
+        }
+        // With the focus-cycling option on, F6 moves the keyboard between the address bar and the page.
+        Command::FocusOmnibox
+            if key == 0x75
+                && crate::commands::live().store.options.focus_cycling
+                && (edit_focused(hwnd) || omnibox_focused(hwnd)) =>
+        {
+            App::focus_page(app)
         }
         Command::FocusOmnibox => focus_omni(hwnd, app, true),
         Command::Reload => App::reload(app),
@@ -10682,6 +10814,22 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     repaint(hwnd);
     arm_motion(hwnd);
+}
+
+/// Runs a registry command by id: the one entry point for the palette, shortcuts, chains and (later)
+/// mouse gestures and toolbar buttons. False when the id is not a command.
+pub(crate) fn run_registered(hwnd: HWND, app: &AppRef, id: &str) -> bool {
+    use crate::commands::{registry::Handler, store::EntryHandler};
+    let live = crate::commands::live();
+    let Some(entry) = crate::commands::entry(&live, id) else {
+        return false;
+    };
+    match entry.handler {
+        EntryHandler::Builtin(Handler::Key(command)) => run_key_command(hwnd, app, command, 0),
+        EntryHandler::Builtin(Handler::Action(action)) => run_palette_command(hwnd, app, action),
+        EntryHandler::Builtin(Handler::Run(run)) => run(&crate::commands::registry::Context { hwnd, app }),
+        EntryHandler::Chain(number) => super::command_actions::start_chain(hwnd, &live.store, number),
+    }
     true
 }
 
@@ -10896,6 +11044,32 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn shift_right_click_shows_the_system_menu_only_with_the_setting_on_shift_held_and_a_bowser_menu_under_the_pointer() {
+        // Every place a right click opens one of Bowser's tab, group, rail or split menus.
+        for hit in [Hit::Tab(0), Hit::TabClose(1), Hit::SidebarGroup(0), Hit::SidebarTab(2), Hit::SidebarTabClose(0), Hit::GroupBall(0), Hit::SplitDivider] {
+            assert!(right_click_shows_system_menu(hit, true, true), "{hit:?}: setting on, Shift held");
+            assert!(!right_click_shows_system_menu(hit, false, true), "{hit:?}: setting off, Bowser's own menu stays");
+            assert!(!right_click_shows_system_menu(hit, true, false), "{hit:?}: no Shift, Bowser's own menu stays");
+            assert!(!right_click_shows_system_menu(hit, false, false), "{hit:?}");
+        }
+        // Over the page, the address bar or empty strip there is no Bowser menu to replace.
+        for hit in [Hit::None, Hit::Viewport, Hit::Omnibox, Hit::CaptionArea, Hit::Back, Hit::MainMenu] {
+            assert!(!right_click_shows_system_menu(hit, true, true), "{hit:?}");
+        }
+        assert!(system_menu_wanted(true, true));
+        assert!(!system_menu_wanted(true, false) && !system_menu_wanted(false, true));
+    }
+
+    #[test]
+    fn the_shift_right_click_setting_is_read_from_the_saved_file() {
+        let mut settings = crate::settings::Settings::default();
+        assert!(!settings.shift_right_click_context, "off by default: a plain right click is always Bowser's menu");
+        settings.shift_right_click_context = true;
+        let again = crate::settings::Settings::parse(&crate::settings::render_updated("", &settings));
+        assert!(again.shift_right_click_context);
+    }
 
     #[test]
     fn rail_menu_opens_right_of_the_rail_and_keeps_the_pointer_height() {

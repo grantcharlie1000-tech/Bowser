@@ -12,6 +12,7 @@ import { selectField, type SelectField } from './panels/select';
 import { textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
 import { mountExtensionsSection } from './extensions-section';
+import { mountCommandsSections } from './commands-section';
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
@@ -24,7 +25,7 @@ import {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', privacy: 'shield', performance: 'workspace-bolt',
-  search: 'search', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
+  search: 'search', keyboard: 'command', commands: 'link', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -715,6 +716,14 @@ export function startSettingsPage(root: HTMLElement): void {
   customNote.textContent = 'Searches use the custom provider in search-provider.txt until you choose an engine here.';
   engineRow.root.append(customNote);
 
+  // Keyboard and Quick commands (docs/commands.md): each control is its own command, answered by the
+  // `commands` snapshot, never part of `save`. The rows join the page's search like any other.
+  const commandSections = mountCommandsSections({ send: cmd, toast: (text, ok) => showToast(text, ok) });
+  sectionNodes.get('keyboard')?.append(...commandSections.keyboard);
+  sectionNodes.get('commands')?.append(...commandSections.commands);
+  for (const found of commandSections.rows) rows.set(found.spec.id, { ...found, flag: null, target: null });
+  groups.push(...commandSections.groups);
+
   // Downloads (docs/design/downloads.md "Settings"): both controls are their own commands, never
   // part of `save`; Rust shows the native folder picker and answers with the next snapshot.
   const downloadsCard = card('downloads');
@@ -1127,6 +1136,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'commands') { commandSections.receive(message); return; }
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
     if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded. The response was invalid.'; return; }

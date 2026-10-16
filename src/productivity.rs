@@ -78,53 +78,12 @@ impl CommandRegistry {
     }
 }
 
+/// The commands the palette lists, from the one command registry (`crate::commands`): built-ins and
+/// the user's chains. The action of each is the command id.
 pub fn browser_commands() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
-    for (label, detail, action) in [
-        ("New tab", "Open a blank tab", "new-tab"),
-        (
-            "New private tab",
-            "Browse without saving history, cookies or site data",
-            "new-private-tab",
-        ),
-        ("Close tab", "Close the current tab", "close-tab"),
-        (
-            "Close all private tabs",
-            "Close every private tab in this window",
-            "close-private-tabs",
-        ),
-        ("Settings", "Open browser settings", "settings"),
-        (
-            "Toggle notes and tasks",
-            "Show or hide the productivity sidebar",
-            "toggle-sidebar",
-        ),
-        (
-            "Passwords and passkeys",
-            "Manage saved credentials",
-            "passwords",
-        ),
-        ("Profiles", "Switch or manage profiles", "profiles"),
-        (
-            "Save session",
-            "Save the open tabs as a named session",
-            "save-session",
-        ),
-        (
-            "Saved sessions",
-            "Restore or delete a saved session",
-            "sessions",
-        ),
-        ("Add bookmark", "Save the current page", "add-bookmark"),
-        ("Reload", "Reload the current page", "reload"),
-        ("Back", "Go back", "back"),
-        ("Forward", "Go forward", "forward"),
-        ("Extensions", "Manage installed extensions", "extensions"),
-        ("Reader view", "Read this page without the clutter", "reader"),
-        ("Hide distractions", "Hide overlays, cookie banners and sticky bars", "calm"),
-        ("Translate page", "Translate this page with Google Translate, or show the original", "translate"),
-    ] {
-        commands.register(label, detail, action);
+    for command in crate::commands::palette_commands(&crate::commands::live()) {
+        commands.register(command.label, command.detail, command.id);
     }
     commands
 }
@@ -1215,6 +1174,7 @@ mod tests {
             "settings",
             "passwords",
             "profiles",
+            "toggle-notes",
             "toggle-sidebar",
             "save-session",
             "sessions",

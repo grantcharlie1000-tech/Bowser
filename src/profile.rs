@@ -414,6 +414,16 @@ impl Profile {
         self.root.join(SETTINGS_FILE_NAME)
     }
 
+    /// Shortcut assignments and the keyboard / Quick Commands options (`crate::commands::store`).
+    pub fn keybindings_file(&self) -> PathBuf {
+        self.root.join("keybindings.txt")
+    }
+
+    /// Command chains (`crate::commands::chains`).
+    pub fn chains_file(&self) -> PathBuf {
+        self.root.join("chains.txt")
+    }
+
     pub fn metadata_file(&self) -> PathBuf {
         self.root.join(METADATA_FILE_NAME)
     }

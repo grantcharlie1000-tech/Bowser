@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { filterPalette, flatten, moveSelection, scoreItem, subsequenceGap, validPalettePayload, MAX_RESULTS } from '../src/palette-logic.ts';
 import { validSiteInfoPayload, cookieText, blockerText, blockedNoticeText, ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, PRIVATE_SITE_NOTE } from '../src/siteinfo-logic.ts';
 import * as esbuild from 'esbuild';
 
@@ -16,13 +15,14 @@ async function bundle(file) {
   return import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].contents).toString('base64')}`);
 }
 const { parseInbound } = await bundle('protocol.ts');
+const { filterPalette, flatten, moveSelection, scoreItem, subsequenceGap, validPalettePayload, MAX_RESULTS } = await bundle('palette-logic.ts');
 const { parseRenameSnapshot, localRenameError } = await bundle('rename.ts');
 const fixture = JSON.parse(readFileSync(join(here, 'fixtures', 'popup-pages.json'), 'utf8'));
 
 test('Rust palette page passes the strict palette contract', () => {
   assert.equal(validPalettePayload(fixture.palette), true);
   const sections = new Set(fixture.palette.items.map((item) => item.s));
-  assert.deepEqual([...sections], ['tab', 'command', 'bookmark', 'history']);
+  assert.deepEqual([...sections], ['tab', 'closed', 'workspace', 'command', 'action', 'bookmark', 'note', 'history']);
   assert.ok(fixture.palette.items.some((item) => item.acc === 'Ctrl+T'));
   const commands = fixture.palette.items.filter((item) => item.s === 'command').map((item) => item.label);
   assert.deepEqual(commands.slice(0, 3), ['New tab', 'New private tab', 'Close tab']);

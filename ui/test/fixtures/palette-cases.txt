@@ -1,0 +1,61 @@
+# Quick Commands search cases, read by both src/commands/palette.rs (cargo test) and ui/src/palette-logic.ts
+# (ui/test/palette.mjs). Tab separated, one record per line.
+#   item <TAB> kind <TAB> label <TAB> detail <TAB> action
+#   case <TAB> query <TAB> types (a comma list in order, or * for the default order) <TAB> limit <TAB> expected actions joined by |
+# An empty expectation means no rows. A calculator row is written copy:<result>.
+item	tab	Settings guide	https://docs.example/	tab:1
+item	tab	Daily notes	https://notes.example/	tab:2
+item	closed	Closed news	https://news.example/	reopen:https://news.example/
+item	workspace	Work	3 tabs	workspace:1
+item	workspace	Home	1 tab	workspace:2
+item	command	Settings	Open browser settings	settings
+item	command	New tab	Open a blank tab	new-tab
+item	command	Save session	Save the open tabs as a named session	save-session
+item	action	Reload	Reload the current page	reload
+item	action	Reader view	Read this page without the clutter	reader
+item	bookmark	Sweet tea	https://tea.example/	url:https://tea.example/
+item	bookmark	Plan	https://plan.example/ Work	url:https://plan.example/
+item	note	Shopping	milk and tea	note:7
+item	note	Ideas	reload the garden plan	note:8
+item	history	News	https://set.example/	url:https://set.example/
+item	history	A page about tea	https://a.example/	url:https://a.example/
+# Typed search ranks by match quality while the order is the default: the best match leads.
+case	settings	*	12	settings|tab:1
+case	set	*	12	settings|save-session|tab:1|url:https://tea.example/|url:https://set.example/|reader
+case	reload	*	12	reload|note:8
+case	RELOAD	*	12	reload|note:8
+case	zzz	*	12	
+# Prefixes and their short forms.
+case	bookmark: tea	*	12	url:https://tea.example/|url:https://plan.example/
+case	bkm:tea	*	12	url:https://tea.example/|url:https://plan.example/
+case	BKM: plan	*	12	url:https://plan.example/
+case	note: tea	*	12	note:7|note:8
+case	tab: set	*	12	tab:1
+case	tb: news	*	12	reopen:https://news.example/
+case	history: tea	*	12	url:https://a.example/|url:https://set.example/
+case	command: set	*	12	settings|save-session
+case	cmd: new	*	12	new-tab
+case	action: rel	*	12	reload|reader
+case	workspace: wor	*	12	workspace:1
+case	foo: bar	*	12	
+# A prefix alone lists that type, up to the limit.
+case	bkm:	*	12	url:https://tea.example/|url:https://plan.example/
+case	bkm:	*	1	url:https://tea.example/
+case	workspace:	*	12	workspace:1|workspace:2
+# An empty search shows the first tabs, closed tabs, workspaces and commands only.
+case		*	12	tab:1|tab:2|reopen:https://news.example/|workspace:1|workspace:2|settings|new-tab|save-session
+# The limit caps typed results.
+case	e	*	3	url:https://a.example/|reopen:https://news.example/|tab:2
+# Hidden types never show, even through their prefix.
+case	tea	tab,command	12	save-session|tab:1|tab:2
+case	bkm: tea	tab,command	12	
+case		command	12	settings|new-tab|save-session
+# A custom order groups by it, in the user's order.
+case	set	history,command,tab	12	url:https://set.example/|settings|save-session|tab:1
+case	reload	note,action	12	note:8|reload
+# A sum adds a calculator row first, unless prefixed or hidden.
+case	2+2*3	*	12	copy:8
+case	12 / 4	*	12	copy:3
+case	tab: 2+2	*	12	
+case	2+2	tab,command	12	
+case	42	*	12	

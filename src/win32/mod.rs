@@ -1,5 +1,6 @@
 mod card;
 mod corner_fringe;
+mod command_actions; // run_registered helpers: command chains, the cheat sheet, per-site shortcut priority
 mod command_palette;
 mod composer;
 mod devtools_dock;
@@ -56,6 +57,8 @@ pub(crate) use window::{
     gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer,
     show_pending_address, sync_address_input,
 };
+// Registry handlers (`crate::commands::registry`) that need a window.
+pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_toggle_site_shortcuts};
 
 use windows::{
     Win32::{
@@ -151,6 +154,8 @@ pub(crate) const WM_DOWNLOADS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessa
 /// The installed extensions changed (installed, turned on or off, removed, or a load result came
 /// in): the toolbar's extensions button and the settings page's Extensions section read them again.
 pub(crate) const WM_EXTENSIONS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C5;
+/// A step of a running command chain is due (`command_actions::chain_step` runs it).
+pub(crate) const WM_CHAIN_STEP: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5E1;
 /// Trailing flush of a throttled progress update (`downloads_ui`).
 pub(crate) const WM_DOWNLOADS_TIMER: usize = 0xB070;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.

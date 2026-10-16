@@ -33,6 +33,7 @@ use crate::{
         protocol::{Command, PanelFields, PanelType},
         settings::{self as wire, Ack, Action},
         extensions_page as ext,
+        commands_page as cmdpage,
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -73,6 +74,13 @@ struct Runtime {
     ext_busy: String,
     ext_ack: ext::Ack,
     ext_error: String,
+    /// Last Keyboard and Quick Commands snapshot sent, whether a fresh one is due, and how the last
+    /// command in those sections went (`chrome_host::commands_page`).
+    commands: Option<String>,
+    cmd_due: bool,
+    cmd_ack: cmdpage::Ack,
+    cmd_error: String,
+    cmd_conflict: Option<(String, String, String)>,
     dirty: bool,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
@@ -176,6 +184,13 @@ pub(crate) fn extensions_changed(owner: HWND) {
     super::window::split_ui_invalidate(owner);
 }
 
+/// The shortcut or option store changed outside the page (the per-site switch, another window): the
+/// Keyboard and Quick Commands sections read it again the next time the page syncs.
+pub(crate) fn commands_changed(owner: HWND) {
+    let _ = with(owner, |rt| rt.cmd_due = true);
+    super::window::split_ui_invalidate(owner);
+}
+
 /// The page's "Check for updates" finished with `result` (`staged`, `uptodate`, ...).
 pub(crate) fn update_checked(owner: HWND, result: &'static str) {
     let _ = with(owner, |rt| {
@@ -255,6 +270,8 @@ fn ensure_host(owner: HWND) {
                     rt.state = None;
                     rt.snapshot = None;
                     rt.privacy = None;
+                    rt.commands = None;
+                    crate::commands::set_capturing(false); // a reloaded page is not waiting for a key
                     rt.dirty = true;
                     // A reloaded page starts at the top: show the tab's section again.
                     if rt.go.is_none() {
@@ -364,6 +381,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     };
     let Some(want) = want else {
         if shown.is_some() {
+            crate::commands::set_capturing(false);
             let _ = host.set_visible(false);
             unsafe {
                 let _ = ShowWindow(container, SW_HIDE);
@@ -404,6 +422,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| {
             rt.privacy_due = true;
             rt.ext_due = true;
+            rt.cmd_due = true;
         });
         let snapshot = snapshot(owner, app);
         // An answer is always delivered, even when the values did not change (a second identical
@@ -437,6 +456,27 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 rt.extensions = Some(extensions);
                 rt.ext_ack = ext::Ack::None;
                 rt.ext_error.clear();
+            });
+        }
+    }
+    // The Keyboard and Quick Commands sections: the live store (`crate::commands`), sent when it
+    // changed or carries an answer.
+    if with(owner, |rt| std::mem::take(&mut rt.cmd_due)).unwrap_or(false) {
+        let (ack, error, conflict) = with(owner, |rt| (rt.cmd_ack, rt.cmd_error.clone(), rt.cmd_conflict.clone())).unwrap_or_default();
+        let live = crate::commands::live();
+        let status = cmdpage::Status {
+            ack,
+            error: &error,
+            conflict: conflict.as_ref().map(|(chord, id, label)| (chord.as_str(), id.as_str(), label.as_str())),
+        };
+        let commands = cmdpage::snapshot_json(status, &live.store);
+        let fresh = with(owner, |rt| rt.cmd_ack != cmdpage::Ack::None || rt.commands.as_deref() != Some(commands.as_str())).unwrap_or(false);
+        if fresh && host.post_json(&commands).is_ok() {
+            let _ = with(owner, |rt| {
+                rt.commands = Some(commands);
+                rt.cmd_ack = cmdpage::Ack::None;
+                rt.cmd_error.clear();
+                rt.cmd_conflict = None;
             });
         }
     }
@@ -557,6 +597,8 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                     run(owner, app, tab, action);
                 } else if let Some(action) = ext::map_command(&fields) {
                     run_extension(owner, app, action);
+                } else if let Some(action) = cmdpage::map_command(&fields) {
+                    run_commands(owner, app, action);
                 }
             }
             Queued::Privacy(fields) => {
@@ -679,6 +721,40 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             };
             answer(owner, crate::default_browser::make_default(&exe));
         }
+    }
+}
+
+// ----- the Keyboard and Quick Commands sections (docs/commands.md) -----
+
+/// Records how a Keyboard or Quick Commands command went; the next snapshot reports it once.
+fn cmd_answer(owner: HWND, ack: cmdpage::Ack, error: String, conflict: Option<(String, String, String)>) {
+    let _ = with(owner, |rt| {
+        rt.cmd_ack = ack;
+        rt.cmd_error = error;
+        rt.cmd_conflict = conflict;
+        rt.cmd_due = true;
+        rt.commands = None;
+    });
+}
+
+/// Applies one command to a copy of the live store, saves it with the profile and makes it live (the
+/// key handlers read it from the next key press). Test Chain runs the draft and saves nothing.
+fn run_commands(owner: HWND, app: &AppRef, action: cmdpage::Action) {
+    let mut store = crate::commands::live().store.clone();
+    match cmdpage::apply(&mut store, &action) {
+        cmdpage::Outcome::Saved => match crate::commands::save_and_install(store) {
+            Ok(_) => cmd_answer(owner, cmdpage::Ack::Saved, String::new(), None),
+            Err(error) => cmd_answer(owner, cmdpage::Ack::Failed, error, None),
+        },
+        cmdpage::Outcome::Conflict { chord, owner: holder, label } => cmd_answer(owner, cmdpage::Ack::Conflict, String::new(), Some((chord, holder, label))),
+        cmdpage::Outcome::Failed(error) => cmd_answer(owner, cmdpage::Ack::Failed, error, None),
+        cmdpage::Outcome::Test(chain) => {
+            super::command_actions::start(owner, &chain);
+            cmd_answer(owner, cmdpage::Ack::Ran, String::new(), None);
+        }
+        cmdpage::Outcome::CheatSheet => super::window::show_shortcuts_sheet(owner, app),
+        // While the editor waits for a key, the page gets every key (`html_settings_accelerator`).
+        cmdpage::Outcome::Capture(on) => crate::commands::set_capturing(on),
     }
 }
 

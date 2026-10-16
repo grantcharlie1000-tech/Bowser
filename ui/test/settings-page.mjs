@@ -163,7 +163,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'pinNewTabGroups', 'shiftRightClickContext', 'tabPreviewImages', 'tabPreviewMemory']);
+  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'frameless', 'pinNewTabGroups', 'tabPreviewImages', 'tabPreviewMemory']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -367,11 +367,11 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 10);
-  assert.equal(app.querySelectorAll('section').length, 10);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 12);
+  assert.equal(app.querySelectorAll('section').length, 12);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
-  // The Privacy dashboard and the Extensions block each stand for one row.
-  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext').map((row) => row.dataset.row);
+  // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
+  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row);
   assert.deepEqual(rows, logic.ROWS.map((row) => row.id));
   for (const control of app.querySelectorAll('[role="switch"], [role="radiogroup"]')) {
     assert.ok(control.getAttribute('aria-labelledby') || control.getAttribute('aria-label'), control.className);
@@ -468,10 +468,10 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('blocker').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('centredAddressBar'), null);
-  // Bookmarks bar and Shortcuts hold only such rows: one note under the heading, none on the rows.
+  // The Bookmarks bar holds only such rows: one note under the heading, none on the rows. Shortcuts now act, so it has no note.
   for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
   const notes = app.querySelectorAll('.sp-group-note');
-  assert.equal(notes.length, 2);
+  assert.equal(notes.length, 1);
   assert.ok(notes.every((note) => note.textContent === logic.NOT_YET_GROUP_NOTE));
   const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
   assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless sp-f-frameless', 'the note is read with the control');
@@ -615,3 +615,327 @@ test('the Extensions section is part of the page: its snapshot fills the block a
   assert.ok(logic.matchRows('addon').has('extensions'));
   assert.ok(logic.matchRows('manifest permissions').has('extensions'));
 });
+
+// --- keyboard and quick commands (docs/commands.md) ---
+
+test('the three shortcut rows that used to say "no effect yet" now say nothing, and sit in the shortcuts group', () => {
+  for (const id of ['ctrlSVerticalTabs', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) {
+    const row = logic.ROWS.find((r) => r.id === id);
+    assert.equal(row.notYet, undefined, `${id} acts, so it carries no "no effect yet" flag`);
+    const node = app.querySelector(`.sp-row[data-row="${id}"]`);
+    assert.equal(node.querySelector('.sp-flag'), null, id);
+    const control = node.querySelector('[role="switch"]');
+    assert.equal(control.getAttribute('aria-describedby'), `sp-d-${id}`, 'only its description is read with it');
+  }
+  // A change to one of them is part of the whole-draft save, like every other profile switch.
+  sent.length = 0;
+  app.querySelector('.sp-row[data-row="shiftRightClickContext"]').querySelector('[role="switch"]').click();
+  assert.equal(sent[0].a, 'save');
+  assert.match(sent[0].text, /\nshift_right_click_context=true\n/);
+  deliver(fixture.snap);
+});
+
+const commandsFixture = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
+const commandsSnap = (patch = {}) => ({ ...commandsFixture, d: { ...commandsFixture.d, ...patch } });
+const keyboard = () => app.querySelector('section[data-section="keyboard"]');
+const quick = () => app.querySelector('section[data-section="commands"]');
+const rowIn = (root, id) => root.querySelector(`.sp-row[data-row="${id}"]`);
+const kbRow = (id) => app.querySelector(`.sp-kb-row[data-command="${id}"]`);
+const buttonNamed = (root, text) => root.querySelectorAll('button').find((b) => b.textContent.trim() === text);
+const captureHandlers = [];
+document.addEventListener = (type, cb) => { if (type === 'keydown') captureHandlers.push(cb); };
+document.removeEventListener = (type, cb) => { const at = captureHandlers.indexOf(cb); if (type === 'keydown' && at >= 0) captureHandlers.splice(at, 1); };
+const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: false, shiftKey: false, altKey: false, isComposing: false, preventDefault() {}, stopPropagation() {}, ...init });
+
+test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
+  assert.ok(keyboard() && quick());
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(4, 8), ['search', 'keyboard', 'commands', 'downloads']);
+  assert.equal(keyboard().querySelector('.sp-kb').dataset.row, 'kbEditor');
+  assert.equal(quick().querySelector('.sp-chains').dataset.row, 'chains');
+  deliver(commandsSnap());
+  const on = (root, id) => rowIn(root, id).querySelector('[role="switch"]').getAttribute('aria-checked');
+  assert.deepEqual(['kbEnabled', 'kbSingleKey', 'kbAltMenu', 'kbFocusCycling'].map((id) => on(keyboard(), id)), ['true', 'false', 'false', 'false']);
+  assert.deepEqual(['qcKeepLast', 'qcNewTab', 'qcNotesPanel'].map((id) => on(quick(), id)), ['false', 'false', 'true']);
+  assert.equal(rowIn(quick(), 'qcMax').querySelector('input').value, '9');
+  // Every option sends its own flag name and the new state.
+  for (const [root, id, name] of [
+    [keyboard(), 'kbEnabled', 'shortcuts_enabled'], [keyboard(), 'kbSingleKey', 'single_key_shortcuts'], [keyboard(), 'kbAltMenu', 'alt_opens_menu'],
+    [keyboard(), 'kbFocusCycling', 'focus_cycling'], [quick(), 'qcKeepLast', 'palette_keep_last'], [quick(), 'qcNewTab', 'palette_open_new_tab'],
+    [quick(), 'qcNotesPanel', 'palette_notes_in_panel'],
+  ]) {
+    sent.length = 0;
+    const control = rowIn(root, id).querySelector('[role="switch"]');
+    const before = control.getAttribute('aria-checked') === 'true';
+    control.click();
+    assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kboption', text: name, on: !before }], id);
+  }
+  deliver(commandsSnap({ shortcutsEnabled: false, singleKey: true }));
+  assert.equal(on(keyboard(), 'kbEnabled'), 'false');
+  assert.equal(on(keyboard(), 'kbSingleKey'), 'true');
+  assert.equal(keyboard().querySelector('.sp-cmd-note').hidden, false, 'turning shortcuts off says how to get them back');
+  deliver(commandsSnap());
+  assert.equal(keyboard().querySelector('.sp-cmd-note').hidden, true);
+});
+
+test('the shortcut list: chips, remove one, clear, restore, browser priority, filter, cheat sheet, restore all', () => {
+  deliver(commandsSnap());
+  const closeTab = kbRow('close-tab');
+  assert.deepEqual(closeTab.querySelectorAll('.sp-kb-keys').map((k) => k.textContent), ['Ctrl+W', 'Ctrl+F4', 'Ctrl+Shift+X']);
+  assert.deepEqual(kbRow('new-private-tab').querySelectorAll('.sp-kb-keys'), []);
+  assert.equal(kbRow('new-private-tab').querySelector('.sp-kb-none').textContent, 'No shortcut');
+  sent.length = 0;
+  closeTab.querySelectorAll('.sp-kb-chip-remove')[2].click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbremove', text: 'close-tab\tCtrl+Shift+X' });
+  const tool = (row, label) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === label);
+  tool(closeTab, 'Clear the shortcuts of Close tab').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbclear', text: 'close-tab' });
+  tool(closeTab, 'Restore the default shortcuts of Close tab').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbrestore', text: 'close-tab' });
+  assert.equal(tool(kbRow('reload'), 'Restore the default shortcuts of Reload'), undefined, 'a command on its defaults has nothing to restore');
+  assert.equal(tool(kbRow('new-private-tab'), 'Clear the shortcuts of New private tab'), undefined, 'a command with no shortcut has nothing to clear');
+  // Browser priority: the shield shows the command's current flag and a click sends the opposite one.
+  const shield = tool(kbRow('history'), 'Browser priority for History');
+  assert.equal(shield.getAttribute('aria-pressed'), 'true');
+  shield.click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbpriority', text: 'history', on: false });
+  assert.equal(tool(kbRow('chain:1'), 'Browser priority for Morning'), undefined, 'a chain has no browser priority');
+  assert.equal(tool(kbRow('reload'), 'Browser priority for Reload').getAttribute('aria-pressed'), 'false', 'a command off the list shows it');
+  // Categories keep the registry's order, chains last.
+  assert.deepEqual(keyboard().querySelectorAll('.sp-card-h').map((h) => h.textContent).at(-1), 'Command chains');
+  // The filter matches names, categories and the shortcuts themselves.
+  const filter = keyboard().querySelector('.sp-kb-filter');
+  filter.value = 'ctrl+j';
+  filter.dispatch('input');
+  assert.deepEqual(app.querySelectorAll('.sp-kb-row').map((r) => r.dataset.command), ['downloads']);
+  filter.value = 'zzzz nothing';
+  filter.dispatch('input');
+  assert.equal(app.querySelectorAll('.sp-kb-row').length, 0);
+  assert.match(app.querySelector('.sp-kb-empty').textContent, /No command or shortcut matches/);
+  filter.value = '';
+  filter.dispatch('input');
+  assert.ok(app.querySelectorAll('.sp-kb-row').length > 50);
+  // The cheat sheet and restore all (which asks first).
+  sent.length = 0;
+  buttonNamed(keyboard(), 'Cheat sheet').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbsheet' }]);
+  sent.length = 0;
+  const restoreAll = buttonNamed(keyboard(), 'Restore all');
+  restoreAll.click();
+  assert.deepEqual(sent, [], 'the first click only asks');
+  assert.equal(restoreAll.textContent, 'Restore every shortcut');
+  restoreAll.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbrestoreall' }]);
+});
+
+test('adding a shortcut waits for the keys, cancels on Escape, and offers to reassign a taken chord', () => {
+  deliver(commandsSnap());
+  sent.length = 0;
+  const add = (id) => kbRow(id).querySelector('.sp-kb-add');
+  const capture = (on) => ({ v: 1, t: 'set', a: 'kbcapture', on });
+  add('history').click();
+  assert.ok(kbRow('history').querySelector('.sp-kb-capture'), 'the row asks for a key press');
+  assert.deepEqual(sent, [capture(true)], 'while it waits, Bowser hands every key to the page (Ctrl+T must not open a tab)');
+  press({ key: 'Control', code: 'ControlLeft', ctrlKey: true });
+  assert.deepEqual(sent, [capture(true)], 'a modifier alone keeps waiting');
+  press({ key: 'Escape', code: 'Escape' });
+  assert.equal(kbRow('history').querySelector('.sp-kb-capture'), null);
+  assert.deepEqual(sent, [capture(true), capture(false)], 'Escape cancels and gives the keys back');
+  sent.length = 0;
+  add('history').click();
+  press({ key: 'K', code: 'KeyK', ctrlKey: true, shiftKey: true });
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbassign', text: 'history\tCtrl+Shift+K', on: false });
+  assert.deepEqual(sent, [capture(true), capture(false)], 'the chord ends the wait before it is sent');
+  // Bowser says another command has it: the row names it and offers to take it.
+  deliver(commandsSnap({ ack: 'conflict', conflictChord: 'Ctrl+Shift+K', conflictId: 'command-palette', conflictLabel: 'Quick commands' }));
+  const conflict = kbRow('history').querySelector('.sp-kb-conflict');
+  assert.equal(conflict.querySelector('span').textContent, 'Ctrl+Shift+K is already used by Quick commands.');
+  buttonNamed(conflict, 'Reassign').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbassign', text: 'history\tCtrl+Shift+K', on: true });
+  deliver(commandsSnap({ ack: 'saved' }));
+  assert.equal(kbRow('history').querySelector('.sp-kb-conflict'), null);
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Saved');
+  // A refusal is a toast with Bowser's words, and the editor stays usable.
+  add('history').click();
+  press({ key: 'c', code: 'KeyC', ctrlKey: true });
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbassign', text: 'history\tCtrl+C', on: false });
+  deliver(commandsSnap({ ack: 'failed', error: 'That shortcut is kept for editing and Windows.' }));
+  assert.equal(app.querySelector('.sp-toast').textContent, 'That shortcut is kept for editing and Windows.');
+  assert.equal(app.querySelector('.sp-toast').classList.contains('is-error'), true);
+  assert.equal(captureHandlers.length, 0, 'no key listener is left behind');
+});
+
+test('sites that prioritise their own shortcuts: add normalises, a duplicate is refused here, remove sends', () => {
+  deliver(commandsSnap());
+  const row = rowIn(keyboard(), 'kbSites');
+  const input = row.querySelector('input');
+  const add = buttonNamed(row, 'Add');
+  assert.deepEqual(row.querySelectorAll('.sp-site-name').map((n) => n.textContent), ['docs.example.com']);
+  sent.length = 0;
+  input.value = 'https://www.Docs.Example.com/page';
+  add.click();
+  assert.deepEqual(sent, [], 'already on the list');
+  assert.equal(row.querySelector('.sp-field-error').textContent, 'docs.example.com is already on the list.');
+  input.value = 'not a host';
+  add.click();
+  assert.equal(row.querySelector('.sp-field-error').textContent, 'Enter a site such as example.com.');
+  input.value = ' https://WWW.Other.example:8080/x ';
+  add.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbsiteadd', text: 'other.example' }]);
+  sent.length = 0;
+  row.querySelector('.sp-site-remove').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbsiteremove', text: 'docs.example.com' }]);
+});
+
+test('Quick commands: result types show, hide, reorder and reset; the limit clamps', () => {
+  deliver(commandsSnap());
+  const items = () => rowIn(quick(), 'qcTypes').querySelectorAll('.sp-qc-type');
+  const names = () => items().map((li) => li.querySelector('.sp-label').textContent);
+  assert.deepEqual(names(), ['Commands', 'Open tabs', 'Calculator', 'Recently closed tabs', 'Workspaces', 'Page actions', 'Bookmarks', 'Notes', 'History'], 'shown ones first, in order');
+  assert.deepEqual(items().map((li) => li.classList.contains('is-off')), [false, false, false, true, true, true, true, true, true]);
+  const move = (at, which) => items()[at].querySelectorAll('.sp-qc-move')[which];
+  assert.equal(move(0, 0).disabled, true, 'the first cannot go up');
+  assert.equal(move(2, 1).disabled, true, 'the last shown cannot go down');
+  assert.equal(move(3, 0).disabled && move(3, 1).disabled, true, 'a hidden type has no order');
+  sent.length = 0;
+  move(0, 1).click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypes', text: 'tab,command,calc' });
+  move(2, 0).click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypes', text: 'command,calc,tab' });
+  items()[1].querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypes', text: 'command,calc' }, 'hiding one keeps the rest in order');
+  items()[7].querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypes', text: 'command,tab,calc,note' }, 'showing one puts it last');
+  // The last shown type cannot be hidden.
+  deliver(commandsSnap({ paletteTypes: ['tab'] }));
+  items()[0].querySelector('[role="switch"]').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypes', text: 'tab' });
+  // Reset shows only while the order is not the default.
+  const reset = buttonNamed(rowIn(quick(), 'qcTypes'), 'Reset order');
+  assert.equal(reset.hidden, false);
+  reset.click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qctypesreset' });
+  deliver(commandsSnap({ paletteTypes: ['tab', 'closed', 'workspace', 'command', 'action', 'bookmark', 'note', 'history', 'calc'], paletteDefaultOrder: true }));
+  assert.equal(reset.hidden, true);
+  const max = rowIn(quick(), 'qcMax').querySelector('input');
+  for (const [typed, sentValue] of [['40', 30], ['1', 3], ['12', 12], ['abc', 3]]) {
+    max.value = typed;
+    max.dispatch('change');
+    assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'qcmax', n: sentValue }, typed);
+    assert.equal(max.value, String(sentValue));
+  }
+});
+
+test('command chains: the list, clone, delete with a confirmation, and the editor (name, delays, order, test, save)', () => {
+  deliver(commandsSnap());
+  const block = quick().querySelector('.sp-chains');
+  const chainRows = () => block.querySelectorAll('.sp-chain-row');
+  assert.equal(chainRows().length, 1);
+  assert.equal(chainRows()[0].querySelector('.sp-label').textContent, 'Morning');
+  assert.equal(chainRows()[0].querySelector('.sp-desc').textContent, 'New tab → History');
+  sent.length = 0;
+  const tool = (label) => chainRows()[0].querySelectorAll('button').find((b) => b.getAttribute('aria-label') === label);
+  tool('Clone Morning').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chainclone', n: 1 });
+  tool('Test Morning').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chaintest', text: '1\tMorning\n0\tnew-tab\n250\thistory' });
+  tool('Delete Morning').click();
+  assert.deepEqual(sent, [], 'delete asks first');
+  assert.match(chainRows()[0].textContent, /Delete Morning\?/);
+  buttonNamed(chainRows()[0], 'Cancel').click();
+  assert.equal(sent.length, 0);
+  tool('Delete Morning').click();
+  buttonNamed(chainRows()[0], 'Delete').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chaindelete', n: 1 });
+
+  // Edit: the editor opens on the chain, with its steps in order.
+  const editor = block.querySelector('.sp-chain-editor');
+  assert.equal(editor.hidden, true);
+  tool('Edit Morning').click();
+  assert.equal(editor.hidden, false);
+  assert.equal(editor.querySelector('.sp-chain-name').value, 'Morning');
+  const steps = () => editor.querySelectorAll('.sp-chain-step');
+  assert.deepEqual(steps().map((s) => s.querySelector('.bw-select-value').textContent), ['New tab', 'History']);
+  assert.deepEqual(steps().map((s) => s.querySelector('.sp-chain-delay').value), ['0', '250']);
+  // Delays clamp; order moves; a step removes.
+  const delay = steps()[1].querySelector('.sp-chain-delay');
+  delay.value = '99999999';
+  delay.dispatch('change');
+  assert.equal(delay.value, '60000');
+  steps()[1].querySelector('.sp-chain-delay').value = '300';
+  steps()[1].querySelector('.sp-chain-delay').dispatch('change');
+  const stepMove = (at, label) => steps()[at].querySelectorAll('button').find((b) => b.getAttribute('aria-label').startsWith(label));
+  stepMove(1, 'Move command 2 up').click();
+  assert.deepEqual(steps().map((s) => s.querySelector('.bw-select-value').textContent), ['History', 'New tab']);
+  stepMove(0, 'Move command 1 down').click();
+  assert.deepEqual(steps().map((s) => s.querySelector('.bw-select-value').textContent), ['New tab', 'History']);
+  // Test sends the draft without saving; Save sends it as an edit of chain 1.
+  sent.length = 0;
+  buttonNamed(editor, 'Test chain').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chaintest', text: '1\tMorning\n0\tnew-tab\n300\thistory' });
+  buttonNamed(editor, 'Save chain').click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chainsave', text: '1\tMorning\n0\tnew-tab\n300\thistory' });
+  // Bowser's refusal stays in the editor; its "saved" closes it.
+  deliver(commandsSnap({ ack: 'failed', error: 'There is already a chain called Morning.' }));
+  assert.equal(editor.hidden, false);
+  assert.equal(editor.querySelector('.sp-chain-error').textContent, 'There is already a chain called Morning.');
+  buttonNamed(editor, 'Save chain').click();
+  deliver(commandsSnap({ ack: 'saved' }));
+  assert.equal(editor.hidden, true);
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Saved');
+  // Test is acknowledged as a start, not a save.
+  deliver(commandsSnap({ ack: 'ran' }));
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Chain started');
+});
+
+test('a new chain is checked here before it is sent: a name, a command, whole-millisecond delays', () => {
+  deliver(commandsSnap());
+  const block = quick().querySelector('.sp-chains');
+  const editor = block.querySelector('.sp-chain-editor');
+  sent.length = 0;
+  buttonNamed(block, 'New chain').click();
+  assert.equal(editor.hidden, false);
+  assert.equal(editor.querySelector('.sp-chain-name').value, '');
+  buttonNamed(editor, 'Create chain').click();
+  assert.equal(editor.querySelector('.sp-chain-error').textContent, 'Give the chain a name.');
+  editor.querySelector('.sp-chain-name').value = 'morning';
+  editor.querySelector('.sp-chain-name').dispatch('input');
+  buttonNamed(editor, 'Create chain').click();
+  assert.equal(editor.querySelector('.sp-chain-error').textContent, 'There is already a chain called morning.', 'names are unique, ignoring case');
+  editor.querySelector('.sp-chain-name').value = 'Evening';
+  editor.querySelector('.sp-chain-name').dispatch('input');
+  buttonNamed(editor, 'Test chain').click();
+  assert.equal(editor.querySelector('.sp-chain-error').textContent, 'Add at least one command to the chain.');
+  assert.deepEqual(sent, [], 'nothing invalid is sent');
+  buttonNamed(editor, 'Cancel').click();
+  assert.equal(editor.hidden, true);
+});
+
+test('the new rows join the page search and the Keyboard and Quick commands blocks hide with it', () => {
+  assert.ok(logic.matchRows('rebind shortcut').has('kbEditor'));
+  assert.ok(logic.matchRows('prefix bkm tb cmd').has('qcTypes'));
+  assert.ok(logic.matchRows('macro delay milliseconds').has('chains'));
+  assert.ok(logic.matchRows('alt menu').has('kbAltMenu'));
+  assert.ok(logic.matchRows('f6 focus').has('kbFocusCycling'));
+  assert.ok(logic.matchRows('website priority').has('kbSites'));
+  assert.ok(logic.matchRows('single key').has('kbSingleKey'));
+  assert.ok(logic.matchRows('notes manager').has('qcNotesPanel'));
+  // Typing in the page search hides the blocks whose rows do not match.
+  const search = app.querySelector('.sp-search-input');
+  search.value = 'macro';
+  search.dispatch('input');
+  assert.equal(quick().querySelector('.sp-chains').hidden, false);
+  assert.equal(keyboard().querySelector('.sp-kb').hidden, true);
+  assert.equal(keyboard().hidden, true, 'a section with no match is hidden');
+  search.value = '';
+  search.dispatch('input');
+  assert.equal(keyboard().querySelector('.sp-kb').hidden, false);
+});
+
+test('a bad commands snapshot is dropped and leaves the sections as they were', () => {
+  deliver(commandsSnap());
+  const before = app.querySelectorAll('.sp-kb-row').length;
+  deliver(commandsSnap({ commands: 'nope' }));
+  deliver({ ...commandsFixture, d: { ...commandsFixture.d, extra: 1 } });
+  assert.equal(app.querySelectorAll('.sp-kb-row').length, before);
+});
+// --- end keyboard and quick commands ---
