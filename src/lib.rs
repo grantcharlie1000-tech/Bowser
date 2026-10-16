@@ -4,6 +4,7 @@ pub mod blocker;
 pub mod bookmarks;
 pub mod chrome;
 pub mod chrome_host;
+pub mod commands;
 pub mod crx;
 pub mod crx_fetch;
 pub mod crx_file;

@@ -106,8 +106,14 @@ pub fn accel_command_gated(
     if omnibox_editing && is_editing_chord(accel) {
         return None;
     }
-    let command =
-        shortcuts::command_for_gated(accel.vk, accel.ctrl, accel.shift, accel.alt, gated)?;
+    // The live keymap (`crate::commands`): the defaults plus the user's assignments and options.
+    let context = crate::commands::ResolveContext {
+        gated,
+        source: crate::commands::Source::Chrome,
+        typing: omnibox_editing,
+        host: None,
+    };
+    let command = crate::commands::resolve(accel.vk, accel.ctrl, accel.shift, accel.alt, &context)?;
     if accel.repeat && shortcuts::is_toggle(command) {
         return None;
     }

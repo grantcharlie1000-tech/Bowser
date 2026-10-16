@@ -74,6 +74,10 @@ pub enum Command {
     /// Ctrl+S collapses or expands the vertical sidebar. Only bound while `ctrl_s_vertical_tabs` is
     /// on and the vertical layout is active (see [`GatedChords`]); otherwise the page keeps Ctrl+S.
     ToggleSidebar,
+    /// A command that has no variant of its own: a registry command (`crate::commands`) named by the
+    /// handle `commands::intern` gave its id. Chains, the cheat sheet and every command other threads
+    /// add run this way, so they can all take a keyboard shortcut.
+    Registered(u32),
 }
 
 /// Commands that flip a setting. An auto-repeated key press must not flip it again.
@@ -81,6 +85,7 @@ pub fn is_toggle(command: Command) -> bool {
     matches!(
         command,
         Command::ToggleSplit
+            | Command::Registered(_)
             | Command::ToggleBlocker
             | Command::ToggleNotes
             | Command::TogglePictureInPicture

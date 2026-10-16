@@ -731,13 +731,18 @@ mod tests {
         shown.zoom = 125;
         let page = html_page(&shown, false);
         let siteinfo = crate::win32::html_popup::Page::debug_json(page, 7);
-        let palette_items = super::super::command_palette::html_items(
-            &[(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],
-            &[("Docs".into(), "https://docs.example/".into(), "Work".into())],
-            &[(1, "https://news.example/".into(), "News".into())],
-            &crate::productivity::browser_commands(),
-        );
-        let palette = crate::win32::html_popup::Page::debug_json(super::super::command_palette::html_page(&palette_items), 8);
+        let palette_data = super::super::command_palette::PaletteData {
+            tabs: vec![(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],
+            closed: vec![("Old".into(), "https://old.example/".into())],
+            workspaces: vec![(1, "Work".into(), 2)],
+            bookmarks: vec![("Docs".into(), "https://docs.example/".into(), "Work".into())],
+            notes: vec![(5, "Shopping".into(), "milk and tea".into())],
+            history: vec![(1, "https://news.example/".into(), "News".into())],
+            commands: crate::commands::palette_commands(&crate::commands::Live::new(crate::commands::store::Store::default())),
+        };
+        let palette_options = crate::commands::store::Options::default();
+        let palette_items = super::super::command_palette::html_items(&palette_data, &palette_options);
+        let palette = crate::win32::html_popup::Page::debug_json(super::super::command_palette::html_page(&palette_items, &palette_options), 8);
         let fixture = format!(
             "{{\"siteinfo\":{siteinfo},\"palette\":{palette},\"act\":{{\"v\":1,\"t\":\"act\",\"tok\":7,\"id\":2,\"n\":0}}}}\n"
         );

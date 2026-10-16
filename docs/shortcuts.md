@@ -1,7 +1,10 @@
 # Keyboard shortcuts
 
-The chord table is `src/shortcuts.rs` (`command_for`, modifiers match exactly). It is consulted from all
-three focus contexts:
+Shortcuts are now assignable: the live keymap is the command registry's defaults plus the user's
+assignments (`docs/commands.md`, `src/commands/`), and `commands::resolve` is the one lookup. The table below
+and `src/shortcuts.rs` (`command_for`, modifiers match exactly) are the **defaults**; a test keeps the
+registry's default keymap identical to that table (plus Ctrl+F1, the cheat sheet). The table is consulted
+from all three focus contexts:
 
 - **Content WebView**: `AcceleratorKeyPressed` in `src/engine/webview2.rs` posts `WM_SHORTCUT_KEY`.
 - **HTML chrome WebViews** (toolbar, tabs, rail, panel): `html_accelerator` in `src/win32/window.rs`
