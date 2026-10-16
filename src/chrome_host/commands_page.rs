@@ -426,6 +426,44 @@ mod tests {
         assert!(store.binds.is_empty() && store.priority.is_empty());
     }
 
+    /// The whole path for every on/off option: the page's command, the store change, the next snapshot the
+    /// page reads, and the file a restart reads back.
+    #[test]
+    fn every_option_the_page_sets_comes_back_in_the_snapshot_and_survives_a_save() {
+        let keys = [
+            ("shortcuts_enabled", "shortcutsEnabled", true),
+            ("single_key_shortcuts", "singleKey", false),
+            ("alt_opens_menu", "altMenu", false),
+            ("focus_cycling", "focusCycling", false),
+            ("palette_keep_last", "paletteKeepLast", false),
+            ("palette_open_new_tab", "paletteNewTab", false),
+            ("palette_notes_in_panel", "paletteNotesInPanel", true),
+        ];
+        assert_eq!(keys.map(|(name, _, _)| name), FLAGS, "the test covers every flag the page can send");
+        let mut store = Store::default();
+        for (name, key, default) in keys {
+            let mut f = with_text("kboption", name);
+            f.on = Some(!default);
+            let action = map_command(&f).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(apply(&mut store, &action), Outcome::Saved);
+            let json = snapshot_json(Status::default(), &store);
+            assert!(json.contains(&format!("\"{key}\":{}", !default)), "{key} reads back flipped: {json}");
+            let mut reread = Store::default();
+            reread.parse_keys(&store.serialize_keys());
+            assert_eq!(reread.options, store.options, "{name} survives a restart");
+        }
+        // The visible-result limit and the type order take the same path.
+        let mut max = fields("qcmax");
+        max.n = Some(21);
+        assert_eq!(apply(&mut store, &map_command(&max).unwrap()), Outcome::Saved);
+        assert_eq!(apply(&mut store, &Action::Types("command,tab".into())), Outcome::Saved);
+        let json = snapshot_json(Status::default(), &store);
+        assert!(json.contains("\"paletteMax\":21") && json.contains("\"paletteTypes\":[\"command\",\"tab\"]") && json.contains("\"paletteDefaultOrder\":false"));
+        let mut reread = Store::default();
+        reread.parse_keys(&store.serialize_keys());
+        assert_eq!((reread.options.palette_max_results, reread.options.palette_types.len()), (21, 2));
+    }
+
     #[test]
     fn chains_can_be_created_cloned_edited_deleted_and_tested() {
         let mut store = Store::default();

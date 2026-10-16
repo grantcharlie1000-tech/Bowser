@@ -16,7 +16,7 @@
     bg: 'rgb(244,246,248)', fill: 'rgba(255,255,255,0.7)', border: 'rgba(22,143,152,0.282)', focusBorder: '#4a6d73', text: '#14181d',
     placeholder: '#4b5159', completion: '#50575f', selection: 'rgba(0,103,192,0.251)', hover: 'rgba(0,0,0,0.06)', progress: '#0067c0',
   };
-  const state = { v: 1, t: 'state', scale: 1, solid: true, dark, back: true, forward: false, loading: false, progress: 0, security: 'secure', label: '', theme: dark ? DARK : LIGHT };
+  const state = { t: 'state', scale: 1, solid: true, dark, back: true, forward: false, loading: false, progress: 0, security: 'secure', label: '', theme: dark ? DARK : LIGHT };
   const data = window.__T4;
   const settings = JSON.parse(JSON.stringify(data.settings));
   const commands = JSON.parse(JSON.stringify(data.commands));

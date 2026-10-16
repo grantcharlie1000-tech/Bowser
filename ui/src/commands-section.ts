@@ -279,7 +279,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     remove.setAttribute('aria-label', `Remove ${chord} from ${command.label}`);
     remove.setAttribute('data-tip', 'Remove');
     remove.append(icon('close', { size: 12, fine: true }));
-    remove.addEventListener('click', () => { send(removeChordCommand(command.id, chord)); });
+    remove.addEventListener('click', () => { touched(command.id, removeChordCommand(command.id, chord)); });
     node.append(text, remove);
     return node;
   };
@@ -330,11 +330,11 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       keys.append(add);
     }
     const tools = el('div', 'sp-kb-rowtools');
-    if (command.chords.length > 0) tools.append(iconButton('trash', `Clear the shortcuts of ${command.label}`, () => { send(clearCommand(command.id)); }));
-    if (command.changed) tools.append(iconButton('reset', `Restore the default shortcuts of ${command.label}`, () => { send(restoreCommand(command.id)); }));
+    if (command.chords.length > 0) tools.append(iconButton('trash', `Clear the shortcuts of ${command.label}`, () => { touched(command.id, clearCommand(command.id)); }));
+    if (command.changed) tools.append(iconButton('reset', `Restore the default shortcuts of ${command.label}`, () => { touched(command.id, restoreCommand(command.id)); }));
     if (!command.chain) {
       // Browser priority: on a site that prioritises its own shortcuts, this command still works.
-      const priority = iconButton('shield', `Browser priority for ${command.label}`, () => { send(priorityCommand(command.id, !command.priority)); }, 'sp-kb-priority');
+      const priority = iconButton('shield', `Browser priority for ${command.label}`, () => { touched(command.id, priorityCommand(command.id, !command.priority)); }, 'sp-kb-priority');
       priority.setAttribute('aria-pressed', String(command.priority));
       priority.setAttribute('data-tip', command.priority ? 'Browser priority: still works on sites that use their own shortcuts' : 'Not browser priority: a site that uses its own shortcuts gets this key');
       tools.append(priority);
@@ -358,8 +358,13 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     return item;
   };
 
+  /** The command whose row the user last acted on: its row gets the keyboard back after the list is redrawn. */
+  let lastRow: string | null = null;
+  const touched = (id: string, fields: PanelFields): void => { lastRow = id; send(fields); };
+
   function paintEditor(): void {
     if (!snapshot) { editorList.replaceChildren(); return; }
+    const hadFocus = editorList.contains(document.activeElement);
     const grouped = groupCommands(snapshot.commands, editorQuery);
     if (grouped.length === 0) {
       const empty = el('p', 'sp-desc sp-kb-empty');
@@ -376,6 +381,11 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       box.append(heading, card);
       return box;
     }));
+    // The button that was clicked is gone with the old list: keep the keyboard on that command's row.
+    if (hadFocus && lastRow !== null) {
+      const row = editorList.querySelector<HTMLElement>(`.sp-kb-row[data-command="${lastRow}"]`);
+      (row?.querySelector<HTMLElement>('button:not([disabled])') ?? null)?.focus({ preventScroll: true });
+    }
   }
   const editorRow: SearchRow = { spec: editorSpec, root: editor, label: editorHeading, desc: null, card: editor };
   rows.push(editorRow);

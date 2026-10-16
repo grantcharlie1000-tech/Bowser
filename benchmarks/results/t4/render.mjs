@@ -115,22 +115,38 @@ for (const scheme of ['dark', 'light']) {
   }
 }
 let made = 0;
-for (const s of shots.filter((shot) => !only || new RegExp(only).test(shot.name))) {
-  const file = join(out, `${s.name}.png`);
-  rmSync(file, { force: true });
-  const profile = mkdtempSync(join(tmpdir(), 't4-edge-'));
-  await new Promise((done) => {
-    const child = spawn(edge, [
-    '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', `--user-data-dir=${profile}`, `--force-device-scale-factor=${s.dpr}`,
-    `--window-size=${s.w},${s.h + 100}`, '--virtual-time-budget=5000', `--screenshot=${file}`, `${base}?${s.query}&w=${s.w}`,
-    ], { stdio: 'ignore' });
-    const timer = setTimeout(() => { spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); done(); }, 60000);
-    child.on('exit', () => { clearTimeout(timer); done(); });
-  });
-  try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }); } catch { /* temp */ }
-  if (existsSync(file) && statSync(file).size > 0) made += 1;
-  else console.error('no screenshot', s.name);
+const todo = shots.filter((shot) => !only || new RegExp(only).test(shot.name));
+let next = 0;
+async function worker() {
+  while (next < todo.length) {
+    const s = todo[next++];
+    const file = join(out, `${s.name}.png`);
+    rmSync(file, { force: true });
+    const profile = mkdtempSync(join(tmpdir(), 't4-edge-'));
+    await new Promise((done) => {
+      const child = spawn(edge, [
+        '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', `--user-data-dir=${profile}`, `--force-device-scale-factor=${s.dpr}`,
+        `--window-size=${s.w},${s.h + 100}`, '--virtual-time-budget=5000', `--screenshot=${file}`, `${base}?${s.query}&w=${s.w}`,
+      ], { stdio: 'ignore' });
+      // Done when the screenshot exists (Edge can linger after writing it) or after a minute.
+      const started = Date.now();
+      const poll = setInterval(() => {
+        const written = existsSync(file) && statSync(file).size > 0;
+        if (written || Date.now() - started > 60000) { clearInterval(poll); setTimeout(done, written ? 300 : 0); }
+      }, 300);
+      child.on('exit', () => { setTimeout(() => { clearInterval(poll); done(); }, 500); });
+    });
+    // Only this shot's own browser tree: it carries this shot's profile directory.
+    await new Promise((finished) => {
+      spawn('powershell', ['-NoProfile', '-Command',
+      `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*${profile}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore' }).on('exit', finished);
+    });
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 5 }); } catch { /* temp */ }
+    if (existsSync(file) && statSync(file).size > 0) made += 1;
+    else console.error('no screenshot', s.name);
+  }
 }
+await Promise.all([worker(), worker()]);
 server.close();
 try { rmSync(site, { recursive: true, force: true }); } catch { /* temp */ }
 console.log(`rendered ${made} of ${shots.length} shots to ${out}`);

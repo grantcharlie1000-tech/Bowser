@@ -10,6 +10,7 @@
 //! This file holds the live state (the keymap the key handlers consult) and [`resolve`], which maps a
 //! pressed key to the command it runs.
 
+pub mod behaviour;
 pub mod calc;
 pub mod chains;
 pub mod chord;

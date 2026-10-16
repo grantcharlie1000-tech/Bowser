@@ -2461,7 +2461,7 @@ unsafe extern "system" fn window_proc(
             // Alt pressed and released on its own (or F10): Bowser's main menu when the "Alt opens the
             // menu" option is on; otherwise nothing, instead of Windows' hidden system-menu mode.
             WM_SYSCOMMAND if (wparam.0 & 0xFFF0) == SC_KEYMENU as usize && lparam.0 == 0 => {
-                if crate::commands::live().store.options.alt_opens_menu {
+                if crate::commands::behaviour::alt_tap(&crate::commands::live().store.options) == crate::commands::behaviour::AltTap::OpenMenu {
                     if let Some(app) = app {
                         show_main_menu(hwnd, app);
                     }
@@ -6728,20 +6728,17 @@ fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
         if App::tab_ids(app).contains(&TabId(id)) {
             let _ = App::select_tab(app, TabId(id));
         }
-    } else if let Some(url) = action.strip_prefix("url:").and_then(|s| web(s)) {
-        // "Open links in a new tab" decides between a new tab and the current one.
-        if options.palette_open_new_tab {
+    } else if let Some(url) = action.strip_prefix("url:").or_else(|| action.strip_prefix("reopen:")).and_then(|s| web(s)) {
+        // "Open links in a new tab" decides between a new tab and the current one; a closed tab always
+        // comes back in a tab of its own (`commands::behaviour::link_open`).
+        if crate::commands::behaviour::link_open(&options, action) == Some(crate::commands::behaviour::LinkOpen::NewTab) {
             App::new_tab(app);
         }
-        App::navigate_current(app, &url);
-    } else if let Some(url) = action.strip_prefix("reopen:").and_then(|s| web(s)) {
-        // A closed tab always comes back in a tab of its own.
-        App::new_tab(app);
         App::navigate_current(app, &url);
     } else if let Some(id) = action.strip_prefix("workspace:").and_then(|s| s.parse::<u32>().ok()) {
         let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id));
     } else if let Some(id) = action.strip_prefix("note:").and_then(|s| s.parse::<u64>().ok()) {
-        if options.palette_notes_in_panel {
+        if crate::commands::behaviour::note_pick(&options) == crate::commands::behaviour::NotePick::OpenPanel {
             notes_panel::open(hwnd);
             apply_sidebar_bounds(hwnd, app);
         } else if let Ok(profile) = crate::profile::active() {
@@ -10741,8 +10738,11 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
         // With the focus-cycling option on, F6 moves the keyboard between the address bar and the page.
         Command::FocusOmnibox
             if key == 0x75
-                && crate::commands::live().store.options.focus_cycling
-                && (edit_focused(hwnd) || omnibox_focused(hwnd)) =>
+                && crate::commands::behaviour::f6_moves_to_page(
+                    &crate::commands::live().store.options,
+                    key,
+                    edit_focused(hwnd) || omnibox_focused(hwnd),
+                ) =>
         {
             App::focus_page(app)
         }
