@@ -202,6 +202,20 @@ pub(crate) fn run_toggle_address_bar(cx: &Context) {
 mod tests {
     use super::*;
 
+    /// Integration: T2's suggestion wake-up and T4's chain step were both WM_APP + 0x5E1, so the main
+    /// window's message match never reached the address bar's arm. The window's own wave-1 messages
+    /// must stay distinct.
+    #[test]
+    fn the_main_window_messages_of_the_wave_1_threads_are_distinct() {
+        let ids = [
+            super::super::address_bar::WM_ADDRESS_SUGGEST,
+            super::super::WM_CHAIN_STEP,
+            super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND,
+        ];
+        let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "{ids:x?}");
+    }
+
     #[test]
     fn the_address_bar_command_flips_the_saved_switch_and_it_survives_a_reload() {
         let mut settings = crate::settings::Settings::default();

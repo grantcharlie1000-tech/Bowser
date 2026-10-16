@@ -1223,3 +1223,37 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
   assert.equal(app.querySelectorAll('.ad-engine').length, 7);
 });
+
+// ---- wave-1 integration: one coherent page ----
+
+test('integrated page: sixteen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
+  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
+  const ids = logic.ROWS.map((r) => r.id);
+  assert.equal(new Set(ids).size, ids.length, 'no row twice');
+  const labels = logic.ROWS.map((r) => r.label.toLowerCase());
+  assert.equal(new Set(labels).size, labels.length, 'no two rows with one label');
+  // "Open new tabs next to the active tab" was a second control for `new_tab_beside_active`, which
+  // Tabs > New tab position owns now; it is gone from the page (the key stays in the save text).
+  assert.equal(logic.ROWS.find((r) => r.id === 'newTabBesideActive'), undefined);
+  assert.equal(app.querySelector('.sp-row[data-row="newTabBesideActive"]'), null);
+  // The Ctrl+Tab order and the tab previews sit in Tabs > Tab bar, after T1's own rows.
+  const tabsSection = app.querySelector('section[data-section="tabs"]');
+  for (const id of ['ctrlTabMru', 'tabPreviewImages', 'tabPreviewMemory']) {
+    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'tabs', id);
+    assert.ok(tabsSection.querySelector(`.sp-row[data-row="${id}"]`), `${id} is drawn in Tabs`);
+  }
+  // Each still saves its own key through the whole-draft save.
+  deliver(fixture.snap);
+  for (const [id, key] of [['ctrlTabMru', 'ctrl_tab_mru'], ['tabPreviewImages', 'tab_preview_images'], ['tabPreviewMemory', 'tab_preview_memory']]) {
+    sent.length = 0;
+    tabsSection.querySelector(`.sp-row[data-row="${id}"]`).querySelector('[role="switch"]').click();
+    assert.equal(sent[0].a, 'save', id);
+    assert.match(sent[0].text, new RegExp(`\\n${key}=false\\n`), id);
+    deliver(fixture.snap);
+  }
+  // The new tab page's four choices sit on the Tabs section's first row.
+  const newTab = tabsSection.querySelector('.sp-row[data-row="tabs_new_tab_page"]');
+  assert.ok(newTab);
+  assert.ok(logic.matchRows('blank page').has('tabs_new_tab_page'));
+  assert.ok(logic.matchRows('nickname').has('qcNickname'));
+});

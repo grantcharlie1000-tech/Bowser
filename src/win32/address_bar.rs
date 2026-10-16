@@ -33,7 +33,8 @@ use crate::{
 };
 
 /// Engine suggestions arrived (see [`take_answers`]).
-pub(crate) const WM_ADDRESS_SUGGEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5E1;
+/// (WM_APP + 0x5E1 is `WM_CHAIN_STEP`; the integration moved this one so neither shadows the other.)
+pub(crate) const WM_ADDRESS_SUGGEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5E3;
 
 /// Most suggestions one answer keeps.
 const MAX_ANSWERS: usize = 8;

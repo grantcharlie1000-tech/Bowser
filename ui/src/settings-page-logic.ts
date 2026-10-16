@@ -8,7 +8,7 @@ import { parseStartSettings, startSaveLines, type StartSettings } from './start-
 // --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
 import { ADDRESS_ROWS } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
-import { parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
+import { cardSpecs, parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -442,6 +442,21 @@ export const RESTART_NOTE = 'Applies after restart';
 export const NOT_YET_NOTE = 'Has no effect yet. Bowser keeps your choice for when it does.';
 export const NOT_YET_GROUP_NOTE = 'These have no effect yet. Bowser keeps your choices for when they do.';
 
+// --- wave-1 integration --- the Tabs section: T1's options card by card, with the older tab rows
+// (Ctrl+Tab order, tab previews) at the end of its Tab bar card, where settings-page.ts draws them.
+const OLDER_TAB_ROWS: readonly RowSpec[] = [
+  { id: 'ctrlTabMru', section: 'tabs', label: 'Cycle tabs most-recently-used first with Ctrl+Tab', description: 'Ctrl+Tab steps through tabs in the order you last used them. Off, it follows the tab order.', keywords: 'ctrl tab cycle cycling most recently used mru switch order' },
+  { id: 'tabPreviewImages', section: 'tabs', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image popup' },
+  { id: 'tabPreviewMemory', section: 'tabs', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover popup' },
+];
+const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
+  const rows = tabOptionRows();
+  const lastBar = cardSpecs('bar').at(-1)?.key;
+  const at = rows.findIndex((row) => row.id === lastBar) + 1;
+  return [...rows.slice(0, at), ...OLDER_TAB_ROWS, ...rows.slice(at)];
+})();
+// --- end wave-1 integration ---
+
 /** Every row the page draws, in page order. The view builds a control per id. */
 export const ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', description: 'Settings on this page apply to this profile only.', keywords: 'account person name avatar guest' },
@@ -460,11 +475,10 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'minimalUrl', section: 'appearance', label: 'Show a simplified address while unfocused', description: 'Shows the page’s registrable host until you focus the address bar, then the full address.', keywords: 'url simplified host domain minimal address bar focus' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Show a loading progress bar', description: 'A thin bar tracks page loads in the toolbar.', keywords: 'progress loading bar indicator' },
   { id: 'grouping', section: 'appearance', label: 'Group tabs by site', description: 'Tabs from one site share an island. Groups you make by hand stay.', keywords: 'automatic tab groups islands domain', restart: true },
-  { id: 'newTabBesideActive', section: 'appearance', label: 'Open new tabs next to the active tab', description: 'A new tab opens right after the tab you’re on, not at the end.', keywords: 'new tab position beside active next' },
-  { id: 'ctrlTabMru', section: 'appearance', label: 'Cycle tabs most-recently-used first with Ctrl+Tab', description: 'Ctrl+Tab steps through tabs in the order you last used them.', keywords: 'ctrl tab cycle most recently used mru switch' },
+  // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
+  // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
+  // (TABS_SECTION_ROWS below).
   { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
-  { id: 'tabPreviewImages', section: 'appearance', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image' },
-  { id: 'tabPreviewMemory', section: 'appearance', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'appearance', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
@@ -483,7 +497,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'shiftRightClickContext', section: 'appearance', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system' },
   { id: 'ctrlShiftCCopyLink', section: 'appearance', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
-  ...tabOptionRows(),
+  ...TABS_SECTION_ROWS,
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
   { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },

@@ -484,20 +484,16 @@ export function startSettingsPage(root: HTMLElement): void {
   const loadProgress = switchControl((on) => change((d) => { d.showLoadProgress = on; }));
   row(addressCard, 'showLoadProgress', loadProgress.root);
 
-  // Tabs (the rows Bowser does not act on yet sit last)
-  const tabsCard = card('appearance', 'Tabs');
+  // Tab groups and split view. The new-tab position, Ctrl+Tab order and tab preview rows live in the
+  // Tabs section (wave-1 integration), which also owns `new_tab_beside_active` through its position row.
+  const tabsCard = card('appearance', 'Tab groups and split view');
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
   row(tabsCard, 'grouping', grouping.root);
-  const besideActive = switchControl((on) => change((d) => { d.newTabBesideActive = on; }));
-  row(tabsCard, 'newTabBesideActive', besideActive.root);
   const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
-  row(tabsCard, 'ctrlTabMru', mru.root);
   const edgeDrop = switchControl((on) => change((d) => { d.splitEdgeDrop = on; }));
   row(tabsCard, 'splitEdgeDrop', edgeDrop.root);
   const previewImages = switchControl((on) => change((d) => { d.tabPreviewImages = on; }));
-  row(tabsCard, 'tabPreviewImages', previewImages.root);
   const previewMemory = switchControl((on) => change((d) => { d.tabPreviewMemory = on; }));
-  row(tabsCard, 'tabPreviewMemory', previewMemory.root);
   const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
   row(tabsCard, 'pinNewTabGroups', pinGroups.root);
   const vTabs = switchControl((on) => change((d) => { d.ctrlSVerticalTabs = on; }));
@@ -656,6 +652,12 @@ export function startSettingsPage(root: HTMLElement): void {
   for (const cardKey of TAB_CARDS) {
     const tabCard = card('tabs', TAB_CARD_TITLES[cardKey]);
     for (const spec of cardSpecs(cardKey)) row(tabCard, spec.key, buildTabControl(spec));
+    // --- wave-1 integration --- the older tab rows join the Tabs section's tab bar card.
+    if (cardKey === 'bar') {
+      row(tabCard, 'ctrlTabMru', mru.root);
+      row(tabCard, 'tabPreviewImages', previewImages.root);
+      row(tabCard, 'tabPreviewMemory', previewMemory.root);
+    }
   }
 
   // Privacy and security
@@ -984,7 +986,6 @@ export function startSettingsPage(root: HTMLElement): void {
     grouping.set(d.automaticTabGrouping);
     previewImages.set(d.tabPreviewImages);
     previewMemory.set(d.tabPreviewMemory);
-    besideActive.set(d.newTabBesideActive);
     mru.set(d.ctrlTabMru);
     pinGroups.set(d.pinNewTabGroups);
     edgeDrop.set(d.splitEdgeDrop);
@@ -1046,7 +1047,7 @@ export function startSettingsPage(root: HTMLElement): void {
     banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
-      previewImages, previewMemory, besideActive, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
+      previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
       rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
     ]) control.disable(!s.readable);

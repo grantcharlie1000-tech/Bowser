@@ -996,7 +996,7 @@ mod tests {
     fn the_palette_and_drop_down_result_caps_agree() {
         use crate::{address_settings::MAX_DROPDOWN_RESULTS, chrome_host::protocol::MAX_SUGGEST_ITEMS, commands::store::MAX_RESULTS};
         assert_eq!(usize::from(MAX_DROPDOWN_RESULTS), MAX_SUGGEST_ITEMS, "every row the setting allows can be sent");
-        assert!(MAX_RESULTS >= MAX_DROPDOWN_RESULTS);
+        const { assert!(MAX_RESULTS >= MAX_DROPDOWN_RESULTS) };
         let page = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/src/palette-logic.ts")).unwrap();
         assert!(page.contains(&format!("export const MAX_LIMIT = {MAX_RESULTS};")), "the page's limit matches the store's");
     }
