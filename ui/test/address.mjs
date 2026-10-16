@@ -384,3 +384,73 @@ test('the QR path draws exactly the dark modules, one run at a time', () => {
   assert.equal(area, real.flat().filter(Boolean).length, 'the path covers every dark module once');
   assert.equal(path.size, real.length + 8);
 });
+
+// ---- the bookmarks bar ----
+
+const barLogic = await bundle('bookmark-bar-logic.ts');
+const dialogLogic = await bundle('address-dialog-logic.ts');
+
+test('the bookmarks bar snapshot from Rust parses, and malformed ones do not', () => {
+  const bar = barLogic.parseBarSnapshot(fixture.bar.d);
+  assert.equal(bar.display, 'text-icon');
+  assert.deepEqual(bar.items.map((i) => [i.id, i.kind, i.title]), [[1, 'link', 'Rust'], [2, 'folder', 'Reading']]);
+  assert.deepEqual(bar.groups, [{ key: 'example.com', name: 'Example', pinned: true, live: false, colour: -1 }]);
+  assert.equal(parseInbound(fixture.bar).t, 'snap');
+  const d = fixture.bar.d;
+  const item = d.items[0];
+  for (const bad of [{ ...d, extra: 1 }, { ...d, display: 'big' }, { ...d, items: [item, item] }, { ...d, items: [{ ...item, kind: 'tab' }] }, { ...d, items: [{ ...item, id: 0 }] },
+    { ...d, items: [{ ...d.items[1], url: 'https://x.example/' }] }, { ...d, items: [{ ...item, fav: 'https://x.example/f.png' }] }, { ...d, items: [{ ...item, title: 'a\nb' }] },
+    { ...d, groups: [{ ...d.groups[0], key: 'bad key' }] }, { ...d, groups: [{ ...d.groups[0], colour: 300 }] }, { ...d, groups: [{ ...d.groups[0], pinned: 1 }] },
+    { ...d, items: Array.from({ length: 201 }, (_, i) => ({ ...item, id: i + 1 })) }]) {
+    assert.equal(barLogic.parseBarSnapshot(bad), null, JSON.stringify(bad).slice(0, 90));
+  }
+});
+
+test('each display mode shows what its name says, folders keep their names unless only icons show', () => {
+  const link = { kind: 'link' };
+  const folder = { kind: 'folder' };
+  assert.deepEqual(barLogic.faceOf(link, 'text-icon'), { icon: 'site', text: true });
+  assert.deepEqual(barLogic.faceOf(link, 'text'), { icon: null, text: true });
+  assert.deepEqual(barLogic.faceOf(link, 'icon'), { icon: 'site', text: false });
+  assert.deepEqual(barLogic.faceOf(link, 'bookmark-icon'), { icon: 'bookmark', text: false });
+  assert.deepEqual(barLogic.faceOf(folder, 'text-icon'), { icon: 'folder', text: true });
+  assert.deepEqual(barLogic.faceOf(folder, 'text'), { icon: null, text: true });
+  assert.deepEqual(barLogic.faceOf(folder, 'icon'), { icon: 'folder', text: false });
+  assert.deepEqual(barLogic.faceOf(folder, 'bookmark-icon'), { icon: 'folder', text: true }, 'a folder keeps its name with bookmark icons only');
+});
+
+test('the bar sends flat commands and fits as many items as the row holds', () => {
+  assert.deepEqual(barLogic.openFields(4, true), { a: 'baropen', id: 4, n: 1 });
+  assert.deepEqual(barLogic.folderFields(4, '1,2,3,4'), { a: 'barfolder', id: 4, text: '1,2,3,4' });
+  assert.deepEqual(barLogic.contextFields(4), { a: 'barctx', id: 4 });
+  assert.deepEqual(barLogic.groupFields('example.com'), { a: 'bargroup', text: 'example.com' });
+  assert.deepEqual(barLogic.overflowFields(3, '1,2,3,4'), { a: 'baroverflow', n: 3, text: '1,2,3,4' });
+  take();
+  for (const fields of [barLogic.openFields(4, false), barLogic.folderFields(4, '1,2,3,4'), barLogic.contextFields(4), barLogic.groupContextFields('a.example'), barLogic.overflowFields(1, '1,2,3,4')]) {
+    assert.equal(sendAddr(fields), true, JSON.stringify(fields));
+  }
+  assert.equal(take().length, 5);
+  // Five items of 50px with 2px gaps need 258px: all fit in 300, two fit in 170 with the 28px overflow button.
+  assert.equal(barLogic.fitCount([50, 50, 50, 50, 50], 300, 2, 28), 5);
+  assert.equal(barLogic.fitCount([50, 50, 50, 50, 50], 170, 2, 28), 2);
+  assert.equal(barLogic.fitCount([50, 50, 50, 50, 50], 10, 2, 28), 0);
+  assert.equal(barLogic.fitCount([], 100, 2, 28), 0);
+});
+
+test('the address dialogs: snapshots parse strictly and fields are cleaned before they are sent', () => {
+  const qr = dialogLogic.parseDialogSnapshot(fixture.qr.d);
+  assert.deepEqual(qr, { kind: 'qr', text: 'https://example.com/a b' });
+  const bookmark = dialogLogic.parseDialogSnapshot(fixture.bookmark.d);
+  assert.equal(bookmark.kind, 'bookmark');
+  assert.equal(bookmark.existing, true);
+  assert.equal(bookmark.folder, 9);
+  assert.equal(bookmark.nickname, 'rl');
+  assert.deepEqual(bookmark.folders.map((f) => f.id), [4, 9]);
+  const d = fixture.bookmark.d;
+  for (const bad of [{ ...d, kind: 'other' }, { ...d, extra: 1 }, { ...d, folder: -1 }, { ...d, existing: 'yes' }, { ...d, folders: [{ id: 0, title: 'x', depth: 0 }] }, { ...d, name: 'a\tb' }, { kind: 'qr', text: 'x', extra: 1 }]) {
+    assert.equal(dialogLogic.parseDialogSnapshot(bad), null, JSON.stringify(bad).slice(0, 80));
+  }
+  assert.equal(dialogLogic.cleanField('  a\tb\nc  '), 'a b c');
+  assert.equal(dialogLogic.MAX_QR_BYTES, 213);
+  assert.ok(qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES)) !== null && qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES + 1)) === null, 'the dialog limit is the encoder limit');
+});

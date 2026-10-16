@@ -370,6 +370,35 @@ pub struct EngineEvents {
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     // --- end split view ---
+    // --- address bar, search and bookmarks ---
+    /// The page context menu is about to open on a selection or an image: the labels of the search
+    /// items to add (none for nothing to add).
+    pub context_search: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, &ContextSearchInfo) -> ContextSearchLabels>>,
+    /// One of those items was picked.
+    pub context_search_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, ContextSearchPick)>>,
+    // --- end address bar, search and bookmarks ---
+}
+
+/// What the page context menu was opened on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextSearchInfo {
+    /// The selected text, trimmed and cut, when there is a selection.
+    pub selection: Option<String>,
+    /// The address of the image under the pointer (http or https only).
+    pub image: Option<url::Url>,
+}
+
+/// The labels of the search items to add to that menu.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextSearchLabels {
+    pub selection: Option<String>,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextSearchPick {
+    Selection(String),
+    Image(url::Url),
 }
 
 /// Per-site permission decisions, shared between the UI (Site information) and the WebView2 request

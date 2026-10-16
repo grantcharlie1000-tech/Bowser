@@ -5264,6 +5264,56 @@ impl App {
         }
     }
 
+    /// The search items a page's context menu gets for a selection or an image: the default engine
+    /// (the private-window one in a private tab) searching for the selection, the image engine
+    /// searching for the image. Nothing is offered when no engine can.
+    fn context_search_labels(app: &AppRef, tab: TabId, info: &engine::ContextSearchInfo) -> engine::ContextSearchLabels {
+        let Ok(state) = app.try_borrow() else { return Default::default() };
+        let private = state.tabs.iter().any(|candidate| candidate.id == tab && candidate.private);
+        let show_nickname = state.settings.address.show_nickname;
+        drop(state);
+        let engines = crate::address_runtime::engines();
+        let selection = info.selection.as_ref().map(|text| {
+            let engine = engines.effective(private);
+            let shown: String = if text.chars().count() > 28 { format!("{}…", text.chars().take(28).collect::<String>()) } else { text.clone() };
+            let _ = show_nickname;
+            format!("Search {} for “{shown}”", engine.name)
+        });
+        let image = info.image.as_ref().and_then(|url| {
+            let engine = engines.image_engine()?;
+            engine.image_request(url.as_str())?;
+            Some(format!("Search for this image with {}", engine.name))
+        });
+        engine::ContextSearchLabels { selection, image }
+    }
+
+    /// A search item of a page's context menu was picked.
+    fn context_search_run(app: &AppRef, pick: engine::ContextSearchPick) {
+        use crate::address_input::Destination;
+        let (private, background) = {
+            let state = app.borrow();
+            (state.tabs.iter().any(|tab| tab.id == state.tab_model.active() && tab.private), state.settings.address.selection_background)
+        };
+        let engines = crate::address_runtime::engines();
+        match pick {
+            engine::ContextSearchPick::Selection(text) => {
+                let before = app.borrow().tab_model.active();
+                let options = crate::address_input::Options { new_tab: true, from_search_field: true, ..Default::default() };
+                Self::submit_with(app, &text, options);
+                // "Search for selected text in a background tab": the page you were reading stays shown.
+                if background {
+                    let _ = Self::select_tab(app, before);
+                }
+            }
+            engine::ContextSearchPick::Image(url) => {
+                let Some(engine) = engines.image_engine() else { return };
+                let Some(request) = engine.image_request(url.as_str()) else { return };
+                let destination = Destination::Search { request, query: url.to_string(), engine: engine.id.clone() };
+                Self::open_destination(app, "", destination, true, private);
+            }
+        }
+    }
+
     /// Opens what Enter resolved to, in the shown tab or a new one, and remembers the typed text.
     fn open_destination(app: &AppRef, typed: &str, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
         use crate::address_input::Destination;
@@ -5276,7 +5326,14 @@ impl App {
             }
         }
         match destination {
-            Destination::Navigate { url, .. } => Self::submit_url(app, url, None),
+            Destination::Navigate { url, upgraded_from } => {
+                let tab = app.borrow().tab_model.active();
+                match upgraded_from {
+                    Some(original) => crate::address_runtime::note_upgrade(tab, original),
+                    None => crate::address_runtime::forget_upgrade(tab),
+                }
+                Self::submit_url(app, url, None)
+            }
             Destination::Search { request, .. } => {
                 match request.post {
                     Some(body) => POST_BODY.with(|slot| *slot.borrow_mut() = Some((request.url.clone(), body))),
@@ -5803,6 +5860,22 @@ impl App {
                 }))
             },
             // --- end split view ---
+            // --- address bar, search and bookmarks ---
+            context_search: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, info: &engine::ContextSearchInfo| {
+                    search_app.upgrade().map(|app| App::context_search_labels(&app, tab, info)).unwrap_or_default()
+                }))
+            },
+            context_search_pick: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |_tab, pick| {
+                    if let Some(app) = search_app.upgrade() {
+                        App::context_search_run(&app, pick);
+                    }
+                }))
+            },
+            // --- end address bar, search and bookmarks ---
             render_process_failed: {
                 let crash_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -5837,6 +5910,19 @@ impl App {
                 let failed_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, certificate| {
                     if let Some(app) = failed_app.upgrade() {
+                        // "Always use HTTPS": a site that cannot be reached securely is tried once over
+                        // plain http (never after a certificate problem, which must not be bypassed).
+                        if !certificate {
+                            if let Some(original) = crate::address_runtime::take_upgrade(tab_id) {
+                                // Only when the page that failed is the one that was upgraded.
+                                let same_site = app.borrow().tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| tab.url.as_ref())
+                                    .is_some_and(|shown| shown.scheme() == "https" && shown.host_str() == original.host_str());
+                                if same_site {
+                                    Self::navigate_tab(&app, tab_id, &original);
+                                    return;
+                                }
+                            }
+                        }
                         let found = {
                             let mut state = app.borrow_mut();
                             match state.tabs.iter_mut().find(|tab| tab.id == tab_id) {

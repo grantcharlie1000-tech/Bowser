@@ -2,6 +2,7 @@ mod card;
 // --- address bar, search and bookmarks (src/address_settings.rs) ---
 mod address_bar;
 mod address_dialog;
+mod bookmark_bar;
 // --- end address bar, search and bookmarks ---
 mod corner_fringe;
 mod command_palette;

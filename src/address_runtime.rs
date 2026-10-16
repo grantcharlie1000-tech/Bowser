@@ -28,6 +28,9 @@ struct EngineCache {
 }
 
 thread_local! {
+    /// Tabs that were sent to an https address by "always use HTTPS", with the http address they
+    /// were sent from: when the secure page cannot load, the plain one is tried once.
+    static UPGRADED: RefCell<std::collections::HashMap<crate::tabs::TabId, url::Url>> = RefCell::new(std::collections::HashMap::new());
     static ENGINES: RefCell<Option<EngineCache>> = const { RefCell::new(None) };
     static TYPED: RefCell<Option<(PathBuf, TypedHistory)>> = const { RefCell::new(None) };
 }
@@ -58,6 +61,27 @@ pub fn save_engines(store: &EngineStore) -> std::io::Result<()> {
     store.save(profile.root())?;
     ENGINES.with(|cell| *cell.borrow_mut() = None);
     Ok(())
+}
+
+/// Remembers that `tab` was sent from `original` (http) to its https address.
+pub fn note_upgrade(tab: crate::tabs::TabId, original: url::Url) {
+    UPGRADED.with(|map| {
+        let mut map = map.borrow_mut();
+        if map.len() > 64 {
+            map.clear();
+        }
+        map.insert(tab, original);
+    });
+}
+
+/// The http address `tab` was upgraded from, once: asking again gives nothing.
+pub fn take_upgrade(tab: crate::tabs::TabId) -> Option<url::Url> {
+    UPGRADED.with(|map| map.borrow_mut().remove(&tab))
+}
+
+/// A tab navigated somewhere else: its upgrade, if any, no longer applies.
+pub fn forget_upgrade(tab: crate::tabs::TabId) {
+    UPGRADED.with(|map| map.borrow_mut().remove(&tab));
 }
 
 /// Whether typed text may be remembered for the active profile: not a guest, history on.

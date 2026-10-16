@@ -404,6 +404,9 @@ struct HtmlTabsInputs {
 }
 
 struct WindowChrome {
+    /// The bookmarks bar's share of the page, in physical pixels, and whether it is at the bottom
+    /// (src/win32/bookmark_bar.rs); `relayout` takes it off the viewport.
+    bar_reserve: (i32, bool),
     surface: ChromeSurface,
     overlay: HWND,
     /// Client size in physical pixels. The surface only keeps the chrome rows.
@@ -610,6 +613,7 @@ struct HtmlFavicon {
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         Self {
+            bar_reserve: (0, false),
             surface: {
                 let mut surface = ChromeSurface::new(width, height, dpi);
                 let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
@@ -982,6 +986,8 @@ impl WindowChrome {
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
             self.slots.iter().map(|slot| slot.collapsed && !slot.marker_only),
         );
+        // The bookmarks bar takes its row off the top (or bottom) of the page area.
+        self.layout.viewport = super::bookmark_bar::reserved_viewport(self.layout.viewport, self.bar_reserve);
         if let Some(sidebar) = sidebar {
             self.sidebar_scroll = self.sidebar_scroll.clamp(0, sidebar.max_scroll);
             self.sidebar_scroll_target = self.sidebar_scroll_target.clamp(0, sidebar.max_scroll);
@@ -2608,6 +2614,12 @@ unsafe extern "system" fn window_proc(
             super::WM_EXTENSIONS_CHANGED => {
                 html_refresh_extensions_button(hwnd);
                 super::settings_page::extensions_changed(hwnd);
+                LRESULT(0)
+            }
+            super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND => {
+                if let Some(app) = app {
+                    super::bookmark_bar::run_queued(hwnd, app);
+                }
                 LRESULT(0)
             }
             // Engine suggestions for the address field or the search field arrived.
@@ -7971,6 +7983,8 @@ fn close_html_chrome(hwnd: HWND) {
     super::history_page::close(hwnd);
     super::downloads_page::close(hwnd);
     super::downloads_ui::close(hwnd);
+    super::bookmark_bar::close(hwnd);
+    super::address_bar::forget(hwnd);
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
@@ -8214,6 +8228,7 @@ fn html_sync(hwnd: HWND) {
     // The address field's and the search field's options (src/win32/address_bar.rs).
     let generation = with_chrome(hwnd, |s| s.html_state_generation[0]).unwrap_or_default();
     super::address_bar::sync(hwnd, &app, generation);
+    super::bookmark_bar::sync(hwnd, &app);
     let display =
         with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
     let (send_text, select, generation) = with_chrome(hwnd, |s| {
@@ -8329,6 +8344,26 @@ pub(super) fn toolbar_anchor(hwnd: HWND, rect: chrome_host::protocol::HoverRect)
     let scale = dpi as f32 / 96.0;
     let element = super::html_hover::anchor_to_screen(screen, scale, rect);
     Some(windows::Win32::Foundation::POINT { x: element.left, y: element.bottom + (4.0 * scale).round() as i32 })
+}
+
+/// Gives the bookmarks bar `reserve` (physical pixels, bottom?) of the page area. `true` when that
+/// changed it: the window is laid out again at once, and the caller's sync runs again with the room
+/// in place.
+pub(super) fn apply_bar_reserve(hwnd: HWND, app: &AppRef, reserve: (i32, bool)) -> bool {
+    let relaid = with_chrome(hwnd, |s| {
+        if s.bar_reserve == reserve {
+            return false;
+        }
+        s.bar_reserve = reserve;
+        s.relayout_sidebar(App::sidebar_width(app))
+    })
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+        repaint(hwnd);
+    }
+    relaid
 }
 
 /// Runs the chrome sync now (the options a menu pick changed reach the toolbar).
@@ -8910,7 +8945,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {

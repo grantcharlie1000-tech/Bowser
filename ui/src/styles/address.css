@@ -288,7 +288,11 @@
   margin-top: auto;
 }
 
-/* ---- Bookmarks bar ---- */
+/* ---- Bookmarks bar (view=bar, one 28px row of the chrome's glass) ---- */
+.bm-root {
+  background: transparent;
+}
+
 .bm-bar {
   display: flex;
   align-items: center;
@@ -298,6 +302,16 @@
   box-sizing: border-box;
   overflow: hidden;
   color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+}
+
+.bm-list {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .bm-item {
@@ -313,8 +327,12 @@
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 12px;
   cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bm-item[hidden] {
+  display: none;
 }
 
 .bm-item:hover,
@@ -322,17 +340,21 @@
   background: var(--bw-hover);
 }
 
-.bm-item .bm-label {
+.bm-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bm-item .bm-fav {
+.bm-fav {
   flex: none;
   width: 16px;
   height: 16px;
-  border-radius: 3px;
+}
+
+.bm-glyph {
+  flex: none;
+  color: var(--bw-text-2);
 }
 
 .bm-sep {
@@ -343,7 +365,7 @@
   background: var(--bw-omni-edge);
 }
 
-.bm-item.is-group .bm-dot {
+.bm-dot {
   flex: none;
   width: 8px;
   height: 8px;
@@ -351,11 +373,15 @@
   background: var(--bw-accent);
 }
 
+.bm-item.is-group:not(.is-live) {
+  opacity: 0.7;
+}
+
 .bm-overflow {
-  margin-inline-start: auto;
+  flex: none;
+  padding: 0 6px;
 }
 
 .bm-empty {
   color: var(--bw-text-2);
-  font-size: 12px;
 }

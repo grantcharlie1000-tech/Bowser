@@ -28,6 +28,7 @@ import { startRail } from './rail';
 import { startPanel } from './panel';
 import { startPopup } from './popup';
 import { startDialog } from './dialog';
+import { startBookmarkBar } from './bookmark-bar'; // --- address bar, search and bookmarks ---
 // Types only: the settings and history pages are separate bundles (see loadPage).
 import type { startSettingsPage } from './settings-page';
 import type { startHistoryPage } from './history-page';
@@ -498,6 +499,7 @@ function start(): void {
   }
   else if (view === 'panel') startPanel(root);
   else if (view === 'popup') startPopup(root);
+  else if (view === 'bar') startBookmarkBar(root); // --- address bar, search and bookmarks ---
   else if (view === 'dialog') startDialog(root);
   else if (view === 'hover') startHover(root); // --- hover layer ---
   else if (view === 'split') startSplit(root); // --- split view ---

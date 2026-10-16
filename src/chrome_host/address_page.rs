@@ -265,6 +265,104 @@ pub fn toolbar_command(f: &PanelFields) -> Option<ToolbarAction> {
     }
 }
 
+// ----- the bookmarks bar -----
+
+/// One bookmark or folder on the bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BarItem {
+    pub id: u64,
+    pub folder: bool,
+    pub title: String,
+    pub url: String,
+    /// The site's icon as a `data:` URI, or empty.
+    pub fav: String,
+}
+
+/// One tab group chip on the bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BarGroup {
+    /// The group's domain: what the chip's commands name.
+    pub key: String,
+    pub name: String,
+    pub pinned: bool,
+    /// The group has open tabs now.
+    pub live: bool,
+    /// Palette index of the group's colour, or -1 for the theme accent.
+    pub colour: i32,
+}
+
+/// Most items and chips the bar carries.
+pub const MAX_BAR_ITEMS: usize = 200;
+pub const MAX_BAR_GROUPS: usize = 32;
+
+/// `{v:1,t:"snap",p:"bookmarkbar",d:{display,items:[..],groups:[..]}}`.
+pub fn bar_snapshot_json(display: &str, items: &[BarItem], groups: &[BarGroup]) -> String {
+    snap_json("bookmarkbar", |out| {
+        out.string("display", display);
+        out.array("items", |list| {
+            for item in items.iter().take(MAX_BAR_ITEMS) {
+                list.object(|o| {
+                    o.uint("id", item.id);
+                    o.string("kind", if item.folder { "folder" } else { "link" });
+                    o.string("title", &plain(&item.title, 120));
+                    o.string("url", &item.url.chars().take(2048).collect::<String>());
+                    o.string("fav", &item.fav);
+                });
+            }
+        });
+        out.array("groups", |list| {
+            for group in groups.iter().take(MAX_BAR_GROUPS) {
+                list.object(|o| {
+                    o.string("key", &plain(&group.key, 253));
+                    o.string("name", &plain(&group.name, 80));
+                    o.bool("pinned", group.pinned);
+                    o.bool("live", group.live);
+                    o.int("colour", i64::from(group.colour));
+                });
+            }
+        });
+    })
+    .expect("bookmarkbar is a panel token")
+}
+
+/// What the bookmarks bar asks of Bowser through `{t:"addr",a:..}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BarAction {
+    /// Open bookmark `id`; `new_tab` for a middle click or Ctrl+click.
+    Open { id: u64, new_tab: bool },
+    /// Show folder `id`'s items under the folder button at `rect`.
+    Folder { id: u64, rect: super::protocol::HoverRect },
+    /// The context menu of bookmark or folder `id`.
+    Context { id: u64 },
+    /// Go to the tab group of this domain (or open it).
+    Group { key: String },
+    /// The context menu of a tab group chip.
+    GroupContext { key: String },
+    /// The items from index `first` on, which did not fit, listed under the button at `rect`.
+    Overflow { first: usize, rect: super::protocol::HoverRect },
+}
+
+fn valid_domain_key(text: &str) -> bool {
+    !text.is_empty() && text.len() <= 253 && !text.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, ',' | '/' | '\\' | '=' | '#'))
+}
+
+/// Maps the `addr` family of the bookmarks bar; exactly each action's fields, nothing else.
+pub fn bar_command(f: &PanelFields) -> Option<BarAction> {
+    if f.parent.is_some() || f.before.is_some() || f.on.is_some() || f.url.is_some() {
+        return None;
+    }
+    use super::protocol::HoverRect;
+    match f.a.as_str() {
+        "baropen" if f.text.is_none() => Some(BarAction::Open { id: f.id?, new_tab: match f.n? { 0 => false, 1 => true, _ => return None } }),
+        "barfolder" if f.n.is_none() => Some(BarAction::Folder { id: f.id?, rect: HoverRect::parse(f.text.as_deref()?)? }),
+        "barctx" if f.n.is_none() && f.text.is_none() => Some(BarAction::Context { id: f.id? }),
+        "bargroup" if f.id.is_none() && f.n.is_none() => Some(BarAction::Group { key: f.text.clone().filter(|key| valid_domain_key(key))? }),
+        "bargctx" if f.id.is_none() && f.n.is_none() => Some(BarAction::GroupContext { key: f.text.clone().filter(|key| valid_domain_key(key))? }),
+        "baroverflow" if f.id.is_none() => Some(BarAction::Overflow { first: usize::try_from(f.n?).ok().filter(|n| *n < MAX_BAR_ITEMS)?, rect: HoverRect::parse(f.text.as_deref()?)? }),
+        _ => None,
+    }
+}
+
 /// What the address dialog shows.
 pub enum DialogPage<'a> {
     /// The QR code of `text` (a page address).
@@ -376,13 +474,22 @@ mod tests {
             folders: &folders,
             error: "",
         }));
+        let bar = bar_snapshot_json(
+            "text-icon",
+            &[
+                BarItem { id: 1, folder: false, title: "Rust".into(), url: "https://www.rust-lang.org/".into(), fav: String::new() },
+                BarItem { id: 2, folder: true, title: "Reading".into(), url: String::new(), fav: String::new() },
+            ],
+            &[BarGroup { key: "example.com".into(), name: "Example".into(), pinned: true, live: false, colour: -1 }],
+        );
         let fixture = format!(
-            "{{\"addr\":{},\"sfield\":{},\"snap\":{},\"qr\":{},\"bookmark\":{}}}\n",
+            "{{\"addr\":{},\"sfield\":{},\"snap\":{},\"qr\":{},\"bookmark\":{},\"bar\":{}}}\n",
             addr_json(&settings, "example.co.uk"),
             sfield_json(&settings, &engines, 1),
             snapshot,
             dialog_snapshot_json(&DialogPage::Qr { text: "https://example.com/a b" }),
             bookmark,
+            bar,
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/address-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some() {
@@ -393,6 +500,25 @@ mod tests {
             fixture,
             "set BOWSER_WRITE_FIXTURES=1 cargo test address_messages_write_the_ui_fixture --lib"
         );
+    }
+
+    #[test]
+    fn bar_commands_carry_exactly_their_own_fields() {
+        let with = |a: &str, text: Option<&str>, n: Option<i32>, id: Option<u64>| PanelFields { a: a.into(), text: text.map(str::to_owned), n, id, ..PanelFields::default() };
+        assert_eq!(bar_command(&with("baropen", None, Some(1), Some(5))), Some(BarAction::Open { id: 5, new_tab: true }));
+        assert_eq!(bar_command(&with("baropen", None, Some(2), Some(5))), None);
+        assert_eq!(bar_command(&with("baropen", None, Some(0), None)), None);
+        assert!(matches!(bar_command(&with("barfolder", Some("10,20,80,22"), None, Some(3))), Some(BarAction::Folder { id: 3, .. })));
+        assert_eq!(bar_command(&with("barfolder", Some("bad"), None, Some(3))), None);
+        assert_eq!(bar_command(&with("barctx", None, None, Some(3))), Some(BarAction::Context { id: 3 }));
+        assert_eq!(bar_command(&with("bargroup", Some("example.com"), None, None)), Some(BarAction::Group { key: "example.com".into() }));
+        assert_eq!(bar_command(&with("bargroup", Some("bad domain"), None, None)), None);
+        assert_eq!(bar_command(&with("bargroup", Some("a/b"), None, None)), None);
+        assert_eq!(bar_command(&with("bargctx", Some("example.com"), None, Some(1))), None);
+        assert!(matches!(bar_command(&with("baroverflow", Some("1,2,3,4"), Some(4), None)), Some(BarAction::Overflow { first: 4, .. })));
+        assert_eq!(bar_command(&with("baroverflow", Some("1,2,3,4"), Some(-1), None)), None);
+        assert_eq!(bar_command(&with("baroverflow", Some("1,2,3,4"), Some(500), None)), None);
+        assert_eq!(bar_command(&with("explode", None, None, None)), None);
     }
 
     #[test]

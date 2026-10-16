@@ -4310,6 +4310,88 @@ unsafe fn configure_controller(
         }
         // --- end split view ---
 
+        // --- address bar, search and bookmarks ---
+        // "Search <engine> for <selection>" and "Search for this image with <engine>" in the page's
+        // context menu. The labels and the action come from the window (it knows the engines).
+        if let (Some(labels), Some(picked), Ok(webview11), Ok(environment9)) = (
+            events.context_search.clone(),
+            events.context_search_pick.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut has_selection = BOOL::default();
+                    target.HasSelection(&mut has_selection)?;
+                    let mut selection = None;
+                    if has_selection.as_bool() {
+                        let mut text = PWSTR::null();
+                        target.SelectionText(&mut text)?;
+                        let text = CoTaskMemPWSTR::from(text).to_string();
+                        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let text: String = text.chars().take(256).collect();
+                        if !text.is_empty() {
+                            selection = Some(text);
+                        }
+                    }
+                    let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+                    target.Kind(&mut kind)?;
+                    let mut image = None;
+                    if kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE {
+                        let mut source = PWSTR::null();
+                        target.SourceUri(&mut source)?;
+                        image = Url::parse(&CoTaskMemPWSTR::from(source).to_string()).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
+                    }
+                    let info = super::ContextSearchInfo { selection, image };
+                    if info.selection.is_none() && info.image.is_none() {
+                        return Ok(());
+                    }
+                    let names = labels(tab_id, &info);
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let position = |wanted: &[&str], fallback: u32| {
+                        let mut at = fallback;
+                        for index in 0..count {
+                            let mut name = PWSTR::null();
+                            if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok()
+                                && wanted.contains(&CoTaskMemPWSTR::from(name).to_string().as_str())
+                            {
+                                at = index + 1;
+                            }
+                        }
+                        at
+                    };
+                    let mut add = |label: &str, pick: super::ContextSearchPick, after: &[&str]| -> windows::core::Result<()> {
+                        let wide = HSTRING::from(label);
+                        let item = environment9.CreateContextMenuItem(PCWSTR(wide.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                        let picked = picked.clone();
+                        let mut item_token = 0i64;
+                        item.add_CustomItemSelected(
+                            &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                                picked(tab_id, pick.clone());
+                                Ok(())
+                            })),
+                            &mut item_token,
+                        )?;
+                        let at = position(after, 0);
+                        items.InsertValueAtIndex(at, &item)
+                    };
+                    if let (Some(label), Some(text)) = (names.selection, info.selection) {
+                        add(&label, super::ContextSearchPick::Selection(text), &["copy"])?;
+                    }
+                    if let (Some(label), Some(url)) = (names.image, info.image) {
+                        add(&label, super::ContextSearchPick::Image(url), &["copyImage", "saveImageAs", "copyImageLocation"])?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end address bar, search and bookmarks ---
+
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();
         let external_handler: ICoreWebView2LaunchingExternalUriSchemeEventHandler =
