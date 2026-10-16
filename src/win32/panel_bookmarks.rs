@@ -1023,7 +1023,8 @@ impl Content {
         let Ok(url) = url::Url::parse(url) else {
             return;
         };
-        if new_tab {
+        // "Open bookmarks in a new tab" (bm_open_new_tab).
+        if new_tab || App::settings(&self.app).address.bookmark_new_tab {
             App::new_tab(&self.app);
         }
         App::navigate_current(&self.app, &url);

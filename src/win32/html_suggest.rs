@@ -24,6 +24,10 @@ pub(crate) enum Target {
     Search(String),
     /// Switch to an open tab.
     Tab(TabId),
+    /// Put this text in the address field (a calculator answer).
+    Fill(String),
+    /// Search for this text with the engine of this id (a row of the search field's drop-down).
+    EngineSearch { engine: String, query: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,9 +66,10 @@ fn to_row(row: Suggestion, tabs: &[TabSource]) -> Option<Row> {
     let target = match (row.kind, row.tab) {
         (SuggestKind::Tab, Some(index)) => Target::Tab(tabs.get(index)?.0),
         (SuggestKind::Search, _) => Target::Search(row.target.clone()),
+        (SuggestKind::Calc, _) => Target::Fill(row.target.clone()),
         _ => Target::Navigate(row.target.clone()),
     };
-    let fav_url = if row.kind == SuggestKind::Search { String::new() } else { row.target.clone() };
+    let fav_url = if matches!(row.kind, SuggestKind::Search | SuggestKind::Calc) { String::new() } else { row.target.clone() };
     Some(Row {
         item: SuggestItem {
             kind: row.kind.wire().to_owned(),
@@ -72,6 +77,7 @@ fn to_row(row: Suggestion, tabs: &[TabSource]) -> Option<Row> {
             title: row.title,
             url: row.url,
             png: None,
+            badge: false,
         },
         target,
         fav_url,
@@ -86,6 +92,108 @@ pub(crate) fn tab_with_host(tabs: &[TabSource], url: &str) -> Option<TabId> {
             Url::parse(tab_url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).as_deref() == Some(host.as_str())
         })
         .map(|(id, _, _)| *id)
+}
+
+// ----- address bar options -----
+
+/// What the address options and the engine list add to the rows.
+pub(crate) struct Env<'a> {
+    pub settings: &'a crate::address_settings::AddressSettings,
+    pub engines: &'a crate::search_engines::EngineStore,
+    pub typed_history: &'a crate::address_suggest::TypedHistory,
+    /// Suggestions the nickname's engine answered for the current query.
+    pub engine_suggestions: &'a [String],
+    pub private: bool,
+}
+
+/// Rows for `typed` under the address options: the enabled sources in their order, scoped
+/// nicknames, engine nicknames and the calculator. `tabs` must not hold the active tab. Pure.
+pub(crate) fn rows_for(
+    history: &History,
+    completion: Option<&Completion>,
+    typed: &str,
+    typed_url: Option<&Url>,
+    tabs: &[TabSource],
+    marks: &[Mark],
+    env: &Env<'_>,
+) -> Vec<Row> {
+    let tab_sources: Vec<SuggestSource<'_>> = tabs.iter().map(|(_, url, title)| SuggestSource { url, title }).collect();
+    let mark_sources: Vec<crate::address_suggest::MarkSource<'_>> =
+        marks.iter().map(|(url, title, nickname)| crate::address_suggest::MarkSource { url, title, nickname }).collect();
+    let ctx = crate::address_suggest::Context {
+        typed,
+        completion,
+        typed_url,
+        history,
+        bookmarks: &mark_sources,
+        tabs: &tab_sources,
+        typed_history: env.typed_history,
+        engines: env.engines,
+        settings: env.settings,
+        engine_suggestions: env.engine_suggestions,
+        private: env.private,
+    };
+    let mut rows: Vec<Row> = crate::address_suggest::compose(&ctx).into_iter().filter_map(|row| to_row(row, tabs)).collect();
+    if env.settings.always_badge {
+        // The default row is what Enter does; every other row names its kind.
+        for row in rows.iter_mut().skip(1) {
+            row.item.badge = true;
+        }
+    }
+    rows
+}
+
+/// Rows of the typed-history list (an empty field was focused, or the history button pressed).
+pub(crate) fn typed_rows(history: &crate::address_suggest::TypedHistory, settings: &crate::address_settings::AddressSettings) -> Vec<Row> {
+    crate::address_suggest::typed_rows(history, settings)
+        .into_iter()
+        .filter_map(|row| to_row(row, &[]))
+        .map(|mut row| {
+            row.item.badge = settings.always_badge;
+            row
+        })
+        .collect()
+}
+
+/// A bookmarked page as (address, title, nickname).
+pub(crate) type Mark = (String, String, String);
+
+struct MarkCache {
+    root: PathBuf,
+    stamps: [Option<(SystemTime, u64)>; 2],
+    marks: Rc<Vec<Mark>>,
+}
+
+thread_local! {
+    static MARKS: RefCell<Option<MarkCache>> = const { RefCell::new(None) };
+}
+
+/// Every bookmarked page with its nickname, re-read only when the bookmark file or the nickname file
+/// changed (two `stat`s per call). Empty in a guest profile.
+pub(crate) fn marks() -> Rc<Vec<Mark>> {
+    let Ok(profile) = crate::profile::active() else { return Rc::default() };
+    if !crate::productivity::profile_allows_productivity(&profile) {
+        return Rc::default();
+    }
+    let root = profile.root().to_path_buf();
+    let stamps = [stamp_of(&root.join("bookmarks-v2.txt")), stamp_of(&root.join(crate::bookmark_extras::FILE_NAME))];
+    if let Some(hit) = MARKS.with(|cell| cell.borrow().as_ref().filter(|cache| cache.root == root && cache.stamps == stamps).map(|cache| cache.marks.clone())) {
+        return hit;
+    }
+    let store = BookmarkStore::load(&root).unwrap_or_default();
+    let extras = crate::bookmark_extras::Extras::load(&root);
+    let marks: Rc<Vec<Mark>> = Rc::new(
+        store
+            .items()
+            .iter()
+            .filter_map(|item| match &item.kind {
+                BookmarkKind::Link { url, .. } => Some((url.clone(), item.title.clone(), extras.nickname(item.id).to_owned())),
+                BookmarkKind::Folder => None,
+            })
+            .collect(),
+    );
+    MARKS.with(|cell| *cell.borrow_mut() = Some(MarkCache { root, stamps, marks: marks.clone() }));
+    marks
 }
 
 // ----- bookmarks -----

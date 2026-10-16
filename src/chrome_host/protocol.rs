@@ -106,7 +106,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, Address }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -1009,7 +1009,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "addr" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -1131,7 +1131,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "addr" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1141,6 +1141,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "ren" => PanelType::Rename,
                 // The bowser://downloads page (docs/design/downloads.md).
                 "dpage" => PanelType::DownloadsPage,
+                // The address field's own commands and the search field (address_page.rs).
+                "addr" => PanelType::Address,
                 // The bowser://history page (docs/design/history-page.md); not the rail panel's `hist`.
                 "hpage" => PanelType::HistoryPage,
                 _ => PanelType::Privacy,
@@ -1745,7 +1747,7 @@ pub fn hover_hide_json() -> String {
 
 // --- omnibox suggest ---
 /// Most rows in one `suggest` message, the default row included.
-pub const MAX_SUGGEST_ITEMS: usize = 8;
+pub const MAX_SUGGEST_ITEMS: usize = 20;
 /// Longest suggestion text and URL sent to the page, in UTF-16 code units: the unit the page
 /// validates in (JavaScript string length), so an emoji-heavy row is cut here instead of rejected
 /// there. Cuts fall on character boundaries.
@@ -1753,7 +1755,7 @@ pub const MAX_SUGGEST_TEXT_CHARS: usize = 256;
 /// Widest dropdown Rust may ask for, in CSS pixels.
 pub const MAX_SUGGEST_WIDTH: u32 = 4000;
 /// Row kinds on the wire: a search, a typed or completed address, history, a bookmark, an open tab.
-pub const SUGGEST_KINDS: [&str; 5] = ["search", "url", "hist", "bm", "tab"];
+pub const SUGGEST_KINDS: [&str; 6] = ["search", "url", "hist", "bm", "tab", "calc"];
 
 /// One dropdown row as the page shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1767,9 +1769,11 @@ pub struct SuggestItem {
     pub url: String,
     /// A favicon PNG, when one is known.
     pub png: Option<Vec<u8>>,
+    /// Show the kind badge on this row (`dd_always_badge`); sent as `"bd":true` only when set.
+    pub badge: bool,
 }
 
-/// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"q":..,"items":[{"k","text","title","url","fav"?}]}`.
+/// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"q":..,"items":[{"k","text","title","url","fav"?,"bd"?}]}`.
 /// `seq` is the edit the list answers; `tok` is the hover layer's content token (`0` for the
 /// toolbar's copy, which carries no favicons); `w` is the dropdown width in CSS pixels; `q` is the
 /// typed text the rows answer (capped at twice `MAX_SUGGEST_TEXT_CHARS` UTF-16 units), used to emphasise
@@ -1798,6 +1802,9 @@ pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, q: &str, items: &[Su
                     let fav = budgeted_uri(item.png.as_deref(), &mut budget);
                     if !fav.is_empty() {
                         row.string("fav", &fav);
+                    }
+                    if item.badge {
+                        row.bool("bd", true);
                     }
                 });
             }
@@ -4432,7 +4439,7 @@ mod tests {
 
     // --- omnibox suggest ---
     fn item(kind: &str, text: &str, title: &str, url: &str) -> SuggestItem {
-        SuggestItem { kind: kind.into(), text: text.into(), title: title.into(), url: url.into(), png: None }
+        SuggestItem { kind: kind.into(), text: text.into(), title: title.into(), url: url.into(), png: None, badge: false }
     }
 
     #[test]

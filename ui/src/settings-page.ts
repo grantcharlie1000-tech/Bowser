@@ -12,19 +12,21 @@ import { selectField, type SelectField } from './panels/select';
 import { textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
 import { mountExtensionsSection } from './extensions-section';
+import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SECTIONS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
-  type SearchEngine, type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
+  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
 } from './settings-page-logic';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
+  address: 'link', bookmarks: 'bookmark',
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -36,7 +38,7 @@ function cmd(fields: PanelFields): boolean {
 
 interface Control<T> { readonly root: HTMLElement; set(value: T): void; disable(off: boolean): void }
 
-function switchControl(onChange: (on: boolean) => void): Control<boolean> {
+export function switchControl(onChange: (on: boolean) => void): Control<boolean> {
   const button = el('button', 'bw-toggle sp-switch');
   button.type = 'button';
   button.setAttribute('role', 'switch');
@@ -96,7 +98,7 @@ function radioGroup<T extends string>(className: string, label: string, items: R
   };
 }
 
-function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Control<T | null> {
+export function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Control<T | null> {
   return radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
 }
 
@@ -691,29 +693,17 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   row(memoryCard, 'sleepAfter', sleepHost);
 
-  // Search engine
-  const searchCard = card('search');
-  const engines: ReadonlyArray<readonly [SearchEngine, string, string]> = [
-    ['optimised', 'Optimised', 'DuckDuckGo for web searches, Google for images. The default.'],
-    ['google', 'Google', 'Google for web and image searches.'],
-    ['duckduckgo', 'DuckDuckGo', 'DuckDuckGo for web and image searches.'],
-  ];
-  const engine = radioGroup<SearchEngine>('sp-engines', 'Search engine', engines.map(([key, name, about]) => [key, (button: HTMLButtonElement) => {
-    button.className = 'sp-engine';
-    const dot = el('span', 'sp-radio');
-    dot.setAttribute('aria-hidden', 'true');
-    const text = el('span', 'sp-engine-text');
-    const n = el('span', 'sp-engine-name');
-    n.textContent = name;
-    const d = el('span', 'sp-engine-desc');
-    d.textContent = about;
-    text.append(n, d);
-    button.append(dot, text);
-  }] as const), (value) => change((d) => { d.searchEngine = value; }));
-  const engineRow = row(searchCard, 'engine', engine.root, { stack: true });
-  const customNote = el('p', 'sp-note');
-  customNote.textContent = 'Searches use the custom provider in search-provider.txt until you choose an engine here.';
-  engineRow.root.append(customNote);
+  // Address bar, search engines and bookmarks (src/address-section.ts): its own snapshot, its own
+  // commands in the `set` family. The bookmarks bar's rows join the page's existing ones in Appearance.
+  const addressSections = mountAddressSections({
+    send: cmd,
+    toast: (text, ok) => showToast(text, ok),
+    card,
+    row: (into, id, control, options) => row(into, id, control, options),
+    barCard: bookmarksCard,
+    switchControl,
+    segmentedControl,
+  });
 
   // Downloads (docs/design/downloads.md "Settings"): both controls are their own commands, never
   // part of `save`; Rust shows the native folder picker and answers with the next snapshot.
@@ -919,8 +909,6 @@ export function startSettingsPage(root: HTMLElement): void {
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
     sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
-    engine.set(d.searchEngine ?? (s.searchFallback === 'custom' ? null : 'optimised'));
-    customNote.hidden = !(d.searchEngine === null && s.searchFallback === 'custom');
     downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Your Downloads folder';
     downloadAsk.set(s.downloadAsk);
     translateOffer.set(s.translateOffer);
@@ -945,7 +933,7 @@ export function startSettingsPage(root: HTMLElement): void {
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
     for (const control of [
-      layout, grouping, blocker, tracking, efficiency, sleep, engine,
+      layout, grouping, blocker, tracking, efficiency, sleep,
       previewImages, previewMemory, besideActive, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
       rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
@@ -1127,6 +1115,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
     if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded. The response was invalid.'; return; }

@@ -1,4 +1,8 @@
 mod card;
+// --- address bar, search and bookmarks (src/address_settings.rs) ---
+mod address_bar;
+mod address_dialog;
+// --- end address bar, search and bookmarks ---
 mod corner_fringe;
 mod command_palette;
 mod composer;
@@ -205,6 +209,11 @@ pub(crate) fn settings_page_focus(hwnd: HWND) {
 // --- history page (docs/design/history-page.md) ---
 /// Opens `bowser://history` in window `hwnd` (the History side panel when the window has no HTML
 /// chrome). `reuse_blank`: a blank normal shown tab becomes the page.
+/// An `@bookmarks` / `@history` / `@tabs` nickname was submitted: open the scope's first result.
+pub(crate) fn address_scoped_submit(hwnd: HWND, app: &crate::app::AppRef, scope: crate::address_settings::Scope, rest: &str) {
+    address_bar::scoped_submit(hwnd, app, scope, rest);
+}
+
 pub(crate) fn open_history_page(hwnd: HWND, app: &crate::app::AppRef, reuse_blank: bool) {
     history_page::open(hwnd, app, reuse_blank);
 }

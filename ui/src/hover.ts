@@ -171,7 +171,7 @@ function renderSuggest(msg: SuggestMsg): HTMLElement {
     const title = item.title !== '' ? item.title : item.text;
     const text = el('span', 'bw-suggest-text');
     text.append(matchedText('bw-suggest-title', title, needle));
-    const badge = suggestBadge(item.k, item.fav !== '');
+    const badge = suggestBadge(item.k, item.fav !== '', item.bd === true);
     if (badge) text.append(icon(badge.icon, { size: 12, fine: true, label: badge.label, className: 'bw-suggest-mark' }));
     if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
     row.append(lead, text);

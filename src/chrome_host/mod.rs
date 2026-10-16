@@ -1,6 +1,7 @@
 //! HTML chrome host: the WebView2 toolbar bridge, its wire protocol and embedded assets.
 //! See docs/html-chrome-protocol.md.
 
+pub mod address_page; // the address bar, search and bookmark options (src/address_settings.rs)
 pub mod assets;
 #[cfg(test)]
 mod fingerprint;

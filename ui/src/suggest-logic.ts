@@ -22,13 +22,14 @@ export function suggestGlyph(kind: SuggestKind): IconName {
     case 'hist': return 'history';
     case 'bm': return 'bookmark';
     case 'tab': return 'tab-switch';
+    case 'calc': return 'calculator';
     default: return 'globe';
   }
 }
 
 /** Trailing caption for rows whose action differs from "go to this page". */
 export function suggestAction(kind: SuggestKind): string {
-  return kind === 'tab' ? 'Switch to tab' : '';
+  return kind === 'tab' ? 'Switch to tab' : kind === 'calc' ? 'Use the answer' : '';
 }
 
 /**
@@ -36,7 +37,17 @@ export function suggestAction(kind: SuggestKind): string {
  * kind of row it is: only a bookmark needs one (an open tab says "Switch to tab"; history and
  * addresses are the default). Null when the lead glyph already says it.
  */
-export function suggestBadge(kind: SuggestKind, hasFavicon: boolean): { readonly icon: IconName; readonly label: string } | null {
+export function suggestBadge(kind: SuggestKind, hasFavicon: boolean, always = false): { readonly icon: IconName; readonly label: string } | null {
+  if (always) {
+    switch (kind) {
+      case 'bm': return { icon: 'bookmark', label: 'Bookmark' };
+      case 'hist': return { icon: 'history', label: 'History' };
+      case 'tab': return { icon: 'tab-switch', label: 'Open tab' };
+      case 'search': return { icon: 'search', label: 'Search' };
+      case 'calc': return { icon: 'calculator', label: 'Calculation' };
+      default: return null;
+    }
+  }
   return kind === 'bm' && hasFavicon ? { icon: 'bookmark', label: 'Bookmark' } : null;
 }
 

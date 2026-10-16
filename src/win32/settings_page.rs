@@ -33,6 +33,7 @@ use crate::{
         protocol::{Command, PanelFields, PanelType},
         settings::{self as wire, Ack, Action},
         extensions_page as ext,
+        address_page as address_wire,
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -74,6 +75,8 @@ struct Runtime {
     ext_ack: ext::Ack,
     ext_error: String,
     dirty: bool,
+    /// Last address bar, search and bookmark snapshot sent (src/chrome_host/address_page.rs).
+    address: Option<String>,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
     focus_pending: bool,
@@ -254,6 +257,7 @@ fn ensure_host(owner: HWND) {
                     rt.ready = true;
                     rt.state = None;
                     rt.snapshot = None;
+                    rt.address = None;
                     rt.privacy = None;
                     rt.dirty = true;
                     // A reloaded page starts at the top: show the tab's section again.
@@ -405,10 +409,17 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.privacy_due = true;
             rt.ext_due = true;
         });
+        let (address_ack, address_error) = with(owner, |rt| (rt.ack, rt.error.clone())).unwrap_or((Ack::None, String::new()));
         let snapshot = snapshot(owner, app);
         // An answer is always delivered, even when the values did not change (a second identical
         // save still gets its "Saved").
         let fresh = with(owner, |rt| rt.ack != Ack::None || rt.snapshot.as_deref() != Some(snapshot.as_str())).unwrap_or(false);
+        // The address bar, search and bookmark section reads the same answer.
+        let address_snapshot = address_snapshot(app, address_ack, &address_error);
+        let address_fresh = with(owner, |rt| address_ack != Ack::None || rt.address.as_deref() != Some(address_snapshot.as_str())).unwrap_or(false);
+        if address_fresh && host.post_json(&address_snapshot).is_ok() {
+            let _ = with(owner, |rt| rt.address = Some(address_snapshot));
+        }
         if fresh && host.post_json(&snapshot).is_ok() {
             let _ = with(owner, |rt| {
                 rt.snapshot = Some(snapshot);
@@ -557,6 +568,8 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                     run(owner, app, tab, action);
                 } else if let Some(action) = ext::map_command(&fields) {
                     run_extension(owner, app, action);
+                } else if let Some(action) = address_wire::map_command(&fields) {
+                    run_address(owner, app, action);
                 }
             }
             Queued::Privacy(fields) => {
@@ -595,6 +608,8 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             let defaults = crate::settings::Settings::default();
             let saved = crate::settings::save(&profile.settings_file(), &defaults);
             if saved.is_ok() {
+                // Search goes back to its defaults too: the engine list is put back as shipped.
+                let _ = std::fs::remove_file(profile.root().join(crate::search_engines::FILE_NAME));
                 App::apply_tab_layout_settings(app, defaults.tab_layout, defaults.sidebar_width);
                 App::apply_efficiency_mode(app, defaults.efficiency_mode);
                 App::apply_sleep_settings(app, defaults.sleep_enabled, defaults.sleep_after_secs);
@@ -678,6 +693,89 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 return answer(owner, Err("Bowser's own program path could not be found.".into()));
             };
             answer(owner, crate::default_browser::make_default(&exe));
+        }
+    }
+}
+
+// ----- the address bar, search and bookmark sections (src/chrome_host/address_page.rs) -----
+
+/// The section's snapshot: every option, the engine list and the bookmark folders, read now.
+fn address_snapshot(app: &AppRef, ack: Ack, error: &str) -> String {
+    let profile = crate::profile::active().ok();
+    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+    let engines = crate::address_runtime::engines();
+    let folders = profile
+        .as_ref()
+        .filter(|profile| crate::productivity::profile_allows_productivity(profile))
+        .and_then(|profile| crate::bookmarks::BookmarkStore::load(profile.root()).ok())
+        .map(|store| super::address_dialog::folders_of(&store))
+        .unwrap_or_default();
+    let _ = app;
+    address_wire::snapshot_json(&address_wire::Snapshot {
+        settings: &settings.address,
+        engines: &engines,
+        folders: &folders,
+        guest: profile.as_ref().is_some_and(|profile| profile.is_guest()),
+        ack: match ack {
+            Ack::None => address_wire::Ack::None,
+            Ack::Saved => address_wire::Ack::Saved,
+            Ack::Failed => address_wire::Ack::Failed,
+        },
+        error,
+    })
+}
+
+/// Runs one change from the address bar, search or bookmark sections.
+fn run_address(owner: HWND, app: &AppRef, action: address_wire::Action) {
+    use address_wire::{Action as Change, EngineOp};
+    let Ok(profile) = crate::profile::active() else { return answer(owner, Err("The profile is not ready.".into())) };
+    let path = profile.settings_file();
+    match action {
+        Change::Set { key, value } => {
+            let Ok(mut settings) = crate::settings::read_strict(&path) else {
+                return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
+            };
+            if !settings.address.set(&key, &value) {
+                return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+            let saved = crate::settings::save(&path, &settings);
+            if saved.is_ok() {
+                App::apply_live_settings(app, &settings);
+            }
+            answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
+        }
+        Change::Engine(op) => {
+            let mut store = (*crate::address_runtime::engines()).clone();
+            let result = match op {
+                EngineOp::Add(engine) => store.add(engine).map(|_| ()),
+                EngineOp::Update(id, engine) => store.update(&id, engine),
+                EngineOp::Remove(id) => store.remove(&id),
+                EngineOp::Move(id, index) => store.move_to(&id, index),
+                EngineOp::Default(id) => store.set_default(&id),
+                EngineOp::Private(id) => store.set_private(&id),
+                EngineOp::Image(id) => store.set_image(&id),
+                EngineOp::Restore => {
+                    store.restore_defaults();
+                    Ok(())
+                }
+            };
+            if let Err(error) = result {
+                return answer(owner, Err(error.to_string()));
+            }
+            if let Err(error) = crate::address_runtime::save_engines(&store) {
+                return answer(owner, Err(format!("Search engines could not be saved: {error}.")));
+            }
+            // The older `search_engine` key follows a default that it can name, so a settings file read
+            // by an earlier Bowser still points at the same engine.
+            if let (Some(legacy), Ok(mut settings)) = (crate::search_engines::legacy_of_id(store.default_id()), crate::settings::read_strict(&path)) {
+                if settings.search_engine != Some(legacy) {
+                    settings.search_engine = Some(legacy);
+                    if crate::settings::save(&path, &settings).is_ok() {
+                        App::apply_live_settings(app, &settings);
+                    }
+                }
+            }
+            answer(owner, Ok(()));
         }
     }
 }

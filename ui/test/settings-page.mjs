@@ -163,7 +163,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'pinNewTabGroups', 'shiftRightClickContext', 'tabPreviewImages', 'tabPreviewMemory']);
+  assert.deepEqual(notYet, ['ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'shiftRightClickContext', 'tabPreviewImages', 'tabPreviewMemory']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -189,7 +189,7 @@ test('search matches every word across label, description, keywords and section;
   const sleep = logic.matchRows('sleep');
   for (const id of ['sleep', 'sleepAfter', 'efficiency']) assert.ok(sleep.has(id), id);
   assert.ok(!sleep.has('engine'));
-  assert.deepEqual([...logic.matchRows('duckduckgo')], ['engine']);
+  assert.deepEqual([...logic.matchRows('duckduckgo')], ['searchDefault']);
   assert.ok(logic.matchRows('TAB layout').has('layout'));
   assert.ok(logic.matchRows('privacy cookies').has('dashboard'), 'section title plus keyword');
   assert.ok(logic.matchRows('netflix').has('media'));
@@ -367,8 +367,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 10);
-  assert.equal(app.querySelectorAll('section').length, 10);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 12);
+  assert.equal(app.querySelectorAll('section').length, 12);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard and the Extensions block each stand for one row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext').map((row) => row.dataset.row);
@@ -465,13 +465,13 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
-  assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('blocker').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('centredAddressBar'), null);
-  // Bookmarks bar and Shortcuts hold only such rows: one note under the heading, none on the rows.
-  for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
+  // The bookmarks bar rows act now. Shortcuts holds only rows that do not yet: one note under the
+  // heading, none on the rows.
+  for (const id of ['bookmarksBar', 'bookmarksBarTabGroups', 'pinNewTabGroups', 'shiftRightClickContext', 'ctrlShiftCCopyLink']) assert.equal(flagOf(id), null, id);
   const notes = app.querySelectorAll('.sp-group-note');
-  assert.equal(notes.length, 2);
+  assert.equal(notes.length, 1);
   assert.ok(notes.every((note) => note.textContent === logic.NOT_YET_GROUP_NOTE));
   const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
   assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless sp-f-frameless', 'the note is read with the control');
@@ -503,7 +503,7 @@ test('search hides what does not match and settingsgo moves without echoing', ()
   input.value = 'img';
   input.dispatch('input');
   const shown = app.querySelectorAll('.sp-row').filter((row) => !row.hidden).map((row) => row.dataset.row);
-  assert.deepEqual(shown, ['engine']);
+  assert.deepEqual(shown, ['searchDefault']);
   assert.ok(app.querySelector('mark'), 'the hit is marked');
   assert.equal(app.querySelector('.sp-sr').textContent, '1 setting found');
   input.value = '';

@@ -2610,6 +2610,11 @@ unsafe extern "system" fn window_proc(
                 super::settings_page::extensions_changed(hwnd);
                 LRESULT(0)
             }
+            // Engine suggestions for the address field or the search field arrived.
+            super::address_bar::WM_ADDRESS_SUGGEST => {
+                super::address_bar::suggestions_ready(hwnd);
+                LRESULT(0)
+            }
             // --- end split view ---
             WM_PANE_FOCUSED => {
                 if let Some(app) = app
@@ -6842,6 +6847,15 @@ fn start_translate(hwnd: HWND, app: &AppRef, tab: TabId, confirmed: bool) {
 }
 
 fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
+    // The bookmark dialog, or the page's own details first (src/win32/address_dialog.rs).
+    if super::address_dialog::defer_quick_add(hwnd, app) {
+        return;
+    }
+    add_bookmark_now(hwnd, app);
+}
+
+/// Saves (or removes) the shown page's bookmark at once, with the toast.
+pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
@@ -6854,6 +6868,7 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
     };
     let title =
         App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    let (title, page_description) = super::address_dialog::apply_metadata(title);
     let mut store = match crate::bookmarks::BookmarkStore::load(profile.root()) {
         Ok(store) => store,
         Err(error) => { show_error_message(&format!("Bookmarks could not be loaded: {error}")); return; }
@@ -6865,6 +6880,9 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
         Err(error) => show_error_message(&format!("Bookmark could not be saved: {error}")),
         Ok(added) => {
         super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+        if added && !page_description.is_empty() {
+            super::address_dialog::save_description(&profile, url.as_str(), &page_description);
+        }
         let mirror = if added {
             crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title).map(|_| ())
         } else {
@@ -8130,7 +8148,7 @@ fn html_refresh(hwnd: HWND) {
 
 /// The application state behind this window, if it is still alive. The clone is an `Rc` handle, so
 /// no borrow of the window table or the app is held by the caller.
-fn app_of(hwnd: HWND) -> Option<AppRef> {
+pub(super) fn app_of(hwnd: HWND) -> Option<AppRef> {
     let raw = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppRef).as_ref() }?;
     Some(raw.clone())
 }
@@ -8193,6 +8211,9 @@ fn html_sync(hwnd: HWND) {
     let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
         return;
     };
+    // The address field's and the search field's options (src/win32/address_bar.rs).
+    let generation = with_chrome(hwnd, |s| s.html_state_generation[0]).unwrap_or_default();
+    super::address_bar::sync(hwnd, &app, generation);
     let display =
         with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
     let (send_text, select, generation) = with_chrome(hwnd, |s| {
@@ -8300,6 +8321,38 @@ pub(super) fn downloads_anchor(hwnd: HWND, rect: Option<chrome_host::protocol::H
     Some(windows::Win32::Foundation::POINT { x: button.right, y: button.bottom + (4.0 * scale).round() as i32 })
 }
 
+/// The screen point a popup under the toolbar element at `rect` (toolbar CSS pixels) hangs from: the
+/// element's bottom left edge. `None` while the toolbar host is not up.
+pub(super) fn toolbar_anchor(hwnd: HWND, rect: chrome_host::protocol::HoverRect) -> Option<windows::Win32::Foundation::POINT> {
+    let (host, dpi) = with_chrome(hwnd, |s| Some((s.html.clone()?, s.dpi)))??;
+    let screen = host.screen_bounds()?;
+    let scale = dpi as f32 / 96.0;
+    let element = super::html_hover::anchor_to_screen(screen, scale, rect);
+    Some(windows::Win32::Foundation::POINT { x: element.left, y: element.bottom + (4.0 * scale).round() as i32 })
+}
+
+/// Runs the chrome sync now (the options a menu pick changed reach the toolbar).
+pub(super) fn html_sync_now(hwnd: HWND) {
+    html_sync(hwnd);
+}
+
+/// Replaces the text of the toolbar's address field and puts the caret at its end.
+pub(super) fn set_toolbar_text(hwnd: HWND, text: &str) {
+    let Some(host) = with_chrome(hwnd, |s| s.html.clone()).flatten() else { return };
+    let _ = with_chrome(hwnd, |s| {
+        s.edit_text.clear();
+        s.edit_text.push_str(text);
+        s.html_text_sent = None;
+    });
+    let _ = host.post_json(&set_text_json(text, false));
+    let _ = host.post_json(&focus_json(false));
+}
+
+/// Remembers the address as typed, for the unfocused field (the same call a plain Enter makes).
+pub(super) fn remember_typed_url(hwnd: HWND, app: &AppRef, text: &str) {
+    remember_url(hwnd, App::active_tab_id(app), text, App::settings(app).minimal_url);
+}
+
 /// Falls back to the native toolbar: the HTML region is released, the native address input comes
 /// back and the host is closed. Safe to call more than once.
 fn html_failed(hwnd: HWND) {
@@ -8357,6 +8410,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             }
         }
         ChromeCommand::Edit { seq, text } => html_edit(hwnd, seq, &text),
+        // The address field's options and the search field (src/win32/address_bar.rs).
+        ChromeCommand::Panel { kind: chrome_host::protocol::PanelType::Address, f } => super::address_bar::on_toolbar_command(hwnd, &f),
         // --- omnibox suggest ---
         ChromeCommand::SuggestPick { seq, i } => {
             if let Some(target) = super::html_hover::suggest_take(hwnd, seq, i) {
@@ -8855,7 +8910,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -9788,28 +9843,70 @@ pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
 /// the inline completion, so the default row follows it. Nothing here touches the disk except one
 /// `stat` of the bookmark file.
 fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
-    use super::html_suggest::{self as suggest, Target};
-    let started = Instant::now();
+    if !super::address_bar::list_on_typing(app) {
+        super::html_hover::suggest_close(hwnd);
+        return;
+    }
+    html_suggest_with(hwnd, app, seq, text, false);
+}
+
+/// The list for `text` although typing does not open it (Down arrow with the list closed).
+pub(super) fn html_suggest_forced(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
+    if text.trim().is_empty() {
+        super::html_hover::suggest_close(hwnd);
+        return;
+    }
+    html_suggest_with(hwnd, app, seq, text, true);
+}
+
+/// A late engine answer: the list for `text` again, from what is now known.
+pub(super) fn html_suggest_refresh(hwnd: HWND, seq: u32, text: &str) {
+    if let Some(app) = app_of(hwnd) {
+        html_suggest_with(hwnd, &app, seq, text, true);
+    }
+}
+
+/// The rows `typed` would show now, for picking the first of them (a scoped nickname's Enter).
+pub(super) fn html_suggest_rows_for(hwnd: HWND, app: &AppRef, typed: &str) -> Vec<super::html_suggest::Row> {
+    html_suggest_compute(hwnd, app, 0, typed, true).map(|(rows, _)| rows).unwrap_or_default()
+}
+
+fn html_suggest_compute(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: bool) -> Option<(Vec<super::html_suggest::Row>, Vec<super::html_suggest::TabSource>)> {
+    use super::html_suggest as suggest;
     let typed_url = App::typed_address(app, text);
     let active = App::active_tab_id(app);
     let tabs: Vec<_> =
         App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
-    let bookmarks = suggest::bookmarks();
-    let Some(mut rows) = with_chrome(hwnd, |s| {
+    let rows = with_chrome(hwnd, |s| {
         let history = loaded_history(&mut s.history, &mut s.history_load);
-        suggest::rows(history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, &bookmarks)
-    }) else {
-        return;
-    };
+        super::address_bar::rows(hwnd, app, history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, seq, forced)
+    })?;
+    let mut rows = rows;
     // A favicon is known for a row's page only through an open tab on the same site.
     for row in &mut rows {
         let tab = match row.target {
-            Target::Tab(id) => Some(id),
+            suggest::Target::Tab(id) => Some(id),
             _ if row.fav_url.is_empty() => None,
             _ => suggest::tab_with_host(&tabs, &row.fav_url),
         };
         row.item.png = tab.and_then(|id| App::tab_favicon(app, id)).filter(|png| chrome_host::favicon_sendable(png));
     }
+    Some((rows, tabs))
+}
+
+fn html_suggest_with(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: bool) {
+    let started = Instant::now();
+    let Some((rows, _)) = html_suggest_compute(hwnd, app, seq, text, forced) else { return };
+    html_suggest_show(hwnd, app, seq, text, rows, started);
+}
+
+/// Shows ready-made rows under the pill (the typed-history list, the search field's list).
+pub(super) fn html_suggest_present(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<super::html_suggest::Row>) {
+    html_suggest_show(hwnd, app, seq, text, rows, Instant::now());
+}
+
+fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<super::html_suggest::Row>, started: Instant) {
+    let _ = app;
     // The dropdown continues the pill as one surface: it is exactly as wide as the pill the toolbar
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
@@ -9841,6 +9938,13 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
 pub(super) fn html_suggest_run(hwnd: HWND, target: super::html_suggest::Target) {
     use super::html_suggest::Target;
     let Some(app) = app_of(hwnd) else { return };
+    if super::address_bar::run_target(hwnd, &app, &target) {
+        // A calculator answer stays in the field; a search-field row opened its page.
+        if matches!(target, Target::EngineSearch { .. }) {
+            html_sync(hwnd);
+        }
+        return;
+    }
     match target {
         Target::Tab(id) => {
             let _ = App::select_tab(&app, id);
@@ -9849,6 +9953,7 @@ pub(super) fn html_suggest_run(hwnd: HWND, target: super::html_suggest::Target) 
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
             App::submit(&app, &text);
         }
+        Target::Fill(_) | Target::EngineSearch { .. } => {}
     }
     App::focus_page(&app);
     html_sync(hwnd);

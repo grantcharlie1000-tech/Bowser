@@ -258,7 +258,7 @@ impl Default for AddressSettings {
             sources: Source::ALL.to_vec(),
             always_https: false,
             strip_javascript: true,
-            highlight_base: true,
+            highlight_base: false,
             expansion_suffix: "com".to_owned(),
             search_field: SearchField::Off,
             show_nickname: true,
@@ -636,6 +636,11 @@ impl AddressSettings {
         None
     }
 
+    /// Whether opening `count` bookmarks at once asks first (`bm_confirm_open`; 0 never asks).
+    pub fn confirm_needed(&self, count: usize) -> bool {
+        self.confirm_open != 0 && count >= usize::from(self.confirm_open)
+    }
+
     /// Whether `source` is enabled.
     pub fn has_source(&self, source: Source) -> bool {
         self.sources.contains(&source)
@@ -801,6 +806,17 @@ mod tests {
             }
         }
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn opening_many_bookmarks_asks_from_the_chosen_count_and_never_when_zero() {
+        let mut settings = AddressSettings::default();
+        settings.set("bm_confirm_open", "5");
+        assert!(!settings.confirm_needed(4));
+        assert!(settings.confirm_needed(5));
+        assert!(settings.confirm_needed(50));
+        settings.set("bm_confirm_open", "0");
+        assert!(!settings.confirm_needed(500));
     }
 
     #[test]

@@ -1168,6 +1168,9 @@ struct EngineCore {
     prewarm_waiting: Option<TabId>,
     waiting_controllers: VecDeque<TabId>,
     pending: HashMap<TabId, Url>,
+    /// Form fields to POST to the `pending` address of a tab whose controller is still being made
+    /// (a search with an engine that posts its query).
+    pending_post: HashMap<TabId, String>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     closed: bool,
@@ -1546,6 +1549,7 @@ impl WebView2Engine {
                         (None, MemoryUsageTarget::Low, false)
                     }
                 };
+                let pending_post = core.borrow_mut().pending_post.remove(&tab_id);
                 if !still_open {
                     let mut tab = tab;
                     let _ = EngineAdapter::close(&mut tab);
@@ -1590,12 +1594,16 @@ impl WebView2Engine {
                         .get(&tab_id)
                         .map(|tab| (tab.webview.clone(), tab.allowed_file.clone()));
                     if let Some((webview, allowed_file)) = handles
-                        && let Err(error) = navigate_with_timing(
-                            &completion_events,
-                            webview.as_ref(),
-                            allowed_file.as_ref(),
-                            &url,
-                        )
+                        && let Err(error) = match pending_post.as_deref() {
+                            // A search that posts its query: the same request the page would send.
+                            Some(body) => post_webview(webview.as_ref(), Some(&controller_environment), &url, body),
+                            None => navigate_with_timing(
+                                &completion_events,
+                                webview.as_ref(),
+                                allowed_file.as_ref(),
+                                &url,
+                            ),
+                        }
                         && let Some(failed) = completion_events.failed.as_ref()
                     {
                         failed(error);
@@ -2477,6 +2485,7 @@ impl WebView2Engine {
                         prewarm_waiting: None,
                         waiting_controllers: VecDeque::new(),
                         pending: HashMap::new(),
+                        pending_post: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
                         closed: false,
@@ -2848,6 +2857,22 @@ impl EngineAdapter for WebView2Engine {
             exit_native_picture_in_picture(&webview);
         }
         self.navigate_tab_internal(tab, url)
+    }
+    fn navigate_tab_post(&mut self, tab: TabId, url: &Url, body: &str) -> Result<()> {
+        let live = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab).map(|tab| (tab.webview.clone(), tab.environment.clone()))
+        };
+        if let Some((webview, environment)) = live {
+            return post_webview(webview.as_ref(), environment.as_ref(), url, body);
+        }
+        // No controller yet: it is made as for any navigation, and the POST is sent when it is ready.
+        self.navigate_tab_internal(tab, url)?;
+        let mut state = self.core.borrow_mut();
+        if state.pending.contains_key(&tab) {
+            state.pending_post.insert(tab, body.to_owned());
+        }
+        Ok(())
     }
     fn execute_script_for_origin(
         &mut self,
@@ -3457,6 +3482,31 @@ fn navigate_webview(
             .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
             .Navigate(*url.as_ref().as_pcwstr())
     }
+}
+
+/// Navigates a webview with a POST of form fields (`body`, already percent-encoded) to an https
+/// address: a search with an engine that takes its query that way.
+fn post_webview(
+    webview: Option<&ICoreWebView2>,
+    environment: Option<&ICoreWebView2Environment>,
+    url: &Url,
+    body: &str,
+) -> Result<()> {
+    if url.scheme() != "https" {
+        return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+    }
+    let webview: ICoreWebView2_2 = webview.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let environment: ICoreWebView2Environment2 =
+        environment.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let stream = unsafe { windows::Win32::UI::Shell::SHCreateMemStream(Some(body.as_bytes())) }
+        .ok_or_else(|| Error::from(windows::Win32::Foundation::E_OUTOFMEMORY))?;
+    let uri = HSTRING::from(url.as_str());
+    let headers = HSTRING::from("Content-Type: application/x-www-form-urlencoded
+");
+    let request = unsafe {
+        environment.CreateWebResourceRequest(PCWSTR(uri.as_ptr()), w!("POST"), &stream, PCWSTR(headers.as_ptr()))?
+    };
+    unsafe { webview.NavigateWithWebResourceRequest(&request) }
 }
 
 fn navigate_with_timing(
@@ -6316,6 +6366,7 @@ mod tests {
             prewarm_waiting: None,
             waiting_controllers: VecDeque::new(),
             pending: HashMap::new(),
+            pending_post: HashMap::new(),
             hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
             closed: false,

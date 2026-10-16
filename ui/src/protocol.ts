@@ -6,6 +6,9 @@ import { validZoom } from './zoom-logic';
 import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
 export type { PairMsg, PrivatePageMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
 // --- end split view ---
+// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
+import { ADDR_FLAG_KEYS, SEARCH_FIELD_MODES, type AddrFlags, type SearchFieldMode } from './address-logic';
+// --- end address bar, search and bookmarks ---
 // --- tab ghost (docs/design/tab-drag.md) ---
 import { parseTabGhost, type TabDragCommand, type TabGhostMsg } from './tab-drag-protocol';
 export type { TabDragCommand, TabGhostMsg } from './tab-drag-protocol';
@@ -41,8 +44,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'addr';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'address' | 'addressdlg';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -231,10 +234,10 @@ export interface FocusOmniboxMsg {
 }
 // --- omnibox suggest ---
 /** Most rows in one `suggest` message, the default row included (Rust MAX_SUGGEST_ITEMS). */
-export const MAX_SUGGEST_ITEMS = 8;
+export const MAX_SUGGEST_ITEMS = 20;
 const MAX_SUGGEST_TEXT = 256;
 const MAX_SUGGEST_WIDTH = 4000;
-export const SUGGEST_KINDS = ['search', 'url', 'hist', 'bm', 'tab'] as const;
+export const SUGGEST_KINDS = ['search', 'url', 'hist', 'bm', 'tab', 'calc'] as const;
 export type SuggestKind = (typeof SUGGEST_KINDS)[number];
 export interface SuggestItem {
   readonly k: SuggestKind;
@@ -245,6 +248,8 @@ export interface SuggestItem {
   readonly url: string;
   /** A PNG data: URI, or '' when none is known. */
   readonly fav: string;
+  /** Show the kind badge on this row (`dd_always_badge`). */
+  readonly bd?: boolean;
 }
 /** The row list for edit `seq`. `tok` is 0 for the toolbar's copy; no items closes the list. */
 export interface SuggestMsg {
@@ -273,6 +278,50 @@ export interface SuggestOpenMsg {
   readonly on: boolean;
 }
 // --- end omnibox suggest ---
+// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
+/** How the address field behaves and looks (toolbar only); sent at start and whenever it changes. */
+export type AddrMsg = { readonly t: 'addr' } & AddrFlags;
+/** One engine in the search field's list. */
+export interface FieldEngine { readonly n: string; readonly k: string }
+/** The search field's mode and engine list (toolbar only). `engine` indexes `engines`. */
+export interface SearchFieldMsg {
+  readonly t: 'sfield';
+  readonly mode: SearchFieldMode;
+  readonly icon: boolean;
+  readonly nick: boolean;
+  readonly suggest: boolean;
+  readonly keep: boolean;
+  readonly engine: number;
+  readonly engines: readonly FieldEngine[];
+}
+/** Most engines the search field lists (Rust `MAX_FIELD_ENGINES`). */
+export const MAX_FIELD_ENGINES = 40;
+function parseAddr(raw: Record<string, unknown>): AddrMsg | null {
+  const keys = ['v', 't', ...ADDR_FLAG_KEYS];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  for (const key of ADDR_FLAG_KEYS) {
+    if (key === 'base' ? !isStr(raw.base, 253) : !isBool(raw[key])) return null;
+  }
+  return { t: 'addr', ...(Object.fromEntries(ADDR_FLAG_KEYS.map((key) => [key, raw[key]])) as unknown as AddrFlags) };
+}
+function parseSearchField(raw: Record<string, unknown>): SearchFieldMsg | null {
+  const keys = ['v', 't', 'mode', 'icon', 'nick', 'suggest', 'keep', 'engine', 'engines'];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  const { mode, icon, nick, suggest, keep, engine, engines } = raw;
+  if (!isOneOf(mode, SEARCH_FIELD_MODES) || !isBool(icon) || !isBool(nick) || !isBool(suggest) || !isBool(keep)) return null;
+  if (!Array.isArray(engines) || engines.length === 0 || engines.length > MAX_FIELD_ENGINES || !isInt(engine, 0, engines.length - 1)) return null;
+  const list: FieldEngine[] = [];
+  for (const item of engines) {
+    if (!isRecord(item) || !hasOnlyKeys(item, ['n', 'k']) || !hasAllKeys(item, ['n', 'k']) || !isStr(item.n, 80) || !isStr(item.k, 32)) return null;
+    list.push({ n: item.n, k: item.k });
+  }
+  return { t: 'sfield', mode, icon, nick, suggest, keep, engine, engines: list };
+}
+/** A command of the address field or the search field (`{t:"addr",a,...}`), checked like every panel command. */
+export function sendAddr(fields: PanelFields): boolean {
+  return sendPanel('addr', fields);
+}
+// --- end address bar, search and bookmarks ---
 // --- extensions (docs/extensions.md "Managing extensions") ---
 /** The toolbar's extensions button (toolbar only): shown while an enabled extension has a popup. */
 export interface ExtButtonMsg {
@@ -382,7 +431,7 @@ export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; 
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -416,6 +465,8 @@ export type Inbound =
   | MenuOpenMsg
   | DlButtonMsg // --- downloads ---
   | ExtButtonMsg // --- extensions ---
+  | AddrMsg // --- address bar, search and bookmarks ---
+  | SearchFieldMsg
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -474,7 +525,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'address', 'addressdlg'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -685,7 +736,7 @@ export function sendHoverAct(tok: number, fields: HoverActFields): boolean {
 }
 
 // --- omnibox suggest ---
-const SUGGEST_ITEM_KEYS = ['k', 'text', 'title', 'url', 'fav'];
+const SUGGEST_ITEM_KEYS = ['k', 'text', 'title', 'url', 'fav', 'bd'];
 function parseSuggestItem(v: unknown): SuggestItem | null {
   if (!isRecord(v) || !hasOnlyKeys(v, SUGGEST_ITEM_KEYS) || !['k', 'text', 'title', 'url'].every(key => key in v)) return null;
   const { k, text, title, url } = v;
@@ -693,7 +744,8 @@ function parseSuggestItem(v: unknown): SuggestItem | null {
   if (!isStr(text, MAX_SUGGEST_TEXT) || !isStr(title, MAX_TITLE) || !isStr(url, MAX_SUGGEST_TEXT)) return null;
   const fav = 'fav' in v ? v.fav : '';
   if (fav !== '' && !isFavUri(fav)) return null;
-  return { k, text, title, url, fav: fav as string };
+  if ('bd' in v && !isBool(v.bd)) return null;
+  return { k, text, title, url, fav: fav as string, ...(v.bd === true ? { bd: true } : {}) };
 }
 
 /** Strict validation of a `suggest` message. */
@@ -941,6 +993,12 @@ export function parseInbound(data: unknown): Inbound | null {
       return parseDlButton(raw);
     case 'extbtn':
       return parseExtButton(raw);
+    // --- address bar, search and bookmarks ---
+    case 'addr':
+      return parseAddr(raw);
+    case 'sfield':
+      return parseSearchField(raw);
+    // --- end address bar, search and bookmarks ---
     // --- end downloads ---
     // --- split view ---
     case 'pair':

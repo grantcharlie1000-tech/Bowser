@@ -5,6 +5,8 @@ use crate::bookmarks::{Bookmark, BookmarkKind, BookmarkStore};
 pub(crate) enum Action {
     Search(String),
     Open { url: String, new_tab: bool },
+    /// Open every bookmark in folder `id` (and its sub-folders) in new tabs.
+    OpenAll(Vec<String>),
     Delete(u64),
     Rename { id: u64, title: String },
     Update { id: u64, title: String, url: String },
@@ -13,7 +15,8 @@ pub(crate) enum Action {
     Move { id: u64, parent: Option<u64>, index: usize },
 }
 
-pub(crate) fn snapshot(store: &BookmarkStore, query: &str) -> String {
+/// `single_click` is the `bm_panel_single_click` option: panel items open with one click (else two).
+pub(crate) fn snapshot(store: &BookmarkStore, query: &str, single_click: bool) -> String {
     let searching = !query.trim().is_empty();
     let matched = if searching { Some(store.search(query)) } else { None };
     protocol::snap_json("bookmarks", |out| {
@@ -28,6 +31,7 @@ pub(crate) fn snapshot(store: &BookmarkStore, query: &str) -> String {
         });
         out.string("query", query);
         out.null("currentFolder");
+        out.bool("singleClick", single_click);
     }).unwrap_or_else(|| Json::object(|_| {}))
 }
 
@@ -57,6 +61,13 @@ pub(crate) fn map_command(store: &BookmarkStore, fields: PanelFields) -> Option<
             let item = store.items().iter().find(|item| item.id == id)?;
             let BookmarkKind::Link { url, .. } = &item.kind else { return None; };
             Some(Action::Open { url: url.clone(), new_tab: fields.a == "newtab" })
+        }
+        "openall" if no_extra(true, false, false, false, false) => {
+            let id = fields.id?;
+            let item = store.items().iter().find(|item| item.id == id)?;
+            matches!(item.kind, BookmarkKind::Folder).then_some(())?;
+            let urls = links_under(store.items(), id);
+            (!urls.is_empty()).then_some(Action::OpenAll(urls))
         }
         "delete" if no_extra(true, false, false, false, false) => {
             let id = fields.id?;
@@ -94,6 +105,30 @@ pub(crate) fn map_command(store: &BookmarkStore, fields: PanelFields) -> Option<
 
 fn decode_parent(parent: u64) -> Option<u64> { (parent != 0).then_some(parent) }
 
+/// Most bookmarks one "open all" opens.
+pub(crate) const MAX_OPEN_ALL: usize = 100;
+
+/// The addresses of every bookmark inside folder `folder`, in tree order, sub-folders included.
+pub(crate) fn links_under(items: &[Bookmark], folder: u64) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut pending = vec![folder];
+    while let Some(parent) = pending.pop() {
+        let mut later = Vec::new();
+        for item in items.iter().filter(|item| item.parent == Some(parent)) {
+            match &item.kind {
+                BookmarkKind::Link { url, .. } => urls.push(url.clone()),
+                BookmarkKind::Folder => later.push(item.id),
+            }
+        }
+        pending.extend(later.into_iter().rev());
+        if urls.len() >= MAX_OPEN_ALL {
+            break;
+        }
+    }
+    urls.truncate(MAX_OPEN_ALL);
+    urls
+}
+
 fn is_descendant(items: &[Bookmark], candidate: u64, ancestor: u64) -> bool {
     let mut cursor = Some(candidate);
     while let Some(id) = cursor {
@@ -116,10 +151,33 @@ mod tests {
     }
 
     #[test]
+    fn open_all_collects_a_folder_s_links_including_sub_folders() {
+        let mut store = BookmarkStore::new();
+        let reading = store.add_folder(None, "Reading").unwrap();
+        let rust = store.add_folder(Some(reading), "Rust").unwrap();
+        store.add_bookmark(Some(reading), "A", "https://a.example/").unwrap();
+        store.add_bookmark(Some(rust), "B", "https://b.example/").unwrap();
+        store.add_bookmark(None, "C", "https://c.example/").unwrap();
+        assert_eq!(links_under(store.items(), reading), ["https://a.example/", "https://b.example/"]);
+        assert_eq!(map_command(&store, command("openall", Some(reading), None, None, None)), Some(Action::OpenAll(vec!["https://a.example/".into(), "https://b.example/".into()])));
+        assert_eq!(map_command(&store, command("openall", Some(3), None, None, None)), None, "a link is not a folder");
+        let empty = store.add_folder(None, "Empty").unwrap();
+        assert_eq!(map_command(&store, command("openall", Some(empty), None, None, None)), None, "nothing to open");
+        let mut big = BookmarkStore::new();
+        let folder = big.add_folder(None, "Big").unwrap();
+        for n in 0..150 {
+            big.add_bookmark(Some(folder), "x", &format!("https://x{n}.example/")).unwrap();
+        }
+        assert_eq!(links_under(big.items(), folder).len(), MAX_OPEN_ALL);
+    }
+
+    #[test]
     fn snapshot_keeps_root_null_and_link_urls() {
-        let snapshot = snapshot(&fixture(), "");
+        let snapshot = snapshot(&fixture(), "", true);
         assert!(snapshot.contains(r#""parent":null"#));
         assert!(snapshot.contains(r#""url":"https://example.com/docs""#));
+        assert!(snapshot.contains(r#""singleClick":true"#));
+        assert!(super::snapshot(&fixture(), "", false).contains(r#""singleClick":false"#));
     }
 
     #[test]

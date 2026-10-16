@@ -59,6 +59,16 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         self.navigate(url)
     }
+    /// Navigates a tab by POSTing `body` (percent-encoded form fields) to an https address. Used for
+    /// searches with an engine that takes its query that way. Engines that cannot refuse.
+    fn navigate_tab_post(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _url: &url::Url,
+        _body: &str,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(windows::Win32::Foundation::E_NOTIMPL))
+    }
     /// Executes a native-requested script only if the live top-level origin still matches.
     fn execute_script_for_origin(
         &mut self,

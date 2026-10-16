@@ -191,6 +191,7 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     meta.textContent = flat ? folderPath(item) : isFolder ? String(children(item.id).length) : hostOf(item.url ?? '');
     const actions = el('span', 'pn-actions');
     if (!isFolder) actions.append(iconButton('external', `Open ${name} in a new tab`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('newtab', item.id)); }));
+    else if (children(item.id).some((child) => child.kind === 'link')) actions.append(iconButton('external', `Open everything in ${name} in new tabs`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('openall', item.id)); }));
     actions.append(
       iconButton('pencil', `Edit ${name}`, (event) => { event.stopPropagation(); openEditor(item); }),
       iconButton('trash', `Delete ${name}`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('delete', item.id)); }),
@@ -199,8 +200,14 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     row.append(chevron, lead, title, trail);
     row.addEventListener('click', () => {
       select(item.id);
-      if (isFolder) { if (!flat) toggle(item.id); } else emit(bookmarkActionCommand('open', item.id));
+      // "Open panel items with a single click": off, a bookmark opens with a double click instead.
+      if (isFolder) { if (!flat) toggle(item.id); } else if (snapshot?.singleClick !== false) emit(bookmarkActionCommand('open', item.id));
     });
+    if (!isFolder) {
+      row.addEventListener('dblclick', () => {
+        if (snapshot?.singleClick === false) emit(bookmarkActionCommand('open', item.id));
+      });
+    }
 
     // Drag to reorder or move into a folder.
     row.addEventListener('dragstart', (event) => {

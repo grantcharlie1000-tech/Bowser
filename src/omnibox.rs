@@ -126,7 +126,7 @@ pub(crate) enum SchemeFilter {
 /// the typed host already has a dot: the suggestion then extends only the last label, so it never
 /// adds a registrable-looking domain. Among matches, the most visited wins, then the most recent.
 pub fn inline_completion(history: &History, typed: &str, allow: bool) -> Option<Completion> {
-    if !allow {
+    if !allow || !AUTOCOMPLETE.with(std::cell::Cell::get) {
         return None;
     }
     let (scheme, needle) = strip_typed_prefixes(typed);
@@ -199,10 +199,32 @@ pub fn minimal_display_form(url: &Url) -> String {
     }
 }
 
+// `address_show_full`: the unfocused address shows everything (see [`set_show_full_address`]).
+thread_local! {
+    static SHOW_FULL_ADDRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `address_autocomplete`: inline completion is offered (on by default).
+    static AUTOCOMPLETE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Turns inline completion of the typed text on or off ("Complete addresses as you type").
+pub fn set_autocomplete(on: bool) {
+    AUTOCOMPLETE.with(|flag| flag.set(on));
+}
+
+/// Turns "show the full address" on or off (on the UI thread, which draws every address). The next
+/// address shown follows it.
+pub fn set_show_full_address(on: bool) {
+    SHOW_FULL_ADDRESS.with(|flag| flag.set(on));
+}
+
 /// [`display_form`], condensed through [`minimal_display_form`] when `minimal` is set. The unfocused
 /// address display calls this with `minimal_url`; the suggestion dropdown and the focused field
 /// always want the full form, so they call `display_form` directly.
 pub fn address_display(url: &Url, minimal: bool) -> String {
+    // "Show the full address": the whole address, scheme and `www.` included, whatever `minimal` says.
+    if SHOW_FULL_ADDRESS.with(std::cell::Cell::get) {
+        return url.as_str().to_owned();
+    }
     if minimal {
         minimal_display_form(url)
     } else {
@@ -642,6 +664,28 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn show_full_address_keeps_scheme_and_www_and_wins_over_the_minimal_form() {
+        let url = Url::parse("https://www.example.com/a/b?q=1").unwrap();
+        set_show_full_address(false);
+        assert_eq!(address_display(&url, false), "example.com/a/b?q=1");
+        assert_eq!(address_display(&url, true), "example.com/a/b");
+        set_show_full_address(true);
+        assert_eq!(address_display(&url, false), "https://www.example.com/a/b?q=1");
+        assert_eq!(address_display(&url, true), "https://www.example.com/a/b?q=1");
+        set_show_full_address(false);
+    }
+
+    #[test]
+    fn autocomplete_off_offers_no_completion() {
+        let history = history_of(&[("https://www.wikipedia.org/", "Wikipedia")]);
+        assert!(inline_completion(&history, "wiki", true).is_some());
+        set_autocomplete(false);
+        assert_eq!(inline_completion(&history, "wiki", true), None);
+        set_autocomplete(true);
+        assert!(inline_completion(&history, "wiki", true).is_some());
     }
 
     #[test]
