@@ -1868,6 +1868,8 @@ fn save_form(hwnd: HWND) {
         translate_offer: current.translate_offer,
         translate_auto: current.translate_auto,
         translate_target: current.translate_target,
+        // The GDI form has no controls for the tab options (the HTML settings page has them).
+        tabs: current.tabs,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

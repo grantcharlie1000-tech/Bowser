@@ -680,6 +680,10 @@ pub struct App {
     /// Recently closed tabs for the split view's empty side (newest first, http(s) only, never a
     /// private tab). In memory only.
     recently_closed: std::collections::VecDeque<ClosedTab>,
+    // --- tab options (src/tab_state.rs) ---
+    /// Strip selection, the one-second tick and hover thumbnails.
+    tab_state: crate::tab_state::TabState,
+    // --- end tab options ---
     /// A split side's controller became ready; the window re-applies the panes.
     split_refresh: bool,
     // --- end split view ---
@@ -744,6 +748,11 @@ pub type SplitBounds = crate::split_view::PaneMap<windows::Win32::Foundation::RE
 pub struct ClosedTab {
     pub url: String,
     pub title: String,
+    // --- tab options --- what "Reopen closed tab" needs to put the tab back as it was.
+    pub pinned: bool,
+    /// Its place in the strip when it closed (the strip may be shorter by now).
+    pub index: usize,
+    // --- end tab options ---
 }
 // --- end split view ---
 
@@ -787,6 +796,10 @@ struct AppTab {
     /// Page translation: the page's language, whether it is translated, and the epoch that makes
     /// work for an earlier document stale (`crate::translate`).
     translate: crate::translate::TabState,
+    // --- tab options ---
+    /// Unread mark, notification count, audio-rule mute, reload timer, custom name, last use.
+    extra: crate::tab_state::TabExtra,
+    // --- end tab options ---
 }
 
 impl AppTab {
@@ -817,12 +830,17 @@ impl AppTab {
             load: LoadState::Loaded,
             reader: crate::reader::TabState::default(),
             translate: crate::translate::TabState::default(),
+            extra: crate::tab_state::TabExtra::fresh(), // --- tab options ---
         }
     }
 }
 
 mod page_translate;
 pub use page_translate::Notice as TranslateNotice;
+// --- tab options --- tab behaviour that follows the settings page's Tabs section.
+mod tab_features;
+pub use tab_features::{TabStripExtra, MAX_SESSION_NAME_CHARS, MAX_TAB_NAME_CHARS};
+// --- end tab options ---
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -1523,6 +1541,12 @@ impl App {
     }
 
     fn new_tab_in_mode(app: &AppRef, private: bool) -> TabId {
+        Self::spawn_tab(app, private, None)
+    }
+
+    /// A new tab shown at once. `opener` is the tab whose page asked for it (a link or a script),
+    /// which the "New tab position" option can keep it next to.
+    pub(crate) fn spawn_tab(app: &AppRef, private: bool, opener: Option<TabId>) -> TabId {
         let (id, hwnd, old, old_has_controller, in_split) = {
             let mut state = app.borrow_mut();
             let old = state.tab_model.active();
@@ -1532,10 +1556,11 @@ impl App {
                 .iter()
                 .find(|tab| tab.id == old)
                 .is_some_and(|tab| tab.controller_created);
-            let beside_active = state.settings.new_tab_beside_active;
-            let id = state.tab_model.add(beside_active);
+            let placement = tab_features::placement(&state.settings);
+            let id = state.tab_model.add_placed(placement, opener);
             state.tab_model.select(id);
             let _ = state.workspaces.add_tab(id);
+            tab_features::place_in_workspace(&mut state, id); // --- tab options ---
             let _ = state.workspaces.select_tab(id);
             // --- split view ---
             // A new tab is shown alone, as in Chrome; the pair stays together (parked) in the strip.
@@ -1543,7 +1568,10 @@ impl App {
             // --- end split view ---
             let mut fresh = AppTab::empty(id);
             fresh.private = private;
-            state.tabs.push(fresh);
+            // --- tab options --- the strip's list follows the model's order, as `set_tab_pinned` expects.
+            let at = state.tab_model.index_of(id).map_or(state.tabs.len(), |at| at.min(state.tabs.len()));
+            state.tabs.insert(at, fresh);
+            // --- end tab options ---
             state.navigation_progress.reset();
             state.page_loaded = false;
             state.desired_memory_target = MemoryUsageTarget::Normal;
@@ -1570,6 +1598,7 @@ impl App {
             Self::save_workspaces(app, WorkspaceChange::TabOpen);
             Self::sync_window_title(app);
             Self::schedule_tab_idle_timer(app);
+            Self::on_tab_shown(app, old, id); // --- tab options ---
             return id;
         }
         let now = Instant::now();
@@ -1595,6 +1624,7 @@ impl App {
         Self::save_workspaces(app, WorkspaceChange::TabOpen);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
+        Self::on_tab_shown(app, old, id); // --- tab options ---
         id
     }
 
@@ -1659,6 +1689,11 @@ impl App {
                 (true, state.hwnd, outcome.new_active, true, true)
             } else {
                 let was_active = state.tab_model.active() == id;
+                // --- tab options --- what the close-activation options decide from.
+                let order_before: Vec<TabId> = state.workspaces.active().tabs().to_vec();
+                let opener_before = state.tab_model.get(id).and_then(|tab| tab.opener);
+                state.tab_state.forget(id);
+                // --- end tab options ---
                 let outcome = state.tab_model.close(id);
                 if let Some(workspace_id) = state.workspaces.workspace_for(id) {
                     let is_last_member = state
@@ -1672,11 +1707,20 @@ impl App {
                     }
                 }
                 state.tabs.remove(index);
-                let active = if was_active {
+                let mut active = if was_active {
                     state.workspaces.active().active_tab()
                 } else {
                     outcome.new_active
                 };
+                // --- tab options --- "Close tab activation": a related, recent, left or right tab.
+                if was_active
+                    && let Some(target) =
+                        tab_features::close_target_for(&state, &order_before, id, opener_before)
+                {
+                    let _ = state.workspaces.select_tab(target);
+                    active = target;
+                }
+                // --- end tab options ---
                 if was_active {
                     let _ = state.tab_model.select(active);
                 }
@@ -1744,6 +1788,7 @@ impl App {
         Self::save_workspaces(app, WorkspaceChange::TabClose);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
+        Self::on_tab_closed(app, active, was_active); // --- tab options ---
         changed
     }
 
@@ -1843,6 +1888,7 @@ impl App {
         // --- end split view ---
         Self::restore_discarded_tab(app, id);
         Self::reader_probe_if_needed(app, id);
+        Self::on_tab_shown(app, previous, id); // --- tab options ---
         Self::post_tab_changed(hwnd, id);
         Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
@@ -1914,6 +1960,7 @@ impl App {
         };
         Self::apply_visible_panes(app);
         Self::restore_discarded_tab(app, active);
+        Self::on_tab_shown(app, active, active); // --- tab options ---
         Self::post_tab_changed(hwnd, active);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
@@ -2024,6 +2071,7 @@ impl App {
             if !state.tab_model.set_pinned(id, pinned) {
                 return false;
             }
+            App::note_pinned_site(&mut state, id, pinned, None); // --- tab options ---
             let tab = state.tabs.remove(from);
             let target = state
                 .tab_model
@@ -2744,7 +2792,8 @@ impl App {
 
     /// Remembers a closing tab for the empty side's "Recently closed" list.
     fn remember_closed_tab(&mut self, index: usize) {
-        const KEEP: usize = 8;
+        // The split view's empty side shows the newest eight; "Closed tabs" lists all of them.
+        const KEEP: usize = 25;
         let Some(tab) = self.tabs.get(index) else {
             return;
         };
@@ -2757,6 +2806,8 @@ impl App {
         let entry = ClosedTab {
             url: url.as_str().to_owned(),
             title: tab.title.clone(),
+            pinned: self.tab_model.get(tab.id).is_some_and(|model| model.pinned),
+            index,
         };
         self.recently_closed.retain(|closed| closed.url != entry.url);
         self.recently_closed.push_front(entry);
@@ -3485,15 +3536,15 @@ impl App {
 
     pub fn tab_muted(app: &AppRef, id: TabId) -> bool {
         let state = app.borrow();
-        state
-            .tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .is_some_and(|tab| tab.muted)
-            || state
-                .engine
-                .as_ref()
-                .is_some_and(|engine| engine.tab_muted(id))
+        let tab = state.tabs.iter().find(|tab| tab.id == id);
+        // The audio rule's own mute (Settings > Tabs > Mute tab audio) is not the user's: the engine
+        // reports it as muted, the tab menu and the strip must not.
+        tab.is_some_and(|tab| tab.muted)
+            || (!tab.is_some_and(|tab| tab.extra.auto_muted)
+                && state
+                    .engine
+                    .as_ref()
+                    .is_some_and(|engine| engine.tab_muted(id)))
     }
 
     pub fn tab_supports_muting(app: &AppRef, id: TabId) -> bool {
@@ -3504,12 +3555,15 @@ impl App {
     }
 
     pub fn set_tab_muted(app: &AppRef, id: TabId, muted: bool) {
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+        let effective = if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
             tab.muted = muted;
+            muted || tab.extra.auto_muted // --- tab options ---
         } else {
             return;
-        }
-        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.set_tab_muted(id, muted)) {
+        };
+        if let Some(Err(error)) =
+            Self::with_engine(app, |engine| engine.set_tab_muted(id, effective))
+        {
             win32::show_error_message(&format!("Audio control failed: {error}"));
         }
     }
@@ -3523,7 +3577,9 @@ impl App {
             && !state
                 .split_view
                 .is_some_and(|split| split.pane_for(id).is_some())
-            && !state.tab_model.get(id).is_some_and(|model| model.pinned)
+            // --- tab options --- a pinned tab "minimised" instead of closed may sleep.
+            && (tab.extra.allow_pinned_sleep
+                || !state.tab_model.get(id).is_some_and(|model| model.pinned))
             && !tab.loading
             && tab.controller_created
             && !tab.discarded
@@ -3571,6 +3627,9 @@ impl App {
 
     fn finish_hibernate_check(app: &AppRef, id: TabId, blocked: bool) {
         let eligible = Self::tab_hibernate_eligible(app, id);
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.extra.allow_pinned_sleep = false; // --- tab options ---
+        }
         let playing_audio = eligible && Self::tab_playing_audio(app, id);
         if !eligible || blocked || playing_audio {
             if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
@@ -3592,6 +3651,7 @@ impl App {
             };
             tab.sleep_check_started = None;
             tab.suspended = true;
+            tab.extra.hibernated = true; // --- tab options --- "dim icon when hibernated"
             tab.hidden_since.get_or_insert_with(Instant::now);
             state.hwnd
         };
@@ -4848,6 +4908,7 @@ impl App {
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
+            tab_state: crate::tab_state::TabState::default(), // --- tab options ---
             split_refresh: false,
             split_bounds: None,
             group_preferences: group_preferences_path
@@ -4946,6 +5007,12 @@ impl App {
                 };
                 state.tab_model.set_url(id, Some(url.as_str()));
                 state.tab_model.set_title(id, &saved.title);
+                if saved.used != 0 {
+                    // --- tab options --- keeps "inactive days" across restarts.
+                    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.extra.last_used = saved.used;
+                    }
+                }
                 if saved.pinned {
                     state.tab_model.set_pinned(id, true);
                 }
@@ -4959,7 +5026,13 @@ impl App {
                         tab.favicon_key = Some(crate::favicon::key_for(page.favicon()));
                     }
                 }
+                App::note_pinned_site(&mut state, id, saved.pinned, Some(&url)); // --- tab options ---
                 restored_ids.push(Some(id));
+                // --- tab options --- "Load restored tabs when first selected" / "Always load pinned tabs".
+                if (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned)) && index != session.active {
+                    state.tab_state.eager.push(id);
+                }
+                // --- end tab options ---
                 // The saved active tab wins; otherwise the first tab that restored.
                 if index == session.active || active_id.is_none() {
                     active_id = Some(id);
@@ -5030,6 +5103,7 @@ impl App {
         Self::post_tab_changed(hwnd, app.borrow().tab_model.active());
         Self::sync_window_title(app);
         Self::submit_url(app, url, None);
+        Self::load_eager_tabs(app); // --- tab options ---
     }
 
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
@@ -5108,6 +5182,13 @@ impl App {
                 });
             }
         }
+        // --- tab options --- when each saved tab was last used, for "inactive days".
+        for model in state.tab_model.iter() {
+            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), state.tabs.iter().find(|tab| tab.id == model.id)) {
+                session.tabs[saved].used = tab.extra.last_used;
+            }
+        }
+        // --- end tab options ---
         Some(session)
     }
 
@@ -5518,9 +5599,14 @@ impl App {
             title_changed: Some(Rc::new(move |tab_id, title| {
                 if let Some(app) = title_events_app.upgrade() {
                     let mut state = app.borrow_mut();
+                    // --- tab options --- a count in the title ("(3) Inbox") is a notification.
+                    let detect = state.settings.tabs.title_notifications;
+                    let shown = state.tab_model.active() == tab_id;
+                    // --- end tab options ---
                     let found =
                         if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                             tab.title.clone_from(&title);
+                            tab_features::note_title(tab, &title, detect, shown); // --- tab options ---
                             true
                         } else {
                             false
@@ -5575,13 +5661,13 @@ impl App {
                                 tab.zoom = crate::site_prefs::ZOOM_DEFAULT;
                                 tab.hidden_since = (!visible).then(Instant::now);
                                 tab.suspended = false;
-                                tab.muted
+                                tab.muted || tab.extra.auto_muted // --- tab options ---
                             } else {
                                 false
                             }
                         };
                         if should_mute {
-                            Self::set_tab_muted(&app, tab_id, true);
+                            Self::push_effective_mute(&app, tab_id); // --- tab options ---
                         }
                         // --- split view ---
                         // A side's page now exists: put it at its pane (outside this callback).
@@ -5618,6 +5704,11 @@ impl App {
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.page_usable = true;
                                 tab.loading = false;
+                                // --- tab options --- finished loading while out of sight: unread.
+                                if !active {
+                                    tab.extra.loaded_in_background();
+                                }
+                                // --- end tab options ---
                             } else {
                                 return;
                             }
@@ -5630,6 +5721,7 @@ impl App {
                             let action = App::page_usable(&app);
                             let action = App::combine_idle_and_suspend_timers(&app, action);
                             win32::schedule_idle_timer(app.borrow().hwnd, action);
+                            App::schedule_thumbnail(&app); // --- tab options ---
                         } else {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                         }
@@ -5744,13 +5836,21 @@ impl App {
                             let private = crate::private::inherits_privacy(
                                 App::tab_private(&app, source_tab),
                             );
-                            let child = App::new_tab_in_mode(&app, private);
-                            let _ = app.borrow_mut().tab_model.set_opener(child, source_tab);
-                            App::submit_url(&app, url, None);
+                            // --- tab options --- position, related tabs and background loading.
+                            App::open_link_tab(&app, source_tab, private, url);
+                            // --- end tab options ---
                         }
                     }
                 }))
             },
+            // --- tab options --- pinned tabs stay on their site.
+            link_navigation: {
+                let link_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, url: &url::Url| {
+                    link_app.upgrade().is_some_and(|app| App::pinned_link(&app, tab, url))
+                }))
+            },
+            // --- end tab options ---
             // --- split view ---
             open_in_split: {
                 let split_app = Rc::downgrade(app);
@@ -6026,6 +6126,7 @@ impl App {
             }
             Self::apply_visible_panes(app);
         }
+        Self::load_eager_tabs(app); // --- tab options ---
     }
 
     pub fn navigate_current(app: &AppRef, url: &url::Url) {
@@ -6460,6 +6561,10 @@ impl App {
             state.settings.ctrl_s_vertical_tabs = settings.ctrl_s_vertical_tabs;
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
+            // --- tab options --- the hover card's thumbnail and memory line.
+            state.settings.tab_preview_images = settings.tab_preview_images;
+            state.settings.tab_preview_memory = settings.tab_preview_memory;
+            // --- end tab options ---
             (state.hwnd, state.edit)
         };
         let bounds = app.borrow_mut().latest_viewport_bounds();
@@ -7043,6 +7148,7 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
 
     mod translate_flow;
+    mod tab_flow; // --- tab options ---
 
     #[test]
     fn reader_probe_due_table() {
@@ -7645,6 +7751,7 @@ mod tests {
             url: url.to_owned(),
             title: title.to_owned(),
             pinned,
+            used: 0,
         };
         app.borrow_mut().pending_restore = Some(crate::session::Session {
             tabs: vec![
@@ -9230,6 +9337,7 @@ mod tests {
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
+            tab_state: crate::tab_state::TabState::default(), // --- tab options ---
             split_refresh: false,
             split_bounds: None,
             group_preferences: crate::tab_groups::GroupPreferences::default(),

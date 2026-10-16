@@ -70,7 +70,11 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # ask_download_location=false\r\n\
     # translate_offer=true\r\n\
     # translate_auto=false\r\n\
-    # translate_target=\r\n";
+    # translate_target=\r\n\
+    # tabs_new_tab_page=start\r\n\
+    # tabs_close_activation=right\r\n\
+    # tabs_keep_window=true\r\n\
+    # (more tabs_* options: see Settings > Tabs)\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -489,6 +493,10 @@ pub struct Settings {
     /// `translate_target` (default empty: the Windows display language): the language pages are
     /// translated into, as a primary subtag such as `en`.
     pub translate_target: String,
+    // --- tab options (src/tab_options.rs) ---
+    /// The `tabs_*` options of the settings page's Tabs section.
+    pub tabs: crate::tab_options::TabOptions,
+    // --- end tab options ---
 }
 
 impl Default for Settings {
@@ -537,6 +545,7 @@ impl Default for Settings {
             translate_offer: true,
             translate_auto: false,
             translate_target: String::new(),
+            tabs: crate::tab_options::TabOptions::default(),
         }
     }
 }
@@ -793,6 +802,11 @@ impl Settings {
                         settings.translate_target = target;
                     }
                 }
+                // --- tab options ---
+                key if key.starts_with("tabs_") => {
+                    crate::tab_options::read_file_line(&mut settings.tabs, key, value);
+                }
+                // --- end tab options ---
                 _ => {}
             }
         }
@@ -983,7 +997,9 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             out.push_str(&format!("{name}={value}{newline}"));
         }
     }
-    out
+    // --- tab options ---
+    crate::tab_options::render_into(&out, &settings.tabs, newline)
+    // --- end tab options ---
 }
 
 /// Reads the file as text, refusing anything over `MAX_FILE_BYTES` or not valid UTF-8. Unlike
@@ -1256,7 +1272,61 @@ mod tests {
             translate_offer: false,
             translate_auto: true,
             translate_target: "fr".to_owned(),
+            tabs: crate::tab_options::TabOptions::default(),
         }
+    }
+
+    #[test]
+    fn tab_options_round_trip_through_the_file_and_leave_other_lines_alone() {
+        let custom = Settings {
+            tabs: crate::tab_options::TabOptions {
+                close_activation: crate::tab_options::CloseActivation::Recent,
+                keep_window: false,
+                confirm_close: crate::tab_options::Bounded(4),
+                new_tab_url: crate::tab_options::PageUrl("https://example.com/new".to_owned()),
+                new_tab_page: crate::tab_options::NewTabPage::Url,
+                mute_mode: crate::tab_options::MuteMode::Prioritise,
+                ..Default::default()
+            },
+            ..sample()
+        };
+        let written = render_updated("# kept
+unknown_key=1
+", &custom);
+        assert!(written.contains("# kept
+unknown_key=1
+"));
+        assert!(written.contains("tabs_close_activation=recent
+"));
+        assert!(written.contains("tabs_keep_window=false
+"));
+        assert!(written.contains("tabs_confirm_close=4
+"));
+        assert!(!written.contains("tabs_scroll"), "an option still at its default is not written");
+        let back = Settings::parse(&written);
+        assert_eq!(back.tabs, custom.tabs);
+        assert_eq!(back, custom);
+        // Saving again does not repeat the lines.
+        let again = render_updated(&written, &back);
+        assert_eq!(again, written);
+        // An option set back to its default keeps its line, now with the default value.
+        let mut reset = back.clone();
+        reset.tabs.keep_window = true;
+        assert!(render_updated(&written, &reset).contains("tabs_keep_window=true
+"));
+        // A file of all-default options gets no tab lines at all.
+        assert_eq!(render_updated("", &sample()).matches("tabs_").count(), 0);
+        // A hand-written file may use the usual spellings, and bad values keep the default.
+        let hand = Settings::parse("tabs_keep_window=OFF
+tabs_close_activation=Left
+tabs_confirm_close=500
+tabs_new_tab_url=javascript:1
+");
+        assert!(!hand.tabs.keep_window);
+        assert_eq!(hand.tabs.close_activation, crate::tab_options::CloseActivation::Left);
+        assert_eq!(hand.tabs.confirm_close.0, 0, "out of range keeps the default");
+        assert_eq!(hand.tabs.new_tab_url.0, "", "a script address is never kept");
+        assert_eq!(Settings::parse("").tabs, crate::tab_options::TabOptions::default());
     }
 
     #[test]

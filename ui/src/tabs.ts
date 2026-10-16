@@ -1,6 +1,6 @@
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
+import { onInbound, send, sendClosedTabs, sendTabSelection, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
@@ -36,6 +36,12 @@ import {
   type Entry,
   type GroupEntry,
 } from './tabs-logic';
+// --- tab options (Settings > Tabs) ---
+import {
+  clickSelection, loadMark, lockedWidth, markedName, notifyLabel, pruneSelection, reloadLabel, reloadRemaining, stepTab, stripClasses, wheelSteps,
+  type LoadIndicatorChoice,
+} from './tab-marks-logic';
+// --- end tab options ---
 
 /** Fixed island accents, indexed by the host's colour ids (-1 means the theme accent). */
 const ISLAND: readonly string[] = [
@@ -76,6 +82,38 @@ export interface TabNode {
   readonly close: HTMLButtonElement;
   uri: string;
   shift: number;
+  // --- tab options --- created only while a tab needs them, so a plain tab keeps its plain DOM.
+  bar?: HTMLSpanElement;
+  ring?: HTMLSpanElement;
+  dot?: HTMLSpanElement;
+  badge?: HTMLSpanElement;
+  rl?: HTMLSpanElement;
+  /** Seconds left in the tab's reload when the strip last heard (and when), so the label can count down locally. */
+  rlFrom?: number;
+  rlAt?: number;
+  // --- end tab options ---
+}
+
+/** What one tab needs from the strip's options when it is drawn. */
+export interface TabView {
+  readonly indicator: LoadIndicatorChoice;
+  /** Part of the selection made with Ctrl or Shift click. */
+  readonly picked: boolean;
+  readonly now: number;
+}
+const PLAIN_VIEW: TabView = { indicator: 'spinner', picked: false, now: 0 };
+/** Before the host's first `tabopts`: Bowser's own defaults. */
+const DEFAULT_OPTS: TabOptsMsg = {
+  t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
+  alignClose: false, selection: true, removeSpacing: false, maximised: false, closed: 0,
+};
+const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
+
+/** Counts every reload label down by the time since the host last said how long was left. Exported for test/tab-options.mjs. */
+export function tickReloads(nodes: Iterable<TabNode>, now: number): void {
+  for (const n of nodes) {
+    if (n.rl && n.rlFrom !== undefined && n.rlAt !== undefined) n.rl.textContent = reloadLabel(reloadRemaining(n.rlFrom, now - n.rlAt));
+  }
 }
 
 interface GroupNode {
@@ -170,10 +208,26 @@ export function createTab(id: number): TabNode {
   return { id, root, img, title, marker, audio, close, uri: '', shift: 0 };
 }
 
-export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): void {
+/** A mark node of a tab: created and put before `before` the first time, dropped when the mark goes. */
+function mark(n: TabNode, key: 'bar' | 'ring' | 'dot' | 'badge' | 'rl', on: boolean, parent: HTMLElement, before: Node | null): HTMLSpanElement | undefined {
+  const have = n[key];
+  if (!on) {
+    if (have) { have.remove(); delete n[key]; }
+    return undefined;
+  }
+  if (have) return have;
+  const node = el('span', key === 'bar' ? 'loadbar' : key === 'ring' ? 'ring' : key === 'dot' ? 'unread' : key === 'badge' ? 'notify' : 'rl');
+  node.setAttribute('aria-hidden', 'true');
+  parent.insertBefore(node, before);
+  n[key] = node;
+  return node;
+}
+
+export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string, view: TabView = PLAIN_VIEW): void {
   if (n.title.textContent !== item.title) n.title.textContent = item.title;
   const label = item.title !== '' ? item.title : 'Tab';
-  const name = item.private ? privateTabName(label) : label;
+  const base = item.private ? privateTabName(label) : label;
+  const name = markedName(base, item.notify, item.unread, item.rl);
   if (n.root.getAttribute('aria-label') !== name) {
     // No data-tip on the tab itself: the hover card shows the title, and a plain tooltip would flash before it.
     n.root.setAttribute('aria-label', name);
@@ -193,8 +247,30 @@ export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: str
   n.root.classList.toggle('pinned', item.pinned);
   n.root.classList.toggle('muted', item.muted);
 
-  const mode = item.loading ? 'spin' : uri !== '' ? 'fav' : 'glyph';
+  // --- tab options --- the page load indicator, and the marks a tab can carry.
+  const loading = loadMark(view.indicator, item.loading, item.pct);
+  const mode = loading === 'spin' ? 'spin' : uri !== '' ? 'fav' : 'glyph';
   if (n.root.dataset.icon !== mode) n.root.dataset.icon = mode;
+  const ring = mark(n, 'ring', loading === 'ring', n.img.parentElement ?? n.root, null);
+  if (ring) ring.style.setProperty('--pct', String(item.pct ?? 0));
+  const bar = mark(n, 'bar', loading === 'bar', n.root, null);
+  if (bar) bar.style.setProperty('--pct', String((item.pct ?? 0) / 100));
+  mark(n, 'dot', item.unread === true, n.root, n.audio);
+  const badge = mark(n, 'badge', item.notify !== undefined, n.root, n.audio);
+  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  const rl = mark(n, 'rl', item.rl !== undefined, n.root, n.audio);
+  if (rl && item.rl !== undefined) {
+    n.rlFrom = item.rl;
+    n.rlAt = view.now;
+    rl.textContent = reloadLabel(item.rl);
+  } else {
+    delete n.rlFrom;
+    delete n.rlAt;
+  }
+  n.root.classList.toggle('asleep', item.asleep === true);
+  n.root.classList.toggle('idle', item.idle === true);
+  n.root.classList.toggle('picked', view.picked);
+  // --- end tab options ---
   if (n.uri !== uri) {
     n.uri = uri;
     if (uri !== '') n.img.src = uri;
@@ -306,6 +382,55 @@ export function startTabs(strip: HTMLElement): void {
    */
   let landing: Landing | null = null;
   const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // --- tab options ---
+  let ui: TabOptsMsg = DEFAULT_OPTS;
+  /** Tabs selected with Ctrl or Shift click, and the tab the next Shift click ranges from. */
+  let picked: number[] = [];
+  let anchor = 0;
+  let wheelTotal = 0;
+  let wheelAt = 0;
+  let locked = false;
+  let reloadTimer = 0;
+  const closedBtn = el('button', 'closed-btn bw-icon-btn');
+  closedBtn.type = 'button';
+  closedBtn.setAttribute('aria-label', 'Closed tabs');
+  closedBtn.append(icon('trash'));
+  setTip(closedBtn, 'Closed tabs');
+  closedBtn.addEventListener('click', () => { sendClosedTabs(); });
+  const pinSep = el('span', 'pinsep');
+  pinSep.setAttribute('aria-hidden', 'true');
+  pinSep.setAttribute('role', 'presentation');
+  const applyUi = (): void => {
+    const wanted = stripClasses(ui);
+    for (const name of STRIP_OPTION_CLASSES) strip.classList.toggle(name, wanted.includes(name));
+    strip.style.setProperty('--tab-active-min', ui.minWidth > 0 ? `${ui.minWidth}px` : '');
+    if (!ui.alignClose) unlockWidths();
+  };
+  /** Holds every tab at `tab`'s width until the pointer leaves, so the next close button lands under it. */
+  const lockWidths = (tab: HTMLElement): void => {
+    strip.style.setProperty('--tab-lock', `${lockedWidth(tab.getBoundingClientRect().width)}px`);
+    strip.classList.add('locked');
+    locked = true;
+  };
+  const unlockWidths = (): void => {
+    if (!locked) return;
+    locked = false;
+    strip.classList.remove('locked');
+    strip.style.setProperty('--tab-lock', '');
+  };
+  const setPicked = (ids: readonly number[]): void => {
+    if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
+    picked = [...ids];
+    if (sendTabSelection(picked)) { /* Rust keeps the same list for the tab menu */ }
+    dirty = true;
+    schedule();
+  };
+  const ensureReloadTick = (): void => {
+    const need = [...tabNodes.values()].some((n) => n.rl !== undefined);
+    if (need && reloadTimer === 0) reloadTimer = window.setInterval(() => tickReloads(tabNodes.values(), Date.now()), 1000);
+    else if (!need && reloadTimer !== 0) { window.clearInterval(reloadTimer); reloadTimer = 0; }
+  };
+  // --- end tab options ---
   // --- split view ---
   // The window's split pair (joined capsule) and a tab drag that left the strip for the page.
   let pair: PairMsg | null = null;
@@ -352,7 +477,7 @@ export function startTabs(strip: HTMLElement): void {
 
   const syncTab = (item: TabItem): TabNode => {
     const n = tabFor(item);
-    updateTab(n, item, item.id === activeId, item.fav ? (favs.get(item.id) ?? '') : '');
+    updateTab(n, item, item.id === activeId, item.fav ? (favs.get(item.id) ?? '') : '', { indicator: ui.indicator, picked: picked.includes(item.id), now: Date.now() }); // --- tab options ---
     return n;
   };
 
@@ -389,6 +514,10 @@ export function startTabs(strip: HTMLElement): void {
     activeId = msg.active;
     const entries: Entry[] = buildEntries(msg.items, msg.active);
     const live = new Set<number>(msg.items.map((it) => it.id));
+    // --- tab options --- a closed tab leaves the selection.
+    const kept = pruneSelection(picked, live);
+    if (kept.length !== picked.length) { picked = kept; sendTabSelection(picked); }
+    // --- end tab options ---
     const keys = new Set<number>();
     for (const e of entries) if (e.kind === 'group') keys.add(e.key);
 
@@ -453,11 +582,13 @@ export function startTabs(strip: HTMLElement): void {
     pruneFavs(favs, live);
 
     const top: HTMLElement[] = [];
+    let lastPinned = -1; // --- tab options ---
     for (const e of entries) {
       if (e.kind === 'tab') {
         const n = syncTab(e.slot.item);
         n.root.hidden = false;
         top.push(n.root);
+        if (e.slot.item.pinned) lastPinned = top.length - 1; // --- tab options ---
         continue;
       }
       let g = groups.get(e.key);
@@ -475,8 +606,13 @@ export function startTabs(strip: HTMLElement): void {
       place(g.shell, nodes);
       top.push(g.shell);
     }
+    // --- tab options --- a thin line where the pinned tabs end, and the Closed tabs button at the end.
+    if (ui.separator && lastPinned >= 0 && lastPinned < top.length - 1) top.splice(lastPinned + 1, 0, pinSep);
+    if (ui.closed > 0) top.push(closedBtn);
+    // --- end tab options ---
     place(strip, top);
     strip.append(...ghosts);
+    ensureReloadTick(); // --- tab options ---
     // --- tab ghost --- the host has laid out the released tab's slot: the ghost glides there.
     if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
       const r = ghostLand.node.root.getBoundingClientRect();
@@ -787,7 +923,8 @@ export function startTabs(strip: HTMLElement): void {
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
     if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
-    if (ev.target.closest('.close, .audio, .ball')) return;
+    if (!ev.target.closest('.close')) unlockWidths(); // --- tab options ---
+    if (ev.target.closest('.close, .audio, .ball, .closed-btn')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
       if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) send({ v: 1, t: 'drag' });
@@ -852,6 +989,19 @@ export function startTabs(strip: HTMLElement): void {
   window.addEventListener('blur', () => endDrag(false));
   strip.addEventListener('scroll', updateEdges, { passive: true });
   strip.addEventListener('wheel', (ev) => {
+    // --- tab options --- "Switch tabs by scrolling": a wheel over the strip steps through the tabs.
+    if (ui.wheel && layoutMode === 'horizontal') {
+      ev.preventDefault();
+      const now = Date.now();
+      if (now - wheelAt > 400) wheelTotal = 0;
+      wheelAt = now;
+      const moved = wheelSteps(wheelTotal, ev.deltaY !== 0 ? ev.deltaY : ev.deltaX);
+      wheelTotal = moved.rest;
+      const target = moved.steps === 0 ? null : stepTab(visibleTabs().map((n) => n.id), activeId, moved.steps);
+      if (target !== null) send({ v: 1, t: 'tab', a: 'select', id: target });
+      return;
+    }
+    // --- end tab options ---
     const delta = scrollDeltaForWheel(ev.deltaX, ev.deltaY, ev.shiftKey);
     if (delta !== 0) { ev.preventDefault(); strip.scrollLeft += delta; }
   }, { passive: false });
@@ -872,6 +1022,19 @@ export function startTabs(strip: HTMLElement): void {
     }
     const id = Number(tab.dataset.id);
     const a: TabAction = t.closest('.close') ? 'close' : t.closest('.audio') ? 'mute' : 'select';
+    // --- tab options ---
+    if (a === 'select') {
+      // Ctrl and Shift click select tabs without leaving the one being read; a plain click clears the selection.
+      const outcome = ui.selection
+        ? clickSelection(picked, visibleTabs().map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey })
+        : { selected: [] as number[], anchor: id, activate: true };
+      anchor = outcome.anchor;
+      setPicked(outcome.selected);
+      if (!outcome.activate) return;
+    } else if (a === 'close' && ui.alignClose && ev.detail > 0) {
+      lockWidths(tab);
+    }
+    // --- end tab options ---
     send({ v: 1, t: 'tab', a, id });
   });
 
@@ -912,12 +1075,25 @@ export function startTabs(strip: HTMLElement): void {
   strip.addEventListener('dblclick', (ev) => {
     if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) {
       send({ v: 1, t: 'caption', a: 'toggleMaximize' });
+      return;
     }
+    // --- tab options --- "Double click on a tab": Rust decides (rename, close or nothing).
+    if (ev.target instanceof Element && !ev.target.closest('.close, .audio')) {
+      const tab = ev.target.closest<HTMLElement>('.tab');
+      if (tab) send({ v: 1, t: 'tab', a: 'dblclick', id: Number(tab.dataset.id) });
+    }
+    // --- end tab options ---
   });
+  // --- tab options --- the pointer leaving the strip ends a width lock.
+  strip.addEventListener('pointerleave', unlockWidths);
+  // --- end tab options ---
 
   strip.addEventListener('keydown', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
+    // --- tab options --- Escape drops the selection.
+    if (ev.key === 'Escape' && picked.length > 0) { ev.preventDefault(); setPicked([]); return; }
+    // --- end tab options ---
     const tab = t.closest<HTMLElement>('.tab');
     if (!tab) return;
     // Enter/Space on the close or mute button activates that button (click), not the tab.
@@ -1002,6 +1178,15 @@ export function startTabs(strip: HTMLElement): void {
         dirty = true;
         schedule();
         break;
+      // --- tab options ---
+      case 'tabopts':
+        ui = msg;
+        applyUi();
+        sidebar.options(msg);
+        dirty = true;
+        schedule();
+        break;
+      // --- end tab options ---
       case 'fav':
         rememberFav(favs, msg.id, msg.uri, new Set(latest?.items.map((item) => item.id) ?? []));
         dirty = true;

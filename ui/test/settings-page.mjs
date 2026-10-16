@@ -163,7 +163,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   assert.deepEqual(restart, ['allow', 'blocker', 'grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'pinNewTabGroups', 'shiftRightClickContext', 'tabPreviewImages', 'tabPreviewMemory']);
+  assert.deepEqual(notYet, ['bookmarksBar', 'bookmarksBarTabGroups', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'frameless', 'pinNewTabGroups', 'shiftRightClickContext']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -367,8 +367,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 10);
-  assert.equal(app.querySelectorAll('section').length, 10);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 11);
+  assert.equal(app.querySelectorAll('section').length, 11);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard and the Extensions block each stand for one row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext').map((row) => row.dataset.row);
@@ -464,7 +464,7 @@ test('Translation: two switches and a language select, each its own command, app
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
-  assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
   assert.equal(flagOf('pinNewTabGroups').textContent, logic.NOT_YET_NOTE);
   assert.equal(flagOf('blocker').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('centredAddressBar'), null);
@@ -491,7 +491,7 @@ test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
   assert.deepEqual(sent[1], { v: 1, t: 'set', a: 'history', on: false });
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical', ack: 'saved' } });
   assert.equal(app.querySelector('.sp-toast').textContent, 'Saved');
-  const nav = app.querySelectorAll('.sp-nav-item')[2];
+  const nav = app.querySelectorAll('.sp-nav-item')[3];
   sent.length = 0;
   nav.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'privacy' }]);

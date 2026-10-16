@@ -81,6 +81,9 @@ pub enum TabAction {
     Menu,
     Pin,
     Mute,
+    // --- tab options --- a double click on the tab (the "Double click on a tab" option decides).
+    DoubleClick,
+    // --- end tab options ---
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,7 +109,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, Sessions }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -240,6 +243,12 @@ pub enum Command {
     Tab { action: TabAction, id: u32 },
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
+    // --- tab options ---
+    /// The strip's selection after a Ctrl or Shift click, as wire ids in strip order (empty clears it).
+    TabSelection { ids: Vec<u32> },
+    /// The strip's Closed tabs button: Rust shows the list of closed tabs at the cursor.
+    ClosedTabs,
+    // --- end tab options ---
     Group { action: GroupAction, key: u32 },
     // --- vertical sidebar (lane S) ---
     Side(SideAction),
@@ -812,6 +821,34 @@ fn str_field<'a>(
     }
 }
 
+// --- tab options ---
+/// Most ids a `tabsel` list may carry (the strip never shows more than `MAX_TABS` tabs).
+pub const MAX_TAB_SELECTION: usize = 512;
+
+/// A comma-separated list of tab wire ids: digits only, no empty items, at most [`MAX_TAB_SELECTION`].
+/// The empty string is the empty list.
+fn id_list_field(fields: &[(String, Value)], name: &'static str) -> Result<Vec<u32>, ProtocolError> {
+    let text = str_field(fields, name)?;
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    if text.len() > MAX_TAB_SELECTION * 11 {
+        return Err(ProtocolError::TooLong(name));
+    }
+    let mut ids = Vec::new();
+    for item in text.split(',') {
+        if item.is_empty() || item.len() > 10 || !item.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ProtocolError::InvalidValue(name));
+        }
+        ids.push(item.parse::<u32>().map_err(|_| ProtocolError::InvalidValue(name))?);
+        if ids.len() > MAX_TAB_SELECTION {
+            return Err(ProtocolError::TooLong(name));
+        }
+    }
+    Ok(ids)
+}
+// --- end tab options ---
+
 fn text_field(fields: &[(String, Value)]) -> Result<String, ProtocolError> {
     let text = str_field(fields, "text")?;
     if text.chars().count() > MAX_TEXT_CHARS {
@@ -1002,6 +1039,10 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "caption" => &["a"],
         "tab" => &["a", "id"],
         "tabmove" => &["id", "before"],
+        // --- tab options ---
+        "tabsel" => &["ids"],
+        "closedtabs" => &[],
+        // --- end tab options ---
         "group" => &["a", "key"],
         // --- vertical sidebar (lane S) ---
         "side" => &["a"],
@@ -1009,7 +1050,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "sess" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -1081,10 +1122,15 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "menu" => TabAction::Menu,
                 "pin" => TabAction::Pin,
                 "mute" => TabAction::Mute,
+                "dblclick" => TabAction::DoubleClick, // --- tab options ---
                 _ => return Err(ProtocolError::InvalidValue("a")),
             },
             id: uint_field(fields, "id")?,
         },
+        // --- tab options ---
+        "tabsel" => Command::TabSelection { ids: id_list_field(fields, "ids")? },
+        "closedtabs" => Command::ClosedTabs,
+        // --- end tab options ---
         "tabmove" => Command::TabMove {
             id: uint_field(fields, "id")?,
             before: uint_field(fields, "before")?,
@@ -1131,7 +1177,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "sess" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1143,6 +1189,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "dpage" => PanelType::DownloadsPage,
                 // The bowser://history page (docs/design/history-page.md); not the rail panel's `hist`.
                 "hpage" => PanelType::HistoryPage,
+                // The Sessions panel (Settings > Tabs, docs/design/sessions.md).
+                "sess" => PanelType::Sessions,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -1518,7 +1566,92 @@ pub struct TabItem {
     pub group_size: u32,
     /// A favicon is cached for this tab id.
     pub has_favicon: bool,
+    // --- tab options ---
+    pub marks: TabMarks,
+    // --- end tab options ---
 }
+
+// --- tab options ---
+/// What a tab shows beyond the model's own fields (Settings > Tabs): each is sent only when set, so
+/// a strip with none of them reads exactly as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TabMarks {
+    /// Changed while out of sight and not looked at since.
+    pub unread: bool,
+    /// The count a page title announces; `0` for none.
+    pub notify: u32,
+    /// The page is asleep (the icon is dimmed).
+    pub asleep: bool,
+    /// Page load progress, 0 to 100.
+    pub progress: Option<u8>,
+    /// Seconds until the tab's periodic reload.
+    pub reload: Option<u32>,
+    /// Not used for longer than the inactive threshold.
+    pub idle: bool,
+}
+
+/// Largest notification count sent.
+pub const MAX_NOTIFY: u32 = 999;
+
+/// What the strip needs from the Tabs settings, sent as `{"t":"tabopts",...}` whenever any of it
+/// changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StripOptions {
+    pub close_left: bool,
+    pub close_always: bool,
+    pub scroll: bool,
+    pub min_width: u32,
+    /// `spinner`, `bar`, `favicon` or `none`.
+    pub indicator: &'static str,
+    pub wheel: bool,
+    pub separator: bool,
+    pub align_close: bool,
+    pub selection: bool,
+    pub remove_spacing: bool,
+    pub maximised: bool,
+    /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
+    pub closed: u32,
+}
+
+impl Default for StripOptions {
+    fn default() -> Self {
+        Self {
+            close_left: false,
+            close_always: false,
+            scroll: false,
+            min_width: 0,
+            indicator: "spinner",
+            wheel: false,
+            separator: false,
+            align_close: false,
+            selection: true,
+            remove_spacing: false,
+            maximised: false,
+            closed: 0,
+        }
+    }
+}
+
+/// `{"v":1,"t":"tabopts",...}`: every key always present.
+pub fn tabopts_json(options: &StripOptions) -> String {
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "tabopts");
+        out.bool("closeLeft", options.close_left);
+        out.bool("closeAlways", options.close_always);
+        out.bool("scroll", options.scroll);
+        out.uint("minWidth", u64::from(options.min_width.min(400)));
+        out.string("indicator", options.indicator);
+        out.bool("wheel", options.wheel);
+        out.bool("separator", options.separator);
+        out.bool("alignClose", options.align_close);
+        out.bool("selection", options.selection);
+        out.bool("removeSpacing", options.remove_spacing);
+        out.bool("maximised", options.maximised);
+        out.uint("closed", u64::from(options.closed.min(99)));
+    })
+}
+// --- end tab options ---
 
 /// `{"v":1,"t":"tabs","active":...,"items":[...]}`: the whole tab strip. Titles are capped at
 /// `MAX_TAB_TITLE_CHARS` and group names at `MAX_GROUP_NAME_CHARS`, both on character boundaries.
@@ -1551,7 +1684,29 @@ pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
                 item.group_size,
             ));
         }
-        out.push_str(&format!(",\"fav\":{}}}", item.has_favicon));
+        out.push_str(&format!(",\"fav\":{}", item.has_favicon));
+        // --- tab options --- only what is set.
+        let marks = &item.marks;
+        if marks.unread {
+            out.push_str(",\"unread\":true");
+        }
+        if marks.notify > 0 {
+            out.push_str(&format!(",\"notify\":{}", marks.notify.min(MAX_NOTIFY)));
+        }
+        if marks.asleep {
+            out.push_str(",\"asleep\":true");
+        }
+        if let Some(progress) = marks.progress {
+            out.push_str(&format!(",\"pct\":{}", progress.min(100)));
+        }
+        if let Some(reload) = marks.reload {
+            out.push_str(&format!(",\"rl\":{}", reload.min(86_400)));
+        }
+        if marks.idle {
+            out.push_str(",\"idle\":true");
+        }
+        // --- end tab options ---
+        out.push('}');
     }
     out.push_str("]}");
     out
@@ -1634,6 +1789,12 @@ pub struct HoverCard {
     pub rows: Vec<HoverRow>,
     /// Rows the card does not draw.
     pub more: usize,
+    // --- tab options --- Settings > Appearance: "Show a thumbnail in tab previews" and "Show memory use".
+    /// A JPEG thumbnail of the page (`crate::thumbnail`), sent only when it is small enough.
+    pub thumb: Option<Vec<u8>>,
+    /// Memory of the tab's page process in megabytes.
+    pub memory_mb: Option<u32>,
+    // --- end tab options ---
 }
 
 /// The island menu: name field, colour swatches, member rows and the close button.
@@ -1709,6 +1870,14 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
         out.string("fav", &budgeted_uri(card.png.as_deref(), &mut budget));
         write_hover_rows(out, &card.rows, &mut budget);
         out.uint("more", (card.more + hidden) as u64);
+        // --- tab options --- only what is there, so a card without them reads as before.
+        if let Some(uri) = card.thumb.as_deref().and_then(crate::thumbnail::data_uri) {
+            out.string("thumb", &uri);
+        }
+        if let Some(memory) = card.memory_mb {
+            out.uint("mem", u64::from(memory.min(99_999)));
+        }
+        // --- end tab options ---
     })
 }
 
@@ -2005,7 +2174,7 @@ fn truncate_utf16(text: &str, max: usize) -> &str {
 }
 
 /// Standard base64 (RFC 4648 section 4) with `=` padding.
-fn base64_encode(bytes: &[u8]) -> String {
+pub fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -3662,6 +3831,7 @@ mod tests {
             collapsed: false,
             group_size: 0,
             has_favicon: false,
+            marks: Default::default(),
         }
     }
 
@@ -3682,6 +3852,7 @@ mod tests {
             private: true,
             marker: 2,
             has_favicon: true,
+            marks: Default::default(),
             ..plain_tab(7, "Home")
         };
         assert_eq!(
@@ -4354,6 +4525,7 @@ mod tests {
             png: Some(vec![1, 2, 3]),
             rows: rows.clone(),
             more: 1,
+            ..HoverCard::default() // --- tab options ---
         });
         assert!(card.contains(&format!("\"title\":\"{}\"", "x".repeat(MAX_TAB_TITLE_CHARS))));
         assert!(card.contains("\"marker\":-1"));
@@ -4403,6 +4575,7 @@ mod tests {
             png: None,
             rows: vec![HoverRow { title: "Other".into(), active: true, linked: true, png: None }],
             more: 0,
+            ..HoverCard::default() // --- tab options ---
         });
         let island = island_json(8, &HoverIsland {
             name: String::new(),
@@ -4602,4 +4775,109 @@ mod tests {
         );
     }
     // --- end omnibox suggest ---
+
+    // --- tab options ---
+    #[test]
+    fn a_tab_carries_only_the_marks_that_are_set() {
+        let plain = tabs_json(1, &[plain_tab(1, "Plain")]);
+        assert!(!plain.contains("unread") && !plain.contains("notify") && !plain.contains("asleep") && !plain.contains("\"pct\"") && !plain.contains("\"rl\"") && !plain.contains("idle"), "{plain}");
+        let mut marked = plain_tab(2, "Marked");
+        marked.marks = TabMarks { unread: true, notify: 1200, asleep: true, progress: Some(150), reload: Some(90_000), idle: true };
+        let json = tabs_json(1, &[marked]);
+        assert!(json.ends_with(r#""fav":false,"unread":true,"notify":999,"asleep":true,"pct":100,"rl":86400,"idle":true}]}"#), "counts and times are capped: {json}");
+        let mut zero = plain_tab(3, "Zero");
+        zero.marks = TabMarks { notify: 0, progress: Some(0), reload: Some(0), ..TabMarks::default() };
+        let json = tabs_json(1, &[zero]);
+        assert!(json.ends_with(r#""fav":false,"pct":0,"rl":0}]}"#), "no count of zero, but a progress of 0 and a reload due now are values: {json}");
+    }
+
+    #[test]
+    fn the_strip_options_message_always_carries_every_key() {
+        let json = tabopts_json(&StripOptions::default());
+        assert_eq!(
+            json,
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"removeSpacing":false,"maximised":false,"closed":0}"#
+        );
+        let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
+        let json = tabopts_json(&set);
+        assert!(json.contains(r#""closeLeft":true"#) && json.contains(r#""minWidth":400"#) && json.contains(r#""indicator":"bar""#) && json.contains(r#""closed":99"#), "{json}");
+    }
+
+    #[test]
+    fn tab_options_messages_match_committed_fixture() {
+        let mut plain = plain_tab(1, "Plain");
+        plain.has_favicon = false;
+        let mut marked = plain_tab(2, "(3) Inbox");
+        marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
+        let mut bar = plain_tab(3, "Loading");
+        bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, remove_spacing: true, maximised: true, closed: 4 };
+        let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::write(&path, content).expect("write tab options fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed tab options fixture").replace("\r\n", "\n"), content);
+        }
+    }
+
+    #[test]
+    fn the_hover_card_carries_a_thumbnail_and_memory_only_when_it_has_them() {
+        let plain = HoverCard { title: "T".into(), host: "example.com".into(), ..HoverCard::default() };
+        let json = card_json(3, &plain);
+        assert!(!json.contains("thumb") && !json.contains("\"mem\""), "{json}");
+        let jpeg = vec![0xFF, 0xD8, 1, 2, 3, 4, 0xFF, 0xD9];
+        let full = HoverCard { thumb: Some(jpeg.clone()), memory_mb: Some(412), ..plain.clone() };
+        let json = card_json(3, &full);
+        assert!(json.contains(r#""thumb":"data:image/jpeg;base64,/9gBAgME/9k=""#), "{json}");
+        assert!(json.ends_with(r#""more":0,"thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
+        // Not a JPEG, or too big: no thumbnail rather than a broken one.
+        let png = HoverCard { thumb: Some(vec![0x89, b'P', b'N', b'G']), ..plain.clone() };
+        assert!(!card_json(3, &png).contains("thumb"));
+        let mut big = vec![0xFF, 0xD8];
+        big.resize(crate::thumbnail::MAX_THUMB_BYTES + 10, 0);
+        big.extend([0xFF, 0xD9]);
+        assert!(!card_json(3, &HoverCard { thumb: Some(big), ..plain.clone() }).contains("thumb"));
+        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain }).contains(r#""mem":99999"#), "memory is capped");
+    }
+
+    #[test]
+    fn hover_preview_messages_match_committed_fixture() {
+        let card = HoverCard { title: "Docs".into(), host: "example.com".into(), thumb: Some(vec![0xFF, 0xD8, 1, 2, 3, 4, 0xFF, 0xD9]), memory_mb: Some(412), ..HoverCard::default() };
+        let memory_only = HoverCard { title: "Mail".into(), host: "mail.example".into(), memory_mb: Some(88), ..HoverCard::default() };
+        let content = format!("{{\"card\":{},\"memory\":{}}}\n", card_json(5, &card), card_json(6, &memory_only));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/hover-preview-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::write(&path, content).expect("write hover preview fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed hover preview fixture").replace("\r\n", "\n"), content);
+        }
+    }
+
+    #[test]
+    fn the_strip_selection_and_closed_tabs_commands_are_validated() {
+        assert_eq!(ok(r#"{"v":1,"t":"tabsel","ids":"3,9,12"}"#), Command::TabSelection { ids: vec![3, 9, 12] });
+        assert_eq!(ok(r#"{"v":1,"t":"tabsel","ids":""}"#), Command::TabSelection { ids: vec![] }, "empty clears the selection");
+        assert_eq!(ok(r#"{"v":1,"t":"closedtabs"}"#), Command::ClosedTabs);
+        assert_eq!(ok(r#"{"v":1,"t":"tab","a":"dblclick","id":4}"#), Command::Tab { action: TabAction::DoubleClick, id: 4 });
+        for bad in [r#"{"v":1,"t":"tabsel","ids":"1,,2"}"#, r#"{"v":1,"t":"tabsel","ids":"1,x"}"#, r#"{"v":1,"t":"tabsel","ids":"-1"}"#, r#"{"v":1,"t":"tabsel","ids":" 1"}"#, r#"{"v":1,"t":"tabsel","ids":"99999999999"}"#, r#"{"v":1,"t":"tabsel","ids":1}"#, r#"{"v":1,"t":"tabsel"}"#] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        let many = (0..=MAX_TAB_SELECTION).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        assert!(parse_command(&format!(r#"{{"v":1,"t":"tabsel","ids":"{many}"}}"#)).is_err(), "more than the strip can show");
+        let most = (0..MAX_TAB_SELECTION).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        assert!(parse_command(&format!(r#"{{"v":1,"t":"tabsel","ids":"{most}"}}"#)).is_ok());
+        assert!(parse_command(r#"{"v":1,"t":"closedtabs","id":1}"#).is_err(), "no extra fields");
+        assert!(parse_command(r#"{"v":1,"t":"tab","a":"rename","id":4}"#).is_err());
+    }
+
+    #[test]
+    fn the_sessions_panel_family_is_its_own_kind() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"sess","a":"save","text":"Work","n":0}"#),
+            Command::Panel { kind: PanelType::Sessions, f: PanelFields { a: "save".into(), text: Some("Work".into()), n: Some(0), ..PanelFields::default() } }
+        );
+        assert!(parse_command(r#"{"v":1,"t":"sess","a":"Save"}"#).is_err(), "actions are lower-case words");
+    }
+    // --- end tab options ---
 }

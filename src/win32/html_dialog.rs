@@ -25,11 +25,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Privacy, Rename }
+pub(crate) enum Kind { Notes, Privacy, Rename, Sessions }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -38,6 +38,8 @@ thread_local! {
     static CLASS_READY: Cell<bool> = const { Cell::new(false) };
     /// The open Privacy dashboard window, so a second request focuses it instead of stacking one.
     static PRIVACY: Cell<isize> = const { Cell::new(0) };
+    /// The open Sessions panel, so a second request focuses it instead of stacking one.
+    static SESSIONS: Cell<isize> = const { Cell::new(0) };
     /// An HTML dialog host could not be created: later dialogs use their native windows.
     static FAILED: Cell<bool> = const { Cell::new(false) };
 }
@@ -46,6 +48,9 @@ const DIALOG_CLASS: PCWSTR = w!("BowserHtmlDialog");
 /// Logical (96 DPI) size of the Privacy dashboard window.
 const PRIVACY_WIDTH: i32 = 640;
 const PRIVACY_HEIGHT: i32 = 760;
+/// Logical (96 DPI) size of the Sessions panel.
+const SESSIONS_WIDTH: i32 = 420;
+const SESSIONS_HEIGHT: i32 = 560;
 /// The Notes window keeps its native resize strip on the left edge, so the page starts after it.
 const NOTES_RESIZE_STRIP_DIP: i32 = 9;
 
@@ -107,6 +112,7 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             WM_NCDESTROY => {
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -213,6 +219,37 @@ pub(crate) fn open_privacy(owner: HWND, app: &AppRef, env: ChromeEnv) {
     unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
+/// Opens the Sessions panel in its own owned window, or brings the open one to the front.
+pub(crate) fn open_sessions(owner: HWND, app: &AppRef, env: ChromeEnv) {
+    let existing = SESSIONS.with(Cell::get);
+    if existing != 0 {
+        let window = HWND(existing as *mut std::ffi::c_void);
+        if unsafe { IsWindow(Some(window)) }.as_bool() {
+            unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+            send_to(window);
+            return;
+        }
+        SESSIONS.with(|slot| slot.set(0));
+    }
+    let Some(window) = create_window(owner, Kind::Sessions.title(), SESSIONS_WIDTH, SESSIONS_HEIGHT) else {
+        show_error_message("The Sessions panel could not be opened.");
+        return;
+    };
+    SESSIONS.with(|slot| slot.set(window.0 as isize));
+    attach(app, owner, window, env, Kind::Sessions);
+    unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+}
+
+/// Sends the open Sessions panel a fresh snapshot (its list changed from outside).
+pub(crate) fn refresh_sessions() {
+    let existing = SESSIONS.with(Cell::get);
+    if existing != 0 { send_to(HWND(existing as *mut std::ffi::c_void)); }
+}
+
+fn send_to(window: HWND) {
+    if let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(window.0 as isize)).cloned()) { send_current(&runtime); }
+}
+
 pub(crate) fn resize(parent: HWND) {
     let runtime = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned());
     let Some(runtime) = runtime else { return; };
@@ -264,6 +301,7 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         }
         Command::Panel { kind: PanelType::Notes, f } if runtime.borrow().kind == Kind::Notes => handle_notes(runtime, f),
         Command::Panel { kind: PanelType::Privacy, f } if runtime.borrow().kind == Kind::Privacy => handle_privacy(runtime, f),
+        Command::Panel { kind: PanelType::Sessions, f } if runtime.borrow().kind == Kind::Sessions => handle_sessions(runtime, f),
         _ => {}
     }
 }
@@ -273,7 +311,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
 }
 
@@ -393,6 +431,42 @@ fn handle_rename(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     }
 }
 // --- end popup surfaces ---
+
+// --- tab options --- the Sessions panel: saved sessions, saving the open tabs, opening and deleting.
+fn sessions_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let app = runtime.try_borrow().ok()?.app.clone();
+    let profile = profile::active().ok()?;
+    let allowed = crate::productivity::profile_allows_productivity(&profile);
+    let sessions = if allowed { crate::productivity::read_sessions(&profile.saved_sessions_file()) } else { Vec::new() };
+    Some(panels::sessions::snapshot_json(allowed, App::tab_ids(&app).len(), App::selected_tab_count(&app), &sessions))
+}
+
+/// A validated `sess` command (`panels::sessions::map_command`) acts on the profile's saved sessions. A
+/// session is found in the file again by its name, so a stale list in the page never opens or deletes the
+/// wrong one.
+fn handle_sessions(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let app = match runtime.try_borrow() { Ok(state) => state.app.clone(), Err(_) => return };
+    let Some(action) = panels::sessions::map_command(&f) else { return; };
+    let Ok(profile) = profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let file = profile.saved_sessions_file();
+    match action {
+        panels::sessions::Action::Save { name, selected } => {
+            let ids = if selected { App::selected_tabs(&app) } else { App::tab_ids(&app) };
+            if let Err(message) = App::save_session(&app, &name, &ids) { show_error_message(&message); }
+        }
+        panels::sessions::Action::Open { name, replace } => {
+            if let Some(session) = crate::productivity::read_sessions(&file).into_iter().find(|session| session.name == name) {
+                App::open_session(&app, &session, replace);
+            }
+        }
+        panels::sessions::Action::Delete { name } => {
+            if let Err(error) = crate::productivity::delete_session(&file, &name) { show_error_message(&format!("The session could not be deleted: {error}")); }
+        }
+    }
+    send_current(runtime);
+}
+// --- end tab options ---
 
 fn notes_snapshot() -> Option<String> {
     let profile = profile::active().ok()?;

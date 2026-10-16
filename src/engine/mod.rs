@@ -184,6 +184,23 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Captures the tab's page as a JPEG no larger than `max_w` x `max_h` (a thumbnail for the tab
+    /// hover card). Only a tab that is on screen can be captured; any other, and any failure, reports
+    /// `None`. `done` may run later. Nothing is stored by the engine.
+    fn capture_tab_thumbnail(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _max_w: u32,
+        _max_h: u32,
+        done: Box<dyn FnOnce(Option<Vec<u8>>)>,
+    ) {
+        done(None);
+    }
+    /// The working set in bytes of the page process of each tab that can be told apart (the tab hover
+    /// card's memory line). Tabs the engine cannot match to a process are left out. `done` may run later.
+    fn tab_memory_usage(&mut self, done: Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>) {
+        done(Vec::new());
+    }
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
     /// form input, playing video, picture-in-picture or a live camera/microphone stream.
     /// `done(true)` means "keep it awake". It may run later (after the page answers) but never
@@ -331,6 +348,10 @@ pub struct EngineEvents {
     pub login_message:
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::passwords::LoginMessage)>>,
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    /// A link the user followed is about to load in this tab (a new document, not a redirect or a typed
+    /// address). Returning true cancels it: the app opened the page in a new tab instead ("Keep pinned
+    /// tabs on their site").
+    pub link_navigation: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A blocker stopped a request; includes the current-page count and page host when known.

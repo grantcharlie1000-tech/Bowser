@@ -670,6 +670,49 @@
   gap: var(--bw-space-2);
 }
 
+/* ---- Sessions panel (ui/src/panels/sessions.ts): the notes panel's rows, two lines tall ---- */
+.ps-bar { align-items: flex-start; }
+
+.ps-form {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  padding: 0 var(--bw-space-3) var(--bw-space-3);
+}
+
+.ps-form[hidden],
+.ps-which[hidden] { display: none; }
+
+.ps-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bw-space-2);
+}
+
+.ps-error {
+  padding: 0;
+  color: var(--bw-text);
+}
+
+.ps-error:empty { display: none; }
+
+.ps-row {
+  height: 48px;
+  align-items: center;
+}
+
+.ps-row .bw-row-title,
+.ps-row .bw-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-row .pn-trail { min-width: 72px; max-width: none; }
+.ps-row.is-confirming { background: var(--bw-accent-soft); }
+.ps-row.is-confirming .pn-actions { opacity: 1; }
+
 @media (max-width: 640px) {
   .pg-row {
     flex-wrap: wrap;

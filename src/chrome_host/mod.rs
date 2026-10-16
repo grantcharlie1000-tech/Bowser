@@ -355,6 +355,9 @@ pub struct TabRow {
     /// Pinned tabs never join a group, so a pinned row's group is ignored.
     pub group: Option<RowGroup>,
     pub has_favicon: bool,
+    // --- tab options ---
+    pub marks: protocol::TabMarks,
+    // --- end tab options ---
 }
 
 /// Wire items for the strip, in the order given. The first unpinned member of each group is its
@@ -399,6 +402,7 @@ pub fn tab_items(rows: &[TabRow]) -> Vec<TabItem> {
                 collapsed,
                 group_size: size,
                 has_favicon: row.has_favicon,
+                marks: row.marks.clone(), // --- tab options ---
             })
         })
         .collect()
@@ -947,6 +951,7 @@ mod tests {
             marker: None,
             group,
             has_favicon: id == 1,
+            marks: Default::default(),
         };
         let rows = vec![
             row(0, Some(group.clone()), false),

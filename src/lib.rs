@@ -38,6 +38,9 @@ pub mod site_security;
 pub mod split_view;
 pub mod drop_intent; // when a dragged tab over the page means "split" (docs/design/tab-drag.md)
 pub mod tab_groups;
+pub mod tab_options;
+pub mod tab_state;
+pub mod thumbnail;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;

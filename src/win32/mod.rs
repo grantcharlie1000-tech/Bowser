@@ -19,6 +19,9 @@ mod html_suggest;
 // --- end hover layer ---
 // --- end popup host ---
 mod notes_panel;
+// --- tab options --- the Sessions panel.
+mod sessions_panel;
+// --- end tab options ---
 mod panel_bookmarks;
 mod panel_customize;
 mod panel_history;
@@ -53,7 +56,7 @@ mod tab_ghost; // the native ghost of a held tab (docs/design/tab-drag.md)
 mod window;
 
 pub(crate) use window::{
-    gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer,
+    gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer, set_link_timer, set_tab_tick, set_thumbnail_timer,
     show_pending_address, sync_address_input,
 };
 

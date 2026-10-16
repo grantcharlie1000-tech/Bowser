@@ -115,6 +115,28 @@ pub fn browser_commands() -> CommandRegistry {
             "Restore or delete a saved session",
             "sessions",
         ),
+        // --- tab options (Settings > Tabs) ---
+        (
+            "Save All Tabs as Session",
+            "Save every open tab as a named session",
+            "save-all-session",
+        ),
+        (
+            "Open Saved Session",
+            "Open a saved session in this window",
+            "open-session",
+        ),
+        (
+            "Reopen closed tab",
+            "Bring back the tab you closed last (Ctrl+Shift+T)",
+            "reopen-tab",
+        ),
+        (
+            "Closed tabs",
+            "List the tabs closed in this session",
+            "closed-tabs",
+        ),
+        // --- end tab options ---
         ("Add bookmark", "Save the current page", "add-bookmark"),
         ("Reload", "Reload the current page", "reload"),
         ("Back", "Go back", "back"),
@@ -1218,6 +1240,10 @@ mod tests {
             "toggle-sidebar",
             "save-session",
             "sessions",
+            "save-all-session",
+            "open-session",
+            "reopen-tab",
+            "closed-tabs",
             "add-bookmark",
             "extensions",
         ] {

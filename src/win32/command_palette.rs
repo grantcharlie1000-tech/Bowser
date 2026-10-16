@@ -616,7 +616,7 @@ const HTML_ITEMS_BUDGET: usize = 200 * 1024;
 
 /// Shortcut labels for palette commands. Each one is a real binding (`shortcuts::command_for`,
 /// checked by a test), shown right-aligned in the row.
-const ACCELERATORS: [(&str, &str); 12] = [
+const ACCELERATORS: [(&str, &str); 13] = [
     ("new-tab", "Ctrl+T"),
     ("new-private-tab", "Ctrl+Shift+P"),
     ("close-tab", "Ctrl+W"),
@@ -629,6 +629,7 @@ const ACCELERATORS: [(&str, &str); 12] = [
     ("forward", "Alt+Right"),
     ("extensions", "Ctrl+Shift+E"),
     ("reader", "Ctrl+Alt+R"),
+    ("reopen-tab", "Ctrl+Shift+T"), // --- tab options ---
 ];
 
 /// One row of the HTML palette. `section` is `tab`, `command`, `bookmark` or `history`.

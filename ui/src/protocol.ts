@@ -38,11 +38,11 @@ export type ReaderPill = 'none' | 'available' | 'on';
 export type TranslatePill = 'none' | 'available' | 'on';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
-export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
+export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'sess';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'sessions';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -82,6 +82,10 @@ export type Command =
   | { v: 1; t: 'caption'; a: CaptionAction }
   | { v: 1; t: 'tab'; a: TabAction; id: number }
   | { v: 1; t: 'tabmove'; id: number; before: number }
+  // --- tab options --- the strip's selection (comma-separated wire ids) and its Closed tabs button.
+  | { v: 1; t: 'tabsel'; ids: string }
+  | { v: 1; t: 'closedtabs' }
+  // --- end tab options ---
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
@@ -162,6 +166,12 @@ export interface HoverCardMsg {
   readonly fav: string;
   readonly rows: readonly HoverRowMsg[];
   readonly more: number;
+  // --- tab options --- sent only when "Show a thumbnail in tab previews" / "Show memory use" are on and known.
+  /** A small JPEG of the page as a data: URI. */
+  readonly thumb?: string;
+  /** Memory of the tab's page process in megabytes. */
+  readonly mem?: number;
+  // --- end tab options ---
 }
 export interface HoverIslandMsg {
   readonly t: 'hover';
@@ -337,6 +347,20 @@ export interface TabItem {
   readonly gsize?: number;
   /** A favicon is cached for this id (see the `fav` message). */
   readonly fav: boolean;
+  // --- tab options --- each is sent only when set (Settings > Tabs).
+  /** Changed while out of sight and not looked at since. */
+  readonly unread?: boolean;
+  /** The count a page title announces ("(3) Inbox"), 1 to 999. */
+  readonly notify?: number;
+  /** The page is asleep: the icon is dimmed. */
+  readonly asleep?: boolean;
+  /** Page load progress, 0 to 100. */
+  readonly pct?: number;
+  /** Seconds until the tab's periodic reload. */
+  readonly rl?: number;
+  /** Not used for longer than the inactive threshold. */
+  readonly idle?: boolean;
+  // --- end tab options ---
 }
 export interface TabsMsg {
   readonly t: 'tabs';
@@ -377,12 +401,43 @@ export interface FlyoutMsg { readonly t: 'flyout'; readonly caret: number }
 export const MAX_FLYOUT_CARET = 4000;
 // --- end rail flyouts ---
 export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
+// --- tab options ---
+export const LOAD_INDICATORS = ['spinner', 'bar', 'favicon', 'none'] as const;
+export type LoadIndicator = typeof LOAD_INDICATORS[number];
+/** What the strip needs from the Tabs settings; sent again whenever any of it changes. */
+export interface TabOptsMsg {
+  readonly t: 'tabopts';
+  readonly closeLeft: boolean;
+  readonly closeAlways: boolean;
+  readonly scroll: boolean;
+  /** Narrowest the active tab gets, in pixels; 0 leaves it to the strip. */
+  readonly minWidth: number;
+  readonly indicator: LoadIndicator;
+  readonly wheel: boolean;
+  readonly separator: boolean;
+  readonly alignClose: boolean;
+  readonly selection: boolean;
+  readonly removeSpacing: boolean;
+  readonly maximised: boolean;
+  /** Tabs in the closed-tabs list; 0 hides the Closed tabs button. */
+  readonly closed: number;
+}
+export const MAX_SELECTION = 512;
+/** The strip's selection, as the comma list Rust parses. False when the ids are not tab ids. */
+export function sendTabSelection(ids: readonly number[]): boolean {
+  if (ids.length > MAX_SELECTION || !ids.every((id) => isInt(id, 0, MAX_ID))) return false;
+  return send({ v: 1, t: 'tabsel', ids: ids.join(',') });
+}
+export function sendClosedTabs(): boolean {
+  return send({ v: 1, t: 'closedtabs' });
+}
+// --- end tab options ---
 // --- vertical sidebar (lane S) ---
 export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -395,6 +450,7 @@ export type Inbound =
   | FocusOmniboxMsg
   | CompletionMsg
   | TabsMsg
+  | TabOptsMsg // --- tab options ---
   | FavMsg
   | RailMsg
   | RailFavMsg
@@ -474,7 +530,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'sessions'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -754,6 +810,12 @@ function parseColours(v: unknown, max: number): string[] | null {
 }
 const TOOLTIP_KEYS = ['v', 't', 'tok', 'kind', 'text'];
 const CARD_KEYS = ['v', 't', 'tok', 'kind', 'title', 'host', 'marker', 'markers', 'sleeping', 'fav', 'rows', 'more'];
+/** Longest thumbnail data: URI Rust sends (36,000 bytes of JPEG as base64). */
+export const MAX_THUMB_URI = 48 * 1024;
+const THUMB_PREFIX = 'data:image/jpeg;base64,';
+function isThumbUri(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= MAX_THUMB_URI && v.startsWith(THUMB_PREFIX) && BASE64_RE.test(v.slice(THUMB_PREFIX.length));
+}
 const ISLAND_KEYS = ['v', 't', 'tok', 'kind', 'name', 'hint', 'slot', 'swatches', 'rows', 'more', 'close'];
 
 /** Strict validation of a Rust `hover` message (tooltip, card or island content). */
@@ -766,13 +828,18 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
       return { t: 'hover', tok, kind: 'tooltip', text: raw.text };
     }
     case 'card': {
-      if (!hasOnlyKeys(raw, CARD_KEYS) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      if (!hasOnlyKeys(raw, [...CARD_KEYS, 'thumb', 'mem']) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      if (('thumb' in raw && !isThumbUri(raw.thumb)) || ('mem' in raw && !isInt(raw.mem, 0, 99999))) return null; // --- tab options ---
       const { title, host, marker, sleeping, fav, more } = raw;
       const markers = parseColours(raw.markers, HOVER_MARKERS);
       const rows = parseHoverRows(raw.rows);
       if (!isStr(title, MAX_TITLE) || !isStr(host, MAX_HOVER_HOST) || !isInt(marker, -1, HOVER_MARKERS - 1)) return null;
       if (!isBool(sleeping) || (fav !== '' && !isFavUri(fav)) || !isInt(more, 0, MAX_ID) || !markers || !rows) return null;
-      return { t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more };
+      return {
+        t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more,
+        ...(typeof raw.thumb === 'string' ? { thumb: raw.thumb } : {}), // --- tab options ---
+        ...(typeof raw.mem === 'number' ? { mem: raw.mem } : {}),
+      };
     }
     case 'island': {
       if (!hasOnlyKeys(raw, ISLAND_KEYS) || !hasAllKeys(raw, ISLAND_KEYS)) return null;
@@ -836,7 +903,7 @@ function parseTheme(v: unknown): Theme {
   return out;
 }
 
-const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'private', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize'];
+const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'private', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize', 'unread', 'notify', 'asleep', 'pct', 'rl', 'idle'];
 const LEADER_KEYS = ['gname', 'gcol', 'gcollapsed', 'gsize'];
 
 /** Strict validation of one `tabs` item. Ids must be new within the message (`seen`). */
@@ -846,7 +913,19 @@ function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
   if (!isInt(id, 0, MAX_ID) || seen.has(id)) return null;
   if (!isStr(title, MAX_TITLE) || !isBool(loading) || !isBool(pinned) || !isBool(muted) || !isBool(priv) || !isBool(fav)) return null;
   if (!isInt(marker, -1, 7) || !isInt(g, 0, MAX_ID) || !isBool(gl)) return null;
-  const base = { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav };
+  // --- tab options --- optional marks: absent means off.
+  if (('unread' in v && !isBool(v.unread)) || ('asleep' in v && !isBool(v.asleep)) || ('idle' in v && !isBool(v.idle))) return null;
+  if (('notify' in v && !isInt(v.notify, 1, 999)) || ('pct' in v && !isInt(v.pct, 0, 100)) || ('rl' in v && !isInt(v.rl, 0, 86400))) return null;
+  const marks = {
+    ...(v.unread === true ? { unread: true } : {}),
+    ...(typeof v.notify === 'number' ? { notify: v.notify } : {}),
+    ...(v.asleep === true ? { asleep: true } : {}),
+    ...(typeof v.pct === 'number' ? { pct: v.pct } : {}),
+    ...(typeof v.rl === 'number' ? { rl: v.rl } : {}),
+    ...(v.idle === true ? { idle: true } : {}),
+  };
+  // --- end tab options ---
+  const base = { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav, ...marks };
   if (!gl) {
     // Group fields are leader-only: a member must not carry them.
     if (LEADER_KEYS.some((k) => k in v)) return null;
@@ -1041,6 +1120,16 @@ export function parseInbound(data: unknown): Inbound | null {
       }
       return { t: 'tabs', active, items: out };
     }
+    // --- tab options ---
+    case 'tabopts': {
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'removeSpacing', 'maximised', 'closed'];
+      if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, removeSpacing, maximised, closed } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, removeSpacing, maximised].every(isBool)) return null;
+      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99)) return null;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, removeSpacing, maximised, closed } as TabOptsMsg;
+    }
+    // --- end tab options ---
     case 'fav': {
       if (!hasOnlyKeys(raw, ['v', 't', 'id', 'uri']) || raw.v !== 1) return null;
       const { id, uri } = raw;

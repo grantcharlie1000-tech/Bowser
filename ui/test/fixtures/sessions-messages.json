@@ -1,0 +1,1 @@
+{"snap":{"v":1,"t":"snap","p":"sessions","d":{"allowed":true,"tabs":4,"selected":3,"suggest":"Session 1","items":[{"name":"Work","count":2,"hosts":["example.com","news.example"]},{"name":"Reading list","count":1,"hosts":["one.example"]}]}},"guest":{"v":1,"t":"snap","p":"sessions","d":{"allowed":false,"tabs":2,"selected":0,"suggest":"Session 1","items":[]}}}

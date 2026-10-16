@@ -8,6 +8,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     NewTab,
+    /// Ctrl+Shift+T reopens the tab closed last; closed tabs are listed under the strip's Closed tabs button.
+    ReopenClosedTab,
     CloseTab,
     NextTab,
     PrevTab,
@@ -87,6 +89,7 @@ pub fn is_toggle(command: Command) -> bool {
             | Command::ToggleReader
             | Command::OpenDevTools
             | Command::ToggleSidebar
+            | Command::ReopenClosedTab
     )
 }
 
@@ -169,6 +172,7 @@ const VK_BROWSER_STOP: u32 = 0xA9;
 pub fn command_for(key: u32, ctrl: bool, shift: bool, alt: bool) -> Option<Command> {
     match (key, ctrl, shift, alt) {
         (VK_T, true, false, false) => Some(Command::NewTab),
+        (VK_T, true, true, false) => Some(Command::ReopenClosedTab),
         (VK_W, true, false, false) | (VK_F4, true, false, false) => Some(Command::CloseTab),
         (VK_TAB, true, false, false) | (VK_NEXT, true, false, false) => Some(Command::NextTab),
         (VK_TAB, true, true, false) | (VK_PRIOR, true, false, false) => Some(Command::PrevTab),
@@ -247,6 +251,7 @@ mod tests {
     fn bindings() -> Vec<(u32, bool, bool, bool, Command)> {
         let mut table = vec![
             (VK_T, true, false, false, Command::NewTab),
+            (VK_T, true, true, false, Command::ReopenClosedTab),
             (VK_W, true, false, false, Command::CloseTab),
             (VK_F4, true, false, false, Command::CloseTab),
             (VK_TAB, true, false, false, Command::NextTab),
@@ -361,7 +366,7 @@ mod tests {
     #[test]
     fn near_miss_chords_are_not_bound() {
         for (key, ctrl, shift, alt) in [
-            (VK_T, true, true, false),
+            (VK_T, true, true, true), // Ctrl+Shift+Alt+T
             (VK_T, true, false, true),
             (VK_W, false, false, false),
             (VK_L, false, false, false),
