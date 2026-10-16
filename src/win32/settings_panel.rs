@@ -1880,6 +1880,8 @@ fn save_form(hwnd: HWND) {
         start: current.start,
         // Address bar, search and bookmark options have no GDI controls; the file's values are kept.
         address: current.address,
+        // The GDI form has no controls for the tab options (the HTML settings page has them).
+        tabs: current.tabs,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

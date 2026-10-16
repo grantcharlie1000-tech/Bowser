@@ -51,6 +51,9 @@ pub mod split_view;
 pub mod start_page; // the new-tab start page: speed dials, widgets, startup (docs/design/start-page.md)
 pub mod drop_intent; // when a dragged tab over the page means "split" (docs/design/tab-drag.md)
 pub mod tab_groups;
+pub mod tab_options;
+pub mod tab_state;
+pub mod thumbnail;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;

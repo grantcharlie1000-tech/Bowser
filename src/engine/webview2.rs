@@ -469,6 +469,94 @@ fn sync_top_host(webview: &ICoreWebView2, block: &TabBlockState) {
     *block.top_host.borrow_mut() = host;
 }
 
+// --- tab options ---
+/// Reads a captured page image back out of the memory stream it was written to.
+fn read_capture_stream(stream: &IStream) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    unsafe { stream.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None) }.ok()?;
+    loop {
+        let mut chunk = [0u8; 16384];
+        let mut read = 0u32;
+        unsafe { stream.Read(chunk.as_mut_ptr().cast(), chunk.len() as u32, Some(&mut read)).ok().ok()? };
+        if read == 0 {
+            break;
+        }
+        if result.len().saturating_add(read as usize) > crate::thumbnail::MAX_CAPTURE_BYTES {
+            return None;
+        }
+        result.extend_from_slice(&chunk[..read as usize]);
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+/// The working set of the page process behind each tab: a renderer process whose frames include the
+/// tab's own address belongs to that tab. Tabs of the same address share an answer, and a tab whose
+/// process cannot be told apart is left out, never guessed.
+fn renderer_memory(infos: &ICoreWebView2ProcessExtendedInfoCollection, sources: &[(TabId, String)]) -> Vec<(TabId, u64)> {
+    let mut count = 0u32;
+    if unsafe { infos.Count(&mut count) }.is_err() {
+        return Vec::new();
+    }
+    let mut best: HashMap<TabId, u64> = HashMap::new();
+    for index in 0..count.min(512) {
+        let Ok(info) = (unsafe { infos.GetValueAtIndex(index) }) else { continue };
+        let Ok(process) = (unsafe { info.ProcessInfo() }) else { continue };
+        let mut kind = COREWEBVIEW2_PROCESS_KIND::default();
+        let mut pid = 0i32;
+        if unsafe { process.Kind(&mut kind) }.is_err() || kind != COREWEBVIEW2_PROCESS_KIND_RENDERER || unsafe { process.ProcessId(&mut pid) }.is_err() || pid <= 0 {
+            continue;
+        }
+        let Ok(frames) = (unsafe { info.AssociatedFrameInfos() }) else { continue };
+        let Ok(iterator) = (unsafe { frames.GetIterator() }) else { continue };
+        let mut owned: Vec<TabId> = Vec::new();
+        loop {
+            let mut has = BOOL::default();
+            if unsafe { iterator.HasCurrent(&mut has) }.is_err() || !has.as_bool() {
+                break;
+            }
+            if let Ok(frame) = unsafe { iterator.GetCurrent() } {
+                let mut source = PWSTR::null();
+                if unsafe { frame.Source(&mut source) }.is_ok() {
+                    let source = CoTaskMemPWSTR::from(source).to_string();
+                    owned.extend(sources.iter().filter(|(_, tab)| *tab == source).map(|(id, _)| *id));
+                }
+            }
+            let mut more = BOOL::default();
+            if unsafe { iterator.MoveNext(&mut more) }.is_err() || !more.as_bool() {
+                break;
+            }
+        }
+        if owned.is_empty() {
+            continue;
+        }
+        let Some(bytes) = process_working_set(pid as u32) else { continue };
+        for id in owned {
+            let entry = best.entry(id).or_insert(0);
+            *entry = (*entry).max(bytes);
+        }
+    }
+    best.into_iter().collect()
+}
+
+/// The working set of process `pid` in bytes, when the process can be queried.
+fn process_working_set(pid: u32) -> Option<u64> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut counters = PROCESS_MEMORY_COUNTERS { cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+        let ok = K32GetProcessMemoryInfo(handle, &mut counters, counters.cb).as_bool();
+        let _ = CloseHandle(handle);
+        ok.then_some(counters.WorkingSetSize as u64)
+    }
+}
+// --- end tab options ---
+
 fn read_favicon_stream(stream: IStream) -> Option<Vec<u8>> {
     const MAX_FAVICON_BYTES: usize = 1024 * 1024;
     let mut result = Vec::new();
@@ -3387,6 +3475,69 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    // --- tab options --- the tab hover card's thumbnail and memory line.
+    fn capture_tab_thumbnail(&mut self, tab_id: TabId, max_w: u32, max_h: u32, done: Box<dyn FnOnce(Option<Vec<u8>>)>) {
+        let (webview, on_screen) = {
+            let state = self.core.borrow();
+            (
+                state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone()),
+                state.active_tab == Some(tab_id) || state.visible_tabs.contains(&tab_id),
+            )
+        };
+        // A hidden controller paints nothing, so only a tab on screen is captured.
+        let (Some(webview), true) = (webview, on_screen) else {
+            done(None);
+            return;
+        };
+        let Some(stream) = (unsafe { windows::Win32::UI::Shell::SHCreateMemStream(None) }) else {
+            done(None);
+            return;
+        };
+        let keep = stream.clone();
+        let done = std::cell::RefCell::new(Some(done));
+        let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(move |status| {
+            let bytes = if status.is_ok() { read_capture_stream(&keep) } else { None };
+            if let Some(done) = done.borrow_mut().take() {
+                done(bytes.and_then(|bytes| crate::thumbnail::downscale_jpeg(&bytes, max_w, max_h)));
+            }
+            Ok(())
+        }));
+        let _ = unsafe { webview.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, &stream, &handler) };
+    }
+    fn tab_memory_usage(&mut self, done: Box<dyn FnOnce(Vec<(TabId, u64)>)>) {
+        let (environment, webviews) = {
+            let state = self.core.borrow();
+            (
+                state.environment.clone(),
+                state.tabs.iter().filter_map(|(id, tab)| tab.webview.clone().map(|webview| (*id, webview))).collect::<Vec<_>>(),
+            )
+        };
+        let sources: Vec<(TabId, String)> = webviews
+            .into_iter()
+            .filter_map(|(id, webview)| {
+                let mut source = PWSTR::null();
+                unsafe { webview.Source(&mut source) }.ok()?;
+                Some((id, CoTaskMemPWSTR::from(source).to_string()))
+            })
+            .collect();
+        let Some(environment) = environment.and_then(|environment| environment.cast::<ICoreWebView2Environment13>().ok()) else {
+            done(Vec::new());
+            return;
+        };
+        let done = std::cell::RefCell::new(Some(done));
+        let handler = webview2_com::GetProcessExtendedInfosCompletedHandler::create(Box::new(move |status, infos| {
+            let usage = match (status.is_ok(), infos) {
+                (true, Some(infos)) => renderer_memory(&infos, &sources),
+                _ => Vec::new(),
+            };
+            if let Some(done) = done.borrow_mut().take() {
+                done(usage);
+            }
+            Ok(())
+        }));
+        let _ = unsafe { environment.GetProcessExtendedInfos(&handler) };
+    }
+    // --- end tab options ---
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
         // A download dies with its webview, so a tab that is downloading stays awake.
         if super::download::owner_downloading(super::download::tab_owner(tab_id.0)) {
@@ -3933,6 +4084,7 @@ unsafe fn configure_controller(
         let block_tab = Rc::new(TabBlockState::default());
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
+        let link_navigation = events.link_navigation.clone(); // --- tab options ---
         let nav_blocker = blocker.clone();
         let nav_block_tab = block_tab.clone();
         webview.add_NavigationStarting(
@@ -3976,6 +4128,26 @@ unsafe fn configure_controller(
                                     );
                                 }
                             }
+                            // --- tab options --- "Keep pinned tabs on their site": a followed link to another
+                            // site opens in a new tab and this navigation is cancelled.
+                            if let (Some(hook), Some(destination)) = (link_navigation.as_ref(), parsed.as_ref()) {
+                                let (mut user, mut redirected) = (BOOL::default(), BOOL::default());
+                                let _ = args.IsUserInitiated(&mut user);
+                                let _ = args.IsRedirected(&mut redirected);
+                                let mut kind = COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT;
+                                if let Ok(args3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+                                    let _ = args3.NavigationKind(&mut kind);
+                                }
+                                if user.as_bool()
+                                    && !redirected.as_bool()
+                                    && kind == COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT
+                                    && hook(tab_id, destination)
+                                {
+                                    let _ = args.SetCancel(true);
+                                    return Ok(());
+                                }
+                            }
+                            // --- end tab options ---
                             // The first-party host is set when the navigation commits (see
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;

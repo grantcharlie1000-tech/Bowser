@@ -194,6 +194,20 @@ body.bw-hover-body {
   line-height: 16px;
 }
 
+/* A thumbnail of the page under the title (Settings > Appearance > "Show a thumbnail in tab previews"). */
+.bw-card-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 8 / 5;
+  margin-top: var(--bw-space-2);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-hover);
+  object-fit: cover;
+  object-position: top;
+}
+
+.bw-card-memory { font-variant-numeric: tabular-nums; }
+
 /* ----- member rows (card and island) ----- */
 
 .bw-card-rows,

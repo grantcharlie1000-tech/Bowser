@@ -50,6 +50,18 @@ pub fn display_title(tab: &Tab) -> &str {
     }
 }
 
+/// Where a new tab is inserted (the "New tab position" option).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Placement {
+    /// At the end of the strip.
+    Last,
+    /// Right of the active tab.
+    AfterActive,
+    /// Right of the tab that opened it and that tab's earlier children; with no opener, right of the
+    /// active tab.
+    AfterRelated,
+}
+
 /// Result of [`TabList::close`]. `new_active` is the active tab after the close.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CloseOutcome {
@@ -106,6 +118,34 @@ impl TabList {
             _ => self.tabs.len(),
         };
         self.tabs.insert(at, Tab::new(id));
+        id
+    }
+
+    /// Inserts an empty tab where `placement` says and returns its id. `opener` is recorded on the new
+    /// tab and is what `Placement::AfterRelated` keeps it next to. The active tab is unchanged.
+    pub fn add_placed(&mut self, placement: Placement, opener: Option<TabId>) -> TabId {
+        let id = self.allocate_id();
+        let opener = opener.filter(|opener| self.index_of(*opener).is_some());
+        let at = match placement {
+            Placement::Last => self.tabs.len(),
+            Placement::AfterRelated if opener.is_some() => {
+                let opener = opener.expect("checked above");
+                let index = self.index_of(opener).expect("the opener is in the list");
+                let mut at = if self.tabs[index].pinned { self.pinned_count() } else { index + 1 };
+                while at < self.tabs.len() && !self.tabs[at].pinned && self.tabs[at].opener == Some(opener) {
+                    at += 1;
+                }
+                at
+            }
+            Placement::AfterActive | Placement::AfterRelated => match self.index_of(self.active) {
+                Some(active_index) if !self.tabs[active_index].pinned => active_index + 1,
+                Some(_) => self.pinned_count(),
+                None => self.tabs.len(),
+            },
+        };
+        let mut tab = Tab::new(id);
+        tab.opener = opener;
+        self.tabs.insert(at, tab);
         id
     }
 
@@ -681,6 +721,59 @@ mod tests {
         assert_eq!(ids(&list), vec![TabId(0), TabId(1), TabId(2), TabId(3)]);
         assert!(list.move_tab(TabId(0), 3));
         assert_eq!(ids(&list), vec![TabId(1), TabId(0), TabId(2), TabId(3)]);
+        assert_eq!(list.pinned_count(), 2);
+    }
+
+    #[test]
+    fn placement_last_after_active_and_after_related_put_the_tab_where_asked() {
+        let mut list = list_of(4);
+        list.select(TabId(1));
+        let last = list.add_placed(Placement::Last, None);
+        assert_eq!(ids(&list), vec![TabId(0), TabId(1), TabId(2), TabId(3), last]);
+        let beside = list.add_placed(Placement::AfterActive, Some(TabId(3)));
+        assert_eq!(list.index_of(beside), Some(2), "right of the active tab, whatever the opener");
+        assert_eq!(list.get(beside).unwrap().opener, Some(TabId(3)));
+        let related = list.add_placed(Placement::AfterRelated, Some(TabId(3)));
+        let at = list.index_of(related).unwrap();
+        assert_eq!(list.index_of(TabId(3)).unwrap() + 1, at, "right of its opener");
+    }
+
+    #[test]
+    fn related_tabs_stack_up_after_their_opener_in_opening_order() {
+        let mut list = list_of(3);
+        list.select(TabId(0));
+        let first = list.add_placed(Placement::AfterRelated, Some(TabId(0)));
+        let second = list.add_placed(Placement::AfterRelated, Some(TabId(0)));
+        let third = list.add_placed(Placement::AfterRelated, Some(TabId(0)));
+        assert_eq!(ids(&list), vec![TabId(0), first, second, third, TabId(1), TabId(2)]);
+        let other = list.add_placed(Placement::AfterRelated, Some(TabId(1)));
+        assert_eq!(list.index_of(other), Some(5), "another opener keeps its own place");
+        let nested = list.add_placed(Placement::AfterRelated, Some(first));
+        assert_eq!(list.index_of(nested), Some(2), "a child's child goes beside that child");
+    }
+
+    #[test]
+    fn related_without_a_known_opener_falls_back_to_after_the_active_tab() {
+        let mut list = list_of(3);
+        list.select(TabId(1));
+        let tab = list.add_placed(Placement::AfterRelated, None);
+        assert_eq!(list.index_of(tab), Some(2));
+        let stale = list.add_placed(Placement::AfterRelated, Some(TabId(99)));
+        assert_eq!(list.index_of(stale), Some(2), "a closed opener is no opener");
+        assert_eq!(list.get(stale).unwrap().opener, None);
+    }
+
+    #[test]
+    fn placed_tabs_never_split_the_pinned_prefix() {
+        let mut list = list_of(4);
+        list.set_pinned(TabId(0), true);
+        list.set_pinned(TabId(1), true);
+        list.select(TabId(0));
+        let after_active = list.add_placed(Placement::AfterActive, None);
+        assert_eq!(list.index_of(after_active), Some(2));
+        let related = list.add_placed(Placement::AfterRelated, Some(TabId(1)));
+        assert_eq!(list.index_of(related), Some(2), "the first unpinned slot, ahead of earlier children");
+        assert!(!list.get(related).unwrap().pinned);
         assert_eq!(list.pinned_count(), 2);
     }
 

@@ -21,6 +21,7 @@ pub const HISTORY_PAGE_START_URL: &str = "bowser-ui://app/index.html?view=histor
 /// The downloads page over a `bowser://downloads` tab (docs/design/downloads.md).
 pub const DOWNLOADS_PAGE_START_URL: &str = "bowser-ui://app/index.html?view=downloads";
 pub const PRIVACY_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=privacy";
+pub const SESSIONS_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=sessions";
 pub const RENAME_DIALOG_START_URL: &str = "bowser-ui://app/index.html?view=dialog&p=rename";
 /// The bookmarks bar (`View::BookmarkBar`).
 pub const BOOKMARK_BAR_START_URL: &str = "bowser-ui://app/index.html?view=bar";
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn all_view_start_urls_serve_the_same_page() {
         let page = lookup("/index.html").expect("page");
-        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL, PRIVACY_DIALOG_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL] {
+        for url in [START_URL, TABS_START_URL, RAIL_START_URL, PANEL_START_URL, POPUP_START_URL, DIALOG_START_URL, NOTES_DIALOG_START_URL, SETTINGS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL, PRIVACY_DIALOG_START_URL, SESSIONS_DIALOG_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL] {
             let path = url
                 .strip_prefix(&format!("{SCHEME}://app"))
                 .expect("app host");

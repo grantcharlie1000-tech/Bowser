@@ -689,6 +689,10 @@ fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
             })
             .collect(),
         more: model.rows.len().saturating_sub(tab_card::MAX_ROWS),
+        // --- tab options ---
+        thumb: App::tab_thumbnail(app, tab),
+        memory_mb: App::tab_memory_mb(app, tab),
+        // --- end tab options ---
     };
     let rows = rows.into_iter().take(tab_card::MAX_ROWS).collect();
     Some(Content::Card { tab, rows, model: card })
@@ -737,6 +741,9 @@ fn show_card(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) {
     if App::active_tab_id(app) == tab {
         return;
     }
+    // --- tab options --- the memory line fills in when the measurement arrives.
+    App::refresh_tab_memory(app);
+    // --- end tab options ---
     if let Some(content) = card_content(app, tab) {
         present(owner, content, anchor);
     }

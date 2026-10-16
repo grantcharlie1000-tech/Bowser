@@ -36,7 +36,7 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL,
         SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
@@ -186,6 +186,8 @@ pub enum View {
     DialogAddress,
     /// The bookmarks bar under the toolbar (src/win32/bookmark_bar.rs).
     BookmarkBar,
+    /// The Sessions panel (Settings > Tabs): saved sessions, saving the open tabs as one.
+    DialogSessions,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
     // --- split view ---
@@ -217,6 +219,7 @@ impl View {
             Self::DialogRename => RENAME_DIALOG_START_URL,
             Self::DialogAddress => ADDRESS_DIALOG_START_URL,
             Self::BookmarkBar => BOOKMARK_BAR_START_URL,
+            Self::DialogSessions => SESSIONS_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
@@ -1045,7 +1048,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
         View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
@@ -1059,6 +1062,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
         View::DialogAddress => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Address, .. }),
         View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. } | Command::Tip { .. } | Command::TipOff),
+        View::DialogSessions => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Sessions, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
         View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
@@ -1720,7 +1724,8 @@ mod tests {
     fn accelerator_modifiers_must_match_exactly() {
         // Ctrl+Alt (AltGr) and extra Shift never run a command.
         assert_eq!(accel_command(key(0x54, true, false, true), false), None);
-        assert_eq!(accel_command(key(0x54, true, true, false), false), None);
+        assert_eq!(accel_command(key(0x54, true, true, true), false), None);
+        assert_eq!(accel_command(key(0x54, true, true, false), false), Some(Shortcut::ReopenClosedTab), "Ctrl+Shift+T reopens the closed tab");
         assert_eq!(accel_command(key(0x74, false, true, false), false), None);
         // A bare letter is never a shortcut.
         assert_eq!(accel_command(key(0x54, false, false, false), false), None);

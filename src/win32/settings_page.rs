@@ -736,6 +736,15 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             App::set_translate_target(app, &target);
             answer(owner, Ok(()));
         }
+        // --- tab options ---
+        Action::TabOption(text) => {
+            if App::set_tab_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        // --- end tab options ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.

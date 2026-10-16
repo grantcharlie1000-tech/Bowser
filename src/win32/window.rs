@@ -134,6 +134,13 @@ const WM_CHROME_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x
 const WM_HTML_HOVER_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x85;
 // --- popup host (lane M) ---
 const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
+// --- tab options ---
+/// The one-second tick of periodic tab reload and the audio rule; set only while one needs it.
+const WM_TAB_TICK_TIMER: usize = 0xB0A1;
+/// A moment after a page settles or a tab is shown: capture its thumbnail for the hover card.
+const WM_TAB_THUMB_TIMER: usize = 0xB0A2;
+const WM_TAB_LINK_TIMER: usize = 0xB0A3;
+// --- end tab options ---
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
 // --- end popup host ---
 /// Posted from the first paint to start the HTML chrome. Posted, not called, so the paint finishes
@@ -168,6 +175,9 @@ enum DeferredChromeCommand {
     SiteInfo,
     SplitMenu,
     TabMenu { id: TabId, x: i32, y: i32 },
+    // --- tab options --- the strip's Closed tabs button: the list of closed tabs at the point.
+    ClosedTabs { x: i32, y: i32 },
+    // --- end tab options ---
     IslandMenu { id: TabId, x: i32, y: i32 },
     BeginDrag,
     ToggleMaximize,
@@ -401,6 +411,10 @@ struct HtmlTabsInputs {
     group_preferences: tab_groups::GroupPreferences,
     favicons: Vec<(TabId, Option<FaviconKey>)>,
     generation: u64,
+    // --- tab options ---
+    extras: Vec<crate::app::TabStripExtra>,
+    options: chrome_host::protocol::StripOptions,
+    // --- end tab options ---
 }
 
 struct WindowChrome {
@@ -551,6 +565,9 @@ struct WindowChrome {
     html_tabs_last: Option<String>,
     // --- vertical sidebar (lane S) ---
     html_tabs_layout: Option<chrome_host::protocol::LayoutMode>,
+    // --- tab options --- the last `tabopts` message the strip was sent.
+    html_tabs_opts: Option<String>,
+    // --- end tab options ---
     html_tabs_workspace: Option<(String, String)>,
     // --- end vertical sidebar ---
     /// Group wire key to the tab a group command acts on, from the last strip sent.
@@ -712,6 +729,7 @@ impl WindowChrome {
             html_tabs_last: None,
             // --- vertical sidebar (lane S) ---
             html_tabs_layout: None,
+            html_tabs_opts: None, // --- tab options ---
             html_tabs_workspace: None,
             // --- end vertical sidebar ---
             html_tabs_groups: HashMap::new(),
@@ -815,11 +833,15 @@ impl WindowChrome {
         for &id in &ids {
             let old = previous.get(&id).copied();
             let raw_title = App::tab_title(app, id).unwrap_or_default();
-            let title = if raw_title.trim().is_empty() {
+            // --- tab options --- a name the user gave the tab wins over the page's title.
+            let title = if let Some(name) = App::tab_name(app, id) {
+                name
+            } else if raw_title.trim().is_empty() {
                 "New tab".to_owned()
             } else {
                 raw_title.clone()
             };
+            // --- end tab options ---
             let loading = App::tab_loading(app, id);
             // The sidebar rows are only rebuilt on a reprojection, so only then are they collected.
             if reproject {
@@ -1002,6 +1024,7 @@ impl WindowChrome {
         }
         if was_vertical != self.sidebar.is_some() {
             self.html_tabs_layout = None;
+            self.html_tabs_opts = None; // --- tab options ---
             self.html_tabs_workspace = None;
         }
         self.split_divider = if self.split_orientation.is_stacked() {
@@ -1706,6 +1729,40 @@ pub(crate) fn schedule_power_timer(hwnd: HWND, enabled: bool) {
         }
     }
 }
+// --- tab options ---
+/// Starts or stops the window's one-second tab tick.
+pub(crate) fn set_tab_tick(hwnd: HWND, on: bool) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        if on {
+            let _ = SetTimer(Some(hwnd), WM_TAB_TICK_TIMER, 1000, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), WM_TAB_TICK_TIMER);
+        }
+    }
+}
+/// Arms the one-shot timer that opens links a pinned tab refused in tabs of their own.
+pub(crate) fn set_link_timer(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = SetTimer(Some(hwnd), WM_TAB_LINK_TIMER, 10, None);
+    }
+}
+/// Arms the one-shot thumbnail timer (a newer request replaces an older one).
+pub(crate) fn set_thumbnail_timer(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = SetTimer(Some(hwnd), WM_TAB_THUMB_TIMER, 1200, None);
+    }
+}
+// --- end tab options ---
+
 pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
     unsafe {
         match action {
@@ -3104,8 +3161,7 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::SidebarNewTab => {
                         if let Some(app) = app {
-                            App::new_tab(app);
-                            focus_omni(hwnd, app, true);
+                            open_user_tab(hwnd, app); // --- tab options ---
                         }
                     }
                     Hit::SidebarResize => {
@@ -3160,8 +3216,7 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::NewTab => {
                         if let Some(app) = app {
-                            App::new_tab(app);
-                            focus_omni(hwnd, app, true)
+                            open_user_tab(hwnd, app) // --- tab options ---
                         }
                     }
                     Hit::TabMenu => {
@@ -3346,14 +3401,14 @@ unsafe extern "system" fn window_proc(
                         if let Hit::TabClose(i) = was {
                             if let Some(app) = app {
                                 if let Some(id) = slot_tab_id(hwnd, i) {
-                                    let _ = App::close_tab(app, id);
+                                    user_close(hwnd, app, id); // --- tab options ---
                                 }
                             }
                         }
                         if let Hit::SidebarTabClose(i) = was {
                             if let Some(app) = app {
                                 if let Some(id) = sidebar_tab_id(hwnd, i) {
-                                    let _ = App::close_tab(app, id);
+                                    user_close(hwnd, app, id); // --- tab options ---
                                 }
                             }
                         }
@@ -3419,7 +3474,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(id) = target {
                     card::cancel(hwnd);
                     if let Some(app) = app {
-                        let _ = App::close_tab(app, id);
+                        user_close(hwnd, app, id); // --- tab options --- middle click
                     }
                 }
                 LRESULT(0)
@@ -3704,6 +3759,30 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- tab options --- periodic reload and the audio rule (App::tab_tick).
+            WM_TIMER if wparam.0 == WM_TAB_TICK_TIMER => {
+                if let Some(app) = app {
+                    App::tab_tick(app);
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_TAB_TICK_TIMER);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_TAB_THUMB_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_TAB_THUMB_TIMER);
+                if let Some(app) = app {
+                    App::thumbnail_timer_fired(app);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_TAB_LINK_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_TAB_LINK_TIMER);
+                if let Some(app) = app {
+                    App::run_deferred_links(app);
+                }
+                LRESULT(0)
+            }
+            // --- end tab options ---
             // --- popup host (lane M) ---
             WM_TIMER if wparam.0 == WM_HTML_POPUP_PREWARM_TIMER => {
                 let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER);
@@ -4903,8 +4982,7 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
             if let Some(url) = App::settings(app).start.home_target() {
                 App::navigate_current(app, &url);
             } else {
-                App::new_tab(app);
-                focus_omni(hwnd, app, true);
+                open_user_tab(hwnd, app); // --- tab options --- the new tab page choice
             }
         }
         // --- end start page ---
@@ -5240,6 +5318,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const CLOSE_LEFT: usize = 14;
     const CLOSE_RIGHT: usize = 15;
     const PICTURE_IN_PICTURE: usize = 18;
+    let targets = App::selection_targets(app, id); // --- tab options ---
     let pinned = App::tab_pinned(app, id);
     let private = App::tab_private(app, id);
     let url = App::tab_committed_url(app, id);
@@ -5417,6 +5496,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         )
         .glyph("pip")));
     }
+    // --- tab options --- periodic reload, rename and the actions on a selection.
+    entries.extend(tab_options_menu_entries(app, id, url.as_ref(), targets.len()));
+    // --- end tab options ---
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).glyph("close")),
@@ -5472,6 +5554,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             // --- split view ---
             split if super::split_ui::tab_menu_pick(hwnd, app, id, split) => {}
             // --- end split view ---
+            // --- tab options ---
+            tab if tab_options_menu_pick(hwnd, app, id, tab, &targets) => {}
+            // --- end tab options ---
             GROUP_NEW => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
             }
@@ -5511,11 +5596,18 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                         App::set_tab_muted(app, created, true);
                     }
                     let current = App::tab_ids(app);
-                    let after = current
-                        .iter()
-                        .position(|candidate| *candidate == id)
-                        .unwrap_or(index)
-                        + 1;
+                    // --- tab options --- "Duplicated tab position": next to the original, or last.
+                    let after = match App::tab_options(app).duplicate_position {
+                        crate::tab_options::DuplicatePosition::Last => current.len(),
+                        crate::tab_options::DuplicatePosition::Beside => {
+                            current
+                                .iter()
+                                .position(|candidate| *candidate == id)
+                                .unwrap_or(index)
+                                + 1
+                        }
+                    };
+                    // --- end tab options ---
                     let _ = App::move_tab(app, created, after);
                 }
             }
@@ -5545,24 +5637,18 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     }
                 }
             }
-            CLOSE => {
-                let _ = App::close_tab(app, id);
-            }
+            CLOSE => user_close(hwnd, app, id), // --- tab options ---
+            // --- tab options --- a bulk close asks first at the configured count.
             CLOSE_OTHERS => {
-                for other in ids.iter().copied().filter(|other| *other != id) {
-                    let _ = App::close_tab(app, other);
-                }
+                close_many(hwnd, app, ids.iter().copied().filter(|other| *other != id).collect());
             }
             CLOSE_LEFT => {
-                for left in ids[..index].iter().copied() {
-                    let _ = App::close_tab(app, left);
-                }
+                close_many(hwnd, app, ids[..index].to_vec());
             }
             CLOSE_RIGHT => {
-                for right in ids[index + 1..].iter().copied() {
-                    let _ = App::close_tab(app, right);
-                }
+                close_many(hwnd, app, ids[index + 1..].to_vec());
             }
+            // --- end tab options ---
             CLOSE_PRIVATE => {
                 App::close_private_tabs(app);
             }
@@ -6125,6 +6211,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const GROUP_AUTO: usize = 5061;
     const GROUP_NEVER: usize = 5062;
     const RECENT_BASE: usize = 5300;
+    const REOPEN_CLOSED: usize = 5290; // --- tab options ---
     // Submenu parents need an id distinct from any leaf below them, since html_popup's
     // menu_json rejects a menu with any repeated item id (validate_entries, seen.insert) -
     // including a parent sharing an id with its own child - and falls back to the native GDI
@@ -6156,6 +6243,14 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             .glyph("history")
             .shortcut("Ctrl+H"),
     )];
+    // --- tab options --- Ctrl+Shift+T.
+    history_entries.push(Entry::Item(
+        Item::new(REOPEN_CLOSED, "Reopen closed tab", Icon::None)
+            .glyph("reset")
+            .shortcut("Ctrl+Shift+T")
+            .disabled_if(recent.is_empty()),
+    ));
+    // --- end tab options ---
     history_entries.push(Entry::Separator);
     if recent.is_empty() {
         history_entries.push(Entry::Item(
@@ -6391,10 +6486,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
 
     if let Some(chosen) = chosen {
         match chosen.id {
-            NEW_TAB => {
-                App::new_tab(app);
-                focus_omni(hwnd, app, true);
-            }
+            NEW_TAB => open_user_tab(hwnd, app), // --- tab options ---
             NEW_WINDOW => open_another_window(false),
             NEW_PRIVATE_WINDOW => open_another_window(true),
             NEW_PRIVATE_TAB => {
@@ -6413,10 +6505,17 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 dispatch(hwnd, app, 0x4A, true, false, false);
             }
             id if (RECENT_BASE..RECENT_BASE + recent.len()).contains(&id) => {
-                if let Some((_, url)) = recent.get(id - RECENT_BASE) {
-                    App::submit(app, url);
+                // --- tab options --- reopened as a tab, where it was, and gone from the list.
+                if recent.get(id - RECENT_BASE).is_some_and(|(_, url)| App::closed_tabs(app).get(id - RECENT_BASE).is_some_and(|closed| closed.url == *url)) {
+                    let _ = App::reopen_closed_at(app, id - RECENT_BASE);
                 }
+                // --- end tab options ---
             }
+            // --- tab options ---
+            REOPEN_CLOSED => {
+                let _ = App::reopen_closed_tab(app);
+            }
+            // --- end tab options ---
             SHOW_BOOKMARKS => {
                 let _ = rail_activate(hwnd, app, side_panel::PanelId::Bookmarks);
             }
@@ -6451,7 +6550,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
             PALETTE => run_command_palette(hwnd, app),
             BOOKMARK => add_current_bookmark(hwnd, app),
-            SESSIONS => show_sessions(hwnd, app),
+            SESSIONS => super::sessions_panel::open(hwnd, app), // --- tab options --- the Sessions panel
             WORKSPACES => show_workspaces_menu(hwnd, app),
             READER => run_reader(hwnd, app, crate::reader::Mode::Reader),
             CALM => run_reader(hwnd, app, crate::reader::Mode::Calm),
@@ -6797,8 +6896,19 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
         "close-private-tabs" => {
             App::close_private_tabs(app);
         }
+        // --- tab options --- the tab and session commands of Quick Commands.
+        "reopen-tab" => {
+            let _ = App::reopen_closed_tab(app);
+        }
+        "closed-tabs" => {
+            let point = main_menu_anchor(hwnd);
+            show_closed_tabs_menu(hwnd, app, point.x, point.y);
+        }
+        "save-all-session" => save_session_prompt(hwnd, app, &App::tab_ids(app)),
+        "open-session" => show_open_session_menu(hwnd, app),
+        // --- end tab options ---
         "settings" => super::settings_page::open(hwnd, app, None, false),
-        "save-session" | "sessions" => show_sessions(hwnd, app),
+        "save-session" | "sessions" => super::sessions_panel::open(hwnd, app), // --- tab options ---
         "calm" => run_reader(hwnd, app, crate::reader::Mode::Calm),
         "translate" => run_translate(hwnd, app, TranslateAction::Toggle),
         _ => {}
@@ -7034,7 +7144,211 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
     }
 }
 
-fn show_sessions(hwnd: HWND, _app: &AppRef) {
+// --- tab options (src/tab_options.rs, src/app/tab_features.rs) ---
+
+/// A new tab from the user's hand (Ctrl+T, the new tab buttons, the menus): what the new tab page
+/// option says opens, and the keyboard goes to the page or the address bar as the options say.
+fn open_user_tab(hwnd: HWND, app: &AppRef) {
+    let id = App::open_new_tab(app);
+    if !App::tab_is_blank(app, id) && App::tab_options(app).focus_page {
+        App::focus_page(app);
+    } else {
+        focus_omni(hwnd, app, true);
+    }
+}
+
+/// Closes a tab the user asked to close (the close button, middle click, Ctrl+W, the tab menu, a
+/// double click): the pinned and last tab options decide, and the last tab may take the window.
+fn user_close(hwnd: HWND, app: &AppRef, id: TabId) {
+    if App::user_close_tab(app, id) == crate::tab_options::CloseKind::CloseWindow {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Closes several tabs at once (Close other tabs, to the left, to the right, the selection), asking
+/// first when their count reaches "Confirm when closing many tabs". A pinned tab that is set not to
+/// close stays. Returns how many closed.
+fn close_many(hwnd: HWND, app: &AppRef, mut ids: Vec<TabId>) -> usize {
+    let keep_pinned = App::tab_options(app).pinned_close == crate::tab_options::PinnedClose::Keep;
+    ids.retain(|id| !(keep_pinned && App::tab_pinned(app, *id)));
+    if ids.is_empty() {
+        return 0;
+    }
+    if App::close_needs_confirmation(app, ids.len()) && !super::ask_yes_no(&crate::tab_options::confirm_close_text(ids.len())) {
+        let _ = hwnd;
+        return 0;
+    }
+    ids.into_iter().filter(|id| App::close_tab(app, *id)).count()
+}
+
+/// The strip's selection (Ctrl and Shift click): wire ids in strip order, kept for the tab menu.
+fn html_tab_selection(hwnd: HWND, wire_ids: &[u32]) {
+    let Some(app) = app_of(hwnd) else { return };
+    let open = App::tab_ids(&app);
+    let ids: Vec<TabId> = wire_ids.iter().filter_map(|raw| chrome_host::tab_from_wire(*raw, &open)).collect();
+    App::set_tab_selection(&app, &ids);
+}
+
+/// The names Quick Commands, the tab menu and the Sessions panel give the actions.
+const TAB_RELOAD_PARENT: usize = 0x5200;
+const TAB_RELOAD_OFF: usize = 0x5201;
+const TAB_RELOAD_ALL_OFF: usize = 0x5202;
+const TAB_RENAME: usize = 0x5203;
+const TAB_CLOSE_SELECTED: usize = 0x5204;
+const TAB_SESSION_SELECTED: usize = 0x5205;
+const TAB_RELOAD_BASE: usize = 0x5210;
+
+/// The tab menu's rows for periodic reload, renaming and a selection of several tabs.
+fn tab_options_menu_entries(app: &AppRef, id: TabId, url: Option<&url::Url>, selected: usize) -> Vec<Entry> {
+    let current = App::tab_reload_secs(app, id);
+    let web = url.is_some_and(|url| matches!(url.scheme(), "http" | "https"));
+    let mut reload = crate::tab_state::RELOAD_PRESETS
+        .iter()
+        .enumerate()
+        .map(|(index, secs)| {
+            Entry::Item(
+                Item::new(TAB_RELOAD_BASE + index, crate::tab_state::interval_label(*secs), Icon::None).checked(current == Some(*secs)),
+            )
+        })
+        .collect::<Vec<_>>();
+    if current.is_some() {
+        reload.push(Entry::Separator);
+        reload.push(Entry::Item(Item::new(TAB_RELOAD_OFF, "Stop reloading this tab", Icon::None)));
+    }
+    if App::reloading_tab_count(app) > 0 {
+        reload.push(Entry::Item(Item::new(TAB_RELOAD_ALL_OFF, "Stop reloading all tabs", Icon::None)));
+    }
+    let mut entries = vec![
+        Entry::Item(Item::new(TAB_RELOAD_PARENT, "Reload every", Icon::None).glyph("reload").submenu_with(reload).disabled_if(!web)),
+        Entry::Item(Item::new(TAB_RENAME, "Rename tab…", Icon::None).glyph("edit")),
+    ];
+    if selected > 1 {
+        entries.push(Entry::Separator);
+        entries.push(Entry::Item(Item::new(TAB_CLOSE_SELECTED, format!("Close {selected} selected tabs"), Icon::Close).glyph("close")));
+        entries.push(Entry::Item(Item::new(TAB_SESSION_SELECTED, format!("Save {selected} selected tabs as session…"), Icon::None).glyph("save")));
+    }
+    entries
+}
+
+/// Runs a row of [`tab_options_menu_entries`]. False for any other row.
+fn tab_options_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize, targets: &[TabId]) -> bool {
+    let presets = crate::tab_state::RELOAD_PRESETS;
+    match command {
+        c if (TAB_RELOAD_BASE..TAB_RELOAD_BASE + presets.len()).contains(&c) => {
+            let _ = App::set_tab_reload(app, id, Some(presets[c - TAB_RELOAD_BASE]));
+        }
+        TAB_RELOAD_OFF => {
+            let _ = App::set_tab_reload(app, id, None);
+        }
+        TAB_RELOAD_ALL_OFF => {
+            let _ = App::disable_all_reloads(app);
+        }
+        TAB_RENAME => rename_tab_prompt(hwnd, app, id),
+        TAB_CLOSE_SELECTED => {
+            close_many(hwnd, app, targets.to_vec());
+        }
+        TAB_SESSION_SELECTED => save_session_prompt(hwnd, app, targets),
+        _ => return false,
+    }
+    true
+}
+
+/// "Rename tab": asks for a name. An empty name goes back to the page's title.
+fn rename_tab_prompt(hwnd: HWND, app: &AppRef, id: TabId) {
+    let current = App::tab_name(app, id).unwrap_or_default();
+    let validate: super::profile_rename::Validator = Box::new(|name| {
+        if name.chars().any(char::is_control) {
+            Err("Names cannot contain control characters.".to_owned())
+        } else if name.chars().count() > crate::app::MAX_TAB_NAME_CHARS {
+            Err(format!("Use at most {} characters.", crate::app::MAX_TAB_NAME_CHARS))
+        } else {
+            Ok(())
+        }
+    });
+    let Some(name) = super::profile_rename::prompt_validated(hwnd, &current, "Rename tab", "Rename", "Leave it empty to show the page’s title.", validate) else {
+        return;
+    };
+    let _ = App::set_tab_name(app, id, &name);
+}
+
+/// The list of tabs closed this session at `(x, y)` (client pixels); a pick reopens it where it was.
+fn show_closed_tabs_menu(hwnd: HWND, app: &AppRef, x: i32, y: i32) {
+    const BASE: usize = 0x5300;
+    const REOPEN: usize = 0x52FF;
+    let closed = App::closed_tabs(app);
+    let urls: Vec<String> = closed.iter().map(|tab| tab.url.clone()).collect();
+    let mut entries = vec![Entry::Item(
+        Item::new(REOPEN, "Reopen closed tab", Icon::None).glyph("reset").shortcut("Ctrl+Shift+T").disabled_if(closed.is_empty()),
+    )];
+    entries.push(Entry::Separator);
+    if closed.is_empty() {
+        entries.push(Entry::Item(Item::new(BASE, "Nothing closed in this session", Icon::None).glyph("clock").disabled()));
+    }
+    entries.extend(closed.iter().enumerate().map(|(index, tab)| {
+        let label = if tab.title.trim().is_empty() { tab.url.clone() } else { tab.title.clone() };
+        Entry::Item(Item::new(BASE + index, label, Icon::None).glyph("clock"))
+    }));
+    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
+    let menu = Menu { header: None, entries, footer: "Closed tabs this session".to_owned() };
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, "closedtabs", move |app, chosen| {
+        let Some(chosen) = chosen else { return };
+        if chosen.id == REOPEN {
+            let _ = App::reopen_closed_tab(app);
+        } else if (BASE..BASE + urls.len()).contains(&chosen.id) {
+            let n = chosen.id - BASE;
+            // The list may have changed while the menu was open: reopen only the entry that was shown.
+            if App::closed_tabs(app).get(n).is_some_and(|tab| tab.url == urls[n]) {
+                let _ = App::reopen_closed_at(app, n);
+            }
+        }
+    });
+}
+
+/// "Save all tabs as session" and "Save selected tabs as session": asks for a name and saves the
+/// web pages among `ids`.
+fn save_session_prompt(hwnd: HWND, app: &AppRef, ids: &[TabId]) {
+    let Some(name) = super::profile_rename::prompt(hwnd, "", "Save tabs as session", "Save") else {
+        return;
+    };
+    if let Err(message) = App::save_session(app, &name, ids) {
+        show_error_message(&message);
+    }
+    super::sessions_panel::refresh(hwnd);
+}
+
+/// "Open saved session": a menu of the saved sessions; a pick opens it.
+fn show_open_session_menu(hwnd: HWND, _app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return };
+    if !crate::productivity::profile_allows_productivity(&profile) {
+        return;
+    }
+    let sessions = crate::productivity::read_sessions(&profile.saved_sessions_file());
+    const BASE: usize = 0x5400;
+    let mut entries: Vec<Entry> = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| Entry::Item(Item::new(BASE + index, format!("{} ({})", session.name, session.urls.len()), Icon::None).glyph("folder")))
+        .collect();
+    if entries.is_empty() {
+        entries.push(Entry::Item(Item::new(BASE, "No saved sessions", Icon::None).glyph("folder").disabled()));
+    }
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu { header: None, entries, footer: "Saved sessions".into() };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "sessions", move |app, chosen| {
+        let Some(chosen) = chosen else { return };
+        let live = crate::productivity::read_sessions(&profile.saved_sessions_file());
+        let Some(session) = sessions.get(chosen.id.wrapping_sub(BASE)).filter(|session| live.iter().any(|other| other.name == session.name)) else {
+            return;
+        };
+        App::open_session(app, session, false);
+    });
+}
+
+// --- end tab options ---
+
+pub(super) fn show_sessions(hwnd: HWND, _app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
@@ -8645,8 +8959,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Open(OpenTarget::NewTab) => {
             if let Some(app) = app_of(hwnd) {
-                App::new_tab(&app);
-                focus_omni(hwnd, &app, true);
+                open_user_tab(hwnd, &app); // --- tab options ---
             }
         }
         ChromeCommand::Open(OpenTarget::ZoomReset) => {
@@ -8684,6 +8997,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
+        | ChromeCommand::TabSelection { .. } // --- tab options ---
+        | ChromeCommand::ClosedTabs // --- tab options ---
         | ChromeCommand::Group { .. }
         | ChromeCommand::Rail { .. }
         | ChromeCommand::RailMove { .. }
@@ -8961,6 +9276,7 @@ fn html_tabs_refresh(hwnd: HWND) {
         s.html_tabs_last_state = None;
         // --- vertical sidebar (lane S) ---
         s.html_tabs_layout = None;
+        s.html_tabs_opts = None; // --- tab options ---
         s.html_tabs_workspace = None;
         // --- end vertical sidebar ---
         s.html_state_generation[1] = s.html_state_generation[1].wrapping_add(1);
@@ -8981,6 +9297,7 @@ fn html_tabs_failed(hwnd: HWND) {
         s.html_tabs_last = None;
         // --- vertical sidebar (lane S) ---
         s.html_tabs_layout = None;
+        s.html_tabs_opts = None; // --- tab options ---
         s.html_tabs_workspace = None;
         // --- end vertical sidebar ---
         s.html_tabs_groups.clear();
@@ -9019,6 +9336,21 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         // --- end hover layer ---
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
         ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
+        // --- tab options ---
+        ChromeCommand::TabSelection { ids } => {
+            html_tab_selection(hwnd, &ids);
+            return;
+        }
+        ChromeCommand::ClosedTabs => {
+            if let Some((x, mut y)) = cursor_client_point(hwnd) {
+                if let Some(bottom) = with_chrome(hwnd, |s| (!s.layout.tab_row.is_empty()).then_some(s.layout.tab_row.bottom)).flatten() {
+                    y = y.max(bottom);
+                }
+                defer_html_command(hwnd, DeferredChromeCommand::ClosedTabs { x, y });
+            }
+            return;
+        }
+        // --- end tab options ---
         ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
         // --- vertical sidebar (lane S) ---
         ChromeCommand::Side(action) => {
@@ -9028,8 +9360,7 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
                 SideAction::Workspace => defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu),
                 SideAction::NewTab => {
                     if let Some(app) = app_of(hwnd) {
-                        App::new_tab(&app);
-                        focus_omni(hwnd, &app, true);
+                        open_user_tab(hwnd, &app); // --- tab options ---
                     }
                 }
                 SideAction::Collapse => {
@@ -9066,7 +9397,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -9275,6 +9606,12 @@ fn run_deferred_html_command(hwnd: HWND) {
                 show_html_tab_menu(hwnd, &app, id, x, y);
             }
         }
+        // --- tab options ---
+        DeferredChromeCommand::ClosedTabs { x, y } => {
+            card::cancel(hwnd);
+            show_closed_tabs_menu(hwnd, &app, x, y);
+        }
+        // --- end tab options ---
         DeferredChromeCommand::IslandMenu { id, x, y } => {
             if App::tab_ids(&app).contains(&id) {
                 card::cancel(hwnd);
@@ -9366,11 +9703,22 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
     };
     match action {
         TabAction::Select => {
-            let _ = App::select_tab(&app, id);
+            // --- tab options --- "Minimise the active tab": a click on it goes back to the last tab.
+            if id == App::active_tab_id(&app) && App::tab_options(&app).minimise_active {
+                let _ = App::minimise_active_tab(&app);
+            } else {
+                let _ = App::select_tab(&app, id);
+            }
+            // --- end tab options ---
         }
-        TabAction::Close => {
-            let _ = App::close_tab(&app, id);
-        }
+        TabAction::Close => user_close(hwnd, &app, id), // --- tab options ---
+        // --- tab options --- "Double click on a tab".
+        TabAction::DoubleClick => match App::tab_options(&app).double_click {
+            crate::tab_options::DoubleClick::Ignore => {}
+            crate::tab_options::DoubleClick::Close => user_close(hwnd, &app, id),
+            crate::tab_options::DoubleClick::Rename => rename_tab_prompt(hwnd, &app, id),
+        },
+        // --- end tab options ---
         TabAction::Pin => {
             let pinned = App::tab_pinned(&app, id);
             let _ = App::set_tab_pinned(&app, id, !pinned);
@@ -9481,6 +9829,48 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
     .unwrap_or_default()
 }
 
+// --- tab options ---
+/// The Tabs settings the strip needs, with the window facts it cannot know itself.
+fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripOptions {
+    use crate::tab_options::LoadIndicator;
+    let options = App::tab_options(app);
+    chrome_host::protocol::StripOptions {
+        close_left: options.close_button_left,
+        close_always: options.close_button_always,
+        scroll: options.scroll_tabs,
+        min_width: options.active_min_width.0,
+        indicator: match options.load_indicator {
+            LoadIndicator::Spinner => "spinner",
+            LoadIndicator::Bar => "bar",
+            LoadIndicator::Favicon => "favicon",
+            LoadIndicator::None => "none",
+        },
+        wheel: options.wheel_switch,
+        separator: options.pinned_separator,
+        align_close: options.align_close_button,
+        selection: options.selection,
+        remove_spacing: options.remove_spacing_maximised,
+        maximised: with_chrome(hwnd, |s| s.layout.maximised).unwrap_or(false),
+        closed: App::closed_tabs(app).len() as u32,
+    }
+}
+
+/// What the strip marks on tab `id`, from the one pass `App::tab_strip_extras` made.
+fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_host::protocol::TabMarks {
+    let Some(extra) = extras.iter().find(|extra| extra.id == id) else {
+        return Default::default();
+    };
+    chrome_host::protocol::TabMarks {
+        unread: extra.unread,
+        notify: extra.notify,
+        asleep: extra.asleep,
+        progress: extra.progress,
+        reload: extra.reload.map(|(_, next)| next.saturating_duration_since(Instant::now()).as_secs_f64().ceil() as u32),
+        idle: extra.idle,
+    }
+}
+// --- end tab options ---
+
 /// Posts the tab strip's tabs and any favicon that is new for its tab. Does nothing while the strip
 /// is not active (not ready, or the tabs are vertical), and posts nothing that is unchanged. Holds no
 /// chrome borrow while calling App, which may re-enter this window.
@@ -9529,6 +9919,17 @@ fn html_tabs_sync(hwnd: HWND) {
         }
     }
     // --- end vertical sidebar ---
+    // --- tab options --- what the strip draws beyond the model, and how it draws it.
+    let strip_options = html_strip_options(hwnd, &app);
+    let strip_extras = App::tab_strip_extras(&app, &ids);
+    {
+        let json = chrome_host::protocol::tabopts_json(&strip_options);
+        let pending = with_chrome(hwnd, |s| s.html_tabs_opts.as_deref() != Some(json.as_str())).unwrap_or(false);
+        if pending && host.post_json(&json).is_ok() {
+            let _ = with_chrome(hwnd, |s| s.html_tabs_opts = Some(json));
+        }
+    }
+    // --- end tab options ---
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
     let tab_states: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)> = snapshot
@@ -9558,6 +9959,8 @@ fn html_tabs_sync(hwnd: HWND) {
         group_preferences: preferences.clone(),
         favicons: favicon_keys,
         generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
+        extras: strip_extras,
+        options: strip_options,
     };
     let is_unchanged = with_chrome(hwnd, |s| {
         s.html_tabs_last.is_some()
@@ -9591,6 +9994,7 @@ fn html_tabs_sync(hwnd: HWND) {
                 .flatten()
                 .map(|key| chrome_host::row_group(&key, &preferences)),
             has_favicon: with_png.contains(&id),
+            marks: html_tab_marks(&current_inputs.extras, id),
         })
         .collect();
     let items = chrome_host::tab_items(&rows);
@@ -10875,18 +11279,18 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
                 run_registered(hwnd, app, &id);
             }
         }
-        Command::NewTab => {
-            App::new_tab(app);
-            focus_omni(hwnd, app, true)
+        Command::NewTab => open_user_tab(hwnd, app), // --- tab options ---
+        // --- tab options --- Ctrl+Shift+T.
+        Command::ReopenClosedTab => {
+            let _ = App::reopen_closed_tab(app);
         }
+        // --- end tab options ---
         Command::NewWindow => open_another_window(false),
         Command::NewPrivateTab => {
             App::new_private_tab(app);
             focus_omni(hwnd, app, true)
         }
-        Command::CloseTab => {
-            let _ = App::close_tab(app, App::active_tab_id(app));
-        }
+        Command::CloseTab => user_close(hwnd, app, App::active_tab_id(app)), // --- tab options ---
         Command::NextTab => {
             App::select_next(app);
         }

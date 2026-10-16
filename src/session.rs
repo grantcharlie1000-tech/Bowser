@@ -58,6 +58,8 @@ pub struct SessionTab {
     pub url: String,
     pub title: String,
     pub pinned: bool,
+    /// Unix seconds the tab was last used (0 when unknown); saved as an optional `used` line.
+    pub used: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,6 +156,7 @@ impl Session {
                 url,
                 title: title.chars().take(MAX_TITLE_CHARS).collect(),
                 pinned,
+                used: 0,
             });
         }
         (!kept.is_empty()).then_some(Self {
@@ -181,6 +184,10 @@ impl Session {
                 }
             }
             text.push('\n');
+            // Older builds skip a line they do not know, so this stays readable by them.
+            if tab.used != 0 {
+                text.push_str(&format!("used\t{}\n", tab.used));
+            }
         }
         if let Some(split) = self.split.filter(|split| split.valid(self.tabs.len())) {
             // A layout of three or four panes appends `<h|v> <trail1|-> <trail2|-> <cross> <focused
@@ -224,7 +231,7 @@ impl Session {
             return None;
         }
         let mut active = 0usize;
-        let mut tabs = Vec::new();
+        let mut tabs = Vec::<SessionTab>::new();
         let mut split = None;
         for line in lines {
             if let Some(value) = line.strip_prefix("active ") {
@@ -283,6 +290,12 @@ impl Session {
                 }
                 continue;
             }
+            if let Some(used) = line.strip_prefix("used\t") {
+                if let (Some(tab), Ok(used)) = (tabs.last_mut(), used.trim().parse::<u64>()) {
+                    tab.used = used;
+                }
+                continue;
+            }
             let mut fields = line.splitn(4, '\t');
             if fields.next() != Some("tab") {
                 continue;
@@ -307,6 +320,7 @@ impl Session {
                 url,
                 title: unescape(title).chars().take(MAX_TITLE_CHARS).collect(),
                 pinned,
+                used: 0,
             });
         }
         if tabs.is_empty() {
@@ -923,9 +937,24 @@ mod tests {
     }
 
     #[test]
+    fn when_a_tab_was_last_used_round_trips_and_older_text_still_parses() {
+        let mut session = sample();
+        session.tabs[0].used = 1_700_000_000;
+        let text = session.serialize();
+        assert!(text.contains("used\t1700000000\n"));
+        let parsed = Session::parse(&text).unwrap();
+        assert_eq!(parsed.tabs[0].used, 1_700_000_000);
+        assert!(parsed.tabs[1..].iter().all(|tab| tab.used == 0));
+        // A tab line without one (what older builds wrote) reads as unknown.
+        let plain = sample().serialize();
+        assert!(!plain.contains("used\t"));
+        assert!(Session::parse(&plain).unwrap().tabs.iter().all(|tab| tab.used == 0));
+    }
+
+    #[test]
     fn layouts_of_three_and_four_panes_round_trip_and_bad_lines_drop_the_layout() {
         let mut session = sample();
-        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false };
+        let tab = |n: usize| SessionTab { url: format!("https://t{n}.test/"), title: format!("T{n}"), pinned: false, used: 0 };
         session.tabs = (0..5).map(tab).collect();
         let quad = SessionSplit {
             left: 0,
@@ -1071,7 +1100,7 @@ mod tests {
         let (mut store, _) = SessionStore::open(&dir).unwrap();
         store.begin_run(None);
         let snapshot = Session {
-            tabs: vec![SessionTab { url: "https://a.test/".to_owned(), title: "A".to_owned(), pinned: false }],
+            tabs: vec![SessionTab { url: "https://a.test/".to_owned(), title: "A".to_owned(), pinned: false, used: 0 }],
             active: 0,
             split: None,
         };

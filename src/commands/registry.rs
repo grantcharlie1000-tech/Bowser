@@ -198,6 +198,12 @@ pub static BUILTINS: &[CommandDef] = &[
     def("shortcuts-cheat-sheet", "Keyboard shortcuts", "Show every shortcut", C::Keyboard, &["Ctrl+F1"], Cmd, Run(crate::win32::run_cheat_sheet)),
     def("toggle-site-shortcuts", "Prioritise website shortcuts on this site", "On this site, keys the page uses go to the page; the browser keeps its priority list", C::Keyboard, &[], Page, Run(crate::win32::run_toggle_site_shortcuts)),
     def("keyboard-settings", "Keyboard settings", "Assign shortcuts and edit command chains", C::Keyboard, &[], Cmd, Run(crate::win32::run_keyboard_settings)),
+    // --- tab options (T1): closed tabs and sessions; run by `run_key_command` / `run_palette_command` ---
+    browser(def("reopen-tab", "Reopen closed tab", "Bring back the tab you closed last", C::Tabs, &["Ctrl+Shift+T"], Cmd, Key(Command::ReopenClosedTab))),
+    def("closed-tabs", "Closed tabs", "List the tabs closed in this session", C::Tabs, &[], Cmd, Action("closed-tabs")),
+    def("save-all-session", "Save All Tabs as Session", "Save every open tab as a named session", C::Tabs, &[], Cmd, Action("save-all-session")),
+    def("open-session", "Open Saved Session", "Open a saved session in this window", C::Tabs, &[], Cmd, Action("open-session")),
+    // --- end tab options ---
 ];
 
 /// The command with this id, if it is a built-in.

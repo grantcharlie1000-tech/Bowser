@@ -4,11 +4,14 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendSide, type TabItem, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendSide, sendTabSelection, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
+// --- tab options ---
+import { clickSelection, markedName, notifyLabel, pruneSelection } from './tab-marks-logic';
+// --- end tab options ---
 import {
   buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
@@ -41,6 +44,10 @@ export interface SidebarTabNode {
   readonly close: HTMLButtonElement;
   readonly face: HTMLSpanElement;
   shift: number;
+  // --- tab options --- created only while the row needs them.
+  dot?: HTMLSpanElement;
+  badge?: HTMLSpanElement;
+  // --- end tab options ---
 }
 interface SidebarGroupNode {
   readonly root: HTMLDivElement;
@@ -81,16 +88,40 @@ function setFace(node: SidebarTabNode, uri: string | undefined): void {
   else node.image.removeAttribute('src');
 }
 
-export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): void {
+/** The marks a row can carry (Settings > Tabs): the unread dot and the notification count live beside the mute and marker flags. */
+function sideMark(node: SidebarTabNode, key: 'dot' | 'badge', on: boolean): HTMLSpanElement | undefined {
+  const have = node[key];
+  if (!on) {
+    if (have) { have.remove(); delete node[key]; }
+    return undefined;
+  }
+  if (have) return have;
+  const made = el('span', key === 'dot' ? 'side-unread' : 'side-notify');
+  node.mute.parentElement?.insertBefore(made, node.mute);
+  node[key] = made;
+  return made;
+}
+
+export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false): void {
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
+  // --- tab options ---
+  sideMark(node, 'dot', item.unread === true);
+  const badge = sideMark(node, 'badge', item.notify !== undefined);
+  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  node.root.classList.toggle('asleep', item.asleep === true);
+  node.root.classList.toggle('idle', item.idle === true);
+  node.root.classList.toggle('picked', picked);
+  const marked = markedName(label, item.notify, item.unread, item.rl);
+  // --- end tab options ---
   // No data-tip: the hover card shows the title, and a tooltip would flash before it.
   if (item.private) {
-    node.root.setAttribute('aria-label', privateTabName(label));
+    node.root.setAttribute('aria-label', privateTabName(marked));
     node.root.dataset.private = 'true';
   } else {
-    node.root.removeAttribute('aria-label');
+    if (marked !== label) node.root.setAttribute('aria-label', marked);
+    else node.root.removeAttribute('aria-label');
     delete node.root.dataset.private;
   }
   node.root.setAttribute('aria-selected', String(active));
@@ -169,6 +200,7 @@ function makeGroup(key: number): SidebarGroupNode {
 export function createSidebarRenderer(root: HTMLElement): {
   render(msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void;
   workspace(value: SidebarWorkspace): void;
+  options(value: TabOptsMsg): void; // --- tab options ---
 } {
   const tabs = new Map<number, SidebarTabNode>();
   const groups = new Map<number, SidebarGroupNode>();
@@ -179,6 +211,24 @@ export function createSidebarRenderer(root: HTMLElement): {
   let pendingRender: { readonly msg: TabsMsg; readonly favs: ReadonlyMap<number, string>; readonly workspace: SidebarWorkspace } | null = null;
   let ignoreClick = false;
   let rendered = false;
+  // --- tab options --- the strip's selection (Ctrl and Shift click) and the Closed tabs row.
+  let picked: number[] = [];
+  let anchor = 0;
+  let selectionOn = true;
+  const closedRow = el('button', 'side-closed bw-focus-inset');
+  closedRow.type = 'button';
+  closedRow.hidden = true;
+  setTip(closedRow, 'Closed tabs');
+  const closedLabel = el('span', 'side-closed-label');
+  closedLabel.textContent = 'Closed tabs';
+  closedRow.append(icon('trash', { size: 16 }), closedLabel);
+  const setPicked = (ids: readonly number[]): void => {
+    if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
+    picked = [...ids];
+    sendTabSelection(picked);
+    for (const [id, node] of tabs) node.root.classList.toggle('picked', picked.includes(id));
+  };
+  // --- end tab options ---
   // --- split view ---
   // A row or tile dragged out of the sidebar to the right is over the page: Rust shows which half
   // (left, right, top or bottom) it would open in, as for a tab dragged below the horizontal strip.
@@ -211,7 +261,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   head.append(header, collapse);
   const top = el('div', 'side-top');
   top.setAttribute(DRAG_ATTR, '');
-  top.append(head, add);
+  top.append(head, add, closedRow); // --- tab options ---
   const pinGrid = el('div', 'side-pinned');
   pinGrid.setAttribute('role', 'none');
   const COLLAPSED_MAX_PX = 72;
@@ -303,6 +353,10 @@ export function createSidebarRenderer(root: HTMLElement): {
     const rows: HTMLElement[] = [];
     const live = new Set(msg.items.map((item) => item.id));
     for (const id of tabs.keys()) if (!live.has(id)) tabs.delete(id);
+    // --- tab options --- a closed tab leaves the selection.
+    const keptPicked = pruneSelection(picked, live);
+    if (keptPicked.length !== picked.length) { picked = keptPicked; sendTabSelection(picked); }
+    // --- end tab options ---
     const entries = buildSidebarEntries(msg.items, msg.active);
     const keys = new Set<number>();
     const groupColour = new Map<number, string>();
@@ -332,7 +386,7 @@ export function createSidebarRenderer(root: HTMLElement): {
           node = makeTab(item, active, favs);
           tabs.set(item.id, node);
         } else {
-          syncTab(node, item, active, favs);
+          syncTab(node, item, active, favs, picked.includes(item.id)); // --- tab options ---
         }
         const gc = item.g > 0 && !item.pinned ? groupColour.get(item.g) : undefined;
         if (gc) node.root.style.setProperty('--gc', gc);
@@ -606,6 +660,12 @@ export function createSidebarRenderer(root: HTMLElement): {
       sendSide('collapse');
       return;
     }
+    // --- tab options ---
+    if (event.target.closest('.side-closed')) {
+      sendClosedTabs();
+      return;
+    }
+    // --- end tab options ---
     const group = event.target.closest<HTMLElement>('.side-group');
     if (group) {
       toggleGroup(group);
@@ -615,8 +675,27 @@ export function createSidebarRenderer(root: HTMLElement): {
     if (!row || row.classList.contains('leaving')) return;
     if (ignoreClick) { ignoreClick = false; return; }
     const a = event.target.closest('.side-close') ? 'close' : 'select';
+    // --- tab options --- Ctrl and Shift click select tabs; a plain click clears the selection.
+    if (a === 'select') {
+      const id = Number(row.dataset.id);
+      const order = Array.from(root.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)')).map((tab) => Number(tab.dataset.id));
+      const outcome = selectionOn
+        ? clickSelection(picked, order, anchor, latest?.active ?? 0, id, { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey })
+        : { selected: [] as number[], anchor: id, activate: true };
+      anchor = outcome.anchor;
+      setPicked(outcome.selected);
+      if (!outcome.activate) return;
+    }
+    // --- end tab options ---
     send({ v: 1, t: 'tab', a, id: Number(row.dataset.id) });
   });
+  // --- tab options --- "Double click on a tab".
+  root.addEventListener('dblclick', (event) => {
+    if (!(event.target instanceof Element) || event.target.closest('.side-close')) return;
+    const row = event.target.closest<HTMLElement>('.side-tab');
+    if (row && !row.classList.contains('leaving')) send({ v: 1, t: 'tab', a: 'dblclick', id: Number(row.dataset.id) });
+  });
+  // --- end tab options ---
   root.addEventListener('contextmenu', (event) => {
     if (!(event.target instanceof Element)) return;
     const group = event.target.closest<HTMLElement>('.side-group');
@@ -736,5 +815,12 @@ export function createSidebarRenderer(root: HTMLElement): {
       currentWorkspace = value;
       if (latest) render(latest, latestFavs, currentWorkspace);
     },
+    // --- tab options ---
+    options(value) {
+      selectionOn = value.selection;
+      closedRow.hidden = value.closed === 0;
+      if (!selectionOn && picked.length > 0) setPicked([]);
+    },
+    // --- end tab options ---
   };
 }

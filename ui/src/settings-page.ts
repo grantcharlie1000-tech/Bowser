@@ -17,6 +17,7 @@ import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
+import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SECTIONS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
@@ -27,7 +28,7 @@ import {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
-  profile: 'person', appearance: 'sidebar', privacy: 'shield', performance: 'workspace-bolt',
+  profile: 'person', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'link', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
   address: 'link', bookmarks: 'bookmark',
@@ -594,6 +595,69 @@ export function startSettingsPage(root: HTMLElement): void {
   const copyLink = switchControl((on) => change((d) => { d.ctrlShiftCCopyLink = on; }));
   row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
 
+  // Tabs: every option is a `tabopt` command of its own (`key=value`), applied at once, never part of `save`.
+  const tabControls = new Map<string, { set(values: TabOptionValues): void; disable(off: boolean): void }>();
+  const sendTabOption = (key: string, value: boolean | number | string): void => {
+    const text = assignmentText(key, value);
+    if (text === null) { showToast('That value is not allowed.', false); return; }
+    if (cmd({ a: 'tabopt', text })) pending += 1;
+  };
+  const buildTabControl = (spec: TabOptionSpec): HTMLElement => {
+    switch (spec.kind) {
+      case 'toggle': {
+        const sw = switchControl((on) => sendTabOption(spec.key, on));
+        tabControls.set(spec.key, { set: (values) => sw.set(values[spec.key] === true), disable: (off) => sw.disable(off) });
+        return sw.root;
+      }
+      case 'choice': {
+        const seg = segmentedControl<string>(spec.label, spec.choices.map(([value, label]) => [value, label] as const), (value) => sendTabOption(spec.key, value));
+        tabControls.set(spec.key, { set: (values) => seg.set(String(values[spec.key] ?? spec.default)), disable: (off) => seg.disable(off) });
+        return seg.root;
+      }
+      case 'number': {
+        const input = el('input', 'bw-input sp-zoom-input');
+        input.type = 'number';
+        input.min = String(spec.min);
+        input.max = String(spec.max);
+        input.step = '1';
+        input.setAttribute('aria-label', spec.label);
+        const suffix = el('span', 'sp-value');
+        const wrap = el('div', 'sp-zoom-wrap');
+        wrap.append(input, suffix);
+        const paint = (n: number): void => { input.value = String(n); suffix.textContent = numberLabel(spec, n); };
+        input.addEventListener('change', () => {
+          const n = clampNumber(spec, Number(input.value));
+          paint(n);
+          sendTabOption(spec.key, n);
+        });
+        tabControls.set(spec.key, { set: (values) => paint(Number(values[spec.key] ?? spec.default)), disable: (off) => { input.disabled = off; } });
+        return wrap;
+      }
+      case 'text': {
+        const input = el('input', 'bw-input sp-ui-font-input');
+        input.type = 'text';
+        input.placeholder = spec.placeholder;
+        input.maxLength = spec.max;
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.setAttribute('aria-label', spec.label);
+        input.addEventListener('change', () => sendTabOption(spec.key, input.value.trim()));
+        let unreadable = false;
+        let latest: TabOptionValues = {};
+        const refresh = (): void => { input.disabled = unreadable || !textApplies(spec, latest); };
+        tabControls.set(spec.key, {
+          set: (values) => { latest = values; input.value = String(values[spec.key] ?? ''); refresh(); },
+          disable: (off) => { unreadable = off; refresh(); },
+        });
+        return input;
+      }
+    }
+  };
+  for (const cardKey of TAB_CARDS) {
+    const tabCard = card('tabs', TAB_CARD_TITLES[cardKey]);
+    for (const spec of cardSpecs(cardKey)) row(tabCard, spec.key, buildTabControl(spec));
+  }
+
   // Privacy and security
   const blockCard = card('privacy', 'Blocking');
   // The old on/off switch is the "None" choice of the blocking level (blocker_enabled=false).
@@ -961,6 +1025,7 @@ export function startSettingsPage(root: HTMLElement): void {
     translateOffer.set(s.translateOffer);
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
+    for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
     autoUpdate.set(s.autoUpdate);
     autoUpdate.disable(s.update === 'unavailable');
     const view = updateView(s);

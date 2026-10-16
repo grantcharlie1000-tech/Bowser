@@ -8,6 +8,7 @@ import { parseStartSettings, startSaveLines, type StartSettings } from './start-
 // --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
 import { ADDRESS_ROWS } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
+import { parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -152,6 +153,8 @@ export interface SettingsSnapshot {
   translateOffer: boolean;
   /** "Translate automatically on sites set to always translate"; its own command. */
   translateAuto: boolean;
+  /** The Tabs section's options (`tab-options-logic.ts`); each change is its own `tabopt` command. */
+  tabOptions: TabOptionValues;
   /** `''` means the Windows display language, else a 2-3 letter lower-case code. Its own command. */
   translateTarget: string;
   /** The codes `translateTarget` may be set to, in the order the page lists them. */
@@ -174,7 +177,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions'];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -240,6 +243,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!v.translateTargets.every((code) => typeof code === 'string' && LANGUAGE_RE.test(code))) return null;
   const start = parseStartSettings(v.start); // --- start page ---
   if (start === null) return null;
+  const tabOptions = parseTabOptions(v.tabOptions);
+  if (!tabOptions) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -300,6 +305,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateTarget: v.translateTarget,
     translateTargets: [...(v.translateTargets as string[])],
     start,
+    tabOptions,
   };
 }
 
@@ -397,6 +403,7 @@ export interface SectionSpec { readonly key: SettingsSection; readonly title: st
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs, text size and page translation.' },
+  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: 'How tabs open, close, show their state and come back after a restart.' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
@@ -456,8 +463,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'newTabBesideActive', section: 'appearance', label: 'Open new tabs next to the active tab', description: 'A new tab opens right after the tab you’re on, not at the end.', keywords: 'new tab position beside active next' },
   { id: 'ctrlTabMru', section: 'appearance', label: 'Cycle tabs most-recently-used first with Ctrl+Tab', description: 'Ctrl+Tab steps through tabs in the order you last used them.', keywords: 'ctrl tab cycle most recently used mru switch' },
   { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
-  { id: 'tabPreviewImages', section: 'appearance', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image', notYet: true },
-  { id: 'tabPreviewMemory', section: 'appearance', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover', notYet: true },
+  { id: 'tabPreviewImages', section: 'appearance', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image' },
+  { id: 'tabPreviewMemory', section: 'appearance', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'appearance', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
@@ -475,6 +482,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'translateTarget', section: 'appearance', label: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows' },
   { id: 'shiftRightClickContext', section: 'appearance', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system' },
   { id: 'ctrlShiftCCopyLink', section: 'appearance', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
+  // The Tabs section's rows come from its own table (tab-options-logic.ts).
+  ...tabOptionRows(),
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
   { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },

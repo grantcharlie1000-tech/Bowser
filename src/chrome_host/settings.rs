@@ -84,6 +84,8 @@ pub struct Snapshot<'a> {
 }
 
 const MAX_DOWNLOAD_DIR_CHARS: usize = 260;
+/// Longest `key=value` text of one tab option (the new tab address is the longest value).
+const MAX_TAB_OPTION_TEXT: usize = 2100;
 
 pub fn snapshot_json(s: &Snapshot<'_>) -> String {
     let settings = s.settings;
@@ -126,6 +128,17 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.bool("pinNewTabGroups", settings.pin_new_tab_groups);
         out.bool("splitEdgeDrop", settings.split_edge_drop);
         out.bool("blockYoutubeVideoAds", settings.block_youtube_video_ads);
+        // --- tab options ---
+        out.object("tabOptions", |options| {
+            for (key, value) in crate::tab_options::snapshot_entries(settings) {
+                match value {
+                    crate::tab_options::Value::Bool(on) => options.bool(key, on),
+                    crate::tab_options::Value::Text(text) => options.string(key, &text),
+                    crate::tab_options::Value::Uint(n) => options.uint(key, n),
+                }
+            }
+        });
+        // --- end tab options ---
         out.bool("autoUpdate", s.auto_update);
         out.bool("historyEnabled", s.history_enabled && !s.guest);
         out.bool("guest", s.guest);
@@ -208,6 +221,10 @@ pub enum Action {
     /// The language pages are translated into: empty (the Windows display language) or one of
     /// [`crate::translate::target_languages`]. Anything else is refused here.
     TranslateTarget(String),
+    // --- tab options ---
+    /// One `key=value` change of the Tabs section, checked by `tab_options::apply_assignment`.
+    TabOption(String),
+    // --- end tab options ---
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -237,6 +254,14 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             let text = f.text.as_deref()?;
             (text.is_empty() || crate::translate::target_languages().contains(&text)).then(|| Action::TranslateTarget(text.to_owned()))?
         }
+        // --- tab options ---
+        "tabopt" if text_only => {
+            let text = f.text.as_deref()?;
+            let mut probe = Settings::default();
+            if text.len() > MAX_TAB_OPTION_TEXT || !crate::tab_options::apply_assignment(&mut probe, text) { return None; }
+            Action::TabOption(text.to_owned())
+        }
+        // --- end tab options ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,

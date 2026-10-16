@@ -164,7 +164,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   assert.deepEqual(restart, ['grouping', 'sidePanelPosition', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['frameless', 'tabPreviewImages', 'tabPreviewMemory']);
+  assert.deepEqual(notYet, ['frameless']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -368,8 +368,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 15);
-  assert.equal(app.querySelectorAll('section').length, 15);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 16);
+  assert.equal(app.querySelectorAll('section').length, 16);
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
   // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
   const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row);
@@ -465,7 +465,7 @@ test('Translation: two switches and a language select, each its own command, app
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
   assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
-  assert.equal(flagOf('tabPreviewImages').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
   assert.equal(flagOf('grouping').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
   assert.equal(flagOf('centredAddressBar'), null);
@@ -491,7 +491,7 @@ test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
   assert.deepEqual(sent[1], { v: 1, t: 'set', a: 'history', on: false });
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical', ack: 'saved' } });
   assert.equal(app.querySelector('.sp-toast').textContent, 'Saved');
-  const nav = app.querySelectorAll('.sp-nav-item')[3];
+  const nav = app.querySelectorAll('.sp-nav-item').find((b) => b.dataset.section === 'privacy');
   sent.length = 0;
   nav.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'privacy' }]);
@@ -650,7 +650,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(6, 11), ['search', 'bookmarks', 'keyboard', 'commands', 'downloads']);
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(7, 12), ['search', 'bookmarks', 'keyboard', 'commands', 'downloads']);
   assert.equal(keyboard().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(quick().querySelector('.sp-chains').dataset.row, 'chains');
   deliver(commandsSnap());

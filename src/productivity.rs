@@ -1180,6 +1180,10 @@ mod tests {
             "toggle-sidebar",
             "save-session",
             "sessions",
+            "save-all-session",
+            "open-session",
+            "reopen-tab",
+            "closed-tabs",
             "add-bookmark",
             "extensions",
         ] {
