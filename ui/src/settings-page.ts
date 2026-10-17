@@ -25,6 +25,7 @@ import {
   saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
+  AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
 } from './settings-page-logic';
 
 /** --- settings slim --- the disclosures remember whether they are open (a per-viewer convenience only). */
@@ -527,8 +528,29 @@ export function startSettingsPage(root: HTMLElement): void {
   const windowCard = card('appearance', 'Window');
   const rounded = switchControl((on) => change((d) => { d.roundedContentFrame = on; }));
   row(windowCard, 'roundedContentFrame', rounded.root);
+  // --- auto-hide (T11) --- the master switch, and the two rows behind "More options" (see ROWS).
   const frameless = switchControl((on) => change((d) => { d.frameless = on; }));
   row(windowCard, 'frameless', frameless.root);
+  const autoHideBarSwitches = new Map<AutoHideBar, Control<boolean>>();
+  const autoHideList = el('div', 'sp-toolbar-list');
+  for (const bar of AUTO_HIDE_BARS) {
+    const item = el('div', 'sp-toolbar-item');
+    const label = el('span', 'sp-label');
+    label.textContent = AUTO_HIDE_BAR_LABELS[bar];
+    const sw = switchControl((on) => change((d) => {
+      const bars = new Set(autoHideBarsList(d.autoHideBars));
+      if (on) bars.add(bar); else bars.delete(bar);
+      d.autoHideBars = autoHideBarsText(bars);
+    }));
+    sw.root.setAttribute('aria-label', AUTO_HIDE_BAR_LABELS[bar]);
+    autoHideBarSwitches.set(bar, sw);
+    item.append(label, sw.root);
+    autoHideList.append(item);
+  }
+  row(windowCard, 'autoHideBars', autoHideList, { stack: true });
+  const autoHideFullscreen = switchControl((on) => change((d) => { d.autoHideFullscreen = on; }));
+  row(windowCard, 'autoHideFullscreen', autoHideFullscreen.root);
+  // --- end auto-hide ---
 
   // Bookmarks bar
   const bookmarksCard = card('appearance', 'Bookmarks bar');
@@ -1321,6 +1343,10 @@ export function startSettingsPage(root: HTMLElement): void {
     minimal.set(d.minimalUrl);
     loadProgress.set(d.showLoadProgress);
     frameless.set(d.frameless);
+    // --- auto-hide (T11) --- the bar list only matters while the master switch is on.
+    for (const [bar, sw] of autoHideBarSwitches) { sw.set(autoHideBarsList(d.autoHideBars).includes(bar)); sw.disable(!s.readable || !d.frameless); }
+    autoHideFullscreen.set(d.autoHideFullscreen);
+    // --- end auto-hide ---
     rounded.set(d.roundedContentFrame);
     bookmarksBarCtl.set(d.bookmarksBar);
     bookmarksGroups.set(d.bookmarksBarTabGroups);
@@ -1370,7 +1396,7 @@ export function startSettingsPage(root: HTMLElement): void {
     banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
-      previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
+      previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless, autoHideFullscreen,
       rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
     ]) control.disable(!s.readable);

@@ -212,6 +212,10 @@ pub static BUILTINS: &[CommandDef] = &[
     def("qr-code", "QR code for this page", "Show the page's address as a QR code", C::Page, &[], Page, Run(crate::win32::run_qr_code)),
     def("toggle-address-bar", "Show or hide the address bar", "Turn Settings > Address bar > Show the address bar on or off", C::Navigation, &[], Cmd, Run(crate::win32::run_toggle_address_bar)),
     // --- end wave-1 integration ---
+    // --- auto-hide (T11): src/auto_hide.rs, win32/window/auto_hide.rs ---
+    def("toggle-auto-hide", "Toggle auto-hide UI", "Hide the toolbars and tabs until the pointer rests at the window edge, or show them again", C::Windows, &["Ctrl+F11"], Cmd, Run(crate::win32::run_toggle_auto_hide)),
+    browser(def("toggle-fullscreen", "Full screen", "Fill the screen with the page; the bars come back when the pointer rests at the edge", C::Windows, &["F11"], Cmd, Run(crate::win32::run_toggle_fullscreen))),
+    // --- end auto-hide ---
 ];
 
 /// The command with this id, if it is a built-in.

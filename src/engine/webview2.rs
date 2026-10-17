@@ -4365,6 +4365,24 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
+        // --- auto-hide (T11) --- a page element (a video) asks for full screen or leaves it. Only
+        // installed when the app listens, so nothing runs otherwise.
+        if let Some(fullscreen_changed) = events.fullscreen_changed.clone() {
+            webview.add_ContainsFullScreenElementChanged(
+                &webview2_com::ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(sender) = sender {
+                        let mut on = BOOL(0);
+                        if sender.ContainsFullScreenElement(&mut on).is_ok() {
+                            fullscreen_changed(tab_id, on.as_bool());
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end auto-hide ---
+
         let policy_event = events.policy_event.clone();
         let permission_store = permissions.clone();
         let permission_denied = events.permission_denied.clone();
@@ -6394,9 +6412,11 @@ mod tests {
                         (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                     let expected = if is_key_down(kind)
                         && key != u32::from(VK_ESCAPE.0)
-                        // Ctrl+F1 (the cheat sheet) is the one chord the command registry adds.
+                        // Ctrl+F1 (the cheat sheet), F11 (full screen) and Ctrl+F11 (auto-hide) are the chords the
+                        // command registry adds.
                         && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
-                            || (key, ctrl, shift, alt) == (0x70, true, false, false))
+                            || [(0x70, true, false, false), (0x7A, false, false, false), (0x7A, true, false, false)]
+                                .contains(&(key, ctrl, shift, alt)))
                     {
                         forward(key, ctrl, shift, alt)
                     } else {

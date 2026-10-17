@@ -55,6 +55,17 @@ shows it.
 `src/shortcuts.rs` keeps the default chord table (`command_for`, `command_for_gated`) as a reference: a test
 checks that the registry's default keymap is that table key for key, plus Ctrl+F1.
 
+## Auto-hide and full screen (T11)
+
+Two registry commands, both `Run` handlers in `src/win32/command_actions.rs`:
+
+- `toggle-auto-hide` ("Toggle auto-hide UI", Ctrl+F11) flips the saved master switch, the `frameless` key shown as
+  Settings > Appearance > Auto-hide toolbars and tabs, so the choice lasts across restarts (as in Vivaldi).
+- `toggle-fullscreen` ("Full screen", F11) fills the monitor with the page; a page element (a video) going full
+  screen does the same through `ContainsFullScreenElementChanged`.
+
+The status bar button for `toggle-auto-hide` is added with the status bar (thread T6); it calls the same command.
+
 ## Files
 
 Per profile, plain text, beside the other profile files:
