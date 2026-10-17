@@ -3696,9 +3696,13 @@ impl App {
         if !Self::tab_hibernate_eligible(app, id) {
             return false;
         }
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
-            tab.sleep_check_started = Some(Instant::now());
-        }
+        let started = Instant::now();
+        let epoch = {
+            let mut state = app.borrow_mut();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return false };
+            tab.sleep_check_started = Some(started);
+            tab.reader.epoch
+        };
         let verdict = Rc::new(std::cell::Cell::new(None));
         let answered_inline = Rc::new(std::cell::Cell::new(true));
         let weak = Rc::downgrade(app);
@@ -3709,7 +3713,7 @@ impl App {
                 if answered_inline.get() {
                     verdict.set(Some(blocked));
                 } else if let Some(app) = weak.upgrade() {
-                    Self::finish_hibernate_check(&app, id, blocked);
+                    Self::finish_hibernate_check(&app, id, epoch, started, blocked);
                 }
             })
         };
@@ -3719,24 +3723,26 @@ impl App {
         });
         answered_inline.set(false);
         match (asked, verdict.take()) {
-            (Some(Ok(())), Some(blocked)) => Self::finish_hibernate_check(app, id, blocked),
+            (Some(Ok(())), Some(blocked)) => Self::finish_hibernate_check(app, id, epoch, started, blocked),
             (Some(Ok(())), None) => {}
             _ => return false,
         }
         true
     }
 
-    fn finish_hibernate_check(app: &AppRef, id: TabId, blocked: bool) {
+    fn finish_hibernate_check(app: &AppRef, id: TabId, epoch: u32, started: Instant, blocked: bool) {
+        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
         let eligible = Self::tab_hibernate_eligible(app, id);
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
-            tab.extra.allow_pinned_sleep = false; // --- tab options ---
-        }
         let playing_audio = eligible && Self::tab_playing_audio(app, id);
+        // The COM audio query can dispatch callbacks; validate again before clearing state.
+        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
+        let eligible = eligible && Self::tab_hibernate_eligible(app, id);
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.extra.allow_pinned_sleep = false;
+            tab.sleep_check_started = None;
+        }
         if !eligible || blocked || playing_audio {
-            if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
-                tab.sleep_check_started = None;
-            }
-            if blocked || playing_audio {
+            if eligible && (blocked || playing_audio) {
                 win32::show_error_message("This tab has unsaved input or audio and was left open.");
             }
             return;
@@ -7218,9 +7224,13 @@ impl App {
     /// Asks the page whether sleeping could lose unsaved input or stop media, then sleeps the
     /// tab if not. Engines that answer at once sleep it before this returns.
     fn sleep_tab_if_safe(app: &AppRef, id: TabId) {
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
-            tab.sleep_check_started = Some(Instant::now());
-        }
+        let started = Instant::now();
+        let epoch = {
+            let mut state = app.borrow_mut();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return };
+            tab.sleep_check_started = Some(started);
+            tab.reader.epoch
+        };
         let verdict = Rc::new(std::cell::Cell::new(None));
         let answered_inline = Rc::new(std::cell::Cell::new(true));
         let weak = Rc::downgrade(app);
@@ -7231,7 +7241,7 @@ impl App {
                 if answered_inline.get() {
                     verdict.set(Some(blocked));
                 } else if let Some(app) = weak.upgrade() {
-                    Self::finish_sleep_check(&app, id, blocked);
+                    Self::finish_sleep_check(&app, id, epoch, started, blocked);
                 }
             })
         };
@@ -7241,7 +7251,7 @@ impl App {
         });
         answered_inline.set(false);
         match (asked, verdict.take()) {
-            (Some(_), Some(blocked)) => Self::finish_sleep_check(app, id, blocked),
+            (Some(_), Some(blocked)) => Self::finish_sleep_check(app, id, epoch, started, blocked),
             (Some(_), None) => {} // the page will answer later
             (None, _) => {
                 if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
@@ -7251,33 +7261,33 @@ impl App {
         }
     }
 
-    fn finish_sleep_check(app: &AppRef, id: TabId, blocked: bool) {
-        {
-            let mut state = app.borrow_mut();
-            if state.closing {
-                return;
-            }
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
-                return;
-            };
-            tab.sleep_check_started = None;
-            if blocked {
+    fn sleep_check_current(state: &Self, id: TabId, epoch: u32, started: Instant) -> bool {
+        !state.closing
+            && started.elapsed() < SLEEP_CHECK_TIMEOUT
+            && state.tabs.iter().any(|tab| tab.id == id
+                && tab.reader.epoch == epoch && tab.sleep_check_started == Some(started))
+    }
+
+    fn finish_sleep_check(app: &AppRef, id: TabId, epoch: u32, started: Instant, blocked: bool) {
+        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
+        if blocked {
+            if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+                tab.sleep_check_started = None;
                 tab.sleep_blocked_until = Some(Instant::now() + SLEEP_BLOCKED_BACKOFF);
             }
-        }
-        if blocked {
             let _ = app.borrow().log.record("tab_sleep_blocked");
             return;
         }
         // The answer may be late: only sleep a tab that is still hidden and still eligible.
         let still_eligible = Self::discard_candidate(app, id).is_some_and(|candidate| {
             tab_discard_eligible(candidate, || Self::tab_playing_audio(app, id))
-        }) && app
-            .borrow()
-            .tabs
-            .iter()
-            .any(|tab| tab.id == id && tab.controller_created && !tab.discarded);
-        if still_eligible {
+        }) && app.borrow().tabs.iter().any(|tab| tab.id == id && tab.controller_created && !tab.discarded);
+        // Recheck after the COM audio query and before clearing the request or closing anything.
+        if !Self::sleep_check_current(&app.borrow(), id, epoch, started) { return; }
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.sleep_check_started = None;
+        }
+        if still_eligible && Self::discard_candidate(app, id).is_some_and(|candidate| tab_discard_eligible(candidate, || false)) {
             Self::discard_tab(app, id);
         }
     }
@@ -8242,6 +8252,17 @@ mod tests {
     }
 
     #[test]
+    fn optimistic_suspension_never_skips_the_draft_media_probe_before_discard() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        assert!(app.borrow().tabs.iter().any(|tab| tab.id == hidden && tab.suspended));
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Inline(true));
+        App::discard_one_hidden_tab_if(&app, || true);
+        assert_eq!(SLEEP_CHECKS_ASKED.with(|asked| asked.get()), 1);
+        assert!(closed_tabs(&calls).is_empty(), "optimistic suspension must not authorize data loss");
+        assert!(app.borrow().tabs.iter().any(|tab| tab.id == hidden && tab.controller_created && !tab.discarded));
+    }
+
+    #[test]
     fn late_sleep_answer_sleeps_only_a_tab_that_is_still_hidden() {
         let (app, hidden, _active, calls) = sleeping_app(300);
         SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
@@ -8274,6 +8295,77 @@ mod tests {
             .unwrap();
         done(false);
         assert_eq!(closed_tabs(&calls), [format!("close:{}", hidden.0)]);
+    }
+
+    #[test]
+    fn late_safe_sleep_verdict_cannot_discard_a_replacement_document() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
+        App::discard_one_hidden_tab_if(&app, || true);
+        let done = SLEEP_CHECK.with(|check| match &mut *check.borrow_mut() {
+            SleepCheck::Deferred(slot) => slot.take(),
+            SleepCheck::Inline(_) => None,
+        }).unwrap();
+        // NavigationStarting resets the document epoch. Even after that page finishes loading,
+        // the old document's safe verdict must not authorize closing this controller.
+        app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == hidden).unwrap().reader.reset();
+        done(false);
+        assert!(closed_tabs(&calls).is_empty());
+        assert!(app.borrow().tabs.iter().any(|tab| tab.id == hidden && !tab.discarded));
+    }
+
+    #[test]
+    fn superseded_sleep_and_hibernate_verdicts_cannot_clear_a_newer_request() {
+        let (app, hidden, _active, calls) = sleeping_app(300);
+        let old = Instant::now() - Duration::from_millis(1);
+        let current = Instant::now();
+        let epoch = {
+            let mut state = app.borrow_mut();
+            let tab = state.tabs.iter_mut().find(|tab| tab.id == hidden).unwrap();
+            tab.sleep_check_started = Some(current);
+            tab.reader.epoch
+        };
+        App::finish_sleep_check(&app, hidden, epoch, old, false);
+        App::finish_hibernate_check(&app, hidden, epoch, old, false);
+        assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().sleep_check_started, Some(current));
+        assert!(closed_tabs(&calls).is_empty());
+        assert!(!app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().extra.hibernated);
+        App::finish_sleep_check(&app, hidden, epoch, current, true);
+        assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().sleep_check_started, None);
+        assert!(closed_tabs(&calls).is_empty());
+    }
+
+    #[test]
+    fn expired_or_closing_sleep_verdicts_neither_close_nor_show_a_hibernate_dialog() {
+        for closing in [false, true] {
+            let (app, hidden, _active, calls) = sleeping_app(300);
+            let started = if closing { Instant::now() } else { Instant::now() - SLEEP_CHECK_TIMEOUT };
+            let epoch = {
+                let mut state = app.borrow_mut();
+                state.closing = closing;
+                let tab = state.tabs.iter_mut().find(|tab| tab.id == hidden).unwrap();
+                tab.sleep_check_started = Some(started);
+                tab.reader.epoch
+            };
+            App::finish_sleep_check(&app, hidden, epoch, started, false);
+            App::finish_hibernate_check(&app, hidden, epoch, started, true);
+            assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().sleep_check_started, Some(started));
+            assert!(closed_tabs(&calls).is_empty());
+        }
+    }
+
+    #[test]
+    fn late_hibernate_answer_for_a_replaced_document_is_ignored_without_a_dialog() {
+        let (app, hidden, _active, _calls) = sleeping_app(300);
+        SLEEP_CHECK.with(|check| *check.borrow_mut() = SleepCheck::Deferred(None));
+        assert!(App::hibernate_tab(&app, hidden));
+        let done = SLEEP_CHECK.with(|check| match &mut *check.borrow_mut() {
+            SleepCheck::Deferred(slot) => slot.take(),
+            SleepCheck::Inline(_) => None,
+        }).unwrap();
+        app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == hidden).unwrap().reader.reset();
+        done(true);
+        assert!(!app.borrow().tabs.iter().find(|tab| tab.id == hidden).unwrap().extra.hibernated);
     }
 
     #[test]
