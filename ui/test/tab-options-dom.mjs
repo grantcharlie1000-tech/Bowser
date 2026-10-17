@@ -298,7 +298,7 @@ test('a double click opens the session in this window and Enter does too; the bu
 test('Save Tabs as Session asks for a name, saves all or the selected tabs, and refuses a blank name', () => {
   sent.length = 0;
   const save = panelRoot.querySelector('.ps-bar .bw-button');
-  assert.equal(save.textContent, 'Save Tabs as Session');
+  assert.equal(save.textContent, 'Save tabs as session');
   const form = panelRoot.querySelector('.ps-form');
   assert.equal(form.hidden, true);
   save.click();

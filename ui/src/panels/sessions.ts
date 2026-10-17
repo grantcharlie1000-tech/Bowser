@@ -29,7 +29,7 @@ export function startSessionsPanel(root: HTMLElement): (message: Inbound) => voi
   const header = panelHeader('Sessions', 'Close sessions');
   const info = el('p', 'pn-status ps-info');
   info.setAttribute('role', 'status');
-  const saveButton = textButton('Save Tabs as Session', () => beginSave(), { icon: 'save', primary: true });
+  const saveButton = textButton('Save tabs as session', () => beginSave(), { icon: 'save' }); // sentence case and secondary, like Notes' Add note
   const bar = el('div', 'pn-bar ps-bar');
   bar.append(saveButton);
 

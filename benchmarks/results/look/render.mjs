@@ -1,7 +1,7 @@
 // Headless before/after screenshots for the wave-1 look pass: every new wave-1 surface next to the
 // pre-existing Bowser surfaces it must match (settings Appearance/Performance, menus, hover cards),
 // light and dark, 100% and 150%. One headless Edge at a time, each with its own temp profile,
-// served from 127.0.0.1 out of this tree's ui/dist (render "before" first, rebuild, then "after").
+// served from 127.0.0.1; "before" uses origin/vivaldi/wave1-integration's committed ui/dist, "after" this tree's.
 //   node render.mjs <outDir> <before|after> [nameFilterRegex]
 import { createServer } from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
@@ -20,7 +20,10 @@ const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 
 const site = mkdtempSync(join(tmpdir(), 'look-site-'));
 for (const file of ['app.js', 'app.css', 'settings-page.js', 'history-page.js', 'start-page.js', 'index.html']) {
-  if (existsSync(join(repo, 'ui', 'dist', file))) copyFileSync(join(repo, 'ui', 'dist', file), join(site, file));
+  if (label === 'before') {
+    const shown = spawnSync('git', ['show', `origin/vivaldi/wave1-integration:ui/dist/${file}`], { cwd: repo, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+    if (shown.status === 0) writeFileSync(join(site, file), shown.stdout);
+  } else if (existsSync(join(repo, 'ui', 'dist', file))) copyFileSync(join(repo, 'ui', 'dist', file), join(site, file));
 }
 copyFileSync(join(here, 'fake-host.js'), join(site, 'fake-host.js'));
 writeFileSync(join(site, 'harness.css'), 'html.h-dark{background:#20242c}html.h-light{background:#f4f6f8}\n');
@@ -81,7 +84,7 @@ for (const scheme of ['dark', 'light']) {
     const add = (name, query, w, h, act = '') => shots.push({ name: `${label}-${name}-${scheme}-${d}`, query: `${query}&scheme=${scheme}${act ? `&act=${encodeURIComponent(act)}` : ''}`, w, h, dpr });
     for (const s of SETTINGS) add(`set-${s}`, `view=settings&scn=settings-${s}`, 1100, 1500);
     add('set-chain', 'view=settings&scn=settings-commands', 1100, 1100, 'wait:400|text:New chain|wait:300');
-    add('set-delete', 'view=settings&scn=settings-privacy', 1100, 1100, 'wait:400|top:.pg-card:last-of-type');
+    add('set-delete', 'view=settings&scn=settings-privacy', 1100, 2300); // down to Delete browsing data
     add('tabstrip', 'view=tabs&scn=tabstrip', 1100, 34);
     add('startpage', 'view=split&scn=start', 1100, 760);
     add('palette', 'view=popup&scn=palette&q=docs', 560, 360);

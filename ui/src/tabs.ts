@@ -394,7 +394,7 @@ export function startTabs(strip: HTMLElement): void {
   const closedBtn = el('button', 'closed-btn bw-icon-btn');
   closedBtn.type = 'button';
   closedBtn.setAttribute('aria-label', 'Closed tabs');
-  closedBtn.append(icon('trash'));
+  closedBtn.append(icon('tab-restore'));
   setTip(closedBtn, 'Closed tabs');
   closedBtn.addEventListener('click', () => { sendClosedTabs(); });
   const pinSep = el('span', 'pinsep');
