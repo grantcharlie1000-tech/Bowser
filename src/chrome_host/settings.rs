@@ -81,7 +81,14 @@ pub struct Snapshot<'a> {
     pub download_dir: &'a str,
     /// "Ask where to save each file before downloading".
     pub download_ask: bool,
+    /// --- tab stacks, tiling and workspaces (T10) --- the workspace rules as (site, workspace), and
+    /// the workspaces a rule can name, in rail order.
+    pub workspace_rules: Vec<(String, String)>,
+    pub workspace_names: Vec<String>,
 }
+
+/// --- tab stacks (T10) --- longest `wsrule` text: a host, a tab, a workspace name and its verb.
+const MAX_RULE_TEXT: usize = 600;
 
 const MAX_DOWNLOAD_DIR_CHARS: usize = 260;
 /// Longest `key=value` text of one tab option (the new tab address is the longest value).
@@ -162,6 +169,19 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         // --- start page --- one object, so the strict key list of the snapshot grows by one
         out.object("start", |start| start_snapshot(&settings.start, start));
         // --- end start page ---
+        // --- tab stacks, tiling and workspaces (T10) --- the workspace rules editor's list.
+        out.object("workspaceRules", |rules| {
+            rules.array("rules", |items| {
+                for (site, workspace) in s.workspace_rules.iter().take(crate::workspace_rules::MAX_RULES) {
+                    items.object(|rule| {
+                        rule.string("site", site);
+                        rule.string("workspace", capped(workspace, 128));
+                    });
+                }
+            });
+            rules.array("workspaces", |items| for name in s.workspace_names.iter().take(128) { items.string(capped(name, 128)); });
+        });
+        // --- end tab stacks ---
     })
     .expect("settings is a panel token")
 }
@@ -225,6 +245,12 @@ pub enum Action {
     /// One `key=value` change of the Tabs section, checked by `tab_options::apply_assignment`.
     TabOption(String),
     // --- end tab options ---
+    // --- tab stacks (T10) ---
+    /// "Workspace rules": `site` (a plain host) opens in the workspace named `workspace`.
+    WorkspaceRuleAdd { site: String, workspace: String },
+    /// Removes the rule for `site`.
+    WorkspaceRuleRemove(String),
+    // --- end tab stacks ---
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -262,6 +288,23 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             Action::TabOption(text.to_owned())
         }
         // --- end tab options ---
+        // --- tab stacks (T10) --- `add<TAB>site<TAB>workspace` or `del<TAB>site`.
+        "wsrule" if text_only => {
+            let text = f.text.as_deref()?;
+            if text.len() > MAX_RULE_TEXT { return None; }
+            let mut parts = text.split('\t');
+            match (parts.next()?, parts.next(), parts.next(), parts.next()) {
+                ("add", Some(site), Some(workspace), None) => {
+                    let site = crate::workspace_rules::normalise_site(site)?;
+                    let workspace = workspace.trim();
+                    if workspace.is_empty() || workspace.chars().any(char::is_control) { return None; }
+                    Action::WorkspaceRuleAdd { site, workspace: workspace.to_owned() }
+                }
+                ("del", Some(site), None, None) => Action::WorkspaceRuleRemove(crate::workspace_rules::normalise_site(site)?),
+                _ => return None,
+            }
+        }
+        // --- end tab stacks ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
@@ -540,7 +583,28 @@ mod tests {
             default_browser: "yes",
             download_dir: "C:\\Users\\Work\\Downloads",
             download_ask: false,
+            workspace_rules: vec![("example.org".into(), "Work".into())],
+            workspace_names: vec!["Default".into(), "Work".into()],
         }
+    }
+
+    /// --- tab stacks (T10) --- the workspace rules editor's list and its two commands.
+    #[test]
+    fn workspace_rules_ride_in_the_snapshot_and_their_commands_carry_a_plain_site() {
+        let json = snapshot_json(&sample(&Settings::default()));
+        assert!(json.ends_with(r#""workspaceRules":{"rules":[{"site":"example.org","workspace":"Work"}],"workspaces":["Default","Work"]}}}"#), "{json}");
+        let mut rule = fields("wsrule");
+        rule.text = Some("add\thttps://www.News.example.com/x\tReading".into());
+        assert_eq!(map_command(&rule), Some(Action::WorkspaceRuleAdd { site: "news.example.com".into(), workspace: "Reading".into() }));
+        rule.text = Some("del\texample.org".into());
+        assert_eq!(map_command(&rule), Some(Action::WorkspaceRuleRemove("example.org".into())));
+        for bad in ["add\tnot a site\tWork", "add\texample.org\t", "add\texample.org", "del", "del\texample.org\tWork", "move\texample.org", "add\texample.org\tW\u{1}"] {
+            rule.text = Some(bad.into());
+            assert_eq!(map_command(&rule), None, "{bad:?}");
+        }
+        rule.text = None;
+        rule.on = Some(true);
+        assert_eq!(map_command(&rule), None, "a rule carries text only");
     }
 
     #[test]
@@ -573,7 +637,7 @@ mod tests {
         settings.translate_auto = true;
         let json = snapshot_json(&sample(&settings));
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
-        assert!(json.ends_with(r##""widgetColor":"#1f2933","widgetDrag":true}}}"##), "{json}");
+        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true},"##), "{json}");
     }
 
     #[test]

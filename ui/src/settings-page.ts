@@ -25,6 +25,7 @@ import {
   saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
+  addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
 } from './settings-page-logic';
 
 /** --- settings slim --- the disclosures remember whether they are open (a per-viewer convenience only). */
@@ -47,6 +48,7 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
   address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
+  stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -515,8 +517,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
   row(tabsCard, 'grouping', grouping.root);
   const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
+  // --- T10 --- drawn in Tab stacks, tiling and workspaces, beside the other tiling options.
   const edgeDrop = switchControl((on) => change((d) => { d.splitEdgeDrop = on; }));
-  row(tabsCard, 'splitEdgeDrop', edgeDrop.root);
   const previewImages = switchControl((on) => change((d) => { d.tabPreviewImages = on; }));
   const previewMemory = switchControl((on) => change((d) => { d.tabPreviewMemory = on; }));
   const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
@@ -669,9 +671,90 @@ export function startSettingsPage(root: HTMLElement): void {
       }
     }
   };
+  // --- tab stacks, tiling and workspaces (T10) --- the workspace rules editor, a sub-page of its own.
+  let ruleWorkspaces: readonly string[] = [];
+  let ruleList: WorkspaceRules['rules'] = [];
+  let ruleWorkspace = '';
+  const rulesList = el('ul', 'sp-sites');
+  rulesList.setAttribute('aria-label', 'Workspace rules');
+  const rulesForm = el('div', 'sp-allow-add');
+  const ruleSite = el('input', 'bw-input sp-allow-input');
+  ruleSite.type = 'text';
+  ruleSite.placeholder = 'example.com';
+  ruleSite.autocomplete = 'off';
+  ruleSite.spellcheck = false;
+  ruleSite.maxLength = 253;
+  ruleSite.setAttribute('aria-label', 'Site');
+  const ruleTargetHost = el('div', 'sp-select-host');
+  let ruleSelect: SelectField<string> | null = null;
+  let ruleChoices = '';
+  const ruleError = el('p', 'sp-field-error');
+  ruleError.setAttribute('role', 'alert');
+  const addRule = (): void => {
+    if (ruleSiteOf(ruleSite.value) === null) { ruleError.textContent = 'Enter a site such as example.com.'; return; }
+    if (ruleExists(ruleList, ruleSite.value)) { ruleError.textContent = 'That site already has a rule.'; return; }
+    const text = addRuleText(ruleSite.value, ruleWorkspace);
+    if (text === null) { ruleError.textContent = 'Choose a workspace.'; return; }
+    ruleError.textContent = '';
+    ruleSite.value = '';
+    if (cmd({ a: 'wsrule', text })) pending += 1;
+  };
+  const ruleAdd = textButton('Add', addRule, { icon: 'plus' });
+  ruleSite.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addRule(); } });
+  ruleSite.addEventListener('input', () => { ruleError.textContent = ''; });
+  rulesForm.append(ruleSite, ruleTargetHost, ruleAdd);
+  const paintRules = (value: WorkspaceRules): void => {
+    ruleList = value.rules;
+    ruleWorkspaces = value.workspaces;
+    if (!ruleWorkspaces.includes(ruleWorkspace)) ruleWorkspace = ruleWorkspaces[0] ?? '';
+    const key = ruleWorkspaces.join('\n');
+    if (!ruleSelect || key !== ruleChoices) {
+      ruleChoices = key;
+      ruleSelect?.close();
+      ruleSelect = selectField<string>({
+        options: ruleWorkspaces.map((name) => ({ value: name, label: name })),
+        value: ruleWorkspace,
+        label: 'Workspace',
+        placeholder: 'Workspace',
+        onChange: (next) => { ruleWorkspace = next; },
+      });
+      ruleTargetHost.replaceChildren(ruleSelect.root);
+    } else {
+      ruleSelect.set(ruleWorkspace);
+    }
+    rulesList.replaceChildren(...value.rules.map((rule) => {
+      const item = el('li', 'sp-site');
+      const name = el('span', 'sp-site-name');
+      name.textContent = `${rule.site} → ${rule.workspace}`;
+      name.dir = 'auto';
+      const missing = !ruleWorkspaces.includes(rule.workspace);
+      if (missing) name.setAttribute('data-tip', 'No workspace has this name, so the rule rests until one does.');
+      item.classList.toggle('is-muted', missing);
+      const remove = el('button', 'bw-icon-btn sp-site-remove');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove the rule for ${rule.site}`);
+      remove.setAttribute('data-tip', 'Remove');
+      remove.append(icon('close', { size: 12, fine: true }));
+      remove.addEventListener('click', () => {
+        if (cmd({ a: 'wsrule', text: removeRuleText(rule.site) })) pending += 1;
+        ruleSite.focus();
+      });
+      item.append(name, remove);
+      return item;
+    }));
+    rulesList.hidden = value.rules.length === 0;
+  };
+  // --- end tab stacks ---
   for (const cardKey of TAB_CARDS) {
-    const tabCard = card('tabs', TAB_CARD_TITLES[cardKey]);
+    // --- T10 --- the stacks card is its own part of the Tabs and start page area.
+    const tabCard = card(cardKey === 'stacks' ? 'stacks' : 'tabs', TAB_CARD_TITLES[cardKey]);
     for (const spec of cardSpecs(cardKey)) row(tabCard, spec.key, buildTabControl(spec));
+    if (cardKey === 'stacks') {
+      row(tabCard, 'splitEdgeDrop', edgeDrop.root);
+      const rulesRow = row(tabCard, 'workspaceRules', rulesForm);
+      rulesRow.root.classList.add('is-wrap', 'is-tight');
+      rulesRow.root.append(rulesList, ruleError);
+    }
     // --- wave-1 integration --- the older tab rows join the Tabs section's tab bar card.
     if (cardKey === 'bar') {
       row(tabCard, 'ctrlTabMru', mru.root);
@@ -1312,6 +1395,7 @@ export function startSettingsPage(root: HTMLElement): void {
     mru.set(d.ctrlTabMru);
     pinGroups.set(d.pinNewTabGroups);
     edgeDrop.set(d.splitEdgeDrop);
+    paintRules(s.workspaceRules); // --- tab stacks (T10) ---
     vTabs.set(d.ctrlSVerticalTabs);
     theme.set(d.theme);
     accentInput.value = d.themeAccent !== '' ? d.themeAccent : '#000000';

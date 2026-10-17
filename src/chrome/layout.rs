@@ -507,9 +507,11 @@ impl SplitPanes {
 /// the cross gaps' at `cross_at`, minimum pane sizes and the gap from `split_view`, scaled by `m`.
 /// `None` when the content cannot hold two panes (the focused pane then shows alone).
 pub fn split_panes(content: Rect, view: crate::split_view::SplitView, primary_at: i32, cross_at: i32, m: Metrics) -> Option<SplitPanes> {
-    use crate::split_view::{geometry, GAP_DIP, MIN_PANE_DIP, MIN_PANE_HEIGHT_DIP};
+    use crate::split_view::{geometry, MIN_PANE_DIP, MIN_PANE_HEIGHT_DIP};
     let page = (content.left, content.top, content.right, content.bottom);
-    let geometry = geometry(view, page, primary_at, cross_at, m.px(MIN_PANE_DIP), m.px(MIN_PANE_HEIGHT_DIP), m.px(GAP_DIP))?;
+    // --- tab stacks (T10) --- the gap follows "Remove the space around tiles" (`stacks::gap_dip`).
+    let gap = m.px(crate::stacks::gap_dip());
+    let geometry = geometry(view, page, primary_at, cross_at, m.px(MIN_PANE_DIP), m.px(MIN_PANE_HEIGHT_DIP), gap)?;
     Some(SplitPanes::from_geometry(&geometry, view))
 }
 
@@ -2243,6 +2245,8 @@ mod tests {
                 dot: false,
                 accent: None,
                 favicon: None,
+                count: 0,
+                emoji: None,
             })
             .collect();
         let view = RailView {
@@ -2307,6 +2311,8 @@ mod tests {
                 dot: false,
                 accent: None,
                 favicon: None,
+                count: 0,
+                emoji: None,
             })
             .collect();
         let view = RailView {

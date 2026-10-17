@@ -446,6 +446,13 @@
   background: var(--bw-accent-soft);
   box-shadow: inset 0 0 0 1px var(--bw-accent);
 }
+/* --- tab stacks (T10) --- the tab a held tab rests over: a release stacks the two. The selection's
+   tint with a firmer edge, so the two marks never read as one. */
+.strip .tab.stack-target::before,
+.strip .tab.active.stack-target::before {
+  background: var(--bw-accent-soft);
+  box-shadow: inset 0 0 0 2px var(--bw-accent);
+}
 
 .strip .unread {
   flex: none;

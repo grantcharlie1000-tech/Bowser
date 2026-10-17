@@ -53,7 +53,8 @@ shows it.
 5. On a site in the prioritised list, and from a page, only commands marked browser priority are claimed.
 
 `src/shortcuts.rs` keeps the default chord table (`command_for`, `command_for_gated`) as a reference: a test
-checks that the registry's default keymap is that table key for key, plus Ctrl+F1.
+checks that the registry's default keymap is that table key for key, plus Ctrl+F1 and the tilings' Ctrl+F7, Ctrl+F8
+and Ctrl+F9.
 
 ## Files
 
@@ -102,6 +103,31 @@ Y), Esc, Alt+F4, Shift+F10 and Ctrl+Alt with a typing key (AltGr) cannot be assi
 - **Space fast-forward**: there is no fast-forward feature, and Space scrolling belongs to the page.
 - **Include English search terms**: Bowser's interface is English only; there is no other language to add
   English terms to.
+
+## Tab stacks, tiling and workspaces (T10)
+
+Registry rows in `src/commands/registry.rs` (handlers in `src/win32/stack_ui.rs`), so each is in Quick Commands,
+the keyboard editor, the cheat sheet and chains:
+
+| Id | Label | Default |
+| --- | --- | --- |
+| `stack-site-tabs` | Stack tabs of this site | |
+| `stack-tabs-by-site` | Stack all tabs by site | |
+| `unstack` | Unstack | |
+| `tile-vertical` | Tile vertically | Ctrl+F9 |
+| `tile-horizontal` | Tile horizontally | Ctrl+F8 |
+| `tile-grid` | Tile in a grid | Ctrl+F7 |
+| `untile` | Untile | |
+| `next-workspace` | Next workspace | |
+| `previous-workspace` | Previous workspace | |
+
+The three tilings are browser priority (they keep working on a site that prioritises its own shortcuts). They
+tile the selected tabs (Ctrl or Shift click) when two or more are selected, otherwise the stack of the tab in
+front, at most four (the split view's panes); with neither they say so. A stack is a site island
+(`src/tab_groups.rs`): the commands place tabs with the island machinery's manual membership, so Undo tab
+organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "Tab stack" submenu offers the
+same and the per-stack actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
+links, move to a workspace or a new window, unstack).
 
 ## Command chains
 

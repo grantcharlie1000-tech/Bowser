@@ -508,6 +508,8 @@ pub fn rail_items<'a>(
                 dot: entry.dot,
                 accent: entry.accent.map(css_colour).unwrap_or_default(),
                 has_favicon,
+                count: entry.count, // --- tab stacks and workspaces (T10) ---
+                emoji: entry.emoji.clone().unwrap_or_default(),
             }
         })
         .collect()
@@ -994,6 +996,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 

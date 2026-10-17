@@ -244,3 +244,45 @@ test('session: never shown ends silently; touch gets none; a new drag abandons t
   assert.equal(GhostSession.start(11, 'tab', 100, 26, 500, 1, false, 'mouse', hooks()), null);
   assert.equal(sent.length, before);
 });
+
+// --- tab stacks (T10) --- "Stack tabs by dragging one onto another".
+test('a held tab over the middle half of another tab is a stack target; near the edges it reorders', () => {
+  const { stackCandidate, stackAnnouncement } = logic;
+  const lefts = [0, 100, 200];
+  const widths = [100, 100, 100];
+  assert.equal(stackCandidate(lefts, widths, 0, 150), 1, 'the middle of the next tab');
+  assert.equal(stackCandidate(lefts, widths, 0, 125), 1, 'a quarter in counts');
+  assert.equal(stackCandidate(lefts, widths, 0, 124), -1, 'the outer quarter moves between tabs');
+  assert.equal(stackCandidate(lefts, widths, 0, 175), -1);
+  assert.equal(stackCandidate(lefts, widths, 0, 50), -1, 'never the held tab itself');
+  assert.equal(stackCandidate(lefts, [100, 0, 100], 0, 150), -1, 'a tab with no width is no target');
+  assert.equal(stackAnnouncement('Mail'), 'Release to stack with Mail.');
+  assert.equal(stackAnnouncement(''), 'Release to stack with this tab.');
+});
+
+test('the stack drop reaches Rust as tabstack with two different tab ids', () => {
+  const sent = [];
+  const host = (globalThis.window ??= {});
+  const before = host.chrome;
+  host.chrome = { webview: { postMessage: (m) => sent.push(m), addEventListener: () => {} } };
+  return load('protocol.ts').then(({ sendTabStack, sendRailWheel }) => {
+    assert.equal(sendTabStack(3, 7), true);
+    assert.equal(sendTabStack(3, 3), false, 'not onto itself');
+    assert.equal(sendTabStack(0, 7), false);
+    assert.equal(sendRailWheel(2), true);
+    assert.equal(sendRailWheel(0), false);
+    assert.equal(sendRailWheel(9), false);
+    assert.deepEqual(sent.map((m) => (typeof m === 'string' ? JSON.parse(m) : m)), [{ v: 1, t: 'tabstack', id: 3, onto: 7 }, { v: 1, t: 'railwheel', d: 2 }]);
+    host.chrome = before;
+  });
+});
+
+test('tabs.ts holds the strip still over a stack target and sends tabstack only once the delay has run', () => {
+  const src = readFileSync(join(here, '..', 'src', 'tabs.ts'), 'utf8');
+  assert.match(src, /if \(d\.stackOn !== null\) return;/, 'no reorder while over a target');
+  assert.match(src, /window\.setTimeout\(arm, ui\.stackDelay\)/, 'the delay comes from the strip options');
+  assert.match(src, /const stackOnto = commit && d\.stackArmed && !splitOut \? d\.stackOn : null;/);
+  assert.match(src, /ui\.stackDrag/, 'the option gates it');
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
+  assert.match(css, /\.strip \.tab\.stack-target::before/);
+});

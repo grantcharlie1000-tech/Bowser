@@ -649,6 +649,8 @@ pub struct App {
     pub user_data_dir: PathBuf,
     pub benchmark_url: Option<url::Url>,
     initial_url: Option<url::Url>,
+    /// --- tab stacks (T10) --- further `--open-url` addresses, opened after `initial_url`.
+    more_initial_urls: Vec<url::Url>,
     pub allowed_benchmark_file: Option<url::Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
@@ -742,6 +744,8 @@ pub struct App {
     downloads: crate::downloads::DownloadManager,
     /// Told after every change to `downloads` (set by the window; see `set_downloads_observer`).
     downloads_observer: Option<Rc<dyn Fn(crate::downloads::Change)>>,
+    /// --- tab stacks (T10) --- sites that open in a named workspace (`workspace-rules.txt`).
+    workspace_rules: Vec<crate::workspace_rules::Rule>,
 }
 
 // --- split view ---
@@ -849,6 +853,7 @@ pub use privacy::DeleteReport;
 mod tab_features;
 pub use tab_features::{TabStripExtra, MAX_SESSION_NAME_CHARS, MAX_TAB_NAME_CHARS};
 // --- end tab options ---
+mod stacks; // --- tab stacks, tiling and workspaces (T10) ---
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -2239,8 +2244,10 @@ impl App {
         })
     }
 
+    /// The group preferences the strip, the sidebar and the bookmarks bar draw from: folded the way
+    /// the stack style says (--- tab stacks (T10) ---, `stacks::collapse_rule`).
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
-        app.borrow().group_preferences.clone()
+        app.borrow().styled_group_preferences()
     }
 
     /// Projection inputs for the tab strip, in model order, with manual placement applied.
@@ -2278,6 +2285,11 @@ impl App {
     }
 
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
+        // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves: a click on the
+        // ball goes to a member instead of storing a collapse.
+        if !matches!(Self::stack_style(app), crate::tab_options::StackStyle::Islands | crate::tab_options::StackStyle::Off) {
+            return Self::stack_ball(app, id);
+        }
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
             if state.mirror(id).is_some_and(|tab| tab.private) {
@@ -2471,7 +2483,8 @@ impl App {
     fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
-            if state.tab_model.active() == id {
+            // --- tab stacks (T10) --- only Islands keeps a stored collapse to undo.
+            if state.tab_model.active() == id || state.settings.tabs.stack_style != crate::tab_options::StackStyle::Islands {
                 return false;
             }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
@@ -2539,12 +2552,23 @@ impl App {
             .into_iter()
             .map(|input| (input.id, input))
             .collect();
-        self.workspaces
+        let mut inputs: Vec<tab_groups::TabGroupInput> = self
+            .workspaces
             .active()
             .tabs()
             .iter()
             .filter_map(|id| all.remove(id))
-            .collect()
+            .collect();
+        // --- tab stacks (T10) --- "Tab stacks: Off": nothing forms a stack. Only this view of the
+        // inputs: the site rules (which span workspaces) still see every tab's site.
+        if !crate::stacks::stacks_on(self.settings.tabs.stack_style) {
+            for input in &mut inputs {
+                input.domain = None;
+                input.opener = None;
+                input.manual = false;
+            }
+        }
+        inputs
     }
 
     /// Inputs for every tab of every workspace, in model order, from the same state the strip
@@ -4825,6 +4849,8 @@ impl App {
         // Address bar options read wherever an address is shown or completed.
         crate::omnibox::set_show_full_address(settings.address.show_full);
         crate::omnibox::set_autocomplete(settings.address.autocomplete);
+        // --- tab stacks (T10) --- the split view's tile look, read by its geometry.
+        crate::stacks::set_tile_look(settings.tabs.tile_titles, settings.tabs.tile_tight);
         let provider =
             SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
@@ -4917,6 +4943,7 @@ impl App {
     ) -> Self {
         let benchmark_url = options.benchmark_url;
         let initial_url = options.open_url;
+        let more_initial_urls = options.more_urls; // --- tab stacks (T10) ---
         let allowed_benchmark_file = benchmark_url.clone();
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
@@ -4945,6 +4972,7 @@ impl App {
             allowed_benchmark_file,
             benchmark_url,
             initial_url,
+            more_initial_urls,
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
             benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
@@ -5000,6 +5028,12 @@ impl App {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            // --- tab stacks (T10) --- a guest window keeps no rules.
+            workspace_rules: crate::profile::active()
+                .ok()
+                .filter(|profile| !profile.is_guest())
+                .map(|profile| crate::workspace_rules::load(profile.root()))
+                .unwrap_or_default(),
         }
     }
 
@@ -5493,6 +5527,16 @@ impl App {
         if let Some(url) = url {
             Self::submit_url(app, url, None);
         }
+        // --- tab stacks (T10) --- the rest of a stack moved to this new window: one tab each, asleep
+        // until selected, as restored tabs are.
+        let more = std::mem::take(&mut app.borrow_mut().more_initial_urls);
+        let shown = Self::active_tab_id(app);
+        for url in more {
+            let id = Self::new_background_tab(app, false, None);
+            Self::make_asleep(app, id, &url);
+            let _ = Self::move_tab(app, id, usize::MAX);
+        }
+        let _ = Self::select_tab(app, shown);
     }
 
     // --- start page ---
@@ -5545,6 +5589,10 @@ impl App {
             Self::navigate_internal(app, active, &url);
             return;
         }
+        // --- tab stacks (T10) --- a site with a workspace rule opens in its workspace, which the
+        // window switches to.
+        let active = app.borrow().tab_model.active();
+        let _ = Self::apply_workspace_rule(app, active, &url, true);
         // The address bar shows the target now, not after the engine starts and the page commits.
         let (hwnd, edit, active) = {
             let state = app.borrow();
@@ -7433,6 +7481,7 @@ mod tests {
     mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
     mod tab_flow; // --- tab options ---
     mod wave1_fixes; // --- wave-1 fixes ---
+    mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
 
     #[test]
     fn reader_probe_due_table() {
@@ -9599,6 +9648,7 @@ mod tests {
             user_data_dir: PathBuf::new(),
             benchmark_url: None,
             initial_url: None,
+            more_initial_urls: Vec::new(), // --- tab stacks (T10) ---
             allowed_benchmark_file: None,
             benchmark_tracking_prevention: None,
             benchmark_memory_pressure: false,
@@ -9656,6 +9706,7 @@ mod tests {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            workspace_rules: Vec::new(), // --- tab stacks (T10) ---
         }))
     }
 

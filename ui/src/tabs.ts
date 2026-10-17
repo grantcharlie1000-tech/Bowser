@@ -1,6 +1,6 @@
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { onInbound, send, sendClosedTabs, sendTabSelection, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { onInbound, send, sendClosedTabs, sendTabSelection, sendTabStack, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
@@ -14,7 +14,7 @@ import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
 // --- tab ghost (docs/design/tab-drag.md) ---
 import { announce, GhostSession, routeGhostMessage } from './tab-drag';
-import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, nextPhase, stripBand, type DragPhase } from './tab-drag-logic';
+import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, nextPhase, stackAnnouncement, stackCandidate, stripBand, type DragPhase } from './tab-drag-logic';
 // --- end tab ghost ---
 import {
   beforeSlotId,
@@ -106,6 +106,7 @@ const PLAIN_VIEW: TabView = { indicator: 'spinner', picked: false, now: 0 };
 const DEFAULT_OPTS: TabOptsMsg = {
   t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
   alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
+  stackDrag: true, stackDelay: 400, // --- tab stacks (T10) ---
 };
 const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
 
@@ -153,6 +154,11 @@ interface Drag {
   lastX: number;
   lastY: number;
   // --- end tab ghost ---
+  // --- tab stacks (T10) --- the tab the held tab rests over the middle of, since when, and whether
+  // the stacking delay has run (a release then stacks the two).
+  stackOn: TabNode | null;
+  stackArmed: boolean;
+  stackTimer: number;
 }
 
 function colourOf(index: number): string {
@@ -775,6 +781,27 @@ export function startTabs(strip: HTMLElement): void {
   });
 
   /**
+   * --- tab stacks (T10) --- marks `target` as the tab the held tab rests over the middle of. Once it
+   * has rested there for the stacking delay the tab shows it, and a release stacks the two.
+   */
+  const setStackOn = (d: Drag, target: TabNode | null): void => {
+    if (d.stackOn === target) return;
+    window.clearTimeout(d.stackTimer);
+    d.stackOn?.root.classList.remove('stack-target');
+    d.stackOn = target;
+    d.stackArmed = false;
+    if (target === null) return;
+    const arm = (): void => {
+      if (drag !== d || d.stackOn !== target) return;
+      d.stackArmed = true;
+      target.root.classList.add('stack-target');
+      announce(stackAnnouncement(titleOf(target)));
+    };
+    if (ui.stackDelay <= 0) arm();
+    else d.stackTimer = window.setTimeout(arm, ui.stackDelay);
+  };
+
+  /**
    * Lays the strip out for the held tab at the last pointer position: attached, the neighbours open
    * the gap under the pointer (the ghost, or the tab itself without one, rides above); floating, the
    * gap closes and, over the page, Rust shows the split drop zone.
@@ -821,6 +848,7 @@ export function startTabs(strip: HTMLElement): void {
     }
     // --- end split view ---
     if (phase === 'floating') {
+      setStackOn(d, null); // --- tab stacks (T10) ---
       // Off the strip: no slot. With a ghost the gap closes up behind it; without one the tab stays
       // under the pointer and its neighbours go home.
       d.dest = d.from;
@@ -838,6 +866,14 @@ export function startTabs(strip: HTMLElement): void {
       d.centers = home.centers;
       d.lefts = home.lefts;
     }
+    // --- tab stacks (T10) --- over the middle of another tab the strip holds still, so that tab stays
+    // under the pointer; resting there for the stacking delay marks it, and a release stacks the two.
+    // Where each tab is drawn now (home plus its gap shift), so the tab marked is the one under the pointer.
+    const shown = d.lefts.map((left, i) => left + (d.order[i]?.shift ?? 0));
+    const over = ui.stackDrag && !d.node.root.classList.contains('pinned') ? stackCandidate(shown, d.widths, d.from, x) : -1;
+    const target = over >= 0 ? d.order[over] ?? null : null;
+    setStackOn(d, target !== null && !target.root.classList.contains('pinned') ? target : null);
+    if (d.stackOn !== null) return;
     // The slot comes from the pointer, not from the dragged tab's centre: grabbing a wide tab by its edge
     // must not shift the drop by the grab offset.
     d.dest = dropIndex(d.centers, d.from, x);
@@ -855,7 +891,16 @@ export function startTabs(strip: HTMLElement): void {
     drag = null;
     window.removeEventListener('keydown', onDragKey, true);
     try { if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
+    // --- tab stacks (T10) --- a release over a marked tab stacks the two; the held tab goes home.
+    window.clearTimeout(d.stackTimer);
+    const stackOnto = commit && d.stackArmed && !splitOut ? d.stackOn : null;
+    d.stackOn?.root.classList.remove('stack-target');
+    d.stackOn = null;
     if (!d.active) return;
+    if (stackOnto !== null) {
+      sendTabStack(d.node.id, stackOnto.id);
+      d.dest = d.from;
+    }
     ignoreClick = true;
     const ghost = d.ghost;
     const outcome = dropOutcome(commit, d.phase, splitOut, d.from, d.dest);
@@ -944,6 +989,7 @@ export function startTabs(strip: HTMLElement): void {
       pointerId: ev.pointerId, startX: ev.clientX, node, order, centers: home.centers, from, active: false, dest: from, dx: 0,
       startY: ev.clientY, pointerType: ev.pointerType, lefts: home.lefts, widths: home.widths, phase: 'attached', ghost: null,
       lastX: ev.clientX, lastY: ev.clientY,
+      stackOn: null, stackArmed: false, stackTimer: 0, // --- tab stacks (T10) ---
     };
     try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
@@ -1165,7 +1211,8 @@ export function startTabs(strip: HTMLElement): void {
         }
         break;
       case 'workspace':
-        workspace = { name: msg.name, icon: msg.icon };
+        // --- tab stacks and workspaces (T10) --- the emoji and the off flag ride along.
+        workspace = { name: msg.name, icon: msg.icon, ...(msg.emoji !== undefined ? { emoji: msg.emoji } : {}), ...(msg.off ? { off: true } : {}) };
         if (layoutMode === 'vertical') sidebar.workspace(workspace);
         break;
       // --- end vertical sidebar ---

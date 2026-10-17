@@ -243,6 +243,14 @@ pub enum Command {
     Tab { action: TabAction, id: u32 },
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
+    // --- tab stacks (T10) ---
+    /// The held tab `id` was dropped on tab `onto` after resting over it ("Stack tabs by dragging one
+    /// onto another"): Rust stacks the two.
+    TabStack { id: u32, onto: u32 },
+    /// The wheel turned over the rail's workspaces: `d` notches, down positive ("Switch workspaces
+    /// by scrolling"; Rust acts only while the option is on).
+    RailWheel { d: i32 },
+    // --- end tab stacks ---
     // --- tab options ---
     /// The strip's selection after a Ctrl or Shift click, as wire ids in strip order (empty clears it).
     TabSelection { ids: Vec<u32> },
@@ -928,6 +936,24 @@ fn uint_field(fields: &[(String, Value)], name: &'static str) -> Result<u32, Pro
     }
 }
 
+/// --- tab stacks (T10) --- a plain, possibly negative, integer that fits an `i32`.
+fn int_field(fields: &[(String, Value)], name: &'static str) -> Result<i32, ProtocolError> {
+    match field(fields, name) {
+        Some(Value::Number(raw)) => {
+            let digits = raw.strip_prefix('-').unwrap_or(raw);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(ProtocolError::WrongType(name));
+            }
+            raw.parse::<i32>().map_err(|_| ProtocolError::InvalidValue(name))
+        }
+        Some(_) => Err(ProtocolError::WrongType(name)),
+        None => Err(ProtocolError::MissingField(name)),
+    }
+}
+
+/// Most notches one `railwheel` message carries (a fast wheel is reported once per frame).
+pub const MAX_RAIL_WHEEL: u32 = 8;
+
 /// `seq` must be a plain integer in `0..=u32::MAX`.
 fn seq_field(fields: &[(String, Value)]) -> Result<u32, ProtocolError> {
     uint_field(fields, "seq")
@@ -1039,6 +1065,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "caption" => &["a"],
         "tab" => &["a", "id"],
         "tabmove" => &["id", "before"],
+        "tabstack" => &["id", "onto"], // --- tab stacks (T10) ---
+        "railwheel" => &["d"], // --- tab stacks (T10) ---
         // --- tab options ---
         "tabsel" => &["ids"],
         "closedtabs" => &[],
@@ -1135,6 +1163,19 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             id: uint_field(fields, "id")?,
             before: uint_field(fields, "before")?,
         },
+        // --- tab stacks (T10) ---
+        "tabstack" => Command::TabStack {
+            id: uint_field(fields, "id")?,
+            onto: uint_field(fields, "onto")?,
+        },
+        "railwheel" => {
+            let d = int_field(fields, "d")?;
+            if d == 0 || d.unsigned_abs() > MAX_RAIL_WHEEL {
+                return Err(ProtocolError::InvalidValue("d"));
+            }
+            Command::RailWheel { d }
+        }
+        // --- end tab stacks ---
         "group" => Command::Group {
             action: match str_field(fields, "a")? {
                 "toggle" => GroupAction::Toggle,
@@ -1322,10 +1363,19 @@ pub fn layout_json(mode: LayoutMode) -> String {
 // --- vertical sidebar (lane S) ---
 /// Active workspace metadata for the vertical sidebar. Only the known glyph tokens are emitted.
 pub fn workspace_json(name: &str, icon: &str) -> Option<String> {
+    workspace_json_with(name, icon, None, true)
+}
+
+/// --- tab stacks and workspaces (T10) --- [`workspace_json`] with the emoji the workspace shows
+/// instead of its glyph (`emoji` rides only when there is one the emoji check accepts), and
+/// `"off":true` while workspaces are off, which hides the sidebar's workspace switcher.
+pub fn workspace_json_with(name: &str, icon: &str, emoji: Option<&str>, on: bool) -> Option<String> {
     const ICONS: [&str; 12] = ["g:briefcase", "g:home", "g:code", "g:book", "g:cart", "g:game", "g:music", "g:heart", "g:star", "g:bolt", "g:globe", "g:leaf"];
     if !ICONS.contains(&icon) { return None; }
+    let emoji = emoji.and_then(crate::workspaces::clean_emoji).map(|emoji| format!(",\"emoji\":{}", json_string(&emoji))).unwrap_or_default();
+    let off = if on { "" } else { ",\"off\":true" };
     Some(format!(
-        "{{\"v\":1,\"t\":\"workspace\",\"name\":{},\"icon\":{}}}",
+        "{{\"v\":1,\"t\":\"workspace\",\"name\":{},\"icon\":{}{emoji}{off}}}",
         json_string(truncate_utf16(name, MAX_RAIL_LABEL_CHARS)),
         json_string(icon),
     ))
@@ -1617,6 +1667,9 @@ pub struct StripOptions {
     pub maximised: bool,
     /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
     pub closed: u32,
+    /// --- tab stacks (T10) --- a held tab resting over another for `stack_delay` ms stacks on drop.
+    pub stack_drag: bool,
+    pub stack_delay: u32,
 }
 
 impl Default for StripOptions {
@@ -1635,6 +1688,8 @@ impl Default for StripOptions {
             remove_spacing: false,
             maximised: false,
             closed: 0,
+            stack_drag: true,
+            stack_delay: 400,
         }
     }
 }
@@ -1657,6 +1712,8 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         out.bool("removeSpacing", options.remove_spacing);
         out.bool("maximised", options.maximised);
         out.uint("closed", u64::from(options.closed.min(99)));
+        out.bool("stackDrag", options.stack_drag); // --- tab stacks (T10) ---
+        out.uint("stackDelay", u64::from(options.stack_delay.min(2000)));
     })
 }
 // --- end tab options ---
@@ -2030,11 +2087,18 @@ pub struct RailItem {
     pub accent: String,
     /// A favicon is cached for this key (`railfav` follows).
     pub has_favicon: bool,
+    /// --- tab stacks and workspaces (T10) --- a workspace's tab count badge, 0 for none (`n`).
+    pub count: u32,
+    /// The emoji a workspace shows instead of its glyph, `""` for none.
+    pub emoji: String,
 }
+
+/// Largest tab count a rail badge carries (it shows "99+" beyond 99).
+pub const MAX_RAIL_COUNT: u32 = 9999;
 
 /// `{"v":1,"t":"rail","items":[...]}`: the whole rail, in order. At most `MAX_RAIL_ITEMS` items are
 /// sent. Labels are capped at `MAX_RAIL_LABEL_CHARS` characters; an accent that is not a safe CSS
-/// colour is sent as `""`.
+/// colour is sent as `""`. `n` and `emoji` ride only on items that have them.
 pub fn rail_json(items: &[RailItem]) -> String {
     let mut out = String::from("{\"v\":1,\"t\":\"rail\",\"items\":[");
     for (index, item) in items.iter().take(MAX_RAIL_ITEMS).enumerate() {
@@ -2043,7 +2107,7 @@ pub fn rail_json(items: &[RailItem]) -> String {
         }
         let accent = if is_safe_css_colour(&item.accent) { item.accent.as_str() } else { "" };
         out.push_str(&format!(
-            "{{\"k\":{},\"icon\":{},\"label\":{},\"active\":{},\"dot\":{},\"accent\":{},\"fav\":{}}}",
+            "{{\"k\":{},\"icon\":{},\"label\":{},\"active\":{},\"dot\":{},\"accent\":{},\"fav\":{}",
             json_string(&item.key),
             json_string(&item.icon),
             json_string(truncate_chars(&item.label, MAX_RAIL_LABEL_CHARS)),
@@ -2052,6 +2116,14 @@ pub fn rail_json(items: &[RailItem]) -> String {
             json_string(accent),
             item.has_favicon,
         ));
+        // --- tab stacks and workspaces (T10) ---
+        if item.count > 0 {
+            out.push_str(&format!(",\"n\":{}", item.count.min(MAX_RAIL_COUNT)));
+        }
+        if let Some(emoji) = crate::workspaces::clean_emoji(&item.emoji) {
+            out.push_str(&format!(",\"emoji\":{}", json_string(&emoji)));
+        }
+        out.push('}');
     }
     out.push_str("]}");
     out
@@ -2525,6 +2597,10 @@ mod tests {
         // --- vertical sidebar (lane S) ---
         assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
         assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);
+        // --- T10 --- the emoji rides only when set and clean.
+        assert_eq!(workspace_json_with("Work", "g:code", Some("🚀"), true).as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work","icon":"g:code","emoji":"🚀"}"#));
+        assert_eq!(workspace_json_with("Work", "g:code", Some("a b"), true), workspace_json("Work", "g:code"));
+        assert_eq!(workspace_json_with("Work", "g:code", None, false).as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work","icon":"g:code","off":true}"#));
         // --- end vertical sidebar ---
         assert_eq!(snap_json("history", |d| d.int("count", 0)).as_deref(), Some(r#"{"v":1,"t":"snap","p":"history","d":{"count":0}}"#));
         assert_eq!(snap_json("History", |_| {}), None);
@@ -3712,6 +3788,19 @@ mod tests {
         );
     }
 
+    /// --- tab stacks (T10) ---
+    #[test]
+    fn tab_stack_and_rail_wheel_carry_exactly_their_fields() {
+        assert_eq!(ok(r#"{"v":1,"t":"tabstack","id":3,"onto":7}"#), Command::TabStack { id: 3, onto: 7 });
+        assert_eq!(err(r#"{"v":1,"t":"tabstack","id":3}"#), ProtocolError::MissingField("onto"));
+        assert_eq!(ok(r#"{"v":1,"t":"railwheel","d":-2}"#), Command::RailWheel { d: -2 });
+        assert_eq!(ok(r#"{"v":1,"t":"railwheel","d":8}"#), Command::RailWheel { d: 8 });
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":0}"#), ProtocolError::InvalidValue("d"), "no turn, no message");
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":9}"#), ProtocolError::InvalidValue("d"));
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":1.5}"#), ProtocolError::WrongType("d"));
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":1,"x":2}"#), ProtocolError::UnknownKey("x".into()), "no extra fields");
+    }
+
     #[test]
     fn tab_move_requires_both_ids_as_u32() {
         assert_eq!(
@@ -4169,6 +4258,8 @@ mod tests {
             dot: false,
             accent: accent.to_owned(),
             has_favicon: false,
+            count: 0,
+            emoji: String::new(),
         }
     }
 
@@ -4339,6 +4430,8 @@ mod tests {
                 dot: true,
                 accent: String::new(),
                 has_favicon: false,
+                count: 0,
+                emoji: String::new(),
             },
             RailItem {
                 key: "ws:4".to_owned(),
@@ -4348,6 +4441,8 @@ mod tests {
                 dot: false,
                 accent: "#4385d1".to_owned(),
                 has_favicon: false,
+                count: 0,
+                emoji: String::new(),
             },
         ];
         assert_eq!(
@@ -4360,6 +4455,21 @@ mod tests {
             )
         );
         assert_eq!(rail_json(&[]), r#"{"v":1,"t":"rail","items":[]}"#);
+    }
+
+    /// --- tab stacks and workspaces (T10) --- a workspace's tab count and emoji ride only when set.
+    #[test]
+    fn rail_items_carry_a_tab_count_and_an_emoji_only_when_they_have_one() {
+        let mut work = rail_item("ws:4", "Work", "");
+        work.count = 12;
+        work.emoji = "🚀".to_owned();
+        let json = rail_json(&[work.clone()]);
+        assert!(json.ends_with(r#""fav":false,"n":12,"emoji":"🚀"}]}"#), "{json}");
+        work.count = 100_000;
+        work.emoji = "not an emoji at all".to_owned();
+        let json = rail_json(&[work]);
+        assert!(json.contains(r#""n":9999"#) && !json.contains("emoji"), "a capped count, and text no emoji check passes is left out: {json}");
+        assert!(!rail_json(&[rail_item("home", "Home", "")]).contains("\"n\""));
     }
 
     #[test]
@@ -4810,8 +4920,10 @@ mod tests {
         let json = tabopts_json(&StripOptions::default());
         assert_eq!(
             json,
-            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0}"#
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"stackDrag":true,"stackDelay":400}"#
         );
+        // --- tab stacks (T10) --- the delay is capped like the setting.
+        assert!(tabopts_json(&StripOptions { stack_drag: false, stack_delay: 9_000, ..StripOptions::default() }).ends_with(r#""stackDrag":false,"stackDelay":2000}"#));
         let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
         let json = tabopts_json(&set);
         assert!(json.contains(r#""closeLeft":true"#) && json.contains(r#""minWidth":400"#) && json.contains(r#""indicator":"bar""#) && json.contains(r#""closed":99"#), "{json}");
@@ -4825,7 +4937,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4 };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, stack_drag: false, stack_delay: 250 };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
