@@ -48,6 +48,8 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # minimal_url=true\r\n\
     # show_load_progress=true\r\n\
     # frameless=false\r\n\
+    # auto_hide_bars=tabs,address,bookmarks\r\n\
+    # auto_hide_fullscreen=true\r\n\
     # rounded_content_frame=true\r\n\
     # show_home_button=true\r\n\
     # bookmarks_bar=never\r\n\
@@ -455,8 +457,9 @@ pub struct Settings {
     pub minimal_url: bool,
     /// `show_load_progress` (default true). Applies immediately.
     pub show_load_progress: bool,
-    /// `frameless` (default false): hide the browser chrome until the pointer nears the window
-    /// edge. Applies after restart.
+    /// `frameless` (default false): the master "Auto-hide toolbars and tabs" switch. The bars chosen in
+    /// `auto_hide` leave the page's layout and float over it when the pointer rests at their edge
+    /// (`src/auto_hide.rs`). The key keeps its name so a saved value carries over. Applies immediately.
     pub frameless: bool,
     /// `rounded_content_frame` (default true). Applies immediately.
     pub rounded_content_frame: bool,
@@ -531,6 +534,10 @@ pub struct Settings {
     /// `private_theme` (default follow): the light or dark look while a private tab is shown.
     pub private_theme: PrivateTheme,
     // --- end privacy, history and website appearance ---
+    // --- auto-hide (T11) ---
+    /// Which bars auto-hide and whether full screen always hides them (`src/auto_hide.rs`).
+    pub auto_hide: crate::auto_hide::AutoHideSettings,
+    // --- end auto-hide ---
     // --- start page ---
     /// The start page, speed dials, dashboard widgets, homepage and startup (`src/start_page.rs`).
     pub start: crate::start_page::StartSettings,
@@ -598,6 +605,7 @@ impl Default for Settings {
             website_appearance: WebsiteAppearance::Auto,
             force_dark_websites: false,
             private_theme: PrivateTheme::Follow,
+            auto_hide: crate::auto_hide::AutoHideSettings::default(),
             start: crate::start_page::StartSettings::default(),
             address: crate::address_settings::AddressSettings::default(),
             tabs: crate::tab_options::TabOptions::default(),
@@ -897,7 +905,7 @@ impl Settings {
                 // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
                 // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
-                    if !settings.start.parse_key(key, value) {
+                    if !settings.auto_hide.parse_key(key, value) && !settings.start.parse_key(key, value) {
                         settings.address.parse_line(key, value);
                     }
                 }
@@ -1071,6 +1079,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     ];
     // --- start page ---
     let mut values = Vec::from(values);
+    values.extend(settings.auto_hide.pairs().into_iter().map(|(key, value)| (key, Some(value)))); // --- auto-hide (T11) ---
     values.extend(settings.start.pairs().into_iter().map(|(key, value)| (key, Some(value))));
     // --- end start page ---
     let mut written = vec![false; values.len()];
@@ -1424,6 +1433,7 @@ mod tests {
             website_appearance: WebsiteAppearance::Dark,
             force_dark_websites: true,
             private_theme: PrivateTheme::Dark,
+            auto_hide: crate::auto_hide::AutoHideSettings { bars: crate::auto_hide::Bars::PANEL, in_fullscreen: false },
             start: crate::start_page::StartSettings {
                 group_reopen: crate::start_page::GroupReopen::First,
                 titles: crate::start_page::TitleMode::Auto,
@@ -1719,6 +1729,7 @@ tabs_new_tab_url=javascript:1
              translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n\
              blocker_level=trackers\r\ncookie_notices=true\r\nhistory_retention=1w\r\n\
              website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n\
+             auto_hide_bars=panel\r\nauto_hide_fullscreen=false\r\n\
              start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\

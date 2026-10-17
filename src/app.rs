@@ -932,7 +932,7 @@ fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::
     settings.tracking_prevention = file.tracking_prevention;
     settings.block_youtube_video_ads = file.block_youtube_video_ads;
     settings.side_panel_position = file.side_panel_position;
-    settings.frameless = file.frameless;
+    // `frameless` (auto-hide) is applied live from the file now, so memory owns it (`apply_live_settings`).
     settings.search_engine = file.search_engine;
 }
 
@@ -5839,6 +5839,22 @@ impl App {
                     }
                 }))
             },
+            // --- auto-hide (T11) --- a page element (a video) asks for full screen, or leaves it.
+            fullscreen_changed: {
+                let events_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, on| {
+                    if let Some(app) = events_app.upgrade() {
+                        let (hwnd, active) = {
+                            let state = app.borrow();
+                            (state.hwnd, state.tab_model.active() == tab_id)
+                        };
+                        if active || !on {
+                            win32::page_fullscreen(hwnd, &app, on);
+                        }
+                    }
+                }))
+            },
+            // --- end auto-hide ---
             controller_ready: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -5850,6 +5866,7 @@ impl App {
                                 || state
                                     .split_view
                                     .is_some_and(|split| split.pane_for(tab_id).is_some());
+                            win32::auto_hide_page_created(state.hwnd); // --- auto-hide (T11) --- a page created later starts above the bars
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.controller_created = true;
                                 // A new controller starts at 100%; the next commit re-applies
@@ -6809,6 +6826,10 @@ impl App {
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
             state.settings.start = settings.start.clone(); // --- start page ---
+            // --- auto-hide (T11) --- the master switch and its two rows take effect at once.
+            state.settings.frameless = settings.frameless;
+            state.settings.auto_hide = settings.auto_hide;
+            // --- end auto-hide ---
             // Address bar, search and bookmark options (src/address_settings.rs).
             state.settings.address = settings.address.clone();
             crate::omnibox::set_show_full_address(settings.address.show_full);
@@ -6831,6 +6852,11 @@ impl App {
             Self::tab_options_changed(app, &before);
         }
         Self::mark_synced_from(app, &before); // --- wave-1 fixes ---
+        // --- auto-hide (T11) --- lays the window out with the bars in or out and resizes the page.
+        if !hwnd.is_invalid() {
+            win32::auto_hide_sync(hwnd, app);
+        }
+        // --- end auto-hide ---
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         // The address field's own font follows font_size and ui_font (the painted chrome and the
@@ -7332,9 +7358,14 @@ impl App {
         }
         // The chrome layout takes raw DPI; a scale factor here would clamp to 96 at 144 DPI.
         let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd) }.max(96);
-        let maximised =
-            unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(self.hwnd) }.as_bool();
-        let bounds = chrome_viewport_bounds(
+        // --- auto-hide (T11) --- maximised or full screen; and the bars out of the layout, which the
+        // window lays out the same way (`chrome::layout::compute_*_auto_hide`).
+        let maximised = crate::win32::zoomed_or_full(self.hwnd);
+        let hidden = crate::win32::auto_hide_effective(self.hwnd, &self.settings).hidden;
+        let plan = crate::auto_hide::plan(hidden, self.settings.tab_layout);
+        let panel = if plan.panel { 0 } else { crate::win32::side_panel::active_width_px(self.hwnd) };
+        // --- end auto-hide ---
+        let bounds = chrome_viewport_bounds_hiding(
             rect.right - rect.left,
             rect.bottom - rect.top,
             dpi,
@@ -7342,7 +7373,8 @@ impl App {
             maximised,
             self.settings.tab_layout,
             self.settings.effective_sidebar_width(),
-            crate::win32::side_panel::active_width_px(self.hwnd),
+            panel,
+            plan.layout(),
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -7351,7 +7383,7 @@ impl App {
             if let Some(bounds) = self.last_valid_viewport_bounds {
                 bounds
             } else {
-                let fallback = chrome_viewport_bounds(
+                let fallback = chrome_viewport_bounds_hiding(
                     1000,
                     720,
                     dpi,
@@ -7359,7 +7391,8 @@ impl App {
                     maximised,
                     self.settings.tab_layout,
                     self.settings.effective_sidebar_width(),
-                    crate::win32::side_panel::active_width_px(self.hwnd),
+                    panel,
+                    plan.layout(),
                 );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
@@ -7368,7 +7401,33 @@ impl App {
     }
 }
 
+#[cfg(test)]
 fn chrome_viewport_bounds(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    tab_count: usize,
+    maximised: bool,
+    tab_layout: crate::settings::TabLayout,
+    sidebar_width: u16,
+    side_panel_width: i32,
+) -> windows::Win32::Foundation::RECT {
+    chrome_viewport_bounds_hiding(
+        width,
+        height,
+        dpi,
+        tab_count,
+        maximised,
+        tab_layout,
+        sidebar_width,
+        side_panel_width,
+        crate::chrome::layout::AutoHide::OFF,
+    )
+}
+
+/// [`chrome_viewport_bounds`] with the chrome in `hide` out of the page's rectangle (auto-hide).
+#[allow(clippy::too_many_arguments)]
+fn chrome_viewport_bounds_hiding(
     width: i32,
     height: i32,
     dpi: u32,
@@ -7377,8 +7436,9 @@ fn chrome_viewport_bounds(
     tab_layout: crate::settings::TabLayout,
     sidebar_width: u16,
     side_panel_width: i32,
+    hide: crate::chrome::layout::AutoHide,
 ) -> windows::Win32::Foundation::RECT {
-    let mut viewport = match tab_layout {
+    let viewport = match tab_layout {
         crate::settings::TabLayout::ToolbarTop
         | crate::settings::TabLayout::TabsTop
         | crate::settings::TabLayout::SingleRow => {
@@ -7397,6 +7457,10 @@ fn chrome_viewport_bounds(
             .viewport
         }
     };
+    // --- auto-hide (T11) --- the window lays the page out the same way (`layout::auto_hide_viewport`).
+    let hide = if tab_layout.is_vertical() { hide } else { crate::chrome::layout::AutoHide { sidebar: false, ..hide } };
+    let mut viewport = crate::chrome::layout::auto_hide_viewport(viewport, hide, dpi, maximised);
+    // --- end auto-hide ---
     viewport.left = (viewport.left + side_panel_width.max(0)).min(viewport.right);
     windows::Win32::Foundation::RECT {
         left: viewport.left,
@@ -10217,6 +10281,57 @@ mod tests {
         assert!(valid_viewport_bounds(bounds));
         assert_eq!(app.borrow().last_valid_viewport_bounds, Some(bounds));
     }
+
+    // --- auto-hide (T11) ---
+    /// The page rectangle the app sizes a tab to is the one the window lays out, for every layout, DPI,
+    /// window state and set of hidden bars: switching auto-hide on or off resizes the page to it.
+    #[test]
+    fn the_apps_page_rectangle_is_the_windows_for_every_set_of_hidden_bars() {
+        use crate::auto_hide::{plan, Bars, ALL_BARS, BAR_TABLE};
+        use crate::chrome::layout::{self, AutoHide};
+        let mut sets = vec![Bars::NONE, ALL_BARS];
+        sets.extend(BAR_TABLE.iter().map(|(_, bar)| *bar));
+        for tab_layout in crate::settings::TabLayout::ALL {
+            for dpi in [96, 144, 192] {
+                for maximised in [false, true] {
+                    for hidden in &sets {
+                        let hide = plan(*hidden, tab_layout).layout();
+                        let context = format!("{tab_layout:?} dpi {dpi} max {maximised} hidden {}", hidden.text());
+                        let app = chrome_viewport_bounds_hiding(1600, 1000, dpi, 3, maximised, tab_layout, 260, 0, hide);
+                        let window = if tab_layout.is_vertical() {
+                            layout::compute_vertical_in_frame_auto_hide(1600, 1000, dpi, 3, 0, maximised, 260, true, hide).0.viewport
+                        } else {
+                            layout::compute_in_frame_auto_hide(tab_layout, 1600, 1000, dpi, 3, 0, maximised, true, hide).viewport
+                        };
+                        assert_eq!((app.left, app.top, app.right, app.bottom), (window.left, window.top, window.right, window.bottom), "{context}");
+                        if hide == AutoHide::OFF {
+                            let before = chrome_viewport_bounds(1600, 1000, dpi, 3, maximised, tab_layout, 260, 0);
+                            assert_eq!((app.left, app.top, app.right, app.bottom), (before.left, before.top, before.right, before.bottom), "{context}: off is as it was");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The saved settings decide what hides: off hides nothing, on hides the chosen bars, full screen all.
+    #[test]
+    fn the_saved_settings_decide_which_part_of_the_window_the_page_may_use() {
+        use crate::auto_hide::{effective, plan, AutoHideSettings, Bars, Fullscreen};
+        let layout_of = |frameless: bool, bars: &str, fullscreen: Fullscreen, in_fullscreen: bool| {
+            let settings = AutoHideSettings { bars: Bars::parse(bars).unwrap(), in_fullscreen };
+            plan(effective(frameless, &settings, fullscreen).hidden, crate::settings::TabLayout::Vertical).layout()
+        };
+        use crate::chrome::layout::AutoHide;
+        assert_eq!(layout_of(false, "tabs,address", Fullscreen::No, true), AutoHide::OFF);
+        assert_eq!(layout_of(true, "tabs", Fullscreen::No, true), AutoHide { top: false, sidebar: true });
+        assert_eq!(layout_of(true, "address", Fullscreen::No, true), AutoHide { top: true, sidebar: false });
+        assert_eq!(layout_of(true, "bookmarks,panel", Fullscreen::No, true), AutoHide::OFF, "those two are not part of the page rectangle");
+        assert_eq!(layout_of(false, "", Fullscreen::Window, true), AutoHide { top: true, sidebar: true });
+        assert_eq!(layout_of(false, "", Fullscreen::Window, false), AutoHide::OFF);
+        assert_eq!(layout_of(false, "", Fullscreen::Page, false), AutoHide { top: true, sidebar: true });
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn webview_bounds_match_chrome_viewport_in_physical_pixels() {

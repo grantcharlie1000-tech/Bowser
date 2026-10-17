@@ -179,14 +179,14 @@ fn the_new_tab_page_option_decides_what_a_fresh_tab_opens() {
 }
 
 /// Integration: a later save from memory keeps the keys the page wrote straight to the file
-/// (grouping, tracking, YouTube ads, side panel, frameless, legacy engine) instead of reverting them.
+/// (grouping, tracking, YouTube ads, side panel, legacy engine) instead of reverting them. `frameless`
+/// (auto-hide) is not one of them any more: it is applied live, so memory owns it.
 #[test]
 fn a_save_from_memory_keeps_the_keys_only_the_file_holds() {
     let defaults = crate::settings::Settings::default();
     let file = crate::settings::Settings {
         automatic_tab_grouping: !defaults.automatic_tab_grouping,
         block_youtube_video_ads: !defaults.block_youtube_video_ads,
-        frameless: !defaults.frameless,
         tracking_prevention: crate::settings::TrackingLevel::Strict,
         ..crate::settings::Settings::default()
     };
@@ -196,9 +196,33 @@ fn a_save_from_memory_keeps_the_keys_only_the_file_holds() {
     crate::app::keep_file_owned_keys(&mut memory, &file);
     assert_eq!(memory.automatic_tab_grouping, file.automatic_tab_grouping);
     assert_eq!(memory.block_youtube_video_ads, file.block_youtube_video_ads);
-    assert_eq!(memory.frameless, file.frameless);
+    assert!(!memory.frameless, "auto-hide is memory's own");
     assert_eq!(memory.tracking_prevention, crate::settings::TrackingLevel::Strict);
     assert_eq!(memory.sidebar_width, width);
+}
+
+/// --- auto-hide (T11) --- the master switch and its rows are live in the running app (no restart): the
+/// page's save and Ctrl+F11 both end in `apply_live_settings`.
+#[test]
+fn applying_the_file_settings_makes_auto_hide_live() {
+    let (app, _shared) = fixture();
+    assert!(!App::settings(&app).frameless);
+    let mut file = crate::settings::Settings::default();
+    file.frameless = true;
+    file.auto_hide.bars = crate::auto_hide::Bars::TABS;
+    file.auto_hide.in_fullscreen = false;
+    App::apply_live_settings(&app, &file);
+    let live = App::settings(&app);
+    assert!(live.frameless);
+    assert_eq!(live.auto_hide, file.auto_hide);
+    // A later save from memory keeps it (it is memory's own key now).
+    let mut memory = live;
+    let on_file = crate::settings::Settings::default();
+    crate::app::keep_file_owned_keys(&mut memory, &on_file);
+    assert!(memory.frameless, "not put back to the file's older value");
+    file.frameless = false;
+    App::apply_live_settings(&app, &file);
+    assert!(!App::settings(&app).frameless, "and switching it off is live too");
 }
 
 /// Integration: Reset settings (and any whole-file apply) puts the Tabs options into the running app.

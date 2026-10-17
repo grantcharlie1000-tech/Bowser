@@ -1559,6 +1559,7 @@ pub fn auto_hide_viewport(normal: Rect, hide: AutoHide, dpi: u32, maximised: boo
 /// [`compute_in_frame_for_with`] with the chrome in `hide` taken out of the page's rectangle. The
 /// bars keep the rectangles they have when shown, so a revealed bar is drawn exactly where it
 /// always is. The horizontal layouts have no sidebar; `hide.sidebar` is ignored there.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_in_frame_auto_hide(
     variant: TabLayout,
     client_w: i32,
@@ -1581,6 +1582,7 @@ pub fn compute_in_frame_auto_hide(
 /// With the sidebar hidden the toolbar starts at the rail instead of at the sidebar's edge, so no
 /// gap is left where the sidebar was; the returned sidebar keeps its shown rectangle, which is where
 /// it floats when revealed.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_vertical_in_frame_auto_hide(
     client_w: i32,
     client_h: i32,
@@ -1622,6 +1624,7 @@ pub fn compute_vertical_in_frame_auto_hide(
 
 /// The page rectangle for a window with the chrome in `hide` out of the layout (what the app sizes
 /// a tab to before the window has laid itself out). Same rectangle as the layouts' `viewport`.
+#[allow(clippy::too_many_arguments)]
 pub fn auto_hide_page_rect(
     variant: TabLayout,
     client_w: i32,

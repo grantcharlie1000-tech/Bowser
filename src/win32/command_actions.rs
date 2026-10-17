@@ -198,6 +198,29 @@ pub(crate) fn run_toggle_address_bar(cx: &Context) {
 }
 // --- end wave-1 integration ---
 
+// --- auto-hide (T11) ---
+/// "Toggle auto-hide UI" (Ctrl+F11): flips the saved master switch (Settings > Appearance > Auto-hide
+/// toolbars and tabs), as in Vivaldi, so the choice lasts across restarts.
+pub(crate) fn run_toggle_auto_hide(cx: &Context) {
+    let Ok(profile) = crate::profile::active() else { return };
+    let path = profile.settings_file();
+    let Ok(mut settings) = crate::settings::read_strict(&path) else {
+        super::show_error_message("settings.txt could not be read, so auto-hide was not changed.");
+        return;
+    };
+    settings.frameless = !settings.frameless;
+    match crate::settings::save(&path, &settings) {
+        Ok(()) => App::apply_live_settings(cx.app, &settings),
+        Err(error) => super::show_error_message(&format!("Settings could not be saved: {error}")),
+    }
+}
+
+/// "Full screen" (F11): the window fills its monitor with no frame, or goes back.
+pub(crate) fn run_toggle_fullscreen(cx: &Context) {
+    super::window::toggle_fullscreen(cx.hwnd, cx.app);
+}
+// --- end auto-hide ---
+
 #[cfg(test)]
 mod tests {
     use super::*;

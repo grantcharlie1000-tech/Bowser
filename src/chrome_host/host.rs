@@ -421,6 +421,43 @@ impl ChromeHost {
         })
     }
 
+    // --- auto-hide (T11) ---
+    /// Puts this view's window above its siblings (the tab pages, which are created later and so
+    /// start on top). Auto-hide floats a revealed bar over the page with it. The controller does not
+    /// expose its window, so it is found among the parent's children by its bounds; nothing happens
+    /// when no child has exactly them. Never activates anything and moves and resizes nothing.
+    pub fn raise_to_top(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindow, GetWindowRect, HWND_TOP, GW_CHILD, GW_HWNDNEXT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        let (parent, revealed) = match self.state.try_borrow() {
+            Ok(state) if !state.closed && state.revealed && state.applied_visible != Some(false) => (state.parent, true),
+            _ => return,
+        };
+        let Some(want) = self.screen_bounds().filter(|_| revealed) else { return };
+        let mut child = unsafe { GetWindow(parent, GW_CHILD) }.ok();
+        let mut first = true;
+        while let Some(window) = child {
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(window, &mut rect) }.is_ok()
+                && rect.left == want.left
+                && rect.top == want.top
+                && rect.right == want.right
+                && rect.bottom == want.bottom
+            {
+                if !first {
+                    unsafe {
+                        let _ = SetWindowPos(window, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    }
+                }
+                return;
+            }
+            first = false;
+            child = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok();
+        }
+    }
+    // --- end auto-hide ---
+
     /// Sends one JSON message to the page and reports failure to the caller.
     pub fn post_json(&self, json: &str) -> Result<()> {
         let webview = {

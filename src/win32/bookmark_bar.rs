@@ -403,7 +403,16 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     let Some((host, container, ready)) = with(owner, |rt| (rt.host.clone(), rt.container, rt.ready && !rt.failed)) else { return };
     let (Some(host), Some(container), true) = (host, container, ready) else { return };
     let Some(viewport) = super::window::page_viewport(owner) else { return };
-    let rect = if reserve.1 { RECT { left: viewport.left, top: viewport.bottom, right: viewport.right, bottom: viewport.bottom + reserve.0 } } else { RECT { left: viewport.left, top: viewport.top - reserve.0, right: viewport.right, bottom: viewport.top } };
+    let mut rect = if reserve.1 { RECT { left: viewport.left, top: viewport.bottom, right: viewport.right, bottom: viewport.bottom + reserve.0 } } else { RECT { left: viewport.left, top: viewport.top - reserve.0, right: viewport.right, bottom: viewport.top } };
+    // --- auto-hide (T11) --- auto-hide has the bar out of the layout: it floats where it would sit, and only while revealed.
+    if let Some((float, revealed)) = super::window::bookmark_bar_placement(owner) {
+        if !revealed {
+            hide(owner);
+            return;
+        }
+        rect = float;
+    }
+    // --- end auto-hide ---
     let state = super::window::split_host_state(owner, App::settings_accent(app));
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
