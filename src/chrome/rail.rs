@@ -135,6 +135,11 @@ pub struct RailEntry<'a> {
     pub accent: Option<Rgba>,
     /// The app's favicon. When `None`, an app shows its letter tile.
     pub favicon: Option<&'a FaviconBitmap>,
+    /// --- tab stacks and workspaces (T10) --- the workspace's tab count, shown as a badge
+    /// ("Show tab counts on workspaces"); 0 shows none.
+    pub count: u32,
+    /// The emoji a workspace shows instead of its glyph ("icon or emoji").
+    pub emoji: Option<String>,
 }
 
 /// The hover amount of one button that is still fading, in `0.0..=1.0`.
@@ -798,6 +803,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 

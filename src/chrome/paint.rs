@@ -402,6 +402,32 @@ impl ChromeSurface {
         self.round(target, radius, tint, dirty);
         self.border(target, radius, m.px(2) as f32, palette.omnibox_focus_border, dirty);
     }
+
+    /// --- tab stacks (T10) --- the title bars of a split's tiles ("Show a title bar on each tile"):
+    /// each a tab face across the top of its tile with the page's title, the focused tile's lifted
+    /// like the active tab. `bars` holds `(bar, title, focused)`.
+    pub fn paint_tile_titles(&mut self, bars: &[(Rect, String, bool)], palette: &Palette, dirty: Rect) {
+        let m = Metrics::new(self.dpi);
+        let inset = m.px(10);
+        for (bar, title, focused) in bars {
+            if bar.intersect(dirty).is_empty() || bar.width() <= inset * 3 || bar.height() <= m.px(4) {
+                continue;
+            }
+            let face = Rect::new(bar.left, bar.top + m.px(2), bar.right, bar.bottom - m.px(2));
+            let radius = m.px(6).min(face.height() / 2).max(0);
+            let fill = if *focused { palette.tab_active } else { palette.tab_inactive };
+            self.round(face, radius, fill, dirty);
+            if *focused {
+                self.border(face, radius, m.px(1) as f32, palette.tab_active_border, dirty);
+            }
+            // An empty string must never reach DrawTextW.
+            let text = if title.trim().is_empty() { "New tab" } else { title.as_str() };
+            let colour = if *focused { palette.tab_text_active } else { palette.tab_text_inactive };
+            let label = Rect::new(face.left + inset, face.top, face.right - inset, face.bottom);
+            self.draw_text(text, label, colour, true, face, dirty);
+        }
+    }
+    // --- end tab stacks ---
     pub fn width(&self) -> i32 {
         self.width
     }
@@ -1131,6 +1157,11 @@ impl ChromeSurface {
                 let text = letter.to_uppercase().collect::<String>();
                 self.draw_centred(&text, tile, Rgba::hex(0xFFFFFF, 0xFF), clip);
             }
+        } else if let Some(emoji) = entry.emoji.as_deref().filter(|emoji| !emoji.trim().is_empty()) {
+            // --- tab stacks and workspaces (T10) --- a workspace's emoji in place of its glyph. GDI
+            // draws it in the ink colour, as it draws the letter tiles.
+            let square = rail::centred(button, m.px(rail::ICON) + m.px(4));
+            self.draw_centred(emoji, square, ink, clip);
         } else {
             // A workspace glyph already wears its colour, so its draw-on is a lighter pass of it.
             let (colour, trace) = match entry.icon {
@@ -1148,6 +1179,17 @@ impl ChromeSurface {
             let centre_x = (button.right - m.px(6)) as f32;
             let centre_y = (button.top + m.px(6)) as f32;
             self.line_f(centre_x, centre_y, centre_x, centre_y, size, accent, clip);
+        }
+        // --- tab stacks and workspaces (T10) --- "Show tab counts on workspaces": a small pill at
+        // the button's lower right, a tab face's fill and text so it reads on any backdrop.
+        if entry.count > 0 {
+            let text = if entry.count > 99 { "99+".to_owned() } else { entry.count.to_string() };
+            let height = m.px(12);
+            let width = (height + m.px(5) * (text.len() as i32 - 1)).max(height);
+            let pill = Rect::new(button.right - width, button.bottom - height, button.right, button.bottom);
+            self.round(pill, height / 2, palette.tab_active, clip);
+            self.border(pill, height / 2, 1.0, palette.tab_active_border, clip);
+            self.draw_centred(&text, pill, palette.tab_text_active, clip);
         }
     }
 
@@ -3749,6 +3791,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 
@@ -4294,6 +4338,8 @@ mod tests {
         let letter = [rail_entry(key, RailIcon::Letter)];
         let with_favicon = [RailEntry {
             favicon: Some(&favicon),
+            count: 0,
+            emoji: None,
             ..rail_entry(key, RailIcon::Letter)
         }];
         let rect = button_rect(&letter, 96, key);

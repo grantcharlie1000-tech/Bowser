@@ -275,8 +275,9 @@ mod tests {
             for modifiers in 0..8_u8 {
                 let (ctrl, shift, alt) = (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                 let resolved = resolve_in(&live, key, ctrl, shift, alt, &context);
-                if (key, ctrl, shift, alt) == (0x70, true, false, false) {
-                    // Ctrl+F1, the cheat sheet, is the one chord the registry adds.
+                // Ctrl+F1, the cheat sheet, and --- tab stacks (T10) --- Ctrl+F7, F8 and F9, the three
+                // tilings, are the chords the registry adds.
+                if [0x70, 0x76, 0x77, 0x78].contains(&key) && (ctrl, shift, alt) == (true, false, false) {
                     assert!(matches!(resolved, Some(Command::Registered(_))), "{resolved:?}");
                     continue;
                 }

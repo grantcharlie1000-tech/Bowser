@@ -236,6 +236,21 @@ impl From<io::Error> for PreferencesError {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupPreferences {
     entries: BTreeMap<DomainKey, Entry>,
+    /// --- tab stacks (T10) --- how the stack style folds islands for display. Never saved: only the
+    /// copy the strip draws from carries anything but [`CollapseRule::Stored`].
+    collapse_rule: CollapseRule,
+}
+
+/// Which islands show folded. The stored flag is the user's own collapse ("Islands"); the other two
+/// are the stack styles of `src/stacks.rs`, which fold islands whatever the stored flag says.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CollapseRule {
+    #[default]
+    Stored,
+    /// Every island folded ("Compact").
+    All,
+    /// Every island folded but the one holding the tab in use, if any ("Accordion").
+    AllBut(Option<DomainKey>),
 }
 
 impl GroupPreferences {
@@ -244,7 +259,21 @@ impl GroupPreferences {
     }
 
     pub fn is_collapsed(&self, key: &DomainKey) -> bool {
-        self.entries.get(key).is_some_and(|e| e.collapsed)
+        match &self.collapse_rule {
+            CollapseRule::Stored => self.entries.get(key).is_some_and(|e| e.collapsed),
+            CollapseRule::All => true,
+            CollapseRule::AllBut(open) => open.as_ref() != Some(key),
+        }
+    }
+
+    /// --- tab stacks (T10) --- these preferences as a stack style shows them (`src/stacks.rs`).
+    pub fn with_collapse_rule(&self, rule: CollapseRule) -> Self {
+        Self { entries: self.entries.clone(), collapse_rule: rule }
+    }
+
+    /// The rule these preferences fold islands by.
+    pub fn collapse_rule(&self) -> &CollapseRule {
+        &self.collapse_rule
     }
 
     /// The island's name, when the user has set one.
@@ -1224,6 +1253,21 @@ mod tests {
                 assert_eq!(mode.forms_group(members), *expected, "{mode:?} {members}");
             }
         }
+    }
+
+    /// --- tab stacks (T10) --- a stack style folds islands for display only: never saved.
+    #[test]
+    fn a_collapse_rule_folds_islands_without_reaching_the_file() {
+        let mut prefs = GroupPreferences::default();
+        prefs.set_collapsed(&key("a.com"), true).unwrap();
+        let all = prefs.with_collapse_rule(CollapseRule::All);
+        assert!(all.is_collapsed(&key("b.com")) && all.is_collapsed(&key("a.com")));
+        let open = prefs.with_collapse_rule(CollapseRule::AllBut(Some(key("a.com"))));
+        assert!(!open.is_collapsed(&key("a.com")) && open.is_collapsed(&key("b.com")), "the stored flag gives way to the rule");
+        assert_eq!(all.serialize(), prefs.serialize(), "the rule is not part of the file");
+        assert_eq!(*all.collapse_rule(), CollapseRule::All);
+        assert_ne!(all, prefs, "a ruled copy differs, so the strip draws it again");
+        assert!(prefs.with_collapse_rule(CollapseRule::Stored).is_collapsed(&key("a.com")));
     }
 
     #[test]

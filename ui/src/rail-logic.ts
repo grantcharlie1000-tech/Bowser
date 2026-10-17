@@ -144,3 +144,27 @@ export function hoverSwitches(key: string): boolean {
   return flyoutOf(key) !== null;
 }
 // --- end rail flyouts ---
+
+// --- tab stacks and workspaces (T10) ---
+/** The text of a workspace's tab count badge: '' for none, "99+" beyond 99. */
+export function countBadge(n: number | undefined): string {
+  if (n === undefined || !Number.isInteger(n) || n <= 0) return '';
+  return n > 99 ? '99+' : String(n);
+}
+
+/** One wheel notch in CSS px (Chromium's line-free wheel step on Windows). */
+export const WHEEL_NOTCH_PX = 100;
+
+/**
+ * Whole wheel notches in `delta` (a `WheelEvent.deltaY` in `mode`) plus what was left over from the
+ * last turn, at most eight at once; down is positive. Lines and pages count as fractions and runs
+ * of notches. The rest carries a slow trackpad swipe over to the next event.
+ */
+export function wheelNotches(rest: number, delta: number, mode: number): { notches: number; rest: number } {
+  const px = mode === 0 ? delta : mode === 1 ? delta * (WHEEL_NOTCH_PX / 3) : delta * WHEEL_NOTCH_PX * 3;
+  const total = rest + (Number.isFinite(px) ? px : 0);
+  const whole = Math.trunc(total / WHEEL_NOTCH_PX);
+  const notches = Math.max(-8, Math.min(8, whole));
+  return { notches, rest: whole === 0 ? total : 0 };
+}
+// --- end tab stacks and workspaces ---

@@ -189,7 +189,7 @@ test('a switch, a choice, a number and the address each send one tabopt command 
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_close_activation=recent' }]);
   // New tab position: the three positions, no stack.
   const position = rowOf('tabs_new_tab_position').querySelectorAll('[role="radio"]');
-  assert.deepEqual(position.map((r) => r.textContent), ['After related', 'After active', 'As last']);
+  assert.deepEqual(position.map((r) => r.textContent), ['After related', 'After active', 'As last', 'As stack with related']); // --- T10 ---
   position[0].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_new_tab_position=related' }]);
   // Number: typed, clamped, sent; one tab is not a bulk close.

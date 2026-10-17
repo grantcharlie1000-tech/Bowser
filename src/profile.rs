@@ -862,6 +862,31 @@ pub fn spawn_window_with_url(profile: &Profile, url: &url::Url) -> bool {
     spawn_window_inner(profile, Some(url))
 }
 
+/// --- tab stacks (T10) --- "Move the stack to a new window": a new Bowser process for `profile`
+/// with one tab per address (the first shown, the rest asleep). Addresses a new window cannot take
+/// are left out; false when none is left or the process did not start.
+pub fn spawn_window_with_urls(profile: &Profile, urls: &[url::Url]) -> bool {
+    let urls: Vec<&url::Url> = urls.iter().filter(|url| can_open_in_new_window(url)).take(crate::performance::MAX_OPEN_URLS).collect();
+    let Some((first, rest)) = urls.split_first() else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut command = std::process::Command::new(exe);
+    command.arg("--new-window");
+    if let Some(root) = data_root_override() {
+        command.arg("--data-dir").arg(root);
+    }
+    if let Some(name) = profile.name() {
+        command.arg("--profile").arg(name);
+    }
+    for url in std::iter::once(first).chain(rest) {
+        command.arg("--open-url").arg(url.as_str());
+    }
+    command.spawn().is_ok()
+}
+
 fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;

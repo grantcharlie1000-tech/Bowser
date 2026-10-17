@@ -579,6 +579,9 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
         },
         download_dir: &download_dir,
         download_ask: App::settings(app).ask_download_location,
+        // --- tab stacks (T10) --- the workspace rules editor.
+        workspace_rules: App::workspace_rules(app).into_iter().map(|rule| (rule.site, rule.workspace)).collect(),
+        workspace_names: App::workspace_entries(app).into_iter().map(|(_, name, ..)| name).collect(),
     })
 }
 
@@ -746,6 +749,20 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
         }
         // --- end tab options ---
+        // --- tab stacks (T10) --- workspace rules.
+        Action::WorkspaceRuleAdd { site, workspace } => {
+            let mut rules = App::workspace_rules(app);
+            let result = crate::workspace_rules::add(&mut rules, &site, &workspace)
+                .map_err(|error| error.message().to_owned())
+                .and_then(|()| App::set_workspace_rules(app, rules));
+            answer(owner, result);
+        }
+        Action::WorkspaceRuleRemove(site) => {
+            let mut rules = App::workspace_rules(app);
+            crate::workspace_rules::remove(&mut rules, &site);
+            answer(owner, App::set_workspace_rules(app, rules));
+        }
+        // --- end tab stacks ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.

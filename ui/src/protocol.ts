@@ -85,6 +85,9 @@ export type Command =
   | { v: 1; t: 'caption'; a: CaptionAction }
   | { v: 1; t: 'tab'; a: TabAction; id: number }
   | { v: 1; t: 'tabmove'; id: number; before: number }
+  // --- tab stacks (T10) --- a held tab dropped on another after resting over it; the wheel over the workspaces.
+  | { v: 1; t: 'tabstack'; id: number; onto: number }
+  | { v: 1; t: 'railwheel'; d: number }
   // --- tab options --- the strip's selection (comma-separated wire ids) and its Closed tabs button.
   | { v: 1; t: 'tabsel'; ids: string }
   | { v: 1; t: 'closedtabs' }
@@ -433,6 +436,10 @@ export interface RailItem {
   readonly accent: string;
   /** A favicon is cached for this key (see the `railfav` message). */
   readonly fav: boolean;
+  /** --- tab stacks and workspaces (T10) --- the workspace's tab count badge (absent: none). */
+  readonly n?: number;
+  /** The emoji a workspace shows instead of its glyph. */
+  readonly emoji?: string;
 }
 export interface RailMsg {
   readonly t: 'rail';
@@ -472,6 +479,9 @@ export interface TabOptsMsg {
   readonly maximised: boolean;
   /** Tabs in the closed-tabs list; 0 hides the Closed tabs button. */
   readonly closed: number;
+  /** --- tab stacks (T10) --- a held tab resting over another for `stackDelay` ms stacks on drop. */
+  readonly stackDrag: boolean;
+  readonly stackDelay: number;
 }
 export const MAX_SELECTION = 512;
 /** The strip's selection, as the comma list Rust parses. False when the ids are not tab ids. */
@@ -482,13 +492,33 @@ export function sendTabSelection(ids: readonly number[]): boolean {
 export function sendClosedTabs(): boolean {
   return send({ v: 1, t: 'closedtabs' });
 }
+// --- tab stacks (T10) ---
+/** Most notches one `railwheel` carries (Rust's `MAX_RAIL_WHEEL`). */
+export const MAX_RAIL_WHEEL = 8;
+/** The held tab `id` was dropped on tab `onto` after resting over it. */
+export function sendTabStack(id: number, onto: number): boolean {
+  return isInt(id, 1, MAX_ID) && isInt(onto, 1, MAX_ID) && id !== onto && send({ v: 1, t: 'tabstack', id, onto });
+}
+/** The wheel turned `d` notches (down positive) over the workspaces. */
+export function sendRailWheel(d: number): boolean {
+  return Number.isInteger(d) && d !== 0 && Math.abs(d) <= MAX_RAIL_WHEEL && send({ v: 1, t: 'railwheel', d });
+}
+// --- end tab stacks ---
 // --- end tab options ---
 // --- vertical sidebar (lane S) ---
-export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
+export interface WorkspaceMsg {
+  readonly t: 'workspace';
+  readonly name: string;
+  readonly icon: RailIconName;
+  /** --- tab stacks and workspaces (T10) --- shown instead of the glyph. */
+  readonly emoji?: string;
+  /** Workspaces are off: the switcher hides. */
+  readonly off?: boolean;
+}
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -992,6 +1022,14 @@ function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
 }
 
 const RAIL_ITEM_KEYS = ['k', 'icon', 'label', 'active', 'dot', 'accent', 'fav'];
+/** --- tab stacks and workspaces (T10) --- keys an item carries only when set. */
+const RAIL_ITEM_OPTIONAL = ['n', 'emoji'];
+/** Longest workspace emoji in bytes (Rust's `MAX_EMOJI_BYTES`; at most eight characters). */
+const MAX_EMOJI = 32;
+/** A workspace emoji: short, no spaces or control characters (Rust's `clean_emoji`). */
+export function isWorkspaceEmoji(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && new TextEncoder().encode(v).length <= MAX_EMOJI && Array.from(v).length <= 8 && !/[\s\u0000-\u001f\u007f]/.test(v);
+}
 
 /** A PNG data: URI with base64 payload, at most MAX_FAV_URI characters. */
 function isFavUri(v: unknown): v is string {
@@ -1001,12 +1039,15 @@ function isFavUri(v: unknown): v is string {
 
 /** Strict validation of one `rail` item: every key present, none extra, key unique within the message. */
 function parseRailItem(v: unknown, seen: ReadonlySet<string>): RailItem | null {
-  if (!isRecord(v) || !hasOnlyKeys(v, RAIL_ITEM_KEYS) || !hasAllKeys(v, RAIL_ITEM_KEYS)) return null;
+  if (!isRecord(v) || !hasOnlyKeys(v, [...RAIL_ITEM_KEYS, ...RAIL_ITEM_OPTIONAL]) || !hasAllKeys(v, RAIL_ITEM_KEYS)) return null;
   const { k, icon, label, active, dot, accent, fav } = v;
   if (typeof k !== 'string' || !isRailKey(k) || seen.has(k)) return null;
   if (!isRailIcon(icon) || !isStr(label, MAX_RAIL_LABEL) || !isBool(active) || !isBool(dot) || !isBool(fav)) return null;
   if (!isStr(accent, MAX_COLOR) || (accent !== '' && !isSafeColour(accent))) return null;
-  return { k, icon, label, active, dot, accent, fav };
+  // --- tab stacks and workspaces (T10) ---
+  if ('n' in v && !isInt(v.n, 1, 9999)) return null;
+  if ('emoji' in v && !isWorkspaceEmoji(v.emoji)) return null;
+  return { k, icon, label, active, dot, accent, fav, ...('n' in v ? { n: v.n as number } : {}), ...('emoji' in v ? { emoji: v.emoji as string } : {}) };
 }
 
 /** Strictly validates a host message. Accepts an object or its JSON text; returns null for anything unexpected. */
@@ -1043,8 +1084,11 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- vertical sidebar (lane S) ---
     case 'workspace': {
-      if (!hasOnlyKeys(raw, ['v', 't', 'name', 'icon']) || raw.v !== 1 || !isStr(raw.name, MAX_RAIL_LABEL) || !isRailIcon(raw.icon) || !raw.icon.startsWith('g:')) return null;
-      return { t: 'workspace', name: raw.name, icon: raw.icon };
+      if (!hasOnlyKeys(raw, ['v', 't', 'name', 'icon', 'emoji', 'off']) || raw.v !== 1 || !isStr(raw.name, MAX_RAIL_LABEL) || !isRailIcon(raw.icon) || !raw.icon.startsWith('g:')) return null;
+      // --- tab stacks and workspaces (T10) --- optional emoji and off flag.
+      if ('emoji' in raw && !isWorkspaceEmoji(raw.emoji)) return null;
+      if ('off' in raw && raw.off !== true) return null;
+      return { t: 'workspace', name: raw.name, icon: raw.icon, ...('emoji' in raw ? { emoji: raw.emoji as string } : {}), ...('off' in raw ? { off: true } : {}) };
     }
     // --- end vertical sidebar ---
     // --- hover layer ---
@@ -1182,12 +1226,12 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- tab options ---
     case 'tabopts': {
-      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed'];
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay'];
       if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
-      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed } = raw;
-      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised].every(isBool)) return null;
-      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99)) return null;
-      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed } as TabOptsMsg;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag].every(isBool)) return null;
+      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99) || !isInt(stackDelay, 0, 2000)) return null;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay } as TabOptsMsg;
     }
     // --- end tab options ---
     case 'fav': {

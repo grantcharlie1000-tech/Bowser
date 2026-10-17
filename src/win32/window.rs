@@ -233,6 +233,9 @@ struct RailEntryData {
     /// The favicon's source bytes, as the HTML rail sends them (it sends only PNGs that pass the
     /// protocol gate).
     png: Option<Rc<Vec<u8>>>,
+    /// --- tab stacks and workspaces (T10) --- the tab count badge (0: none) and the emoji.
+    count: u32,
+    emoji: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -490,6 +493,9 @@ struct WindowChrome {
     hover: Hit,
     pressed: Hit,
     drag: Option<(TabId, usize)>,
+    /// --- tab stacks (T10) --- the slot the held tab rests over the middle of, and since when
+    /// ("Stack tabs by dragging one onto another" in the native strip).
+    stack_hover: Option<(usize, Instant)>,
     split_drag_companion: Option<TabId>,
     split_drop: Option<crate::split_view::DropZone>,
     dpi: u32,
@@ -688,6 +694,7 @@ impl WindowChrome {
             pressed: Hit::None,
             drag: None,
             split_drag_companion: None,
+            stack_hover: None, // --- tab stacks (T10) ---
             split_drop: None,
             dpi,
             motion: Motion::new(!animations_enabled()),
@@ -1319,11 +1326,15 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
-        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, count: 0, emoji: None });
     }
-    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None });
-    if shown(SidebarKind::Workspaces) {
-        for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
+    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None, count: 0, emoji: None });
+    // --- tab stacks and workspaces (T10) --- "Workspaces" off hides them; the counts are an option.
+    let workspace_options = App::tab_options(app);
+    if shown(SidebarKind::Workspaces) && workspace_options.workspaces {
+        for (id, name, icon, colour, tab_count, active) in App::workspace_entries(app) {
+            let count = if workspace_options.workspace_counts { u32::try_from(tab_count).unwrap_or(u32::MAX) } else { 0 };
+            let emoji = App::workspace_emoji(app, id);
             let glyph = match icon {
                 WorkspaceIcon::Briefcase => WorkspaceGlyph::Briefcase,
                 WorkspaceIcon::Home => WorkspaceGlyph::Home,
@@ -1348,9 +1359,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 WorkspaceColour::Green => 0x56A36B,
                 WorkspaceColour::Slate => 0x778394,
             }, 0xFF));
-            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None });
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None, count, emoji });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, count: 0, emoji: None });
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
@@ -1370,9 +1381,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 (None, None)
             };
             let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, count: 0, emoji: None });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, count: 0, emoji: None });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -1380,9 +1391,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, count: 0, emoji: None });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, count: 0, emoji: None });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
         return false;
@@ -1470,6 +1481,8 @@ fn rail_view_of(entries: &[RailEntryData]) -> Vec<RailEntry<'static>> {
                 dot: false,
                 accent: entry.accent,
                 favicon: entry.favicon.as_deref(),
+                count: entry.count,
+                emoji: entry.emoji.clone(),
             };
             // SAFETY: as documented above, the bitmap outlives every use of the view.
             unsafe { std::mem::transmute::<RailEntry<'_>, RailEntry<'static>>(view) }
@@ -2665,6 +2678,14 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- tab stacks (T10) --- the tile look changed: lay the shown split out again.
+            super::WM_SPLIT_LOOK => {
+                if let Some(app) = app {
+                    apply_sidebar_bounds(hwnd, app);
+                    mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
             super::WM_SETTINGS_COMMAND => {
                 if let Some(app) = app {
                     super::settings_page::run_queued(hwnd, app);
@@ -2752,6 +2773,11 @@ unsafe extern "system" fn window_proc(
                     if refreshed.as_ref().is_some_and(|(_, changed)| *changed) {
                         sync_split_ratio(hwnd, App::split_view(app));
                         apply_sidebar_bounds(hwnd, app);
+                    }
+                    // --- tab stacks (T10) --- the rail's tab counts follow tabs opening and closing
+                    // (the rail sends nothing when the rebuilt entries are the same).
+                    if structural && App::tab_options(app).workspace_counts {
+                        App::rail_changed(app);
                     }
                     // A visit was just written: an open History flyout shows it without reopening,
                     // and so does a shown bowser://history page.
@@ -2948,6 +2974,25 @@ unsafe extern "system" fn window_proc(
                             if changed {
                                 let _ = InvalidateRect(Some(hwnd), None, false);
                             }
+                            // --- tab stacks (T10) --- the held tab resting over the middle of another
+                            // tab: a release after the stacking delay stacks the two.
+                            let _ = with_chrome(hwnd, |s| {
+                                let Some((_, from)) = s.drag else {
+                                    s.stack_hover = None;
+                                    return;
+                                };
+                                let over = (0..s.slots.len()).find(|&slot| {
+                                    slot != from
+                                        && s.layout.tab(slot).is_some_and(|rect| {
+                                            rect.contains(point.x, point.y) && crate::stacks::over_middle(rect.left, rect.right, point.x)
+                                        })
+                                });
+                                s.stack_hover = match (over, s.stack_hover) {
+                                    (Some(slot), Some((held, since))) if held == slot => Some((held, since)),
+                                    (Some(slot), _) => Some((slot, Instant::now())),
+                                    (None, _) => None,
+                                };
+                            });
                         }
                         if let Some(app) = app
                             && with_chrome(hwnd, |s| s.pressed == Hit::Omnibox).unwrap_or(false)
@@ -3022,6 +3067,15 @@ unsafe extern "system" fn window_proc(
                 let mut point = frame::point_from_lparam(lparam);
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
                 let in_rail = with_chrome(hwnd, |s| s.layout.rail.contains(point.x, point.y)).unwrap_or(false);
+                // --- tab stacks (T10) --- "Switch workspaces by scrolling" over the rail's workspaces.
+                if in_rail
+                    && let Some(app) = app
+                    && App::tab_options(app).workspace_scroll
+                    && matches!(hit(hwnd, point.x, point.y), Hit::Rail(RailKey::Workspace(_) | RailKey::AddWorkspace))
+                {
+                    let _ = App::scroll_workspaces(app, -((wparam.0 >> 16) as i16 as i32).signum());
+                    return LRESULT(0);
+                }
                 if in_rail {
                     let delta = -((wparam.0 >> 16) as i16 as i32).signum()
                         * Metrics::new(dpi(hwnd)).px(36);
@@ -3155,7 +3209,10 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     Hit::SidebarWorkspace => {
-                        if let Some(app) = app {
+                        // --- tab stacks (T10) --- no workspace menu while workspaces are off.
+                        if let Some(app) = app
+                            && App::workspaces_enabled(app)
+                        {
                             show_workspaces_menu(hwnd, app);
                         }
                     }
@@ -3381,12 +3438,18 @@ unsafe extern "system" fn window_proc(
                                     App::update_split_bounds(app, panes);
                                 }
                             }
+                        } else if let Some(target) = native_stack_target(hwnd, app)
+                            && App::stack_onto(app, id, target)
+                        {
+                            // --- tab stacks (T10) --- held over another tab long enough: a stack.
+                            super::stack_ui::stack_made(hwnd, app, target);
                         } else {
                             let to = layout::reorder_target(&l, from, p.x);
                             let model_to = slot_model_index(hwnd, to).unwrap_or(to);
                             let _ = App::drop_tab(app, id, model_to);
                         }
                     }
+                    let _ = with_chrome(hwnd, |s| s.stack_hover = None);
                     repaint(hwnd);
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
@@ -4307,6 +4370,28 @@ fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     })
     .flatten()
 }
+/// --- tab stacks (T10) --- opens the stack editor (the island menu: name, colour and members) of
+/// the stack `id` is in. Deferred, so the strip has drawn a stack that was just made before the
+/// editor anchors to it: at its ball when the native strip draws one, else under the pointer.
+pub(super) fn open_stack_editor(hwnd: HWND, app: &AppRef, id: TabId) {
+    let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+    let anchor = ball_anchor(hwnd, id)
+        .map(|ball| (ball.left + ball.width() / 2, ball.bottom))
+        .or_else(|| cursor_client_point(hwnd));
+    if let Some((x, y)) = anchor {
+        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y });
+    }
+}
+/// --- tab stacks (T10) --- the tab a native tab drag released now stacks onto: the one the held tab
+/// rested over the middle of for the stacking delay, while the option is on.
+fn native_stack_target(hwnd: HWND, app: &AppRef) -> Option<TabId> {
+    let options = App::tab_options(app);
+    let (slot, since) = with_chrome(hwnd, |s| s.stack_hover.take()).flatten()?;
+    let rested = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    crate::stacks::drop_stacks(options.stack_drag, rested, options.stack_drop_delay.0)
+        .then(|| slot_tab_id(hwnd, slot))
+        .flatten()
+}
 /// Favicon of a tab for the island menu's rows: the chrome's decoded bitmap, or, while a live HTML
 /// tab strip left it undecoded, one decoded now through the same cache.
 pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
@@ -4489,11 +4574,34 @@ fn split_rects_at(hwnd: HWND, divider: Option<i32>, cross: Option<i32>) -> Optio
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
     let panes = layout::split_panes(viewport, view, divider.unwrap_or(saved_divider), cross.unwrap_or(saved_cross), layout.metrics)?;
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, layout.metrics))
 }
 
-fn bounds_of(panes: &layout::SplitPanes) -> crate::app::SplitBounds {
-    crate::split_view::PaneMap(panes.panes.map(|pane| pane.map(to_win_rect)))
+/// The pages' rectangles of a split: each pane, less its title bar when tiles carry one
+/// (--- tab stacks (T10) ---, `stacks::tile_parts`).
+fn bounds_of(panes: &layout::SplitPanes, m: Metrics) -> crate::app::SplitBounds {
+    let title = m.px(crate::stacks::title_dip());
+    crate::split_view::PaneMap(panes.panes.map(|pane| {
+        pane.map(|rect| {
+            let ((left, top, right, bottom), _) = crate::stacks::tile_parts((rect.left, rect.top, rect.right, rect.bottom), title);
+            RECT { left, top, right, bottom }
+        })
+    }))
+}
+
+/// --- tab stacks (T10) --- the title bars of the shown split's tiles, with the tab each one names,
+/// in client coordinates. Empty without title bars.
+fn tile_title_bars(hwnd: HWND, s: &WindowChrome) -> Vec<(Rect, TabId)> {
+    let title = s.layout.metrics.px(crate::stacks::title_dip());
+    let (Some(view), true) = (s.split_layout, title > 0) else { return Vec::new() };
+    let Some(panes) = split_panes_now(hwnd, s) else { return Vec::new() };
+    view.panes()
+        .filter_map(|(pane, tab)| {
+            let rect = panes.panes[pane.index()]?;
+            let (_, bar) = crate::stacks::tile_parts((rect.left, rect.top, rect.right, rect.bottom), title);
+            bar.map(|(left, top, right, bottom)| (Rect::new(left, top, right, bottom), tab))
+        })
+        .collect()
 }
 
 /// The overlay layout of the shown split at the saved dividers, or `None` (no split, or too small).
@@ -4533,7 +4641,7 @@ pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::Spli
         let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
         state.split_orientation = split.orientation;
         state.split_layout = Some(split);
-        let (primary, cross) = crate::split_view::dividers_for_ratios(split, page, state.layout.metrics.px(crate::split_view::GAP_DIP));
+        let (primary, cross) = crate::split_view::dividers_for_ratios(split, page, state.layout.metrics.px(crate::stacks::gap_dip()));
         state.split_divider = primary;
         state.split_cross = cross;
     });
@@ -4543,13 +4651,13 @@ pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::Spli
 /// clamped by the layout's minimum pane sizes, stored, and turned into the app's ratios. Returns the
 /// new pane rectangles, or `None` when the layout does not fit.
 fn drag_split_divider(hwnd: HWND, app: &AppRef, held: crate::split_view::Divider, p: POINT) -> Option<crate::app::SplitBounds> {
-    use crate::split_view::{axis_coord, axis_span, ratio_for_divider, Divider, GAP_DIP};
+    use crate::split_view::{axis_coord, axis_span, ratio_for_divider, Divider};
     let (layout, view, orientation, saved_primary, saved_cross) =
         with_chrome(hwnd, |s| (s.layout, s.split_layout, s.split_orientation, s.split_divider, s.split_cross))?;
     let view = view?;
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
-    let gap = layout.metrics.px(GAP_DIP);
+    let gap = layout.metrics.px(crate::stacks::gap_dip());
     let moves_primary = !matches!(held, Divider::Cross(_));
     let moves_cross = held != Divider::Primary;
     let primary_at = if moves_primary { axis_coord(orientation, p.x, p.y) - gap / 2 } else { saved_primary };
@@ -4572,7 +4680,7 @@ fn drag_split_divider(hwnd: HWND, app: &AppRef, held: crate::split_view::Divider
         let (start, end) = axis_span(page, orientation.other());
         App::set_split_cross_ratio(app, ratio_for_divider(start, end, cross, gap));
     }
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, layout.metrics))
 }
 
 /// The divider of the shown split at client point `p`, if any (for the divider menu).
@@ -4721,9 +4829,9 @@ pub(super) fn split_rects_for_view(hwnd: HWND, view: crate::split_view::SplitVie
     let viewport = split_viewport(hwnd)?;
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
     let m = with_chrome(hwnd, |s| s.layout.metrics)?;
-    let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::split_view::GAP_DIP));
+    let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::stacks::gap_dip()));
     let panes = layout::split_panes(Rect::new(page.0, page.1, page.2, page.3), view, primary, cross, m)?;
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, m))
 }
 
 /// The shown split's overlay geometry and focused pane, for the split host (picker placement).
@@ -5264,10 +5372,24 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     }
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
-                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
+                        let mut entries: Vec<Entry> = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
+                        // --- tab stacks and workspaces (T10) --- "icon or emoji".
+                        const EMOJI: usize = 34;
+                        const NO_EMOJI: usize = 35;
+                        let emoji = App::workspace_emoji(app, id);
+                        entries.push(Entry::Separator);
+                        entries.push(Entry::Item(Item::new(EMOJI, emoji.as_deref().map_or_else(|| "Emoji…".to_owned(), |emoji| format!("Emoji: {emoji}…")), Icon::Grid).glyph("edit").checked(emoji.is_some())));
+                        if emoji.is_some() {
+                            entries.push(Entry::Item(Item::new(NO_EMOJI, "Use the icon", Icon::Grid).glyph("reset")));
+                        }
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
                         menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
-                            if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
+                            let Some(picked) = chosen.map(|item| item.id) else { return };
+                            match picked {
+                                EMOJI => workspace_emoji_prompt(hwnd, app, id),
+                                NO_EMOJI => { let _ = App::workspace_set_emoji(app, id, None); }
+                                _ => if let Some(icon) = icons.get(picked.saturating_sub(20)).copied() { let _ = App::workspace_set_icon(app, id, icon); },
+                            }
                         });
                     }
                     3 => {
@@ -5392,6 +5514,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend(super::split_ui::tab_menu_entries(app, id));
     entries.push(Entry::Separator);
     // --- end split view ---
+    entries.extend(super::stack_ui::tab_menu_entries(app, id)); // --- tab stacks (T10) ---
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
@@ -5443,7 +5566,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 Icon::None,
             )
             .glyph(if collapsed { "chevron-down" } else { "chevron-up" })
-            .disabled_if(!has_group),
+            // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves.
+            .disabled_if(!has_group || App::stack_style(app) != crate::tab_options::StackStyle::Islands),
         ));
     }
     entries.push(Entry::Item(
@@ -5576,6 +5700,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             // --- split view ---
             split if super::split_ui::tab_menu_pick(hwnd, app, id, split) => {}
             // --- end split view ---
+            stack if super::stack_ui::tab_menu_pick(hwnd, app, id, stack) => {} // --- tab stacks (T10) ---
             // --- tab options ---
             tab if tab_options_menu_pick(hwnd, app, id, tab, &targets) => {}
             // --- end tab options ---
@@ -6054,13 +6179,22 @@ const WORKSPACE_DELETE: usize = 6302;
 fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     let workspaces = App::workspaces(app);
     let active = workspaces.active_id();
+    // --- tab stacks and workspaces (T10) --- the tab counts and emoji show here too.
+    let counts = App::tab_options(app).workspace_counts;
     let mut entries = workspaces
         .all()
         .iter()
         .enumerate()
         .map(|(index, workspace)| {
+            let mut label = match workspace.emoji() {
+                Some(emoji) => format!("{emoji}  {}", workspace.name()),
+                None => workspace.name().to_owned(),
+            };
+            if counts {
+                label = format!("{label} · {}", crate::stacks::tab_count_label(workspace.tabs().len()));
+            }
             Entry::Item(
-                Item::new(WORKSPACE_SELECT_BASE + index, workspace.name(), Icon::Grid)
+                Item::new(WORKSPACE_SELECT_BASE + index, label, Icon::Grid)
                     .glyph(workspace_glyph_name(workspace.icon()))
                     .checked(workspace.id() == active),
             )
@@ -6361,9 +6495,12 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 ),
             ]),
     ));
-    entries.push(Entry::Item(
-        Item::new(WORKSPACES, "Workspaces", Icon::Grid).glyph("workspace").submenu_with(workspace_menu_entries(app)),
-    ));
+    // --- tab stacks and workspaces (T10) --- "Workspaces" off takes them out of the menu too.
+    if App::workspaces_enabled(app) {
+        entries.push(Entry::Item(
+            Item::new(WORKSPACES, "Workspaces", Icon::Grid).glyph("workspace").submenu_with(workspace_menu_entries(app)),
+        ));
+    }
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
         .glyph("shield")
@@ -6788,7 +6925,12 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     let data = command_palette::PaletteData {
         tabs,
         closed: App::recently_closed(app).into_iter().map(|closed| (closed.title, closed.url)).collect(),
-        workspaces: App::workspace_entries(app).into_iter().map(|(id, name, _, _, count, _)| (id.0, name, count)).collect(),
+        // --- tab stacks and workspaces (T10) --- none while workspaces are off.
+        workspaces: if App::workspaces_enabled(app) {
+            App::workspace_entries(app).into_iter().map(|(id, name, _, _, count, _)| (id.0, name, count)).collect()
+        } else {
+            Vec::new()
+        },
         bookmarks,
         notes,
         history,
@@ -7332,6 +7474,23 @@ pub(crate) fn show_periodic_reload_menu(hwnd: HWND, app: &AppRef) {
     });
 }
 // --- end wave-1 integration ---
+
+/// --- tab stacks and workspaces (T10) --- "Emoji…" for a workspace: asks for an emoji (or a short
+/// text) to show instead of its icon. Empty goes back to the icon.
+fn workspace_emoji_prompt(hwnd: HWND, app: &AppRef, id: crate::workspaces::WorkspaceId) {
+    let current = App::workspace_emoji(app, id).unwrap_or_default();
+    let validate: super::profile_rename::Validator = Box::new(|text| {
+        if text.trim().is_empty() || crate::workspaces::clean_emoji(text).is_some() {
+            Ok(())
+        } else {
+            Err(format!("Use one emoji, or up to {} characters without spaces.", crate::workspaces::MAX_EMOJI_CHARS))
+        }
+    });
+    let Some(text) = super::profile_rename::prompt_validated(hwnd, &current, "Workspace emoji", "Use", "Shown instead of the icon. Leave it empty to show the icon. Win+. opens the emoji panel.", validate) else {
+        return;
+    };
+    let _ = App::workspace_set_emoji(app, id, Some(&text));
+}
 
 /// "Rename tab": asks for a name. An empty name goes back to the page's title.
 fn rename_tab_prompt(hwnd: HWND, app: &AppRef, id: TabId) {
@@ -9075,6 +9234,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
+        | ChromeCommand::TabStack { .. } // --- tab stacks (T10) ---
+        | ChromeCommand::RailWheel { .. } // --- tab stacks (T10) ---
         | ChromeCommand::TabSelection { .. } // --- tab options ---
         | ChromeCommand::ClosedTabs // --- tab options ---
         | ChromeCommand::Group { .. }
@@ -9414,6 +9575,25 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         // --- end hover layer ---
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
         ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
+        // --- tab stacks (T10) --- a held tab dropped on another after resting over it.
+        ChromeCommand::TabStack { id, onto } => {
+            let Some(app) = app_of(hwnd) else { return };
+            let open = App::tab_ids(&app);
+            let (Some(dragged), Some(target)) = (chrome_host::tab_from_wire(id, &open), chrome_host::tab_from_wire(onto, &open)) else {
+                return;
+            };
+            if App::stack_onto(&app, dragged, target) {
+                super::stack_ui::stack_made(hwnd, &app, target);
+            }
+        }
+        // The vertical sidebar's workspace header takes the wheel like the rail's workspaces.
+        ChromeCommand::RailWheel { d } => {
+            if let Some(app) = app_of(hwnd) {
+                let _ = App::scroll_workspaces(&app, d);
+            }
+            return;
+        }
+        // --- end tab stacks ---
         // --- tab options ---
         ChromeCommand::TabSelection { ids } => {
             html_tab_selection(hwnd, &ids);
@@ -9435,7 +9615,12 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
             let vertical = with_chrome(hwnd, |s| s.sidebar.is_some() && s.html_tab_region().is_some()).unwrap_or(false);
             if !vertical { return; }
             match action {
-                SideAction::Workspace => defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu),
+                SideAction::Workspace => {
+                    // --- tab stacks (T10) --- the switcher is hidden while workspaces are off.
+                    if app_of(hwnd).is_some_and(|app| App::workspaces_enabled(&app)) {
+                        defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu);
+                    }
+                }
                 SideAction::NewTab => {
                     if let Some(app) = app_of(hwnd) {
                         open_user_tab(hwnd, &app); // --- tab options ---
@@ -9931,6 +10116,9 @@ fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripO
         remove_spacing: options.remove_spacing_maximised,
         maximised: with_chrome(hwnd, |s| s.layout.maximised).unwrap_or(false),
         closed: App::closed_tabs(app).len() as u32,
+        // --- tab stacks (T10) --- stacking by drag needs stacks to be on.
+        stack_drag: options.stack_drag && crate::stacks::stacks_on(options.stack_style),
+        stack_delay: options.stack_drop_delay.0,
     }
 }
 
@@ -9988,8 +10176,13 @@ fn html_tabs_sync(hwnd: HWND) {
     let workspace_set = App::workspaces(&app);
     let workspace = workspace_set.active();
     let workspace_name = workspace.name().to_owned();
-    let workspace_icon = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
-    if let Some(json) = chrome_host::protocol::workspace_json(&workspace_name, &workspace_icon) {
+    let glyph = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
+    // --- tab stacks and workspaces (T10) --- the header shows the workspace's emoji when it has one;
+    // the emoji is part of what was sent, so a change of it is sent again.
+    let emoji = workspace.emoji().map(str::to_owned);
+    let workspaces_on = App::workspaces_enabled(&app);
+    let workspace_icon = format!("{glyph}|{}|{workspaces_on}", emoji.as_deref().unwrap_or(""));
+    if let Some(json) = chrome_host::protocol::workspace_json_with(&workspace_name, &glyph, emoji.as_deref(), workspaces_on) {
         let already_sent = with_chrome(hwnd, |s| {
             s.html_tabs_workspace.as_ref().is_some_and(|(name, icon)| name == &workspace_name && icon == &workspace_icon)
         }).unwrap_or(false);
@@ -10284,6 +10477,12 @@ fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Rail { action, key, rect } => html_rail_action(hwnd, action, key, rect),
         ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
+        // --- tab stacks (T10) --- "Switch workspaces by scrolling" (Rust checks the option).
+        ChromeCommand::RailWheel { d } => {
+            if let Some(app) = app_of(hwnd) {
+                let _ = App::scroll_workspaces(&app, d);
+            }
+        }
         // --- hover layer ---
         ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
             html_hover_command(hwnd, View::Rail, command);
@@ -11013,12 +11212,27 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 }
                 // --- split view --- the native strip's half, or the HTML card's fallback rectangle
                 let native_drop = s.split_drop.map(|zone| {
-                    let gap = s.layout.metrics.px(crate::split_view::GAP_DIP);
+                    let gap = s.layout.metrics.px(crate::stacks::gap_dip());
                     let (l, t, r, b) = crate::split_view::drop_rect((sidebar_viewport.left, sidebar_viewport.top, sidebar_viewport.right, sidebar_viewport.bottom), zone, gap);
                     Rect::new(l, t, r, b)
                 });
                 if let Some(target) = native_drop.or(split_drop_fallback.map(|rect| Rect::new(rect.left, rect.top, rect.right, rect.bottom))) {
                     s.surface.paint_split_drop(target, p, dirty);
+                }
+                // --- tab stacks (T10) --- "Show a title bar on each tile", in both chromes: the bars
+                // sit in the window, above each tile's page.
+                if active_has_controller {
+                    let focused = split_view.map(|view| view.focused_tab());
+                    let bars: Vec<(Rect, String, bool)> = tile_title_bars(hwnd, s)
+                        .into_iter()
+                        .map(|(bar, tab)| {
+                            let title = s.tabs.iter().find(|shown| shown.id == tab).map(|shown| shown.title.clone()).unwrap_or_default();
+                            (bar, title, focused == Some(tab))
+                        })
+                        .collect();
+                    if !bars.is_empty() {
+                        s.surface.paint_tile_titles(&bars, p, dirty);
+                    }
                 }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
@@ -12017,6 +12231,8 @@ mod tests {
             accent: None,
             favicon: None,
             png: None,
+            count: 0,
+            emoji: None,
         };
         let mut rail = vec![entry(RailKey::Customize, "Customize"), entry(RailKey::App(1), "Mail")];
         rail[1].png = Some(Rc::new(vec![1u8, 2, 3]));

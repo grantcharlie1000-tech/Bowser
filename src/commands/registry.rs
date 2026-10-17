@@ -212,6 +212,17 @@ pub static BUILTINS: &[CommandDef] = &[
     def("qr-code", "QR code for this page", "Show the page's address as a QR code", C::Page, &[], Page, Run(crate::win32::run_qr_code)),
     def("toggle-address-bar", "Show or hide the address bar", "Turn Settings > Address bar > Show the address bar on or off", C::Navigation, &[], Cmd, Run(crate::win32::run_toggle_address_bar)),
     // --- end wave-1 integration ---
+    // --- tab stacks, tiling and workspaces (T10; win32/stack_ui.rs) ---
+    def("stack-site-tabs", "Stack tabs of this site", "Put every tab of this site in one stack", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
+    def("stack-tabs-by-site", "Stack all tabs by site", "One stack for each site with two tabs or more", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
+    def("unstack", "Unstack", "Take the tabs of this stack out of it", C::Tabs, &[], Cmd, Run(crate::win32::run_unstack)),
+    browser(def("tile-vertical", "Tile vertically", "Show the selected tabs, or this stack, side by side", C::Windows, &["Ctrl+F9"], Cmd, Run(crate::win32::run_tile_vertical))),
+    browser(def("tile-horizontal", "Tile horizontally", "Show the selected tabs, or this stack, one above another", C::Windows, &["Ctrl+F8"], Cmd, Run(crate::win32::run_tile_horizontal))),
+    browser(def("tile-grid", "Tile in a grid", "Show the selected tabs, or this stack, two by two", C::Windows, &["Ctrl+F7"], Cmd, Run(crate::win32::run_tile_grid))),
+    def("untile", "Untile", "Show the tiled tabs one at a time again", C::Windows, &[], Cmd, Run(crate::win32::run_untile)),
+    def("next-workspace", "Next workspace", "Switch to the workspace below this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_next_workspace)),
+    def("previous-workspace", "Previous workspace", "Switch to the workspace above this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_previous_workspace)),
+    // --- end tab stacks, tiling and workspaces ---
 ];
 
 /// The command with this id, if it is a built-in.

@@ -38,7 +38,7 @@ export interface TextSpec extends Base {
 }
 export type TabOptionSpec = ToggleSpec | ChoiceSpec | NumberSpec | TextSpec;
 
-export const TAB_CARDS = ['new', 'close', 'bar', 'select', 'audio', 'pinned', 'restore'] as const;
+export const TAB_CARDS = ['new', 'close', 'bar', 'select', 'audio', 'pinned', 'restore', 'stacks'] as const;
 export type TabCardKey = typeof TAB_CARDS[number];
 export const TAB_CARD_TITLES: Readonly<Record<TabCardKey, string>> = {
   new: 'New tabs',
@@ -48,6 +48,7 @@ export const TAB_CARD_TITLES: Readonly<Record<TabCardKey, string>> = {
   audio: 'Audio',
   pinned: 'Pinned tabs',
   restore: 'Restoring tabs',
+  stacks: 'Tab stacks, tiling and workspaces', // --- T10 ---
 };
 
 const toggle = (key: string, card: TabCardKey, def: boolean, label: string, description: string, keywords: string): ToggleSpec =>
@@ -69,8 +70,8 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
     kind: 'text', key: 'tabs_new_tab_url', card: 'new', default: '', max: MAX_PAGE_URL, placeholder: 'https://example.com', when: ['tabs_new_tab_page', 'url'],
     label: 'Address of the new tab page', description: 'Opened by every new tab while the page above is a specific page.', keywords: 'new tab address url website',
   },
-  choice(POSITION_KEY, 'new', 'active', [['related', 'After related'], ['active', 'After active'], ['last', 'As last']], 'New tab position',
-    'Where a new tab goes. After related keeps tabs opened from a page next to it.', 'new tab position related active last order next beside'),
+  choice(POSITION_KEY, 'new', 'active', [['related', 'After related'], ['active', 'After active'], ['last', 'As last'], ['stack', 'As stack with related']], 'New tab position',
+    'Where a new tab goes. After related keeps tabs opened from a page next to it; as stack with related also puts them in its stack.', 'new tab position related active last order next beside stack'),
   toggle('tabs_link_background', 'new', false, 'Open links in new tabs in the background', 'A link opened in a new tab loads without leaving the page you are reading.', 'link background new tab open'),
   choice('tabs_duplicate_position', 'new', 'beside', [['beside', 'Next to the original'], ['last', 'Last']], 'Duplicated tab position',
     'Where Duplicate tab puts the copy.', 'duplicate tab position copy'),
@@ -112,6 +113,22 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
 
   toggle('tabs_lazy_restore', 'restore', true, 'Load restored tabs when first selected', 'Off loads every tab at once when Bowser reopens them.', 'lazy load restored tabs session restore'),
   toggle('tabs_load_pinned', 'restore', false, 'Always load pinned tabs', 'Pinned tabs load as soon as Bowser reopens them, even when the others wait.', 'always load pinned tabs restore'),
+
+  // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) --- a stack is a site island.
+  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['off', 'Off']], 'Tab stacks',
+    'Islands sit side by side and fold when you fold them. Compact folds each stack to its ball and the tab in use. Accordion opens only the stack you are in.',
+    'tab stacks stacking islands groups compact accordion two level fold off'),
+  toggle('tabs_workspaces', 'stacks', true, 'Workspaces', 'Shows workspaces in the rail, the sidebar, the menu and Quick commands. Off hides them; their tabs wait until you turn them back on.',
+    'workspaces enable disable rail switcher'),
+  toggle('tabs_stack_open_in_current', 'stacks', false, 'Open new tabs in the current stack', 'A new tab opened while a stacked tab is in front joins that stack.', 'open new tab current stack join'),
+  toggle('tabs_stack_drag', 'stacks', true, 'Stack tabs by dragging one onto another', 'Hold a dragged tab over the middle of another tab, then let go, to stack the two.', 'stack drag drop tab onto another'),
+  number('tabs_stack_drop_delay', 'stacks', 400, 0, 2000, 'ms', 'Stacking delay', 'How long a dragged tab rests over another before a drop stacks them.', 'stacking drop delay milliseconds hold wait', 'At once'),
+  toggle('tabs_stack_editor', 'stacks', false, 'Open the stack editor when a stack is made', 'Making a stack by dragging or with a Stack command opens its name and colour.', 'stack editor name colour rename auto open'),
+  toggle('tabs_tile_titles', 'stacks', false, 'Show a title bar on each tile', 'Tiled tabs in a split view each show their page’s title above the page.', 'tile title bar split view tiling header'),
+  toggle('tabs_tile_tight', 'stacks', false, 'Remove the space around tiles', 'Tiles meet with a hairline instead of the usual gap.', 'tile gap space spacing tight split view tiling'),
+  toggle('tabs_workspace_scroll', 'stacks', false, 'Switch workspaces by scrolling', 'The mouse wheel over the workspaces in the rail or the sidebar switches to the next or previous one.', 'switch workspaces scroll wheel mouse rail'),
+  toggle('tabs_workspace_counts', 'stacks', false, 'Show tab counts on workspaces', 'Each workspace in the rail and the workspace menu shows how many tabs it holds.', 'workspace tab count number badge'),
+  // --- end tab stacks, tiling and workspaces ---
 ];
 
 export const TAB_OPTION_KEYS: readonly string[] = [...TAB_OPTIONS.map((spec) => spec.key)];
@@ -172,8 +189,9 @@ export function clampNumber(spec: NumberSpec, typed: number): number {
 }
 
 /** Row specs for the page's search index and its row builder (the settings page lists ROWS in this order). */
-export function tabOptionRows(): ReadonlyArray<{ id: string; section: 'tabs'; label: string; description: string; keywords: string }> {
-  return TAB_OPTIONS.map((spec) => ({ id: spec.key, section: 'tabs' as const, label: spec.label, description: spec.description, keywords: spec.keywords }));
+export function tabOptionRows(): ReadonlyArray<{ id: string; section: 'tabs' | 'stacks'; label: string; description: string; keywords: string }> {
+  // --- T10 --- the stacks card is its own settings section (Tabs and start page > Tab stacks, tiling and workspaces).
+  return TAB_OPTIONS.map((spec) => ({ id: spec.key, section: spec.card === 'stacks' ? 'stacks' as const : 'tabs' as const, label: spec.label, description: spec.description, keywords: spec.keywords }));
 }
 
 /** The card a spec belongs in, with the specs of that card in page order. */

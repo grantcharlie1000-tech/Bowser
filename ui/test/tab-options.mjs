@@ -32,8 +32,8 @@ test('every option the page lists is one Rust stores, and the other way round', 
   const table = rust.slice(rust.indexOf('tab_options! {'), rust.indexOf('// ---- virtual options'));
   const rustKeys = [...table.matchAll(/"(tabs_[a-z_]+)";/g)].map((m) => m[1]);
   assert.ok(rustKeys.length >= 30, `found ${rustKeys.length} Rust options`);
-  // The related flag only ever travels as part of the position, which Rust keeps in two older settings.
-  const expected = [...rustKeys.filter((key) => key !== 'tabs_new_tab_related'), options.POSITION_KEY].sort();
+  // The related and stack flags only ever travel as part of the position, which Rust keeps in older settings.
+  const expected = [...rustKeys.filter((key) => key !== 'tabs_new_tab_related' && key !== 'tabs_new_tab_stack'), options.POSITION_KEY].sort();
   assert.deepEqual([...options.TAB_OPTION_KEYS].sort(), expected);
   assert.equal(new Set(options.TAB_OPTION_KEYS).size, options.TAB_OPTION_KEYS.length, 'no key twice');
   for (const spec of options.TAB_OPTIONS) {
@@ -51,14 +51,15 @@ test('the choices the page offers are exactly the words Rust parses', () => {
   const byKey = {
     tabs_new_tab_page: 'NewTabPage', tabs_duplicate_position: 'DuplicatePosition', tabs_close_activation: 'CloseActivation', tabs_double_click: 'DoubleClick',
     tabs_load_indicator: 'LoadIndicator', tabs_mute_mode: 'MuteMode', tabs_pinned_close: 'PinnedClose',
+    tabs_stack_style: 'StackStyle', // --- tab stacks (T10) ---
   };
   for (const [key, name] of Object.entries(byKey)) {
     const spec = options.TAB_OPTIONS.find((s) => s.key === key);
     assert.deepEqual(spec.choices.map(([value]) => value).sort(), [...choices.get(name)].sort(), key);
   }
   const position = options.TAB_OPTIONS.find((s) => s.key === options.POSITION_KEY);
-  assert.deepEqual(position.choices.map(([value]) => value), ['related', 'active', 'last']);
-  assert.ok(!position.choices.some(([value]) => value === 'stack'), 'stacks wait for tab stacks: no dead option');
+  // --- tab stacks (T10) --- "as stack with related" is offered now that stacks exist (T1's waiting choice).
+  assert.deepEqual(position.choices.map(([value]) => value), ['related', 'active', 'last', 'stack']);
 });
 
 test('the Rust snapshot carries every option, with the defaults the page names', () => {
@@ -85,7 +86,9 @@ test('the option snapshot is refused unless it is whole and every value is legal
   const bad = {
     tabs_new_tab_page: 'speeddial', tabs_double_click: 'minimise', tabs_close_activation: 'Right', tabs_mute_mode: true, tabs_load_indicator: 'ring',
     tabs_confirm_close: 100, tabs_active_min_width: 401, tabs_inactive_days: 366, tabs_keep_window: 'yes', tabs_pinned_close: 'stack',
-    tabs_new_tab_url: 'javascript:alert(1)', tabs_scroll: 1, tabs_new_tab_position: 'stack',
+    tabs_new_tab_url: 'javascript:alert(1)', tabs_scroll: 1, tabs_new_tab_position: 'stacked',
+    // --- tab stacks (T10) --- two-level is not a style Bowser draws; the delay has Rust's range.
+    tabs_stack_style: 'two-level', tabs_stack_drop_delay: 2001, tabs_workspaces: 'on',
   };
   for (const [key, value] of Object.entries(bad)) assert.equal(options.parseTabOptions({ ...good, [key]: value }), null, `${key}=${value}`);
   assert.ok(options.parseTabOptions({ ...good, tabs_new_tab_url: 'https://example.com/a?b=c' }));
@@ -248,8 +251,11 @@ test('the strip options message is whole or refused', () => {
   const opts = parseInbound(JSON.stringify(stripFixture.opts));
   assert.deepEqual(opts, {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
-    selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4,
+    selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4, stackDrag: false, stackDelay: 250,
   });
+  // --- tab stacks (T10) --- stacking by drag is on by default, after Rust's 400 ms.
+  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDrag, true);
+  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDelay, 400);
   const defaults = parseInbound(JSON.stringify(stripFixture.defaults));
   assert.equal(defaults.indicator, 'spinner');
   assert.equal(defaults.selection, true);
@@ -261,7 +267,7 @@ test('the strip options message is whole or refused', () => {
     delete missing[key];
     assert.equal(parseInbound(JSON.stringify(missing)), null, `missing ${key}`);
   }
-  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }]) {
+  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }, { stackDelay: 2001 }, { stackDrag: 1 }]) {
     assert.equal(parseInbound(JSON.stringify({ ...raw, ...bad })), null, JSON.stringify(bad));
   }
 });

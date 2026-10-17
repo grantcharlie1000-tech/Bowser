@@ -134,3 +134,26 @@ export function dragAnnouncement(kind: 'lift' | 'float' | 'attach' | 'drop' | 'c
     case 'cancel': return `Move cancelled. ${name} returned to its place.`;
   }
 }
+
+// --- tab stacks (T10) ---
+/**
+ * The tab whose middle half `x` is over, by index in strip order, or -1: a dragged tab resting there
+ * stacks with it on release (Rust's `stacks::over_middle`). `lefts` are where the tabs are drawn now;
+ * `from`, the held tab, is never its own target.
+ */
+export function stackCandidate(lefts: readonly number[], widths: readonly number[], from: number, x: number): number {
+  for (let i = 0; i < lefts.length; i++) {
+    if (i === from) continue;
+    const left = lefts[i] ?? 0;
+    const width = widths[i] ?? 0;
+    const quarter = width / 4;
+    if (width > 0 && x >= left + quarter && x < left + width - quarter) return i;
+  }
+  return -1;
+}
+
+/** Screen-reader text once a dragged tab is marked to stack. */
+export function stackAnnouncement(title: string): string {
+  return `Release to stack with ${title !== '' ? title : 'this tab'}.`;
+}
+// --- end tab stacks ---
