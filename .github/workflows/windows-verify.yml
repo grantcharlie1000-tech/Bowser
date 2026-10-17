@@ -24,19 +24,34 @@ jobs:
         run: |
           $tokens = $null
           $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $pwd 'benchmarks/scripts/verify-release-candidate.ps1'),
-            [ref]$tokens, [ref]$parseErrors) | Out-Null
-          if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw 'Native smoke script does not parse.' }
+          foreach ($script in @('verify-release-candidate.ps1', 'test-native-theme-flow.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $pwd "benchmarks/scripts/$script"),
+              [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw "$script does not parse." }
+          }
       - name: Install official Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
           rustc +stable --version
           cargo +stable --version
+      - name: Diagnose focused native theme persistence before aggregate tests
+        timeout-minutes: 15
+        run: ./benchmarks/scripts/test-native-theme-flow.ps1
+      - name: Save focused Rust logs and timeout process evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-theme-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-theme-tests/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Test default native Windows source
+        timeout-minutes: 10
         run: cargo +stable test --locked
       - name: Test shipping HTML-default Windows source
+        timeout-minutes: 10
         run: cargo +stable test --locked --features html-chrome-default
       - name: Check Windows source with Clippy
         run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings

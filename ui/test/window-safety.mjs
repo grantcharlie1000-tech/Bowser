@@ -55,3 +55,17 @@ test('foreground fading refreshes page and panel state without resetting dirty d
   assert.match(sync, /html_panel::settings_changed\(hwnd\)/);
   assert.doesNotMatch(sync, /settings_page::refresh|history_page::refresh|downloads_page::refresh/);
 });
+
+test('theme-flow tests use isolated real persistence and cannot block in error dialogs', () => {
+  const flow = read('src/app/tests/theme_flow.rs');
+  assert.equal((flow.match(/#\[test\]/g) ?? []).length,
+    (flow.match(/let _profile = crate::profile::TestProfileGuard::isolated\(\);/g) ?? []).length);
+  assert.match(flow, /path\.is_file\(\)/);
+  assert.match(flow, /settings::read_strict/);
+  const profile = read('src/profile.rs');
+  assert.match(profile, /thread_local! \{\s*static TEST_ACTIVE:/);
+  assert.match(profile, /parallel_app_profiles_keep_real_settings_writes_separate/);
+  assert.match(profile, /isolated_app_profiles_restore_scope_and_remove_only_their_owned_root/);
+  assert.match(mod, /#\[cfg\(test\)\]\s*pub fn show_error_message\(message: &str\) \{\s*panic!/);
+  assert.match(mod, /#\[cfg\(not\(test\)\)\]\s*pub fn show_error_message/);
+});

@@ -58,10 +58,14 @@ fn fixture() -> Fixture {
 
 fn option(app: &AppRef, text: &str) {
     assert!(App::set_theme_option(app, text), "{text}");
+    let path = crate::profile::active().unwrap().settings_file();
+    assert!(path.is_file(), "theme option must persist real settings: {text}");
+    crate::settings::read_strict(&path).expect("persisted theme settings must be readable");
 }
 
 #[test]
 fn a_colour_option_reaches_the_palette_every_surface_reads() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     let base = theme::palette_base(Appearance::Dark, true).clone();
     assert_eq!(theme::palette(Appearance::Dark, true), &base, "nothing chosen: Bowser's own look");
@@ -87,6 +91,7 @@ fn a_colour_option_reaches_the_palette_every_surface_reads() {
 
 #[test]
 fn a_refused_value_changes_nothing() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_colouring=tab_bar");
     let before = App::settings(&app).themes;
@@ -102,6 +107,7 @@ fn a_refused_value_changes_nothing() {
 
 #[test]
 fn the_colouring_mode_tints_the_bar_it_names() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_accent_page=false");
     app.borrow_mut().settings.theme_accent = Some("#d03030".to_owned());
@@ -127,6 +133,7 @@ fn the_colouring_mode_tints_the_bar_it_names() {
 
 #[test]
 fn the_accent_saturation_limit_reaches_the_accent_the_chrome_uses() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     app.borrow_mut().settings.theme_accent = Some("#e02020".to_owned());
     let full = App::user_theme(&app).accent.expect("accent");
@@ -146,6 +153,7 @@ fn the_accent_saturation_limit_reaches_the_accent_the_chrome_uses() {
 
 #[test]
 fn the_contrast_option_raises_the_text_contrast_the_chrome_keeps() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_background=#ffffff");
     option(&app, "theme_foreground=#6b6b6b");
@@ -159,6 +167,7 @@ fn the_contrast_option_raises_the_text_contrast_the_chrome_keeps() {
 
 #[test]
 fn a_private_tabs_own_look_keeps_its_family_when_a_background_is_chosen() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_background=#ffffff");
     option(&app, "theme_highlight=#ffcc00");
@@ -171,6 +180,7 @@ fn a_private_tabs_own_look_keeps_its_family_when_a_background_is_chosen() {
 
 #[test]
 fn the_schedule_sets_the_look_the_window_uses() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_schedule=none");
     option(&app, "theme_look=dark");
@@ -206,6 +216,7 @@ fn the_schedule_sets_the_look_the_window_uses() {
 
 #[test]
 fn saving_the_page_s_settings_takes_the_theme_options_into_memory() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     let mut file = Settings::default();
     file.theme = Theme::System;
@@ -224,6 +235,7 @@ fn saving_the_page_s_settings_takes_the_theme_options_into_memory() {
 
 #[test]
 fn reset_theme_settings_puts_the_whole_theme_back_and_only_it() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let app = app_with_pending(rect(800, 600));
     option(&app, "theme_background=#102030");
     option(&app, "theme_schedule=none");
@@ -247,6 +259,7 @@ fn reset_theme_settings_puts_the_whole_theme_back_and_only_it() {
 
 #[test]
 fn an_exported_theme_imports_back_and_a_bad_file_changes_nothing() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let (from, ..) = fixture();
     option(&from, "theme_background=#202830");
     option(&from, "theme_foreground=#eeeeee");
@@ -275,6 +288,7 @@ fn an_exported_theme_imports_back_and_a_bad_file_changes_nothing() {
 
 #[test]
 fn the_accent_follows_the_page_only_while_the_option_is_on() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let (app, answer, scripts) = fixture();
     let tab = App::active_tab_id(&app);
     *answer.borrow_mut() = Some("\"#1a73e8\"".to_owned());
@@ -321,6 +335,7 @@ fn the_accent_follows_the_page_only_while_the_option_is_on() {
 
 #[test]
 fn the_page_accent_tints_the_bar_the_colouring_mode_names() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
     let (app, answer, _) = fixture();
     let tab = App::active_tab_id(&app);
     app.borrow_mut().tabs.iter_mut().find(|t| t.id == tab).unwrap().url = Some(url::Url::parse("https://example.test/").unwrap());

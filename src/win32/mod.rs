@@ -87,7 +87,7 @@ pub(crate) use command_actions::{
 use windows::{
     Win32::{
         Foundation::HWND,
-        UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+        UI::WindowsAndMessaging::MessageBoxW,
     },
     core::w,
 };
@@ -98,6 +98,13 @@ pub fn show_runtime_error(error: &crate::engine::RuntimeUnavailable) {
     show_error_message(&format!("{error}"));
 }
 
+/// Unit tests must surface errors, not wait forever for a human to dismiss a native dialog.
+#[cfg(test)]
+pub fn show_error_message(message: &str) {
+    panic!("Unexpected native error dialog in unit test: {message}");
+}
+
+#[cfg(not(test))]
 pub fn show_error_message(message: &str) {
     let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
@@ -105,7 +112,8 @@ pub fn show_error_message(message: &str) {
             Some(HWND::default()),
             windows::core::PCWSTR(text.as_ptr()),
             w!("Bowser"),
-            MB_OK | MB_ICONERROR,
+            windows::Win32::UI::WindowsAndMessaging::MB_OK
+                | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
         );
     }
 }
@@ -385,3 +393,12 @@ pub(crate) use page_tools_ui::{
     run_capture_visible_copy, run_capture_visible_note, run_note_append, run_note_from_selection,
 };
 // --- end page tools ---
+
+#[cfg(test)]
+mod error_dialog_tests {
+    #[test]
+    #[should_panic(expected = "Unexpected native error dialog in unit test: settings write failed")]
+    fn unexpected_error_dialog_fails_instead_of_waiting_for_desktop_input() {
+        super::show_error_message("settings write failed");
+    }
+}
