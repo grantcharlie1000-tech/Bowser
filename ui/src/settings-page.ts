@@ -29,9 +29,9 @@ import {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
-  search: 'search', keyboard: 'command', commands: 'link', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
+  search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
-  address: 'workspace-globe', bookmarks: 'bookmark', // --- wave-1 integration --- 'link' is Quick commands' glyph
+  address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 

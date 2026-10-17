@@ -5,13 +5,15 @@
  */
 
 /* ---- Settings: suggestion sources and the engine list ---- */
+/* One inset well with hairline rules between rows, like the toolbar list on Appearance (no card in a card). */
 .ad-sources,
 .ad-engines {
   display: flex;
   flex-direction: column;
-  gap: var(--bw-space-2);
   margin: 0;
-  padding: 0;
+  padding: 0 var(--bw-space-3);
+  border-radius: var(--bw-r-row);
+  background: var(--sp-well);
   list-style: none;
 }
 
@@ -20,10 +22,14 @@
   display: flex;
   align-items: center;
   gap: var(--bw-space-3);
-  padding: var(--bw-space-2) var(--bw-space-3);
-  border: 1px solid var(--sp-card-edge);
-  border-radius: var(--bw-r-island);
+  min-height: 48px;
+  padding: var(--bw-space-2) 0;
   transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.ad-source + .ad-source,
+.ad-engine + .ad-engine {
+  border-top: 1px solid var(--sp-rule);
 }
 
 .ad-source.is-off {
@@ -55,8 +61,9 @@
   width: 28px;
   height: 28px;
   border-radius: var(--bw-r-control);
-  background: color-mix(in srgb, var(--bw-accent) 14%, transparent);
-  color: var(--bw-accent);
+  /* The placeholder favicon tile every other list uses (bookmarks panel, history). */
+  background: var(--bw-glyph-fill);
+  color: var(--bw-on-glyph);
   font-weight: var(--bw-weight-strong);
 }
 
@@ -151,7 +158,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--bw-space-0_5);
   min-width: 0;
   max-width: 190px;
   height: 100%;
@@ -296,7 +303,7 @@
 .bm-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--bw-space-0_5);
   height: 100%;
   padding: 0 var(--bw-space-2);
   box-sizing: border-box;
@@ -309,7 +316,7 @@
   display: flex;
   flex: 1 1 auto;
   align-items: center;
-  gap: 2px;
+  gap: var(--bw-space-0_5);
   min-width: 0;
   overflow: hidden;
 }
@@ -318,10 +325,10 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--bw-space-1_5);
   max-width: 180px;
   height: 22px;
-  padding: 0 8px;
+  padding: 0 var(--bw-space-2);
   border: 0;
   border-radius: var(--bw-r-control);
   background: transparent;
@@ -341,6 +348,8 @@
 }
 
 .bm-label {
+  /* A caption line box, so descenders (g, p, y) are not clipped by the ellipsis' overflow. */
+  line-height: var(--bw-leading-caption);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

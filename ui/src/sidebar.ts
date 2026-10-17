@@ -221,7 +221,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   setTip(closedRow, 'Closed tabs');
   const closedLabel = el('span', 'side-closed-label');
   closedLabel.textContent = 'Closed tabs';
-  closedRow.append(icon('trash', { size: 16 }), closedLabel);
+  closedRow.append(icon('tab-restore', { size: 16 }), closedLabel);
   const setPicked = (ids: readonly number[]): void => {
     if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
     picked = [...ids];

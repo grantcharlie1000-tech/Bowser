@@ -422,7 +422,7 @@ export function buildStartPage(): {
       case 'topsites': return 'clock';
       case 'bookmarks': return 'bookmark';
       case 'notes': return 'notes';
-      case 'date': return 'workspace-book';
+      case 'date': return 'calendar';
       case 'privacy': return 'shield';
       default: return 'globe';
     }

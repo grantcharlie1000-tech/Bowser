@@ -325,8 +325,8 @@ const COMMAND_GLYPH: Readonly<Record<string, string>> = {
   'translate page': 'translate',
   'keyboard shortcuts': 'command',
   // Wave-1 commands (T1 tabs, T2 address bar, T3 privacy), all from the existing icon set.
-  'reopen closed tab': 'reset',
-  'closed tabs': 'clock',
+  'reopen closed tab': 'tab-restore',
+  'closed tabs': 'tab-restore',
   'save all tabs as session': 'save',
   'open saved session': 'folder-open',
   'reload this tab every…': 'reload',
@@ -334,7 +334,7 @@ const COMMAND_GLYPH: Readonly<Record<string, string>> = {
   'delete browsing data': 'trash',
   'next blocking level for this site': 'shield',
   'qr code for this page': 'qr-code',
-  'show or hide the address bar': 'search',
+  'show or hide the address bar': 'address-bar',
 };
 
 export function commandGlyph(label: string): string {
