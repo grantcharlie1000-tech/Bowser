@@ -434,7 +434,108 @@ export interface RowSpec {
   readonly restart?: boolean;
   /** Saved, but Bowser does not act on it yet: the page says so instead of pretending. */
   readonly notYet?: boolean;
+  /** Where the row is drawn (`rowTier`); a row that sets none gets the table's choice. */
+  readonly tier?: RowTier;
 }
+
+// --- settings slim --- the page shows a short core list per area. The long tail of each area sits
+// behind one "More options" disclosure, the big editors open as sub-pages from one row, and the rows
+// that do nothing yet sit in "Not active yet" at the end. Rust's sixteen section keys stay (deep links,
+// `settingsgo`); an area groups one or more of them under one heading and one nav item.
+
+/** `core`: always shown. `more`: behind the area's "More options". `page`: its own sub-page, opened from a row. `later`: "Not active yet". */
+export type RowTier = 'core' | 'more' | 'page' | 'later';
+
+export interface AreaSpec {
+  readonly key: SettingsSection;
+  readonly title: string;
+  readonly nav: string;
+  readonly lead: string;
+  /** The Rust sections drawn in this area, in order; the first is the area's own key. */
+  readonly parts: readonly SettingsSection[];
+}
+
+const sectionSpec = (key: SettingsSection): SectionSpec => SECTIONS.find((spec) => spec.key === key)!;
+const single = (key: SettingsSection): AreaSpec => {
+  const spec = sectionSpec(key);
+  return { key, title: spec.title, nav: spec.nav, lead: spec.lead, parts: [key] };
+};
+
+/** The page's areas, in nav order: Bowser's own sections, with Tabs, Address bar and Shortcuts each taking in their neighbours. */
+export const AREAS: readonly AreaSpec[] = [
+  single('profile'),
+  single('appearance'),
+  { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'startpage'] },
+  single('privacy'),
+  single('performance'),
+  { key: 'address', title: 'Address bar and search', nav: 'Address bar and search', lead: 'How the address field behaves, the engines it searches with, and how bookmarks open.', parts: ['address', 'search', 'bookmarks'] },
+  { key: 'keyboard', title: 'Shortcuts and commands', nav: 'Shortcuts and commands', lead: 'Keyboard shortcuts, Quick commands and chains of commands.', parts: ['keyboard', 'commands'] },
+  single('downloads'),
+  single('media'),
+  single('extensions'),
+  single('updates'),
+  single('about'),
+];
+
+/** The area a Rust section is drawn in. */
+export function areaOf(section: SettingsSection): AreaSpec {
+  return AREAS.find((area) => area.parts.includes(section)) ?? AREAS[0]!;
+}
+
+/** The title of a part inside a merged area (the old section's own title). */
+export function partTitle(section: SettingsSection): string {
+  return sectionSpec(section).title;
+}
+
+export const MORE_LABEL = 'More options';
+export const LATER_TITLE = 'Not active yet';
+export const LATER_LEAD = 'Bowser saves these choices, but they change nothing yet. Each one starts working when its feature arrives.';
+export const LATER_LABEL = 'Show these settings';
+
+/** "12 more settings": the disclosure's description. */
+export function moreCountText(count: number): string {
+  return count === 1 ? '1 more setting' : `${count} more settings`;
+}
+
+/** Rows a person changes often enough to see without opening anything. Every other row is `more`. */
+const CORE_ROWS: ReadonlySet<string> = new Set([
+  'profile', 'profiles', 'import',
+  'layout', 'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
+  'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
+  'startupMode', 'startupPages', 'startHomepage',
+  'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
+  'efficiency', 'sleep', 'sleepAfter',
+  'addrAutocomplete', 'addrFull', 'secHttps', 'searchDefault', 'searchPrivate', 'searchField', 'bmNewTab',
+  'kbEnabled',
+  'downloadDir', 'downloadAsk', 'media', 'extensions', 'autoUpdate', 'updateStatus', 'version', 'file', 'reset', 'defaultBrowser',
+]);
+
+export interface PageSpec {
+  /** The opening row's button. */
+  readonly button: string;
+  /** Put the opening row after this row (or opening row) instead of where the editor was. */
+  readonly after?: string;
+}
+
+/** The big editors and blocks that open as sub-pages, each from one row. */
+export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
+  engines: { button: 'Edit search engines…' },
+  siteRules: { button: 'Edit sites…', after: 'cookieNotices' },
+  blockLists: { button: 'Edit lists…', after: 'siteRules' },
+  deleteData: { button: 'Choose what to delete…', after: 'historyRetention' },
+  dashboard: { button: 'Open dashboard…', after: 'deleteData' },
+  kbEditor: { button: 'Edit shortcuts…' },
+  chains: { button: 'Edit chains…' },
+};
+
+/** Where a row is drawn. A row Bowser does not act on yet is always `later`, whatever else it says. */
+export function rowTier(row: RowSpec): RowTier {
+  if (row.notYet) return 'later';
+  if (row.tier) return row.tier;
+  if (Object.hasOwn(PAGE_ROWS, row.id)) return 'page';
+  return CORE_ROWS.has(row.id) ? 'core' : 'more';
+}
+// --- end settings slim ---
 
 /** The note under a row whose change waits for a restart. */
 export const RESTART_NOTE = 'Applies after restart';
@@ -469,7 +570,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'websiteAppearance', section: 'appearance', label: 'Website appearance', description: 'The colour scheme websites are asked to use: light, dark, or what Windows uses.', keywords: 'dark light auto mode prefers color scheme websites page theme' },
   { id: 'forceDark', section: 'appearance', label: 'Force dark theme on all websites', description: 'Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.', keywords: 'force dark mode night websites invert auto dark' },
   { id: 'privateTheme', section: 'appearance', label: 'Private tab theme', description: 'How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.', keywords: 'private incognito inprivate theme dark light window colour' },
-  { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', description: 'Choose which buttons appear in the toolbar.', keywords: 'back forward reload bookmark newtab split reader site information buttons customize' },
+  { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', description: 'Choose which buttons appear in the toolbar.', keywords: 'back forward reload bookmark newtab split reader site information buttons customize', notYet: true },
   { id: 'showHomeButton', section: 'appearance', label: 'Show the Home button', description: 'Adds a Home button to the side rail, beside the tabs.', keywords: 'home button toolbar rail sidebar' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre the address bar', description: 'Keeps the address bar centred in the toolbar.', keywords: 'address bar centre centered position' },
   { id: 'minimalUrl', section: 'appearance', label: 'Show a simplified address while unfocused', description: 'Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.', keywords: 'url simplified host domain minimal address bar focus' },
@@ -480,7 +581,7 @@ export const ROWS: readonly RowSpec[] = [
   // (TABS_SECTION_ROWS below).
   { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
-  { id: 'ctrlSVerticalTabs', section: 'appearance', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
+  { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
   { id: 'frameless', section: 'appearance', label: 'Frameless window', description: 'Hides the browser’s toolbar and tabs until the pointer nears the top of the window.', keywords: 'frameless hide toolbar tabs immersive', notYet: true },
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
@@ -494,8 +595,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'translateOffer', section: 'appearance', label: 'Offer to translate pages in other languages', description: 'Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.', keywords: 'translate translation language foreign page' },
   { id: 'translateAuto', section: 'appearance', label: 'Translate automatically on sites set to always translate', description: 'Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.', keywords: 'translate translation language foreign page automatic always' },
   { id: 'translateTarget', section: 'appearance', label: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows' },
-  { id: 'shiftRightClickContext', section: 'appearance', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system' },
-  { id: 'ctrlShiftCCopyLink', section: 'appearance', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
+  { id: 'shiftRightClickContext', section: 'keyboard', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system' },
+  { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
   // --- start page --- (docs/design/start-page.md)

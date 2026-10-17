@@ -151,11 +151,14 @@ deliver(settingsFixture.snap);
 const rowOf = (key) => page.querySelector(`.sp-row[data-row="${key}"]`);
 
 test('the Tabs section lists every option in cards, each with its own control and a plain label', () => {
-  const section = page.querySelector('section[data-section="tabs"]');
-  assert.ok(section, 'a Tabs section');
-  assert.equal(section.querySelector('h2').textContent, 'Tabs');
-  const cards = section.querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  assert.deepEqual(cards, options.TAB_CARDS.map((card) => options.TAB_CARD_TITLES[card]));
+  // --- settings slim --- Tabs is the first part of the Tabs and start page area; its core rows sit in
+  // one Tabs card and every other option keeps its card heading behind the area's More options.
+  const section = page.querySelector('section[data-area="tabs"]');
+  assert.ok(section, 'a Tabs area');
+  assert.equal(section.querySelector('h2').textContent, 'Tabs and start page');
+  assert.ok(section.querySelector('section[data-section="tabs"]'), 'with a Tabs part');
+  const cards = section.querySelector('.sp-more').querySelectorAll('.sp-group-h').map((h) => h.textContent);
+  for (const card of options.TAB_CARDS) assert.ok(cards.includes(options.TAB_CARD_TITLES[card]), card);
   for (const spec of options.TAB_OPTIONS) {
     const row = rowOf(spec.key);
     assert.ok(row, spec.key);
@@ -167,7 +170,7 @@ test('the Tabs section lists every option in cards, each with its own control an
   }
   const nav = page.querySelector('.sp-nav-item[data-section="tabs"]');
   assert.ok(nav);
-  assert.equal(nav.textContent, 'Tabs');
+  assert.equal(nav.textContent, 'Tabs and start page');
 });
 
 test('a switch, a choice, a number and the address each send one tabopt command and nothing else', () => {
