@@ -1249,10 +1249,16 @@ fn apply_cosmetic_css(
     } else {
         state.cosmetic_css_for_host(&top_host)
     };
+    let x_script = state.x_promoted_script(&top_host, private);
     drop(state);
     let installed = block.cosmetic_installed.replace(css.is_some());
     let Some(script) = cosmetic_script(css.as_deref(), installed) else {
         return;
+    };
+    // X promoted posts: the marker script runs after the style it depends on.
+    let script = match x_script {
+        Some(marker) => format!("{script};\n{marker}"),
+        None => script,
     };
     // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
     // `engine_never_blocks_on_a_webview2_completion`).
