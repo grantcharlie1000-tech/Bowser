@@ -134,33 +134,121 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
 }
 
 /// Resolves `host` and returns its addresses only if every one is public.
-pub(crate) fn resolve_public(host: &str) -> Result<(), FetchError> {
-    let mut any = false;
+pub(crate) fn resolve_public(host: &str) -> Result<Vec<IpAddr>, FetchError> {
+    let mut addresses = Vec::new();
     for address in (host, 443).to_socket_addrs().map_err(|_| FetchError::Network)? {
-        any = true;
         if !is_public_ip(address.ip()) {
             return Err(FetchError::PrivateAddress);
         }
+        if !addresses.contains(&address.ip()) {
+            addresses.push(address.ip());
+        }
     }
-    if any { Ok(()) } else { Err(FetchError::Network) }
+    if addresses.is_empty() { Err(FetchError::Network) } else { Ok(addresses) }
+}
+
+/// [`resolve_public`], given at most the time left before `deadline`: the system resolver has no timeout
+/// of its own, so it runs on a short-lived thread that is abandoned if it does not answer in time.
+pub(crate) fn resolve_public_by(host: &str, deadline: Deadline) -> Result<Vec<IpAddr>, FetchError> {
+    let left = deadline.remaining()?;
+    let (answer, answered) = std::sync::mpsc::channel();
+    let owned = host.to_owned();
+    std::thread::Builder::new()
+        .name("bowser-resolve".into())
+        .spawn(move || {
+            let _ = answer.send(resolve_public(&owned));
+        })
+        .map_err(|_| FetchError::Network)?;
+    answered.recv_timeout(left).map_err(|_| FetchError::Network)?
+}
+
+/// The wall-clock end of a whole fetch (every hop's name lookup, connection, request, headers and body).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Deadline(Instant);
+
+impl Deadline {
+    pub(crate) fn after(started: Instant, seconds: u64) -> Self {
+        Self(started + Duration::from_secs(seconds))
+    }
+
+    /// The time left, or [`FetchError::Network`] once it has run out.
+    pub(crate) fn remaining(self) -> Result<Duration, FetchError> {
+        let left = self.0.saturating_duration_since(Instant::now());
+        if left.is_zero() { Err(FetchError::Network) } else { Ok(left) }
+    }
+
+    fn remaining_ms(self) -> Result<i32, FetchError> {
+        Ok(i32::try_from(self.remaining()?.as_millis()).unwrap_or(i32::MAX).max(1))
+    }
+}
+
+/// Sets `handle`'s WinHTTP timeouts so the next blocking call cannot outlast `deadline`: each limit is the
+/// usual one or the time left, whichever is less. `send` is for `WinHttpSendRequest`, which resolves,
+/// connects and sends in one call, so those three share the time left; otherwise (receiving the headers
+/// or a piece of the body) the receive limit gets all of it.
+pub(crate) fn bound_timeouts(handle: *mut c_void, deadline: Deadline, usual: [i32; 4], send: bool) -> Result<(), FetchError> {
+    let left = deadline.remaining_ms()?;
+    let share = if send { (left / 3).max(1) } else { left };
+    let [resolve, connect, sending, receive] = usual;
+    unsafe { WinHttpSetTimeouts(handle, resolve.min(share), connect.min(share), sending.min(share), receive.min(left)) }.map_err(|_| FetchError::Network)
+}
+
+/// The server name a hop connects to. A plain `http` hop connects to the address that was just checked
+/// (with the name sent in a `Host` header), so a name that changes its answer before WinHTTP looks it up
+/// again cannot send the request elsewhere. An `https` hop keeps the name, which the certificate check
+/// needs; WinHTTP's own lookup there is watched by [`peer_watch`]. IPv4 is preferred; IPv6 is bracketed.
+pub(crate) fn connect_target(url: &Url, vetted: &[IpAddr]) -> Option<String> {
+    let host = url.host_str()?;
+    if url.scheme() != "http" {
+        return Some(host.to_owned());
+    }
+    let ip = vetted.iter().find(|ip| ip.is_ipv4()).or_else(|| vetted.first())?;
+    Some(match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    })
 }
 
 /// The address text WinHTTP hands its status callback ("93.184.216.34", "2606:4700::1", possibly with a
-/// trailing NUL or a `[...]` wrapper or a zone id), as an address. `None` for anything else.
+/// trailing NUL or a `[...]` wrapper or a zone id), as an address. `None` for anything else. WinHTTP
+/// passes a wide (UTF-16LE) string; a narrow one is read too. An address's text is ASCII, so a second
+/// byte of 0 means UTF-16.
 pub fn peer_address(text: &[u8]) -> Option<IpAddr> {
-    let text = std::str::from_utf8(text).ok()?.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let decoded: String;
+    let text = if text.len() >= 2 && text[1] == 0 {
+        let units: Vec<u16> = text.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).take_while(|&unit| unit != 0).collect();
+        decoded = String::from_utf16(&units).ok()?;
+        decoded.as_str()
+    } else {
+        std::str::from_utf8(text).ok()?
+    };
+    let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let text = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).unwrap_or(text);
     let text = text.split('%').next()?;
     text.parse().ok()
 }
 
+/// Longest address text read from a callback, in UTF-16 units (an IPv6 address with a zone id is under 64).
+const MAX_PEER_UNITS: usize = 64;
+
 /// Called by WinHTTP, on the calling thread, as it resolves and connects. `context` is the address of
 /// the hop's [`AtomicBool`]; an address that is not public (or not readable) sets it.
+///
+/// `info` is a NUL-terminated wide string. Whether `length` counts bytes or characters is not something
+/// to rely on, so the string is read up to its NUL, at most `length` units and [`MAX_PEER_UNITS`].
 pub(crate) unsafe extern "system" fn peer_watch(_handle: *mut c_void, context: usize, status: u32, info: *mut c_void, length: u32) {
     if context == 0 || !matches!(status, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED | WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER | WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER) {
         return;
     }
-    let bytes = if info.is_null() || length == 0 || length > 128 { &[][..] } else { unsafe { std::slice::from_raw_parts(info as *const u8, length as usize) } };
+    let mut units = 0usize;
+    if !info.is_null() {
+        let wide = info as *const u16;
+        let limit = (length as usize).min(MAX_PEER_UNITS);
+        while units < limit && unsafe { wide.add(units).read_unaligned() } != 0 {
+            units += 1;
+        }
+    }
+    let bytes = if units == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(info as *const u8, units * 2) } };
     if !peer_address(bytes).is_some_and(is_public_ip) {
         unsafe { &*(context as *const AtomicBool) }.store(true, Ordering::SeqCst);
     }
@@ -229,11 +317,11 @@ impl Drop for Handle {
 
 /// Fetches `url` and returns the body's bytes.
 pub fn fetch_list(url: &Url) -> Result<Vec<u8>, FetchError> {
-    let started = Instant::now();
+    let deadline = Deadline::after(Instant::now(), TOTAL_SECONDS);
     let mut current = url.clone();
     for _ in 0..=MAX_REDIRECTS {
         check_url(&current)?;
-        match get_once(&current, started)? {
+        match get_once(&current, deadline)? {
             Reply::Body(bytes) => return Ok(bytes),
             Reply::Redirect(location) => {
                 let next = current.join(&location).map_err(|_| FetchError::BadRedirect)?;
@@ -250,10 +338,14 @@ enum Reply {
     Redirect(String),
 }
 
-fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
+/// WinHTTP's usual limits for a list fetch (resolve, connect, send, receive), in milliseconds.
+const LIST_TIMEOUTS: [i32; 4] = [10_000, 10_000, 15_000, 30_000];
+
+fn get_once(url: &Url, deadline: Deadline) -> Result<Reply, FetchError> {
     let host = url.host_str().ok_or(FetchError::Network)?;
-    // First check: every address the name resolves to must be public.
-    resolve_public(host)?;
+    // First check: every address the name resolves to must be public. Lists are https only, so the
+    // connection keeps the name (see `connect_target`) and the second check below watches WinHTTP's lookup.
+    resolve_public_by(host, deadline)?;
     // Second check, below: every address WinHTTP actually resolves and connects to.
     let refused = AtomicBool::new(false);
     let mut path = url.path().to_owned();
@@ -275,7 +367,7 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
             0,
         );
     }
-    unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 15_000, 30_000) }.map_err(|_| FetchError::Network)?;
+    bound_timeouts(session.0, deadline, LIST_TIMEOUTS, true)?;
     let connection = Handle(unsafe { WinHttpConnect(session.0, &HSTRING::from(host), 443, 0) });
     if connection.0.is_null() {
         return Err(FetchError::Network);
@@ -291,17 +383,20 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
         .map_err(|_| FetchError::Network)?;
     let headers: Vec<u16> = "Accept: text/plain, */*;q=0.5\r\n".encode_utf16().collect();
     let context = &refused as *const AtomicBool as usize;
+    bound_timeouts(request.0, deadline, LIST_TIMEOUTS, true)?;
     let sent = unsafe { WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, context) };
     // A non-public peer ends the hop whatever else happened; its answer is never read.
     if refused.load(Ordering::SeqCst) {
         return Err(FetchError::PrivateAddress);
     }
     sent.map_err(|_| FetchError::Network)?;
+    bound_timeouts(request.0, deadline, LIST_TIMEOUTS, false)?;
     let received = unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) };
     if refused.load(Ordering::SeqCst) {
         return Err(FetchError::PrivateAddress);
     }
     received.map_err(|_| FetchError::Network)?;
+    deadline.remaining()?;
     let mut status = 0u32;
     let mut size = 4u32;
     unsafe {
@@ -324,9 +419,7 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
     let mut body = Vec::new();
     let mut buffer = vec![0u8; 32 * 1024];
     loop {
-        if started.elapsed() > Duration::from_secs(TOTAL_SECONDS) {
-            return Err(FetchError::Network);
-        }
+        bound_timeouts(request.0, deadline, LIST_TIMEOUTS, false)?;
         let mut read = 0u32;
         unsafe { WinHttpReadData(request.0, buffer.as_mut_ptr() as *mut c_void, buffer.len() as u32, &mut read) }
             .map_err(|_| FetchError::Network)?;
@@ -433,22 +526,64 @@ mod tests {
         assert_eq!(peer_address(&[0xff, 0xfe]), None);
     }
 
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
+    }
+
+    #[test]
+    fn peer_addresses_are_read_as_the_wide_strings_winhttp_passes() {
+        let bytes = |text: &str| -> Vec<u8> { wide(text).iter().flat_map(|unit| unit.to_le_bytes()).collect() };
+        assert_eq!(peer_address(&bytes("93.184.216.34")), Some("93.184.216.34".parse().unwrap()));
+        assert_eq!(peer_address(&bytes("2606:4700::1111")), Some("2606:4700::1111".parse().unwrap()));
+        assert_eq!(peer_address(&bytes("[fe80::1%12]")), Some("fe80::1".parse().unwrap()));
+        assert_eq!(peer_address(&bytes("1.1.1.1")[..14]), Some("1.1.1.1".parse().unwrap()), "without its NUL");
+        assert_eq!(peer_address(&bytes("example.com")), None);
+        assert_eq!(peer_address(&[b'1', 0, 0x00, 0xd8]), None, "an unpaired surrogate");
+    }
+
     #[test]
     fn the_peer_callback_flags_private_or_unreadable_peers_only() {
         let flag = AtomicBool::new(false);
         let context = &flag as *const AtomicBool as usize;
-        let mut public = *b"93.184.216.34\0";
-        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER, public.as_mut_ptr().cast(), public.len() as u32) };
+        // WinHTTP's length is in bytes for some notifications and characters for others: both are read.
+        let mut public = wide("93.184.216.34");
+        for length in [public.len() as u32, (public.len() * 2) as u32] {
+            unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER, public.as_mut_ptr().cast(), length) };
+            assert!(!flag.load(Ordering::SeqCst), "a public wide address passes (length {length})");
+        }
+        let mut v6 = wide("2606:4700::1111");
+        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED, v6.as_mut_ptr().cast(), (v6.len() * 2) as u32) };
         assert!(!flag.load(Ordering::SeqCst));
         // Other notifications are ignored.
-        let mut private = *b"10.0.0.1\0";
-        unsafe { peer_watch(std::ptr::null_mut(), context, 0x0000_0001, private.as_mut_ptr().cast(), private.len() as u32) };
+        let mut private = wide("10.0.0.1");
+        unsafe { peer_watch(std::ptr::null_mut(), context, 0x0000_0001, private.as_mut_ptr().cast(), (private.len() * 2) as u32) };
         assert!(!flag.load(Ordering::SeqCst));
-        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED, private.as_mut_ptr().cast(), private.len() as u32) };
+        unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED, private.as_mut_ptr().cast(), (private.len() * 2) as u32) };
         assert!(flag.load(Ordering::SeqCst));
         flag.store(false, Ordering::SeqCst);
         unsafe { peer_watch(std::ptr::null_mut(), context, WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER, std::ptr::null_mut(), 0) };
         assert!(flag.load(Ordering::SeqCst), "an unreadable peer is refused");
+    }
+
+    #[test]
+    fn plain_http_connects_to_the_vetted_address_and_https_keeps_the_name() {
+        let v4: IpAddr = "93.184.216.34".parse().unwrap();
+        let v6: IpAddr = "2606:4700::1111".parse().unwrap();
+        let http = Url::parse("http://feeds.example/rss").unwrap();
+        let https = Url::parse("https://feeds.example/rss").unwrap();
+        assert_eq!(connect_target(&http, &[v6, v4]).as_deref(), Some("93.184.216.34"), "IPv4 first");
+        assert_eq!(connect_target(&http, &[v6]).as_deref(), Some("[2606:4700::1111]"));
+        assert_eq!(connect_target(&http, &[]), None);
+        assert_eq!(connect_target(&https, &[v4]).as_deref(), Some("feeds.example"));
+    }
+
+    #[test]
+    fn a_spent_deadline_ends_the_fetch_before_any_lookup() {
+        let spent = Deadline::after(Instant::now() - Duration::from_secs(5), 1);
+        assert_eq!(spent.remaining(), Err(FetchError::Network));
+        assert_eq!(resolve_public_by("example.com", spent), Err(FetchError::Network));
+        assert!(Deadline::after(Instant::now(), 10).remaining().unwrap() > Duration::from_secs(9));
+        assert!(matches!(resolve_public_by("localhost", Deadline::after(Instant::now(), 10)), Err(FetchError::PrivateAddress)));
     }
 
     #[test]

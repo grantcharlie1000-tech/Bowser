@@ -646,9 +646,33 @@ impl AddressSettings {
         self.sources.contains(&source)
     }
 
-    /// Reads one `key=value` line from the file, ignoring what is not understood.
+    /// Reads one `key=value` line from the file, ignoring what is not understood. A scope word is
+    /// checked on its own here; that no two scopes share one is checked once the whole file is read
+    /// ([`Self::dedupe_scope_words`]), so the order of the lines does not matter.
     pub fn parse_line(&mut self, key: &str, value: &str) {
+        if let "nick_bookmarks" | "nick_history" | "nick_tabs" = key {
+            let word = value.trim().trim_start_matches('@').to_ascii_lowercase();
+            if valid_nickname_word(&word) {
+                match key {
+                    "nick_bookmarks" => self.nick_bookmarks = word,
+                    "nick_history" => self.nick_history = word,
+                    _ => self.nick_tabs = word,
+                }
+            }
+            return;
+        }
         let _ = self.set(key, value);
+    }
+
+    /// The check after a file is read: a scope word another scope already uses (bookmarks first,
+    /// then history, then tabs) turns that later scope off, so `@word` never means two things.
+    pub fn dedupe_scope_words(&mut self) {
+        if !self.nick_history.is_empty() && self.nick_history == self.nick_bookmarks {
+            self.nick_history.clear();
+        }
+        if !self.nick_tabs.is_empty() && (self.nick_tabs == self.nick_bookmarks || self.nick_tabs == self.nick_history) {
+            self.nick_tabs.clear();
+        }
     }
 
     /// `text` with this module's lines replaced in place (or appended), and every other line kept.
@@ -768,6 +792,32 @@ mod tests {
         assert!(settings.show_full);
         assert!(settings.set("bm_confirm_open", "0"));
         assert_eq!(settings.confirm_open, 0, "0 means never ask");
+    }
+
+    /// Reads `lines` the way `settings.txt` is read: each line, then the one check after the file.
+    fn read_lines(lines: &[(&str, &str)]) -> AddressSettings {
+        let mut settings = AddressSettings::default();
+        for (key, value) in lines {
+            settings.parse_line(key, value);
+        }
+        settings.dedupe_scope_words();
+        settings
+    }
+
+    #[test]
+    fn scope_words_read_the_same_in_any_line_order() {
+        let lines = [("nick_tabs", "t"), ("nick_history", "tabs")];
+        for order in [[lines[0], lines[1]], [lines[1], lines[0]]] {
+            let settings = read_lines(&order);
+            assert_eq!((settings.nick_history.as_str(), settings.nick_tabs.as_str()), ("tabs", "t"), "{order:?}");
+        }
+        // A word used twice turns the later scope off, whatever the order of the lines.
+        let lines = [("nick_bookmarks", "b"), ("nick_tabs", "b")];
+        for order in [[lines[0], lines[1]], [lines[1], lines[0]]] {
+            let settings = read_lines(&order);
+            assert_eq!((settings.nick_bookmarks.as_str(), settings.nick_tabs.as_str()), ("b", ""), "{order:?}");
+        }
+        assert_eq!(read_lines(&[("nick_history", "NOT VALID!")]).nick_history, "history");
     }
 
     #[test]

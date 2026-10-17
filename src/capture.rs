@@ -223,14 +223,34 @@ fn factory() -> Option<IWICImagingFactory> {
     unsafe { CoCreateInstance::<_, IWICImagingFactory>(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok() }
 }
 
+/// Bytes a decoded `width` x `height` picture takes as 24-bit rows padded to 4 bytes.
+fn decoded_bytes(width: u32, height: u32) -> u64 {
+    (u64::from(width) * 3).div_ceil(4) * 4 * u64::from(height)
+}
+
+/// The width and height a PNG's header (its first chunk, `IHDR`) declares, read without decoding.
+pub fn png_header_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if kind_of(bytes) != Some(CaptureFormat::Png) || bytes.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let number = |at: usize| bytes.get(at..at + 4).and_then(|raw| raw.try_into().ok()).map(u32::from_be_bytes);
+    Some((number(16)?, number(20)?))
+}
+
 fn decode(factory: &IWICImagingFactory, bytes: &[u8], max_side: u32) -> Option<Decoded> {
+    decode_within(factory, bytes, max_side, u64::MAX)
+}
+
+/// [`decode`], refusing (before any pixel buffer is allocated) a picture whose rows would take more
+/// than `max_bytes`.
+fn decode_within(factory: &IWICImagingFactory, bytes: &[u8], max_side: u32, max_bytes: u64) -> Option<Decoded> {
     let source = unsafe { factory.CreateStream().ok()? };
     unsafe { source.InitializeFromMemory(bytes).ok()? };
     let decoder = unsafe { factory.CreateDecoderFromStream(&source, std::ptr::null(), WICDecodeMetadataCacheOnLoad).ok()? };
     let frame = unsafe { decoder.GetFrame(0).ok()? };
     let (mut width, mut height) = (0u32, 0u32);
     unsafe { frame.GetSize(&mut width, &mut height).ok()? };
-    if width == 0 || height == 0 || width > max_side || height > max_side {
+    if width == 0 || height == 0 || width > max_side || height > max_side || decoded_bytes(width, height) > max_bytes {
         return None;
     }
     let converter = unsafe { factory.CreateFormatConverter().ok()? };
@@ -330,12 +350,19 @@ pub fn stitch(slices: &[Vec<u8>], format: CaptureFormat) -> Result<Vec<u8>, Stri
 /// for the clipboard. `Err` says why when the picture is too large or cannot be read.
 pub fn dib_of(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let failed = || "The capture could not be read for the clipboard.".to_owned();
+    let too_large = || "This capture is too large to copy. Save it to a file instead.".to_owned();
     kind_of(bytes).ok_or_else(failed)?;
-    let factory = factory().ok_or_else(failed)?;
-    let picture = decode(&factory, bytes, 70_000).ok_or_else(failed)?;
-    if u64::from(picture.stride) * u64::from(picture.height) > MAX_CLIPBOARD_BYTES {
-        return Err("This capture is too large to copy. Save it to a file instead.".to_owned());
+    // The size is checked before anything is decoded: a 3840 x 60000 capture would otherwise allocate
+    // about 690 MB, and an allocation failure ends the browser.
+    if png_header_size(bytes).is_some_and(|(width, height)| decoded_bytes(width, height) > MAX_CLIPBOARD_BYTES) {
+        return Err(too_large());
     }
+    let factory = factory().ok_or_else(failed)?;
+    let size = size_of(bytes).ok_or_else(failed)?;
+    if decoded_bytes(size.0, size.1) > MAX_CLIPBOARD_BYTES {
+        return Err(too_large());
+    }
+    let picture = decode_within(&factory, bytes, 70_000, MAX_CLIPBOARD_BYTES).ok_or_else(failed)?;
     let image_size = picture.stride * picture.height;
     let mut out = Vec::with_capacity(40 + image_size as usize);
     out.extend_from_slice(&40u32.to_le_bytes()); // biSize
@@ -535,5 +562,29 @@ pub(crate) mod tests {
         assert_eq!(dib[40], 20, "the bottom row comes first");
         assert_eq!(dib[40 + stride], 200);
         assert!(dib_of(b"not an image").is_err());
+    }
+
+    /// A PNG signature and an `IHDR` chunk declaring `width` x `height`, with no picture data after it.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        out.extend_from_slice(b"IHDR");
+        out.extend_from_slice(&width.to_be_bytes());
+        out.extend_from_slice(&height.to_be_bytes());
+        out.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        out
+    }
+
+    #[test]
+    fn a_huge_capture_is_refused_for_the_clipboard_before_it_is_decoded() {
+        let huge = png_header(3840, 60_000);
+        assert_eq!(png_header_size(&huge), Some((3840, 60_000)));
+        assert!(decoded_bytes(3840, 60_000) > MAX_CLIPBOARD_BYTES);
+        assert_eq!(dib_of(&huge), Err("This capture is too large to copy. Save it to a file instead.".to_owned()));
+        // A real picture's header is read the same way, and a small one still copies.
+        let png = picture(5, 2, CaptureFormat::Png, |_| 9);
+        assert_eq!(png_header_size(&png), Some((5, 2)));
+        assert_eq!(png_header_size(b"\x89PNG\r\n\x1a\n...."), None);
+        assert!(dib_of(&png).is_ok());
+        assert!(decoded_bytes(5, 2) == 32);
     }
 }

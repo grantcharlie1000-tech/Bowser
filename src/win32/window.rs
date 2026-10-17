@@ -114,6 +114,9 @@ const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 // --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
 mod auto_hide;
 // --- end auto-hide ---
+// --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
+mod host_state;
+// --- end look state ---
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -2231,6 +2234,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         super::panel_customize::register(&app);
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
+        super::set_blocker_wake(hwnd); // --- latency (fix E) --- blocker lists built off-thread
         super::panel_webapp::register(&app);
         super::panel_webapp::set_on_icon_changed(Box::new(move || {
             RAIL_ICON_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
@@ -3914,25 +3918,9 @@ unsafe extern "system" fn window_proc(
                         return LRESULT(0);
                     }
                 }
-                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) >= 0 {
-                    if let Some(app) = app {
-                        match wparam.0 as u32 {
-                            0x42 => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); return LRESULT(0); }
-                            // bowser://downloads in a tab (docs/design/downloads.md).
-                            0x4A => { super::downloads_page::open(hwnd, app, false); return LRESULT(0); }
-                            // bowser://history in a tab (the side panel without the HTML chrome).
-                            0x48 => {
-                                if super::history_page::available(hwnd) {
-                                    super::history_page::open(hwnd, app, false);
-                                } else {
-                                    rail_activate(hwnd, app, side_panel::PanelId::History);
-                                }
-                                return LRESULT(0);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // --- latency (fix E) --- Ctrl+B / Ctrl+J / Ctrl+H are registry commands
+                // ("bookmarks-panel", "downloads", "history") run by `dispatch_current` below, so
+                // rebinding, clearing and "shortcuts off" apply to them like every other chord.
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && side_panel::is_open(hwnd)
                     && !crate::win32::menu::is_tracking()
@@ -5018,6 +5006,8 @@ fn finish_sidebar_drag(hwnd: HWND, app: &AppRef) {
         // as after every drag frame.
         apply_sidebar_bounds(hwnd, app);
         App::save_settings(app);
+        // --- fix group C --- an open settings page reads the new width, so its next Save keeps it.
+        super::settings_page::refresh(hwnd);
     }
 }
 
@@ -5161,38 +5151,19 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
     };
     // --- end theme options ---
     palette.window.a = 255;
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        solid: true,
-        dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
-        compact_menus: false,
-        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
-        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
-        theme: chrome_host::theme_tokens(&palette),
-    }
-    .to_json()
+    // --- look state (fix group B) --- the person's text size, font, density, menus and window look.
+    let look = host_look(hwnd);
+    host_state::page_host_view(dpi as f32 / 96.0, true, dark, look, chrome_host::theme_tokens(&palette)).to_json()
 }
+
+/// The settings-driven part of a page or panel host's `state`, as `html_sync` builds it for the toolbar.
+fn host_look(hwnd: HWND) -> host_state::HostLook {
+    match app_of(hwnd) {
+        Some(app) => host_state::HostLook::of(&App::settings(&app), window_in_background(hwnd)),
+        None => host_state::HostLook::neutral(),
+    }
+}
+// --- end look state ---
 
 /// The palette and dark flag a page host takes: the window's own, or the private theme's light or
 /// dark look while a private tab is shown (the same rule as `html_sync`).
@@ -9769,44 +9740,26 @@ pub(super) fn html_panel_accelerator(hwnd: HWND, accel: Accel) -> bool {
 pub(super) fn html_panel_state(hwnd: HWND) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
+    // --- look state (fix group B) --- the private theme's look while a private tab is shown, as
+    // the toolbar (html_sync) and the page hosts (split_host_state) take it.
+    let system_look = glass::appearance();
+    let (look, dark) = match app_of(hwnd) {
+        Some(app) => {
+            let look = App::private_theme(&app).appearance(App::active_tab_private(&app), system_look);
+            (look, look == crate::theme::Appearance::Dark)
+        }
+        None => (system_look, system_look == crate::theme::Appearance::Dark),
+    };
+    // --- end look state ---
     // --- theme options ---
     let palette = match app_of(hwnd) {
-        Some(app) => App::themed_palette(&app, glass::appearance(), !palette.translucent).0,
+        Some(app) => App::themed_palette(&app, look, !palette.translucent).0,
         None => palette.clone(),
     };
     // --- end theme options ---
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        // The flyout window is transparent around its surface (shadow room); the page paints the
-        // opaque surface itself, so the body must not fill the window.
-        solid: false,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
-        compact_menus: false,
-        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
-        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
-        theme: chrome_host::theme_tokens(&palette),
-    }.to_json()
+    // The flyout window is transparent around its surface (shadow room); the page paints the
+    // opaque surface itself, so the body must not fill the window (solid false).
+    host_state::page_host_view(dpi as f32 / 96.0, false, dark, host_look(hwnd), chrome_host::theme_tokens(&palette)).to_json() // --- look state (fix group B) ---
 }
 
 /// The page area (below the toolbar, right of the rail) in client coordinates, before any panel
@@ -12268,7 +12221,12 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
         Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),
         Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         // bowser://history in a tab; the flyout or the docked panel without the HTML chrome.
-        Command::ShowHistory => super::history_page::open(hwnd, app, false),
+        // bowser://history in a tab; the History side panel without the HTML chrome (fix E: this
+        // fallback was in the hardcoded Ctrl+H block).
+        Command::ShowHistory if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
+        Command::ShowHistory => {
+            rail_activate(hwnd, app, side_panel::PanelId::History);
+        }
         // bowser://downloads in a tab (Ctrl+J, the main menu).
         Command::ShowDownloads => super::downloads_page::open(hwnd, app, false),
         Command::ToggleReader => run_reader(hwnd, app, crate::reader::Mode::Reader),

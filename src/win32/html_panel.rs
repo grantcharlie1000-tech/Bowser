@@ -431,6 +431,22 @@ pub(crate) fn history_changed(owner: HWND) {
     let _ = post(&runtime, &host, &chrome_host::panels::history::snapshot(&entries, &query, history_now_secs(), history_local_offset()));
 }
 
+// --- look state (fix group B) ---
+/// Settings were saved: an open flyout takes the new text size, density and window look at once
+/// (only the `state` is posted, so its list, search text and placement stay).
+pub(crate) fn settings_changed(owner: HWND) {
+    let Some(runtime) = runtime(owner) else { return; };
+    let host = {
+        let Ok(state) = runtime.try_borrow() else { return; };
+        if state.closed || !state.ready || !state.open { return; }
+        state.host.clone()
+    };
+    if let Some(host) = host {
+        let _ = post(&runtime, &host, &super::window::html_panel_state(owner));
+    }
+}
+// --- end look state ---
+
 fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let (host, owner, open, panel, query, path, profile_dir, app) = {
         let Ok(state) = runtime.try_borrow() else { return; };

@@ -1949,7 +1949,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus, message.look); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look); return; }
     if (message.t === 'settingsgo') {
       // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }

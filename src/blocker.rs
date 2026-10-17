@@ -1010,6 +1010,9 @@ pub struct BlockerState {
     /// Bumped whenever the rules or the per-site choices change, so a tab that already pushed its
     /// DevTools patterns knows to push them again.
     generation: u32,
+    /// A full build of the sources running on a worker thread ([`Self::load_deferred`],
+    /// [`Self::reload_sources_deferred`]); [`Self::take_built`] swaps it in on the UI thread.
+    pending: Option<std::sync::mpsc::Receiver<sources::Built>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1056,6 +1059,7 @@ impl BlockerState {
             devtools: OnceCell::new(),
             devtools_trackers: OnceCell::new(),
             generation: 0,
+            pending: None,
         }
     }
 
@@ -1063,13 +1067,97 @@ impl BlockerState {
     /// `dir`.
     pub fn load(dir: &Path, config_allow: &[String]) -> Self {
         let mut state = Self::matcher_only(dir);
-        state.set_config_allow(config_allow);
+        state.load_site_choices(dir, config_allow);
+        state
+    }
+
+    fn load_site_choices(&mut self, dir: &Path, config_allow: &[String]) {
+        self.set_config_allow(config_allow);
         let path = dir.join(SITES_FILE_NAME);
         if let Some(text) = read_capped(&path, MAX_SITES_BYTES) {
-            state.site_rules = site_rules::SiteRules::parse(&text);
+            self.site_rules = site_rules::SiteRules::parse(&text);
         }
-        state.sites_path = Some(path);
+        self.sites_path = Some(path);
+    }
+
+    /// [`Self::load`] for the UI thread at launch: it starts with the built-in lists only (nothing
+    /// but the small registry and site files is read) and builds every enabled source, `filters.txt`
+    /// and added lists of up to 8 MB each included, on a worker thread. The worker calls `wake` when
+    /// the build is ready; the UI thread then calls [`Self::take_built`] to swap it in.
+    pub fn load_deferred(dir: &Path, config_allow: &[String], wake: fn()) -> Self {
+        let mut state = Self::matcher_only_deferred(dir, wake);
+        state.load_site_choices(dir, config_allow);
         state
+    }
+
+    /// [`Self::matcher_only`] with the disk-backed sources built on a worker thread, as in
+    /// [`Self::load_deferred`].
+    pub fn matcher_only_deferred(dir: &Path, wake: fn()) -> Self {
+        let registry = sources::Registry::load(dir);
+        let mut state = Self::new(Blocker::default(), &[]);
+        state.install(sources::build_builtin(&registry));
+        if sources::reads_disk(&registry) {
+            state.spawn_build(dir, registry, wake);
+        }
+        state
+    }
+
+    /// [`Self::reload_sources`] off the UI thread: the current rules stay in force until the new
+    /// build is ready (`wake`, then [`Self::take_built`]). A newer reload replaces an older one that
+    /// has not arrived yet, so a stale build is never swapped in.
+    pub fn reload_sources_deferred(&mut self, dir: &Path, wake: fn()) {
+        let registry = sources::Registry::load(dir);
+        self.spawn_build(dir, registry, wake);
+    }
+
+    fn spawn_build(&mut self, dir: &Path, registry: sources::Registry, wake: fn()) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_dir = dir.to_path_buf();
+        let spawned = std::thread::Builder::new().name("bowser-blocker-build".into()).spawn(move || {
+            let built = sources::build(&worker_dir, &registry);
+            if sender.send(built).is_ok() {
+                wake();
+            }
+        });
+        match spawned {
+            Ok(_) => self.pending = Some(receiver),
+            // No thread: build here rather than run without the user's lists.
+            Err(_) => {
+                self.pending = None;
+                let built = sources::build(dir, &sources::Registry::load(dir));
+                self.install(built);
+            }
+        }
+    }
+
+    /// Swaps in a build a worker finished, if there is one. `true` when the rules changed.
+    pub fn take_built(&mut self) -> bool {
+        let Some(receiver) = &self.pending else { return false };
+        match receiver.try_recv() {
+            Ok(built) => {
+                self.pending = None;
+                self.install(built);
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                false
+            }
+        }
+    }
+
+    /// A worker is still building the rules.
+    pub fn building(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn install(&mut self, built: sources::Built) {
+        self.matcher = built.all;
+        self.trackers = built.trackers;
+        self.cookies = built.cookies;
+        self.source_counts = built.counts;
+        self.rules_changed();
     }
 
     /// A state with only the rule sources from `dir`: no site choices are read or saved. Private
@@ -1091,12 +1179,8 @@ impl BlockerState {
     /// Replaces the rules with a fresh build of the enabled sources in `dir` (after a source was
     /// switched, added or removed). Per-site choices and switches stay.
     pub fn reload_sources(&mut self, dir: &Path) {
-        let built = sources::build(dir, &sources::Registry::load(dir));
-        self.matcher = built.all;
-        self.trackers = built.trackers;
-        self.cookies = built.cookies;
-        self.source_counts = built.counts;
-        self.rules_changed();
+        self.pending = None;
+        self.install(sources::build(dir, &sources::Registry::load(dir)));
     }
 
     /// Forget what was derived from the rules, and tell tabs to push their patterns again.
@@ -3112,6 +3196,89 @@ mod level_tests {
         s.cookie_notices = true;
         assert!(s.set_site_cookies("example.com", Some(false)));
         assert!(s.cosmetic_css_for_host_private(PAGE).is_some(), "a private tab ignores the site's saved choice");
+    }
+
+    static WOKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn count_wake() {
+        WOKEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Waits (bounded) for the worker's build and swaps it in.
+    fn wait_built(s: &mut BlockerState) {
+        let start = std::time::Instant::now();
+        while !s.take_built() {
+            assert!(s.building(), "the worker went away without a build");
+            assert!(start.elapsed() < std::time::Duration::from_secs(120), "the build never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A big added list (`count` host rules, about 8 MB at 300 000) stored as a source of `dir`.
+    fn add_big_list(dir: &Path, tag: &str, count: usize) {
+        let mut text = String::with_capacity(count * 30);
+        for n in 0..count {
+            text.push_str(&format!("||ad{n}.{tag}.example^\n"));
+        }
+        let mut registry = sources::Registry::load(dir);
+        registry.add(dir, tag, sources::SourceKind::Ads, sources::Origin::File, &text).unwrap();
+    }
+
+    /// Fix E: launch reads only the small registry and site files on the UI thread; every big
+    /// list is parsed on a worker and swapped in afterwards, and then blocks exactly as a
+    /// synchronous load does.
+    #[test]
+    fn launch_starts_with_the_built_in_lists_and_builds_big_lists_on_a_worker() {
+        let dir = dir("deferred");
+        for tag in ["biga", "bigb"] {
+            add_big_list(&dir, tag, 300_000);
+        }
+        assert!(fs::metadata(dir.join(sources::LISTS_DIR).join("u1.txt")).unwrap().len() > 7_000_000);
+        let before = WOKEN.load(std::sync::atomic::Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        let mut s = BlockerState::load_deferred(&dir, &[], count_wake);
+        let elapsed = start.elapsed();
+        eprintln!("load_deferred with 2 x 7.5 MB lists returned in {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_millis(50), "{elapsed:?}");
+        assert!(s.building(), "the big lists are still being built");
+        assert!(s.should_block(AD, PAGE), "the built-in lists block from the start");
+        assert!(!s.should_block("https://ad7.bigb.example/x.js", PAGE), "not yet");
+        let generation = s.generation();
+        let waited = std::time::Instant::now();
+        wait_built(&mut s);
+        eprintln!("the worker's build arrived {:?} later", waited.elapsed());
+        assert!(WOKEN.load(std::sync::atomic::Ordering::SeqCst) > before, "the worker woke the UI thread");
+        assert_ne!(s.generation(), generation, "tabs push their patterns again");
+        assert!(!s.building());
+        let sync = BlockerState::load(&dir, &[]);
+        assert_eq!(s.rule_count(), sync.rule_count());
+        for url in [AD, TRACKER, "https://ad7.bigb.example/x.js", "https://ad299999.bigb.example/", "https://fine.example/"] {
+            assert_eq!(s.should_block(url, PAGE), sync.should_block(url, PAGE), "{url}");
+        }
+        assert_eq!(s.source_rule_count("u2"), sync.source_rule_count("u2"));
+    }
+
+    /// Fix E: a reload keeps the current rules until the worker's build arrives, and only the
+    /// latest of two quick reloads is swapped in.
+    #[test]
+    fn a_deferred_reload_keeps_the_old_rules_until_the_newest_build_arrives() {
+        let dir = dir("deferred-reload");
+        add_big_list(&dir, "bigr", 1_000);
+        let mut s = BlockerState::load(&dir, &[]);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE));
+        let mut registry = sources::Registry::load(&dir);
+        registry.set_enabled("u1", false);
+        registry.save(&dir).unwrap();
+        s.reload_sources_deferred(&dir, count_wake);
+        // Switched back on before the first build was taken: the second build wins.
+        registry.set_enabled("u1", true);
+        registry.set_enabled(sources::ID_ADS, false);
+        registry.save(&dir).unwrap();
+        s.reload_sources_deferred(&dir, count_wake);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE), "old rules stay meanwhile");
+        wait_built(&mut s);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE), "the newest build: list on");
+        assert!(!s.should_block(AD, PAGE), "the newest build: built-in ads off");
+        assert!(!s.take_built(), "nothing else is swapped in");
     }
 
     #[test]

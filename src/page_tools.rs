@@ -454,10 +454,17 @@ pub fn clean_name_part(text: &str, max: usize) -> String {
     cut.trim_matches(|c: char| c == ' ' || c == '.').to_owned()
 }
 
+/// Whether Windows reads `stem` as a device name: the part before the first dot, with the spaces Windows
+/// ignores at its end (`nul .x` is NUL), is CON, PRN, AUX, NUL, CONIN$, CONOUT$, or COM / LPT with a digit
+/// 1-9 or a superscript 1, 2 or 3.
 fn reserved(stem: &str) -> bool {
-    let upper = stem.split('.').next().unwrap_or("").to_ascii_uppercase();
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((upper.starts_with("COM") || upper.starts_with("LPT")) && upper.len() == 4 && upper.as_bytes()[3].is_ascii_digit() && upper.as_bytes()[3] != b'0')
+    let upper = stem.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let Some(number) = upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")) else { return false };
+    let mut chars = number.chars();
+    matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
 }
 
 /// The file name (without extension) a template makes. An empty or reserved result becomes `capture`.
@@ -728,6 +735,18 @@ mod tests {
         assert_eq!(capture_stem("{title}", "h", "com1.txt", CaptureMode::Visible, at), "capture");
         let long = capture_stem("{title}", "h", &"x".repeat(500), CaptureMode::Visible, at);
         assert_eq!(long.chars().count(), 60);
+    }
+
+    #[test]
+    fn every_windows_device_name_falls_back() {
+        let at = stamp();
+        for device in ["nul .x", "NUL  .png", "con ", "CONIN$", "conout$.txt", "COM\u{b9}", "lpt\u{b2}.x", "Com\u{b3}", "LPT9", "aux.tar.gz"] {
+            assert!(reserved(device), "{device:?}");
+            assert_eq!(capture_stem("{title}", "h", device, CaptureMode::Visible, at), "capture", "{device:?}");
+        }
+        for fine in ["console", "COM0", "LPT10", "COM\u{b9}0", "nul x", "CONIN", "conin$x", "LPT\u{b4}", "null"] {
+            assert!(!reserved(fine), "{fine:?}");
+        }
     }
 
     #[test]

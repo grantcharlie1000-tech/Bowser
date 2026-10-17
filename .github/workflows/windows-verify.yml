@@ -1,0 +1,97 @@
+name: Verify Windows release candidate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install locked UI dependencies
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck UI
+        working-directory: ui
+        run: npm run typecheck
+      - name: Lint UI
+        working-directory: ui
+        run: npm run lint
+      - name: Require Edge for browser-backed regression tests
+        run: |
+          $edge = @(
+            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { throw 'Microsoft Edge is required; browser-backed suites must not silently skip.' }
+          "BOWSER_TEST_EDGE=$edge" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test UI
+        working-directory: ui
+        run: npm test
+      - name: Test shipped Shield extension
+        run: node --test extensions/bowser-shield/test/run-tests.js
+      - name: Rebuild embedded UI
+        working-directory: ui
+        run: npm run build
+      - name: Verify committed UI is reproducible
+        run: |
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed source/assets.' }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustc +stable --version
+          cargo +stable --version
+      - name: Test Windows source and default HTML chrome
+        run: cargo +stable test --locked --features html-chrome-default
+      - name: Check Windows source with Clippy
+        run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+      - name: Build release candidate
+        run: cargo +stable build --release --locked --bin bowser --features html-chrome-default
+      - name: Record immutable build identity
+        run: |
+          New-Item -ItemType Directory -Force release-candidate | Out-Null
+          Copy-Item target/release/bowser.exe release-candidate/Bowser.exe
+          $file = Get-Item release-candidate/Bowser.exe
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = (git rev-parse HEAD).Trim()
+          $metadata = [ordered]@{
+            commit = $source
+            workflow_sha = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            asset = 'Bowser.exe'
+            sha256 = $hash
+            bytes = $file.Length
+            features = 'html-chrome-default'
+            rustc = (rustc +stable --version)
+            built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            published = $false
+          }
+          $metadata | ConvertTo-Json | Set-Content -Encoding utf8 release-candidate/build-metadata.json
+          "$hash  Bowser.exe" | Set-Content -Encoding ascii release-candidate/SHA256SUMS.txt
+      - name: Save verified release candidate (not a publication)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bowser-windows-${{ github.sha }}
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 14

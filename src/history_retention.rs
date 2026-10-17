@@ -109,14 +109,106 @@ pub fn after_visit(path: &Path) {
     });
 }
 
-/// At exit: a session-only history ends here. Other settings leave the file alone.
+// --- latency (fix E) --- a session-only history is shared by every Bowser process of the profile
+// (`profile::spawn_window` starts separate processes), so it ends with the last of them, and a
+// session a crash cut short is cleared when the next one starts.
+
+/// Where each running Bowser process of a profile keeps its marker, beside `history.txt`.
+fn markers_dir(history: &Path) -> std::path::PathBuf {
+    history.with_file_name("history-running")
+}
+
+/// This process's place in the profile's running set: a marker file it holds open without delete
+/// sharing for its whole life. Another process that cannot delete it knows this one is alive; once
+/// this process ends, however it ends, Windows closes the handle and the marker can be deleted.
+pub struct SessionMarker {
+    file: Option<std::fs::File>,
+    path: std::path::PathBuf,
+}
+
+/// Deletes every other process's marker in `dir` that can be deleted (their process is gone) and
+/// counts the ones that cannot (their process is alive).
+fn live_others(dir: &Path, own: Option<&Path>) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| Some(path.as_path()) != own && path.extension().is_some_and(|ext| ext == "run"))
+        .filter(|path| std::fs::remove_file(path).is_err() && path.exists())
+        .count()
+}
+
+impl SessionMarker {
+    /// Joins the running set for the history at `history`. `.1` is true when no other process of
+    /// the profile is running (this one is the first).
+    pub fn join(history: &Path) -> io::Result<(Self, bool)> {
+        let dir = markers_dir(history);
+        std::fs::create_dir_all(&dir)?;
+        let first = live_others(&dir, None) == 0;
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let path = dir.join(format!("{}-{nanos}.run", std::process::id()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(0x1); // FILE_SHARE_READ only: no delete while this process lives.
+        }
+        let file = options.open(&path)?;
+        Ok((Self { file: Some(file), path }, first))
+    }
+
+    /// Leaves the running set. True when this was the last process of the profile.
+    pub fn leave(mut self) -> bool {
+        self.file = None;
+        let _ = std::fs::remove_file(&self.path);
+        self.path.parent().is_none_or(|dir| live_others(dir, Some(&self.path)) == 0)
+    }
+}
+
+static MARKER: std::sync::Mutex<Option<SessionMarker>> = std::sync::Mutex::new(None);
+
+/// At launch, once the retention setting is known: joins the profile's running set, and when this is
+/// the first process and the history is session only, clears what a session that never reached
+/// [`finish_at_exit`] (a crash, a kill, a power cut) left behind.
+pub fn start_session() {
+    let Ok(profile) = crate::profile::active() else { return };
+    if profile.is_guest() {
+        return;
+    }
+    if let Some((marker, _first)) = start_session_for(&profile.history_file(), current()) {
+        *MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(marker);
+    }
+}
+
+/// [`start_session`] for the history at `path`. `None` when the marker cannot be written (then
+/// [`finish_at_exit`] behaves as before: it clears at this process's exit).
+pub fn start_session_for(path: &Path, retention: HistoryRetention) -> Option<(SessionMarker, bool)> {
+    let (marker, first) = SessionMarker::join(path).ok()?;
+    if first && retention == HistoryRetention::Session {
+        let _ = productivity::clear_history(path);
+    }
+    Some((marker, first))
+}
+
+/// At exit: a session-only history ends here, once the last Bowser process of the profile closes.
+/// Other settings leave the file alone.
 pub fn finish_at_exit() {
+    let marker = MARKER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Ok(profile) = crate::profile::active() {
         if !profile.is_guest() {
-            let _ = finish_at_exit_for(&profile.history_file(), current());
+            let _ = finish_session_for(&profile.history_file(), current(), marker);
         }
     }
 }
+
+/// [`finish_at_exit`] for the history at `path` and this process's `marker`: clears a session-only
+/// history only when no other process of the profile still runs. True when cleared.
+pub fn finish_session_for(path: &Path, retention: HistoryRetention, marker: Option<SessionMarker>) -> bool {
+    let last = marker.is_none_or(SessionMarker::leave);
+    last && finish_at_exit_for(path, retention)
+}
+// --- end latency ---
 
 /// [`finish_at_exit`] for the history at `path`: clears it only for "session only". True when cleared.
 pub fn finish_at_exit_for(path: &Path, retention: HistoryRetention) -> bool {
@@ -190,6 +282,51 @@ mod tests {
         assert_eq!(urls(&path).len(), 2);
         assert!(finish_at_exit_for(&path, HistoryRetention::Session));
         assert!(urls(&path).is_empty(), "closing Bowser ends a session-only history");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Fix E: two Bowser processes on one profile (two markers): closing the first keeps the
+    /// session-only history the second still uses; closing the last clears it.
+    #[test]
+    fn a_session_only_history_ends_with_the_last_process_of_the_profile() {
+        let now = 1_900_000_000;
+        let path = history_with("session-two", &[0, 1], now);
+        let (first, is_first) = start_session_for(&path, HistoryRetention::Session).unwrap();
+        assert!(is_first);
+        assert!(urls(&path).is_empty(), "the first process starts a fresh session-only history");
+        productivity::add_history_entry_at(&path, now, "https://a.test/", "A").unwrap();
+        let (second, is_first) = start_session_for(&path, HistoryRetention::Session).unwrap();
+        assert!(!is_first, "the second window process joins");
+        productivity::add_history_entry_at(&path, now, "https://b.test/", "B").unwrap();
+        productivity::flush_pending_history();
+        assert_eq!(urls(&path).len(), 2, "joining never clears");
+        assert!(!finish_session_for(&path, HistoryRetention::Session, Some(first)), "another process still runs");
+        assert_eq!(urls(&path).len(), 2, "closing one window process keeps the history");
+        assert!(finish_session_for(&path, HistoryRetention::Session, Some(second)), "the last one clears");
+        assert!(urls(&path).is_empty());
+        assert_eq!(fs::read_dir(markers_dir(&path)).unwrap().count(), 0, "no marker is left behind");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Fix E: a crashed process leaves its marker (here: a file nobody holds open) and its
+    /// session-only history; the next first process clears both. Other periods keep the history.
+    #[test]
+    fn a_session_cut_short_by_a_crash_is_cleared_when_the_next_one_starts() {
+        let now = 1_900_000_000;
+        let path = history_with("session-crash", &[0, 1, 2], now);
+        fs::create_dir_all(markers_dir(&path)).unwrap();
+        let stale = markers_dir(&path).join("4242-1.run");
+        fs::write(&stale, b"").unwrap();
+        let (marker, first) = start_session_for(&path, HistoryRetention::Week).unwrap();
+        assert!(first, "a dead process's marker does not count");
+        assert!(!stale.exists(), "and it is removed");
+        assert_eq!(urls(&path).len(), 3, "a period other than session only keeps the history");
+        assert!(!finish_session_for(&path, HistoryRetention::Week, Some(marker)));
+        fs::write(&stale, b"").unwrap();
+        let (marker, first) = start_session_for(&path, HistoryRetention::Session).unwrap();
+        assert!(first);
+        assert!(urls(&path).is_empty(), "the crashed session's history is cleared at start");
+        assert!(finish_session_for(&path, HistoryRetention::Session, Some(marker)));
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

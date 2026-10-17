@@ -1389,6 +1389,32 @@ test('integrated page: eighteen sections in order, no duplicate rows or keys, an
   assert.ok(logic.matchRows('nickname').has('qcNickname'));
 });
 // --- wave-1 fixes --- descriptions say what the rows really do.
+// --- fix group C ---
+test('a snapshot sent after Ctrl+F11 replaces the draft, so the next Save keeps the file value', () => {
+  const base = { ...fixture.snap, d: { ...fixture.snap.d, frameless: false, ack: 'saved' } };
+  deliver(base);
+  // Ctrl+F11 saved frameless=true to the file and the page was refreshed with it.
+  deliver({ ...base, d: { ...base.d, frameless: true } });
+  sent.length = 0;
+  app.querySelector('.sp-row[data-row="minimalUrl"]').querySelector('[role="switch"]').click();
+  const save = sent.filter((m) => m.a === 'save').at(-1);
+  assert.ok(save, 'another row saves');
+  assert.ok(save.text.split('\n').includes('frameless=true'), 'the Save keeps the value Ctrl+F11 wrote');
+  deliver(base);
+});
+
+test('Reset and Settings file say truthfully what they cover', () => {
+  const desc = (id) => logic.ROWS.find((row) => row.id === id).description;
+  for (const word of ['page tools', 'feeds', 'toolbars']) assert.ok(desc('reset').includes(word), word);
+  assert.match(desc('reset'), /Tracking prevention goes back to its default the next time Bowser starts/);
+  assert.match(desc('reset'), /Not changed: how long history is kept, your history and bookmarks, the Keyboard section/);
+  assert.match(desc('file'), /^Most settings are saved/);
+  for (const word of ['shortcuts and command chains', 'search engines', 'history switch', 'workspace rules', 'blocker rules and lists', 'shared by all profiles']) {
+    assert.ok(desc('file').includes(word), word);
+  }
+});
+// --- end fix group C ---
+
 test('row descriptions match what the rows do', () => {
   const desc = (id) => logic.ROWS.find((row) => row.id === id).description;
   const row = (id) => logic.ROWS.find((r) => r.id === id);

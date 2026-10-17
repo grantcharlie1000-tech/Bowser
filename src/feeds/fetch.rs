@@ -15,20 +15,21 @@
 use std::{
     ffi::c_void,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use url::Url;
 use windows::{
     Win32::Networking::WinHttp::{
-        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE, WINHTTP_OPTION_DISABLE_FEATURE,
-        WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
-        WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetStatusCallback, WinHttpSetTimeouts,
+        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_ADDREQ_FLAG_REPLACE, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS,
+        WINHTTP_FLAG_SECURE, WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
+        WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+        WinHttpSetOption, WinHttpSetStatusCallback,
     },
     core::{HSTRING, PCWSTR, w},
 };
 
-use crate::blocker::fetch::{FetchError, Handle, location, peer_watch, public_host_name, resolve_public};
+use crate::blocker::fetch::{Deadline, FetchError, Handle, bound_timeouts, connect_target, location, peer_watch, public_host_name, resolve_public_by};
 
 /// Largest answer accepted, in bytes.
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -118,11 +119,11 @@ pub fn check_url(url: &Url) -> Result<(), FeedFetchError> {
 
 /// Fetches `url` and returns the body's bytes and the final address.
 pub fn fetch(url: &Url) -> Result<Fetched, FeedFetchError> {
-    let started = Instant::now();
+    let deadline = Deadline::after(Instant::now(), TOTAL_SECONDS);
     let mut current = url.clone();
     for _ in 0..=MAX_REDIRECTS {
         check_url(&current)?;
-        match get_once(&current, started)? {
+        match get_once(&current, deadline)? {
             Reply::Body(bytes) => return Ok(Fetched { url: current, bytes }),
             Reply::Redirect(target) => {
                 let next = current.join(&target).map_err(|_| FeedFetchError::BadRedirect)?;
@@ -147,10 +148,15 @@ enum Reply {
     Redirect(String),
 }
 
-fn get_once(url: &Url, started: Instant) -> Result<Reply, FeedFetchError> {
+/// WinHTTP's usual limits for a feed fetch (resolve, connect, send, receive), in milliseconds.
+const FEED_TIMEOUTS: [i32; 4] = [8_000, 8_000, 10_000, 15_000];
+
+fn get_once(url: &Url, deadline: Deadline) -> Result<Reply, FeedFetchError> {
     let host = url.host_str().ok_or(FeedFetchError::Network)?;
-    // First check: every address the name resolves to must be public.
-    resolve_public(host)?;
+    // First check: every address the name resolves to must be public. A plain http hop then connects to
+    // one of those very addresses (no second lookup to rebind); https keeps the name for its certificate.
+    let vetted = resolve_public_by(host, deadline)?;
+    let target = connect_target(url, &vetted).ok_or(FeedFetchError::Network)?;
     // Second check, below: every address WinHTTP actually resolves and connects to.
     let refused = AtomicBool::new(false);
     let mut path = url.path().to_owned();
@@ -167,8 +173,8 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FeedFetchError> {
     unsafe {
         let _ = WinHttpSetStatusCallback(session.0, Some(peer_watch), 0x0000_000f, 0);
     }
-    unsafe { WinHttpSetTimeouts(session.0, 8_000, 8_000, 10_000, 15_000) }.map_err(|_| FeedFetchError::Network)?;
-    let connection = Handle(unsafe { WinHttpConnect(session.0, &HSTRING::from(host), if secure { 443 } else { 80 }, 0) });
+    bound_timeouts(session.0, deadline, FEED_TIMEOUTS, true)?;
+    let connection = Handle(unsafe { WinHttpConnect(session.0, &HSTRING::from(target), if secure { 443 } else { 80 }, 0) });
     if connection.0.is_null() {
         return Err(FeedFetchError::Network);
     }
@@ -180,21 +186,29 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FeedFetchError> {
     let disable = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES;
     unsafe { WinHttpSetOption(Some(request.0 as *const c_void), WINHTTP_OPTION_DISABLE_FEATURE, Some(&disable.to_ne_bytes())) }
         .map_err(|_| FeedFetchError::Network)?;
+    if !secure {
+        // Connected by address: the server still needs the name it is asked for.
+        let host_header: Vec<u16> = format!("Host: {host}\r\n").encode_utf16().collect();
+        unsafe { WinHttpAddRequestHeaders(request.0, &host_header, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) }.map_err(|_| FeedFetchError::Network)?;
+    }
     let headers: Vec<u16> = "Accept: application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.9, text/html;q=0.6, */*;q=0.1\r\n"
         .encode_utf16()
         .collect();
     let context = &refused as *const AtomicBool as usize;
+    bound_timeouts(request.0, deadline, FEED_TIMEOUTS, true)?;
     let sent = unsafe { WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, context) };
     // A non-public peer ends the hop whatever else happened; its answer is never read.
     if refused.load(Ordering::SeqCst) {
         return Err(FeedFetchError::PrivateAddress);
     }
     sent.map_err(|_| FeedFetchError::Network)?;
+    bound_timeouts(request.0, deadline, FEED_TIMEOUTS, false)?;
     let received = unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) };
     if refused.load(Ordering::SeqCst) {
         return Err(FeedFetchError::PrivateAddress);
     }
     received.map_err(|_| FeedFetchError::Network)?;
+    deadline.remaining()?;
     let mut status = 0u32;
     let mut size = 4u32;
     unsafe {
@@ -217,9 +231,7 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FeedFetchError> {
     let mut body = Vec::new();
     let mut buffer = vec![0u8; 32 * 1024];
     loop {
-        if started.elapsed() > Duration::from_secs(TOTAL_SECONDS) {
-            return Err(FeedFetchError::Network);
-        }
+        bound_timeouts(request.0, deadline, FEED_TIMEOUTS, false)?;
         let mut read = 0u32;
         unsafe { WinHttpReadData(request.0, buffer.as_mut_ptr() as *mut c_void, buffer.len() as u32, &mut read) }.map_err(|_| FeedFetchError::Network)?;
         if read == 0 {
