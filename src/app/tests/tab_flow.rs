@@ -17,6 +17,10 @@ struct FakeEngine {
 }
 
 impl EngineAdapter for FakeEngine {
+    fn check_sleep_blocked(&mut self, _tab: TabId, done: Box<dyn FnOnce(bool)>) {
+        // This scripted fixture models readable pages without user edits or live media.
+        done(false);
+    }
     fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()> {
         self.shared.borrow_mut().calls.push(format!("navigate:{url}"));
         Ok(())

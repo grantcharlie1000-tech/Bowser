@@ -3707,50 +3707,42 @@ impl EngineAdapter for WebView2Engine {
             done(true);
             return;
         }
-        let (webview, is_suspended) = {
-            let state = self.core.borrow();
-            (
-                state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone()),
-                state.suspended.contains(&tab_id),
-            )
-        };
+        let webview = self.core.borrow().tabs.get(&tab_id).and_then(|tab| tab.webview.clone());
         let Some(webview) = webview else {
-            done(false);
+            done(true);
             return;
         };
-        if is_suspended {
-            done(false);
-            return;
-        };
-        // A suspended page runs no script, so wake it for the check. The tab is suspended again
-        // once the verdict is in, whatever it was, so the engine and the app agree on its state.
-        if let Ok(webview3) = webview.cast::<ICoreWebView2_3>() {
-            let _ = unsafe { webview3.Resume() };
-        }
-        type CompletionSlot = Rc<RefCell<Option<Box<dyn FnOnce(bool)>>>>;
-        let slot: CompletionSlot = Rc::new(RefCell::new(Some(done)));
-        let completion = slot.clone();
-        let after = webview.clone();
-        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
-            let blocked = sleep_probe_blocks(status.is_ok(), &result);
-            try_suspend(&after);
-            let done = completion.borrow_mut().take();
-            if let Some(done) = done {
-                done(blocked);
-            }
-            Ok(())
-        }));
-        let script = CoTaskMemPWSTR::from(SLEEP_BLOCK_SCRIPT);
-        if unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
-            // The script never ran, so nothing is known about the page. Keep it awake and let
-            // the app back off, rather than sleeping a tab that may hold unsaved input.
-            try_suspend(&webview);
-            let done = slot.borrow_mut().take();
-            if let Some(done) = done {
-                done(true);
-            }
-        }
+        // Suspension is only a scheduling hint: TrySuspend is asynchronous and may be refused,
+        // and even a successfully suspended page can retain unsaved form input. Always wake and
+        // inspect the actual page before any caller may close its controller.
+        resume_then_sleep_probe(
+            || webview.cast::<ICoreWebView2_3>().and_then(|api| unsafe { api.Resume() }),
+            |done| {
+                type CompletionSlot = Rc<RefCell<Option<Box<dyn FnOnce(bool)>>>>;
+                let slot: CompletionSlot = Rc::new(RefCell::new(Some(done)));
+                let completion = slot.clone();
+                let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
+                    let blocked = sleep_probe_blocks(status.is_ok(), &result);
+                    let done = completion.borrow_mut().take();
+                    if let Some(done) = done {
+                        done(blocked);
+                    }
+                    Ok(())
+                }));
+                let script = CoTaskMemPWSTR::from(SLEEP_BLOCK_SCRIPT);
+                if unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
+                    let done = slot.borrow_mut().take();
+                    if let Some(done) = done {
+                        done(true);
+                    }
+                }
+                // Do not re-suspend after a blocked/failed probe, or from a late callback after
+                // tab activation. The caller rechecks eligibility before any explicit hibernate.
+            },
+            done,
+        );
     }
+
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
         let mut state = self.core.borrow_mut();
         let now = Instant::now();
@@ -3836,9 +3828,8 @@ impl EngineAdapter for WebView2Engine {
 }
 
 /// Read-only check run in a tab that is about to sleep. It returns only `true`/`false`; no page
-/// text, field values or URLs leave the page. The top document and same-origin child frames are
-/// checked; a cross-origin frame cannot be read and counts as silent. A contenteditable counts
-/// only when it is focused and has text, because its unedited content cannot be told apart.
+/// text, field values or URLs leave the page. Unreadable frames, recursion limits and exceptions
+/// fail closed. Nonempty editable content blocks even after blur: its original text is unknown.
 const SLEEP_BLOCK_SCRIPT: &str = r#"(function(){
 function own(w){try{var d=w.document;
 if(d.pictureInPictureElement)return true;
@@ -3847,22 +3838,38 @@ for(var i=0;i<m.length;i++){var v=m[i];
 if(!v.paused&&!v.ended&&v.readyState>2)return true;
 var s=v.srcObject;
 if(s&&s.getTracks&&s.getTracks().some(function(t){return t.readyState==='live'}))return true;}
-var f=d.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
+var f=d.querySelectorAll('input,textarea,select,[contenteditable]');
 for(var j=0;j<f.length;j++){var e=f[j],n=e.tagName;
 if(n==='TEXTAREA'){if(e.value!==e.defaultValue)return true;continue;}
+if(n==='SELECT'){var o=e.options;for(var q=0;q<o.length;q++){if(o[q].selected!==o[q].defaultSelected)return true;}continue;}
 if(n==='INPUT'){var t=(e.type||'text').toLowerCase();
+if(t==='file'){if(!e.files||e.files.length>0)return true;continue;}
 if(t==='checkbox'||t==='radio'){if(e.checked!==e.defaultChecked)return true;}
 else if(t!=='hidden'&&t!=='button'&&t!=='submit'&&t!=='reset'&&t!=='image'&&t!=='file'){
 if(e.value!==e.defaultValue)return true;}
 continue;}
-if(e===d.activeElement&&(e.textContent||'').trim().length>0)return true;}
-return false;}catch(x){return false;}}
-function walk(w,depth){if(own(w))return true;if(depth>8)return false;
-var n=0;try{n=w.frames.length}catch(x){return false}
-for(var k=0;k<n;k++){var c=false;try{c=walk(w.frames[k],depth+1)}catch(x){}
+if(e.isContentEditable&&(e.textContent||'').trim().length>0)return true;}
+return false;}catch(x){return true;}}
+function walk(w,depth){if(own(w))return true;if(depth>8)return true;
+var n=0;try{n=w.frames.length}catch(x){return true}
+for(var k=0;k<n;k++){var c=false;try{c=walk(w.frames[k],depth+1)}catch(x){c=true}
 if(c)return true;}
 return false;}
-try{return walk(window,0)}catch(x){return false}})()"#;
+try{return walk(window,0)}catch(x){return true}})()"#;
+
+/// A fresh, successful resume and a real probe are both mandatory. No suspended-state hint
+/// can bypass this path; an unsupported/failed Resume is an unknown page, never permission to close.
+fn resume_then_sleep_probe(
+    resume: impl FnOnce() -> Result<()>,
+    probe: impl FnOnce(Box<dyn FnOnce(bool)>),
+    done: Box<dyn FnOnce(bool)>,
+) {
+    if resume().is_err() {
+        done(true);
+        return;
+    }
+    probe(done);
+}
 
 /// Turns the sleep probe's result into the verdict. Only an explicit `false` lets the tab sleep;
 /// a failed script or any other answer keeps it awake.
@@ -6765,6 +6772,53 @@ mod tests {
             forward(0x25, false, false, true).unwrap().modifier_bits(),
             4
         );
+    }
+
+    #[test]
+    fn refused_or_unsupported_resume_never_authorizes_discard_or_runs_a_probe() {
+        let answered = Rc::new(std::cell::Cell::new(None));
+        let answer = answered.clone();
+        resume_then_sleep_probe(
+            || Err(Error::from(windows::Win32::Foundation::E_NOINTERFACE)),
+            |_| panic!("a failed resume cannot run a page probe"),
+            Box::new(move |blocked| answer.set(Some(blocked))),
+        );
+        assert_eq!(answered.get(), Some(true));
+    }
+
+    #[test]
+    fn a_suspension_hint_cannot_replace_a_fresh_unsaved_input_or_media_probe() {
+        for result in ["true", "false", "null"] {
+            let probes = std::cell::Cell::new(0);
+            let answered = Rc::new(std::cell::Cell::new(None));
+            let answer = answered.clone();
+            resume_then_sleep_probe(
+                || Ok(()),
+                |done| {
+                    probes.set(probes.get() + 1);
+                    done(sleep_probe_blocks(true, result));
+                },
+                Box::new(move |blocked| answer.set(Some(blocked))),
+            );
+            assert_eq!(probes.get(), 1, "every successful resume must inspect the page");
+            assert_eq!(answered.get(), Some(result != "false"));
+        }
+    }
+
+    #[test]
+    fn pending_fresh_sleep_probe_does_not_approve_discard_before_answering() {
+        type Verdict = Box<dyn FnOnce(bool)>;
+        let pending: RefCell<Option<Verdict>> = RefCell::new(None);
+        let answered = Rc::new(std::cell::Cell::new(None));
+        let answer = answered.clone();
+        resume_then_sleep_probe(
+            || Ok(()),
+            |done| *pending.borrow_mut() = Some(done),
+            Box::new(move |blocked| answer.set(Some(blocked))),
+        );
+        assert_eq!(answered.get(), None, "requesting a probe is not a successful verdict");
+        pending.borrow_mut().take().unwrap()(true);
+        assert_eq!(answered.get(), Some(true));
     }
 
     #[test]

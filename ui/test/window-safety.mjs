@@ -1,6 +1,7 @@
 // Static Windows security/integration contracts run even when native Rust/Edge is unavailable.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { readFileSync } from 'node:fs';
 const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 const window = read('src/win32/window.rs');
@@ -78,4 +79,40 @@ test('lint repairs preserve callback-driven modal completion and integer icon id
   const engineSource = read('src/engine/webview2.rs');
   assert.match(engineSource, /Zeroizing::new\(raw_message\.owned_text\(\)\)/);
   assert.doesNotMatch(engineSource, /impl[^\n]*Display for ZeroizingWebMessage/);
+});
+
+test('destructive sleeping always resumes and probes instead of trusting suspension hints', () => {
+  const method = engine.slice(engine.indexOf('    fn check_sleep_blocked('), engine.indexOf('    fn suspend_hidden_tabs('));
+  assert.doesNotMatch(method, /is_suspended|suspended\.contains|try_suspend\(/);
+  assert.match(method, /let Some\(webview\) = webview else \{\s*done\(true\)/);
+  assert.match(method, /resume_then_sleep_probe\([\s\S]*?api\.Resume\(\)[\s\S]*?webview\.ExecuteScript/);
+  assert.match(method, /sleep_probe_blocks\(status\.is_ok\(\), &result\)/);
+  assert.match(engine, /if resume\(\)\.is_err\(\) \{\s*done\(true\);/);
+  assert.match(read('src/engine/mod.rs'), /fn check_sleep_blocked[^\{]+\{\s*done\(true\)/);
+});
+
+test('sleep script conservatively preserves blurred edits and unreadable frame state', () => {
+  const script = /const SLEEP_BLOCK_SCRIPT: &str = r#"([\s\S]*?)"#;/.exec(engine)?.[1];
+  assert.ok(script);
+  const page = (fields = []) => ({ document: { querySelectorAll: (selector) => selector === 'video,audio' ? [] : fields }, frames: [] });
+  const blocked = (window) => runInNewContext(script, { window });
+  assert.equal(blocked(page()), false, 'a readable empty page can be checked');
+  const edited = { tagName: 'DIV', isContentEditable: true, textContent: 'unsaved draft' };
+  assert.equal(blocked(page([edited])), true, 'blurred contenteditable is still protected');
+  assert.equal(blocked(page([{ ...edited, contentEditable: 'plaintext-only' }])), true, 'plaintext-only edits are protected');
+  assert.equal(blocked(page([{ ...edited, isContentEditable: false }])), false, 'contenteditable=false is not editable');
+  assert.equal(blocked(page([{ tagName: 'INPUT', type: 'file', files: { length: 1 } }])), true, 'selected file is unsaved form state');
+  assert.equal(blocked(page([{ tagName: 'INPUT', type: 'file', files: { length: 0 } }])), false, 'empty file input is readable');
+  assert.equal(blocked(page([{ tagName: 'SELECT', options: [{ selected: true, defaultSelected: false }] }])), true, 'changed select stays awake');
+  assert.equal(blocked(page([{ tagName: 'SELECT', options: [{ selected: true, defaultSelected: true }] }])), false, 'unchanged selection can be checked');
+  const media = page(); media.document.querySelectorAll = (selector) => selector === 'video,audio'
+    ? [{ paused: false, ended: false, readyState: 4 }] : [];
+  assert.equal(blocked(media), true, 'muted but playing media stays awake');
+  const inaccessible = {}; Object.defineProperty(inaccessible, 'document', { get() { throw Error('cross-origin'); } });
+  const framed = page(); framed.frames = [inaccessible];
+  assert.equal(blocked(framed), true, 'unreadable child frame is unknown, not safe');
+  const broken = page(); broken.document.querySelectorAll = () => { throw Error('page exception'); };
+  assert.equal(blocked(broken), true, 'probe exceptions fail closed');
+  let deep = page(); for (let depth = 0; depth < 10; depth++) { const parent = page(); parent.frames = [deep]; deep = parent; }
+  assert.equal(blocked(deep), true, 'unvisited frame depth is unknown, not safe');
 });

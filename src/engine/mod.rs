@@ -261,9 +261,9 @@ pub trait EngineAdapter {
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
     /// form input, playing video, picture-in-picture or a live camera/microphone stream.
     /// `done(true)` means "keep it awake". It may run later (after the page answers) but never
-    /// reports page data, only the verdict. Engines that cannot ask report `false` at once.
+    /// reports page data, only the verdict. Engines that cannot ask fail closed and report `true` at once.
     fn check_sleep_blocked(&mut self, _tab: crate::tabs::TabId, done: Box<dyn FnOnce(bool)>) {
-        done(false);
+        done(true);
     }
     /// Suspends controllers that have been hidden for at least the supplied duration.
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
