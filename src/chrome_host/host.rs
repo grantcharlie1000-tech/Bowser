@@ -1089,8 +1089,9 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
-            || matches!(command, Command::TabDrag(_)), // --- tab ghost ---
-        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
+            || matches!(command, Command::TabDrag(_)) // --- tab ghost ---
+            || matches!(command, Command::TabStack { .. } | Command::RailWheel { .. }), // --- tab stacks (T10): the sidebar's workspace header too ---
+        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff | Command::RailWheel { .. }),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. } | Command::DownloadsAct { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),

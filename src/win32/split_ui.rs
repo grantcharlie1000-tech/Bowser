@@ -429,7 +429,7 @@ fn drop_card(owner: HWND, app: &AppRef, tab: TabId, zone: DropZone) -> Option<(D
     let viewport = super::window::split_viewport(owner)?;
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
     let px = |dip| super::window::split_px(owner, dip);
-    let (gap, min_w, min_h) = (px(split_view::GAP_DIP), px(split_view::MIN_PANE_DIP), px(split_view::MIN_PANE_HEIGHT_DIP));
+    let (gap, min_w, min_h) = (px(crate::stacks::gap_dip()), px(split_view::MIN_PANE_DIP), px(split_view::MIN_PANE_HEIGHT_DIP));
     let (shown, (left, top, right, bottom)) = match drop_plan(app, tab, zone) {
         Some(plan) => (
             split_view::drop_target_zone(plan, tab, zone),

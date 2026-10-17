@@ -963,6 +963,11 @@
   border-radius: var(--bw-r-pill);
 }
 
+/* --- tab stacks (T10) --- a workspace rule whose workspace no longer exists rests, shown quieter. */
+.sp-site.is-muted .sp-site-name {
+  color: var(--bw-text-dim);
+}
+
 .sp-allow-add {
   display: flex;
   gap: var(--bw-space-2);

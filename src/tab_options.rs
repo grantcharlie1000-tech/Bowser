@@ -138,6 +138,17 @@ choice! {
     /// What closing a pinned tab does.
     PinnedClose { Close = "close", Keep = "keep", Minimise = "minimise" }
 }
+// --- tab stacks, tiling and workspaces (T10) ---
+choice! {
+    /// How tab stacks (Bowser's site islands) show in the tab bar: side by side with a collapse
+    /// control of their own (`islands`, as before), every stack folded to its ball and the tab in use
+    /// (`compact`), only the stack in use unfolded (`accordion`), or no stacks at all (`off`).
+    /// `two-level` (T10b) folds every stack to its ball in the tab row and shows the tabs of the
+    /// stack in use in a second row under it (`stacks::stack_row`); with the tab bar on a side it
+    /// draws the sidebar's usual stacks.
+    StackStyle { Islands = "islands", Compact = "compact", Accordion = "accordion", TwoLevel = "two-level", Off = "off" }
+}
+// --- end tab stacks, tiling and workspaces ---
 
 macro_rules! tab_options {
     ($($(#[$doc:meta])* $field:ident: $ty:ty = $default:expr, $key:literal;)*) => {
@@ -237,17 +248,46 @@ tab_options! {
     lazy_restore: bool = true, "tabs_lazy_restore";
     /// Restored pinned tabs load at once even when the others wait.
     load_pinned: bool = false, "tabs_load_pinned";
+    // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) ---
+    stack_style: StackStyle = StackStyle::Islands, "tabs_stack_style";
+    /// A new tab opened while a stacked tab is in front joins that stack.
+    stack_open_in_current: bool = false, "tabs_stack_open_in_current";
+    /// Making a stack by hand (a drop, or a Stack command) opens its editor (name and colour).
+    stack_editor: bool = false, "tabs_stack_editor";
+    /// Holding a dragged tab over another tab stacks the two.
+    stack_drag: bool = true, "tabs_stack_drag";
+    /// How long the dragged tab must rest over the other before a drop stacks, in milliseconds.
+    stack_drop_delay: Bounded<0, 2000> = Bounded(400), "tabs_stack_drop_delay";
+    /// Each tile of a split view carries a title bar with its page's title.
+    tile_titles: bool = false, "tabs_tile_titles";
+    /// Tiles meet with a hairline instead of the usual gap.
+    tile_tight: bool = false, "tabs_tile_tight";
+    /// Workspaces in the rail, the sidebar, the menu and Quick commands; off hides them.
+    workspaces: bool = true, "tabs_workspaces";
+    /// The wheel over the rail's workspaces switches to the next or previous one.
+    workspace_scroll: bool = false, "tabs_workspace_scroll";
+    /// Each workspace button carries the number of tabs in it.
+    workspace_counts: bool = false, "tabs_workspace_counts";
+    /// Part of "New tab position: as stack with related" (see [`NewTabPosition`]).
+    new_tab_stack: bool = false, "tabs_new_tab_stack";
+    // --- two-level stacks (T10b) ---
+    /// Two-level stacks: the second row is the smaller one (`chrome::layout::StackRow::Compact`).
+    stack_compact_row: bool = false, "tabs_stack_compact_row";
+    // --- end two-level stacks ---
+    // --- end tab stacks, tiling and workspaces ---
 }
 
 // ---- virtual options: shown by the page, stored in the older settings they belong to ----
 
-/// Where a new tab opens, the three choices the page offers. Stored as `new_tab_beside_active` plus
-/// `tabs_new_tab_related`.
+/// Where a new tab opens, the choices the page offers. Stored as `new_tab_beside_active` plus
+/// `tabs_new_tab_related`, and `tabs_new_tab_stack` for "as stack with related".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NewTabPosition {
     Related,
     Active,
     Last,
+    /// After related, and in the opener's stack (src/stacks.rs).
+    Stack,
 }
 
 impl NewTabPosition {
@@ -256,19 +296,29 @@ impl NewTabPosition {
             Self::Related => "related",
             Self::Active => "active",
             Self::Last => "last",
+            Self::Stack => "stack",
         }
     }
     pub fn parse(text: &str) -> Option<Self> {
-        [Self::Related, Self::Active, Self::Last].into_iter().find(|position| position.key() == text)
+        [Self::Related, Self::Active, Self::Last, Self::Stack].into_iter().find(|position| position.key() == text)
     }
 }
 
-/// The position the two stored settings add up to.
+/// The position the two stored settings add up to (without the stack flag: see [`position_of`]).
 pub fn new_tab_position(beside_active: bool, related: bool) -> NewTabPosition {
     match (beside_active, related) {
         (false, _) => NewTabPosition::Last,
         (true, true) => NewTabPosition::Related,
         (true, false) => NewTabPosition::Active,
+    }
+}
+
+/// The position all three stored settings add up to: "as stack with related" is related placement
+/// with the stack flag.
+pub fn position_of(settings: &crate::settings::Settings) -> NewTabPosition {
+    match new_tab_position(settings.new_tab_beside_active, settings.tabs.new_tab_related) {
+        NewTabPosition::Related if settings.tabs.new_tab_stack => NewTabPosition::Stack,
+        position => position,
     }
 }
 
@@ -286,21 +336,26 @@ pub fn apply_assignment(settings: &mut crate::settings::Settings, text: &str) ->
             return false;
         };
         settings.new_tab_beside_active = position != NewTabPosition::Last;
-        settings.tabs.new_tab_related = position == NewTabPosition::Related;
+        settings.tabs.new_tab_related = matches!(position, NewTabPosition::Related | NewTabPosition::Stack);
+        settings.tabs.new_tab_stack = position == NewTabPosition::Stack;
         return true;
+    }
+    // The flags behind the position are set only through it.
+    if HIDDEN_KEYS.contains(&key) {
+        return false;
     }
     settings.tabs.set(key, value)
 }
 
+/// Stored keys the page never sees on their own: they are parts of the position.
+const HIDDEN_KEYS: [&str; 2] = ["tabs_new_tab_related", "tabs_new_tab_stack"];
+
 /// The snapshot's wire values: every stored option plus the virtual position.
 pub fn snapshot_entries(settings: &crate::settings::Settings) -> Vec<(&'static str, Value)> {
     let mut entries = settings.tabs.entries();
-    // The page sees the related flag only as part of the position.
-    entries.retain(|(key, _)| *key != "tabs_new_tab_related");
-    entries.push((
-        POSITION_KEY,
-        Value::Text(new_tab_position(settings.new_tab_beside_active, settings.tabs.new_tab_related).key().to_owned()),
-    ));
+    // The page sees the related and stack flags only as part of the position.
+    entries.retain(|(key, _)| !HIDDEN_KEYS.contains(key));
+    entries.push((POSITION_KEY, Value::Text(position_of(settings).key().to_owned())));
     entries
 }
 
@@ -588,7 +643,30 @@ mod tests {
         assert!(!settings.tabs.new_tab_related);
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
         assert!(settings.new_tab_beside_active && !settings.tabs.new_tab_related);
-        assert!(!apply_assignment(&mut settings, "tabs_new_tab_position=stack"), "stacks wait for tab stacks");
+        // --- tab stacks (T10) --- "as stack with related" is related placement plus the stack flag.
+        assert!(apply_assignment(&mut settings, "tabs_new_tab_position=stack"));
+        assert!(settings.new_tab_beside_active && settings.tabs.new_tab_related && settings.tabs.new_tab_stack);
+        assert_eq!(position_of(&settings), NewTabPosition::Stack);
+        assert!(snapshot_entries(&settings).contains(&(POSITION_KEY, Value::Text("stack".into()))));
+        assert!(!snapshot_entries(&settings).iter().any(|(key, _)| *key == "tabs_new_tab_stack"), "the flag is only part of the position");
+        assert!(apply_assignment(&mut settings, "tabs_new_tab_position=related"));
+        assert!(!settings.tabs.new_tab_stack, "leaving the stack choice clears its flag");
+        assert!(!apply_assignment(&mut settings, "tabs_new_tab_stack=true"), "the flags are set through the position only");
+        assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
+        // --- end tab stacks ---
+        // --- two-level stacks (T10b) --- the page's two words reach the settings and the snapshot.
+        assert!(apply_assignment(&mut settings, "tabs_stack_style=two-level"));
+        assert_eq!(settings.tabs.stack_style, StackStyle::TwoLevel);
+        assert!(apply_assignment(&mut settings, "tabs_stack_compact_row=true"));
+        assert!(settings.tabs.stack_compact_row);
+        assert!(snapshot_entries(&settings).contains(&("tabs_stack_compact_row", Value::Bool(true))));
+        assert!(snapshot_entries(&settings).contains(&("tabs_stack_style", Value::Text("two-level".into()))));
+        assert!(!apply_assignment(&mut settings, "tabs_stack_style=two_level"), "only the exact word");
+        let text = render_into("", &settings.tabs, "\n");
+        assert!(text.contains("tabs_stack_style=two-level\n") && text.contains("tabs_stack_compact_row=true\n"), "{text}");
+        settings.tabs.stack_style = StackStyle::Islands;
+        settings.tabs.stack_compact_row = false;
+        // --- end two-level stacks ---
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_position"));
         assert!(!apply_assignment(&mut settings, "tabs_unknown=true"));
         assert!(apply_assignment(&mut settings, "tabs_double_click=close"));

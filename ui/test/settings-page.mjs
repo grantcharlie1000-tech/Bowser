@@ -381,8 +381,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('[role="search"]'));
   // --- settings slim --- twelve areas in the nav, each holding the Rust sections it merges, then
   // "Not active yet" and one sub-page per big editor.
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13);
-  assert.equal(app.querySelectorAll('section.sp-part').length, 17);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13); // --- page tools (T7) --- is an area of its own
+  assert.equal(app.querySelectorAll('section.sp-part').length, 18); // --- T10 --- Tab stacks, tiling and workspaces is a part of Tabs and start page
   assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
   assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
@@ -1271,8 +1271,8 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
 
 // ---- wave-1 integration: one coherent page ----
 
-test('integrated page: seventeen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
-  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
+test('integrated page: eighteen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
+  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
   const ids = logic.ROWS.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, 'no row twice');
   const labels = logic.ROWS.map((r) => r.label.toLowerCase());
@@ -1490,6 +1490,94 @@ test('slim: a row nobody placed defaults to More options, so new rows never leng
   assert.equal(logic.rowTier({ ...base, id: 'engines' }), 'page');
   assert.equal(logic.moreCountText(1), '1 more setting');
   assert.equal(logic.moreCountText(12), '12 more settings');
+});
+
+// ---- tab stacks, tiling and workspaces (T10) ----
+
+test('stacks: one small block in Tabs and start page, two core rows, the rest behind More options, each row sends its own tabopt', () => {
+  deliver(fixture.snap);
+  searchFor('');
+  const tabsArea = areaNode('tabs');
+  const part = tabsArea.querySelector('section.sp-part[data-section="stacks"]');
+  assert.ok(part, 'a part of Tabs and start page, not an area of its own');
+  assert.equal(app.querySelectorAll('.sp-nav-item').filter((b) => b.dataset.section === 'stacks').length, 0, 'no nav item of its own');
+  assert.equal(part.querySelector('.sp-group-h').textContent, 'Tab stacks, tiling and workspaces');
+  const core = part.querySelectorAll('.sp-row').map((row) => row.dataset.row).filter((id) => id !== undefined);
+  assert.deepEqual(core.filter((id) => id === 'tabs_stack_style' || id === 'tabs_workspaces'), ['tabs_stack_style', 'tabs_workspaces']);
+  assert.ok(app.querySelector('[data-opens="workspaceRules"]'), 'the rules editor opens from one row');
+  const more = moreOf('tabs');
+  for (const id of ['tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_editor', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop']) {
+    assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
+    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'stacks', id);
+  }
+  const headings = more.querySelectorAll('.sp-group-h').map((h) => h.textContent);
+  assert.ok(headings.includes('Tab stacks, tiling and workspaces'), 'under the block\'s own heading behind More options');
+  // Every row acts: each switch, the style and the delay send exactly one tabopt.
+  sent.length = 0;
+  rowNode('tabs_stack_style').querySelectorAll('[role="radio"]')[1].click();
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_style=compact' });
+  for (const id of ['tabs_workspaces', 'tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_editor', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']) {
+    sent.length = 0;
+    rowNode(id).querySelector('[role="switch"]').click();
+    assert.equal(sent.length, 1, id);
+    assert.match(sent[0].text, new RegExp(`^${id}=(true|false)$`), id);
+  }
+  sent.length = 0;
+  const delay = rowNode('tabs_stack_drop_delay').querySelector('input');
+  delay.value = '9000';
+  delay.dispatch('change');
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_drop_delay=2000' }, 'clamped to what Rust takes');
+  // Drag and drop tiling is the older switch, still saved with the page's draft.
+  sent.length = 0;
+  rowNode('splitEdgeDrop').querySelector('[role="switch"]').click();
+  assert.equal(sent[0].a, 'save');
+  assert.match(sent[0].text, /\nsplit_edge_drop=false\n/);
+  deliver(fixture.snap);
+});
+
+test('stacks: the workspace rules editor lists, adds and removes rules, and says what it refuses', () => {
+  deliver(fixture.snap);
+  const page = app.querySelector('section[data-page="workspaceRules"]');
+  const list = rowNode('workspaceRules').querySelector('.sp-sites');
+  assert.deepEqual(list.querySelectorAll('.sp-site-name').map((n) => n.textContent), ['example.org → Work'], 'the rule Rust sent');
+  const input = rowNode('workspaceRules').querySelector('.sp-allow-input');
+  const add = rowNode('workspaceRules').querySelectorAll('button').find((b) => b.textContent.trim() === 'Add');
+  const error = rowNode('workspaceRules').querySelector('.sp-field-error');
+  sent.length = 0;
+  input.value = 'not a site';
+  add.click();
+  assert.deepEqual(sent, []);
+  assert.equal(error.textContent, 'Enter a site such as example.com.');
+  input.value = 'https://www.example.org/x';
+  add.click();
+  assert.deepEqual(sent, [], 'a site that already has a rule');
+  assert.equal(error.textContent, 'That site already has a rule.');
+  input.value = 'https://News.Example.com/today';
+  add.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'wsrule', text: 'add\tnews.example.com\tDefault' }], 'the first workspace until another is chosen');
+  assert.equal(error.textContent, '');
+  sent.length = 0;
+  list.querySelector('.sp-site-remove').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'wsrule', text: 'del\texample.org' }]);
+  assert.ok(page.contains(rowNode('workspaceRules')));
+});
+
+test('stacks: the workspace rules snapshot is whole and plain or refused', () => {
+  const good = fixture.snap.d.workspaceRules;
+  assert.deepEqual(logic.parseWorkspaceRules(good), { rules: [{ site: 'example.org', workspace: 'Work' }], workspaces: ['Default', 'Work'] });
+  for (const bad of [
+    null, [], { rules: [] }, { ...good, extra: 1 },
+    { ...good, rules: [{ site: 'Example.org', workspace: 'Work' }] },
+    { ...good, rules: [{ site: 'example.org', workspace: '' }] },
+    { ...good, rules: [{ site: 'example.org', workspace: 'W', more: 1 }] },
+    { ...good, workspaces: ['a\u0001'] },
+  ]) assert.equal(logic.parseWorkspaceRules(bad), null, JSON.stringify(bad));
+  assert.equal(logic.addRuleText('example.com', '  Work '), 'add\texample.com\tWork');
+  assert.equal(logic.addRuleText('localhost', 'Work'), null);
+  assert.equal(logic.addRuleText('example.com', ''), null);
+  assert.equal(logic.removeRuleText('example.com'), 'del\texample.com');
+  assert.ok(logic.ruleExists([{ site: 'example.com', workspace: 'W' }], 'https://www.EXAMPLE.com/'));
+  assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, workspaceRules: undefined }), null, 'the snapshot needs it');
 });
 
 // ---- layout (thread T6): presets, the three edges, the long tail behind More options ----

@@ -200,6 +200,10 @@ export interface SettingsSnapshot {
   /** The start page, speed dial, widget, homepage and startup settings (`start_*` keys of settings.txt). */
   start: StartSettings;
   // --- end start page ---
+  // --- tab stacks, tiling and workspaces (T10) ---
+  /** Sites that open in a named workspace, and the workspaces a rule can name. Each change is its own `wsrule` command. */
+  workspaceRules: WorkspaceRules;
+  // --- end tab stacks ---
   // --- layout (thread T6) ---
   /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
   layout: LayoutSettings;
@@ -209,6 +213,50 @@ export interface SettingsSnapshot {
   window: WindowSettings;
   // --- end window and panels ---
 }
+
+// --- tab stacks, tiling and workspaces (T10) ---
+export interface WorkspaceRule { readonly site: string; readonly workspace: string }
+export interface WorkspaceRules { readonly rules: readonly WorkspaceRule[]; readonly workspaces: readonly string[] }
+/** Most rules (Rust's `workspace_rules::MAX_RULES`). */
+export const MAX_WORKSPACE_RULES = 64;
+const MAX_WORKSPACE_NAME = 128;
+const isWorkspaceName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_WORKSPACE_NAME && !/[\u0000-\u001f\u007f]/.test(value);
+/** Strict check of the snapshot's `workspaceRules`. */
+export function parseWorkspaceRules(value: unknown): WorkspaceRules | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || !Array.isArray(record.rules) || !Array.isArray(record.workspaces)) return null;
+  if (record.rules.length > MAX_WORKSPACE_RULES || record.workspaces.length > 128) return null;
+  const rules: WorkspaceRule[] = [];
+  for (const raw of record.rules as unknown[]) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const rule = raw as Record<string, unknown>;
+    if (Object.keys(rule).length !== 2 || typeof rule.site !== 'string' || normaliseSite(rule.site) !== rule.site || !isWorkspaceName(rule.workspace)) return null;
+    rules.push({ site: rule.site, workspace: rule.workspace });
+  }
+  if (!(record.workspaces as unknown[]).every(isWorkspaceName)) return null;
+  return { rules, workspaces: [...(record.workspaces as string[])] };
+}
+/** The `wsrule` text that adds a rule (`null` for a site or workspace Bowser would refuse). */
+export function addRuleText(site: string, workspace: string): string | null {
+  const plain = ruleSite(site);
+  return plain === null || !isWorkspaceName(workspace.trim()) ? null : `add\t${plain}\t${workspace.trim()}`;
+}
+/** A typed site a rule can hold: a plain host with a dot (Rust's `workspace_rules::normalise_site`), or `null`. */
+export function ruleSite(site: string): string | null {
+  const plain = normaliseSite(site);
+  return plain !== null && plain.includes('.') ? plain : null;
+}
+/** The `wsrule` text that removes the rule for `site`. */
+export function removeRuleText(site: string): string {
+  return `del\t${site}`;
+}
+/** Whether a typed site already has a rule. */
+export function ruleExists(rules: readonly WorkspaceRule[], site: string): boolean {
+  const plain = ruleSite(site);
+  return plain !== null && rules.some((rule) => rule.site === plain);
+}
+// --- end tab stacks ---
 
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -222,8 +270,8 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'layout' /* --- layout (thread T6) --- */, 'themeOptions',
-  'window' /* --- window and panels (thread T9) --- */];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules' /* --- tab stacks (T10) --- */,
+  'layout' /* --- layout (thread T6) --- */, 'themeOptions', 'window' /* --- window and panels (thread T9) --- */];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -292,6 +340,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (start === null) return null;
   const tabOptions = parseTabOptions(v.tabOptions);
   if (!tabOptions) return null;
+  const workspaceRules = parseWorkspaceRules(v.workspaceRules); // --- tab stacks (T10) ---
+  if (!workspaceRules) return null;
   const layout = parseLayoutSettings(v.layout); // --- layout (thread T6) ---
   if (layout === null) return null;
   const themeOptions = parseThemeOptions(v.themeOptions); // --- theme options ---
@@ -361,6 +411,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateTargets: [...(v.translateTargets as string[])],
     start,
     tabOptions,
+    workspaceRules,
     layout, // --- layout (thread T6) ---
     themeOptions,
     window, // --- window and panels (thread T9) ---
@@ -475,6 +526,8 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs, text size and page translation.' },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: 'How tabs open, close, show their state and come back after a restart.' },
+  // --- T10 ---
+  { key: 'stacks', title: 'Tab stacks, tiling and workspaces', nav: 'Tab stacks, tiling and workspaces', lead: 'How tabs stack, how tiled tabs look, and how workspaces behave.' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
@@ -537,7 +590,7 @@ const single = (key: SettingsSection): AreaSpec => {
 export const AREAS: readonly AreaSpec[] = [
   single('profile'),
   single('appearance'),
-  { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'startpage'] },
+  { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'stacks', 'startpage'] },
   single('privacy'),
   single('performance'),
   single('pagetools'), // --- page tools (T7) ---
@@ -577,6 +630,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   // --- final --- Appearance keeps ten core rows: the theme schedule (T8) and the auto-hide switch (T11) sit behind More options.
   'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
   'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
+  'tabs_stack_style', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
   'efficiency', 'sleep', 'sleepAfter',
@@ -602,6 +656,7 @@ export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   dashboard: { button: 'Open dashboard…', after: 'deleteData' },
   kbEditor: { button: 'Edit shortcuts…' },
   chains: { button: 'Edit chains…' },
+  workspaceRules: { button: 'Edit rules…' }, // --- T10 ---
 };
 
 /** Where a row is drawn. A row Bowser does not act on yet is always `later`, whatever else it says. */
@@ -669,7 +724,8 @@ export const ROWS: readonly RowSpec[] = [
   // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
   // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
   // (TABS_SECTION_ROWS below).
-  { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
+  // --- T10 --- drag and drop tiling, beside the other tiling options.
+  { id: 'splitEdgeDrop', section: 'stacks', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab tiling tile' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
@@ -707,6 +763,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
+  // --- tab stacks, tiling and workspaces (T10) ---
+  { id: 'workspaceRules', section: 'stacks', label: 'Workspace rules', description: 'Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.', keywords: 'workspace rules sites open automatically named workspace domain' },
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
   { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },

@@ -4,7 +4,8 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendClosedTabs, sendSide, sendTabSelection, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendRailWheel, sendSide, sendTabSelection, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T10) ---
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
@@ -77,7 +78,13 @@ interface SidebarDrag {
   lastY: number;
   // --- end tab ghost ---
 }
-export interface SidebarWorkspace { readonly name: string; readonly icon: string }
+export interface SidebarWorkspace {
+  readonly name: string;
+  readonly icon: string;
+  /** --- tab stacks and workspaces (T10) --- shown instead of the glyph; `off` hides the switcher. */
+  readonly emoji?: string;
+  readonly off?: boolean;
+}
 
 function colour(index: number): string { return index < 0 ? 'var(--bw-accent)' : ISLAND[index & 7] ?? 'var(--bw-accent)'; }
 
@@ -248,6 +255,13 @@ export function createSidebarRenderer(root: HTMLElement): {
   workspaceIcon.setAttribute('aria-hidden', 'true');
   const workspaceName = el('span', 'side-workspace-name');
   header.append(workspaceIcon, workspaceName, icon('chevron-down', { size: 12, fine: true, className: 'side-workspace-chevron' }));
+  // --- tab stacks and workspaces (T10) --- "Switch workspaces by scrolling" over the switcher too.
+  let headerWheel = 0;
+  header.addEventListener('wheel', (ev) => {
+    const step = wheelNotches(headerWheel, ev.deltaY, ev.deltaMode);
+    headerWheel = step.rest;
+    if (step.notches !== 0) sendRailWheel(step.notches);
+  }, { passive: true });
   const add = el('button', 'side-newtab bw-focus-inset');
   add.type = 'button';
   setTip(add, 'New tab');
@@ -347,7 +361,15 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
     applyRoot();
     workspaceName.textContent = workspace.name;
-    workspaceIcon.replaceChildren(icon(workspaceIconName(workspace.icon) as IconName, { size: 14 }));
+    // --- tab stacks and workspaces (T10) --- the emoji in place of the glyph; workspaces off hide the switcher.
+    if (workspace.emoji !== undefined) {
+      const glyph = el('span', 'side-workspace-emoji');
+      glyph.textContent = workspace.emoji;
+      workspaceIcon.replaceChildren(glyph);
+    } else {
+      workspaceIcon.replaceChildren(icon(workspaceIconName(workspace.icon) as IconName, { size: 14 }));
+    }
+    header.hidden = workspace.off === true;
     setTip(header, `${workspace.name} - workspace menu`);
     header.setAttribute('aria-label', `${workspace.name} workspace menu`);
 

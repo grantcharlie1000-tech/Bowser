@@ -41,6 +41,8 @@ pub enum Section {
     Profile,
     Appearance,
     Tabs,
+    /// --- T10 --- tab stacks, tiling and workspaces (src/stacks.rs).
+    Stacks,
     /// The start page, speed dials, homepage and startup (docs/design/start-page.md).
     StartPage,
     Privacy,
@@ -62,10 +64,11 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Profile,
         Self::Appearance,
         Self::Tabs,
+        Self::Stacks,
         Self::StartPage,
         Self::Privacy,
         Self::Performance,
@@ -88,6 +91,7 @@ impl Section {
             Self::Profile => "profile",
             Self::Appearance => "appearance",
             Self::Tabs => "tabs",
+            Self::Stacks => "stacks",
             Self::StartPage => "startpage",
             Self::Privacy => "privacy",
             Self::Performance => "performance",
@@ -271,7 +275,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 17);
+        assert_eq!(Section::ALL.len(), 18, "page tools (T7) and stacks (T10) joined the sixteen");
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 

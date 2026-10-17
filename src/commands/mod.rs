@@ -278,7 +278,7 @@ mod tests {
                 if matches!(resolved, Some(Command::Registered(_))) {
                     // A chord the registry adds for a command with no `Command` of its own (Ctrl+F1, the
                     // cheat sheet; page tools' capture and notes; F11 and Ctrl+F11 for full screen and
-                    // auto-hide): the old table has nothing there.
+                    // auto-hide; Ctrl+F7, F8 and F9, the tilings): the old table has nothing there.
                     assert_eq!(shortcuts::command_for_gated(key, ctrl, shift, alt, all), None, "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
                     continue;
                 }

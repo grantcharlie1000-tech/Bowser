@@ -8,6 +8,10 @@ use std::{
 };
 use url::Url;
 
+/// Most `--open-url` addresses one launch takes (--- tab stacks (T10) ---: a stack moved to a new
+/// window; the split view tiles at most four, a stack may hold more).
+pub const MAX_OPEN_URLS: usize = 16;
+
 #[derive(Debug, Default)]
 pub struct LaunchOptions {
     pub benchmark_log: Option<PathBuf>,
@@ -25,6 +29,9 @@ pub struct LaunchOptions {
     pub profile: Option<String>,
     /// `--open-url <url>`: initial address for a newly opened window.
     pub open_url: Option<Url>,
+    /// --- tab stacks (T10) --- a repeated `--open-url` ("Move the stack to a new window"): the
+    /// addresses after the first, opened as further tabs, at most [`MAX_OPEN_URLS`] in all.
+    pub more_urls: Vec<Url>,
     /// `--guest`: a fresh, disposable browser data directory with no profile identity.
     pub guest: bool,
     /// `--new-window`: a window started on purpose for a profile that is already open. Skips the
@@ -214,8 +221,13 @@ impl LaunchOptions {
                     {
                         return Err("The initial address must be an HTTP(S) or file URL without credentials".into());
                     }
-                    if options.open_url.replace(url).is_some() {
-                        return Err("Duplicate initial URL argument".into());
+                    // --- tab stacks (T10) --- a new window may be given several addresses.
+                    if options.open_url.is_none() {
+                        options.open_url = Some(url);
+                    } else if options.more_urls.len() + 1 < MAX_OPEN_URLS {
+                        options.more_urls.push(url);
+                    } else {
+                        return Err("Too many initial URL arguments".into());
                     }
                 }
                 "--agent-bind" => {
@@ -792,6 +804,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// --- tab stacks (T10) --- "Move the stack to a new window" passes every page of the stack.
+    #[test]
+    fn a_new_window_takes_several_initial_urls_up_to_the_limit() {
+        let options = LaunchOptions::parse_from(
+            args(&["--new-window", "--open-url", "https://a.example/", "--open-url", "https://b.example/", "--open-url", "https://c.example/"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert_eq!(options.open_url.unwrap().as_str(), "https://a.example/");
+        assert_eq!(options.more_urls.iter().map(Url::as_str).collect::<Vec<_>>(), ["https://b.example/", "https://c.example/"]);
+        assert!(
+            LaunchOptions::parse_from(args(&["--open-url", "https://a.example/", "--open-url", "file:///c:/x?u=p"]), Path::new("missing")).is_ok(),
+            "each address passes the same check as the first"
+        );
+        assert!(LaunchOptions::parse_from(args(&["--open-url", "https://a.example/", "--open-url", "javascript:alert(1)"]), Path::new("missing")).is_err());
+        let mut many = Vec::new();
+        for n in 0..MAX_OPEN_URLS {
+            many.extend(["--open-url".to_owned(), format!("https://s{n}.example/")]);
+        }
+        assert_eq!(LaunchOptions::parse_from(many.clone(), Path::new("missing")).unwrap().more_urls.len(), MAX_OPEN_URLS - 1);
+        many.extend(["--open-url".to_owned(), "https://one-more.example/".to_owned()]);
+        assert!(LaunchOptions::parse_from(many, Path::new("missing")).is_err());
     }
     #[test]
     fn remote_benchmark_url_and_duplicate_flags_are_rejected() {

@@ -244,11 +244,15 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
     if right <= row.left {
         return None;
     }
+    // --- two-level stacks (T10b) --- the strip page draws the second tab row too: the host grows
+    // down (tabs at the top) or up (tabs at the bottom) over it and the gap between the rows.
+    let stack = layout.stack_row;
+    let (top, bottom) = if stack.is_empty() { (row.top, row.bottom) } else { (row.top.min(stack.top), row.bottom.max(stack.bottom)) };
     Some(RECT {
         left: row.left,
-        top: row.top,
+        top,
         right,
-        bottom: row.bottom,
+        bottom,
     })
 }
 
@@ -510,6 +514,8 @@ pub fn rail_items<'a>(
                 dot: entry.dot,
                 accent: entry.accent.map(css_colour).unwrap_or_default(),
                 has_favicon,
+                count: entry.count, // --- tab stacks and workspaces (T10) ---
+                emoji: entry.emoji.clone().unwrap_or_default(),
             }
         })
         .collect()
@@ -996,6 +1002,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 

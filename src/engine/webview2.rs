@@ -6625,9 +6625,10 @@ mod tests {
                         && key != u32::from(VK_ESCAPE.0)
                         // Chords the command registry adds for commands with no `Command` of their own
                         // (Ctrl+F1, the cheat sheet; page tools' capture and notes; F11 and Ctrl+F11 for
-                        // full screen and auto-hide) are forwarded too.
+                        // full screen and auto-hide; Ctrl+F7, F8 and F9, the tilings) are forwarded too.
                         && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
-                            || [(0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false), (0x7A, false, false, false), (0x7A, true, false, false)]
+                            || [(0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false), (0x7A, false, false, false), (0x7A, true, false, false),
+                                (0x76, true, false, false), (0x77, true, false, false), (0x78, true, false, false)]
                                 .contains(&(key, ctrl, shift, alt)))
                     {
                         forward(key, ctrl, shift, alt)

@@ -12,7 +12,8 @@ pub(super) fn placement(settings: &crate::settings::Settings) -> Placement {
     match tab_options::new_tab_position(settings.new_tab_beside_active, settings.tabs.new_tab_related) {
         tab_options::NewTabPosition::Last => Placement::Last,
         tab_options::NewTabPosition::Active => Placement::AfterActive,
-        tab_options::NewTabPosition::Related => Placement::AfterRelated,
+        // "As stack with related" (T10) places like related; the stack is joined afterwards.
+        tab_options::NewTabPosition::Related | tab_options::NewTabPosition::Stack => Placement::AfterRelated,
     }
 }
 
@@ -99,6 +100,22 @@ impl App {
             Self::apply_mute_mode(app);
         }
         Self::sync_tick(app);
+        // --- tab stacks (T10) --- the tile look and the rail's workspaces follow at once.
+        let (tiles_changed, rail_changed) = {
+            let now = &app.borrow().settings.tabs;
+            crate::stacks::set_tile_look(now.tile_titles, now.tile_tight);
+            (
+                (now.tile_titles, now.tile_tight) != (before.tile_titles, before.tile_tight),
+                (now.workspaces, now.workspace_counts) != (before.workspaces, before.workspace_counts),
+            )
+        };
+        if tiles_changed {
+            win32::split_look_changed(hwnd);
+        }
+        if rail_changed {
+            Self::notify_rail_changed(app);
+        }
+        // --- end tab stacks ---
         Self::post_tab_changed(hwnd, active);
     }
 
@@ -107,7 +124,9 @@ impl App {
     /// A new tab from the user's hand (Ctrl+T, the new tab button): the new tab page decides what
     /// it opens.
     pub fn open_new_tab(app: &AppRef) -> TabId {
+        let previous = Self::active_tab_id(app);
         let id = Self::new_tab(app);
+        Self::stack_new_tab(app, id, previous, None); // --- tab stacks (T10) ---
         let target = {
             let state = app.borrow();
             // "Homepage" opens the start page settings' homepage (one key set: T5's `homepage`).
@@ -125,10 +144,16 @@ impl App {
         let background = app.borrow().settings.tabs.link_background;
         if background {
             let id = Self::new_background_tab(app, private, Some(source));
+            // --- tab stacks (T10) --- a site with a workspace rule opens there (the window stays);
+            // otherwise the tab may join its opener's stack.
+            if !Self::apply_workspace_rule(app, id, &url, false) {
+                Self::stack_new_tab(app, id, source, Some(source));
+            }
             Self::navigate_tab(app, id, &url);
         } else {
             let child = Self::spawn_tab(app, private, Some(source));
             let _ = app.borrow_mut().tab_model.set_opener(child, source);
+            Self::stack_new_tab(app, child, source, Some(source)); // --- tab stacks (T10) ---
             Self::submit_url(app, url, None);
         }
     }
@@ -838,7 +863,7 @@ impl App {
 
     /// Gives an empty background tab a page it has not loaded: it shows its address and loads when
     /// it is first selected.
-    fn make_asleep(app: &AppRef, id: TabId, url: &url::Url) {
+    pub(super) fn make_asleep(app: &AppRef, id: TabId, url: &url::Url) {
         let mut state = app.borrow_mut();
         state.tab_model.set_url(id, Some(url.as_str()));
         let title = url.host_str().unwrap_or_default().to_owned();

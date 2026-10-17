@@ -93,6 +93,8 @@
 }
 
 .side-workspace-icon svg { width: 16px; height: 16px; }
+/* --- tab stacks and workspaces (T10) --- a workspace's emoji in the glyph's box. */
+.side-workspace-emoji { font-family: "Segoe UI Emoji", var(--bw-font); font-size: 14px; line-height: 1; }
 .side-workspace-name { flex: 1; min-width: 0; overflow: hidden; font-weight: var(--bw-weight-strong); text-overflow: ellipsis; white-space: nowrap; }
 .side-workspace-chevron { flex: none; color: var(--bw-text-dim); }
 .side-newtab { color: var(--bw-text-dim); }

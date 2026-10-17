@@ -230,6 +230,17 @@ pub static BUILTINS: &[CommandDef] = &[
     def("toggle-auto-hide", "Toggle auto-hide UI", "Hide the toolbars and tabs until the pointer rests at the window edge, or show them again", C::Windows, &["Ctrl+F11"], Cmd, Run(crate::win32::run_toggle_auto_hide)),
     browser(def("toggle-fullscreen", "Full screen", "Fill the screen with the page; the bars come back when the pointer rests at the edge", C::Windows, &["F11"], Cmd, Run(crate::win32::run_toggle_fullscreen))),
     // --- end auto-hide ---
+    // --- tab stacks, tiling and workspaces (T10; win32/stack_ui.rs) ---
+    def("stack-site-tabs", "Stack tabs of this site", "Put every tab of this site in one stack", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
+    def("stack-tabs-by-site", "Stack all tabs by site", "One stack for each site with two tabs or more", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
+    def("unstack", "Unstack", "Take the tabs of this stack out of it", C::Tabs, &[], Cmd, Run(crate::win32::run_unstack)),
+    browser(def("tile-vertical", "Tile vertically", "Show the selected tabs, or this stack, side by side", C::Windows, &["Ctrl+F9"], Cmd, Run(crate::win32::run_tile_vertical))),
+    browser(def("tile-horizontal", "Tile horizontally", "Show the selected tabs, or this stack, one above another", C::Windows, &["Ctrl+F8"], Cmd, Run(crate::win32::run_tile_horizontal))),
+    browser(def("tile-grid", "Tile in a grid", "Show the selected tabs, or this stack, two by two", C::Windows, &["Ctrl+F7"], Cmd, Run(crate::win32::run_tile_grid))),
+    def("untile", "Untile", "Show the tiled tabs one at a time again", C::Windows, &[], Cmd, Run(crate::win32::run_untile)),
+    def("next-workspace", "Next workspace", "Switch to the workspace below this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_next_workspace)),
+    def("previous-workspace", "Previous workspace", "Switch to the workspace above this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_previous_workspace)),
+    // --- end tab stacks, tiling and workspaces ---
 ];
 
 /// The command with this id, if it is a built-in.
