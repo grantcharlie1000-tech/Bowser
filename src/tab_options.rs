@@ -74,7 +74,10 @@ impl OptValue for PageUrl {
             return None;
         }
         let url = url::Url::parse(text).ok()?;
-        matches!(url.scheme(), "http" | "https").then(|| Self(url.to_string()))
+        // --- fix group C --- the limit is on what is kept: the parsed form, percent-encoded and so
+        // often longer than what was typed (the snapshot refuses a longer one).
+        let kept = url.to_string();
+        (matches!(url.scheme(), "http" | "https") && kept.len() <= MAX_PAGE_URL).then_some(Self(kept))
     }
     fn text(&self) -> String {
         self.0.clone()
@@ -585,6 +588,20 @@ mod tests {
         assert!(options.lazy_restore);
         assert!(!options.close_related);
     }
+
+    // --- fix group C ---
+    #[test]
+    fn the_page_url_limit_is_on_the_encoded_form_that_is_kept() {
+        // 400 'é' are 800 bytes as typed but 2400 once percent-encoded.
+        let typed = format!("https://example.com/{}", "é".repeat(400));
+        assert!(typed.len() <= MAX_PAGE_URL);
+        assert_eq!(PageUrl::parse(&typed), None);
+        let short = format!("https://example.com/{}", "é".repeat(100));
+        let kept = PageUrl::parse(&short).expect("fits once encoded");
+        assert!(kept.0.len() <= MAX_PAGE_URL && kept.0.contains("%C3%A9"));
+        assert_eq!(PageUrl::parse(&kept.0), Some(kept.clone()), "the kept form reads back");
+    }
+    // --- end fix group C ---
 
     #[test]
     fn every_key_round_trips_through_its_text() {

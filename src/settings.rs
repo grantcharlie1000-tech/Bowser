@@ -1076,6 +1076,10 @@ impl Settings {
                 // --- end start page ---
             }
         }
+        // --- fix group C: checks across keys, made once the whole file is read ---
+        settings.themes.check_schedule();
+        settings.address.dedupe_scope_words();
+        // --- end fix group C ---
         settings
     }
 
@@ -1338,9 +1342,18 @@ pub fn merge_changed(base: &Settings, memory: &Settings, file: &Settings) -> Set
 }
 
 /// Reset settings: every option in the file goes back to its default except how long history is
-/// kept, which the page's description promises it leaves alone (history itself is not in this file).
+/// kept and the three Keyboard-section options, which the page's description promises it leaves
+/// alone (history itself and the shortcuts are not in this file).
 pub fn reset_defaults(current: &Settings) -> Settings {
-    Settings { history_retention: current.history_retention, ..Settings::default() }
+    Settings {
+        history_retention: current.history_retention,
+        // --- fix group C: the Keyboard section is not reset ---
+        ctrl_shift_c_copy_link: current.ctrl_shift_c_copy_link,
+        shift_right_click_context: current.shift_right_click_context,
+        ctrl_s_vertical_tabs: current.ctrl_s_vertical_tabs,
+        // --- end fix group C ---
+        ..Settings::default()
+    }
 }
 // --- end wave-1 fixes ---
 
@@ -2020,8 +2033,85 @@ tabs_new_tab_url=javascript:1
         let reset = reset_defaults(&sample());
         assert_eq!(reset.history_retention, sample().history_retention);
         assert_ne!(sample().history_retention, Settings::default().history_retention, "the sample proves it");
-        assert_eq!(Settings { history_retention: Settings::default().history_retention, ..reset }, Settings::default());
+        let defaults = Settings::default();
+        assert_eq!(
+            Settings {
+                history_retention: defaults.history_retention,
+                ctrl_shift_c_copy_link: defaults.ctrl_shift_c_copy_link,
+                shift_right_click_context: defaults.shift_right_click_context,
+                ctrl_s_vertical_tabs: defaults.ctrl_s_vertical_tabs,
+                ..reset
+            },
+            defaults
+        );
     }
+
+    // --- fix group C ---
+    #[test]
+    fn reset_keeps_the_three_keyboard_section_options() {
+        let defaults = Settings::default();
+        let current = Settings {
+            ctrl_shift_c_copy_link: !defaults.ctrl_shift_c_copy_link,
+            shift_right_click_context: !defaults.shift_right_click_context,
+            ctrl_s_vertical_tabs: !defaults.ctrl_s_vertical_tabs,
+            minimal_url: !defaults.minimal_url,
+            ..Settings::default()
+        };
+        let reset = reset_defaults(&current);
+        assert_eq!(reset.ctrl_shift_c_copy_link, current.ctrl_shift_c_copy_link);
+        assert_eq!(reset.shift_right_click_context, current.shift_right_click_context);
+        assert_eq!(reset.ctrl_s_vertical_tabs, current.ctrl_s_vertical_tabs);
+        assert_eq!(reset.minimal_url, defaults.minimal_url, "other options are reset");
+    }
+
+    /// The saved pair dark 06:00 then light 19:00: the light start equals the default dark start, so
+    /// a check made while the file is read in key order refused it, and a save from memory (which
+    /// re-reads its merged text in sorted key order, dark before light) wrote the reverted value back.
+    #[test]
+    fn a_saved_schedule_survives_load_and_merge_in_any_key_order() {
+        for text in [
+            "theme_light_from=19:00
+theme_dark_from=06:00
+",
+            "theme_dark_from=06:00
+theme_light_from=19:00
+",
+            "theme_dark_from=07:00
+theme_light_from=20:00
+",
+        ] {
+            let file = Settings::parse(text);
+            let (light, dark) = text.lines().fold((0, 0), |(light, dark), line| {
+                let (key, value) = line.split_once('=').unwrap();
+                let minutes = crate::theme_custom::parse_clock(value).unwrap();
+                if key == "theme_light_from" { (minutes, dark) } else { (light, minutes) }
+            });
+            assert_eq!((file.themes.light_from, file.themes.dark_from), (light, dark), "{text}");
+            let merged = merge_changed(&file, &file, &file);
+            assert_eq!(merged.themes, file.themes, "{text}");
+            let memory = Settings { minimal_url: !file.minimal_url, ..file.clone() };
+            assert_eq!(merge_changed(&file, &memory, &file).themes, file.themes, "{text}");
+        }
+        let equal = Settings::parse("theme_light_from=08:00
+theme_dark_from=08:00
+");
+        let defaults = crate::theme_custom::ThemeOptions::default();
+        assert_eq!((equal.themes.light_from, equal.themes.dark_from), (defaults.light_from, defaults.dark_from));
+    }
+
+    #[test]
+    fn scope_words_survive_load_and_merge_in_any_key_order() {
+        for text in ["nick_tabs=t
+nick_history=tabs
+", "nick_history=tabs
+nick_tabs=t
+"] {
+            let file = Settings::parse(text);
+            assert_eq!((file.address.nick_history.as_str(), file.address.nick_tabs.as_str()), ("tabs", "t"), "{text}");
+            assert_eq!(merge_changed(&file, &file, &file).address, file.address, "{text}");
+        }
+    }
+    // --- end fix group C ---
     // --- end wave-1 fixes ---
 
     #[test]

@@ -346,9 +346,38 @@ pub fn accepts(text: &str) -> bool {
     }
 }
 
-/// Reads a `theme_*` line of `settings.txt`. A value the option refuses leaves what it was.
+/// Reads a `theme_*` line of `settings.txt`. A value the option refuses leaves what it was. The two
+/// schedule times are read on their own, whatever order the file has them in, and checked against
+/// each other once the whole file is read ([`ThemeOptions::check_schedule`]).
 pub fn read_file_line(options: &mut ThemeOptions, key: &str, value: &str) {
-    options.set(key, value.trim());
+    let value = value.trim();
+    match key {
+        "theme_light_from" => {
+            if let Some(minutes) = parse_clock(value) {
+                options.light_from = minutes;
+            }
+        }
+        "theme_dark_from" => {
+            if let Some(minutes) = parse_clock(value) {
+                options.dark_from = minutes;
+            }
+        }
+        _ => {
+            options.set(key, value);
+        }
+    }
+}
+
+impl ThemeOptions {
+    /// The check after a file is read: a schedule whose light and dark start at the same time has
+    /// no light (or no dark) part, so both times go back to their defaults.
+    pub fn check_schedule(&mut self) {
+        if self.light_from == self.dark_from {
+            let defaults = Self::default();
+            self.light_from = defaults.light_from;
+            self.dark_from = defaults.dark_from;
+        }
+    }
 }
 
 /// Returns `text` with the theme option lines replaced by `options`, keeping everything else (comments,
@@ -595,6 +624,40 @@ mod tests {
             assert_eq!(parse_clock(bad), None, "{bad}");
         }
         assert_eq!(clock_text(420), "07:00");
+    }
+
+    /// Reads `lines` the way `settings.txt` is read: each line, then the one check after the file.
+    fn read_lines(lines: &[(&str, &str)]) -> ThemeOptions {
+        let mut options = ThemeOptions::default();
+        for (key, value) in lines {
+            read_file_line(&mut options, key, value);
+        }
+        options.check_schedule();
+        options
+    }
+
+    #[test]
+    fn schedule_times_read_in_either_order() {
+        // Light from 19:00 equals the default dark start; dark from 06:00 equals neither default.
+        let pair = [("theme_light_from", "19:00"), ("theme_dark_from", "06:00")];
+        let reversed = [pair[1], pair[0]];
+        for lines in [&pair[..], &reversed[..]] {
+            let options = read_lines(lines);
+            assert_eq!((options.light_from, options.dark_from), (19 * 60, 6 * 60), "{lines:?}");
+        }
+        // Dark from 07:00 equals the default light start.
+        let options = read_lines(&[("theme_dark_from", "07:00"), ("theme_light_from", "20:00")]);
+        assert_eq!((options.light_from, options.dark_from), (20 * 60, 7 * 60));
+    }
+
+    #[test]
+    fn equal_schedule_times_in_the_file_give_the_defaults() {
+        let defaults = ThemeOptions::default();
+        let options = read_lines(&[("theme_light_from", "08:00"), ("theme_dark_from", "08:00")]);
+        assert_eq!((options.light_from, options.dark_from), (defaults.light_from, defaults.dark_from));
+        // A bad time keeps its default and is then checked against the other one.
+        let options = read_lines(&[("theme_light_from", "25:00"), ("theme_dark_from", "07:00")]);
+        assert_eq!((options.light_from, options.dark_from), (defaults.light_from, defaults.dark_from));
     }
 
     #[test]

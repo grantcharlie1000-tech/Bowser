@@ -198,11 +198,23 @@ pub(crate) fn run_toggle_address_bar(cx: &Context) {
         return;
     };
     toggle_address_bar_setting(&mut settings);
-    match crate::settings::save(&path, &settings) {
-        Ok(()) => App::apply_live_settings(cx.app, &settings),
+    save_shortcut_change(cx, &path, &settings);
+}
+
+// --- fix group C: a shortcut's change reaches an open settings page ---
+/// Saves a change a shortcut made to `settings.txt`, applies it, and has an open settings page read
+/// the file again: the page's draft would otherwise still hold the old value, and its next Save (of
+/// any row) would put it back.
+fn save_shortcut_change(cx: &Context, path: &std::path::Path, settings: &crate::settings::Settings) {
+    match crate::settings::save(path, settings) {
+        Ok(()) => {
+            App::apply_live_settings(cx.app, settings);
+            super::settings_page::refresh(cx.hwnd);
+        }
         Err(error) => super::show_error_message(&format!("Settings could not be saved: {error}")),
     }
 }
+// --- end fix group C ---
 // --- end wave-1 integration ---
 
 // --- auto-hide (T11) ---
@@ -216,10 +228,7 @@ pub(crate) fn run_toggle_auto_hide(cx: &Context) {
         return;
     };
     settings.frameless = !settings.frameless;
-    match crate::settings::save(&path, &settings) {
-        Ok(()) => App::apply_live_settings(cx.app, &settings),
-        Err(error) => super::show_error_message(&format!("Settings could not be saved: {error}")),
-    }
+    save_shortcut_change(cx, &path, &settings);
 }
 
 /// "Full screen" (F11): the window fills its monitor with no frame, or goes back.
@@ -277,6 +286,38 @@ mod tests {
             assert_eq!(crate::commands::chains::validate(&chain, &[], known), Ok(()), "{id} can be a chain step");
         }
     }
+
+    // --- fix group C ---
+    /// Ctrl+F11 and "Show or hide the address bar" save straight to the file; an open settings page
+    /// must read it again (`settings_page::refresh`), since the page's draft only follows a snapshot
+    /// and its next Save sends every row. The page side (a refreshed snapshot replaces the draft, so
+    /// a later Save keeps the file's value) is tested in ui/test/settings-page.mjs.
+    #[test]
+    fn the_shortcut_toggles_refresh_an_open_settings_page() {
+        let source = include_str!("command_actions.rs").replace("\r\n", "\n");
+        let body = |name: &str| {
+            let start = source.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("{name}"));
+            let end = source[start..].find("\n}\n").map_or(source.len(), |end| start + end);
+            source[start..end].to_owned()
+        };
+        for name in ["run_toggle_auto_hide", "run_toggle_address_bar"] {
+            let body = body(name);
+            assert!(body.contains("save_shortcut_change(cx,"), "{name} saves through the refreshing helper");
+            assert!(!body.contains("settings::save("), "{name} has no save of its own that skips the refresh");
+        }
+        let helper = body("save_shortcut_change");
+        let applied = helper.find("apply_live_settings").expect("applies");
+        let refreshed = helper.find("settings_page::refresh(cx.hwnd)").expect("refreshes the page");
+        assert!(applied < refreshed && helper[..applied].contains("Ok(())"), "only after a save that worked");
+
+        // The sidebar drag saves its width from memory the same way: the page reads it again too.
+        let window = include_str!("window.rs").replace("\r\n", "\n");
+        let start = window.find("fn finish_sidebar_drag(").expect("finish_sidebar_drag");
+        let drag = &window[start..start + window[start..].find("\n}\n").expect("end")];
+        let saved = drag.find("App::save_settings(app)").expect("saves");
+        assert!(drag[saved..].contains("settings_page::refresh(hwnd)"), "the drag refreshes the page after saving");
+    }
+    // --- end fix group C ---
 
     #[test]
     fn toggling_a_site_adds_it_and_then_removes_it_with_any_parent_that_covered_it() {

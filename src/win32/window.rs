@@ -5018,6 +5018,8 @@ fn finish_sidebar_drag(hwnd: HWND, app: &AppRef) {
         // as after every drag frame.
         apply_sidebar_bounds(hwnd, app);
         App::save_settings(app);
+        // --- fix group C --- an open settings page reads the new width, so its next Save keeps it.
+        super::settings_page::refresh(hwnd);
     }
 }
 
