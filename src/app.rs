@@ -931,7 +931,7 @@ fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::
     settings.automatic_tab_grouping = file.automatic_tab_grouping;
     settings.tracking_prevention = file.tracking_prevention;
     settings.block_youtube_video_ads = file.block_youtube_video_ads;
-    settings.side_panel_position = file.side_panel_position;
+    // --- layout (thread T6) --- `side_panel_position` is live now (`apply_live_settings`), so memory holds it.
     settings.frameless = file.frameless;
     settings.search_engine = file.search_engine;
 }
@@ -4862,6 +4862,7 @@ impl App {
         // applied (the history load, the first tab), so they are set here (thread T3).
         crate::history_retention::set_current(app.settings.history_retention);
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
+        crate::layout_prefs::set_status_overlay(app.settings.status_bar); // --- layout (thread T6) ---
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -6826,8 +6827,29 @@ impl App {
             state.settings.tab_preview_images = settings.tab_preview_images;
             state.settings.tab_preview_memory = settings.tab_preview_memory;
             // --- end tab options ---
+            // --- layout (thread T6) --- the Layout block: every row acts at once (the window lays
+            // the chrome out again below from `App::arrangement`).
+            state.settings.side_panel_position = settings.side_panel_position;
+            state.settings.tab_bar_visible = settings.tab_bar_visible;
+            state.settings.address_bar_position = settings.address_bar_position;
+            state.settings.address_bar_visible = settings.address_bar_visible;
+            state.settings.show_title_bar = settings.show_title_bar;
+            state.settings.status_bar = settings.status_bar;
+            state.settings.ui_density = settings.ui_density;
+            state.settings.compact_menus = settings.compact_menus;
+            state.settings.ui_zoom = settings.ui_zoom;
+            state.settings.layout_saved = settings.layout_saved.clone();
+            // --- end layout ---
             (state.hwnd, state.edit)
         };
+        // --- layout (thread T6) --- the docked panel moves edge at once; the link-address overlay
+        // follows the status bar choice in every open tab and the ones opened next.
+        if !hwnd.is_invalid() {
+            win32::side_panel::set_position(hwnd, settings.side_panel_position);
+        }
+        crate::layout_prefs::set_status_overlay(settings.status_bar);
+        Self::call_engine(app, |engine| engine.apply_status_overlay());
+        // --- end layout ---
         // --- wave-1 integration --- the Tabs options as the file has them (Reset settings, the GDI form):
         // the strip, the audio rule and the tick follow at once.
         let tabs_before = {
@@ -7385,6 +7407,10 @@ impl App {
     }
 }
 
+/// The page bounds for a plain tab layout (the tests' older entry point; the window uses
+/// [`chrome_viewport_bounds_arranged`]).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn chrome_viewport_bounds(
     width: i32,
     height: i32,

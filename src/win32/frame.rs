@@ -335,4 +335,20 @@ mod tests {
         );
         assert_eq!(caption_strip_height(120), 38, "37.5 rounds up");
     }
+
+    // --- layout (thread T6) ---
+    #[test]
+    fn a_row_along_the_bottom_edge_keeps_the_bottom_grip_as_thin_as_the_top_one() {
+        let size = (1000, 700);
+        let low = POINT { x: 500, y: 694 };
+        assert_eq!(frame_hit_test(low, size, 96, false, ChromeHit::Interactive), FrameHit::Bottom, "8px grip by default");
+        assert_eq!(frame_hit_test_with(low, size, 96, false, ChromeHit::Interactive, true), FrameHit::Client, "a tab there is a tab");
+        let edge = POINT { x: 500, y: 699 };
+        assert_eq!(frame_hit_test_with(edge, size, 96, false, ChromeHit::Interactive, true), FrameHit::Bottom, "the last 2px still resize");
+        let corner = POINT { x: 996, y: 694 };
+        assert_eq!(frame_hit_test_with(corner, size, 96, false, ChromeHit::None, true), FrameHit::Right, "the side grips keep their width");
+        assert_eq!(frame_hit_test_with(low, size, 96, true, ChromeHit::Interactive, true), FrameHit::Client, "maximised: no grips at all");
+        assert_eq!(frame_hit_test_with(POINT { x: 500, y: 10 }, size, 96, false, ChromeHit::None, true), FrameHit::Caption, "the top is unchanged");
+    }
+    // --- end layout ---
 }

@@ -1511,6 +1511,17 @@ mod tests {
         Settings {
             tab_layout: TabLayout::Vertical,
             sidebar_width: 300,
+            // --- layout (thread T6) ---
+            tab_bar_visible: true,
+            address_bar_position: crate::layout_prefs::BarPosition::Bottom,
+            address_bar_visible: true,
+            show_title_bar: true,
+            status_bar: crate::layout_prefs::StatusBar::Hidden,
+            ui_density: crate::layout_prefs::UiDensity::Compact,
+            compact_menus: true,
+            ui_zoom: 125,
+            layout_saved: String::new(),
+            // --- end layout ---
             sidebar_collapsed: false,
             side_panel_width: 340,
             sleep_enabled: false,
@@ -1853,6 +1864,8 @@ tabs_new_tab_url=javascript:1
              translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n\
              blocker_level=trackers\r\ncookie_notices=true\r\nhistory_retention=1w\r\n\
              website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n\
+             tab_bar_visible=true\r\naddress_bar_position=bottom\r\naddress_bar_visible=true\r\nshow_title_bar=true\r\n\
+             status_bar=hidden\r\nui_density=compact\r\ncompact_menus=true\r\nui_zoom=125\r\nlayout_saved=\r\n\
              start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\

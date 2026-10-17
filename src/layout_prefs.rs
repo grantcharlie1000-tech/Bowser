@@ -116,6 +116,19 @@ impl UiDensity {
     }
 }
 
+/// The status-bar choice in force, process-wide (one profile per process): a tab created later
+/// starts with it and a change reaches every open tab through the engine (`apply_status_overlay`).
+static STATUS_OVERLAY_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_status_overlay(status: StatusBar) {
+    STATUS_OVERLAY_SHOWN.store(status.overlay_shown(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether pages may show the link-address overlay right now.
+pub fn status_overlay_shown() -> bool {
+    STATUS_OVERLAY_SHOWN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub const MIN_UI_ZOOM: u16 = 50;
 pub const MAX_UI_ZOOM: u16 = 200;
 pub const DEFAULT_UI_ZOOM: u16 = 100;
