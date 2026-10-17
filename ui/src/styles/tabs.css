@@ -543,3 +543,37 @@
   .strip .tab.dragging,
   .strip .tab.landing { box-shadow: var(--bw-sh-tip); }
 }
+
+/* ---- Two-level stacks (T10b): a second row under the tab row with the tabs of the stack in use ----
+   Rust grows the strip's host by the row and its gap only while there is one (body[data-stack-row]);
+   the tab row keeps its own height and any rounding pixel lands in the gap. The row is a .strip, so
+   its tabs are the tab row's own islands; the compact size only lowers the tokens they read. */
+body[data-stack-row] {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+body[data-stack-row] #app.strip {
+  flex: 0 0 var(--bw-tab-row-h);
+  height: var(--bw-tab-row-h);
+}
+
+.stack-row.strip {
+  display: flex;
+  flex: 0 0 var(--bw-stack-row-h);
+  height: var(--bw-stack-row-h);
+  gap: var(--bw-space-1);
+  padding: 0 var(--bw-space-1);
+  align-items: center;
+  overflow: hidden;
+}
+
+.stack-row.strip[hidden] { display: none; }
+
+.stack-row.strip[data-size="compact"] {
+  --bw-tab-h: calc(var(--bw-stack-row-compact-h) - 2px);
+  --bw-icon-box: 16px;
+  flex-basis: var(--bw-stack-row-compact-h);
+  height: var(--bw-stack-row-compact-h);
+}

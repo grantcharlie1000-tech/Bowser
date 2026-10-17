@@ -13,7 +13,12 @@ interface Base {
   readonly keywords: string;
   readonly card: TabCardKey;
 }
-export interface ToggleSpec extends Base { readonly kind: 'toggle'; readonly default: boolean }
+export interface ToggleSpec extends Base {
+  readonly kind: 'toggle';
+  readonly default: boolean;
+  /** --- two-level stacks (T10b) --- the choice option this switch only matters for, and its value. */
+  readonly when?: readonly [key: string, value: string];
+}
 export interface ChoiceSpec extends Base {
   readonly kind: 'choice';
   readonly default: string;
@@ -115,9 +120,9 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_load_pinned', 'restore', false, 'Always load pinned tabs', 'Pinned tabs load as soon as Bowser reopens them, even when the others wait.', 'always load pinned tabs restore'),
 
   // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) --- a stack is a site island.
-  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['off', 'Off']], 'Tab stacks',
-    'Islands sit side by side and fold when you fold them. Compact folds each stack to its ball and the tab in use. Accordion opens only the stack you are in.',
-    'tab stacks stacking islands groups compact accordion two level fold off'),
+  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['two-level', 'Two-level'], ['off', 'Off']], 'Tab stacks',
+    'Islands sit side by side and fold when you fold them. Compact folds each stack to its ball and the tab in use. Accordion opens only the stack you are in. Two-level shows the tabs of the stack you are in on a second row under the tab bar; with the tab bar on a side, the sidebar shows stacks as usual.',
+    'tab stacks stacking islands groups compact accordion two level second row fold off'),
   toggle('tabs_workspaces', 'stacks', true, 'Workspaces', 'Shows workspaces in the rail, the sidebar, the menu and Quick commands. Off hides them; their tabs wait until you turn them back on.',
     'workspaces enable disable rail switcher'),
   toggle('tabs_stack_open_in_current', 'stacks', false, 'Open new tabs in the current stack', 'A new tab opened while a stacked tab is in front joins that stack.', 'open new tab current stack join'),
@@ -128,6 +133,9 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_tile_tight', 'stacks', false, 'Remove the space around tiles', 'Tiles meet with a hairline instead of the usual gap.', 'tile gap space spacing tight split view tiling'),
   toggle('tabs_workspace_scroll', 'stacks', false, 'Switch workspaces by scrolling', 'The mouse wheel over the workspaces in the rail or the sidebar switches to the next or previous one.', 'switch workspaces scroll wheel mouse rail'),
   toggle('tabs_workspace_counts', 'stacks', false, 'Show tab counts on workspaces', 'Each workspace in the rail and the workspace menu shows how many tabs it holds.', 'workspace tab count number badge'),
+  // --- two-level stacks (T10b) --- only two-level stacks have a second row to make smaller.
+  { ...toggle('tabs_stack_compact_row', 'stacks', false, 'Compact second row', 'Two-level stacks: the row with the tabs of the stack you are in is smaller.',
+    'two level stacks second row compact small smaller'), when: ['tabs_stack_style', 'two-level'] },
   // --- end tab stacks, tiling and workspaces ---
 ];
 
@@ -173,6 +181,11 @@ export function assignmentText(key: string, value: unknown): string | null {
 /** Whether a text option applies now (the new tab address only while the page is a specific page). */
 export function textApplies(spec: TextSpec, values: TabOptionValues): boolean {
   return values[spec.when[0]] === spec.when[1];
+}
+
+/** --- two-level stacks (T10b) --- whether a switch applies now ("Compact second row" only with two-level stacks). */
+export function toggleApplies(spec: ToggleSpec, values: TabOptionValues): boolean {
+  return spec.when === undefined || values[spec.when[0]] === spec.when[1];
 }
 
 /** The words next to a number: "Never ask", "Off", "3 tabs", "120 px". */

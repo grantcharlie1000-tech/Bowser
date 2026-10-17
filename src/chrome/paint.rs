@@ -104,6 +104,10 @@ pub struct ChromeView<'a> {
     pub palette: &'a Palette,
     pub tabs: &'a [TabView<'a>],
     pub active: usize,
+    /// --- two-level stacks (T10b) --- the second row's tabs (`Layout::stack_tabs`), and which of
+    /// them is in use. Empty without a second row.
+    pub stack_tabs: &'a [TabView<'a>],
+    pub stack_active: Option<usize>,
     pub hover: Hit,
     pub pressed: Hit,
     pub caption_maximised: bool,
@@ -642,6 +646,7 @@ impl ChromeSurface {
         if !self.html_tabs {
             self.paint_departures(view, dirty);
             self.paint_tabs(view, dirty);
+            self.paint_stack_row(view, dirty); // --- two-level stacks (T10b) ---
         }
         self.paint_tab_menu(view, dirty);
         self.paint_new_tab(view, dirty);
@@ -1610,6 +1615,78 @@ impl ChromeSurface {
             self.line_f(cx - half, cy + half, cx + half, cy - half, 1.5 * scale, c, dirty);
         }
     }
+
+    // --- two-level stacks (T10b) ---
+    /// The second tab row: the tabs of the stack in use as plain islands, drawn the way the tab
+    /// row draws an ungrouped tab (fill, hairline, the selected outline, favicon, title, and the
+    /// close glyph on the hovered or selected island).
+    fn paint_stack_row(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let row = view.layout.stack_row;
+        if row.is_empty() || row.intersect(dirty).is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        let radius = m.tab_radius().min(row.height() / 2);
+        let islands = view.layout.stack_tabs(view.stack_tabs.len());
+        for (index, (island, tab)) in islands.iter().zip(view.stack_tabs).enumerate() {
+            if island.intersect(dirty).is_empty() {
+                continue;
+            }
+            let active = view.stack_active == Some(index);
+            let hovered = matches!(view.hover, Hit::StackTab(i) | Hit::StackTabClose(i) if i == index);
+            let pressed_close = view.pressed == Hit::StackTabClose(index);
+            let base = if hovered { view.palette.tab_hover } else { view.palette.tab_inactive };
+            let fill = if active { view.palette.tab_active } else { base };
+            self.round_sides(*island, radius, radius, fill, dirty);
+            self.border_sides(*island, radius, radius, 1.0, scale_alpha(view.palette.hairline, 0.62), dirty);
+            if active {
+                let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
+                self.border_sides(*island, radius, radius, 1.0, scale_alpha(view.palette.tab_active_border, stroke), dirty);
+            }
+            let mut parts = view.layout.tab_parts(*island);
+            let title = if tab.title.is_empty() { "New tab" } else { tab.title };
+            if !parts.title.is_empty() {
+                // The favicon and title sit centred in the island as a group, as in the tab row.
+                let length = encode_into(&mut self.label_units, title);
+                let text_width = self.text.measure(&self.label_units[..length], length);
+                let group = parts.favicon.width() + m.px(Metrics::TEXT_GAP) + text_width.min(parts.title.width());
+                let start = ((parts.favicon.left + parts.title.right - group) / 2).max(parts.favicon.left);
+                let shift = start - parts.favicon.left;
+                parts.favicon.left += shift;
+                parts.favicon.right += shift;
+                parts.title.left += shift;
+            }
+            if island.contains_rect(parts.favicon) && !(active && parts.active_close) {
+                if let Some(favicon) = tab.favicon {
+                    self.blit_favicon(parts.favicon, favicon, dirty);
+                } else {
+                    self.round(parts.favicon, m.px(4), Rgba::hex(if active { 0x6B7785 } else { 0x84909D }, 210), dirty);
+                    let (cx, cy) = center(parts.favicon);
+                    self.line(cx - 2, cy, cx + 2, cy, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
+                    self.line(cx, cy - 2, cx, cy + 2, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
+                }
+            }
+            if !parts.title.is_empty() {
+                let colour = if active { view.palette.tab_text_active } else { view.palette.tab_text_inactive };
+                self.draw_text(title, parts.title, colour, true, *island, dirty);
+            }
+            let close = if active && parts.active_close { parts.favicon } else { parts.close };
+            if close.is_empty() || !island.contains_rect(close) || !(hovered || active) {
+                continue;
+            }
+            if view.hover == Hit::StackTabClose(index) || pressed_close {
+                self.round(close, m.px(6), if pressed_close { view.palette.tab_active_border } else { view.palette.caption_hover }, dirty);
+            }
+            let c = if hovered || active { view.palette.tab_text_active } else { view.palette.tab_text_inactive };
+            let (cx, cy) = center(close);
+            let scale = m.px(16) as f32 / 24.0;
+            let half = 6.0 * scale;
+            let (cx, cy) = (cx as f32, cy as f32);
+            self.line_f(cx - half, cy - half, cx + half, cy + half, 1.5 * scale, c, dirty);
+            self.line_f(cx - half, cy + half, cx + half, cy - half, 1.5 * scale, c, dirty);
+        }
+    }
+    // --- end two-level stacks ---
 
     fn paint_group_balls(
         &mut self,
@@ -3502,6 +3579,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3734,6 +3813,8 @@ mod tests {
             palette,
             tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3789,6 +3870,8 @@ mod tests {
             palette: palette(Appearance::Dark, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3859,6 +3942,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &[],
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover,
             pressed,
             caption_maximised: false,
@@ -4056,6 +4141,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &[],
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover,
             pressed,
             caption_maximised: false,
@@ -5194,6 +5281,8 @@ mod tests {
                                     palette: pal,
                                     tabs: &tabs,
                                     active: count - 1,
+                                    stack_tabs: &[],
+                                    stack_active: None,
                                     hover: Hit::Tab(0),
                                     pressed: Hit::None,
                                     caption_maximised: false,
@@ -5229,6 +5318,105 @@ mod tests {
             }
         }
     }
+
+    // --- two-level stacks (T10b) ---
+    /// The native strip with the second row of two-level stacks (`row`), three stacked tabs in it.
+    fn paint_two_level(pal: &'static Palette, dpi: u32, width: i32, height: i32, row: crate::chrome::layout::StackRow, hover: Hit) -> (ChromeSurface, Layout) {
+        use crate::chrome::layout::{compute_arranged_in_frame, Arrangement};
+        let (layout, _) = compute_arranged_in_frame(Arrangement::default().with_stack_row(row), width, height, dpi, 3, 1, false, 260, true, 28);
+        let now = Instant::now();
+        let view_of = |title: &'static str, selected: bool, favicon: bool| TabView { title, loading: false, favicon: favicon.then_some(&QA_FAVICON), emphasis: Emphasis::resting(false, selected, now), group_size: None, group_control: false, marker: None, group_colour: None, group_frame: None };
+        let tabs = [view_of("Inbox", false, true), view_of("Docs", true, false), view_of("News", false, true)];
+        let stack = [view_of("Docs - Design notes", false, true), view_of("Docs - Release plan", true, false), view_of("Docs - Weekly review", false, true)];
+        let omni = OmniboxView { text: "https://docs.example/plan", selection: (0, 0), caret_visible: false, focused: false, completion_suffix: "", progress: None, site: SiteSecurity::Secure };
+        let view = ChromeView {
+            layout: &layout,
+            palette: pal,
+            tabs: &tabs,
+            active: 1,
+            stack_tabs: if layout.stack_row.is_empty() { &[] } else { &stack },
+            stack_active: Some(1),
+            hover,
+            pressed: Hit::None,
+            caption_maximised: false,
+            can_back: true,
+            can_forward: false,
+            omnibox: omni,
+            now,
+            departures: &[],
+            rail: None,
+            icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
+        };
+        let mut surface = ChromeSurface::new(width, height, dpi);
+        surface.paint(&view, Rect::new(0, 0, width, surface.height()));
+        (surface, layout)
+    }
+
+    #[test]
+    fn the_native_strip_paints_the_second_row_only_when_it_is_laid_out() {
+        use crate::chrome::layout::StackRow;
+        let pal = palette(Appearance::Dark, true);
+        let opaque_in = |surface: &ChromeSurface, rect: Rect| {
+            let mut count = 0;
+            for y in rect.top.max(0)..rect.bottom.min(surface.height()) {
+                for x in rect.left.max(0)..rect.right.min(surface.width()) {
+                    if surface.pixels()[y as usize * surface.stride() + x as usize * 4 + 3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for dpi in [96, 120, 144, 192] {
+            let (with_row, layout) = paint_two_level(pal, dpi, 1024, 240, StackRow::Regular, Hit::None);
+            let islands = layout.stack_tabs(3);
+            assert_eq!(islands.len(), 3, "dpi {dpi}");
+            for island in &islands {
+                assert!(opaque_in(&with_row, *island) > island.width() * island.height() / 2, "dpi {dpi}: the island {island:?} is painted");
+            }
+            let (compact, compact_layout) = paint_two_level(pal, dpi, 1024, 240, StackRow::Compact, Hit::StackTab(0));
+            assert!(compact_layout.stack_row.height() < layout.stack_row.height());
+            assert!(opaque_in(&compact, compact_layout.stack_tabs(3)[0]) > 0, "dpi {dpi}: compact");
+            let (without, plain) = paint_two_level(pal, dpi, 1024, 240, StackRow::None, Hit::None);
+            assert!(plain.stack_row.is_empty());
+            // Without the row nothing of it is drawn: the pixels where its islands were differ.
+            let pixels_in = |surface: &ChromeSurface, rect: Rect| -> Vec<u8> {
+                (rect.top..rect.bottom).flat_map(|y| {
+                    let start = y as usize * surface.stride() + rect.left as usize * 4;
+                    surface.pixels()[start..start + rect.width() as usize * 4].to_vec()
+                }).collect()
+            };
+            assert_ne!(pixels_in(&with_row, islands[0]), pixels_in(&without, islands[0]), "dpi {dpi}");
+            assert!(plain.viewport.top < layout.viewport.top, "dpi {dpi}: the page gave the row its room");
+        }
+    }
+
+    #[ignore = "set BOWSER_DUMP_TWO_LEVEL to render the native two-level strip before and after"]
+    #[test]
+    fn dump_two_level_native_strip() {
+        use crate::chrome::layout::StackRow;
+        let Ok(dir) = std::env::var("BOWSER_DUMP_TWO_LEVEL") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+            let pal = palette(appearance, true);
+            for (dpi, scale) in [(96, 100), (144, 150)] {
+                for (row, label) in [(StackRow::None, "before"), (StackRow::Regular, "after"), (StackRow::Compact, "after-compact")] {
+                    let width = 900 * dpi as i32 / 96;
+                    let height = 110 * dpi as i32 / 96;
+                    let (surface, _) = paint_two_level(pal, dpi, width, height, row, Hit::StackTab(2));
+                    let rgba = composite_on_background(surface.pixels(), width, surface.height(), surface.stride(), Some([pal.window.r, pal.window.g, pal.window.b]));
+                    write_png(&dir.join(format!("gdi-{label}-{name}-{scale}.png")), width as u32, surface.height() as u32, &rgba);
+                }
+            }
+        }
+    }
+    // --- end two-level stacks ---
 
     #[ignore = "set BOWSER_DUMP_MOTION to render transition frames"]
     #[test]
@@ -5274,6 +5462,8 @@ mod tests {
                 palette: palette(Appearance::Dark, false),
                 tabs: &tabs_hover,
                 active: 0,
+                stack_tabs: &[],
+                stack_active: None,
                 hover: Hit::None,
                 pressed: Hit::None,
                 caption_maximised: false,
@@ -5314,6 +5504,8 @@ mod tests {
                 palette: palette(Appearance::Dark, false),
                 tabs: &tabs_select,
                 active: 4,
+                stack_tabs: &[],
+                stack_active: None,
                 hover: Hit::None,
                 pressed: Hit::None,
                 caption_maximised: false,
@@ -5364,6 +5556,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::Tab(1),
             pressed: Hit::None,
             caption_maximised: false,

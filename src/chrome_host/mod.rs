@@ -243,11 +243,15 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
     if right <= row.left {
         return None;
     }
+    // --- two-level stacks (T10b) --- the strip page draws the second tab row too: the host grows
+    // down (tabs at the top) or up (tabs at the bottom) over it and the gap between the rows.
+    let stack = layout.stack_row;
+    let (top, bottom) = if stack.is_empty() { (row.top, row.bottom) } else { (row.top.min(stack.top), row.bottom.max(stack.bottom)) };
     Some(RECT {
         left: row.left,
-        top: row.top,
+        top,
         right,
-        bottom: row.bottom,
+        bottom,
     })
 }
 

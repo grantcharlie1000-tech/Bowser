@@ -143,7 +143,10 @@ choice! {
     /// How tab stacks (Bowser's site islands) show in the tab bar: side by side with a collapse
     /// control of their own (`islands`, as before), every stack folded to its ball and the tab in use
     /// (`compact`), only the stack in use unfolded (`accordion`), or no stacks at all (`off`).
-    StackStyle { Islands = "islands", Compact = "compact", Accordion = "accordion", Off = "off" }
+    /// `two-level` (T10b) folds every stack to its ball in the tab row and shows the tabs of the
+    /// stack in use in a second row under it (`stacks::stack_row`); with the tab bar on a side it
+    /// draws the sidebar's usual stacks.
+    StackStyle { Islands = "islands", Compact = "compact", Accordion = "accordion", TwoLevel = "two-level", Off = "off" }
 }
 // --- end tab stacks, tiling and workspaces ---
 
@@ -267,6 +270,10 @@ tab_options! {
     workspace_counts: bool = false, "tabs_workspace_counts";
     /// Part of "New tab position: as stack with related" (see [`NewTabPosition`]).
     new_tab_stack: bool = false, "tabs_new_tab_stack";
+    // --- two-level stacks (T10b) ---
+    /// Two-level stacks: the second row is the smaller one (`chrome::layout::StackRow::Compact`).
+    stack_compact_row: bool = false, "tabs_stack_compact_row";
+    // --- end two-level stacks ---
     // --- end tab stacks, tiling and workspaces ---
 }
 
@@ -647,6 +654,19 @@ mod tests {
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_stack=true"), "the flags are set through the position only");
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
         // --- end tab stacks ---
+        // --- two-level stacks (T10b) --- the page's two words reach the settings and the snapshot.
+        assert!(apply_assignment(&mut settings, "tabs_stack_style=two-level"));
+        assert_eq!(settings.tabs.stack_style, StackStyle::TwoLevel);
+        assert!(apply_assignment(&mut settings, "tabs_stack_compact_row=true"));
+        assert!(settings.tabs.stack_compact_row);
+        assert!(snapshot_entries(&settings).contains(&("tabs_stack_compact_row", Value::Bool(true))));
+        assert!(snapshot_entries(&settings).contains(&("tabs_stack_style", Value::Text("two-level".into()))));
+        assert!(!apply_assignment(&mut settings, "tabs_stack_style=two_level"), "only the exact word");
+        let text = render_into("", &settings.tabs, "\n");
+        assert!(text.contains("tabs_stack_style=two-level\n") && text.contains("tabs_stack_compact_row=true\n"), "{text}");
+        settings.tabs.stack_style = StackStyle::Islands;
+        settings.tabs.stack_compact_row = false;
+        // --- end two-level stacks ---
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_position"));
         assert!(!apply_assignment(&mut settings, "tabs_unknown=true"));
         assert!(apply_assignment(&mut settings, "tabs_double_click=close"));

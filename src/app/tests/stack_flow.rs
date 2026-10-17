@@ -271,3 +271,75 @@ fn tiling_lays_the_tabs_out_in_the_split_view() {
     assert!(App::split_view(&app).is_none());
     assert!(!App::tile_tabs(&app, &ids[..1], crate::stacks::TileMode::Vertical, |_| None), "one tab is no tiling");
 }
+
+// --- two-level stacks (T10b) ---
+/// The page bounds the arrangement leaves, at 96 DPI in a 1000 x 700 window.
+fn page_top_bottom(app: &AppRef) -> (i32, i32) {
+    let bounds = chrome_viewport_bounds_arranged(1000, 700, 96, 4, false, App::arrangement(app), 260, (0, crate::settings::SidePanelPosition::Left), crate::layout_prefs::UiDensity::Regular);
+    (bounds.top, bounds.bottom)
+}
+
+#[test]
+fn two_level_stacks_lay_out_a_second_row_only_while_the_tab_in_use_is_in_a_stack() {
+    use crate::chrome::layout::StackRow;
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/1", "https://a.com/2", "https://c.com/"]);
+    let plain = page_top_bottom(&app);
+    for style in [StackStyle::Islands, StackStyle::Compact, StackStyle::Accordion, StackStyle::Off] {
+        set(&app, |o| o.stack_style = style);
+        assert_eq!(App::arrangement(&app).stack_row, StackRow::None, "{style:?} reserves nothing");
+        assert_eq!(page_top_bottom(&app), plain, "{style:?} leaves the page where it was");
+        assert!(App::stack_row_tabs(&app).is_empty());
+    }
+    set(&app, |o| o.stack_style = StackStyle::TwoLevel);
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::Regular, "the tab in use is in a.com's stack");
+    assert_eq!(App::stack_row_tabs(&app), ids[..2].to_vec(), "the second row shows the stack's tabs");
+    assert_eq!(page_top_bottom(&app), (plain.0 + 2 + 28, plain.1), "the page starts a gap and a row lower");
+    assert!(App::tab_group_preferences(&app).is_collapsed(&key("a.com")), "the tab row shows the stack as its ball");
+    // "Compact second row" (behind More options) makes the row smaller.
+    set(&app, |o| o.stack_compact_row = true);
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::Compact);
+    assert_eq!(page_top_bottom(&app), (plain.0 + 2 + 22, plain.1));
+    // A tab in no stack: no second row and the page back where it was.
+    let _ = App::select_tab(&app, ids[2]);
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::None);
+    assert!(App::stack_row_tabs(&app).is_empty());
+    assert_eq!(page_top_bottom(&app), plain);
+    // The compact option alone does nothing without two-level stacks.
+    let _ = App::select_tab(&app, ids[0]);
+    set(&app, |o| o.stack_style = StackStyle::Compact);
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::None);
+}
+
+#[test]
+fn two_level_stacks_follow_the_tab_bar_to_the_bottom_and_fall_back_in_a_sidebar() {
+    use crate::chrome::layout::StackRow;
+    let app = fixture();
+    let _ = tabs_on(&app, &["https://a.com/1", "https://a.com/2"]);
+    app.borrow_mut().settings.tab_layout = crate::settings::TabLayout::TabsBottom;
+    let plain = page_top_bottom(&app);
+    set(&app, |o| o.stack_style = StackStyle::TwoLevel);
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::Regular);
+    assert_eq!(page_top_bottom(&app), (plain.0, plain.1 - 2 - 28), "along the bottom the page ends a row higher");
+    for side in [crate::settings::TabLayout::Vertical, crate::settings::TabLayout::VerticalRight] {
+        app.borrow_mut().settings.tab_layout = side;
+        assert_eq!(App::arrangement(&app).stack_row, StackRow::None, "{side:?}: the sidebar shows stacks its own way");
+    }
+    app.borrow_mut().settings.tab_layout = crate::settings::TabLayout::ToolbarTop;
+    app.borrow_mut().settings.tab_bar_visible = false;
+    assert_eq!(App::arrangement(&app).stack_row, StackRow::None, "no tab bar, no second row");
+}
+
+#[test]
+fn a_ball_click_under_two_level_brings_back_the_member_used_last() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://a.com/1", "https://a.com/2", "https://c.com/"]);
+    set(&app, |o| o.stack_style = StackStyle::TwoLevel);
+    let _ = App::select_tab(&app, ids[1]);
+    let _ = App::select_tab(&app, ids[2]);
+    assert!(App::set_tab_group_collapsed(&app, ids[0], false), "from outside the stack the ball selects");
+    assert_eq!(App::active_tab_id(&app), ids[1], "the member used last");
+    assert!(!App::set_tab_group_collapsed(&app, ids[0], false), "inside, its tabs are already the second row");
+    assert_eq!(App::active_tab_id(&app), ids[1]);
+}
+// --- end two-level stacks ---

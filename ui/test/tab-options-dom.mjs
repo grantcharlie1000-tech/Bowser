@@ -239,6 +239,30 @@ test('the next snapshot is the truth: it moves every control, and the address fo
   assert.equal(rowOf('tabs_keep_window').querySelector('[role="switch"]').disabled, false);
 });
 
+// --- two-level stacks (T10b) ---
+test('two-level is a choice of the Tab stacks row, and its compact option waits behind More options until it is picked', () => {
+  const style = rowOf('tabs_stack_style');
+  const radios = style.querySelectorAll('[role="radio"]');
+  assert.deepEqual(radios.map((r) => r.textContent), ['Islands', 'Compact', 'Accordion', 'Two-level', 'Off'], 'one more value, not a new row');
+  sent.length = 0;
+  radios[3].click();
+  assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_style=two-level' }]);
+  const compact = rowOf('tabs_stack_compact_row');
+  assert.ok(compact.closest('.sp-more'), 'behind the area’s More options');
+  assert.equal(compact.querySelector('.sp-label').textContent, 'Compact second row');
+  const sw = compact.querySelector('[role="switch"]');
+  assert.equal(sw.disabled, true, 'Islands: there is no second row to make smaller');
+  const values = { ...settingsFixture.snap.d.tabOptions, tabs_stack_style: 'two-level' };
+  deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, tabOptions: values } });
+  assert.equal(sw.disabled, false, 'two-level: the option acts');
+  sw.click();
+  assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_compact_row=true' }]);
+  deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, readable: false, tabOptions: values } });
+  assert.equal(sw.disabled, true, 'an unreadable settings file disables it too');
+  deliver(settingsFixture.snap);
+  assert.equal(sw.disabled, true);
+});
+
 test('search finds the tab options by the words people use', () => {
   const settings = page.querySelector('.sp-search-input');
   const find = (text) => {
@@ -554,6 +578,71 @@ test('tabs with marks show them in the strip and a reload countdown ticks once a
   assert.equal(intervals.size, 1, 'one timer while a tab counts down');
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
   assert.equal(intervals.size, 0, 'the timer stops with the last countdown');
+});
+
+// ---- two-level stacks (T10b): the second row ----
+
+test('two-level stacks: the tab row shows the stack as its open ball and the second row shows its tabs', () => {
+  const lead = { gname: 'Docs', gcol: 2, gcollapsed: true, gsize: 3 };
+  const stacked = (active) => tabsMsg([item(1), item(2, { g: 9, gl: true, ...lead }), item(3, { g: 9 }), item(4, { g: 9 }), item(5)], active);
+  const row = document.body.querySelector('.stack-row');
+  assert.ok(row, 'the strip page has a second row');
+  assert.equal(row.hidden, true, 'hidden until Rust lays one out');
+  assert.equal(row.classList.contains('strip'), true, 'its tabs are the strip’s own islands');
+  // Compact style (no second row): the folded stack shows its ball and the tab in use, as before.
+  deliver(opts({ stackRow: 'off' }));
+  deliver(stacked(3));
+  const ball = stripRoot.querySelector('.ball');
+  assert.equal(ball.getAttribute('aria-expanded'), 'false');
+  assert.equal(tabNode(3).hidden, false);
+  assert.equal(tabNode(3).parent.classList.contains('group'), true, 'the tab in use stays in the tab row');
+  assert.equal(row.children.length, 0);
+  assert.equal(document.body.dataset.stackRow, undefined);
+  // Rust laid a second row out: the stack is its open ball alone, its tabs move to the second row.
+  deliver(opts({ stackRow: 'regular' }));
+  assert.equal(row.hidden, false);
+  assert.equal(row.dataset.size, 'regular');
+  assert.equal(document.body.dataset.stackRow, 'regular', 'the page splits into the two rows');
+  assert.deepEqual(row.children.map((c) => c.dataset.id), ['2', '3', '4'], 'every tab of the stack, in order');
+  assert.ok(row.children.every((c) => !c.hidden));
+  assert.equal(ball.getAttribute('aria-expanded'), 'true', 'the ball shows the stack open');
+  assert.deepEqual(ball.parent.children, [ball], 'the tab row holds the ball alone');
+  assert.equal(ball.parent.style.getPropertyValue('--gn'), '0', 'and gives it no tab share');
+  assert.equal(tabNode(3), null, 'the tab in use is no longer in the tab row');
+  assert.equal(row.children[1].classList.contains('active'), true, 'it is the second row’s selected tab');
+  // A click, a middle click and a menu on a second-row tab go to Rust like the tab row's.
+  sent.length = 0;
+  row.children[0].click();
+  row.children[2].querySelector('.close').click();
+  row.children[1].dispatch('auxclick', { button: 1 });
+  row.children[1].dispatch('contextmenu');
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [
+    { v: 1, t: 'tab', a: 'select', id: 2 },
+    { v: 1, t: 'tab', a: 'close', id: 4 },
+    { v: 1, t: 'tab', a: 'close', id: 3 },
+    { v: 1, t: 'tab', a: 'menu', id: 3 },
+  ]);
+  // The keyboard walks the second row on its own.
+  row.children[1].focus();
+  row.children[1].dispatch('keydown', { key: 'ArrowRight', target: row.children[1] });
+  assert.equal(document.activeElement, row.children[2]);
+  // Compact second row: the same tabs, a smaller row.
+  deliver(opts({ stackRow: 'compact' }));
+  assert.equal(row.dataset.size, 'compact');
+  assert.equal(document.body.dataset.stackRow, 'compact');
+  // The tab in use leaves the stack: no second row, and the stack is a ball like any other.
+  deliver(stacked(5));
+  assert.equal(row.hidden, true, 'a tab in no stack shows no second row');
+  assert.equal(row.children.length, 0);
+  assert.equal(document.body.dataset.stackRow, undefined);
+  assert.equal(ball.getAttribute('aria-expanded'), 'false');
+  assert.equal(tabNode(3).hidden, true, 'the stack is folded in the tab row');
+  // Back to no second row at all.
+  deliver(opts({ stackRow: 'off' }));
+  deliver(stacked(3));
+  assert.equal(row.hidden, true);
+  assert.equal(tabNode(3).parent.classList.contains('group'), true);
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
 });
 
 // ---- the hover card ----

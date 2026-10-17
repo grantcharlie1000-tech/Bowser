@@ -22,10 +22,26 @@ use crate::workspaces::WorkspaceId;
 pub fn collapse_rule(style: StackStyle, active_island: Option<DomainKey>) -> CollapseRule {
     match style {
         StackStyle::Islands | StackStyle::Off => CollapseRule::Stored,
-        StackStyle::Compact => CollapseRule::All,
+        // --- two-level stacks (T10b) --- every stack is its ball in the tab row; the second row
+        // shows the tabs of the one in use.
+        StackStyle::Compact | StackStyle::TwoLevel => CollapseRule::All,
         StackStyle::Accordion => CollapseRule::AllBut(active_island),
     }
 }
+
+// --- two-level stacks (T10b) ---
+/// The second tab row the window lays out: one only for two-level stacks while the tab in use is in
+/// a stack (`active_in_stack`), compact when "Compact second row" is on. Every other style, and a
+/// tab in no stack, reserve nothing. (`Arrangement::with_stack_row` drops it again for sidebars.)
+pub fn stack_row(style: StackStyle, compact: bool, active_in_stack: bool) -> crate::chrome::layout::StackRow {
+    use crate::chrome::layout::StackRow;
+    match (style, active_in_stack) {
+        (StackStyle::TwoLevel, true) if compact => StackRow::Compact,
+        (StackStyle::TwoLevel, true) => StackRow::Regular,
+        _ => StackRow::None,
+    }
+}
+// --- end two-level stacks ---
 
 /// Whether any stack forms at all.
 pub fn stacks_on(style: StackStyle) -> bool {
@@ -48,7 +64,8 @@ pub enum BallClick {
 ///
 /// - From outside the stack, Compact and Accordion bring back the member used last.
 /// - Inside a Compact stack the click steps to the next member, so every member can be reached
-///   from its ball alone; an open Accordion stack has nothing to unfold.
+///   from its ball alone; an open Accordion stack has nothing to unfold, and neither has the
+///   two-level stack in use (its tabs are the second row).
 pub fn ball_click(style: StackStyle, members: &[TabId], active: TabId, recent: &[TabId]) -> BallClick {
     if style == StackStyle::Islands || style == StackStyle::Off {
         return BallClick::Toggle;
@@ -262,6 +279,22 @@ mod tests {
         assert_eq!(ball_click(StackStyle::Compact, &members, TabId(4), &[]), BallClick::Select(TabId(2)), "inside compact: the next member, round");
         assert_eq!(ball_click(StackStyle::Accordion, &members, TabId(3), &[]), BallClick::Nothing, "the open accordion stack");
         assert_eq!(ball_click(StackStyle::Compact, &[], TabId(1), &[]), BallClick::Nothing);
+    }
+
+    // --- two-level stacks (T10b) ---
+    #[test]
+    fn two_level_folds_every_stack_to_its_ball_and_opens_the_one_in_use_in_a_second_row() {
+        use crate::chrome::layout::StackRow;
+        assert_eq!(collapse_rule(StackStyle::TwoLevel, Some(key("a.com"))), CollapseRule::All, "the tab row shows balls only");
+        assert!(stacks_on(StackStyle::TwoLevel));
+        let members = ids(&[2, 3, 4]);
+        assert_eq!(ball_click(StackStyle::TwoLevel,&members, TabId(1), &ids(&[4, 1])), BallClick::Select(TabId(4)), "from outside: the member used last");
+        assert_eq!(ball_click(StackStyle::TwoLevel, &members, TabId(3), &[]), BallClick::Nothing, "inside: its tabs are the second row already");
+        assert_eq!(stack_row(StackStyle::TwoLevel, false, true), StackRow::Regular);
+        assert_eq!(stack_row(StackStyle::TwoLevel, true, true), StackRow::Compact, "Compact second row");
+        assert_eq!(stack_row(StackStyle::TwoLevel, true, false), StackRow::None, "a tab in no stack: no row");
+        assert_eq!(stack_row(StackStyle::Compact, true, true), StackRow::None, "the option belongs to two-level only");
+        assert_eq!(StackStyle::TwoLevel.key(), "two-level");
     }
 
     #[test]

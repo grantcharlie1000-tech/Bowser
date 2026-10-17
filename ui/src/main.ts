@@ -494,10 +494,12 @@ function start(): void {
   // ?view=tabs selects the tab strip and ?view=rail the left rail; anything else, including no query, is the toolbar.
   const view = new URLSearchParams(location.search).get('view');
   if (view === 'tabs') {
-    startTabs(root);
-    // --- hover layer ---
-    installTooltips(root);
-    installHoverTargets(root, tabStripHoverTarget);
+    const stackRow = startTabs(root);
+    // --- hover layer --- (and the second row of two-level stacks, T10b)
+    for (const host of [root, stackRow]) {
+      installTooltips(host);
+      installHoverTargets(host, tabStripHoverTarget);
+    }
     // --- end hover layer ---
   } else if (view === 'rail') {
     startRail(root);

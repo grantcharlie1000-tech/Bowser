@@ -21,6 +21,42 @@ impl App {
         self.group_preferences.with_collapse_rule(stacks::collapse_rule(style, open))
     }
 
+    // --- two-level stacks (T10b) ---
+    /// The second tab row two-level stacks want now (`stacks::stack_row`): only with that style and
+    /// the tab in use in a stack. Any other style returns at once, without projecting the islands.
+    pub(crate) fn stack_row(&self) -> crate::chrome::layout::StackRow {
+        let options = &self.settings.tabs;
+        if options.stack_style != StackStyle::TwoLevel {
+            return crate::chrome::layout::StackRow::None;
+        }
+        let in_stack = self.domain_island_of(self.tab_model.active()).is_some();
+        stacks::stack_row(options.stack_style, options.stack_compact_row, in_stack)
+    }
+
+    /// The tabs the second row shows: the members of the stack the tab in use is in, in strip
+    /// order, while two-level stacks lay that row out. Empty otherwise.
+    pub fn stack_row_tabs(app: &AppRef) -> Vec<TabId> {
+        let active = {
+            let state = app.borrow();
+            if state.stack_row() == crate::chrome::layout::StackRow::None {
+                return Vec::new();
+            }
+            state.tab_model.active()
+        };
+        Self::stack_members_of_active(app, active)
+    }
+
+    fn stack_members_of_active(app: &AppRef, active: TabId) -> Vec<TabId> {
+        let state = app.borrow();
+        let Some(key) = state.domain_island_of(active) else {
+            return Vec::new();
+        };
+        let inputs = state.group_inputs();
+        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+        tab_groups::group_members(&keys, &TabGroupKey::Domain(key)).into_iter().map(|index| inputs[index].id).collect()
+    }
+    // --- end two-level stacks ---
+
     /// The members of the stack `id` is in, in strip order; empty when it is in none.
     pub fn stack_members(app: &AppRef, id: TabId) -> Vec<TabId> {
         Self::island_menu(app, id).map(|(_, ids)| ids).unwrap_or_default()

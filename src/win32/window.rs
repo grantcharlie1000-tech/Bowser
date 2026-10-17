@@ -436,6 +436,9 @@ struct WindowChrome {
     palette: &'static Palette,
     tabs: Vec<TabSnapshot>,
     slots: Vec<StripSlot>,
+    /// --- two-level stacks (T10b) --- the second row's tabs (the stack in use), left to right;
+    /// empty while no second row is laid out.
+    stack_tabs: Vec<TabId>,
     sidebar: Option<crate::vertical_tabs::SidebarLayout>,
     sidebar_rows: Vec<crate::chrome::vertical_paint::SidebarRow>,
     sidebar_scroll: i32,
@@ -655,6 +658,7 @@ impl WindowChrome {
             palette: glass::palette(),
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
+            stack_tabs: Vec::new(), // --- two-level stacks (T10b) ---
             sidebar: None,
             sidebar_rows: Vec::new(),
             sidebar_scroll: 0,
@@ -919,6 +923,21 @@ impl WindowChrome {
             }
             _ => self.slots.clone(),
         };
+        // --- two-level stacks (T10b) --- with a second row, the stack in use is only its ball in the
+        // tab row and its tabs are the second row.
+        let mut slots = slots;
+        if reproject {
+            let row = App::arrangement(app).stack_row != layout::StackRow::None;
+            self.stack_tabs = if row { App::stack_row_tabs(app) } else { Vec::new() };
+            if !self.stack_tabs.is_empty() {
+                for slot in slots.iter_mut().filter(|slot| slot.collapsed) {
+                    if ids.get(slot.tab_index).is_some_and(|id| self.stack_tabs.contains(id)) {
+                        slot.marker_only = true;
+                    }
+                }
+            }
+        }
+        // --- end two-level stacks ---
         if reproject {
             self.sidebar_rows = crate::chrome::vertical_paint::rows(
                 &sidebar_tabs,
@@ -2197,6 +2216,8 @@ unsafe extern "system" fn window_proc(
                         | Hit::Omnibox
                         | Hit::SiteInfo
                         | Hit::Split
+                        | Hit::StackTab(_) // --- two-level stacks (T10b) ---
+                        | Hit::StackTabClose(_)
                 );
                 // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
                 let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
@@ -3280,6 +3301,19 @@ unsafe extern "system" fn window_proc(
                         set_pressed(hwnd, Hit::SidebarTabClose(index));
                         let _ = SetCapture(hwnd);
                     }
+                    // --- two-level stacks (T10b) --- a second-row tab selects; its close button
+                    // closes on release, as the tab row's does.
+                    Hit::StackTab(index) => {
+                        if let Some(app) = app
+                            && let Some(id) = stack_tab_id(hwnd, index)
+                        {
+                            let _ = App::select_tab(app, id);
+                        }
+                    }
+                    Hit::StackTabClose(index) => {
+                        set_pressed(hwnd, Hit::StackTabClose(index));
+                        let _ = SetCapture(hwnd);
+                    }
                     Hit::TabClose(i) => {
                         set_pressed(hwnd, Hit::TabClose(i));
                         let _ = with_chrome(hwnd, |s| s.drag = None);
@@ -3494,6 +3528,12 @@ unsafe extern "system" fn window_proc(
                                 }
                             }
                         }
+                        // --- two-level stacks (T10b) ---
+                        if let (Hit::StackTabClose(i), Some(app)) = (was, app)
+                            && let Some(id) = stack_tab_id(hwnd, i)
+                        {
+                            user_close(hwnd, app, id);
+                        }
                         if let (Hit::Back | Hit::Forward | Hit::Reload, Some(app)) = (was, app) {
                             // App::history checks the engine itself, so a click on a dimmed
                             // button is harmless.
@@ -3551,6 +3591,7 @@ unsafe extern "system" fn window_proc(
                 let target = match hit(hwnd, p.x, p.y) {
                     Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
                     Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+                    Hit::StackTab(i) | Hit::StackTabClose(i) => stack_tab_id(hwnd, i), // --- two-level stacks (T10b) ---
                     _ => None,
                 };
                 if let Some(id) = target {
@@ -3628,8 +3669,9 @@ unsafe extern "system" fn window_proc(
                                 island_menu::open_now(hwnd, app, id, anchor);
                             }
                         }
-                        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
-                            if let Some(id) = sidebar_tab_id(hwnd, i) {
+                        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) | Hit::StackTab(i) | Hit::StackTabClose(i) => {
+                            let id = if matches!(target, Hit::StackTab(_) | Hit::StackTabClose(_)) { stack_tab_id(hwnd, i) } else { sidebar_tab_id(hwnd, i) };
+                            if let Some(id) = id {
                                 card::cancel(hwnd);
                                 let app = app.clone();
                                 let menu_app = app.clone();
@@ -4249,6 +4291,14 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 crate::vertical_tabs::SidebarHit::TabClose(index) => Hit::SidebarTabClose(index),
             };
         }
+        // --- two-level stacks (T10b) --- the second row: its tabs and their close buttons; the
+        // rest of the row is nothing (not a drag band).
+        if s.layout.stack_row.contains(x, y) {
+            let islands = s.layout.stack_tabs(s.stack_tabs.len());
+            return islands.iter().position(|island| island.contains(x, y)).map_or(Hit::None, |index| {
+                if s.layout.tab_parts(islands[index]).close.contains(x, y) { Hit::StackTabClose(index) } else { Hit::StackTab(index) }
+            });
+        }
         let now = Instant::now();
         let balls = s
             .slots
@@ -4302,6 +4352,7 @@ fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => slot_tab_id(hwnd, i),
         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+        Hit::StackTab(i) | Hit::StackTabClose(i) => stack_tab_id(hwnd, i), // --- two-level stacks (T10b) ---
         _ => None,
     }
 }
@@ -4486,6 +4537,10 @@ fn slot_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
             .map(|tab| tab.id)
     })
     .flatten()
+}
+/// --- two-level stacks (T10b) --- the tab at `index` of the second row.
+fn stack_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
+    with_chrome(hwnd, |s| s.stack_tabs.get(index).copied()).flatten()
 }
 fn slot_model_index(hwnd: HWND, index: usize) -> Option<usize> {
     with_chrome(hwnd, |s| s.slots.get(index).map(|slot| slot.tab_index)).flatten()
@@ -8401,6 +8456,7 @@ fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
         Hit::Rail(_) | Hit::RailBackground => l.rail,
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => l.tab(i).unwrap_or_default(),
+        Hit::StackTab(_) | Hit::StackTabClose(_) => l.stack_row, // --- two-level stacks (T10b) ---
         Hit::NewTab => l.new_tab_button,
         Hit::TabMenu => l.tab_menu_button,
         Hit::MainMenu => l.main_menu_button,
@@ -10185,6 +10241,12 @@ fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripO
         // --- tab stacks (T10) --- stacking by drag needs stacks to be on.
         stack_drag: options.stack_drag && crate::stacks::stacks_on(options.stack_style),
         stack_delay: options.stack_drop_delay.0,
+        // --- two-level stacks (T10b) --- the second row the window laid out, so the strip page
+        // and its host bounds always agree.
+        stack_row: with_chrome(hwnd, |s| {
+            if s.layout.stack_row.is_empty() { "off" } else { s.last_relayout.as_ref().map_or("off", |inputs| inputs.arrangement.stack_row.key()) }
+        })
+        .unwrap_or("off"),
     }
 }
 
@@ -11145,6 +11207,28 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
                 }
+                // --- two-level stacks (T10b) --- the second row's tabs follow the tab row's views.
+                let main_views = s.views.len();
+                for id in &s.stack_tabs {
+                    let Some(t) = s.tabs.iter().find(|tab| tab.id == *id) else {
+                        continue;
+                    };
+                    let v = TabView {
+                        title: &t.title,
+                        loading: t.loading,
+                        favicon: t.favicon.as_deref(),
+                        emphasis: Emphasis::resting(false, false, now),
+                        group_size: None,
+                        group_control: false,
+                        marker: t.marker,
+                        group_colour: None,
+                        group_frame: None,
+                    };
+                    s.views
+                        .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
+                }
+                let stack_active = s.stack_tabs.iter().position(|id| *id == active);
+                // --- end two-level stacks ---
                 let active_i = s
                     .slots
                     .iter()
@@ -11183,8 +11267,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let view = ChromeView {
                     layout: l,
                     palette: p,
-                    tabs: views,
+                    tabs: &views[..main_views],
                     active: active_i,
+                    stack_tabs: &views[main_views..], // --- two-level stacks (T10b) ---
+                    stack_active,
                     hover: s.hover,
                     pressed: s.pressed,
                     caption_maximised: maximised,
@@ -11578,6 +11664,8 @@ fn opens_bowser_menu(hit: Hit) -> bool {
             | Hit::SidebarGroup(_)
             | Hit::SidebarTab(_)
             | Hit::SidebarTabClose(_)
+            | Hit::StackTab(_) // --- two-level stacks (T10b) ---
+            | Hit::StackTabClose(_)
     )
 }
 

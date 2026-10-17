@@ -47,7 +47,7 @@ test('every option the page lists is one Rust stores, and the other way round', 
 test('the choices the page offers are exactly the words Rust parses', () => {
   const rust = read(join(root, 'src', 'tab_options.rs'));
   const choices = new Map();
-  for (const m of rust.matchAll(/choice! \{[^{]*?(\w+) \{ ([^}]*) \}\s*\}/gs)) choices.set(m[1], [...m[2].matchAll(/= "([a-z]+)"/g)].map((x) => x[1]));
+  for (const m of rust.matchAll(/choice! \{[^{]*?(\w+) \{ ([^}]*) \}\s*\}/gs)) choices.set(m[1], [...m[2].matchAll(/= "([a-z-]+)"/g)].map((x) => x[1]));
   const byKey = {
     tabs_new_tab_page: 'NewTabPage', tabs_duplicate_position: 'DuplicatePosition', tabs_close_activation: 'CloseActivation', tabs_double_click: 'DoubleClick',
     tabs_load_indicator: 'LoadIndicator', tabs_mute_mode: 'MuteMode', tabs_pinned_close: 'PinnedClose',
@@ -87,8 +87,9 @@ test('the option snapshot is refused unless it is whole and every value is legal
     tabs_new_tab_page: 'speeddial', tabs_double_click: 'minimise', tabs_close_activation: 'Right', tabs_mute_mode: true, tabs_load_indicator: 'ring',
     tabs_confirm_close: 100, tabs_active_min_width: 401, tabs_inactive_days: 366, tabs_keep_window: 'yes', tabs_pinned_close: 'stack',
     tabs_new_tab_url: 'javascript:alert(1)', tabs_scroll: 1, tabs_new_tab_position: 'stacked',
-    // --- tab stacks (T10) --- two-level is not a style Bowser draws; the delay has Rust's range.
-    tabs_stack_style: 'two-level', tabs_stack_drop_delay: 2001, tabs_workspaces: 'on',
+    // --- tab stacks (T10) --- only the styles Rust parses; the delay has Rust's range.
+    tabs_stack_style: 'two_level', tabs_stack_drop_delay: 2001, tabs_workspaces: 'on',
+    tabs_stack_compact_row: 'yes', // --- two-level stacks (T10b) ---
   };
   for (const [key, value] of Object.entries(bad)) assert.equal(options.parseTabOptions({ ...good, [key]: value }), null, `${key}=${value}`);
   assert.ok(options.parseTabOptions({ ...good, tabs_new_tab_url: 'https://example.com/a?b=c' }));
@@ -252,7 +253,10 @@ test('the strip options message is whole or refused', () => {
   assert.deepEqual(opts, {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
     selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4, stackDrag: false, stackDelay: 250,
+    stackRow: 'regular', // --- two-level stacks (T10b) ---
   });
+  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackRow, 'off', 'no second row unless Rust laid one out');
+  assert.equal(parseInbound(JSON.stringify({ ...stripFixture.opts, stackRow: 'compact' })).stackRow, 'compact');
   // --- tab stacks (T10) --- stacking by drag is on by default, after Rust's 400 ms.
   assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDrag, true);
   assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDelay, 400);
@@ -267,7 +271,7 @@ test('the strip options message is whole or refused', () => {
     delete missing[key];
     assert.equal(parseInbound(JSON.stringify(missing)), null, `missing ${key}`);
   }
-  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }, { stackDelay: 2001 }, { stackDrag: 1 }]) {
+  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }, { stackDelay: 2001 }, { stackDrag: 1 }, { stackRow: 'tall' }, { stackRow: true }]) {
     assert.equal(parseInbound(JSON.stringify({ ...raw, ...bad })), null, JSON.stringify(bad));
   }
 });

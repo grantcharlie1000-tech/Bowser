@@ -1684,6 +1684,9 @@ pub struct StripOptions {
     /// --- tab stacks (T10) --- a held tab resting over another for `stack_delay` ms stacks on drop.
     pub stack_drag: bool,
     pub stack_delay: u32,
+    /// --- two-level stacks (T10b) --- the second tab row the host laid out: `off`, `regular` or
+    /// `compact` (`chrome::layout::StackRow::key`). The strip draws the stack in use there.
+    pub stack_row: &'static str,
 }
 
 impl Default for StripOptions {
@@ -1704,6 +1707,7 @@ impl Default for StripOptions {
             closed: 0,
             stack_drag: true,
             stack_delay: 400,
+            stack_row: "off",
         }
     }
 }
@@ -1728,6 +1732,8 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         out.uint("closed", u64::from(options.closed.min(99)));
         out.bool("stackDrag", options.stack_drag); // --- tab stacks (T10) ---
         out.uint("stackDelay", u64::from(options.stack_delay.min(2000)));
+        // --- two-level stacks (T10b) --- only the three words the strip knows.
+        out.string("stackRow", if matches!(options.stack_row, "regular" | "compact") { options.stack_row } else { "off" });
     })
 }
 // --- end tab options ---
@@ -4938,10 +4944,13 @@ mod tests {
         let json = tabopts_json(&StripOptions::default());
         assert_eq!(
             json,
-            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"stackDrag":true,"stackDelay":400}"#
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"stackDrag":true,"stackDelay":400,"stackRow":"off"}"#
         );
         // --- tab stacks (T10) --- the delay is capped like the setting.
-        assert!(tabopts_json(&StripOptions { stack_drag: false, stack_delay: 9_000, ..StripOptions::default() }).ends_with(r#""stackDrag":false,"stackDelay":2000}"#));
+        assert!(tabopts_json(&StripOptions { stack_drag: false, stack_delay: 9_000, ..StripOptions::default() }).ends_with(r#""stackDrag":false,"stackDelay":2000,"stackRow":"off"}"#));
+        // --- two-level stacks (T10b) --- the second row's word, and nothing the strip does not know.
+        assert!(tabopts_json(&StripOptions { stack_row: "compact", ..StripOptions::default() }).ends_with(r#""stackRow":"compact"}"#));
+        assert!(tabopts_json(&StripOptions { stack_row: "huge", ..StripOptions::default() }).ends_with(r#""stackRow":"off"}"#));
         let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
         let json = tabopts_json(&set);
         assert!(json.contains(r#""closeLeft":true"#) && json.contains(r#""minWidth":400"#) && json.contains(r#""indicator":"bar""#) && json.contains(r#""closed":99"#), "{json}");
@@ -4955,7 +4964,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, stack_drag: false, stack_delay: 250 };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, stack_drag: false, stack_delay: 250, stack_row: "regular" };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {

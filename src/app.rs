@@ -1112,7 +1112,13 @@ impl App {
     // --- layout (thread T6) ---
     /// How the chrome is arranged, from the layout settings (the window folds in its Ctrl+L reveal).
     pub fn arrangement(app: &AppRef) -> crate::chrome::layout::Arrangement {
-        crate::chrome::layout::Arrangement::from_settings(&app.borrow().settings)
+        app.borrow().arranged() // --- two-level stacks (T10b) ---
+    }
+
+    /// --- two-level stacks (T10b) --- the layout settings plus the second tab row two-level
+    /// stacks want now: the one arrangement the window and the page bounds both lay out.
+    fn arranged(&self) -> crate::chrome::layout::Arrangement {
+        crate::chrome::layout::Arrangement::from_settings(&self.settings).with_stack_row(self.stack_row())
     }
     // --- end layout ---
 
@@ -7413,7 +7419,8 @@ impl App {
             unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(self.hwnd) }.as_bool();
         // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
         // Ctrl+L has it revealed, and the docked panel on the edge it is actually on.
-        let arrangement = crate::chrome::layout::Arrangement::from_settings(&self.settings)
+        let arrangement = self
+            .arranged() // --- two-level stacks (T10b) ---
             .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
         let side_panel = (
             crate::win32::side_panel::active_width_px(self.hwnd),

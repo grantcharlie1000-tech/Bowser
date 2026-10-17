@@ -25,7 +25,7 @@ import {
 } from './layout-logic';
 // --- end layout ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
-import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
+import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, toggleApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
   NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
@@ -759,7 +759,13 @@ export function startSettingsPage(root: HTMLElement): void {
     switch (spec.kind) {
       case 'toggle': {
         const sw = switchControl((on) => sendTabOption(spec.key, on));
-        tabControls.set(spec.key, { set: (values) => sw.set(values[spec.key] === true), disable: (off) => sw.disable(off) });
+        // --- two-level stacks (T10b) --- a switch that only matters for one choice is off-limits otherwise.
+        let unreadable = false;
+        let applies = true;
+        tabControls.set(spec.key, {
+          set: (values) => { sw.set(values[spec.key] === true); applies = toggleApplies(spec, values); sw.disable(unreadable || !applies); },
+          disable: (off) => { unreadable = off; sw.disable(unreadable || !applies); },
+        });
         return sw.root;
       }
       case 'choice': {

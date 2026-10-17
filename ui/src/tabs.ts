@@ -33,6 +33,8 @@ import {
   rememberFav,
   stepMoveBefore,
   scrollDeltaForWheel,
+  ballOnly,
+  stackRowGroup,
   type Entry,
   type GroupEntry,
 } from './tabs-logic';
@@ -107,6 +109,7 @@ const DEFAULT_OPTS: TabOptsMsg = {
   t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
   alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
   stackDrag: true, stackDelay: 400, // --- tab stacks (T10) ---
+  stackRow: 'off', // --- two-level stacks (T10b) ---
 };
 const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
 
@@ -353,8 +356,12 @@ function setShift(n: TabNode, px: number): void {
   n.root.style.transform = px === 0 ? '' : `translateX(${px}px)`;
 }
 
-/** Builds the tab strip into `strip` (the #app element) and wires it to the host. */
-export function startTabs(strip: HTMLElement): void {
+/**
+ * Builds the tab strip into `strip` (the #app element) and wires it to the host. Returns the second
+ * row of two-level stacks (a sibling after `strip`, hidden until Rust lays one out), so the page can
+ * give it the same tooltips and hover cards as the strip.
+ */
+export function startTabs(strip: HTMLElement): HTMLElement {
   // --- vertical sidebar (lane S) ---
   const sidebar = createSidebarRenderer(strip);
   let layoutMode: 'horizontal' | 'vertical' = 'horizontal';
@@ -367,6 +374,25 @@ export function startTabs(strip: HTMLElement): void {
   strip.setAttribute('aria-label', 'Tabs');
   strip.setAttribute(DRAG_ATTR, '');
   strip.replaceChildren();
+  // --- two-level stacks (T10b) --- the second row: the tabs of the stack in use, under the tab row.
+  const row2 = el('div', 'strip stack-row');
+  row2.setAttribute('role', 'tablist');
+  row2.setAttribute('aria-label', 'Tabs in this stack');
+  row2.hidden = true;
+  (strip.parentElement ?? document.body).insertBefore(row2, strip.nextSibling);
+  const showRow2 = (size: TabOptsMsg['stackRow'] | null): void => {
+    const on = size !== null && size !== 'off';
+    row2.hidden = !on;
+    if (on) {
+      if (row2.dataset.size !== size) row2.dataset.size = size;
+      if (document.body.dataset.stackRow !== size) document.body.dataset.stackRow = size;
+    } else {
+      delete row2.dataset.size;
+      delete document.body.dataset.stackRow;
+      if (row2.firstChild) row2.replaceChildren();
+    }
+  };
+  // --- end two-level stacks ---
 
   const tabNodes = new Map<number, TabNode>();
   const groups = new Map<number, GroupNode>();
@@ -487,18 +513,22 @@ export function startTabs(strip: HTMLElement): void {
     return n;
   };
 
-  const visibleTabs = (): TabNode[] => {
+  /** The shown tabs of one row, left to right: the strip's, or (two-level stacks) the second row's. */
+  const tabsIn = (scope: HTMLElement): TabNode[] => {
     const list: TabNode[] = [];
-    for (const node of Array.from(strip.querySelectorAll<HTMLElement>('.tab:not([hidden])'))) {
+    for (const node of Array.from(scope.querySelectorAll<HTMLElement>('.tab:not([hidden])'))) {
       const n = tabNodes.get(Number(node.dataset.id));
       if (n) list.push(n);
     }
     return list;
   };
+  const visibleTabs = (): TabNode[] => tabsIn(strip);
+  /** --- two-level stacks (T10b) --- the row a tab element is in. */
+  const rowOf = (tab: Element): HTMLElement => (tab.parentElement === row2 ? row2 : strip);
 
   // Roving tabindex: one tab in the tab order, the active one unless the keyboard moved focus.
   const applyRoving = (focus?: TabNode): void => {
-    const list = visibleTabs();
+    const list = row2.hidden ? visibleTabs() : [...visibleTabs(), ...tabsIn(row2)]; // --- two-level stacks (T10b) ---
     const target = focus ?? list.find((n) => n.id === activeId) ?? list[0];
     for (const n of tabNodes.values()) {
       const t = n === target ? 0 : -1;
@@ -510,6 +540,7 @@ export function startTabs(strip: HTMLElement): void {
     // --- vertical sidebar (lane S) ---
     if (layoutMode === 'vertical') {
       activeId = msg.active;
+      showRow2(null); // --- two-level stacks (T10b) --- the sidebar shows stacks its own way.
       sidebar.render(msg, favs, workspace);
       return;
     }
@@ -534,12 +565,16 @@ export function startTabs(strip: HTMLElement): void {
     // A stale render (the layout the drop left) updates content only: no transform is touched.
     const changed = nextSignature !== signature && phase !== 'stale';
     const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && changed;
+    // --- two-level stacks (T10b) --- the stack whose tabs are the second row, and the tabs that were
+    // there: a tab changing rows does not slide along the row it left.
+    const second = stackRowGroup(entries, msg.active, ui.stackRow);
+    const wasRow2 = new Set<TabNode>(tabsIn(row2));
     const before = new Map<TabNode, number>();
     const ghosts: HTMLElement[] = [];
     const landed = phase === 'reorder' ? landing : null;
     if (animate) {
       for (const n of tabNodes.values()) {
-        if (n.root.isConnected && !n.root.hidden) before.set(n, n.root.getBoundingClientRect().left);
+        if (n.root.isConnected && !n.root.hidden && !wasRow2.has(n)) before.set(n, n.root.getBoundingClientRect().left);
       }
       strip.classList.add('settle');
       // The dropped tab still carries its drag offset: its "first" is home + offset, not a scaled rect.
@@ -602,6 +637,24 @@ export function startTabs(strip: HTMLElement): void {
         g = createGroup(e.key);
         groups.set(e.key, g);
       }
+      // --- two-level stacks (T10b) --- the stack in use is its ball in the tab row (shown open) and
+      // its tabs are the second row.
+      if (e === second) {
+        syncGroup(g, ballOnly(e), activeId, splitWeight);
+        g.ball.setAttribute('aria-expanded', 'true');
+        g.shell.classList.remove('collapsed');
+        const members: HTMLElement[] = [];
+        for (const slot of e.members) {
+          const n = syncTab(slot.item);
+          n.root.hidden = false;
+          members.push(n.root);
+        }
+        place(g.shell, [g.ball]);
+        place(row2, members);
+        top.push(g.shell);
+        continue;
+      }
+      // --- end two-level stacks ---
       syncGroup(g, e, activeId, splitWeight); // --- split view ---
       const nodes: HTMLElement[] = [g.ball];
       for (const slot of e.members) {
@@ -612,6 +665,7 @@ export function startTabs(strip: HTMLElement): void {
       place(g.shell, nodes);
       top.push(g.shell);
     }
+    showRow2(second === null ? null : ui.stackRow); // --- two-level stacks (T10b) ---
     // --- tab options --- a thin line where the pinned tabs end, and the Closed tabs button at the end.
     if (ui.separator && lastPinned >= 0 && lastPinned < top.length - 1) top.splice(lastPinned + 1, 0, pinSep);
     if (ui.closed > 0) top.push(closedBtn);
@@ -630,7 +684,7 @@ export function startTabs(strip: HTMLElement): void {
       // FLIP "last, invert, play": jump each moved tab back to where it was, then release.
       let moved = false;
       for (const [n, left] of before) {
-        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost')) continue;
+        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost') || n.root.parentElement === row2) continue;
         const dx = flipInvert(left, n.root.getBoundingClientRect().left);
         const lifted = n === landed?.node;
         if (Math.abs(dx) < 0.5 && !lifted) continue;
@@ -1026,6 +1080,8 @@ export function startTabs(strip: HTMLElement): void {
   // ----- events -----
 
   strip.addEventListener('pointerdown', onPointerDown);
+  // --- two-level stacks (T10b) --- a press in the second row is a fresh click (no drag starts there).
+  row2.addEventListener('pointerdown', () => { ignoreClick = false; });
   strip.addEventListener('pointermove', onPointerMove);
   strip.addEventListener('pointerup', (ev) => onPointerEnd(ev, true));
   strip.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
@@ -1052,7 +1108,10 @@ export function startTabs(strip: HTMLElement): void {
     if (delta !== 0) { ev.preventDefault(); strip.scrollLeft += delta; }
   }, { passive: false });
 
-  strip.addEventListener('click', (ev) => {
+  // --- two-level stacks (T10b) --- the second row's tabs answer clicks, the keyboard and menus as
+  // the strip's do (it has no drag reorder and no window drag of its own).
+  for (const host of [strip, row2]) {
+  host.addEventListener('click', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     const ball = t.closest<HTMLElement>('.ball');
@@ -1072,7 +1131,7 @@ export function startTabs(strip: HTMLElement): void {
     if (a === 'select') {
       // Ctrl and Shift click select tabs without leaving the one being read; a plain click clears the selection.
       const outcome = ui.selection
-        ? clickSelection(picked, visibleTabs().map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey }, ui.selectionActive)
+        ? clickSelection(picked, tabsIn(rowOf(tab)).map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey }, ui.selectionActive)
         : { selected: [] as number[], anchor: id, activate: true };
       anchor = outcome.anchor;
       setPicked(outcome.selected);
@@ -1084,7 +1143,7 @@ export function startTabs(strip: HTMLElement): void {
     send({ v: 1, t: 'tab', a, id });
   });
 
-  strip.addEventListener('auxclick', (ev) => {
+  host.addEventListener('auxclick', (ev) => {
     if (ev.button !== 1 || !(ev.target instanceof Element)) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) return;
@@ -1093,11 +1152,11 @@ export function startTabs(strip: HTMLElement): void {
   });
 
   // Middle button on a tab closes it; stop the browser's autoscroll cursor from starting.
-  strip.addEventListener('mousedown', (ev) => {
+  host.addEventListener('mousedown', (ev) => {
     if (ev.button === 1 && ev.target instanceof Element && ev.target.closest('.tab')) ev.preventDefault();
   });
 
-  strip.addEventListener('contextmenu', (ev) => {
+  host.addEventListener('contextmenu', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     const ball = t.closest<HTMLElement>('.ball');
@@ -1118,7 +1177,7 @@ export function startTabs(strip: HTMLElement): void {
     }
   });
 
-  strip.addEventListener('dblclick', (ev) => {
+  host.addEventListener('dblclick', (ev) => {
     if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) {
       send({ v: 1, t: 'caption', a: 'toggleMaximize' });
       return;
@@ -1130,11 +1189,13 @@ export function startTabs(strip: HTMLElement): void {
     }
     // --- end tab options ---
   });
+  } // --- end two-level stacks: both rows ---
   // --- tab options --- the pointer leaving the strip ends a width lock.
   strip.addEventListener('pointerleave', unlockWidths);
   // --- end tab options ---
 
-  strip.addEventListener('keydown', (ev) => {
+  for (const host of [strip, row2]) { // --- two-level stacks (T10b) --- each row walks its own tabs.
+  host.addEventListener('keydown', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     // --- tab options --- Escape drops the selection.
@@ -1145,7 +1206,7 @@ export function startTabs(strip: HTMLElement): void {
     // Enter/Space on the close or mute button activates that button (click), not the tab.
     if ((ev.key === 'Enter' || ev.key === ' ') && t.closest('.close, .audio')) return;
     const id = Number(tab.dataset.id);
-    const list = visibleTabs();
+    const list = tabsIn(rowOf(tab));
     const at = list.findIndex((n) => n.id === id);
     if (at < 0) return;
     let next: number;
@@ -1191,6 +1252,7 @@ export function startTabs(strip: HTMLElement): void {
     target.root.focus();
     target.root.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
+  } // --- end two-level stacks ---
 
   onInbound((msg) => {
     switch (msg.t) {
@@ -1254,4 +1316,5 @@ export function startTabs(strip: HTMLElement): void {
 
   // Registered before ready so no tabs message can be missed.
   send({ v: 1, t: 'ready' });
+  return row2; // --- two-level stacks (T10b) ---
 }

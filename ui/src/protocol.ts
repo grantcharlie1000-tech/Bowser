@@ -492,7 +492,11 @@ export interface TabOptsMsg {
   /** --- tab stacks (T10) --- a held tab resting over another for `stackDelay` ms stacks on drop. */
   readonly stackDrag: boolean;
   readonly stackDelay: number;
+  /** --- two-level stacks (T10b) --- the second tab row Rust laid out (`chrome::layout::StackRow`). */
+  readonly stackRow: StackRowSize;
 }
+export const STACK_ROWS = ['off', 'regular', 'compact'] as const;
+export type StackRowSize = typeof STACK_ROWS[number];
 export const MAX_SELECTION = 512;
 /** The strip's selection, as the comma list Rust parses. False when the ids are not tab ids. */
 export function sendTabSelection(ids: readonly number[]): boolean {
@@ -1240,12 +1244,13 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- tab options ---
     case 'tabopts': {
-      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay'];
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay', 'stackRow'];
       if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
-      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay } = raw;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow } = raw;
       if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag].every(isBool)) return null;
       if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99) || !isInt(stackDelay, 0, 2000)) return null;
-      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay } as TabOptsMsg;
+      if (!isOneOf(stackRow, STACK_ROWS)) return null; // --- two-level stacks (T10b) ---
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow } as TabOptsMsg;
     }
     // --- end tab options ---
     case 'fav': {

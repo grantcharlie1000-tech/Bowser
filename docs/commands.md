@@ -129,6 +129,14 @@ organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "
 same and the per-stack actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
 links, move to a workspace or a new window, unstack).
 
+The stack style (Settings > Tab stacks, tiling and workspaces > Tab stacks) also has **Two-level** (T10b): the
+tab row shows every stack as its ball, and while the tab in use is in a stack its tabs fill a second row under
+the tab row (`chrome::layout::StackRow`, laid out through `Arrangement`, so the page, the HTML strip host and the
+native strip agree). "Compact second row" (behind More options; only with Two-level) makes that row 22 instead of
+28 DIP. With the tab bar at the bottom the second row is still under the tab row; with the tab bar on a side the
+sidebar shows stacks as before and no row is reserved. A ball click from outside the stack brings back the
+member used last, as Compact and Accordion do. No command is added.
+
 ## Command chains
 
 Settings > Quick commands > Command chains: create, clone, edit, delete, Test chain. A chain is an ordered

@@ -138,6 +138,12 @@
     --bw-r-tab: 9px; /* tab / rail / sidebar island radius, tuned to the 26px pill */
     --bw-nav-h: 28px; /* back/forward group and toolbar icon buttons */
     --bw-tab-h: var(--bw-pill-h);
+    /* --- two-level stacks (T10b) --- the tab row and the second row of two-level stacks
+       (Metrics::TAB_ROW_HEIGHT, STACK_ROW_HEIGHT and STACK_ROW_COMPACT_HEIGHT), so the strip
+       page's two rows sit where the native layout puts them. */
+    --bw-tab-row-h: 28px;
+    --bw-stack-row-h: var(--bw-tab-row-h);
+    --bw-stack-row-compact-h: 22px;
 
     /* --- layout (thread T6) --- list row heights. `ui_density` (html[data-density]) lowers the
        sidebar, panel and page rows; `compact_menus` (html[data-compact-menus]) the menu rows. The
