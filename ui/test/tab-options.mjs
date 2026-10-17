@@ -187,6 +187,18 @@ test('Ctrl and Shift click select tabs and a plain click clears the selection', 
   assert.deepEqual(marks.pruneSelection([1, 2, 9], new Set([2, 3])), [2]);
 });
 
+// --- wave-1 fixes ---
+test('with Include the active tab off, the active tab never joins a Ctrl or Shift selection', () => {
+  const order = [1, 2, 3, 4, 5];
+  const click = marks.clickSelection;
+  assert.deepEqual(click([], order, 0, 1, 3, { ctrl: true, shift: false }, false), { selected: [3], anchor: 3, activate: false }, 'Ctrl+click selects only the clicked tab');
+  assert.deepEqual(click([3], order, 3, 1, 5, { ctrl: true, shift: false }, false).selected, [3, 5]);
+  assert.deepEqual(click([3], order, 3, 1, 1, { ctrl: true, shift: false }, false).selected, [3], 'Ctrl+click on the active tab does not add it');
+  assert.deepEqual(click([], order, 0, 2, 4, { ctrl: false, shift: true }, false).selected, [3, 4], 'a range from the active tab leaves it out');
+  assert.deepEqual(click([], order, 5, 3, 1, { ctrl: false, shift: true }, false).selected, [1, 2, 4, 5], 'a range across the active tab skips it');
+  assert.deepEqual(click([], order, 0, 2, 4, { ctrl: false, shift: true }, true).selected, [2, 3, 4], 'on: unchanged');
+});
+
 test('the wheel steps through tabs a notch at a time and stops at the ends', () => {
   assert.deepEqual(marks.wheelSteps(0, 100), { steps: 1, rest: 40 });
   assert.deepEqual(marks.wheelSteps(0, 20), { steps: 0, rest: 20 });
@@ -236,11 +248,12 @@ test('the strip options message is whole or refused', () => {
   const opts = parseInbound(JSON.stringify(stripFixture.opts));
   assert.deepEqual(opts, {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
-    selection: true, removeSpacing: true, maximised: true, closed: 4,
+    selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4,
   });
   const defaults = parseInbound(JSON.stringify(stripFixture.defaults));
   assert.equal(defaults.indicator, 'spinner');
   assert.equal(defaults.selection, true);
+  assert.equal(defaults.selectionActive, true, 'the active tab is included by default');
   assert.equal(defaults.closed, 0);
   const raw = stripFixture.opts;
   for (const key of Object.keys(raw).filter((k) => k !== 'v' && k !== 't')) {

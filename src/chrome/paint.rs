@@ -241,6 +241,12 @@ pub enum SplitGrip {
 }
 // --- end split view ---
 
+/// --- wave-1 fixes --- the page and new-tab surface's corner radius: `rounded` (from
+/// `rounded_content_frame`) keeps the theme's `radius`, off draws square corners.
+fn content_corner_radius(rounded: bool, radius: i32) -> i32 {
+    if rounded { radius } else { 0 }
+}
+
 impl ChromeSurface {
     /// Creates a surface for a client size. `height` is the client height; only chrome rows are kept.
     pub fn new(width: i32, height: i32, dpi: u32) -> Self {
@@ -637,7 +643,7 @@ impl ChromeSurface {
         }
         let m = view.layout.metrics;
         let palette = view.palette;
-        let radius = if view.content_rounded { m.px(9) } else { 0 };
+        let radius = content_corner_radius(view.content_rounded, m.px(9));
         let base = Rgba { a: 255, ..palette.window };
         self.round(region, radius, base, dirty);
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
@@ -648,7 +654,7 @@ impl ChromeSurface {
             return;
         };
         let m = view.layout.metrics;
-        let radius = if view.content_rounded { m.px(9) } else { 0 };
+        let radius = content_corner_radius(view.content_rounded, m.px(9));
         let colour = view.palette.omnibox_border;
         if let Some(panes) = panes {
             // --- split view ---
@@ -3220,6 +3226,16 @@ unsafe extern "system" {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    /// --- wave-1 fixes --- `rounded_content_frame` off squares the page and new-tab corners.
+    #[test]
+    fn the_rounded_content_frame_option_gates_the_corner_radius() {
+        let m = crate::chrome::layout::Metrics::new(96);
+        assert!(content_corner_radius(true, m.px(9)) > 0);
+        assert_eq!(content_corner_radius(false, m.px(9)), 0);
+        let m = crate::chrome::layout::Metrics::new(144);
+        assert_eq!(content_corner_radius(true, m.px(9)), m.px(9), "scaled with DPI");
+    }
     use crate::{
         chrome::motion::{self, Motion},
         tabs::TabId,

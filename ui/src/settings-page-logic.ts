@@ -467,12 +467,12 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'theme', section: 'appearance', label: 'Theme', description: 'Helium colours is Bowser’s own palette. System follows Windows light, dark and accent.', keywords: 'dark light colour scheme helium system' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent colour', description: 'Overrides the theme’s accent colour. Reset to use the default.', keywords: 'colour accent override custom theme reset' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Website appearance', description: 'The colour scheme websites are asked to use: light, dark, or what Windows uses.', keywords: 'dark light auto mode prefers color scheme websites page theme' },
-  { id: 'forceDark', section: 'appearance', label: 'Force dark theme on all websites', description: 'Darkens pages that have no dark theme of their own. It applies to the pages you open next.', keywords: 'force dark mode night websites invert auto dark' },
+  { id: 'forceDark', section: 'appearance', label: 'Force dark theme on all websites', description: 'Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.', keywords: 'force dark mode night websites invert auto dark' },
   { id: 'privateTheme', section: 'appearance', label: 'Private tab theme', description: 'How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.', keywords: 'private incognito inprivate theme dark light window colour' },
   { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', description: 'Choose which buttons appear in the toolbar.', keywords: 'back forward reload bookmark newtab split reader site information buttons customize' },
-  { id: 'showHomeButton', section: 'appearance', label: 'Show the Home button', description: 'Adds a Home button to the toolbar.', keywords: 'home button toolbar' },
+  { id: 'showHomeButton', section: 'appearance', label: 'Show the Home button', description: 'Adds a Home button to the side rail, beside the tabs.', keywords: 'home button toolbar rail sidebar' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre the address bar', description: 'Keeps the address bar centred in the toolbar.', keywords: 'address bar centre centered position' },
-  { id: 'minimalUrl', section: 'appearance', label: 'Show a simplified address while unfocused', description: 'Shows the page’s registrable host until you focus the address bar, then the full address.', keywords: 'url simplified host domain minimal address bar focus' },
+  { id: 'minimalUrl', section: 'appearance', label: 'Show a simplified address while unfocused', description: 'Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.', keywords: 'url simplified host domain minimal address bar focus' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Show a loading progress bar', description: 'A thin bar tracks page loads in the toolbar.', keywords: 'progress loading bar indicator' },
   { id: 'grouping', section: 'appearance', label: 'Group tabs by site', description: 'Tabs from one site share an island. Groups you make by hand stay.', keywords: 'automatic tab groups islands domain', restart: true },
   // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
@@ -486,7 +486,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
-  { id: 'sidePanelPosition', section: 'appearance', label: 'Side panel position', description: 'Which edge the side panels (history, bookmarks, notes and more) are docked to.', keywords: 'side panel left right dock position helium', restart: true },
+  { id: 'sidePanelPosition', section: 'appearance', label: 'Side panel position', description: 'Which edge the side panels (history, bookmarks, notes and more) are docked to. Applies the next time a side panel opens.', keywords: 'side panel left right dock position helium' },
   { id: 'fontSize', section: 'appearance', label: 'Font size', description: 'The base text size across Bowser’s own pages.', keywords: 'font size small medium large text' },
   { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
   { id: 'defaultZoom', section: 'appearance', label: 'Default zoom', description: 'The starting zoom for new pages, not the current page’s own zoom, which is set separately.', keywords: 'zoom default starting percent' },
@@ -517,7 +517,7 @@ export const ROWS: readonly RowSpec[] = [
   // --- end start page ---
   { id: 'blocker', section: 'privacy', label: 'Blocking level', description: 'None blocks nothing. Trackers stops tracking and measurement requests. Trackers and ads stops ads too. A site can have its own level.', keywords: 'adblock ad blocker shield trackers ads none level block' },
   { id: 'cookieNotices', section: 'privacy', label: 'Hide cookie notices', description: 'Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist' },
-  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'Block YouTube video ads', description: 'Skips in-video ads on YouTube.', keywords: 'youtube video ads block skip' },
+  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'Block YouTube video ads', description: 'Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.', keywords: 'youtube video ads block skip' },
   { id: 'allow', section: 'privacy', label: 'Sites the blocker skips', description: 'The blocker never blocks on these sites.', keywords: 'allow list exceptions whitelist adblock' },
   { id: 'tracking', section: 'privacy', label: 'Tracking prevention', description: 'Balanced is the default. Strict blocks more trackers but can break some sites.', keywords: 'privacy cookies strict balanced fingerprinting', restart: true },
   { id: 'history', section: 'privacy', label: 'Save browsing history', description: 'Pages you visit are listed in History and suggested in the address bar.', keywords: 'history visits record' },
@@ -541,7 +541,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'qcMax', section: 'commands', label: 'Visible results', description: 'The most results shown for a typed search.', keywords: 'quick commands palette results limit maximum number' },
   { id: 'qcKeepLast', section: 'commands', label: 'Keep the last typed search', description: 'Quick commands opens with what you typed last time, selected, so the first key you press replaces it.', keywords: 'quick commands palette remember last typed value query' },
   { id: 'qcNewTab', section: 'commands', label: 'Open links in a new tab', description: 'A bookmark or history entry picked in Quick commands opens in a new tab, not the one you are on.', keywords: 'quick commands palette new tab bookmark history open link' },
-  { id: 'qcNotesPanel', section: 'commands', label: 'Open notes in the Notes panel', description: 'Picking a note opens the Notes panel. Off, it copies the note’s text instead.', keywords: 'quick commands palette notes manager panel copy' },
+  { id: 'qcNotesPanel', section: 'commands', label: 'Open notes in the Notes panel', description: 'Picking a note opens the Notes panel; the panel does not yet go to the picked note. Off, it copies the note’s text instead.', keywords: 'quick commands palette notes manager panel copy' },
   { id: 'qcNickname', section: 'commands', label: 'Open a bookmark when its nickname is typed', description: 'Typing a bookmark’s whole nickname in Quick commands opens it at once, without pressing Enter. Give a bookmark a nickname in its bookmark dialog.', keywords: 'quick commands palette bookmark nickname automatic open match keyword' },
   { id: 'chains', section: 'commands', label: 'Command chains', description: 'Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation' },
   // --- end keyboard and quick commands ---
@@ -553,7 +553,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade' },
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release' },
   { id: 'file', section: 'about', label: 'Settings file', description: 'Every setting here is saved in this profile’s settings.txt, which you can also edit by hand.', keywords: 'settings.txt advanced edit text' },
-  { id: 'reset', section: 'about', label: 'Reset settings', description: 'Puts layout, tabs, blocking, performance and search back to their defaults. History, updates and bookmarks are not changed.', keywords: 'defaults restore factory start over' },
+  { id: 'reset', section: 'about', label: 'Reset settings', description: 'Puts layout, appearance, tabs, start page, address bar, search engines, bookmarks bar, blocking and website appearance, performance, downloads and translation back to their defaults. Not changed: how long history is kept, your history and bookmarks, Keyboard and Quick commands, extensions, site permissions and updates.', keywords: 'defaults restore factory start over' },
   { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: 'Open web links from other apps in Bowser.', keywords: 'default browser make bowser windows handler http https' },
 ];
 

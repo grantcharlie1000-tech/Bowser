@@ -648,7 +648,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             let Ok(mut settings) = crate::settings::read_strict(&path) else {
                 return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
             };
-            if !wire::apply_settings_text(&mut settings, &text) {
+            if !wire::apply_page_save(&mut settings, &text) {
                 return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
             }
             let saved = crate::settings::save(&path, &settings);
@@ -662,7 +662,8 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
         Action::Reset => {
             let Ok(profile) = profile else { return answer(owner, Err("The profile is not ready.".into())) };
-            let defaults = crate::settings::Settings::default();
+            // --- wave-1 fixes --- everything but history retention, as the row's description says.
+            let defaults = crate::settings::reset_defaults(&crate::settings::Settings::load(&profile.settings_file()));
             let saved = crate::settings::save(&profile.settings_file(), &defaults);
             if saved.is_ok() {
                 // Search goes back to its defaults too: the engine list is put back as shipped.

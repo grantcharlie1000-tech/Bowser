@@ -388,6 +388,24 @@ impl App {
         kind
     }
 
+    /// --- wave-1 fixes --- a bulk close (other tabs, to the left or right, the selection) split by the
+    /// pinned option: `(close, minimise)`. A pinned tab set to stay is in neither; one set to minimise
+    /// goes to sleep instead of closing, as a single close would.
+    pub fn bulk_close_split(app: &AppRef, ids: &[TabId]) -> (Vec<TabId>, Vec<TabId>) {
+        let state = app.borrow();
+        let mut close = Vec::new();
+        let mut minimise = Vec::new();
+        for id in ids {
+            let pinned = state.tab_model.get(*id).is_some_and(|tab| tab.pinned);
+            match (pinned, state.settings.tabs.pinned_close) {
+                (true, tab_options::PinnedClose::Keep) => {}
+                (true, tab_options::PinnedClose::Minimise) => minimise.push(*id),
+                _ => close.push(*id),
+            }
+        }
+        (close, minimise)
+    }
+
     /// Whether closing `count` tabs at once should ask first.
     pub fn close_needs_confirmation(app: &AppRef, count: usize) -> bool {
         tab_options::should_confirm_close(count, app.borrow().settings.tabs.confirm_close.0)
@@ -459,15 +477,28 @@ impl App {
         let order = Self::tab_ids(app);
         let mut state = app.borrow_mut();
         let enabled = state.settings.tabs.selection;
-        let ids: &[TabId] = if enabled { ids } else { &[] };
-        state.tab_state.set_selection(ids, &order);
+        // --- wave-1 fixes --- with "Include the active tab" off, the active tab is never selected.
+        let active = state.tab_model.active();
+        let include_active = state.settings.tabs.selection_active;
+        let ids: Vec<TabId> = if enabled { ids.iter().copied().filter(|id| include_active || *id != active).collect() } else { Vec::new() };
+        state.tab_state.set_selection(&ids, &order);
     }
 
     /// The tabs a tab action applies to: the selection when `id` is in it, else `id` alone.
     pub fn selection_targets(app: &AppRef, id: TabId) -> Vec<TabId> {
         let state = app.borrow();
-        let include_active = state.settings.tabs.selection_active.then(|| state.tab_model.active());
-        state.tab_state.targets(id, include_active)
+        let active = state.tab_model.active();
+        let include_active = state.settings.tabs.selection_active.then_some(active);
+        let mut targets = state.tab_state.targets(id, include_active);
+        // --- wave-1 fixes --- off, the active tab is left out of a selection's targets (unless it is the
+        // tab acted on alone).
+        if include_active.is_none() && targets.len() > 1 {
+            targets.retain(|tab| *tab != active);
+            if !targets.contains(&id) {
+                return vec![id];
+            }
+        }
+        targets
     }
 
     /// The tabs selected in the strip, in strip order, with the active tab when the options say it
@@ -478,6 +509,9 @@ impl App {
         let mut ids = state.tab_state.selected.clone();
         if state.settings.tabs.selection_active && !ids.is_empty() && !ids.contains(&active) {
             ids.push(active);
+        }
+        if !state.settings.tabs.selection_active {
+            ids.retain(|id| *id != active); // --- wave-1 fixes ---
         }
         if ids.len() < 2 {
             return Vec::new();

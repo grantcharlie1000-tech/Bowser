@@ -1611,6 +1611,8 @@ pub struct StripOptions {
     pub separator: bool,
     pub align_close: bool,
     pub selection: bool,
+    /// --- wave-1 fixes --- the active tab joins a Ctrl or Shift click selection (`tabs_selection_active`).
+    pub selection_active: bool,
     pub remove_spacing: bool,
     pub maximised: bool,
     /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
@@ -1629,6 +1631,7 @@ impl Default for StripOptions {
             separator: false,
             align_close: false,
             selection: true,
+            selection_active: true,
             remove_spacing: false,
             maximised: false,
             closed: 0,
@@ -1650,6 +1653,7 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         out.bool("separator", options.separator);
         out.bool("alignClose", options.align_close);
         out.bool("selection", options.selection);
+        out.bool("selectionActive", options.selection_active);
         out.bool("removeSpacing", options.remove_spacing);
         out.bool("maximised", options.maximised);
         out.uint("closed", u64::from(options.closed.min(99)));
@@ -4806,7 +4810,7 @@ mod tests {
         let json = tabopts_json(&StripOptions::default());
         assert_eq!(
             json,
-            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"removeSpacing":false,"maximised":false,"closed":0}"#
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0}"#
         );
         let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
         let json = tabopts_json(&set);
@@ -4821,7 +4825,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, remove_spacing: true, maximised: true, closed: 4 };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4 };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {

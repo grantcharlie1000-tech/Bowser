@@ -5619,16 +5619,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     }
                     let current = App::tab_ids(app);
                     // --- tab options --- "Duplicated tab position": next to the original, or last.
-                    let after = match App::tab_options(app).duplicate_position {
-                        crate::tab_options::DuplicatePosition::Last => current.len(),
-                        crate::tab_options::DuplicatePosition::Beside => {
-                            current
-                                .iter()
-                                .position(|candidate| *candidate == id)
-                                .unwrap_or(index)
-                                + 1
-                        }
-                    };
+                    let after = duplicate_index(App::tab_options(app).duplicate_position, &current, id, index);
                     // --- end tab options ---
                     let _ = App::move_tab(app, created, after);
                 }
@@ -6519,12 +6510,13 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 App::close_private_tabs(app);
             }
             PROFILE | MORE_TOOLS => {}
-            // The same path as Ctrl+H, so the menu follows wherever History opens.
+            // --- wave-1 fixes --- the registry's commands, not their keys: rebinding or switching off
+            // Ctrl+H / Ctrl+J never breaks the menu, and it still opens wherever History opens.
             HISTORY => {
-                dispatch(hwnd, app, 0x48, true, false, false);
+                run_registered(hwnd, app, MENU_HISTORY_COMMAND);
             }
             DOWNLOADS => {
-                dispatch(hwnd, app, 0x4A, true, false, false);
+                run_registered(hwnd, app, MENU_DOWNLOADS_COMMAND);
             }
             id if (RECENT_BASE..RECENT_BASE + recent.len()).contains(&id) => {
                 // --- tab options --- reopened as a tab, where it was, and gone from the list.
@@ -6901,7 +6893,7 @@ fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
         let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id));
     } else if let Some(id) = action.strip_prefix("note:").and_then(|s| s.parse::<u64>().ok()) {
         if crate::commands::behaviour::note_pick(&options) == crate::commands::behaviour::NotePick::OpenPanel {
-            notes_panel::open(hwnd);
+            notes_panel::show(hwnd); // --- wave-1 fixes --- never closes an open panel
             apply_sidebar_bounds(hwnd, app);
         } else if let Ok(profile) = crate::profile::active() {
             // Off: the note's text goes to the clipboard to paste where it is wanted.
@@ -7129,7 +7121,7 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
     };
     let title =
         App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
-    let (title, page_description) = super::address_dialog::apply_metadata(title);
+    let (title, page_description) = super::address_dialog::apply_metadata(title, App::tab_name(app, id).as_deref(), url.as_str());
     let mut store = match crate::bookmarks::BookmarkStore::load(profile.root()) {
         Ok(store) => store,
         Err(error) => { show_error_message(&format!("Bookmarks could not be loaded: {error}")); return; }
@@ -7178,12 +7170,45 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
 /// option says opens, and the keyboard goes to the page or the address bar as the options say.
 fn open_user_tab(hwnd: HWND, app: &AppRef) {
     let id = App::open_new_tab(app);
-    if !App::tab_is_blank(app, id) && App::tab_options(app).focus_page {
+    if new_tab_focuses_page(App::tab_is_blank(app, id), App::tab_options(app).focus_page) {
         App::focus_page(app);
     } else {
         focus_omni(hwnd, app, true);
     }
 }
+
+/// --- wave-1 fixes (testable rules of the Tabs options) ---
+/// "Focus page content on new tab": the page takes the keyboard only when the option is on and the
+/// tab shows a page; a blank tab (the start page) keeps the address bar.
+fn new_tab_focuses_page(blank: bool, focus_page: bool) -> bool {
+    focus_page && !blank
+}
+
+/// "Duplicated tab position": where the copy of tab `original` goes in `order`, which already holds
+/// the copy at its end; `fallback` is the original's index when it is no longer found.
+fn duplicate_index(position: crate::tab_options::DuplicatePosition, order: &[TabId], original: TabId, fallback: usize) -> usize {
+    match position {
+        crate::tab_options::DuplicatePosition::Last => order.len(),
+        crate::tab_options::DuplicatePosition::Beside => order.iter().position(|candidate| *candidate == original).unwrap_or(fallback) + 1,
+    }
+}
+
+/// What a double click on a tab does ("Double click on a tab").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabDoubleClick {
+    Nothing,
+    Close,
+    Rename,
+}
+
+fn tab_double_click(option: crate::tab_options::DoubleClick) -> TabDoubleClick {
+    match option {
+        crate::tab_options::DoubleClick::Ignore => TabDoubleClick::Nothing,
+        crate::tab_options::DoubleClick::Close => TabDoubleClick::Close,
+        crate::tab_options::DoubleClick::Rename => TabDoubleClick::Rename,
+    }
+}
+// --- end wave-1 fixes ---
 
 /// Closes a tab the user asked to close (the close button, middle click, Ctrl+W, the tab menu, a
 /// double click): the pinned and last tab options decide, and the last tab may take the window.
@@ -7197,18 +7222,17 @@ fn user_close(hwnd: HWND, app: &AppRef, id: TabId) {
 
 /// Closes several tabs at once (Close other tabs, to the left, to the right, the selection), asking
 /// first when their count reaches "Confirm when closing many tabs". A pinned tab that is set not to
-/// close stays. Returns how many closed.
-fn close_many(hwnd: HWND, app: &AppRef, mut ids: Vec<TabId>) -> usize {
-    let keep_pinned = App::tab_options(app).pinned_close == crate::tab_options::PinnedClose::Keep;
-    ids.retain(|id| !(keep_pinned && App::tab_pinned(app, *id)));
-    if ids.is_empty() {
-        return 0;
-    }
-    if App::close_needs_confirmation(app, ids.len()) && !super::ask_yes_no(&crate::tab_options::confirm_close_text(ids.len())) {
+/// close stays, and one set to minimise goes to sleep instead (wave-1 fixes). Returns how many closed.
+fn close_many(hwnd: HWND, app: &AppRef, ids: Vec<TabId>) -> usize {
+    let (close, minimise) = App::bulk_close_split(app, &ids);
+    if !close.is_empty() && App::close_needs_confirmation(app, close.len()) && !super::ask_yes_no(&crate::tab_options::confirm_close_text(close.len())) {
         let _ = hwnd;
         return 0;
     }
-    ids.into_iter().filter(|id| App::close_tab(app, *id)).count()
+    for id in minimise {
+        let _ = App::user_close_tab(app, id);
+    }
+    close.into_iter().filter(|id| App::close_tab(app, *id)).count()
 }
 
 /// The strip's selection (Ctrl and Shift click): wire ids in strip order, kept for the tab menu.
@@ -9767,10 +9791,10 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
         }
         TabAction::Close => user_close(hwnd, &app, id), // --- tab options ---
         // --- tab options --- "Double click on a tab".
-        TabAction::DoubleClick => match App::tab_options(&app).double_click {
-            crate::tab_options::DoubleClick::Ignore => {}
-            crate::tab_options::DoubleClick::Close => user_close(hwnd, &app, id),
-            crate::tab_options::DoubleClick::Rename => rename_tab_prompt(hwnd, &app, id),
+        TabAction::DoubleClick => match tab_double_click(App::tab_options(&app).double_click) {
+            TabDoubleClick::Nothing => {}
+            TabDoubleClick::Close => user_close(hwnd, &app, id),
+            TabDoubleClick::Rename => rename_tab_prompt(hwnd, &app, id),
         },
         // --- end tab options ---
         TabAction::Pin => {
@@ -9903,6 +9927,7 @@ fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripO
         separator: options.pinned_separator,
         align_close: options.align_close_button,
         selection: options.selection,
+        selection_active: options.selection_active,
         remove_spacing: options.remove_spacing_maximised,
         maximised: with_chrome(hwnd, |s| s.layout.maximised).unwrap_or(false),
         closed: App::closed_tabs(app).len() as u32,
@@ -11442,6 +11467,10 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
     arm_motion(hwnd);
 }
 
+/// --- wave-1 fixes --- the registry commands the main menu's History and Downloads items run.
+const MENU_HISTORY_COMMAND: &str = "history";
+const MENU_DOWNLOADS_COMMAND: &str = "downloads";
+
 /// Runs a registry command by id: the one entry point for the palette, shortcuts, chains and (later)
 /// mouse gestures and toolbar buttons. False when the id is not a command.
 pub(crate) fn run_registered(hwnd: HWND, app: &AppRef, id: &str) -> bool {
@@ -11675,6 +11704,38 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// --- wave-1 fixes --- the main menu's History and Downloads run registry commands, so they still
+    /// work with shortcuts switched off or Ctrl+H / Ctrl+J bound elsewhere.
+    #[test]
+    fn the_main_menu_history_and_downloads_do_not_depend_on_their_shortcuts() {
+        use crate::commands::{registry::Handler, store::EntryHandler};
+        let mut store = crate::commands::store::Store::default();
+        store.options.shortcuts_enabled = false;
+        let live = crate::commands::Live::new(store);
+        let cx = crate::commands::ResolveContext::default();
+        assert_eq!(crate::commands::resolve_in(&live, 0x48, true, false, false, &cx), None, "Ctrl+H does nothing now");
+        assert_eq!(crate::commands::resolve_in(&live, 0x4A, true, false, false, &cx), None, "Ctrl+J does nothing now");
+        for (id, command) in [(MENU_HISTORY_COMMAND, Command::ShowHistory), (MENU_DOWNLOADS_COMMAND, Command::ShowDownloads)] {
+            let entry = crate::commands::entry(&live, id).expect("a registry command");
+            assert!(matches!(entry.handler, EntryHandler::Builtin(Handler::Key(found)) if found == command), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_tab_options_decide_focus_duplicate_position_and_double_click() {
+        use crate::tab_options::{DoubleClick, DuplicatePosition};
+        assert!(new_tab_focuses_page(false, true), "a page, option on: the page");
+        assert!(!new_tab_focuses_page(true, true), "the start page keeps the address bar");
+        assert!(!new_tab_focuses_page(false, false), "off: the address bar");
+        let order = [TabId(1), TabId(2), TabId(3), TabId(9)];
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(2), 0), 2, "right of the original");
+        assert_eq!(duplicate_index(DuplicatePosition::Last, &order, TabId(2), 0), 4, "at the end");
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(7), 1), 2, "a gone original uses its old place");
+        assert_eq!(tab_double_click(DoubleClick::Ignore), TabDoubleClick::Nothing);
+        assert_eq!(tab_double_click(DoubleClick::Close), TabDoubleClick::Close);
+        assert_eq!(tab_double_click(DoubleClick::Rename), TabDoubleClick::Rename);
+    }
 
     /// Integration (T2 bookmarks bar, T3 private theme): the page hosts beside the toolbar take the
     /// private look while a private tab is shown, and the window's own look otherwise.

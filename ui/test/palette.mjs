@@ -334,6 +334,10 @@ test('a nickname typed whole matches its bookmark first and, with the option on,
   assert.equal(logic.nicknameMatch(marks, 'rl', false, all), null, 'off');
   assert.equal(logic.nicknameMatch(marks, 'rl', true, ['tab', 'command']), null, 'bookmarks hidden');
   assert.equal(logic.nicknameMatch(marks, 'dup', true, all), null, 'a shared nickname is ambiguous');
+  // --- wave-1 fixes --- a longer nickname that starts with the typed text waits for more typing.
+  const longer = [...marks, { id: 8, s: 'bookmark', label: 'Longer', detail: 'https://c.example/', k: 'rlx' }];
+  assert.equal(logic.nicknameMatch(longer, 'rl', true, all), null, 'rl is not yet unambiguous while rlx exists');
+  assert.equal(logic.nicknameMatch(longer, 'rlx', true, all)?.id, 8, 'the longer nickname typed whole opens');
   assert.equal(logic.flatten(logic.filterPalette(marks, 'dup'))[0].s, 'bookmark', 'still ranked first');
 
   // The page: off, typing the nickname only ranks it first; on, it is picked without Enter.

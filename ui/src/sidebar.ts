@@ -215,6 +215,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   let picked: number[] = [];
   let anchor = 0;
   let selectionOn = true;
+  let selectionActive = true; // --- wave-1 fixes ---
   const closedRow = el('button', 'side-closed bw-focus-inset');
   closedRow.type = 'button';
   closedRow.hidden = true;
@@ -680,7 +681,7 @@ export function createSidebarRenderer(root: HTMLElement): {
       const id = Number(row.dataset.id);
       const order = Array.from(root.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)')).map((tab) => Number(tab.dataset.id));
       const outcome = selectionOn
-        ? clickSelection(picked, order, anchor, latest?.active ?? 0, id, { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey })
+        ? clickSelection(picked, order, anchor, latest?.active ?? 0, id, { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey }, selectionActive)
         : { selected: [] as number[], anchor: id, activate: true };
       anchor = outcome.anchor;
       setPicked(outcome.selected);
@@ -818,6 +819,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     // --- tab options ---
     options(value) {
       selectionOn = value.selection;
+      selectionActive = value.selectionActive;
       closedRow.hidden = value.closed === 0;
       if (!selectionOn && picked.length > 0) setPicked([]);
     },

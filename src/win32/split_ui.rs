@@ -756,11 +756,16 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
     }
 }
 
+/// --- wave-1 fixes --- the `split_edge_drop` option, as the running app has it.
+fn edge_drop_enabled(app: &AppRef) -> bool {
+    App::settings(app).split_edge_drop
+}
+
 /// The edge zone of the page under the dragged tab (`split_view::drop_zone`, which keeps `previous`
 /// near the diagonals and in the middle), or `None` when the pointer is not over the page or the
 /// drop would change nothing (a half dropped where it already is).
 fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32, previous: Option<DropZone>, intent: &mut crate::drop_intent::DropIntent) -> Option<DropZone> {
-    if !App::settings(app).split_edge_drop {
+    if !edge_drop_enabled(app) {
         return None;
     }
     let (screen, dpi) = super::window::tabs_host_screen(owner)?;
@@ -1145,6 +1150,19 @@ pub(crate) fn pair_sent(owner: HWND, index: usize, generation: u64, json: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// --- wave-1 fixes --- "Split by dropping a tab on the page's edge" off: no drop zone at all, before
+    /// the pointer is even looked at; on, the gate lets the zone logic run.
+    #[test]
+    fn the_split_edge_drop_option_gates_every_drop_zone() {
+        let app = crate::app::test_app();
+        App::apply_live_settings(&app, &crate::settings::Settings { split_edge_drop: false, ..crate::settings::Settings::default() });
+        assert!(!edge_drop_enabled(&app));
+        let mut intent = crate::drop_intent::DropIntent::default();
+        assert_eq!(drop_target(HWND::default(), &app, App::active_tab_id(&app), 5, 5, None, &mut intent), None);
+        App::apply_live_settings(&app, &crate::settings::Settings::default());
+        assert!(edge_drop_enabled(&app), "on by default");
+    }
 
     #[test]
     fn container_rect_is_never_empty() {

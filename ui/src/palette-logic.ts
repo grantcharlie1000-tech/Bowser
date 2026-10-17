@@ -265,7 +265,9 @@ export function filterShortcuts(items: readonly PaletteItem[], query: string): P
 /**
  * The bookmark whose nickname is the whole typed text (ignoring case, and after a `bookmark:` /
  * `bkm:` prefix), when "open bookmark automatically on nickname match" is on and bookmarks are a
- * shown type. Any other prefix, or a nickname two bookmarks share, opens nothing.
+ * shown type. Any other prefix, or a nickname two bookmarks share, opens nothing. While a longer
+ * nickname still starts with the typed text (`gh` while `ghx` exists) nothing opens either, so the
+ * user can go on typing; Enter still opens the selected row.
  */
 export function nicknameMatch(items: readonly PaletteItem[], query: string, autonick: boolean, types: readonly ResultType[]): PaletteItem | null {
   if (!autonick || !types.includes('bookmark')) return null;
@@ -273,8 +275,10 @@ export function nicknameMatch(items: readonly PaletteItem[], query: string, auto
   if (kinds !== null && !kinds.includes('bookmark')) return null;
   const needle = text.trim().toLocaleLowerCase();
   if (needle === '') return null;
-  const hits = items.filter(item => item.s === 'bookmark' && item.k !== undefined && item.k.toLocaleLowerCase() === needle);
-  return hits.length === 1 ? hits[0]! : null;
+  const nicks = items.filter(item => item.s === 'bookmark' && item.k !== undefined).map(item => ({ item, nick: item.k!.toLocaleLowerCase() }));
+  if (nicks.some(({ nick }) => nick !== needle && nick.startsWith(needle))) return null;
+  const hits = nicks.filter(({ nick }) => nick === needle);
+  return hits.length === 1 ? hits[0]!.item : null;
 }
 
 /** Rows in display order, for keyboard movement. */

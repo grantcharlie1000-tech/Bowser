@@ -161,7 +161,8 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   // The restart notes match what Rust applies live (chrome_host/settings.rs, settings_page.rs run()).
   const restart = logic.ROWS.filter((row) => row.restart).map((row) => row.id).sort();
   // The blocking level and the sites it skips apply at once (App::apply_live_settings reaches the blocker).
-  assert.deepEqual(restart, ['grouping', 'sidePanelPosition', 'tracking']);
+  // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
+  assert.deepEqual(restart, ['grouping', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
   assert.deepEqual(notYet, ['frameless']);
@@ -1138,6 +1139,16 @@ test('The suggestion sources list in order, turn off and move with one command e
   assert.equal(items[2].querySelector('[aria-label="Move Direct match up"]').disabled, true, 'a source that is off has nothing to move');
 });
 
+// --- wave-1 fixes ---
+test('The engine list shows nicknames only while "Show the nickname" is on', () => {
+  const withNick = (on) => ({ ...addressFixture.snap, d: { ...addressFixture.snap.d, s: { ...addressFixture.snap.d.s, search_show_nickname: on } } });
+  deliver(withNick(false));
+  assert.equal(app.querySelector('.ad-engine').querySelector('.sp-label').textContent, 'Optimised');
+  deliver(withNick(true));
+  assert.equal(app.querySelector('.ad-engine').querySelector('.sp-label').textContent, 'Optimised (opt)');
+  deliver(addressFixture.snap);
+});
+
 test('The engine list shows every engine with its badges, and each action is one engine command', () => {
   deliver(addressFixture.snap);
   const items = app.querySelectorAll('.ad-engine');
@@ -1256,4 +1267,18 @@ test('integrated page: sixteen sections in order, no duplicate rows or keys, and
   assert.ok(newTab);
   assert.ok(logic.matchRows('blank page').has('tabs_new_tab_page'));
   assert.ok(logic.matchRows('nickname').has('qcNickname'));
+});
+// --- wave-1 fixes --- descriptions say what the rows really do.
+test('row descriptions match what the rows do', () => {
+  const desc = (id) => logic.ROWS.find((row) => row.id === id).description;
+  const row = (id) => logic.ROWS.find((r) => r.id === id);
+  assert.match(desc('reset'), /Not changed: how long history is kept/);
+  for (const reset of ['appearance', 'start page', 'address bar', 'search engines', 'downloads', 'translation']) assert.ok(desc('reset').toLowerCase().includes(reset), reset);
+  assert.match(desc('blockYoutubeVideoAds'), /Trackers and ads/);
+  assert.match(desc('showHomeButton'), /rail/);
+  assert.match(desc('minimalUrl'), /path/);
+  assert.match(desc('forceDark'), /open tabs at once/);
+  assert.match(desc('qcNotesPanel'), /does not yet go to the picked note/);
+  assert.match(desc('sidePanelPosition'), /next time a side panel opens/);
+  assert.ok(!row('sidePanelPosition').restart, 'it applies without a restart');
 });
