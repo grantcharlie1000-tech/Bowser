@@ -93,7 +93,8 @@ const ACCENT_ERROR: &str = "Enter a colour as #rrggbb, or leave it blank.";
 const UI_FONT_LABEL: &str = "Font (blank for system font)";
 const UI_FONT_ERROR: &str = "Enter a font name of up to 64 characters, with no control characters.";
 const CHROME_HEADING: &str = "Toolbar & chrome";
-const TOOLBAR_HEADING: &str = "Toolbar buttons";
+/// --- settings slim --- only the omnibox's site-information and split buttons read this list (GDI chrome).
+const TOOLBAR_HEADING: &str = "Toolbar buttons (only Site information and Split view act yet)";
 const BEHAVIOUR_HEADING: &str = "Browsing behaviour";
 const ZOOM_LABEL: &str = "Default zoom for new tabs (25-500%)";
 const DEFAULT_BROWSER_BUTTON: &str = "Make Bowser the default browser";
@@ -2363,6 +2364,7 @@ mod tests {
         assert!(BLOCKER_TOGGLE.contains("None"), "the switch is the None level, not the whole level");
         assert!(BLOCKER_HELP.contains("blocking level"));
         assert!(FRAMELESS_TOGGLE.ends_with("(not active yet)"));
+        assert!(TOOLBAR_HEADING.contains("only Site information and Split view act"), "the checklist says which buttons it moves");
         assert_eq!(search_selector_text(true, Some(SearchEngine::Google), SEARCH_DEFAULT), SEARCH_MANAGED, "the engine list decides");
         assert_eq!(search_selector_text(false, Some(SearchEngine::Google), SEARCH_DEFAULT), SearchEngine::Google.label());
         assert_eq!(search_selector_text(false, None, SEARCH_DEFAULT), SEARCH_DEFAULT);
