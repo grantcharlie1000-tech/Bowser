@@ -161,6 +161,9 @@ pub struct ChromeSurface {
     /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
     /// it never shows the desktop through the glass. `None` while a page is on screen.
     empty_viewport: Option<Rect>,
+    /// Auto-hide has taken the top chrome out of the window (and not brought it back): the toolbar,
+    /// tab row, captions and the chrome backdrop are not painted, and the page owns the space.
+    auto_hidden_top: bool,
     // --- split view ---
     /// How the divider grip is drawn, and the empty side's pane when no HTML surface covers it.
     split_grip: SplitGrip,
@@ -264,6 +267,7 @@ impl ChromeSurface {
             last_presented: None,
             page_regions: None,
             empty_viewport: None,
+            auto_hidden_top: false,
             split_grip: SplitGrip::Idle,
             split_grip_divider: None,
             split_empty: [None; 4],
@@ -353,6 +357,12 @@ impl ChromeSurface {
     /// down above a page that has just appeared).
     pub fn set_empty_viewport(&mut self, viewport: Option<Rect>) -> bool {
         std::mem::replace(&mut self.empty_viewport, viewport) != viewport
+    }
+
+    /// Tells the painter whether auto-hide has the top chrome out of the window. Returns whether that
+    /// changed, so the caller repaints everything.
+    pub fn set_auto_hidden_top(&mut self, hidden: bool) -> bool {
+        std::mem::replace(&mut self.auto_hidden_top, hidden) != hidden
     }
 
     /// Hands the toolbar's back, forward, reload, omnibox and main menu to the HTML chrome.
@@ -584,10 +594,11 @@ impl ChromeSurface {
             let start = y as usize * stride + dirty.left as usize * 4;
             pixels[start..start + dirty.width() as usize * 4].fill(0);
         }
-        if !view.palette.translucent {
+        if !view.palette.translucent && !self.auto_hidden_top {
             // --- layout (thread T6) --- the chrome bands: above the page (title row, toolbar, tab
             // row, whichever are at the top) and below it (a tab row or the toolbar along the
-            // bottom edge; nothing when there is none).
+            // bottom edge; nothing when there is none). --- auto-hide (T11) --- neither while the
+            // top chrome is out of the layout (the page is there).
             self.fill_rect(
                 Rect::new(0, 0, self.width, view.layout.top_chrome),
                 view.palette.window,
@@ -613,19 +624,22 @@ impl ChromeSurface {
         } else if !self.html_pending[2] {
             self.paint_left_rail(view, dirty);
         }
-        if !self.html_tabs {
-            self.paint_departures(view, dirty);
-            self.paint_tabs(view, dirty);
-        }
-        self.paint_tab_menu(view, dirty);
-        self.paint_new_tab(view, dirty);
-        if !self.html_toolbar && !self.html_pending[0] {
-            self.paint_main_menu(view, dirty);
-            self.paint_nav(view, dirty);
-        }
-        self.paint_caption(view, dirty);
-        if !self.html_toolbar && !self.html_pending[0] {
-            self.paint_omnibox(view, dirty);
+        // Auto-hide: the top chrome is out of the window, so none of it is painted over the page.
+        if !self.auto_hidden_top {
+            if !self.html_tabs {
+                self.paint_departures(view, dirty);
+                self.paint_tabs(view, dirty);
+            }
+            self.paint_tab_menu(view, dirty);
+            self.paint_new_tab(view, dirty);
+            if !self.html_toolbar && !self.html_pending[0] {
+                self.paint_main_menu(view, dirty);
+                self.paint_nav(view, dirty);
+            }
+            self.paint_caption(view, dirty);
+            if !self.html_toolbar && !self.html_pending[0] {
+                self.paint_omnibox(view, dirty);
+            }
         }
         self.paint_page_boundary(view, dirty);
         self.paint_empty_viewport(view, dirty);

@@ -4509,6 +4509,24 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
+        // --- auto-hide (T11) --- a page element (a video) asks for full screen or leaves it. Only
+        // installed when the app listens, so nothing runs otherwise.
+        if let Some(fullscreen_changed) = events.fullscreen_changed.clone() {
+            webview.add_ContainsFullScreenElementChanged(
+                &webview2_com::ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(sender) = sender {
+                        let mut on = BOOL(0);
+                        if sender.ContainsFullScreenElement(&mut on).is_ok() {
+                            fullscreen_changed(tab_id, on.as_bool());
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end auto-hide ---
+
         let policy_event = events.policy_event.clone();
         let permission_store = permissions.clone();
         let permission_denied = events.permission_denied.clone();
@@ -6606,9 +6624,10 @@ mod tests {
                     let expected = if is_key_down(kind)
                         && key != u32::from(VK_ESCAPE.0)
                         // Chords the command registry adds for commands with no `Command` of their own
-                        // (Ctrl+F1, the cheat sheet; page tools' capture and notes) are forwarded too.
+                        // (Ctrl+F1, the cheat sheet; page tools' capture and notes; F11 and Ctrl+F11 for
+                        // full screen and auto-hide) are forwarded too.
                         && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
-                            || [(0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false)]
+                            || [(0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false), (0x7A, false, false, false), (0x7A, true, false, false)]
                                 .contains(&(key, ctrl, shift, alt)))
                     {
                         forward(key, ctrl, shift, alt)

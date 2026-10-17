@@ -110,6 +110,8 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         out.bool("minimalUrl", settings.minimal_url);
         out.bool("showLoadProgress", settings.show_load_progress);
         out.bool("frameless", settings.frameless);
+        out.string("autoHideBars", &settings.auto_hide.bars.text()); // --- auto-hide (T11) ---
+        out.bool("autoHideFullscreen", settings.auto_hide.in_fullscreen);
         out.bool("roundedContentFrame", settings.rounded_content_frame);
         out.bool("showHomeButton", settings.show_home_button);
         out.string("bookmarksBar", settings.bookmarks_bar.key());
@@ -378,6 +380,9 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             "pin_new_tab_groups" => settings.pin_new_tab_groups = match value { "true" => true, "false" => false, _ => return false },
             "split_edge_drop" => settings.split_edge_drop = match value { "true" => true, "false" => false, _ => return false },
             "block_youtube_video_ads" => settings.block_youtube_video_ads = match value { "true" => true, "false" => false, _ => return false },
+            // --- auto-hide (T11) --- optional, like the start page's: a payload without them keeps them
+            key if crate::auto_hide::SETTING_KEYS.contains(&key) => { if settings.auto_hide.apply_strict(key, value).is_none() { return false; } }
+            // --- end auto-hide ---
             // --- start page --- optional: a payload without them leaves the start page settings as they are
             key if crate::start_page::SETTING_KEYS.contains(&key) => { if settings.start.apply_strict(key, value).is_none() { return false; } }
             // --- end start page ---
@@ -799,6 +804,48 @@ block_youtube_video_ads=true".to_owned();
         // And a repeated key is refused like any other.
         assert!(!apply_settings_text(&mut Settings::default(), &format!("{required}\nstart_columns=3\nstart_columns=4")));
     }
+
+    // --- auto-hide (T11) --- UI -> Rust save -> snapshot -> file, for the master switch and its two rows.
+    #[test]
+    fn the_auto_hide_rows_save_snapshot_and_reach_the_file() {
+        let required = "tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true";
+        // The snapshot carries the master switch (the old frameless key) and both rows.
+        let json = snapshot_json(&sample(&Settings::default()));
+        assert!(json.contains(r#""frameless":false,"autoHideBars":"tabs,address,bookmarks","autoHideFullscreen":true,"#), "{json}");
+        // A save with them applies them; the master switch rides on the old key.
+        let payload = format!("{}\nauto_hide_bars=tabs,panel\nauto_hide_fullscreen=false", required.replace("frameless=false", "frameless=true"));
+        let mut applied = Settings::default();
+        assert!(apply_settings_text(&mut applied, &payload), "{payload}");
+        assert!(applied.frameless);
+        assert_eq!(applied.auto_hide.bars, crate::auto_hide::Bars::TABS.union(crate::auto_hide::Bars::PANEL));
+        assert!(!applied.auto_hide.in_fullscreen);
+        let again = snapshot_json(&sample(&applied));
+        assert!(again.contains(r#""frameless":true,"autoHideBars":"tabs,panel","autoHideFullscreen":false,"#), "{again}");
+        // They are optional (older pages): a payload without them leaves them as they were.
+        let mut before = Settings::default();
+        before.auto_hide.bars = crate::auto_hide::Bars::PANEL;
+        assert!(apply_settings_text(&mut before, required));
+        assert_eq!(before.auto_hide.bars, crate::auto_hide::Bars::PANEL);
+        // A value Rust would not write refuses the whole payload and changes nothing.
+        for bad in ["auto_hide_bars=address,tabs", "auto_hide_bars=tabs,tabs", "auto_hide_bars=status", "auto_hide_bars=tabs,", "auto_hide_fullscreen=yes", "auto_hide_fullscreen=1"] {
+            let mut target = Settings::default();
+            assert!(!apply_settings_text(&mut target, &format!("{required}\n{bad}")), "{bad}");
+            assert_eq!(target.auto_hide, crate::auto_hide::AutoHideSettings::default(), "{bad}");
+        }
+        assert!(!apply_settings_text(&mut Settings::default(), &format!("{required}\nauto_hide_bars=tabs\nauto_hide_bars=panel")), "a repeated key");
+        // And the file: saved, read back, and the page's other lines left alone.
+        let dir = std::env::temp_dir().join(format!("bowser-auto-hide-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        crate::settings::save(&path, &applied).unwrap();
+        let back = Settings::load(&path);
+        assert!(back.frameless);
+        assert_eq!(back.auto_hide, applied.auto_hide);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("auto_hide_bars=tabs,panel") && text.contains("auto_hide_fullscreen=false") && text.contains("frameless=true"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn the_snapshot_reports_every_field_and_guests_never_record_history() {

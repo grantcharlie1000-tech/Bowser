@@ -40,6 +40,32 @@ export type ThemeMode = typeof THEME_MODES[number];
 export const TOOLBAR_BUTTONS = ['back', 'forward', 'reload', 'site-info', 'bookmark', 'newtab', 'split', 'reader'] as const;
 export type ToolbarButton = typeof TOOLBAR_BUTTONS[number];
 export const DEFAULT_TOOLBAR_BUTTONS = TOOLBAR_BUTTONS.join(',');
+// --- auto-hide (T11) --- the bars "Auto-hide toolbars and tabs" can take out of the layout, in page order
+// (src/auto_hide.rs BAR_TABLE). The status bar joins when the layout work adds one.
+export const AUTO_HIDE_BARS = ['tabs', 'address', 'bookmarks', 'panel'] as const;
+export type AutoHideBar = typeof AUTO_HIDE_BARS[number];
+export const AUTO_HIDE_BAR_LABELS: Readonly<Record<AutoHideBar, string>> = {
+  tabs: 'Tab bar',
+  address: 'Address bar',
+  bookmarks: 'Bookmarks bar',
+  panel: 'Side panel (opens over the page)',
+};
+/** What hides when nobody has chosen: the three bars above and beside the page. */
+export const DEFAULT_AUTO_HIDE_BARS = 'tabs,address,bookmarks';
+/** The bars of a saved list, `''` meaning none. */
+export function autoHideBarsList(text: string): AutoHideBar[] {
+  return text === '' ? [] : (text.split(',') as AutoHideBar[]);
+}
+/** The saved spelling of a set of bars: catalog order, each once. */
+export function autoHideBarsText(bars: Iterable<AutoHideBar>): string {
+  const set = new Set(bars);
+  return AUTO_HIDE_BARS.filter((bar) => set.has(bar)).join(',');
+}
+/** Exactly the spelling Rust saves: every bar known, none twice, catalog order. */
+function isAutoHideBarsText(value: unknown): value is string {
+  return typeof value === 'string' && autoHideBarsText(autoHideBarsList(value)) === value && autoHideBarsList(value).every((bar) => (AUTO_HIDE_BARS as readonly string[]).includes(bar));
+}
+// --- end auto-hide ---
 export const BOOKMARKS_BAR_MODES = ['always', 'never', 'newtab'] as const;
 export type BookmarksBarMode = typeof BOOKMARKS_BAR_MODES[number];
 export const FONT_SIZES = ['small', 'medium', 'large'] as const;
@@ -106,7 +132,12 @@ export interface SettingsSnapshot {
   centredAddressBar: boolean;
   minimalUrl: boolean;
   showLoadProgress: boolean;
+  /** The master "Auto-hide toolbars and tabs" switch (the key keeps its old name). */
   frameless: boolean;
+  /** Comma list of `AUTO_HIDE_BARS`, each at most once in that order; `''` for none. */
+  autoHideBars: string;
+  /** "Always auto-hide in full screen". */
+  autoHideFullscreen: boolean;
   roundedContentFrame: boolean;
   showHomeButton: boolean;
   bookmarksBar: BookmarksBarMode;
@@ -179,7 +210,7 @@ const oneOf = <T extends string>(value: unknown, list: readonly T[]): value is T
 const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'blockerEnabled', 'blockerAllow', 'searchEngine', 'searchFallback',
   'automaticTabGrouping', 'efficiencyMode', 'efficiencyActive', 'trackingPrevention', 'autoUpdate', 'historyEnabled', 'guest', 'profile', 'avatar',
   'version', 'update', 'updateVersion', 'lastCheck', 'checkResult', 'ack', 'error', 'readable',
-  'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame', 'showHomeButton',
+  'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'autoHideBars', 'autoHideFullscreen', 'roundedContentFrame', 'showHomeButton',
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
@@ -232,6 +263,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   for (const key of ['centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame', 'showHomeButton'] as const) {
     if (typeof v[key] !== 'boolean') return null;
   }
+  if (!isAutoHideBarsText(v.autoHideBars) || typeof v.autoHideFullscreen !== 'boolean') return null; // --- auto-hide (T11) ---
   if (!oneOf(v.bookmarksBar, BOOKMARKS_BAR_MODES) || typeof v.bookmarksBarTabGroups !== 'boolean') return null;
   if (!oneOf(v.sidePanelPosition, SIDE_PANEL_POSITIONS)) return null;
   if (typeof v.tabPreviewImages !== 'boolean' || typeof v.tabPreviewMemory !== 'boolean') return null;
@@ -274,6 +306,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     minimalUrl: v.minimalUrl as boolean,
     showLoadProgress: v.showLoadProgress as boolean,
     frameless: v.frameless as boolean,
+    autoHideBars: v.autoHideBars,
+    autoHideFullscreen: v.autoHideFullscreen as boolean,
     roundedContentFrame: v.roundedContentFrame as boolean,
     showHomeButton: v.showHomeButton as boolean,
     bookmarksBar: v.bookmarksBar,
@@ -325,7 +359,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
 export type Draft = Pick<SettingsSnapshot,
   | 'tabLayout' | 'sidebarWidth' | 'sleepEnabled' | 'sleepAfterSecs' | 'blockerEnabled' | 'blockerAllow' | 'searchEngine' | 'automaticTabGrouping'
   | 'efficiencyMode' | 'trackingPrevention' | 'theme' | 'themeAccent' | 'toolbarButtons' | 'centredAddressBar' | 'minimalUrl' | 'showLoadProgress'
-  | 'frameless' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
+  | 'frameless' | 'autoHideBars' | 'autoHideFullscreen' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
   | 'layout' // --- layout (thread T6) ---
@@ -334,14 +368,14 @@ export type Draft = Pick<SettingsSnapshot,
 export function draftOf(snapshot: SettingsSnapshot): Draft {
   const {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow, searchEngine, automaticTabGrouping, efficiencyMode,
-    trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, roundedContentFrame,
+    trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
     blockYoutubeVideoAds, start, layout,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
-    efficiencyMode, trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless,
+    efficiencyMode, trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen,
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
     splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
@@ -360,6 +394,7 @@ export function saveText(draft: Draft): string | null {
   if (!oneOf(draft.efficiencyMode, EFFICIENCY_MODES) || (draft.trackingPrevention !== 'balanced' && draft.trackingPrevention !== 'strict')) return null;
   if (draft.searchEngine !== null && !oneOf(draft.searchEngine, SEARCH_ENGINES)) return null;
   if (!oneOf(draft.theme, THEME_MODES) || !isThemeAccent(draft.themeAccent) || !isToolbarButtonsText(draft.toolbarButtons)) return null;
+  if (!isAutoHideBarsText(draft.autoHideBars)) return null; // --- auto-hide (T11) ---
   if (!oneOf(draft.bookmarksBar, BOOKMARKS_BAR_MODES) || !oneOf(draft.sidePanelPosition, SIDE_PANEL_POSITIONS)) return null;
   if (!oneOf(draft.fontSize, FONT_SIZES) || !isUiFont(draft.uiFont) || !isIntBetween(draft.defaultZoom, MIN_ZOOM, MAX_ZOOM)) return null;
   const lines = [
@@ -382,6 +417,8 @@ export function saveText(draft: Draft): string | null {
     `minimal_url=${draft.minimalUrl}`,
     `show_load_progress=${draft.showLoadProgress}`,
     `frameless=${draft.frameless}`,
+    `auto_hide_bars=${draft.autoHideBars}`,
+    `auto_hide_fullscreen=${draft.autoHideFullscreen}`,
     `rounded_content_frame=${draft.roundedContentFrame}`,
     `show_home_button=${draft.showHomeButton}`,
     `bookmarks_bar=${draft.bookmarksBar}`,
@@ -620,7 +657,11 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
-  { id: 'frameless', section: 'appearance', label: 'Frameless window', description: 'Hides the browser’s toolbar and tabs until the pointer nears the top of the window.', keywords: 'frameless hide toolbar tabs immersive', notYet: true },
+  // --- auto-hide (T11) --- the master switch is the old `frameless` key (core); the other two sit behind "More options".
+  { id: 'frameless', section: 'appearance', label: 'Auto-hide toolbars and tabs', description: 'Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge', tier: 'core' },
+  { id: 'autoHideBars', section: 'appearance', label: 'Bars to hide', description: 'The tab bar and address bar share the top edge in the horizontal layouts, so either one hides both. The side panel opens over the page instead of pushing it.', keywords: 'auto hide bars tabs address bookmarks panel status', tier: 'more' },
+  { id: 'autoHideFullscreen', section: 'appearance', label: 'Always auto-hide in full screen', description: 'In full screen (F11, or a video) every bar hides, even with the switch above off.', keywords: 'auto hide full screen fullscreen f11 video', tier: 'more' },
+  // --- end auto-hide ---
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),

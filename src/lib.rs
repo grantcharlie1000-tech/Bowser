@@ -52,6 +52,7 @@ pub mod sidebar;
 pub mod site_prefs;
 pub mod site_security;
 pub mod split_view;
+pub mod auto_hide; // auto-hide of the toolbars, tabs and panels, and full screen (docs/design/t11-auto-hide.md)
 pub mod start_page; // the new-tab start page: speed dials, widgets, startup (docs/design/start-page.md)
 pub mod drop_intent; // when a dragged tab over the page means "split" (docs/design/tab-drag.md)
 pub mod tab_groups;

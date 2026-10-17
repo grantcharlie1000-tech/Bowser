@@ -111,6 +111,9 @@ use windows::{
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
+// --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
+mod auto_hide;
+// --- end auto-hide ---
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -426,6 +429,8 @@ struct HtmlTabsInputs {
 }
 
 struct WindowChrome {
+    /// Auto-hide: which bars are out of the layout, what is revealed (`auto_hide.rs`).
+    ah: auto_hide::Runtime, // --- auto-hide (T11) ---
     /// The bookmarks bar's share of the page, in physical pixels, and whether it is at the bottom
     /// (src/win32/bookmark_bar.rs); `relayout` takes it off the viewport.
     bar_reserve: (i32, bool),
@@ -641,6 +646,7 @@ struct HtmlFavicon {
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         Self {
+            ah: auto_hide::Runtime::default(), // --- auto-hide (T11) ---
             bar_reserve: (0, false),
             surface: {
                 let mut surface = ChromeSurface::new(width, height, dpi);
@@ -650,7 +656,7 @@ impl WindowChrome {
             overlay,
             client: (width, height),
             layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
-            palette: glass::palette(),
+            palette: auto_hide::chrome_palette(), // --- auto-hide (T11) --- the solid palette while a bar is auto-hidden
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
             sidebar: None,
@@ -1018,10 +1024,23 @@ impl WindowChrome {
             .unwrap_or(0);
         // --- layout (thread T6) --- one geometry for every arrangement: tab bar edge or hidden,
         // address bar edge or hidden, title row, sidebar side and the list density.
-        let (layout, sidebar) = layout::compute_arranged_in_frame(
+        // --- auto-hide (T11) --- with nothing hidden this is exactly that geometry; with bars out
+        // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
+        // every bar shown says where a revealed bar floats.
+        let plan = crate::auto_hide::plan(self.ah.hidden, arrangement.tabs);
+        let hide = plan.layout();
+        let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
-            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
         );
+        let shown = if hide.is_off() {
+            None
+        } else {
+            Some(layout::compute_arranged_in_frame(
+                arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+                i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+            ).0)
+        };
         let sidebar = sidebar.map(|sidebar| sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi));
         // --- end layout ---
         self.layout = layout.with_group_slots(
@@ -1029,8 +1048,30 @@ impl WindowChrome {
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
             self.slots.iter().map(|slot| slot.collapsed && !slot.marker_only),
         );
-        // The bookmarks bar takes its row off the top (or bottom) of the page area.
-        self.layout.viewport = super::bookmark_bar::reserved_viewport(self.layout.viewport, self.bar_reserve);
+        // --- auto-hide (T11) --- where the revealed bars float, and the page's rectangle with the bars out.
+        self.ah.plan = plan;
+        self.ah.page = self.layout.viewport;
+        self.ah.overlay = layout::auto_hide_overlay_arranged(
+            shown.as_ref().unwrap_or(&self.layout), &self.layout, sidebar.as_ref(), arrangement, self.dpi, plan.sidebar,
+        );
+        {
+            let normal = shown.as_ref().map(|shown| shown.viewport).unwrap_or(self.layout.viewport);
+            let (bar, bottom) = self.bar_reserve;
+            self.ah.bar_bottom = bottom;
+            self.ah.bar_float = if bar <= 0 {
+                Rect::default()
+            } else if bottom {
+                Rect::new(normal.left, normal.bottom - bar, normal.right, normal.bottom)
+            } else {
+                Rect::new(normal.left, normal.top, normal.right, normal.top + bar)
+            };
+        }
+        // The bookmarks bar takes its row off the top (or bottom) of the page area, unless auto-hide
+        // has it out of the layout (then it floats over the page).
+        if !plan.bookmarks {
+            self.layout.viewport = super::bookmark_bar::reserved_viewport(self.layout.viewport, self.bar_reserve);
+        }
+        // --- end auto-hide ---
         if let Some(sidebar) = sidebar {
             self.sidebar_scroll = self.sidebar_scroll.clamp(0, sidebar.max_scroll);
             self.sidebar_scroll_target = self.sidebar_scroll_target.clamp(0, sidebar.max_scroll);
@@ -1062,7 +1103,7 @@ impl WindowChrome {
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
     fn html_region(&self) -> Option<Rect> {
-        if !self.html_toolbar_active {
+        if !self.html_toolbar_active || self.ah.top_hidden() {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
@@ -1080,9 +1121,15 @@ impl WindowChrome {
         }
         // --- vertical sidebar (lane S) ---
         if self.sidebar.is_some() {
+            if self.ah.sidebar_hidden() {
+                return None; // --- auto-hide (T11) ---
+            }
             return sidebar_html_region(self.sidebar.as_ref(), true);
         }
         // --- end vertical sidebar ---
+        if self.ah.top_hidden() {
+            return None; // --- auto-hide (T11) ---
+        }
         chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
     }
     /// The left rail the HTML rail covers, in client pixels. `None` until its page is ready, so the
@@ -1113,7 +1160,8 @@ impl WindowChrome {
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none());
+        let hidden = if self.sidebar.is_some() { self.ah.sidebar_hidden() } else { self.ah.top_hidden() }; // --- auto-hide (T11) ---
+        self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none() && !hidden);
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
@@ -1124,7 +1172,7 @@ impl WindowChrome {
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        self.surface.set_html_pending(0, chrome_host::html_ui_enabled() && !self.html_failed[0] && region.is_none());
+        self.surface.set_html_pending(0, chrome_host::html_ui_enabled() && !self.html_failed[0] && region.is_none() && !self.ah.top_hidden()); // --- auto-hide (T11) ---
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -1547,6 +1595,7 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     super::downloads_page::sync(hwnd, app);
     // --- end split view ---
     track_idle_pages(hwnd);
+    auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- the bookmarks bar and page hosts just synced
     let prefs = PaintPrefs::read(app);
     let changed = with_chrome(hwnd, |s| {
         let changed = s.paint_prefs != prefs;
@@ -1690,7 +1739,33 @@ fn sync_html_host_bounds(hwnd: HWND) {
         }
         let _ = host.set_visible(bounds.is_some());
     }
+    auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
 }
+// --- auto-hide (T11) --- what the rest of the app calls (window/auto_hide.rs does the work).
+pub(crate) fn auto_hide_sync(hwnd: HWND, app: &AppRef) {
+    auto_hide::sync_config(hwnd, app);
+}
+pub(crate) fn auto_hide_page_created(hwnd: HWND) {
+    if !hwnd.is_invalid() {
+        auto_hide::page_created(hwnd);
+    }
+}
+pub(crate) fn auto_hide_effective(hwnd: HWND, settings: &crate::settings::Settings) -> crate::auto_hide::Effective {
+    auto_hide::effective_for(hwnd, settings)
+}
+pub(crate) fn zoomed_or_full(hwnd: HWND) -> bool {
+    auto_hide::zoomed_or_full(hwnd)
+}
+pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
+    auto_hide::toggle_fullscreen(hwnd, app);
+}
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
+    auto_hide::page_fullscreen(hwnd, app, on);
+}
+pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
+    auto_hide::bookmark_bar_placement(hwnd)
+}
+// --- end auto-hide ---
 /// Moves the owned chrome popup with the client origin without repainting its pixels.
 fn sync_overlay_position(hwnd: HWND) {
     unsafe {
@@ -2162,6 +2237,11 @@ unsafe extern "system" fn window_proc(
         let app = raw.as_ref();
         match message {
             WM_NCCALCSIZE => {
+                // --- auto-hide (T11) --- a full-screen window has no frame at all: the client is the window.
+                if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No {
+                    return LRESULT(if wparam.0 != 0 { WVR_REDRAW as isize } else { 0 });
+                }
+                // --- end auto-hide ---
                 let d = dpi(hwnd);
                 let mx = IsZoomed(hwnd).as_bool();
                 let fx = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXFRAME, d)
@@ -2221,7 +2301,7 @@ unsafe extern "system" fn window_proc(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
-                    IsZoomed(hwnd).as_bool(),
+                    auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) --- no resize rim in full screen
                     if ih {
                         frame::ChromeHit::Interactive
                     } else {
@@ -2326,7 +2406,7 @@ unsafe extern "system" fn window_proc(
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
-                    s.palette = glass::palette();
+                    s.palette = auto_hide::chrome_palette(); // --- auto-hide (T11) ---
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
                     let rail_settled = s.surface.set_rail_snap(!animations_enabled(), Instant::now());
                     let settled = settled || rail_settled;
@@ -2429,6 +2509,7 @@ unsafe extern "system" fn window_proc(
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
                     super::post(hwnd, WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                    auto_hide::sync_config(hwnd, app); // --- auto-hide (T11) --- a window opened with the setting on starts hidden
                     let _ = SetFocus(Some(edit));
                     sync_foreground(hwnd, Some(app));
                 }
@@ -2454,6 +2535,7 @@ unsafe extern "system" fn window_proc(
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
                     apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
+                    let maximised_now = auto_hide::zoomed_or_full(hwnd); // --- auto-hide (T11) ---
                     let active = App::active_tab_id(app);
                     let settings = App::settings(app);
                     let arrangement = App::arrangement(app); // --- layout (thread T6) ---
@@ -2463,7 +2545,7 @@ unsafe extern "system" fn window_proc(
                             r.bottom,
                             dpi(hwnd),
                             active,
-                            IsZoomed(hwnd).as_bool(),
+                            maximised_now,
                             arrangement.with_address_bar_revealed(s.address_bar_revealed),
                             settings.ui_density,
                             App::sidebar_width(app),
@@ -2545,7 +2627,7 @@ unsafe extern "system" fn window_proc(
                             r.bottom,
                             dpi(hwnd),
                             App::active_tab_id(app),
-                            IsZoomed(hwnd).as_bool(),
+                            auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) ---
                             arrangement,
                             settings.ui_density,
                             App::sidebar_width(app),
@@ -3824,6 +3906,16 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             // --- end theme options ---
+            // --- auto-hide (T11) --- a pointer sensor, and the reveal / hide clock.
+            auto_hide::WM_AUTOHIDE_SENSOR => {
+                auto_hide::on_sensor(hwnd, wparam, lparam);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == auto_hide::TIMER_ID => {
+                auto_hide::on_timer(hwnd);
+                LRESULT(0)
+            }
+            // --- end auto-hide ---
             // --- tab options --- periodic reload and the audio rule (App::tab_tick).
             WM_TIMER if wparam.0 == WM_TAB_TICK_TIMER => {
                 if let Some(app) = app {
@@ -4161,6 +4253,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                auto_hide::forget(hwnd); // --- auto-hide (T11) ---
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
                 let _ = KillTimer(Some(hwnd), super::WM_POWER_TIMER);
@@ -4677,7 +4770,9 @@ fn to_win_rect(rect: Rect) -> RECT {
 
 fn adjusted_viewport(hwnd: HWND, viewport: RECT, window_dpi: u32) -> RECT {
     let viewport = notes_panel::adjust_viewport(viewport, hwnd, window_dpi);
-    let viewport = side_panel::adjust_viewport(viewport, hwnd);
+    // --- auto-hide (T11) --- a floating side panel takes no room from the page.
+    let viewport = if auto_hide::panel_floats(hwnd) { viewport } else { side_panel::adjust_viewport(viewport, hwnd) };
+    // --- end auto-hide ---
     devtools_dock::adjust_viewport(viewport, hwnd)
 }
 
@@ -8264,6 +8359,14 @@ fn monitor_work_area(hwnd: HWND) -> Option<RECT> {
 }
 
 fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximised: bool) {
+    // --- auto-hide (T11) --- a full-screen window is a plain rectangle.
+    if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No {
+        unsafe {
+            let _ = SetWindowRgn(hwnd, None, true);
+        }
+        return;
+    }
+    // --- end auto-hide ---
     let radius = Metrics::new(dpi(hwnd)).window_radius();
     let (left, top, right, bottom) = if maximised {
         let mut window = RECT::default();
@@ -8789,7 +8892,8 @@ fn html_sync(hwnd: HWND) {
     let system_look = glass::appearance();
     let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
     // --- theme options --- the person's colours, the accent (the page's, when asked) and the tint.
-    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid);
+    // --- auto-hide (T11) --- solid while a bar is out of the layout: a revealed bar floats over the page.
+    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid());
     // --- end theme options ---
     let dark = look == crate::theme::Appearance::Dark;
     let state = ViewState {
@@ -8797,7 +8901,7 @@ fn html_sync(hwnd: HWND) {
         pillx,
         pillw,
         menux,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
         dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -9775,7 +9879,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         pillx: 0,
         pillw: 0,
         menux: 0,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -11094,6 +11198,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     sidebar_viewport.right,
                     sidebar_viewport.bottom,
                 );
+                // --- auto-hide (T11) --- the page's frame is drawn below a bar that floats over its top.
+                let sidebar_viewport = s.ah.paint_viewport(sidebar_viewport);
+                let dirty = if s.surface.set_auto_hidden_top(s.ah.top_hidden()) {
+                    Rect::new(0, 0, s.client.0, s.client.1)
+                } else {
+                    dirty
+                };
+                // --- end auto-hide ---
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
                         layout::split_panes(sidebar_viewport, split, s.split_divider, s.split_cross, s.layout.metrics)
@@ -11137,7 +11249,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
-                if let Some(sidebar) = s.sidebar {
+                if let Some(sidebar) = s.sidebar.filter(|_| !s.ah.sidebar_hidden()) { // --- auto-hide (T11) ---
                     s.surface.paint_vertical_sidebar(
                         &sidebar,
                         &s.sidebar_rows,
@@ -11269,6 +11381,7 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     // --- layout (thread T6) --- a hidden address bar comes back for as long as it has the focus.
     set_address_bar_revealed(hwnd, app, true);
+    auto_hide::reveal_for_keyboard(hwnd); // --- auto-hide (T11) --- Ctrl+L, Ctrl+T and friends bring the bars back first
     let _ = with_chrome(hwnd, |s| {
         s.omnibox_claimed = true;
         s.omnibox_edited = false;
@@ -12110,6 +12223,107 @@ mod tests {
             }
         }
     }
+
+    // --- auto-hide (T11) ---
+    fn relaid(s: &mut WindowChrome, dpi: u32, maximised: bool, tab_layout: crate::settings::TabLayout) {
+        let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+        s.relayout(1280, 720, dpi, TabId(0), maximised, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, 100, "");
+    }
+
+    /// The user's rule: with auto-hide off the window lays out exactly as it always did, and no sensor,
+    /// timer or window exists.
+    #[test]
+    fn with_auto_hide_off_the_window_layout_is_unchanged_and_nothing_is_created() {
+        for tab_layout in crate::settings::TabLayout::ALL {
+            for dpi in [96, 144] {
+                for maximised in [false, true] {
+                    let mut s = WindowChrome::new(1280, 720, dpi, HWND::default());
+                    relaid(&mut s, dpi, maximised, tab_layout);
+                    let context = format!("{tab_layout:?} dpi {dpi} max {maximised}");
+                    // --- layout (thread T6) --- the arranged geometry is what every layout is laid out with.
+                    let expected = layout::compute_arranged_in_frame(
+                        layout::Arrangement { tabs: tab_layout, ..Default::default() }, 1280, 720, dpi, 1, 0, maximised, 260, true,
+                        crate::layout_prefs::UiDensity::Regular.sidebar_row_height(),
+                    ).0;
+                    assert_eq!(s.layout.viewport, expected.viewport, "{context}");
+                    assert_eq!(s.layout.strip, expected.strip, "{context}");
+                    assert_eq!(s.layout.tab_row, expected.tab_row, "{context}");
+                    assert_eq!(s.ah.plan, crate::auto_hide::Plan::default(), "{context}");
+                    assert!(!s.ah.top_hidden() && !s.ah.sidebar_hidden(), "{context}");
+                    assert!(!s.ah.machine.active(), "{context}: no timer to run");
+                    assert!(s.ah.paint_viewport(s.layout.viewport) == s.layout.viewport, "{context}");
+                }
+            }
+        }
+    }
+
+    /// Each bar of "Bars to hide" changes the window's layout the way the plan says, and revealing a
+    /// bar never moves the page.
+    #[test]
+    fn hiding_the_bars_widens_the_page_and_a_reveal_leaves_it_where_it_is() {
+        use crate::auto_hide::{Bars, Zone, Zones};
+        let tab_layout = crate::settings::TabLayout::ToolbarTop;
+        let mut shown = WindowChrome::new(1280, 720, 96, HWND::default());
+        relaid(&mut shown, 96, false, tab_layout);
+        let normal = shown.layout.viewport;
+
+        let mut s = WindowChrome::new(1280, 720, 96, HWND::default());
+        s.ah.hidden = Bars::ADDRESS;
+        relaid(&mut s, 96, false, tab_layout);
+        assert!(s.ah.plan.top);
+        assert_eq!(s.layout.viewport.top, layout::auto_hide_top(96, false), "the page rose to the top");
+        assert_eq!((s.layout.viewport.left, s.layout.viewport.right, s.layout.viewport.bottom), (normal.left, normal.right, normal.bottom));
+        assert!(s.ah.top_hidden());
+        assert_eq!(s.ah.overlay.top.bottom, normal.top, "the bars float exactly where they sit when shown");
+        let hidden_viewport = s.layout.viewport;
+
+        // A reveal changes what is drawn, never the page's rectangle.
+        assert!(s.ah.machine.reveal(Zones::NONE.with(Zone::Top), 0));
+        relaid(&mut s, 96, false, tab_layout);
+        assert_eq!(s.layout.viewport, hidden_viewport, "no relayout of the page when a bar appears");
+        assert!(!s.ah.top_hidden());
+        assert_eq!(s.ah.paint_viewport(s.layout.viewport).top, normal.top, "the page's frame is drawn below the floating bars");
+
+        // The bookmarks bar: in the layout it takes room; out of it, the page keeps the room and the bar floats.
+        let mut with_bar = WindowChrome::new(1280, 720, 96, HWND::default());
+        with_bar.bar_reserve = (28, false);
+        relaid(&mut with_bar, 96, false, tab_layout);
+        assert_eq!(with_bar.layout.viewport.top, normal.top + 28, "shown: the bar takes its row");
+        assert!(with_bar.ah.bar_float.is_empty() == false, "its floating place is known either way");
+        assert_eq!(with_bar.ah.bar_float, Rect::new(normal.left, normal.top, normal.right, normal.top + 28));
+        let mut floating = WindowChrome::new(1280, 720, 96, HWND::default());
+        floating.bar_reserve = (28, false);
+        floating.ah.hidden = Bars::BOOKMARKS;
+        relaid(&mut floating, 96, false, tab_layout);
+        assert_eq!(floating.layout.viewport.top, normal.top, "hidden: the page keeps the bar's row");
+        assert!(floating.ah.plan.bookmarks && !floating.ah.plan.top);
+        assert!(!floating.ah.bookmarks_revealed());
+        assert!(floating.ah.machine.reveal(Zones::NONE.with(Zone::Bookmarks), 0));
+        assert!(floating.ah.bookmarks_revealed());
+
+        // The vertical layout: tabs are the sidebar, which has its own edge.
+        let mut v = WindowChrome::new(1280, 720, 96, HWND::default());
+        v.ah.hidden = Bars::TABS;
+        relaid(&mut v, 96, false, crate::settings::TabLayout::Vertical);
+        assert!(v.ah.plan.sidebar && !v.ah.plan.top);
+        assert!(v.ah.sidebar_hidden() && !v.ah.top_hidden());
+        assert_eq!(v.layout.viewport.left, layout::left_rail_inset(96) + Metrics::new(96).px(Metrics::RESIZE_RIM));
+        assert!(v.sidebar.is_some(), "the sidebar keeps its rectangle: it floats there");
+    }
+
+    /// An open side panel floats (takes nothing from the page) when "Side panel" is among the hidden bars.
+    #[test]
+    fn the_side_panel_row_decides_whether_an_open_panel_takes_room() {
+        use crate::auto_hide::{effective, plan, AutoHideSettings, Bars, Fullscreen};
+        let on = AutoHideSettings { bars: Bars::PANEL, in_fullscreen: true };
+        let off = AutoHideSettings { bars: Bars::TABS, in_fullscreen: true };
+        let tab_layout = crate::settings::TabLayout::ToolbarTop;
+        assert!(plan(effective(true, &on, Fullscreen::No).hidden, tab_layout).panel);
+        assert!(!plan(effective(true, &off, Fullscreen::No).hidden, tab_layout).panel);
+        assert!(!plan(effective(false, &on, Fullscreen::No).hidden, tab_layout).panel, "the master switch off: panels take room as ever");
+        assert!(plan(effective(false, &off, Fullscreen::Window).hidden, tab_layout).panel, "full screen floats every bar");
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn unchanged_chrome_sync_does_not_rebuild() {

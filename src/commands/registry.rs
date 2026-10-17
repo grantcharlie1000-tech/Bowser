@@ -226,6 +226,10 @@ pub static BUILTINS: &[CommandDef] = &[
     def("note-from-selection", "Add selection to a new note", "Make a note from the text selected on the page", C::Tools, &["Ctrl+Shift+O"], Page, Run(crate::win32::run_note_from_selection)),
     def("note-append-selection", "Add selection to an existing note", "Pick a note and add the selected text to its end", C::Tools, &[], Page, Run(crate::win32::run_note_append)),
     // --- end page tools ---
+    // --- auto-hide (T11): src/auto_hide.rs, win32/window/auto_hide.rs ---
+    def("toggle-auto-hide", "Toggle auto-hide UI", "Hide the toolbars and tabs until the pointer rests at the window edge, or show them again", C::Windows, &["Ctrl+F11"], Cmd, Run(crate::win32::run_toggle_auto_hide)),
+    browser(def("toggle-fullscreen", "Full screen", "Fill the screen with the page; the bars come back when the pointer rests at the edge", C::Windows, &["F11"], Cmd, Run(crate::win32::run_toggle_fullscreen))),
+    // --- end auto-hide ---
 ];
 
 /// The command with this id, if it is a built-in.

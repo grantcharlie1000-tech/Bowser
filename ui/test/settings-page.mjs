@@ -63,6 +63,12 @@ test('the Rust snapshots pass the strict snapshot contract and anything else is 
     { ...d, toolbarButtons: 'back,' },
     { ...d, centredAddressBar: 'true' },
     { ...d, frameless: 0 },
+    { ...d, autoHideBars: 'address,tabs' },
+    { ...d, autoHideBars: 'tabs,tabs' },
+    { ...d, autoHideBars: 'tabs,status' },
+    { ...d, autoHideBars: 'tabs,' },
+    { ...d, autoHideBars: true },
+    { ...d, autoHideFullscreen: 'yes' },
     { ...d, bookmarksBar: 'sometimes' },
     { ...d, sidePanelPosition: 'top' },
     { ...d, fontSize: 'huge' },
@@ -96,8 +102,8 @@ test('browser-customizability fields: parse, draftOf and save', () => {
 
   const draft = logic.draftOf(s);
   for (const key of [
-    'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'roundedContentFrame',
-    'showHomeButton', 'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont',
+    'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'autoHideBars', 'autoHideFullscreen',
+    'roundedContentFrame', 'showHomeButton', 'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont',
     'defaultZoom', 'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs',
     'pinNewTabGroups', 'splitEdgeDrop', 'blockYoutubeVideoAds',
   ]) {
@@ -166,7 +172,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   // --- settings slim --- the toolbar checklist joins it: the HTML toolbar reads none of its ids.
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['frameless', 'toolbarButtons']);
+  assert.deepEqual(notYet, ['toolbarButtons'], 'frameless is the working auto-hide switch now');
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -176,7 +182,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -474,7 +480,10 @@ test('Translation: two switches and a language select, each its own command, app
 
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
-  assert.equal(flagOf('frameless').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('toolbarButtons').textContent, logic.NOT_YET_NOTE);
+  assert.equal(flagOf('frameless'), null, 'auto-hide acts now: no note');
+  assert.equal(flagOf('autoHideBars'), null);
+  assert.equal(flagOf('autoHideFullscreen'), null);
   assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
   assert.equal(flagOf('grouping').textContent, logic.RESTART_NOTE);
   assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
@@ -484,7 +493,9 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   // With both of those groups acting, no group is left made only of such rows, so no group note shows.
   assert.equal(app.querySelectorAll('.sp-group-note').length, 0);
   const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
-  assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless sp-f-frameless', 'the note is read with the control');
+  assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless', 'auto-hide acts now, so it has no note to read');
+  const locked = app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelector('[role="switch"]');
+  assert.match(locked.getAttribute('aria-describedby') ?? 'sp-f-toolbarButtons', /sp-f-toolbarButtons/, 'a note is read with its control');
   assert.ok(app.querySelectorAll('.sp-flag').every((flag) => !/Applies after restart/.test(flag.textContent) || !logic.ROWS.find((r) => `sp-f-${r.id}` === flag.id)?.notYet));
 });
 
@@ -1381,10 +1392,10 @@ test('slim: the search finds rows behind a closed disclosure and opens it; clear
   assert.equal(button.getAttribute('aria-expanded'), 'true', 'a row used from the search stays in view');
   button.click();
   // Rows that do nothing yet are found too, in their own closed section.
-  searchFor('frameless');
+  searchFor('customise your toolbar');
   assert.equal(areaNode('later').hidden, false);
   assert.equal(areaNode('later').querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'true');
-  assert.equal(rowNode('frameless').hidden, false);
+  assert.equal(rowNode('toolbarButtons').hidden, false);
   assert.equal(areaNode('appearance').hidden, true, 'not in Appearance any more');
   searchFor('');
   assert.equal(areaNode('later').querySelector('.sp-more-body').hidden, true);
@@ -1395,7 +1406,7 @@ test('slim: no row that does nothing yet renders as a live control', () => {
   const later = areaNode('later');
   assert.equal(later.querySelector('.sp-h').textContent, logic.LATER_TITLE);
   assert.equal(later.querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
-  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Customise your toolbar, Frameless window');
+  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Customise your toolbar');
   for (const row of logic.ROWS) {
     const node = rowNode(row.id);
     assert.equal(later.contains(node), row.notYet === true, `${row.id} is in Not active yet only when it does nothing yet`);
@@ -1407,11 +1418,11 @@ test('slim: no row that does nothing yet renders as a live control', () => {
     assert.equal(node.querySelector('.sp-flag').textContent, logic.NOT_YET_NOTE);
   }
   sent.length = 0;
-  rowNode('frameless').querySelector('[role="switch"]').click();
+  rowNode('toolbarButtons').querySelector('[role="switch"]').click();
   assert.deepEqual(sent, []);
   // A fresh snapshot (which enables every working control) leaves them locked.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: true } });
-  assert.equal(rowNode('frameless').querySelector('[role="switch"]').disabled, true);
+  assert.equal(rowNode('toolbarButtons').querySelector('[role="switch"]').disabled, true);
 });
 
 test('slim: every editor opens on its own sub-page from one row, and Back, a nav pick or a search returns', () => {
@@ -1712,4 +1723,84 @@ test('layout: the view applies the density and compact menus to the root for the
   assert.match(read(join(srcDir, 'styles', 'menu.css')), /--menu-item-h: var\(--bw-menu-row-h\)/);
   assert.match(read(join(srcDir, 'styles', 'sidebar.css')), /height: var\(--bw-side-row-h\)/);
   assert.match(read(join(srcDir, 'view.ts')), /root\.dataset\.density = density/);
+});
+
+// ---- Auto-hide toolbars and tabs (thread T11, src/auto_hide.rs) ----
+
+test('auto-hide: the master switch is core, the other two rows are behind More options, nothing is "not active yet"', () => {
+  deliver(fixture.snap);
+  for (const id of ['frameless', 'autoHideBars', 'autoHideFullscreen']) {
+    const row = logic.ROWS.find((r) => r.id === id);
+    assert.ok(!row.notYet && !row.restart, `${id} acts at once`);
+  }
+  assert.equal(logic.ROWS.find((r) => r.id === 'frameless').label, 'Auto-hide toolbars and tabs');
+  assert.equal(tierOf('frameless'), 'core');
+  assert.equal(tierOf('autoHideBars'), 'more');
+  assert.equal(tierOf('autoHideFullscreen'), 'more');
+  assert.ok(moreOf('appearance').querySelector('.sp-more-body').contains(rowNode('autoHideBars')), 'Bars to hide is behind More options');
+  assert.ok(moreOf('appearance').querySelector('.sp-more-body').contains(rowNode('autoHideFullscreen')));
+  assert.ok(!moreOf('appearance').contains(rowNode('frameless')), 'the master switch is not');
+  assert.ok(!areaNode('later').contains(rowNode('frameless')), 'and it left Not active yet');
+  assert.equal(moreOf('appearance').querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
+  assert.ok(logic.matchRows('auto-hide').has('frameless'));
+  assert.ok(logic.matchRows('full screen').has('autoHideFullscreen'));
+});
+
+test('auto-hide: each control saves its own key and a snapshot moves the controls', () => {
+  deliver(fixture.snap);
+  const lastSave = () => sent.filter((m) => m.t === 'set' && m.a === 'save').at(-1).text.split('\n');
+  const value = (key) => lastSave().find((l) => l.startsWith(`${key}=`));
+  const switchOf = (id) => rowNode(id).querySelector('[role="switch"]');
+  sent.length = 0;
+  switchOf('frameless').click();
+  assert.equal(value('frameless'), 'frameless=true');
+  assert.equal(sent.length, 1, 'one save');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, frameless: true, ack: 'saved' } });
+  assert.equal(switchOf('frameless').getAttribute('aria-checked'), 'true');
+  // Bars to hide: one switch per bar, saved in the catalog order, each once.
+  const bars = [...rowNode('autoHideBars').querySelectorAll('[role="switch"]')];
+  assert.deepEqual(bars.map((b) => b.getAttribute('aria-label')), ['Tab bar', 'Address bar', 'Bookmarks bar', 'Side panel (opens over the page)']);
+  assert.deepEqual(bars.map((b) => b.getAttribute('aria-checked')), ['true', 'true', 'true', 'false'], 'the default three');
+  assert.ok(bars.every((b) => !b.disabled), 'enabled while the master switch is on');
+  sent.length = 0;
+  bars[3].click();
+  assert.equal(value('auto_hide_bars'), 'auto_hide_bars=tabs,address,bookmarks,panel');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, frameless: true, autoHideBars: 'tabs,address,bookmarks,panel', ack: 'saved' } });
+  sent.length = 0;
+  bars[0].click();
+  assert.equal(value('auto_hide_bars'), 'auto_hide_bars=address,bookmarks,panel');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, frameless: true, autoHideBars: 'address,bookmarks,panel', ack: 'saved' } });
+  assert.deepEqual([...rowNode('autoHideBars').querySelectorAll('[role="switch"]')].map((b) => b.getAttribute('aria-checked')), ['false', 'true', 'true', 'true']);
+  sent.length = 0;
+  for (const bar of [...rowNode('autoHideBars').querySelectorAll('[role="switch"]')]) if (bar.getAttribute('aria-checked') === 'true') {
+    bar.click();
+    deliver({ ...fixture.snap, d: { ...fixture.snap.d, frameless: true, autoHideBars: value('auto_hide_bars').split('=')[1], ack: 'saved' } });
+  }
+  assert.equal(value('auto_hide_bars'), 'auto_hide_bars=', 'none chosen saves the empty list');
+  // Always auto-hide in full screen.
+  sent.length = 0;
+  switchOf('autoHideFullscreen').click();
+  assert.equal(value('auto_hide_fullscreen'), 'auto_hide_fullscreen=false');
+  // The bar list means nothing while the master switch is off, so it is disabled then.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, frameless: false, ack: 'saved' } });
+  assert.ok([...rowNode('autoHideBars').querySelectorAll('[role="switch"]')].every((b) => b.disabled), 'disabled while auto-hide is off');
+  assert.ok(!switchOf('autoHideFullscreen').disabled, 'full screen has its own switch');
+});
+
+test('auto-hide: the saved text carries both keys once and refuses a bar list Rust would not write', () => {
+  const s = logic.parseSettingsSnapshot(fixture.snap.d);
+  assert.ok(s, 'the Rust snapshot carries autoHideBars and autoHideFullscreen');
+  assert.equal(s.autoHideBars, 'tabs,address,bookmarks');
+  assert.equal(s.autoHideFullscreen, true);
+  const text = logic.saveText(logic.draftOf(s));
+  for (const key of ['auto_hide_bars', 'auto_hide_fullscreen']) assert.equal(text.split('\n').filter((l) => l.startsWith(`${key}=`)).length, 1, key);
+  const rust = read(join(root, 'src', 'auto_hide.rs'));
+  assert.match(rust, /KEY_BARS: &str = "auto_hide_bars"/);
+  assert.match(rust, /KEY_FULLSCREEN: &str = "auto_hide_fullscreen"/);
+  const table = [...rust.matchAll(/^    \("([a-z]+)", Bars::[A-Z]+\),$/gm)].map((m) => m[1]);
+  assert.deepEqual(table, [...logic.AUTO_HIDE_BARS], 'the page lists the bars Rust can hide, in its order');
+  assert.equal(logic.saveText({ ...logic.draftOf(s), autoHideBars: 'address,tabs' }), null);
+  assert.equal(logic.saveText({ ...logic.draftOf(s), autoHideBars: 'status' }), null);
+  assert.equal(logic.autoHideBarsText(['panel', 'tabs']), 'tabs,panel');
+  assert.deepEqual(logic.autoHideBarsList(''), []);
 });

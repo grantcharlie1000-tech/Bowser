@@ -1591,8 +1591,8 @@ fn search_text(panel: &Panel) -> &'static str {
     search_selector_text(engine_list_in_use(), panel.search_engine, panel.search_fallback)
 }
 
-/// --- wave-1 fixes --- the frameless switch is saved but nothing acts on it yet (thread T11 owns it).
-const FRAMELESS_TOGGLE: &str = "Hide toolbar and tabs until the pointer nears the edge (not active yet)";
+/// The frameless key is the master "Auto-hide toolbars and tabs" switch (thread T11, `src/auto_hide.rs`).
+const FRAMELESS_TOGGLE: &str = "Auto-hide toolbars and tabs until the pointer rests at the window edge";
 /// Shown in the search selector once the settings page's engine list decides searches.
 const SEARCH_MANAGED: &str = "Set in Settings > Search";
 
@@ -1898,6 +1898,7 @@ fn save_form(hwnd: HWND) {
         translate_offer: current.translate_offer,
         translate_auto: current.translate_auto,
         translate_target: current.translate_target,
+        auto_hide: current.auto_hide, // --- auto-hide (T11): the GDI form has only the master switch ---
         // --- privacy, history and website appearance (thread T3): kept as the file has them ---
         blocker_level: current.blocker_level,
         cookie_notices: current.cookie_notices,
@@ -2367,7 +2368,7 @@ mod tests {
     fn the_native_form_says_what_its_blocker_search_and_frameless_controls_do() {
         assert!(BLOCKER_TOGGLE.contains("None"), "the switch is the None level, not the whole level");
         assert!(BLOCKER_HELP.contains("blocking level"));
-        assert!(FRAMELESS_TOGGLE.ends_with("(not active yet)"));
+        assert!(FRAMELESS_TOGGLE.starts_with("Auto-hide"), "the switch does what the settings page's row does");
         assert!(TOOLBAR_HEADING.contains("only Site information and Split view act"), "the checklist says which buttons it moves");
         assert_eq!(search_selector_text(true, Some(SearchEngine::Google), SEARCH_DEFAULT), SEARCH_MANAGED, "the engine list decides");
         assert_eq!(search_selector_text(false, Some(SearchEngine::Google), SEARCH_DEFAULT), SearchEngine::Google.label());

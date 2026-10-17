@@ -277,7 +277,8 @@ mod tests {
                 let resolved = resolve_in(&live, key, ctrl, shift, alt, &context);
                 if matches!(resolved, Some(Command::Registered(_))) {
                     // A chord the registry adds for a command with no `Command` of its own (Ctrl+F1, the
-                    // cheat sheet; page tools' capture and notes): the old table has nothing there.
+                    // cheat sheet; page tools' capture and notes; F11 and Ctrl+F11 for full screen and
+                    // auto-hide): the old table has nothing there.
                     assert_eq!(shortcuts::command_for_gated(key, ctrl, shift, alt, all), None, "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
                     continue;
                 }
@@ -289,6 +290,28 @@ mod tests {
             }
         }
     }
+
+    // --- auto-hide (T11) --- both commands are in the registry, so the palette, the keyboard editor, the cheat sheet
+    // and chains have them, with F11 and Ctrl+F11 bound by default and rebindable like any other.
+    #[test]
+    fn auto_hide_and_full_screen_are_registry_commands_with_default_chords() {
+        let live = Live::new(Store::default());
+        for (id, key, ctrl) in [("toggle-auto-hide", 0x7A_u32, true), ("toggle-fullscreen", 0x7A, false)] {
+            let def = registry::builtin(id).unwrap_or_else(|| panic!("{id} is registered"));
+            assert!(matches!(def.handler, registry::Handler::Run(_)), "{id} needs no window code");
+            let Some(Command::Registered(handle)) = resolve_in(&live, key, ctrl, false, false, &cx()) else { panic!("{id}: the chord is bound") };
+            assert_eq!(id_of(handle).as_deref(), Some(id));
+            assert!(entry(&live, id).is_some(), "{id} shows in the keyboard editor, the palette and chains");
+        }
+        assert_eq!(registry::builtin("toggle-auto-hide").map(|d| d.label), Some("Toggle auto-hide UI"));
+        let mut store = Store::default();
+        store.assign("toggle-auto-hide", "Ctrl+Shift+F11", false).unwrap();
+        store.remove_chord("toggle-auto-hide", "Ctrl+F11");
+        let moved = Live::new(store);
+        assert!(resolve_in(&moved, 0x7A, true, true, false, &cx()).is_some());
+        assert_eq!(resolve_in(&moved, 0x7A, true, false, false, &cx()), None, "Ctrl+F11 is free once it is moved");
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn gated_chords_are_unbound_until_their_condition_holds() {
