@@ -191,7 +191,7 @@ pub static BUILTINS: &[CommandDef] = &[
     def("zoom-reset", "Reset zoom", "Return the page to 100%", C::Page, &["Ctrl+0", "Ctrl+Numpad0"], Page, Key(Command::ZoomReset)),
     def("devtools", "Developer tools", "Open or close the developer tools for this tab", C::Tools, &["F12", "Ctrl+Shift+I"], Page, Key(Command::OpenDevTools)),
     browser(def("new-window", "New window", "Open another window for this profile", C::Windows, &["Ctrl+N"], Cmd, Key(Command::NewWindow))),
-    // T7 re-assigns Ctrl+Shift+C to "add selected text to a note": move this one chord to that command.
+    // Ctrl+Shift+C stays Copy address, gated by its setting; T7's "note-from-selection" uses Ctrl+Shift+O instead.
     gated(def("copy-link", "Copy address", "Copy the current page's address", C::Page, &["Ctrl+Shift+C"], Page, Key(Command::CopyLink)), Gate::CopyLink),
     gated(def("toggle-sidebar", "Collapse or expand the tab sidebar", "Vertical layout only", C::Tabs, &["Ctrl+S"], Cmd, Key(Command::ToggleSidebar)), Gate::ToggleSidebar),
     // Keyboard and commands (new with the registry).
@@ -212,6 +212,20 @@ pub static BUILTINS: &[CommandDef] = &[
     def("qr-code", "QR code for this page", "Show the page's address as a QR code", C::Page, &[], Page, Run(crate::win32::run_qr_code)),
     def("toggle-address-bar", "Show or hide the address bar", "Turn Settings > Address bar > Show the address bar on or off", C::Navigation, &[], Cmd, Run(crate::win32::run_toggle_address_bar)),
     // --- end wave-1 integration ---
+    // --- page tools (T7): capture, and notes made from the page (win32/page_tools_ui.rs) ---
+    def("capture-visible", "Capture visible area", "Save what is on screen as a picture", C::Tools, &["Ctrl+Shift+S"], Page, Run(crate::win32::run_capture_visible)),
+    def("capture-full", "Capture full page", "Save the whole page, up to 30000 pixels tall, as one picture", C::Tools, &[], Page, Run(crate::win32::run_capture_full)),
+    def("capture-selection", "Capture selection", "Save the selected part of the page as a picture", C::Tools, &[], Page, Run(crate::win32::run_capture_selection)),
+    def("capture-visible-copy", "Copy capture of visible area", "Copy what is on screen to the clipboard as a picture", C::Tools, &[], Page, Run(crate::win32::run_capture_visible_copy)),
+    def("capture-full-copy", "Copy capture of full page", "Copy the whole page to the clipboard as a picture", C::Tools, &[], Page, Run(crate::win32::run_capture_full_copy)),
+    def("capture-selection-copy", "Copy capture of selection", "Copy the selected part of the page to the clipboard as a picture", C::Tools, &[], Page, Run(crate::win32::run_capture_selection_copy)),
+    def("capture-visible-note", "Capture visible area to a note", "Save what is on screen and add a note that points at it", C::Tools, &[], Page, Run(crate::win32::run_capture_visible_note)),
+    def("capture-full-note", "Capture full page to a note", "Save the whole page and add a note that points at it", C::Tools, &[], Page, Run(crate::win32::run_capture_full_note)),
+    def("capture-selection-note", "Capture selection to a note", "Save the selected part and add a note that points at it", C::Tools, &[], Page, Run(crate::win32::run_capture_selection_note)),
+    // Ctrl+Shift+C stays "Copy address" (its own setting row decides); this chord is free and can be moved to it in Keyboard settings.
+    def("note-from-selection", "Add selection to a new note", "Make a note from the text selected on the page", C::Tools, &["Ctrl+Shift+O"], Page, Run(crate::win32::run_note_from_selection)),
+    def("note-append-selection", "Add selection to an existing note", "Pick a note and add the selected text to its end", C::Tools, &[], Page, Run(crate::win32::run_note_append)),
+    // --- end page tools ---
 ];
 
 /// The command with this id, if it is a built-in.

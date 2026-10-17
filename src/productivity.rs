@@ -1021,7 +1021,7 @@ pub(crate) fn file_holds(path: &Path, bytes: &[u8]) -> bool {
         && fs::read(path).is_ok_and(|current| current == bytes)
 }
 
-fn read_bounded(path: &Path) -> Option<String> {
+pub(crate) fn read_bounded(path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() as usize > MAX_FILE_BYTES {
         return None;
@@ -1086,14 +1086,14 @@ fn valid_http_url(url: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-fn escape(value: &str) -> String {
+pub(crate) fn escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('\t', "\\t")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
 }
-fn unescape(value: &str) -> String {
+pub(crate) fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(c) = chars.next() {

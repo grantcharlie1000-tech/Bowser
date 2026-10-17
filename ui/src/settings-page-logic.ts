@@ -7,6 +7,7 @@ import { parseStartSettings, startSaveLines, type StartSettings } from './start-
 // --- end start page ---
 // --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
 import { ADDRESS_ROWS } from './address-settings-logic';
+import { PAGE_TOOLS_CORE, PAGE_TOOLS_ROWS } from './page-tools-logic'; // --- page tools (T7) ---
 // --- end address bar, search and bookmarks ---
 import { cardSpecs, parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
 
@@ -417,6 +418,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
+  { key: 'pagetools', title: 'Page tools', nav: 'Page tools', lead: 'Capture, moving between links with the keyboard, page zoom and reader view.' }, // --- page tools (T7) ---
   { key: 'address', title: 'Address bar', nav: 'Address bar', lead: 'How the address field behaves, what its drop-down suggests, and how it protects you.' },
   { key: 'search', title: 'Search engine', nav: 'Search engine', lead: 'The engines the address bar and the search field search with.' },
   { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: 'How bookmarks open and how new ones are saved.' },
@@ -478,6 +480,7 @@ export const AREAS: readonly AreaSpec[] = [
   { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'startpage'] },
   single('privacy'),
   single('performance'),
+  single('pagetools'), // --- page tools (T7) ---
   { key: 'address', title: 'Address bar and search', nav: 'Address bar and search', lead: 'How the address field behaves, the engines it searches with, and how bookmarks open.', parts: ['address', 'search', 'bookmarks'] },
   { key: 'keyboard', title: 'Shortcuts and commands', nav: 'Shortcuts and commands', lead: 'Keyboard shortcuts, Quick commands and chains of commands.', parts: ['keyboard', 'commands'] },
   single('downloads'),
@@ -518,6 +521,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'efficiency', 'sleep', 'sleepAfter',
   'addrAutocomplete', 'addrFull', 'secHttps', 'searchDefault', 'searchPrivate', 'searchField', 'bmNewTab',
   'kbEnabled',
+  ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
   'downloadDir', 'downloadAsk', 'media', 'extensions', 'autoUpdate', 'updateStatus', 'version', 'file', 'reset', 'defaultBrowser',
 ]);
 
@@ -653,6 +657,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'sleep', section: 'performance', label: 'Sleep hidden tabs', description: 'Hidden tabs are put to sleep after a delay to free memory, sooner under memory pressure.', keywords: 'memory discard suspend hibernate inactive' },
   { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: 'How long a tab stays hidden before it sleeps.', keywords: 'delay timeout minutes memory' },
   ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
+  ...PAGE_TOOLS_ROWS, // --- page tools (T7) ---
   // --- keyboard and quick commands (docs/commands.md) ---
   { id: 'kbEnabled', section: 'keyboard', label: 'Keyboard shortcuts', description: 'Turns the browser’s shortcuts on or off. Quick commands (Ctrl+Shift+K) keeps working, so you can always turn them back on.', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys' },
   { id: 'kbSingleKey', section: 'keyboard', label: 'Allow single-key shortcuts', description: 'Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.', keywords: 'single key shortcuts letter number plain keys' },

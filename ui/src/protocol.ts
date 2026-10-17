@@ -45,7 +45,7 @@ export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
 export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -498,7 +498,7 @@ export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; 
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -593,7 +593,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;

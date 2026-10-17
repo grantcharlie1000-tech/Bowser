@@ -375,8 +375,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('[role="search"]'));
   // --- settings slim --- twelve areas in the nav, each holding the Rust sections it merges, then
   // "Not active yet" and one sub-page per big editor.
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 12);
-  assert.equal(app.querySelectorAll('section.sp-part').length, 16);
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13);
+  assert.equal(app.querySelectorAll('section.sp-part').length, 17);
   assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
   assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
@@ -669,7 +669,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), ['profile', 'appearance', 'tabs', 'privacy', 'performance', 'address', 'keyboard', 'downloads', 'media', 'extensions', 'updates', 'about']);
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), ['profile', 'appearance', 'tabs', 'privacy', 'performance', 'pagetools', 'address', 'keyboard', 'downloads', 'media', 'extensions', 'updates', 'about']);
   assert.deepEqual(keyboard().querySelectorAll('section.sp-part').map((s) => s.dataset.section), ['keyboard', 'commands']);
   assert.equal(kbPage().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(chainsPage().querySelector('.sp-chains').dataset.row, 'chains');
@@ -1260,8 +1260,8 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
 
 // ---- wave-1 integration: one coherent page ----
 
-test('integrated page: sixteen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
-  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
+test('integrated page: seventeen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
+  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
   const ids = logic.ROWS.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, 'no row twice');
   const labels = logic.ROWS.map((r) => r.label.toLowerCase());

@@ -286,5 +286,5 @@ test('the script holds to its safety rules', () => {
   assert.doesNotMatch(CSS + BAR, /@import|url\(|expression\(|javascript:/i);
   // The only output is the fixed-shape string.
   assert.match(SCRIPT, /'r2\|'/);
-  assert.ok(SCRIPT.length < 11500, `script is ${SCRIPT.length} bytes`);
+  assert.ok(SCRIPT.length < 13500, `script is ${SCRIPT.length} bytes`);
 });

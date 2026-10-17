@@ -275,9 +275,10 @@ mod tests {
             for modifiers in 0..8_u8 {
                 let (ctrl, shift, alt) = (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                 let resolved = resolve_in(&live, key, ctrl, shift, alt, &context);
-                if (key, ctrl, shift, alt) == (0x70, true, false, false) {
-                    // Ctrl+F1, the cheat sheet, is the one chord the registry adds.
-                    assert!(matches!(resolved, Some(Command::Registered(_))), "{resolved:?}");
+                if matches!(resolved, Some(Command::Registered(_))) {
+                    // A chord the registry adds for a command with no `Command` of its own (Ctrl+F1, the
+                    // cheat sheet; page tools' capture and notes): the old table has nothing there.
+                    assert_eq!(shortcuts::command_for_gated(key, ctrl, shift, alt, all), None, "key {key:#04X} ctrl={ctrl} shift={shift} alt={alt}");
                     continue;
                 }
                 assert_eq!(

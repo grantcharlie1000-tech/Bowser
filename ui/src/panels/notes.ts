@@ -1,15 +1,22 @@
 import { sendPanel, type Inbound, type PanelFields, type SnapshotMsg } from '../protocol';
 import { el, icon, place } from '../dom';
-import { notesCommand, parseNotesSnapshot, type Note, type NotesSnapshot, type Task } from './notes-logic';
+import {
+  MAX_FOLDER_NAME, SORTS, SORT_LABELS, addrHost, dateText, exportCommand, groupNotes, notesCommand, parseMarkdown, parseNotesSnapshot,
+  type Block, type Folder, type Inline, type Note, type NotesSnapshot, type Sort, type Task,
+} from './notes-logic';
 import { emptyState, enter, iconButton, moveFocus, panelHeader, sectionHeader, textButton } from './kit';
 import { preview } from './kit-logic';
+import { selectField, type SelectField } from './select';
 
-function emit(a: string, id?: number, fields: { on?: boolean; text?: string } = {}): void {
+function emit(a: string, id?: number, fields: { on?: boolean; text?: string; parent?: number; before?: number } = {}): void {
   const command = notesCommand(a, id, fields);
   if (command) sendPanel('notes', command as PanelFields);
 }
 
-type NoteView = { root: HTMLElement; row: HTMLElement; name: HTMLElement; peek: HTMLElement; title: HTMLInputElement; body: HTMLTextAreaElement; note: Note };
+type NoteView = {
+  root: HTMLElement; row: HTMLElement; name: HTMLElement; peek: HTMLElement; title: HTMLInputElement; body: HTMLTextAreaElement; note: Note;
+  addr: HTMLElement; shown: HTMLElement; folder: SelectField<string>; up: HTMLButtonElement; down: HTMLButtonElement; markdown: boolean; mdButton: HTMLButtonElement;
+};
 type TaskView = { root: HTMLElement; check: HTMLButtonElement; input: HTMLInputElement; task: Task };
 
 let uid = 0;
@@ -17,6 +24,29 @@ let uid = 0;
 /** Writes a value into a field the user is not editing right now. */
 function sync(field: HTMLInputElement | HTMLTextAreaElement, value: string): void {
   if (document.activeElement !== field && field.value !== value) field.value = value;
+}
+
+/** Builds elements for parsed Markdown with DOM calls and textContent only: a note never injects markup. */
+export function renderMarkdown(blocks: readonly Block[]): HTMLElement[] {
+  const inline = (parts: readonly Inline[], into: HTMLElement): void => {
+    for (const part of parts) {
+      if (part.t === 'text') { into.append(document.createTextNode(part.s)); continue; }
+      // A link is shown as a link but never navigates: this page is Bowser's own chrome, which a note must not drive.
+      const node = el(part.t === 'b' ? 'strong' : part.t === 'i' ? 'em' : part.t === 'code' ? 'code' : 'span');
+      node.textContent = part.s;
+      if (part.t === 'link') { node.className = 'pn-md-link'; node.setAttribute('data-tip', part.href); }
+      into.append(node);
+    }
+  };
+  return blocks.map((block) => {
+    if (block.k === 'h') { const h = el('p', `pn-md-h pn-md-h${Math.min(block.level, 3)}`); inline(block.inline, h); return h; }
+    if (block.k === 'p') { const p = el('p', 'pn-md-p'); inline(block.inline, p); return p; }
+    if (block.k === 'quote') { const q = el('blockquote', 'pn-md-quote'); inline(block.inline, q); return q; }
+    if (block.k === 'code') { const pre = el('pre', 'pn-md-code'); pre.textContent = block.s; return pre; }
+    const list = el(block.k, 'pn-md-list');
+    for (const item of block.items) { const li = el('li'); inline(item, li); list.append(li); }
+    return list;
+  });
 }
 
 export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
@@ -53,13 +83,59 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
   }, { icon: 'plus' });
   const bar = el('div', 'pn-bar pn-bar-row');
   bar.append(tabs, add);
+
+  // Notes tools: how the list is ordered, folders, and files. Shown on the Notes tab only.
+  const sortSelect = selectField<Sort>({
+    options: SORTS.map((value) => ({ value, label: SORT_LABELS[value] })),
+    value: 'manual',
+    label: 'Sort notes',
+    placeholder: 'Sort',
+    onChange: (value) => emit('sort', undefined, { text: value }),
+  });
+  const folderInput = el('input', 'bw-input pn-folder-input');
+  folderInput.type = 'text';
+  folderInput.maxLength = MAX_FOLDER_NAME;
+  folderInput.placeholder = 'Folder name';
+  folderInput.setAttribute('aria-label', 'New folder name');
+  folderInput.hidden = true;
+  let renaming: number | null = null;
+  const commitFolder = (): void => {
+    const name = folderInput.value.trim();
+    const target = renaming;
+    folderInput.hidden = true;
+    folderInput.value = '';
+    renaming = null;
+    if (!name) return;
+    if (target !== null) emit('folder-rename', target, { text: name }); else emit('folder-add', undefined, { text: name });
+  };
+  folderInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); commitFolder(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); folderInput.hidden = true; folderInput.value = ''; }
+  });
+  folderInput.addEventListener('blur', () => { folderInput.hidden = true; renaming = null; });
+  const newFolder = iconButton('folder', 'New folder', () => { renaming = null; folderInput.value = ''; folderInput.hidden = false; folderInput.focus(); });
+  const importButton = iconButton('file-text', 'Import notes from a .md or .txt file', () => emit('import'));
+  const exportSelect = selectField<string>({
+    options: [{ value: 'md', label: 'All notes as Markdown (.md)' }, { value: 'txt', label: 'All notes as text (.txt)' }],
+    value: null,
+    label: 'Export notes',
+    placeholder: 'Export',
+    momentary: true,
+    minListWidth: 200,
+    onChange: (value) => { const command = exportCommand('all', undefined, value === 'txt' ? 'txt' : 'md'); if (command) sendPanel('notes', command as PanelFields); },
+  });
+  const tools = el('div', 'pn-bar pn-bar-row pn-notes-tools');
+  tools.append(sortSelect.root, newFolder, importButton, exportSelect.root);
+  const toolsRow = el('div', 'pn-tools-wrap');
+  toolsRow.append(tools, folderInput);
+
   const status = el('p', 'pn-status');
   status.setAttribute('role', 'status');
   const list = el('div', 'pn-scroll bw-scroll');
   list.id = 'pn-notes-list';
   list.setAttribute('role', 'tabpanel');
   const host = el('section', 'pn pn-notes');
-  host.append(header.root, bar, status, list);
+  host.append(header.root, bar, toolsRow, status, list);
   enter(host);
   root.replaceChildren(host);
 
@@ -89,15 +165,41 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
     title.id = `pn-title-${id}`;
     title.autocomplete = 'off';
     title.spellcheck = false;
+    const addr = el('p', 'pn-note-addr');
     const bodyLabel = el('label', 'pn-label');
     bodyLabel.htmlFor = `pn-body-${id}`;
     bodyLabel.textContent = 'Note';
     const body = el('textarea', 'bw-input pn-textarea');
     body.id = `pn-body-${id}`;
     body.rows = 6;
-    editor.append(titleLabel, title, bodyLabel, body);
+    const shown = el('div', 'pn-md');
+    shown.hidden = true;
+    const folder = selectField<string>({
+      options: [{ value: '0', label: 'No folder' }],
+      value: '0',
+      label: 'Folder of this note',
+      placeholder: 'Folder',
+      onChange: (value) => emit('note-folder', view.note.id, { parent: Number(value) }),
+    });
+    const up = iconButton('chevron-up', 'Move note up', () => {
+      const all = (data?.notes ?? []).filter((item) => item.folder === view.note.folder);
+      const index = all.findIndex((item) => item.id === view.note.id);
+      const before = all[index - 1]?.id;
+      if (before !== undefined) emit('move-note', view.note.id, { before });
+    });
+    const down = iconButton('chevron-down', 'Move note down', () => {
+      const all = (data?.notes ?? []).filter((item) => item.folder === view.note.folder);
+      const index = all.findIndex((item) => item.id === view.note.id);
+      const next = all[index + 2]?.id;
+      emit('move-note', view.note.id, next === undefined ? {} : { before: next });
+    });
+    const mdButton = textButton('Preview', () => { view.markdown = !view.markdown; paintMarkdown(view); }, { subtle: true, aria: 'Show this note formatted as Markdown' });
+    const exportOne = iconButton('save', 'Export this note as Markdown', () => { const command = exportCommand('note', view.note.id, 'md'); if (command) sendPanel('notes', command as PanelFields); });
+    const tools = el('div', 'pn-note-tools');
+    tools.append(folder.root, up, down, mdButton, exportOne);
+    editor.append(titleLabel, title, addr, bodyLabel, body, shown, tools);
     wrap.append(row, editor);
-    const view: NoteView = { root: wrap, row, name, peek, title, body, note };
+    const view: NoteView = { root: wrap, row, name, peek, title, body, note, addr, shown, folder, up, down, markdown: false, mdButton };
     const toggle = (): void => { openNote = openNote === view.note.id ? null : view.note.id; applyOpen(); if (openNote !== null) view.title.focus(); };
     row.addEventListener('click', toggle);
     row.addEventListener('keydown', (event) => {
@@ -113,6 +215,12 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
     });
     return view;
   };
+  const paintMarkdown = (view: NoteView): void => {
+    view.body.hidden = view.markdown;
+    view.shown.hidden = !view.markdown;
+    view.mdButton.textContent = view.markdown ? 'Edit' : 'Preview';
+    if (view.markdown) view.shown.replaceChildren(...renderMarkdown(parseMarkdown(view.body.value)));
+  };
   const paintNote = (view: NoteView, note: Note): void => {
     view.note = note;
     view.name.textContent = note.title || 'Untitled note';
@@ -120,6 +228,34 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
     sync(view.title, note.title);
     sync(view.body, note.body);
     view.title.setAttribute('aria-label', 'Note title');
+    const host = addrHost(note.addr);
+    const when = dateText(note.created);
+    view.addr.textContent = [host, when].filter(Boolean).join(' · ');
+    view.addr.hidden = view.addr.textContent === '';
+    if (note.addr) view.addr.setAttribute('data-tip', note.addr); else view.addr.removeAttribute('data-tip');
+    const folders = data?.folders ?? [];
+    view.folder.root.hidden = false;
+    view.up.hidden = view.down.hidden = data?.sort !== 'manual';
+    // The folder list is rebuilt only when the folders changed, so an open list is not closed under the pointer.
+    const key = folders.map((folder) => `${folder.id}:${folder.name}`).join('|');
+    if (view.folder.root.dataset.key !== key) {
+      view.folder.root.dataset.key = key;
+      view.folder.root.replaceWith(rebuildFolderSelect(view, folders));
+    }
+    view.folder.set(String(note.folder));
+    paintMarkdown(view);
+  };
+  const rebuildFolderSelect = (view: NoteView, folders: readonly Folder[]): HTMLElement => {
+    const next = selectField<string>({
+      options: [{ value: '0', label: 'No folder' }, ...folders.map((folder) => ({ value: String(folder.id), label: folder.name }))],
+      value: String(view.note.folder),
+      label: 'Folder of this note',
+      placeholder: 'Folder',
+      onChange: (value) => emit('note-folder', view.note.id, { parent: Number(value) }),
+    });
+    next.root.dataset.key = view.folder.root.dataset.key ?? '';
+    view.folder = next;
+    return next.root;
   };
   const applyOpen = (): void => {
     for (const [id, view] of noteViews) {
@@ -166,6 +302,19 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
     sync(view.input, task.text);
   };
 
+  /** A folder's heading with its own rename, export and delete buttons. */
+  const folderHeader = (folder: Folder): HTMLElement => {
+    const head = sectionHeader(folder.name);
+    const actions = el('span', 'pn-folder-actions');
+    actions.append(
+      iconButton('edit', `Rename folder ${folder.name}`, () => { renaming = folder.id; folderInput.value = folder.name; folderInput.hidden = false; folderInput.focus(); folderInput.select(); }),
+      iconButton('save', `Export folder ${folder.name} as Markdown`, () => { const command = exportCommand('folder', folder.id, 'md'); if (command) sendPanel('notes', command as PanelFields); }),
+      iconButton('trash', `Delete folder ${folder.name}. Its notes are kept`, () => emit('folder-delete', folder.id)),
+    );
+    head.append(actions);
+    return head;
+  };
+
   const render = (): void => {
     const count = (n: number): string => (n > 0 ? ` (${n})` : '');
     tabNotes.textContent = `Notes${count(data?.notes.length ?? 0)}`;
@@ -175,6 +324,8 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
       tab.tabIndex = active === key ? 0 : -1;
     }
     list.setAttribute('aria-labelledby', `pn-tab-${active}`);
+    toolsRow.hidden = active !== 'notes';
+    if (data) sortSelect.set(data.sort);
     const addLabel = active === 'notes' ? 'Add note' : 'Add task';
     const addText = el('span', 'pn-add-label');
     addText.textContent = addLabel;
@@ -196,11 +347,18 @@ export function startNotesPanel(root: HTMLElement): (message: Inbound) => void {
         let view = noteViews.get(note.id);
         if (!view) { view = makeNote(note); noteViews.set(note.id, view); }
         paintNote(view, note);
-        nodes.push(view.root);
       }
       for (const id of [...noteViews.keys()]) if (!live.has(id)) noteViews.delete(id);
       if (openNote !== null && !live.has(openNote)) openNote = null;
-      if (nodes.length === 0) nodes.push(emptyState('notes', 'No notes yet. Add one to get started.'));
+      const groups = groupNotes(data);
+      const foldered = data.folders.length > 0;
+      for (const group of groups) {
+        if (group.folder) nodes.push(folderHeader(group.folder));
+        else if (foldered && group.notes.length > 0) nodes.push(sectionHeader('No folder'));
+        for (const note of group.notes) { const view = noteViews.get(note.id); if (view) nodes.push(view.root); }
+        if (group.folder && group.notes.length === 0) { const none = el('p', 'pn-none'); none.textContent = 'No notes in this folder.'; nodes.push(none); }
+      }
+      if (data.notes.length === 0 && !foldered) nodes.push(emptyState('notes', 'No notes yet. Add one to get started.'));
     } else {
       const live = new Set<number>();
       const todo: HTMLElement[] = [];
