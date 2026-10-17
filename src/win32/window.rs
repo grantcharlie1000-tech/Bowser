@@ -114,6 +114,9 @@ const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 // --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
 mod auto_hide;
 // --- end auto-hide ---
+// --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
+mod host_state;
+// --- end look state ---
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -5161,38 +5164,19 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
     };
     // --- end theme options ---
     palette.window.a = 255;
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        solid: true,
-        dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
-        compact_menus: false,
-        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
-        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
-        theme: chrome_host::theme_tokens(&palette),
-    }
-    .to_json()
+    // --- look state (fix group B) --- the person's text size, font, density, menus and window look.
+    let look = host_look(hwnd);
+    host_state::page_host_view(dpi as f32 / 96.0, true, dark, look, chrome_host::theme_tokens(&palette)).to_json()
 }
+
+/// The settings-driven part of a page or panel host's `state`, as `html_sync` builds it for the toolbar.
+fn host_look(hwnd: HWND) -> host_state::HostLook {
+    match app_of(hwnd) {
+        Some(app) => host_state::HostLook::of(&App::settings(&app), window_in_background(hwnd)),
+        None => host_state::HostLook::neutral(),
+    }
+}
+// --- end look state ---
 
 /// The palette and dark flag a page host takes: the window's own, or the private theme's light or
 /// dark look while a private tab is shown (the same rule as `html_sync`).
@@ -9769,44 +9753,26 @@ pub(super) fn html_panel_accelerator(hwnd: HWND, accel: Accel) -> bool {
 pub(super) fn html_panel_state(hwnd: HWND) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
+    // --- look state (fix group B) --- the private theme's look while a private tab is shown, as
+    // the toolbar (html_sync) and the page hosts (split_host_state) take it.
+    let system_look = glass::appearance();
+    let (look, dark) = match app_of(hwnd) {
+        Some(app) => {
+            let look = App::private_theme(&app).appearance(App::active_tab_private(&app), system_look);
+            (look, look == crate::theme::Appearance::Dark)
+        }
+        None => (system_look, system_look == crate::theme::Appearance::Dark),
+    };
+    // --- end look state ---
     // --- theme options ---
     let palette = match app_of(hwnd) {
-        Some(app) => App::themed_palette(&app, glass::appearance(), !palette.translucent).0,
+        Some(app) => App::themed_palette(&app, look, !palette.translucent).0,
         None => palette.clone(),
     };
     // --- end theme options ---
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        // The flyout window is transparent around its surface (shadow room); the page paints the
-        // opaque surface itself, so the body must not fill the window.
-        solid: false,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
-        compact_menus: false,
-        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
-        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
-        theme: chrome_host::theme_tokens(&palette),
-    }.to_json()
+    // The flyout window is transparent around its surface (shadow room); the page paints the
+    // opaque surface itself, so the body must not fill the window (solid false).
+    host_state::page_host_view(dpi as f32 / 96.0, false, dark, host_look(hwnd), chrome_host::theme_tokens(&palette)).to_json() // --- look state (fix group B) ---
 }
 
 /// The page area (below the toolbar, right of the rail) in client coordinates, before any panel

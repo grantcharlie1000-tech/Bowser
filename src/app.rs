@@ -7011,6 +7011,7 @@ impl App {
         Self::notify_rail_changed(app);
         Self::post_tab_changed(hwnd, active);
         win32::start_ui::settings_changed(hwnd); // --- start page --- a shown start page redraws with the new settings
+        win32::panel_settings_changed(hwnd); // --- look state (fix group B) --- an open flyout follows too
     }
 
     /// Applies a changed `efficiency_mode` setting without a restart.

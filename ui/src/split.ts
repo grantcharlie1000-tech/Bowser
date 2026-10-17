@@ -305,7 +305,7 @@ export function startSplit(root: HTMLElement): void {
   onInbound((msg) => {
     switch (msg.t) {
       case 'state':
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        applyTheme(msg.theme, msg.solid, msg.dark, msg.fontScale, msg.uiFont, msg.density, msg.compactMenus, msg.look);
         break;
       case 'splitpick': {
         leavePrivate();
