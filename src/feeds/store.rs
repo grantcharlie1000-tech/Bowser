@@ -174,7 +174,7 @@ impl Store {
         let mut seen = std::collections::HashSet::new();
         items.retain(|item| seen.insert(item.hash));
         // Newest first; items without a date keep the feed's own order after the dated ones.
-        items.sort_by(|a, b| b.published.cmp(&a.published));
+        items.sort_by_key(|a| std::cmp::Reverse(a.published));
         items.truncate(STORED_ITEMS);
         feed.items = items;
     }

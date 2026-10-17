@@ -42,13 +42,21 @@ impl App {
     /// kept, saved and put to work at once. False (and nothing changed) when the key or value is not one the
     /// page may send.
     pub fn set_bar_option(app: &AppRef, text: &str) -> bool {
+        if !Self::apply_bar_option(app, text) {
+            return false;
+        }
+        Self::save_settings(app);
+        true
+    }
+
+    /// The in-memory half of [`App::set_bar_option`]: checks and applies the change and redraws the bars.
+    pub(crate) fn apply_bar_option(app: &AppRef, text: &str) -> bool {
         {
             let mut state = app.borrow_mut();
             if !crate::toolbar_prefs::apply_assignment(&mut state.settings, text) {
                 return false;
             }
         }
-        Self::save_settings(app);
         Self::bars_changed(app);
         true
     }

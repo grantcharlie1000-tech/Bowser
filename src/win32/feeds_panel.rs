@@ -119,7 +119,7 @@ pub(crate) fn snapshot_json(app: &AppRef) -> String {
     let minutes = App::settings(app).feeds_refresh_minutes;
     let allowed = profile().is_some();
     let empty = Store::default();
-    let json = STATE.with(|state| {
+    STATE.with(|state| {
         let mut state = state.borrow_mut();
         if allowed && state.store.is_none() {
             if let Some(path) = path() {
@@ -138,8 +138,7 @@ pub(crate) fn snapshot_json(app: &AppRef) -> String {
             status,
             error,
         })
-    });
-    json
+    })
 }
 
 // ---- commands ----

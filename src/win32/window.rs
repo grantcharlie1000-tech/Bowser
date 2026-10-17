@@ -10087,10 +10087,11 @@ fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
     let entries = live.store.entries();
     items
         .iter()
-        .filter_map(|item| {
+        .enumerate()
+        .filter_map(|(index, item)| {
             let id = crate::toolbar_prefs::command_of(item)?;
             let entry = entries.iter().find(|entry| entry.id == id)?;
-            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone() })
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
         })
         .collect()
 }
@@ -12309,3 +12310,45 @@ fn main_menu_anchor(hwnd: HWND) -> windows::Win32::Foundation::POINT {
     })
     .unwrap_or_default()
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod bar_tests {
+    use super::*;
+
+    fn list(text: &str) -> Vec<String> {
+        text.split(',').filter(|id| !id.is_empty()).map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn command_buttons_take_their_commands_name_and_their_place_in_the_list() {
+        let buttons = tool_buttons(&list("closed-tabs,cmd:new-private-tab,cmd:no-such,chain:9,cmd:history"));
+        let named: Vec<(&str, &str, u8)> = buttons.iter().map(|b| (b.item.as_str(), b.label.as_str(), b.index)).collect();
+        assert_eq!(named, [("cmd:new-private-tab", "New private tab", 1), ("cmd:history", "History", 4)], "a deleted chain or unknown command shows no button");
+        assert!(tool_buttons(&list("back,reload")).is_empty());
+    }
+
+    #[test]
+    fn the_panel_bar_shows_feeds_with_its_own_glyph_and_command_buttons_as_letter_tiles() {
+        let tools = panel_tools(&list("feeds,cmd:toggle-notes,cmd:no-such"));
+        assert_eq!(tools.len(), 2);
+        assert_eq!((tools[0].0, tools[0].1.as_str(), tools[0].2), (0, "Feeds", RailIcon::Feed));
+        assert_eq!((tools[1].0, tools[1].1.as_str(), tools[1].2), (1, "Toggle notes and tasks", RailIcon::Letter));
+        assert!(panel_tools(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_rail_wire_names_a_tool_by_its_place_and_the_feed_glyph_by_name() {
+        assert_eq!(chrome_host::rail_key_to_wire(RailKey::Tool(3)).to_wire(), "tool:3");
+        assert_eq!(chrome_host::rail_icon_wire(RailIcon::Feed), "feed");
+    }
+
+    #[test]
+    fn a_bar_item_runs_the_command_the_registry_names() {
+        // The commands the bar's own buttons stand for exist, so a button can never be a dead end.
+        for command in ["add-bookmark", "new-tab", "feeds", "subscribe-feed"] {
+            assert!(crate::commands::registry::builtin(command).is_some(), "{command}");
+        }
+    }
+}
+// --- end toolbars and feeds ---

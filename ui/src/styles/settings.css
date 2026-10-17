@@ -1113,31 +1113,125 @@
   opacity: 0.5;
 }
 
-/* ---- Toolbar buttons: a two-column grid in a recessed well, each with its own glyph ---- */
-.sp-toolbar-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 var(--bw-space-6);
-  padding: var(--bw-space-1) var(--bw-space-3);
-  border-radius: var(--bw-r-row);
-  background: var(--sp-well);
-}
-
-.sp-toolbar-item {
+/* ---- Toolbar editor (ui/src/toolbar-editor.ts; Settings > Edit toolbars) ----
+   One group per bar: a heading with its Reset, a line about the bar, then a card of rows. A row is the button's
+   glyph, its name and a note, and (at the end) move up, move down and remove. The rows are the page's own .sp-row,
+   so the hairlines and spacing match every other card; the address bar's rows are grouped by where they sit. */
+.sp-tbe {
   display: flex;
-  align-items: center;
-  gap: var(--bw-space-3);
-  min-height: 40px;
-}
-
-.sp-toolbar-item > .sp-label {
-  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-gap-group);
   min-width: 0;
 }
 
-.sp-toolbar-glyph {
-  flex: none;
+.sp-tbe-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin: 0 0 var(--bw-space-1);
+}
+
+.sp-tbe-title {
+  flex: 1;
+  margin: 0;
+}
+
+.sp-tbe-lead {
+  max-width: 62ch;
+  margin: 0 0 var(--bw-space-2);
+  padding-inline-start: var(--bw-space-0_5);
   color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-card {
+  overflow: hidden;
+}
+
+.sp-tb-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 48px;
+  padding: var(--bw-space-2) var(--sp-row-x);
+}
+
+/* Rows are divided by the same inset rule as the page's own rows. */
+.sp-tb-row + .sp-tb-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-tb-glyph {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--bw-text-2);
+}
+
+.sp-tb-item.is-fixed {
+  color: var(--bw-text-2);
+}
+
+.sp-tb-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  margin-inline-start: auto;
+}
+
+.sp-tb-tools .bw-icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.sp-tb-zone {
+  margin: 0;
+  padding: var(--bw-space-2) var(--sp-row-x) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp-tb-zone:not(:first-child) {
+  border-top: 1px solid var(--sp-rule);
+}
+
+.sp-tb-none {
+  margin: 0;
+  padding: var(--bw-space-1) var(--sp-row-x) var(--bw-space-2);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-2);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-tbe-note {
+  flex: 1;
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-note:empty {
+  display: none;
 }
 
 /* A button in the card's top corner, on the title line (Toolbar: Reset to default). */
@@ -1655,10 +1749,6 @@
   :where(#app.sp-root) .sp-tiles,
   :where(#app.sp-root) .sp-tiles.is-presets {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .sp-toolbar-list {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   /* Wide controls go under their label; a switch stays at the end of its row. */

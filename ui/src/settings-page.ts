@@ -16,6 +16,12 @@ import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+// --- toolbars and feeds (thread T13) ---
+import { mountToolbarEditor, type EditorCommand } from './toolbar-editor';
+import { BAR_KEYS, itemsOf, itemsText, type BarId } from './bars-logic';
+import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } from './feeds-settings-logic';
+import { parseCommandsSnapshot } from './commands-logic';
+// --- end toolbars and feeds ---
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
@@ -27,11 +33,11 @@ import {
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
-  BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
+  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
-  saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
-  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
+  saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
+  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
 } from './settings-page-logic';
 
@@ -605,36 +611,21 @@ export function startSettingsPage(root: HTMLElement): void {
   row(themeCard, 'forceDark', protection.forceDark.root);
   row(themeCard, 'privateTheme', protection.privateTheme.root);
 
-  // Toolbar
-  const TOOLBAR_LABELS: Readonly<Record<ToolbarButton, string>> = {
-    back: 'Back', forward: 'Forward', reload: 'Reload', 'site-info': 'Site information', bookmark: 'Bookmark', newtab: 'New tab', split: 'Split view', reader: 'Reader view',
-  };
-  const TOOLBAR_ICONS: Readonly<Record<ToolbarButton, IconName>> = {
-    back: 'back', forward: 'forward', reload: 'reload', 'site-info': 'info', bookmark: 'bookmark', newtab: 'plus', split: 'split', reader: 'reader',
-  };
+  // Toolbars (thread T13): the editor for the address bar, the tab bar and the panel bar, on a sub-page of its own.
+  // The address bar's list is part of the page's Save (`toolbar_buttons`); the other two bars are each a `baropt` command.
   const toolbarCard = card('appearance', 'Toolbar');
-  const toolbarSwitches = new Map<ToolbarButton, Control<boolean>>();
-  const toolbarList = el('div', 'sp-toolbar-list');
-  for (const id of TOOLBAR_BUTTONS) {
-    const item = el('div', 'sp-toolbar-item');
-    const label = el('span', 'sp-label');
-    label.textContent = TOOLBAR_LABELS[id];
-    const glyph = icon(TOOLBAR_ICONS[id], { className: 'sp-toolbar-glyph' });
-    const sw = switchControl((on) => change((d) => {
-      const ids = new Set(toolbarButtonsList(d.toolbarButtons));
-      if (on) ids.add(id); else ids.delete(id);
-      d.toolbarButtons = TOOLBAR_BUTTONS.filter((b) => ids.has(b)).join(',');
-    }));
-    sw.root.setAttribute('aria-label', TOOLBAR_LABELS[id]);
-    toolbarSwitches.set(id, sw);
-    item.append(glyph, label, sw.root);
-    toolbarList.append(item);
-  }
-  const toolbarReset = textButton('Reset to default', () => change((d) => { d.toolbarButtons = DEFAULT_TOOLBAR_BUTTONS; }));
-  const toolbarActions = el('div', 'sp-corner');
-  toolbarActions.append(toolbarReset);
-  const toolbarRow = row(toolbarCard, 'toolbarButtons', toolbarList, { stack: true });
-  toolbarRow.root.append(toolbarActions);
+  const sendBarOption = (text: string | null): void => {
+    if (text === null) { showToast('That value is not allowed.', false); return; }
+    if (cmd({ a: 'baropt', text })) pending += 1;
+  };
+  let editorCommands: readonly EditorCommand[] = [];
+  const toolbarEditor = mountToolbarEditor({
+    onChange: (bar: BarId, items: string[]) => {
+      if (bar === 'address') change((d) => { d.toolbarButtons = itemsText(items); });
+      else sendBarOption(`${BAR_KEYS[bar]}=${itemsText(items)}`);
+    },
+  });
+  row(toolbarCard, 'toolbarButtons', toolbarEditor.root, { stack: true });
   const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
   row(toolbarCard, 'showHomeButton', showHome.root);
 
@@ -965,6 +956,25 @@ export function startSettingsPage(root: HTMLElement): void {
     switchControl,
     segmentedControl,
   });
+
+  // Feeds (thread T13, docs/feeds.md): open the panel, the address bar's feed button, and when Feeds fetches. Each is
+  // its own command (`openfeeds`, `baropt`), applied at once; the rows join the page's search like any other.
+  const feedsCard = card('address', 'Feeds');
+  const feedsOpen = textButton('Open Feeds', () => cmd({ a: 'openfeeds' }), { icon: 'feed' });
+  row(feedsCard, 'feedsOpen', feedsOpen);
+  const feedsDetect = switchControl((on) => sendBarOption(feedAssignment('feeds_detect', on)));
+  row(feedsCard, 'feedsDetect', feedsDetect.root);
+  const feedsRefreshHost = el('div', 'sp-select-host');
+  const feedsRefreshSelect = selectField<string>({
+    options: REFRESH_CHOICES.map((minutes) => ({ value: String(minutes), label: refreshLabel(minutes) })),
+    value: String(60),
+    label: 'Fetch feeds again when Feeds opens',
+    placeholder: 'Fetch feeds again when Feeds opens',
+    onChange: (next) => sendBarOption(feedAssignment('feeds_refresh_minutes', Number(next) as RefreshChoice)),
+  });
+  feedsRefreshSelect.button.setAttribute('aria-labelledby', 'sp-l-feedsRefresh');
+  feedsRefreshHost.append(feedsRefreshSelect.root);
+  row(feedsCard, 'feedsRefresh', feedsRefreshHost);
 
   // Keyboard and Quick commands (docs/commands.md): each control is its own command, answered by the
   // `commands` snapshot, never part of `save`. The rows join the page's search like any other.
@@ -1466,7 +1476,15 @@ export function startSettingsPage(root: HTMLElement): void {
     vTabs.set(d.ctrlSVerticalTabs);
     theme.set(d.theme);
     accentInput.value = d.themeAccent !== '' ? d.themeAccent : '#000000';
-    for (const [id, sw] of toolbarSwitches) sw.set(toolbarButtonsList(d.toolbarButtons).includes(id));
+    // --- toolbars and feeds (thread T13) ---
+    toolbarEditor.set({ address: itemsOf(d.toolbarButtons), tabs: itemsOf(s.bars.tabs), panel: itemsOf(s.bars.panel), commands: editorCommands });
+    toolbarEditor.disable(!s.readable);
+    feedsDetect.set(s.bars.feedsDetect);
+    feedsDetect.disable(!s.readable || s.guest);
+    feedsRefreshSelect.set(String(s.bars.feedsRefresh));
+    feedsRefreshSelect.button.toggleAttribute('disabled', !s.readable || s.guest);
+    feedsOpen.disabled = !s.readable;
+    // --- end toolbars and feeds ---
     showHome.set(d.showHomeButton);
     centred.set(d.centredAddressBar);
     minimal.set(d.minimalUrl);
@@ -1522,7 +1540,6 @@ export function startSettingsPage(root: HTMLElement): void {
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
-      ...toolbarSwitches.values(),
       presets, tabEdge, addressEdge, panelEdge, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
@@ -1536,7 +1553,6 @@ export function startSettingsPage(root: HTMLElement): void {
     addButton.disabled = !s.readable;
     accentInput.disabled = !s.readable;
     accentReset.disabled = !s.readable;
-    toolbarReset.disabled = !s.readable;
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
     startSection.apply(d.start, s.readable); // --- start page ---
@@ -1739,7 +1755,19 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
-    if (message.t === 'snap' && message.p === 'commands') { commandSections.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'commands') {
+      commandSections.receive(message);
+      // --- toolbars and feeds (thread T13) --- the editor offers every command and chain, and names the command buttons.
+      const known = parseCommandsSnapshot(message.d);
+      if (known && snapshot) {
+        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
+        toolbarEditor.set({ address: itemsOf(draft?.toolbarButtons ?? snapshot.toolbarButtons), tabs: itemsOf(snapshot.bars.tabs), panel: itemsOf(snapshot.bars.panel), commands: editorCommands });
+        toolbarEditor.disable(!snapshot.readable);
+      } else if (known) {
+        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
+      }
+      return;
+    }
     if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);

@@ -1865,3 +1865,41 @@ mod tests {
         assert!(page.is_some());
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod toolbar_view_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_button_is_accepted_only_from_the_bar_it_belongs_to() {
+        let address = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":0}"#).unwrap();
+        let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"cmd:new-tab","i":0}"#).unwrap();
+        assert!(view_accepts_command(View::Toolbar, &address));
+        assert!(!view_accepts_command(View::Toolbar, &tabs));
+        assert!(view_accepts_command(View::Tabs, &tabs));
+        assert!(!view_accepts_command(View::Tabs, &address));
+        for view in [View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogFeeds, View::DialogSessions, View::Hover, View::Split, View::Settings, View::HistoryPage, View::DownloadsPage] {
+            assert!(!view_accepts_command(view, &address), "{view:?}");
+            assert!(!view_accepts_command(view, &tabs), "{view:?}");
+        }
+    }
+
+    #[test]
+    fn the_feeds_window_takes_its_own_family_and_the_dismiss_and_nothing_else() {
+        let feed = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogFeeds, &feed));
+        assert!(view_accepts_command(View::DialogFeeds, &dismiss));
+        for foreign in [r#"{"v":1,"t":"sess","a":"save","text":"x","n":0}"#, r#"{"v":1,"t":"set","a":"reset"}"#, r#"{"v":1,"t":"notes","a":"add-note"}"#, r#"{"v":1,"t":"open","a":"feeds"}"#, r#"{"v":1,"t":"nav","a":"back"}"#] {
+            assert!(!view_accepts_command(View::DialogFeeds, &parse_command(foreign).unwrap()), "{foreign}");
+        }
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSessions, View::Settings] {
+            assert!(!view_accepts_command(view, &feed), "{view:?} accepted the feed family");
+        }
+        // The address bar's feed button is the toolbar's own `open` command.
+        assert!(view_accepts_command(View::Toolbar, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+        assert!(!view_accepts_command(View::Tabs, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+    }
+}
+// --- end toolbars and feeds ---

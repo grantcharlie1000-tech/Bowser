@@ -77,11 +77,13 @@ pub enum ToolBar {
     Tabs,
 }
 
-/// A command button on a bar: the item id (`cmd:new-tab`, `chain:2`) and the name it shows.
+/// A command button on a bar: the item id (`cmd:new-tab`, `chain:2`), the name it shows and its place in
+/// the bar's list (what a press sends back).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ToolButton {
     pub item: String,
     pub label: String,
+    pub index: u8,
 }
 
 /// How the toolbar page lays out its buttons (`crate::toolbar_prefs`, docs/toolbars.md). `items` is
@@ -113,9 +115,10 @@ fn tools_json(tools: &[ToolButton]) -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"k\":{},\"l\":{}}}",
+            "{{\"k\":{},\"l\":{},\"i\":{}}}",
             json_string(truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS)),
-            json_string(truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS))
+            json_string(truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS)),
+            tool.index
         ));
     }
     out.push(']');
@@ -1786,6 +1789,7 @@ pub fn tabopts_json(options: &StripOptions) -> String {
                 list.object(|o| {
                     o.string("k", truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS));
                     o.string("l", truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS));
+                    o.uint("i", u64::from(tool.index));
                 });
             }
         });
@@ -3543,7 +3547,7 @@ mod tests {
             compact_menus: true,
             bar: BarItems {
                 items: Some("back,reload,cmd:new-tab".to_owned()),
-                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned() }],
+                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 2 }],
                 extra: 32,
                 feeds: 2,
             },
@@ -3554,7 +3558,7 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"items":"back,reload,cmd:new-tab","tools":[{"k":"cmd:new-tab","l":"New tab"}],"extra":32,"feeds":2,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"items":"back,reload,cmd:new-tab","tools":[{"k":"cmd:new-tab","l":"New tab","i":2}],"extra":32,"feeds":2,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
@@ -4970,7 +4974,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned() }] };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1 }] };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
@@ -5040,3 +5044,54 @@ mod tests {
     }
     // --- end tab options ---
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod toolbar_wire_tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_command_names_its_bar_item_and_place_and_nothing_else() {
+        let ok = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":2}"#).unwrap();
+        assert_eq!(ok, Command::Tool { bar: ToolBar::Address, item: "cmd:new-tab".into(), index: 2 });
+        let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"chain:3","i":0}"#).unwrap();
+        assert_eq!(tabs, Command::Tool { bar: ToolBar::Tabs, item: "chain:3".into(), index: 0 });
+        for bad in [
+            r#"{"v":1,"t":"tool","b":"panel","k":"cmd:a","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"Cmd:A","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"a b","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":14}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":-1}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a"}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":0,"x":1}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        assert!(is_popup_command(&ok), "rate limited like the other toolbar buttons that can open something");
+    }
+
+    #[test]
+    fn the_feed_button_is_an_open_target_and_a_panel_family_of_its_own() {
+        assert_eq!(parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap(), Command::Open(OpenTarget::Feeds));
+        let panel = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
+        assert!(matches!(panel, Command::Panel { kind: PanelType::Feeds, .. }));
+        assert!(parse_command(r#"{"v":1,"t":"feed","a":"preview","text":"https://a.example/","extra":1}"#).is_err());
+    }
+
+    #[test]
+    fn the_panel_bars_extra_buttons_are_rail_keys_of_their_own() {
+        for n in [0u8, 1, 13] {
+            let key = RailKeyWire::Tool(n);
+            assert_eq!(key.to_wire(), format!("tool:{n}"));
+            assert_eq!(RailKeyWire::parse(&key.to_wire()), Some(key));
+        }
+        for bad in ["tool:", "tool:14", "tool:01", "tool:-1", "tool:x", "tool:100", "tools:1"] {
+            assert_eq!(RailKeyWire::parse(bad), None, "{bad}");
+        }
+        // A tool can be clicked but never dragged: a rail move names only workspaces and apps.
+        assert!(parse_command(r#"{"v":1,"t":"railmove","k":"tool:1","before":""}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"rail","a":"click","k":"tool:1"}"#).is_ok());
+    }
+}
+// --- end toolbars and feeds ---

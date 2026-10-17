@@ -468,6 +468,30 @@ test('the strip follows the host: classes, the pinned separator and the Closed t
   assert.equal(stripRoot.style.getPropertyValue('--tab-active-min'), '');
 });
 
+// --- toolbars and feeds (thread T13) --- the tab bar's list: the Closed tabs button only when it is listed, and
+// the command buttons the user put there, each sending its item and its place in the list.
+test('the tab bar’s list decides the Closed tabs button and adds command buttons that send their place', () => {
+  const box = () => stripRoot.querySelector('.strip-tools');
+  const labels = () => (box()?.children ?? []).map((b) => b.getAttribute('aria-label'));
+  deliver(opts({ closed: 2, closedButton: true, tools: [] }));
+  assert.deepEqual(labels(), ['Closed tabs']);
+  deliver(opts({ closed: 2, closedButton: false, tools: [] }));
+  assert.deepEqual(labels(), [], 'off the list, the button is gone even with closed tabs to list');
+  assert.equal(box(), null);
+  deliver(opts({ closed: 0, closedButton: true, tools: [{ k: 'cmd:new-window', l: 'New window', i: 1 }] }));
+  assert.deepEqual(labels(), ['New window']);
+  deliver(opts({ closed: 3, closedButton: true, tools: [{ k: 'cmd:new-window', l: 'New window', i: 1 }, { k: 'chain:2', l: 'Morning', i: 2 }] }));
+  assert.deepEqual(labels(), ['Closed tabs', 'New window', 'Morning']);
+  sent.length = 0;
+  box().children[1].click();
+  box().children[2].click();
+  box().children[0].click();
+  assert.deepEqual(sent, [{ v: 1, t: 'tool', b: 'tabs', k: 'cmd:new-window', i: 1 }, { v: 1, t: 'tool', b: 'tabs', k: 'chain:2', i: 2 }, { v: 1, t: 'closedtabs' }]);
+  deliver(opts({ closed: 0 }));
+  assert.equal(box(), null);
+});
+// --- end toolbars and feeds ---
+
 test('Ctrl and Shift click select tabs and tell Rust; a plain click clears and selects', () => {
   deliver(opts({ selection: true }));
   sent.length = 0;

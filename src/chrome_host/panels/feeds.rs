@@ -148,7 +148,7 @@ fn view_items(store: &Store, selected: u32) -> Vec<(&Feed, &Item)> {
         Some(feed) => feed.items.iter().map(|item| (feed, item)).collect(),
         None => store.feeds.iter().flat_map(|feed| feed.items.iter().map(move |item| (feed, item))).collect(),
     };
-    items.sort_by(|a, b| b.1.published.cmp(&a.1.published));
+    items.sort_by_key(|a| std::cmp::Reverse(a.1.published));
     items.truncate(MAX_VIEW_ITEMS);
     items
 }

@@ -195,8 +195,10 @@ pub fn plain_text(raw: &str, max: usize) -> String {
         let lower: String = after.chars().take(9).collect::<String>().to_ascii_lowercase();
         if lower.starts_with("<script") || lower.starts_with("<style") {
             let name = if lower.starts_with("<script") { "</script" } else { "</style" };
-            let haystack = after.to_ascii_lowercase();
-            match haystack.find(name).and_then(|at| haystack[at..].find('>').map(|end| at + end + 1)) {
+            stripped.push(' ');
+            // Case-insensitive search that allocates nothing: a feed full of unclosed script tags must stay linear.
+            let found = after.as_bytes().windows(name.len()).position(|window| window.eq_ignore_ascii_case(name.as_bytes()));
+            match found.and_then(|at| after[at..].find('>').map(|end| at + end + 1)) {
                 Some(end) => rest = &after[end..],
                 None => rest = "",
             }
@@ -557,6 +559,15 @@ mod tests {
         let cut = plain_text(&long, 20);
         assert!(cut.chars().count() <= 20 && cut.ends_with('\u{2026}'), "{cut:?}");
         assert_eq!(plain_text("   ", 10), "");
+    }
+
+    #[test]
+    fn many_unclosed_script_tags_stay_fast_and_mixed_case_ones_are_removed() {
+        let hostile = "<script>".repeat(30_000);
+        let started = std::time::Instant::now();
+        assert_eq!(plain_text(&hostile, 100), "");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(plain_text("a<ScRiPt>x</SCRIPT>b<STYLE>y</style >c", 100), "a b c");
     }
 
     #[test]

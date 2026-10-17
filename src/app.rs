@@ -7517,6 +7517,7 @@ mod tests {
     mod translate_flow;
     mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
     mod tab_flow; // --- tab options ---
+    mod feed_flow; // --- toolbars and feeds (thread T13) ---
     mod wave1_fixes; // --- wave-1 fixes ---
 
     #[test]

@@ -2,7 +2,7 @@
 //! in what order. Three lists in `settings.txt`, each a comma-separated list of item ids:
 //!
 //! ```text
-//! toolbar_buttons=back,forward,reload,site-info,split,reader,downloads,extensions   (the address bar)
+//! toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads   (the address bar)
 //! toolbar_tabs=closed-tabs                                                           (the tab bar)
 //! toolbar_panel=                                                                     (the panel bar)
 //! feeds_detect=true
@@ -32,7 +32,7 @@ pub enum Bar {
 pub const ADDRESS_ITEMS: [&str; 10] =
     ["back", "forward", "reload", "site-info", "split", "reader", "bookmark", "newtab", "downloads", "extensions"];
 /// What the address bar shows until the user changes it: today's look (bookmark and new tab are added by choice).
-pub const DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "site-info", "split", "reader", "downloads", "extensions"];
+pub const DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "site-info", "split", "reader", "extensions", "downloads"];
 /// The list an older Bowser saved when the toolbar editor did nothing. It is read as the default,
 /// so nobody who never touched the row gets two new buttons.
 pub const LEGACY_DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "site-info", "bookmark", "newtab", "split", "reader"];
