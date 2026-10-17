@@ -9,6 +9,9 @@ import { parseStartSettings, startSaveLines, type StartSettings } from './start-
 import { ADDRESS_ROWS } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
 import { cardSpecs, parseTabOptions, tabOptionRows, type TabOptionValues } from './tab-options-logic';
+// --- theme options ---
+import { THEME_ROWS, parseThemeOptions, type ThemeOptionValues } from './theme-options-logic';
+// --- end theme options ---
 
 export { SETTINGS_SECTIONS, type SettingsSection };
 
@@ -155,6 +158,8 @@ export interface SettingsSnapshot {
   translateAuto: boolean;
   /** The Tabs section's options (`tab-options-logic.ts`); each change is its own `tabopt` command. */
   tabOptions: TabOptionValues;
+  /** The Appearance area's theme options (`theme-options-logic.ts`); each change is its own `themeopt` command. */
+  themeOptions: ThemeOptionValues;
   /** `''` means the Windows display language, else a 2-3 letter lower-case code. Its own command. */
   translateTarget: string;
   /** The codes `translateTarget` may be set to, in the order the page lists them. */
@@ -177,7 +182,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'themeOptions'];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -245,6 +250,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (start === null) return null;
   const tabOptions = parseTabOptions(v.tabOptions);
   if (!tabOptions) return null;
+  const themeOptions = parseThemeOptions(v.themeOptions); // --- theme options ---
+  if (!themeOptions) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -306,6 +313,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateTargets: [...(v.translateTargets as string[])],
     start,
     tabOptions,
+    themeOptions,
   };
 }
 
@@ -500,7 +508,7 @@ export function moreCountText(count: number): string {
 /** Rows a person changes often enough to see without opening anything. Every other row is `more`. */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
-  'layout', 'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
+  'layout', 'theme', 'themeAccent', 'themeSchedule', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
   'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
@@ -565,11 +573,14 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'import', section: 'profile', label: 'Import from another browser', description: 'Bring bookmarks and other data over from a browser on this PC.', keywords: 'chrome edge firefox migrate transfer bookmarks' },
   { id: 'layout', section: 'appearance', label: 'Browser layout', description: 'Where the toolbar and the tabs sit.', keywords: 'tabs toolbar vertical horizontal sidebar single row top' },
   { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layout.', keywords: 'vertical tabs size wide narrow pixels' },
-  { id: 'theme', section: 'appearance', label: 'Theme', description: 'Helium colours is Bowser’s own palette. System follows Windows light, dark and accent.', keywords: 'dark light colour scheme helium system' },
+  { id: 'theme', section: 'appearance', label: 'Theme', description: 'Helium colours is Bowser’s own palette. System uses your Windows accent colour. Light or dark follows the theme schedule.', keywords: 'dark light colour scheme helium system prefer system colour windows accent' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent colour', description: 'Overrides the theme’s accent colour. Reset to use the default.', keywords: 'colour accent override custom theme reset' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Website appearance', description: 'The colour scheme websites are asked to use: light, dark, or what Windows uses.', keywords: 'dark light auto mode prefers color scheme websites page theme' },
   { id: 'forceDark', section: 'appearance', label: 'Force dark theme on all websites', description: 'Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.', keywords: 'force dark mode night websites invert auto dark' },
   { id: 'privateTheme', section: 'appearance', label: 'Private tab theme', description: 'How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.', keywords: 'private incognito inprivate theme dark light window colour' },
+  // --- theme options --- the schedule, custom colours, colouring mode, page accent, contrast and the theme file.
+  ...THEME_ROWS,
+  // --- end theme options ---
   { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', description: 'Choose which buttons appear in the toolbar.', keywords: 'back forward reload bookmark newtab split reader site information buttons customize', notYet: true },
   { id: 'showHomeButton', section: 'appearance', label: 'Show the Home button', description: 'Adds a Home button to the side rail, beside the tabs.', keywords: 'home button toolbar rail sidebar' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre the address bar', description: 'Keeps the address bar centred in the toolbar.', keywords: 'address bar centre centered position' },

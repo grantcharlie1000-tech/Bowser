@@ -1908,6 +1908,8 @@ fn save_form(hwnd: HWND) {
         address: current.address,
         // The GDI form has no controls for the tab options (the HTML settings page has them).
         tabs: current.tabs,
+        // The GDI form has no controls for the theme options (the HTML settings page has them).
+        themes: current.themes,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

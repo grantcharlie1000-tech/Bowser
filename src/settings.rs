@@ -96,7 +96,9 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # tabs_new_tab_page=start\r\n\
     # tabs_close_activation=right\r\n\
     # tabs_keep_window=true\r\n\
-    # (more tabs_* options: see Settings > Tabs)\r\n";
+    # (more tabs_* options: see Settings > Tabs)\r\n\
+    # theme_schedule=system\r\n\
+    # (more theme_* options: see Settings > Appearance)\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -544,6 +546,10 @@ pub struct Settings {
     /// The `tabs_*` options of the settings page's Tabs section.
     pub tabs: crate::tab_options::TabOptions,
     // --- end tab options ---
+    // --- theme options (src/theme_custom.rs) ---
+    /// The `theme_*` options of the settings page's Appearance area: colours, accent mode, schedule.
+    pub themes: crate::theme_custom::ThemeOptions,
+    // --- end theme options ---
 }
 
 impl Default for Settings {
@@ -601,6 +607,7 @@ impl Default for Settings {
             start: crate::start_page::StartSettings::default(),
             address: crate::address_settings::AddressSettings::default(),
             tabs: crate::tab_options::TabOptions::default(),
+            themes: crate::theme_custom::ThemeOptions::default(),
         }
     }
 }
@@ -862,6 +869,11 @@ impl Settings {
                     crate::tab_options::read_file_line(&mut settings.tabs, key, value);
                 }
                 // --- end tab options ---
+                // --- theme options ---
+                key if crate::theme_custom::KEYS.contains(&key) => {
+                    crate::theme_custom::read_file_line(&mut settings.themes, key, value);
+                }
+                // --- end theme options ---
                 // --- privacy, history and website appearance (thread T3) ---
                 "blocker_level" => {
                     if let Some(level) = BlockerLevel::parse(value) {
@@ -1106,6 +1118,9 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     // --- tab options ---
     let out = crate::tab_options::render_into(&out, &settings.tabs, newline);
     // --- end tab options ---
+    // --- theme options ---
+    let out = crate::theme_custom::render_into(&out, &settings.themes, newline);
+    // --- end theme options ---
     // Address bar, search and bookmark options (src/address_settings.rs).
     settings.address.render_into(&out, newline)
 }
@@ -1443,7 +1458,32 @@ mod tests {
             },
             address: crate::address_settings::AddressSettings::default(),
             tabs: crate::tab_options::TabOptions::default(),
+            themes: crate::theme_custom::ThemeOptions::default(),
         }
+    }
+
+    #[test]
+    fn theme_options_round_trip_through_the_file_and_leave_other_lines_alone() {
+        let mut custom = Settings { theme: Theme::System, theme_accent: Some("#aa5500".to_owned()), ..sample() };
+        for (key, value) in [
+            ("theme_schedule", "time"), ("theme_look", "dark"), ("theme_light_from", "06:15"), ("theme_dark_from", "21:45"),
+            ("theme_background", "#102030"), ("theme_foreground", "#eeeeee"), ("theme_highlight", "#336699"),
+            ("theme_colouring", "unified"), ("theme_accent_page", "true"), ("theme_saturation", "45"), ("theme_contrast", "high"),
+        ] {
+            assert!(custom.themes.set(key, value), "{key}");
+        }
+        let written = render_updated("# kept\nunknown_key=1\n", &custom);
+        assert!(written.starts_with("# kept\nunknown_key=1\n"));
+        assert!(written.contains("theme_background=#102030\n") && written.contains("theme_saturation=45\n") && written.contains("theme_schedule=time\n"));
+        assert_eq!(Settings::parse(&written), custom);
+        assert_eq!(render_updated(&written, &Settings::parse(&written)), written, "saving again repeats nothing");
+        // A profile that never touched the theme options has none of their lines.
+        assert_eq!(render_updated("", &sample()).matches("theme_").count(), 1, "only the older theme_accent line");
+        // A hand-written file may use the usual spellings; bad values keep the default.
+        let hand = Settings::parse("theme_colouring=Unified\ntheme_accent_page=ON\ntheme_saturation=500\ntheme_background=blue\ntheme_light_from=7:00\n");
+        assert_eq!(hand.themes.colouring, crate::theme_custom::Colouring::Unified);
+        assert!(hand.themes.accent_from_page);
+        assert_eq!((hand.themes.saturation, hand.themes.background, hand.themes.light_from), (100, None, 7 * 60));
     }
 
     #[test]

@@ -57,6 +57,7 @@ pub mod thumbnail;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;
+pub mod theme_custom; // colours, accent mode, light/dark schedule, theme file (T8)
 pub mod updater;
 pub mod vertical_tabs;
 pub mod win32;

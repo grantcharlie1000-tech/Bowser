@@ -1113,6 +1113,50 @@
   opacity: 0.5;
 }
 
+/* ---- Theme options: the schedule note, the two times, the three custom colours ---- */
+.sp-schedule-note {
+  display: block;
+}
+
+.sp-theme-times {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--bw-space-2) var(--bw-space-5);
+}
+
+.sp-theme-colours {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--bw-space-2);
+}
+
+.sp-theme-field {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+}
+
+.sp-theme-colours .sp-theme-field > .sp-value:first-child {
+  min-width: 68px;
+}
+
+.sp-theme-hex {
+  min-width: 64px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-time-input {
+  width: 104px;
+}
+
+.sp-theme-file {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 /* ---- Toolbar buttons: a two-column grid in a recessed well, each with its own glyph ---- */
 .sp-toolbar-list {
   display: grid;
