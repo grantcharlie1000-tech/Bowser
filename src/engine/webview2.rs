@@ -154,6 +154,95 @@ fn run_capped_script(
     }
 }
 
+// --- page tools (T7) ---
+/// Calls a capture DevTools method. Only the two methods page capture needs are allowed, only on a page
+/// whose live address is http(s), and an answer past the capture limit is dropped unread.
+fn devtools_capture_call(
+    webview: &ICoreWebView2,
+    method: &str,
+    params: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    if !matches!(method, crate::capture::METHOD_METRICS | crate::capture::METHOD_SHOT)
+        || current_web_url(webview).is_none()
+    {
+        done(None);
+        return;
+    }
+    let slot = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        let answer = (error.is_ok()
+            && !devtools_protocol_error(&result)
+            && result.len() <= crate::page_tools::MAX_SLICE_BASE64 + 4096)
+            .then_some(result);
+        if let Some(done) = completion.borrow_mut().take() {
+            done(answer);
+        }
+        Ok(())
+    }));
+    let method = HSTRING::from(method);
+    let params = HSTRING::from(params);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+    if queued.is_err()
+        && let Some(done) = slot.borrow_mut().take()
+    {
+        done(None);
+    }
+}
+
+/// Runs a script that needs no answer in whatever the tab shows now.
+fn run_quiet_script(webview: &ICoreWebView2, script: &str) {
+    let wide = CoTaskMemPWSTR::from(script);
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let _ = unsafe { webview.ExecuteScript(*wide.as_ref().as_pcwstr(), &handler) };
+}
+
+/// Makes one tab match Settings > Page tools: Ctrl+scroll zoom, and the spatial navigation script (added
+/// for every document the tab loads from now on and run in the one it shows, or taken away again).
+/// `spatial_id` holds the id WebView2 gave the added script while it is in place.
+fn apply_page_tools_to(webview: &ICoreWebView2, spatial_id: &Rc<RefCell<Option<String>>>) {
+    if let Ok(settings) = unsafe { webview.Settings() } {
+        let _ = unsafe { settings.SetIsZoomControlEnabled(crate::page_tools::wheel_zoom_on()) };
+    }
+    let want = crate::page_tools::spatial_on();
+    let have = spatial_id.borrow().is_some();
+    if want && !have {
+        // An empty id marks "being added", so a second apply before the answer does not add it twice.
+        *spatial_id.borrow_mut() = Some(String::new());
+        let slot = spatial_id.clone();
+        let target = webview.clone();
+        let script = CoTaskMemPWSTR::from(crate::page_tools::SPATIAL_SCRIPT);
+        let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |status, id| {
+            if status.is_err() {
+                *slot.borrow_mut() = None;
+            } else if crate::page_tools::spatial_on() {
+                *slot.borrow_mut() = Some(id);
+            } else {
+                // Switched off while it was being added.
+                *slot.borrow_mut() = None;
+                let wide = HSTRING::from(id);
+                let _ = unsafe { target.RemoveScriptToExecuteOnDocumentCreated(PCWSTR(wide.as_ptr())) };
+            }
+            Ok(())
+        }));
+        if unsafe { webview.AddScriptToExecuteOnDocumentCreated(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
+            *spatial_id.borrow_mut() = None;
+            return;
+        }
+        run_quiet_script(webview, crate::page_tools::SPATIAL_SCRIPT);
+    } else if !want && have {
+        if let Some(id) = spatial_id.borrow_mut().take().filter(|id| !id.is_empty()) {
+            let wide = HSTRING::from(id);
+            let _ = unsafe { webview.RemoveScriptToExecuteOnDocumentCreated(PCWSTR(wide.as_ptr())) };
+        }
+        run_quiet_script(webview, crate::page_tools::SPATIAL_OFF_SCRIPT);
+    }
+}
+// --- end page tools ---
+
 fn toggle_native_picture_in_picture(webview: &ICoreWebView2) {
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
     let params = HSTRING::from(PIP_TOGGLE_PARAMETERS);
@@ -1310,6 +1399,8 @@ struct WebView2Tab {
     visible: Rc<Cell<bool>>,
     /// Bounds last accepted by `controller`, so an unchanged resize skips the SetBounds call.
     applied_bounds: Option<RECT>,
+    /// The id of the spatial navigation script while it is added to this tab (page tools, T7).
+    spatial_id: Rc<RefCell<Option<String>>>,
 }
 
 pub struct WebView2Engine {
@@ -2898,6 +2989,37 @@ impl EngineAdapter for WebView2Engine {
         self.clear_browsing_data_set(tab, &[kind], range, done);
     }
 
+    // --- page tools (T7) ---
+    fn devtools_call(&mut self, tab: TabId, method: &str, params: &str, done: Box<dyn FnOnce(Option<String>)>) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => devtools_capture_call(&webview, method, params, done),
+            None => done(None),
+        }
+    }
+
+    fn run_page_script(&mut self, tab: TabId, script: &str, limit: usize, done: Box<dyn FnOnce(Option<String>)>) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_capped_script(&webview, script, limit, done),
+            None => done(None),
+        }
+    }
+
+    fn apply_page_tools(&mut self) {
+        let tabs: Vec<(ICoreWebView2, Rc<RefCell<Option<String>>>)> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| Some((tab.webview.clone()?, tab.spatial_id.clone())))
+            .collect();
+        for (webview, spatial_id) in &tabs {
+            apply_page_tools_to(webview, spatial_id);
+        }
+    }
+    // --- end page tools ---
+
     fn apply_website_look(&mut self) {
         let look = crate::website_look::current();
         let webviews: Vec<ICoreWebView2> = self
@@ -4061,6 +4183,9 @@ unsafe fn configure_controller(
         }
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         start_website_look(&webview);
+        // Page tools (T7): Ctrl+scroll zoom and spatial navigation, as Settings > Page tools has them.
+        let spatial_id = Rc::new(RefCell::new(None::<String>));
+        apply_page_tools_to(&webview, &spatial_id);
         if let Some(level) = tracking_policy.level {
             let verified = apply_tracking_prevention(
                 &webview,
@@ -4671,6 +4796,72 @@ unsafe fn configure_controller(
         }
         // --- end address bar, search and bookmarks ---
 
+        // --- page tools (T7) ---
+        // "Insert note" in the context menu of a text field. The labels and the action come from the app,
+        // which knows the notes; the page is only told the text of the one the user picks, by a script
+        // the app runs through `execute_script_for_origin`.
+        if let (Some(labels), Some(picked), Ok(webview11), Ok(environment9)) = (
+            events.context_notes.clone(),
+            events.context_note_pick.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut editable = BOOL::default();
+                    target.IsEditable(&mut editable)?;
+                    if !editable.as_bool() {
+                        return Ok(());
+                    }
+                    let notes = labels(tab_id);
+                    if notes.is_empty() {
+                        return Ok(());
+                    }
+                    let parent = environment9.CreateContextMenuItem(
+                        w!("Insert note"),
+                        None::<&IStream>,
+                        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU,
+                    )?;
+                    let children = parent.Children()?;
+                    for (index, (note, label)) in notes.into_iter().enumerate() {
+                        let wide = HSTRING::from(label);
+                        let child = environment9.CreateContextMenuItem(
+                            PCWSTR(wide.as_ptr()),
+                            None::<&IStream>,
+                            COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                        )?;
+                        let picked = picked.clone();
+                        let mut item_token = 0i64;
+                        child.add_CustomItemSelected(
+                            &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                                picked(tab_id, note);
+                                Ok(())
+                            })),
+                            &mut item_token,
+                        )?;
+                        children.InsertValueAtIndex(index as u32, &child)?;
+                    }
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let mut at = count;
+                    for index in 0..count {
+                        let mut name = PWSTR::null();
+                        if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok()
+                            && CoTaskMemPWSTR::from(name).to_string() == "paste"
+                        {
+                            at = index + 1;
+                        }
+                    }
+                    items.InsertValueAtIndex(at, &parent)
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end page tools ---
+
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();
         let external_handler: ICoreWebView2LaunchingExternalUriSchemeEventHandler =
@@ -4905,6 +5096,7 @@ unsafe fn configure_controller(
             memory_target_api: None,
             visible: Rc::new(Cell::new(visible)),
             applied_bounds: Some(bounds),
+            spatial_id,
         })
     }
 }

@@ -115,22 +115,34 @@
       if (st.th === 'auto' && typeof c[k] === 'string' && c[k].length < 64 && HEX.test(c[k])) s.setProperty('--bwr-' + k, c[k]); else s.removeProperty('--bwr-' + k);
     }
     s.setProperty('--bwr-ft', st.fs + 'px');
+    s.setProperty('--bwr-ff', FONTS[tf.f]);
+    s.setProperty('--bwr-lh', String(tf.l / 10));
+    s.setProperty('--bwr-mw', tf.w + 'ch');
+    if (tf.v) set(de, 'data-bwr-v', 'on'); else n.ra.call(de, 'data-bwr-v');
     if (st.th === 'auto') s.setProperty('color-scheme', o.d ? 'dark' : 'light'); else s.removeProperty('color-scheme');
     for (k in st.tb) set(st.tb[k], 'aria-pressed', String(k === st.th));
   }
   function bar(st) {
-    var h = n.mk('div'), s = n.as.call(h, { mode: 'closed' }), b = n.mk('div'), i;
+    var h = n.mk('div'), s = n.as.call(h, { mode: 'closed' }), b = n.mk('div'), i, t;
     function btn(t, l, f) { var e = n.mk('button'); e.type = 'button'; e.textContent = t; set(e, 'aria-label', l); e.addEventListener('click', f); b.appendChild(e); return e; }
-    b.className = 'b'; set(h, 'data-bwr-x', 'b'); set(b, 'role', 'toolbar'); set(b, 'aria-label', 'Reader controls');
+    st.tb = {};
+    if (!tf.g && !tf.r) return; // no controls and no reading time: nothing to put on the page
+    b.className = 'b'; set(h, 'data-bwr-x', 'b'); set(b, 'role', tf.g ? 'toolbar' : 'status'); set(b, 'aria-label', tf.g ? 'Reader controls' : 'Reading time');
     function theme(t) { st.tb[t] = btn(t.charAt(0).toUpperCase() + t.slice(1), t + ' theme', function () { st.th = t; paint(st); }); }
-    btn('A−', 'Smaller text', function () { st.fs = Math.max(14, st.fs - 2); paint(st); });
-    btn('A+', 'Larger text', function () { st.fs = Math.min(30, st.fs + 2); paint(st); });
-    b.appendChild(n.mk('i')); st.tb = {};
-    for (i = 0; i < TH.length; i++) theme(TH[i]);
+    if (tf.g) {
+      btn('A−', 'Smaller text', function () { st.fs = Math.max(14, st.fs - 2); paint(st); });
+      btn('A+', 'Larger text', function () { st.fs = Math.min(30, st.fs + 2); paint(st); });
+      b.appendChild(n.mk('i'));
+      for (i = 0; i < TH.length; i++) theme(TH[i]);
+    }
+    if (tf.r) {
+      if (tf.g) b.appendChild(n.mk('i'));
+      t = n.mk('span'); t.className = 't'; t.textContent = Math.max(1, Math.ceil(st.w / 230)) + ' min read'; b.appendChild(t);
+    }
     sheet(s, String(o.b)); s.appendChild(b); D.body.appendChild(h);
   }
   function enter(m, f) {
-    var st = { m: m, y: W.scrollY || 0, th: th, fs: fs, sh: null, tb: null }, css = String(o.k).split('/*R*/'), root, e, p, c, i, h, t;
+    var st = { m: m, y: W.scrollY || 0, th: th, fs: fs, sh: null, tb: null, w: f ? f.w : 0 }, css = String(o.k).split('/*R*/'), root, e, p, c, i, h, t;
     Object.defineProperty(D, KEY, { value: st, configurable: true });
     set(de, 'data-bwr', m);
     st.sh = sheet(D, m === 'reader' ? css.join('') : css[0]);
@@ -157,10 +169,10 @@
       x = at(a[i], 'data-bwr-x');
       if (x === 't' || x === 'b') n.rm.call(a[i]); else { n.ra.call(a[i], 'data-bwr-x'); n.ra.call(a[i], 'data-bwr-k'); }
     }
-    v = ['data-bwr', 'data-bwr-t', 'data-bwr-x'];
-    for (i = 0; i < 3; i++) n.ra.call(de, v[i]);
-    v = ['bg', 'fg', 'ac', 'bd', 'fl', 'ft'];
-    for (i = 0; i < 6; i++) de.style.removeProperty('--bwr-' + v[i]);
+    v = ['data-bwr', 'data-bwr-t', 'data-bwr-x', 'data-bwr-v'];
+    for (i = 0; i < 4; i++) n.ra.call(de, v[i]);
+    v = ['bg', 'fg', 'ac', 'bd', 'fl', 'ft', 'ff', 'lh', 'mw'];
+    for (i = 0; i < 9; i++) de.style.removeProperty('--bwr-' + v[i]);
     de.style.removeProperty('color-scheme');
     if (!at(de, 'style')) n.ra.call(de, 'style');
     if (s instanceof CSSStyleSheet) {
@@ -174,6 +186,15 @@
 
   var cur = D[KEY], a = o.a, m = o.m === 'calm' ? 'calm' : 'reader', f;
   var th = TH.indexOf(o.t) < 0 ? 'auto' : o.t, fs = Math.min(30, Math.max(14, (o.s | 0) || 19));
+  // Typography from Settings > Page tools: font key, line height in tenths, column width in ch, vertical text,
+  // the control bar and the reading time. Anything out of range falls back to the default.
+  var FONTS = { serif: 'Georgia,"Iowan Old Style","Times New Roman",serif', sans: '"Segoe UI Variable","Segoe UI",system-ui,sans-serif', mono: 'Consolas,"Cascadia Mono",monospace' };
+  var tf = {
+    f: FONTS[o.f] && Object.prototype.hasOwnProperty.call(FONTS, o.f) ? o.f : 'serif',
+    l: (o.l | 0) >= 12 && (o.l | 0) <= 24 ? o.l | 0 : 16,
+    w: (o.w | 0) >= 40 && (o.w | 0) <= 120 ? o.w | 0 : 68,
+    v: o.v === true, g: o.g !== false, r: o.r === true
+  };
   if (!(cur && (cur.m === 'reader' || cur.m === 'calm') && typeof cur.fs === 'number')) cur = null;
   if (cur) { th = cur.th; fs = cur.fs; }
   // The page's language, for offering translation: lang (or the content-language meta) cut to 2-3 letters.

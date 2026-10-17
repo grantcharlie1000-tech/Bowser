@@ -540,6 +540,10 @@ pub struct Settings {
     /// further `key=value` lines of this file; changed one key at a time by the settings page.
     pub address: crate::address_settings::AddressSettings,
     // --- end address bar, search and bookmarks ---
+    // --- page tools (T7): capture, spatial navigation, reader defaults, zoom scope, pop-out video ---
+    /// The `pt_*` options (src/page_tools.rs), one line each in `settings.txt`.
+    pub page_tools: crate::page_tools::PageTools,
+    // --- end page tools ---
     // --- tab options (src/tab_options.rs) ---
     /// The `tabs_*` options of the settings page's Tabs section.
     pub tabs: crate::tab_options::TabOptions,
@@ -600,6 +604,7 @@ impl Default for Settings {
             private_theme: PrivateTheme::Follow,
             start: crate::start_page::StartSettings::default(),
             address: crate::address_settings::AddressSettings::default(),
+            page_tools: crate::page_tools::PageTools::default(),
             tabs: crate::tab_options::TabOptions::default(),
         }
     }
@@ -898,7 +903,11 @@ impl Settings {
                 // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
                     if !settings.start.parse_key(key, value) {
-                        settings.address.parse_line(key, value);
+                        if crate::page_tools::PageTools::owns(key) {
+                            settings.page_tools.parse_line(key, value); // --- page tools (T7) ---
+                        } else {
+                            settings.address.parse_line(key, value);
+                        }
                     }
                 }
                 // --- end start page ---
@@ -1107,7 +1116,9 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     let out = crate::tab_options::render_into(&out, &settings.tabs, newline);
     // --- end tab options ---
     // Address bar, search and bookmark options (src/address_settings.rs).
-    settings.address.render_into(&out, newline)
+    let out = settings.address.render_into(&out, newline);
+    // Page tools (src/page_tools.rs).
+    settings.page_tools.render_into(&out, newline)
 }
 
 // --- wave-1 fixes: key-level merge for saves from memory ---
@@ -1442,6 +1453,7 @@ mod tests {
                 widget_drag: false,
             },
             address: crate::address_settings::AddressSettings::default(),
+            page_tools: crate::page_tools::PageTools::default(),
             tabs: crate::tab_options::TabOptions::default(),
         }
     }
@@ -1725,6 +1737,7 @@ tabs_new_tab_url=javascript:1
              start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n".to_owned()
                 // The address bar, search and bookmark options follow, one line each (address_settings.rs).
                 + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")
+                + &crate::page_tools::PageTools::default().render_into("", "\r\n")
         );
         assert_eq!(Settings::parse(&text), sample());
     }

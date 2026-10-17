@@ -4,3 +4,4 @@ button:hover{background:var(--bwr-fl)}
 button[aria-pressed=true]{background:var(--bwr-ac);color:var(--bwr-bg)}
 button:focus-visible{outline:2px solid var(--bwr-ac);outline-offset:1px}
 i{width:1px;height:16px;margin:0 4px;background:var(--bwr-bd)}
+.t{font:600 12px "Segoe UI Variable","Segoe UI",system-ui,sans-serif;padding:0 10px;color:var(--bwr-fg);opacity:.85;white-space:nowrap}
