@@ -147,6 +147,14 @@ pub(crate) fn sync(owner: HWND, viewport: RECT, dpi: u32) {
     }
 }
 
+/// --- wave-1 fixes --- shows the panel without toggling it: a note picked in Quick commands while the
+/// panel is already open leaves it open (`open` closes an open panel, as its button does).
+pub(crate) fn show(owner: HWND) {
+    if OPEN.with(Cell::get) == 0 {
+        open(owner);
+    }
+}
+
 pub(crate) fn open(owner: HWND) {
     if let Some(raw) = OPEN.with(Cell::get).checked_sub(0).filter(|raw| *raw != 0) {
         unsafe {

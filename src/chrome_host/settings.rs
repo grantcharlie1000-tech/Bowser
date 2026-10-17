@@ -276,6 +276,17 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
     })
 }
 
+/// --- wave-1 fixes --- [`apply_settings_text`] for the page's Save over the file's `settings`. The
+/// blocking level is saved by its own control (the protection commands, the Privacy panel), so the
+/// page's copy of `blocker_enabled` is only a mirror that can be older than the file: the file's
+/// value is kept, and a level chosen elsewhere while the page is open is never put back.
+pub fn apply_page_save(settings: &mut Settings, text: &str) -> bool {
+    let blocker_enabled = settings.blocker_enabled;
+    let applied = apply_settings_text(settings, text);
+    settings.blocker_enabled = blocker_enabled;
+    applied
+}
+
 /// Applies a `save` payload: every profile setting exactly once, exact keys and values, nothing
 /// else (the update switch is install-wide and never part of it). `false` leaves the caller's copy
 /// to be discarded.
@@ -346,6 +357,27 @@ mod tests {
 
     fn fields(a: &str) -> PanelFields {
         PanelFields { a: a.to_owned(), id: None, parent: None, before: None, n: None, on: None, text: None, url: None }
+    }
+
+    // --- wave-1 fixes ---
+    /// The level was set to None from the shield or Privacy panel while the page was open: the
+    /// page's older draft (blocker_enabled=true) saves another row and must not turn blocking back on.
+    #[test]
+    fn a_page_save_keeps_the_blocking_level_the_file_holds() {
+        let page = "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow=\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict\n\
+            theme=system\ntheme_accent=\ntoolbar_buttons=back,reload\ncentred_address_bar=false\nminimal_url=false\nshow_load_progress=false\n\
+            frameless=true\nrounded_content_frame=false\nshow_home_button=false\nbookmarks_bar=always\nbookmarks_bar_tab_groups=true\n\
+            side_panel_position=right\ntab_preview_images=false\ntab_preview_memory=false\nfont_size=large\nui_font=\n\
+            default_zoom=125\nshow_zoom_indicator=false\nnew_tab_beside_active=false\nctrl_tab_mru=false\nshift_right_click_context=true\n\
+            ctrl_shift_c_copy_link=false\nctrl_s_vertical_tabs=true\npin_new_tab_groups=true\nsplit_edge_drop=false\nblock_youtube_video_ads=false";
+        let mut off = Settings { blocker_enabled: false, ..Settings::default() };
+        assert!(apply_page_save(&mut off, page));
+        assert!(!off.blocker_enabled, "None chosen elsewhere stays None");
+        assert_eq!(off.theme, Theme::System, "the rest of the save still applies");
+        let mut on = Settings::default();
+        assert!(apply_page_save(&mut on, &page.replace("blocker_enabled=true", "blocker_enabled=false")));
+        assert!(on.blocker_enabled, "a stale None in the draft does not turn blocking off either");
+        assert!(!apply_page_save(&mut Settings::default(), "tab_layout=wrong"), "a bad payload is still refused");
     }
 
     #[test]

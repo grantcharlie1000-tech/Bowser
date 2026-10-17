@@ -47,7 +47,9 @@ export interface SelectionResult {
  * Applies a click on tab `id` to the selection. `order` is the visible tabs in strip order and `active`
  * the active tab. A plain click clears the selection. Ctrl toggles one tab; the active tab joins the
  * selection first, so Ctrl+click on a second tab selects two. Shift selects the range from the anchor
- * (the active tab when none was clicked yet) to the tab, both ends included.
+ * (the active tab when none was clicked yet) to the tab, both ends included. With `includeActive`
+ * false ("Include the active tab in the selection" off) the active tab never joins: Ctrl+click
+ * selects just the clicked tab and a Shift range leaves the active tab out.
  */
 export function clickSelection(
   selected: readonly number[],
@@ -56,19 +58,21 @@ export function clickSelection(
   active: number,
   id: number,
   click: SelectionClick,
+  includeActive = true,
 ): SelectionResult {
   if (!click.ctrl && !click.shift) return { selected: [], anchor: id, activate: true };
+  const keep = (tab: number): boolean => includeActive || tab !== active;
   if (click.shift) {
     const from = order.indexOf(order.includes(anchor) ? anchor : active);
     const to = order.indexOf(id);
     if (from < 0 || to < 0) return { selected, anchor, activate: false };
     const [lo, hi] = from <= to ? [from, to] : [to, from];
-    return { selected: order.slice(lo, hi + 1), anchor: order[from] ?? active, activate: false };
+    return { selected: order.slice(lo, hi + 1).filter(keep), anchor: order[from] ?? active, activate: false };
   }
-  const next = new Set(selected.length === 0 && order.includes(active) ? [active] : selected);
+  const next = new Set(selected.length === 0 && includeActive && order.includes(active) ? [active] : selected);
   if (next.has(id)) next.delete(id);
   else next.add(id);
-  return { selected: order.filter((tab) => next.has(tab)), anchor: id, activate: false };
+  return { selected: order.filter((tab) => next.has(tab) && keep(tab)), anchor: id, activate: false };
 }
 
 /** Drops ids that are no longer tabs (a closed tab leaves the selection). */

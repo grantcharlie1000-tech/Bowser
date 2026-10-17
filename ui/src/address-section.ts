@@ -422,7 +422,7 @@ function engineItem(engine: EngineView, index: number, snapshot: AddressSnapshot
   tile.textContent = monogram(engine.name);
   const text = el('span', 'sp-text');
   const name = el('span', 'sp-label');
-  name.textContent = engineLabel(engine, true);
+  name.textContent = engineLabel(engine, snapshot.s.search_show_nickname); // --- wave-1 fixes ---
   const detail = el('span', 'sp-desc ad-engine-url');
   detail.dir = 'ltr';
   detail.textContent = engine.url.replace(/^https:\/\//, '');

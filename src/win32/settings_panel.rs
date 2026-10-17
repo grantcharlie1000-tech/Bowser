@@ -76,9 +76,10 @@ const BLOCKER_HEADING: &str = "Ad and tracker blocker";
 const LAYOUT_HEADING: &str = "Browser layout";
 const LAYOUT_HELP: &str =
     "Click to step through the layouts: toolbar above tabs, tabs above toolbar, single row or vertical sidebar. Sidebar width is measured in logical pixels.";
-const BLOCKER_TOGGLE: &str = "Block ads and trackers";
+// --- wave-1 fixes --- this switch is only the None choice of the blocking level; it does not choose the level.
+const BLOCKER_TOGGLE: &str = "Blocking on (off is the None level)";
 const BLOCKER_HELP: &str =
-    "Blocks known ad and tracking requests on every site except the ones listed below.";
+    "Off blocks nothing. On uses the blocking level chosen on the settings page (Trackers, or Trackers and ads), on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
 const ALLOW_HELP: &str = "Separate sites with commas, for example example.com, other.org.";
 const TAB_GROUPS_HEADING: &str = "Tab groups";
@@ -1087,7 +1088,7 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
             ),
             (
                 ID_FRAMELESS,
-                "Hide toolbar and tabs until the pointer nears the edge",
+                FRAMELESS_TOGGLE,
                 l.chrome_toggles[3],
                 button,
                 ButtonKind::Owner,
@@ -1582,9 +1583,29 @@ fn make_default_browser(hwnd: HWND) {
 }
 
 fn search_text(panel: &Panel) -> &'static str {
-    match panel.search_engine {
+    search_selector_text(engine_list_in_use(), panel.search_engine, panel.search_fallback)
+}
+
+/// --- wave-1 fixes --- the frameless switch is saved but nothing acts on it yet (thread T11 owns it).
+const FRAMELESS_TOGGLE: &str = "Hide toolbar and tabs until the pointer nears the edge (not active yet)";
+/// Shown in the search selector once the settings page's engine list decides searches.
+const SEARCH_MANAGED: &str = "Set in Settings > Search";
+
+/// Whether the profile has the settings page's engine list, which decides searches instead of the
+/// `search_engine` key this form edits.
+fn engine_list_in_use() -> bool {
+    crate::profile::active().is_ok_and(|profile| profile.root().join(crate::search_engines::FILE_NAME).exists())
+}
+
+/// The selector's text: the older engine choice, unless the engine list is in use (then the selector
+/// says where the engine is chosen and does nothing).
+fn search_selector_text(list_in_use: bool, engine: Option<SearchEngine>, fallback: &'static str) -> &'static str {
+    if list_in_use {
+        return SEARCH_MANAGED;
+    }
+    match engine {
         Some(engine) => engine.label(),
-        None => panel.search_fallback,
+        None => fallback,
     }
 }
 
@@ -1605,6 +1626,10 @@ fn engine_description(engine: SearchEngine) -> &'static str {
 /// Opens the themed engine list under the selector. The list runs its own message loop, so the
 /// panel is read before it opens and changed only after it closes. Nothing is saved until Save.
 fn choose_search_engine(hwnd: HWND) {
+    // --- wave-1 fixes --- the engine list decides searches: this older choice would do nothing.
+    if engine_list_in_use() {
+        return;
+    }
     let Some(button) = child_of(hwnd, ID_SEARCH_ENGINE) else {
         return;
     };
@@ -1908,24 +1933,22 @@ fn window_text_of(hwnd: HWND, id: i32) -> String {
 fn reset(hwnd: HWND) {
     if !confirm(
         hwnd,
-        "Reset all settings to their defaults? Comments and other lines in settings.txt are kept.",
+        "Reset all settings to their defaults? How long history is kept stays as it is, as do comments and other lines in settings.txt.",
     ) {
         return;
     }
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    match settings::save(&path, &Settings::default()) {
+    // --- wave-1 fixes --- the same reset as the settings page: history retention is kept.
+    let defaults = settings::reset_defaults(&Settings::load(&path));
+    match settings::save(&path, &defaults) {
         Ok(()) => {
-            populate(hwnd, &Settings::default());
+            populate(hwnd, &defaults);
             let app = state(hwnd).map(|panel| panel.app.clone());
             if let Some(app) = app {
-                crate::app::App::apply_tab_layout_settings(
-                    &app,
-                    Settings::default().tab_layout,
-                    Settings::default().sidebar_width,
-                );
-                crate::app::App::apply_live_settings(&app, &Settings::default());
+                crate::app::App::apply_tab_layout_settings(&app, defaults.tab_layout, defaults.sidebar_width);
+                crate::app::App::apply_live_settings(&app, &defaults);
             }
             set_status(
                 hwnd,
@@ -2318,6 +2341,17 @@ unsafe extern "system" fn settings_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// --- wave-1 fixes --- the native form does not claim more than it does.
+    #[test]
+    fn the_native_form_says_what_its_blocker_search_and_frameless_controls_do() {
+        assert!(BLOCKER_TOGGLE.contains("None"), "the switch is the None level, not the whole level");
+        assert!(BLOCKER_HELP.contains("blocking level"));
+        assert!(FRAMELESS_TOGGLE.ends_with("(not active yet)"));
+        assert_eq!(search_selector_text(true, Some(SearchEngine::Google), SEARCH_DEFAULT), SEARCH_MANAGED, "the engine list decides");
+        assert_eq!(search_selector_text(false, Some(SearchEngine::Google), SEARCH_DEFAULT), SearchEngine::Google.label());
+        assert_eq!(search_selector_text(false, None, SEARCH_DEFAULT), SEARCH_DEFAULT);
+    }
 
     #[test]
     fn theme_cycles_between_both_values() {

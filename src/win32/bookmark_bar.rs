@@ -281,16 +281,24 @@ fn pin_new_groups(owner: HWND, app: &AppRef, live: &[(String, Vec<TabId>)]) {
         fresh
     })
     .unwrap_or_default();
-    if !settings.pin_new_tab_groups || fresh.is_empty() {
-        return;
+    if let Some(pinned) = pins_after(settings.pin_new_tab_groups, fresh, &settings.address.bar_groups) {
+        save_pinned(app, &pinned);
     }
-    let mut pinned = settings.address.bar_groups.clone();
+}
+
+/// --- wave-1 fixes --- "Pin new tab groups": the pinned list once the groups seen for the first time
+/// join it (at most 32), or `None` when the option is off or nothing new appeared.
+fn pins_after(enabled: bool, fresh: Vec<String>, pinned: &[String]) -> Option<Vec<String>> {
+    if !enabled || fresh.is_empty() {
+        return None;
+    }
+    let mut pinned = pinned.to_vec();
     for domain in fresh {
         if !pinned.contains(&domain) && pinned.len() < 32 {
             pinned.push(domain);
         }
     }
-    save_pinned(app, &pinned);
+    Some(pinned)
 }
 
 fn save_pinned(app: &AppRef, pinned: &[String]) {
@@ -464,8 +472,14 @@ fn url_of(store: &BookmarkStore, id: u64) -> Option<String> {
     })
 }
 
+/// --- wave-1 fixes --- "Open bookmarks in a new tab": a bookmark opens in a new tab when asked (middle
+/// click, the menu) or when the option is on.
+fn opens_in_new_tab(asked: bool, address: &crate::address_settings::AddressSettings) -> bool {
+    asked || address.bookmark_new_tab
+}
+
 fn open_url(owner: HWND, app: &AppRef, url: &str, new_tab: bool) {
-    let new_tab = new_tab || App::settings(app).address.bookmark_new_tab;
+    let new_tab = opens_in_new_tab(new_tab, &App::settings(app).address);
     App::submit_with(app, url, Options { new_tab, ..Options::default() });
     App::focus_page(app);
     super::window::split_ui_invalidate(owner);
@@ -682,6 +696,45 @@ fn anchor(owner: HWND, rect: HoverRect) -> Option<POINT> {
 mod tests {
     use super::*;
     use crate::chrome::layout::Rect;
+
+    // --- wave-1 fixes --- what the bar's options do.
+    #[test]
+    fn the_bar_shows_as_its_option_says() {
+        let app = crate::app::test_app();
+        for (mode, shown) in [(BookmarksBar::Never, false), (BookmarksBar::Always, true), (BookmarksBar::NewTab, true)] {
+            App::apply_live_settings(&app, &crate::settings::Settings { bookmarks_bar: mode, ..crate::settings::Settings::default() });
+            assert_eq!(wanted(&app), shown, "{mode:?} on a new tab page");
+        }
+        crate::app::test_show_page(&app, App::active_tab_id(&app), "https://a.example/");
+        assert!(!wanted(&app), "new tab page only: hidden on a page");
+        App::apply_live_settings(&app, &crate::settings::Settings { bookmarks_bar: BookmarksBar::Always, ..crate::settings::Settings::default() });
+        assert!(wanted(&app), "always: shown on a page too");
+    }
+
+    #[test]
+    fn tab_group_chips_and_pinning_follow_their_options() {
+        let app = crate::app::test_app();
+        let live = vec![("a.example".to_owned(), vec![App::active_tab_id(&app)])];
+        App::apply_live_settings(&app, &crate::settings::Settings::default());
+        assert!(group_chips(&app, &live).is_empty(), "off by default: no group chips");
+        App::apply_live_settings(&app, &crate::settings::Settings { bookmarks_bar_tab_groups: true, ..crate::settings::Settings::default() });
+        let chips = group_chips(&app, &live);
+        assert_eq!(chips.iter().map(|chip| chip.key.as_str()).collect::<Vec<_>>(), ["a.example"]);
+        assert!(chips[0].live && !chips[0].pinned);
+        let pinned = vec!["old.example".to_owned()];
+        assert_eq!(pins_after(false, vec!["new.example".into()], &pinned), None, "off: nothing is pinned");
+        assert_eq!(pins_after(true, Vec::new(), &pinned), None, "nothing new");
+        assert_eq!(pins_after(true, vec!["new.example".into(), "old.example".into()], &pinned), Some(vec!["old.example".to_owned(), "new.example".to_owned()]));
+    }
+
+    #[test]
+    fn a_bookmark_opens_in_a_new_tab_when_asked_or_when_the_option_says() {
+        let mut address = crate::address_settings::AddressSettings { bookmark_new_tab: false, ..Default::default() };
+        assert!(!opens_in_new_tab(false, &address));
+        assert!(opens_in_new_tab(true, &address), "a middle click still opens a new tab");
+        address.bookmark_new_tab = true;
+        assert!(opens_in_new_tab(false, &address));
+    }
 
     #[test]
     fn the_bar_takes_its_height_from_the_top_or_the_bottom_of_the_page() {

@@ -466,6 +466,8 @@ export interface TabOptsMsg {
   readonly separator: boolean;
   readonly alignClose: boolean;
   readonly selection: boolean;
+  /** --- wave-1 fixes --- the active tab joins a Ctrl or Shift click selection. */
+  readonly selectionActive: boolean;
   readonly removeSpacing: boolean;
   readonly maximised: boolean;
   /** Tabs in the closed-tabs list; 0 hides the Closed tabs button. */
@@ -1180,12 +1182,12 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- tab options ---
     case 'tabopts': {
-      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'removeSpacing', 'maximised', 'closed'];
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed'];
       if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
-      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, removeSpacing, maximised, closed } = raw;
-      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, removeSpacing, maximised].every(isBool)) return null;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised].every(isBool)) return null;
       if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99)) return null;
-      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, removeSpacing, maximised, closed } as TabOptsMsg;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed } as TabOptsMsg;
     }
     // --- end tab options ---
     case 'fav': {

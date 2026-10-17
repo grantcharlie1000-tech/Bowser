@@ -68,8 +68,9 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 thread_local! {
     /// Per window: the generation of the toolbar page, the last `addr` and `sfield` sent to it.
     static SENT: RefCell<HashMap<isize, (u64, String, String)>> = RefCell::new(HashMap::new());
-    /// Per window: the index of the engine the search field uses.
-    static CHOSEN: RefCell<HashMap<isize, usize>> = RefCell::new(HashMap::new());
+    /// Per window and per kind of tab shown (normal, private): the index of the engine picked in the
+    /// search field's menu (wave-1 fixes: a pick in a normal tab never overrides the private engine).
+    static CHOSEN: RefCell<HashMap<(isize, bool), usize>> = RefCell::new(HashMap::new());
     static LISTED: RefCell<HashMap<isize, Listed>> = RefCell::new(HashMap::new());
     static CACHE: RefCell<Cache> = RefCell::new(Cache::default());
 }
@@ -89,12 +90,26 @@ fn base_domain(app: &AppRef) -> String {
 /// The search field's engine for this window: the one chosen, else the last used when asked to keep
 /// it, else the default. An index into `engines`.
 fn chosen_engine(hwnd: HWND, app: &AppRef, engines: &EngineStore) -> usize {
+    let private = App::active_tab_private(app);
+    let picked = CHOSEN.with(|chosen| chosen.borrow().get(&(key(hwnd), private)).copied());
+    pick_engine(engines, picked, &App::settings(app).address, private)
+}
+
+/// --- wave-1 fixes --- [`chosen_engine`]'s rule: an engine picked in the menu for this kind of tab;
+/// else, in a private tab, the engine set for private windows; else the last used when asked to keep
+/// it; else the default.
+pub(super) fn pick_engine(engines: &EngineStore, picked: Option<usize>, address: &crate::address_settings::AddressSettings, private: bool) -> usize {
     let list = engines.engines();
-    let settings = App::settings(app);
-    if let Some(index) = CHOSEN.with(|chosen| chosen.borrow().get(&key(hwnd)).copied()).filter(|index| *index < list.len()) {
+    if let Some(index) = picked.filter(|index| *index < list.len()) {
         return index;
     }
-    let wanted = if settings.address.keep_engine && !settings.address.last_engine.is_empty() { settings.address.last_engine.as_str() } else { engines.default_id() };
+    let wanted = if private {
+        engines.effective(true).id.as_str()
+    } else if address.keep_engine && !address.last_engine.is_empty() {
+        address.last_engine.as_str()
+    } else {
+        engines.default_id()
+    };
     list.iter().position(|engine| engine.id == wanted).unwrap_or(0)
 }
 
@@ -131,7 +146,7 @@ pub(super) fn sync(hwnd: HWND, app: &AppRef, generation: u64) {
 /// Forgets what a closed window was told.
 pub(super) fn forget(hwnd: HWND) {
     SENT.with(|sent| sent.borrow_mut().remove(&key(hwnd)));
-    CHOSEN.with(|chosen| chosen.borrow_mut().remove(&key(hwnd)));
+    CHOSEN.with(|chosen| chosen.borrow_mut().retain(|(window, _), _| *window != key(hwnd)));
     LISTED.with(|listed| listed.borrow_mut().remove(&key(hwnd)));
 }
 
@@ -245,7 +260,7 @@ fn show_field_rows(hwnd: HWND, seq: u32, text: &str, engine_id: &str) {
     let settings = App::settings(&app);
     let Some(engine) = engines.find(engine_id) else { return };
     let private = App::active_tab_private(&app);
-    let suggestions = engine_suggestions(hwnd, engine, text, settings.address.suggest_in_field && !private);
+    let suggestions = engine_suggestions(hwnd, engine, text, field_suggestions_allowed(&settings.address, private));
     let label = address_suggest::engine_label(engine, settings.address.show_nickname);
     let mut rows = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -346,13 +361,27 @@ fn show_engine_menu(hwnd: HWND, app: &AppRef, rect: crate::chrome_host::protocol
             let index = picked.id - 1;
             let engines = crate::address_runtime::engines();
             let Some(engine) = engines.engines().get(index) else { return };
-            CHOSEN.with(|chosen| chosen.borrow_mut().insert(key(hwnd), index));
-            if App::settings(app).address.keep_engine {
+            let private = App::active_tab_private(app);
+            CHOSEN.with(|chosen| chosen.borrow_mut().insert((key(hwnd), private), index));
+            // A private pick is not remembered for normal tabs.
+            if remembers_pick(App::settings(app).address.keep_engine, private) {
                 remember_engine(app, &engine.id);
             }
             super::window::html_sync_now(hwnd);
         },
     );
+}
+
+/// --- wave-1 fixes --- the search field asks its engine for suggestions only with "Suggestions in the
+/// search field" on, and never in a private tab.
+fn field_suggestions_allowed(address: &crate::address_settings::AddressSettings, private: bool) -> bool {
+    address.suggest_in_field && !private
+}
+
+/// --- wave-1 fixes --- a pick in the engine menu is remembered ("Keep the last selected engine") only
+/// from a normal tab.
+fn remembers_pick(keep: bool, private: bool) -> bool {
+    keep && !private
 }
 
 /// Saves the engine the search field last used (when "keep last selected engine" is on).
@@ -417,4 +446,57 @@ fn show_qr(hwnd: HWND, app: &AppRef) {
     let id = App::active_tab_id(app);
     let Some(url) = App::tab_committed_url(app, id) else { return };
     super::address_dialog::show_qr(hwnd, app, url.as_str());
+}
+
+// --- wave-1 fixes ---
+#[cfg(test)]
+mod wave1_tests {
+    use super::*;
+
+    /// T2/T3: the search field in a private tab searches with the engine set for private windows,
+    /// whatever the last-used engine or a pick made in a normal tab says; the chosen and remembered
+    /// engine still lead in normal tabs.
+    #[test]
+    fn the_search_field_uses_the_private_engine_in_a_private_tab() {
+        let mut engines = EngineStore::default();
+        let ids: Vec<String> = engines.engines().iter().map(|engine| engine.id.clone()).collect();
+        assert!(ids.len() >= 3, "{ids:?}");
+        engines.set_default(&ids[0]).unwrap();
+        engines.set_private(&ids[2]).unwrap();
+        let mut address = crate::address_settings::AddressSettings { keep_engine: true, last_engine: ids[1].clone(), ..Default::default() };
+        assert_eq!(pick_engine(&engines, None, &address, false), 1, "normal: the remembered engine");
+        assert_eq!(pick_engine(&engines, None, &address, true), 2, "private: the private engine, not the remembered one");
+        assert_eq!(pick_engine(&engines, Some(0), &address, true), 0, "a pick made in a private tab still wins there");
+        address.keep_engine = false;
+        assert_eq!(pick_engine(&engines, None, &address, false), 0, "not kept: the default");
+        assert_eq!(pick_engine(&engines, Some(99), &address, false), 0, "a pick that is gone falls back");
+    }
+
+    #[test]
+    fn the_search_field_suggests_and_remembers_only_where_the_options_allow() {
+        let mut address = crate::address_settings::AddressSettings { suggest_in_field: true, ..Default::default() };
+        assert!(field_suggestions_allowed(&address, false));
+        assert!(!field_suggestions_allowed(&address, true), "never in a private tab");
+        address.suggest_in_field = false;
+        assert!(!field_suggestions_allowed(&address, false));
+        assert!(remembers_pick(true, false));
+        assert!(!remembers_pick(true, true), "a private pick is not remembered");
+        assert!(!remembers_pick(false, false));
+    }
+
+    /// The address drop-down: off while typing, nothing is listed unless the user asked for the list.
+    #[test]
+    fn the_address_drop_down_lists_nothing_while_typing_when_the_option_is_off() {
+        let app = crate::app::test_app();
+        let mut settings = crate::settings::Settings::default();
+        settings.address.dropdown_while_typing = false;
+        App::apply_live_settings(&app, &settings);
+        let history = crate::omnibox::History::default();
+        let query = |forced| Query { text: "rust", typed_url: None, tabs: &[], seq: 1, forced };
+        assert!(rows(HWND::default(), &app, &history, None, &query(false)).is_empty());
+        assert!(!rows(HWND::default(), &app, &history, None, &query(true)).is_empty(), "asked for: the list shows");
+        settings.address.dropdown_while_typing = true;
+        App::apply_live_settings(&app, &settings);
+        assert!(!rows(HWND::default(), &app, &history, None, &query(false)).is_empty());
+    }
 }

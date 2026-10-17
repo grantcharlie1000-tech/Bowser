@@ -150,6 +150,17 @@ export function showsTypedHistoryOnFocus(opts: { readonly enabled: boolean; read
   return opts.enabled && (opts.value === '' || opts.allSelected);
 }
 
+/**
+ * --- wave-1 fixes --- what keyboard focus (Tab, F6, the host focusing the field) does to the address
+ * text under "Select the address on activation", as a click does: `all` selects it, `end` puts the
+ * caret after it, and `keep` leaves an address the user has edited alone (focus also returns when the
+ * window comes back to the front, which must not move the caret).
+ */
+export function keyboardFocusSelection(select: boolean, edited: boolean): 'all' | 'end' | 'keep' {
+  if (edited) return 'keep';
+  return select ? 'all' : 'end';
+}
+
 /** The search field's modes, as `search_field` stores them. */
 export const SEARCH_FIELD_MODES = ['off', 'field', 'button'] as const;
 export type SearchFieldMode = typeof SEARCH_FIELD_MODES[number];

@@ -18,7 +18,7 @@ import {
   type SuggestMsg,
 } from './protocol';
 // --- address bar, search and bookmarks ---
-import { DEFAULT_ADDR, clipboardText, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
+import { DEFAULT_ADDR, clipboardText, keyboardFocusSelection, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
 import { engineLabel, monogram } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
@@ -343,6 +343,12 @@ function startToolbar(root: HTMLElement): void {
     view.pill.classList.remove('is-display');
     // A press that is still down is what moved the focus here: select now as well as on release.
     if (flags.select && pointerIsDown && input.selectionStart === input.selectionEnd) input.select();
+    // --- wave-1 fixes --- keyboard focus (Tab, F6) follows "Select the address on activation" too.
+    if (!pointerIsDown) {
+      const how = keyboardFocusSelection(flags.select, edited);
+      if (how === 'all') input.select();
+      else if (how === 'end') input.setSelectionRange(input.value.length, input.value.length);
+    }
     send({ v: 1, t: 'focus', on: true });
     // --- address bar, search and bookmarks ---
     // An empty field (or one whose whole text is selected) lists what was typed before.

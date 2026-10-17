@@ -773,11 +773,12 @@ fn apply_preferred_colour_scheme(webview: &ICoreWebView2, appearance: crate::set
 }
 
 /// Gives a new tab the website look in force: the profile's colour scheme, and Chromium's automatic
-/// dark mode for the page when `force_dark_websites` is on. A look at its defaults sends nothing, so
-/// a profile that never changed it pays no cost.
+/// dark mode for the page when `force_dark_websites` is on. A look never changed from its defaults
+/// sends nothing, so a profile that never changed it pays no cost; after a change (even back to Auto)
+/// it is sent, so a private profile that kept an older Dark is put right (`website_look::new_tab_needs`).
 fn start_website_look(webview: &ICoreWebView2) {
     let look = crate::website_look::current();
-    if look != crate::website_look::WebsiteLook::default() {
+    if crate::website_look::new_tab_needs_now() {
         apply_preferred_colour_scheme(webview, look.appearance);
         call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
     }
@@ -2906,12 +2907,11 @@ impl EngineAdapter for WebView2Engine {
             .values()
             .filter_map(|tab| tab.webview.clone())
             .collect();
-        // The preferred colour scheme belongs to the browsing profile, so one tab's call covers
-        // them all; the dark-mode override is per page.
-        if let Some(first) = webviews.first() {
-            apply_preferred_colour_scheme(first, look.appearance);
-        }
+        // --- wave-1 fixes --- the preferred colour scheme belongs to the browsing profile, and normal and
+        // private tabs have different profiles, so each tab sets it (a repeat on the same profile is a
+        // no-op); the dark-mode override is per page.
         for webview in &webviews {
+            apply_preferred_colour_scheme(webview, look.appearance);
             call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
         }
     }

@@ -709,6 +709,9 @@ pub struct App {
     /// A deferred workspace change waits for the debounce timer or the exit flush.
     workspaces_dirty: bool,
     settings: crate::settings::Settings,
+    /// --- wave-1 fixes --- what `settings` last agreed with the file: a save from memory writes only the
+    /// keys that differ from this (`settings::merge_changed`), so it never reverts a newer file value.
+    settings_synced: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
@@ -1161,15 +1164,36 @@ impl App {
 
     pub fn save_settings(app: &AppRef) {
         if let Ok(profile) = crate::profile::active() {
-            let mut settings = app.borrow().settings.clone();
-            let file = crate::settings::Settings::load(&profile.settings_file());
-            settings.side_panel_width = file.side_panel_width;
-            // --- wave-1 integration --- keys the running app never changes itself keep the file's value.
-            keep_file_owned_keys(&mut settings, &file);
-            if let Err(error) = crate::settings::save(&profile.settings_file(), &settings) {
+            if let Err(error) = Self::save_settings_to(app, &profile.settings_file()) {
                 win32::show_error_message(&format!("Settings could not be saved: {error}"));
             }
         }
+    }
+
+    /// --- wave-1 fixes --- [`App::save_settings`] into `path`: only the keys the running app changed since
+    /// memory last agreed with the file are written; every other key keeps the file's (newer) value.
+    pub(crate) fn save_settings_to(app: &AppRef, path: &std::path::Path) -> std::io::Result<()> {
+        let (memory, synced) = {
+            let state = app.borrow();
+            (state.settings.clone(), state.settings_synced.clone())
+        };
+        let file = crate::settings::Settings::load(path);
+        let mut settings = crate::settings::merge_changed(&synced, &memory, &file);
+        // The side panel writes its own width straight to the file.
+        settings.side_panel_width = file.side_panel_width;
+        // --- wave-1 integration --- keys the running app never changes itself keep the file's value.
+        keep_file_owned_keys(&mut settings, &file);
+        crate::settings::save(path, &settings)?;
+        app.borrow_mut().settings_synced = memory;
+        Ok(())
+    }
+
+    /// --- wave-1 fixes --- after memory took values from the file (`apply_live_settings`), those keys count
+    /// as agreed with the file, so a later save from memory does not push them over a newer file value.
+    fn mark_synced_from(app: &AppRef, before: &crate::settings::Settings) {
+        let mut state = app.borrow_mut();
+        let now = state.settings.clone();
+        state.settings_synced = crate::settings::merge_changed(before, &now, &state.settings_synced);
     }
 
     pub fn workspaces(app: &AppRef) -> crate::workspaces::WorkspaceSet {
@@ -4825,6 +4849,7 @@ impl App {
             log,
             Some(profile.tab_groups_file()),
         );
+        app.settings_synced = settings.clone();
         app.settings = settings;
         // Retention and the website look are read by code that runs before any window setting is
         // applied (the history load, the first tab), so they are set here (thread T3).
@@ -4958,6 +4983,7 @@ impl App {
             workspaces_path,
             workspaces_dirty: false,
             settings: crate::settings::Settings::default(),
+            settings_synced: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
             last_session_snapshot: None,
@@ -6750,10 +6776,19 @@ impl App {
     /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
     /// and takes effect on the next start, matching the page's "Applies after restart" rows.
     pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        let before = app.borrow().settings.clone(); // --- wave-1 fixes ---
         // The blocker, retention and website-look settings take effect without a restart.
         Self::apply_privacy_settings(app, settings);
         let (hwnd, edit) = {
             let mut state = app.borrow_mut();
+            // --- wave-1 fixes --- the Downloads and Translation options the page saves through the app
+            // (and Reset settings puts back), so memory never holds an older value than the file.
+            state.settings.download_dir = settings.download_dir.clone();
+            state.settings.ask_download_location = settings.ask_download_location;
+            state.settings.translate_offer = settings.translate_offer;
+            state.settings.translate_auto = settings.translate_auto;
+            state.settings.translate_target = settings.translate_target.clone();
+            // --- end wave-1 fixes ---
             state.settings.theme = settings.theme;
             state.settings.theme_accent = settings.theme_accent.clone();
             state.settings.centred_address_bar = settings.centred_address_bar;
@@ -6795,6 +6830,7 @@ impl App {
         if let Some(before) = tabs_before {
             Self::tab_options_changed(app, &before);
         }
+        Self::mark_synced_from(app, &before); // --- wave-1 fixes ---
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         // The address field's own font follows font_size and ui_font (the painted chrome and the
@@ -7370,6 +7406,23 @@ fn chrome_viewport_bounds(
     }
 }
 
+/// --- wave-1 fixes --- a windowless app for tests outside this module (the win32 glue's rules).
+#[cfg(test)]
+pub(crate) fn test_app() -> AppRef {
+    tests::app_with_pending(windows::Win32::Foundation::RECT { left: 0, top: 0, right: 800, bottom: 600 })
+}
+
+/// --- wave-1 fixes --- tab `id` shows `address`, as if it had loaded (for [`test_app`]).
+#[cfg(test)]
+pub(crate) fn test_show_page(app: &AppRef, id: TabId, address: &str) {
+    let mut state = app.borrow_mut();
+    state.tab_model.set_url(id, Some(address));
+    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+        tab.url = url::Url::parse(address).ok();
+        tab.controller_created = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7379,6 +7432,7 @@ mod tests {
     mod translate_flow;
     mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
     mod tab_flow; // --- tab options ---
+    mod wave1_fixes; // --- wave-1 fixes ---
 
     #[test]
     fn reader_probe_due_table() {
@@ -9524,7 +9578,7 @@ mod tests {
         }
     }
 
-    fn app_with_pending(bounds: windows::Win32::Foundation::RECT) -> AppRef {
+    pub(super) fn app_with_pending(bounds: windows::Win32::Foundation::RECT) -> AppRef {
         Rc::new(RefCell::new(App {
             hwnd: HWND::default(),
             edit: HWND::default(),
@@ -9585,6 +9639,7 @@ mod tests {
                 sleep_enabled: false,
                 ..Default::default()
             },
+            settings_synced: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
             last_session_snapshot: None,
