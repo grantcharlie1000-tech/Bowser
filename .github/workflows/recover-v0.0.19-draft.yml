@@ -1,0 +1,261 @@
+name: Recover verified Bowser v0.0.19 draft publication
+
+# One-time recovery only: original production verification passed; the publisher's
+# draft-by-tag lookup failed after uploading these exact assets. Never rebuild or overwrite.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/recover-v0.0.19-draft.yml
+      - .github/workflows/release-v0.0.19.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/recover-v0.0.19-draft.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bowser-v0.0.19-existing-draft-publication
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'grantcharlie1000-tech/Bowser'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Official action only. No checkout, repository scripts, dependencies or executable runs.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          repository: grantcharlie1000-tech/Bowser
+          run-id: 39078462869
+          artifact-ids: '12118407006'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/bowser-v19-recovery-candidate
+          merge-multiple: true
+      - name: Verify original source, immutable evidence and exact existing draft bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_PUBLISH: 'false'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $repo = 'grantcharlie1000-tech/Bowser'
+          $source = 'ad5dd58066d12d6b772e7534baef41ab9d26bef1'
+          $runId = 39078462869L
+          $jobId = 117530425688L
+          $artifactId = 12118407006L
+          $releaseId = 416130160L
+          $exeId = 651890818L
+          $metadataId = 651890813L
+          $exeHash = '341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'
+          $metadataHash = 'ee820c2b3f53e5a19903c82de5a50e0bb7e44f1805ef8a73950bc5067628f149'
+          $artifactHash = 'sha256:ef79997c4bcfdbbce87736c82001eb6faad4b276c58c86baaab7aada2fcd73ba'
+          $tag = 'v0.0.19'
+          if ($env:GITHUB_REPOSITORY -cne $repo) { throw 'Wrong repository.' }
+          $publishing = $env:RECOVERY_PUBLISH -ceq 'true'
+          if ($publishing -and ($env:GITHUB_EVENT_NAME -cne 'push' -or $env:GITHUB_REF -cne 'refs/heads/main')) { throw 'Only an ordinary main push may publish.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          function Read-Api([string]$Path) {
+              Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/$Path" -Headers $headers
+          }
+          function Assert-File([string]$Path, [long]$Bytes, [string]$Hash) {
+              $file = Get-Item -LiteralPath $Path
+              if ($file.Length -ne $Bytes -or (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Hash) { throw "Pinned bytes/hash mismatch: $Path" }
+          }
+          function Assert-TagIfPresent {
+              try { $ref = Read-Api "git/ref/tags/$tag" }
+              catch {
+                  if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { return }
+                  throw
+              }
+              $obj = $ref.object
+              for ($depth = 0; $obj.type -ceq 'tag' -and $depth -lt 8; $depth++) { $obj = (Read-Api "git/tags/$($obj.sha)").object }
+              if ($obj.type -cne 'commit' -or $obj.sha -cne $source) { throw 'Existing tag must target the original tested source; never retarget.' }
+          }
+          function Assert-Release($Release, [bool]$Draft) {
+              if ($Release.id -ne $releaseId -or $Release.tag_name -cne $tag -or $Release.target_commitish -cne $source -or $Release.draft -ne $Draft -or $Release.prerelease) { throw 'Pinned release ID/tag/target/state mismatch.' }
+              $assets = @($Release.assets)
+              if ($assets.Count -ne 2) { throw 'Existing draft must have exactly the two pinned assets.' }
+              $exe = @($assets | Where-Object { $_.name -ceq 'Bowser.exe' })
+              $meta = @($assets | Where-Object { $_.name -ceq 'build-metadata.json' })
+              if ($exe.Count -ne 1 -or $meta.Count -ne 1) { throw 'Unexpected asset names.' }
+              if ($exe[0].id -ne $exeId -or $exe[0].size -ne 7795712 -or $exe[0].digest -cne "sha256:$exeHash" -or $exe[0].state -cne 'uploaded') { throw 'Existing executable asset identity mismatch.' }
+              if ($meta[0].id -ne $metadataId -or $meta[0].size -ne 613 -or $meta[0].digest -cne "sha256:$metadataHash" -or $meta[0].state -cne 'uploaded') { throw 'Existing metadata asset identity mismatch.' }
+          }
+          # These are immutable ORIGINAL run/job/artifact IDs, never this recovery run's build.
+          $run = Read-Api "actions/runs/$runId"
+          if ($run.id -ne $runId -or $run.head_sha -cne $source -or $run.head_branch -cne 'main' -or $run.event -cne 'push' -or $run.status -cne 'completed' -or $run.run_attempt -ne 1 -or $run.workflow_id -ne 388026789 -or $run.path -cne '.github/workflows/release-v0.0.19.yml') { throw 'Original workflow run provenance mismatch.' }
+          $job = Read-Api "actions/jobs/$jobId"
+          if ($job.id -ne $jobId -or $job.run_id -ne $runId -or $job.head_sha -cne $source -or $job.name -cne 'verify' -or $job.status -cne 'completed' -or $job.conclusion -cne 'success') { throw 'Original full verification job did not pass on the pinned source.' }
+          $artifact = Read-Api "actions/artifacts/$artifactId"
+          if ($artifact.id -ne $artifactId -or $artifact.expired -or $artifact.size_in_bytes -ne 3631886 -or $artifact.name -cne "release-v0.0.19-$source-1" -or $artifact.digest -cne $artifactHash -or $artifact.workflow_run.id -ne $runId -or $artifact.workflow_run.head_sha -cne $source) { throw 'Original immutable candidate artifact mismatch.' }
+          $candidate = Join-Path $env:RUNNER_TEMP 'bowser-v19-recovery-candidate'
+          $entries = @(Get-ChildItem -LiteralPath $candidate -Force -Recurse)
+          $expectedNames = @('Bowser.exe', 'build-metadata.json', 'native-smoke.json')
+          if ($entries.Count -ne 3 -or @($entries | Where-Object PSIsContainer).Count -ne 0 -or @($entries | Where-Object { $expectedNames -cnotcontains $_.Name }).Count -ne 0) { throw 'Unexpected candidate artifact file set.' }
+          Assert-File (Join-Path $candidate 'Bowser.exe') 7795712 $exeHash
+          Assert-File (Join-Path $candidate 'build-metadata.json') 613 $metadataHash
+          $m = Get-Content -LiteralPath (Join-Path $candidate 'build-metadata.json') -Raw | ConvertFrom-Json
+          if ($m.repository -cne $repo -or $m.commit -cne $source -or $m.version -cne '0.0.19' -or $m.revision -ne 20 -or $m.tag -cne $tag -or $m.asset -cne 'Bowser.exe' -or $m.sha256 -cne $exeHash -or $m.bytes -ne 7795712 -or $m.features -cne 'html-chrome-default' -or $m.run_id -cne '39078462869' -or $m.run_attempt -cne '1' -or $m.smoke_passed -ne $true) { throw 'Pinned candidate build metadata mismatch.' }
+          $smokePath = Join-Path $candidate 'native-smoke.json'
+          Assert-File $smokePath 5032 '864769acd0dcb7d09c5e0c4102ee4ba74e7d44598ad6defc304d1d323c519528'
+          $smoke = Get-Content -LiteralPath $smokePath -Raw | ConvertFrom-Json
+          if ((Get-FileHash -LiteralPath $smokePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $m.smoke_report_sha256 -or $smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $exeHash -or $smoke.executable_bytes -ne 7795712 -or @($smoke.source_status).Count -ne 0) { throw 'Native smoke is not bound to the original tested executable.' }
+          foreach ($check in @('clean_source', 'native_window', 'webview2_local_fixture_javascript', 'ctrl_l_local_navigation', 'f11_enter_exit_geometry', 'page_fullscreen_origin_notice_and_escape', 'clean_exit', 'engine_ready_html_chrome_and_navigation_events', 'executable_unchanged')) {
+              if ($smoke.checks.$check -ne $true) { throw "Missing original native smoke gate: $check" }
+          }
+          Assert-TagIfPresent
+          Assert-Release (Read-Api "releases/$releaseId") $true
+          # Download only the existing pinned draft asset IDs. No build, execution or asset overwrite.
+          $downloaded = Join-Path $env:RUNNER_TEMP ("bowser-v19-existing-draft-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $downloaded | Out-Null
+          $binaryHeaders = $headers.Clone()
+          $binaryHeaders.Accept = 'application/octet-stream'
+          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$exeId" -Headers $binaryHeaders -OutFile (Join-Path $downloaded 'Bowser.exe')
+          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$metadataId" -Headers $binaryHeaders -OutFile (Join-Path $downloaded 'build-metadata.json')
+          Assert-File (Join-Path $downloaded 'Bowser.exe') 7795712 $exeHash
+          Assert-File (Join-Path $downloaded 'build-metadata.json') 613 $metadataHash
+          # Re-read immediately before the sole permitted mutation. An already-public release fails closed.
+          Assert-TagIfPresent
+          Assert-Release (Read-Api "releases/$releaseId") $true
+          if ($publishing) {
+              $body = @{ draft = $false; make_latest = 'false' } | ConvertTo-Json -Compress
+              $null = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$releaseId" -Headers $headers -ContentType 'application/json' -Body $body
+              # A failed/uncertain publication must be inspected, not retried by another workflow path.
+              Assert-Release (Read-Api "releases/$releaseId") $false
+              $ref = Read-Api "git/ref/tags/$tag"
+              Assert-TagIfPresent
+              $public = Read-Api "releases/tags/$tag"
+              if ($public.id -ne $releaseId -or $public.draft -or -not $public.published_at) { throw 'Public release publication was not verified.' }
+              "Published existing release $releaseId from original source $source; SHA256 $exeHash; 7795712 bytes. Not latest; stable pin unchanged." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+              "Read-only provenance and byte comparison passed for existing draft $releaseId. Nothing published." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+  publish:
+    needs: verify
+    if: needs.verify.result == 'success' && github.repository == 'grantcharlie1000-tech/Bowser' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      actions: read
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Official action only. No checkout, repository scripts, dependencies or executable runs.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          repository: grantcharlie1000-tech/Bowser
+          run-id: 39078462869
+          artifact-ids: '12118407006'
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/bowser-v19-recovery-candidate
+          merge-multiple: true
+      - name: Verify original source, immutable evidence and exact existing draft bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_PUBLISH: 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $repo = 'grantcharlie1000-tech/Bowser'
+          $source = 'ad5dd58066d12d6b772e7534baef41ab9d26bef1'
+          $runId = 39078462869L
+          $jobId = 117530425688L
+          $artifactId = 12118407006L
+          $releaseId = 416130160L
+          $exeId = 651890818L
+          $metadataId = 651890813L
+          $exeHash = '341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'
+          $metadataHash = 'ee820c2b3f53e5a19903c82de5a50e0bb7e44f1805ef8a73950bc5067628f149'
+          $artifactHash = 'sha256:ef79997c4bcfdbbce87736c82001eb6faad4b276c58c86baaab7aada2fcd73ba'
+          $tag = 'v0.0.19'
+          if ($env:GITHUB_REPOSITORY -cne $repo) { throw 'Wrong repository.' }
+          $publishing = $env:RECOVERY_PUBLISH -ceq 'true'
+          if ($publishing -and ($env:GITHUB_EVENT_NAME -cne 'push' -or $env:GITHUB_REF -cne 'refs/heads/main')) { throw 'Only an ordinary main push may publish.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          function Read-Api([string]$Path) {
+              Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/$Path" -Headers $headers
+          }
+          function Assert-File([string]$Path, [long]$Bytes, [string]$Hash) {
+              $file = Get-Item -LiteralPath $Path
+              if ($file.Length -ne $Bytes -or (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Hash) { throw "Pinned bytes/hash mismatch: $Path" }
+          }
+          function Assert-TagIfPresent {
+              try { $ref = Read-Api "git/ref/tags/$tag" }
+              catch {
+                  if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { return }
+                  throw
+              }
+              $obj = $ref.object
+              for ($depth = 0; $obj.type -ceq 'tag' -and $depth -lt 8; $depth++) { $obj = (Read-Api "git/tags/$($obj.sha)").object }
+              if ($obj.type -cne 'commit' -or $obj.sha -cne $source) { throw 'Existing tag must target the original tested source; never retarget.' }
+          }
+          function Assert-Release($Release, [bool]$Draft) {
+              if ($Release.id -ne $releaseId -or $Release.tag_name -cne $tag -or $Release.target_commitish -cne $source -or $Release.draft -ne $Draft -or $Release.prerelease) { throw 'Pinned release ID/tag/target/state mismatch.' }
+              $assets = @($Release.assets)
+              if ($assets.Count -ne 2) { throw 'Existing draft must have exactly the two pinned assets.' }
+              $exe = @($assets | Where-Object { $_.name -ceq 'Bowser.exe' })
+              $meta = @($assets | Where-Object { $_.name -ceq 'build-metadata.json' })
+              if ($exe.Count -ne 1 -or $meta.Count -ne 1) { throw 'Unexpected asset names.' }
+              if ($exe[0].id -ne $exeId -or $exe[0].size -ne 7795712 -or $exe[0].digest -cne "sha256:$exeHash" -or $exe[0].state -cne 'uploaded') { throw 'Existing executable asset identity mismatch.' }
+              if ($meta[0].id -ne $metadataId -or $meta[0].size -ne 613 -or $meta[0].digest -cne "sha256:$metadataHash" -or $meta[0].state -cne 'uploaded') { throw 'Existing metadata asset identity mismatch.' }
+          }
+          # These are immutable ORIGINAL run/job/artifact IDs, never this recovery run's build.
+          $run = Read-Api "actions/runs/$runId"
+          if ($run.id -ne $runId -or $run.head_sha -cne $source -or $run.head_branch -cne 'main' -or $run.event -cne 'push' -or $run.status -cne 'completed' -or $run.run_attempt -ne 1 -or $run.workflow_id -ne 388026789 -or $run.path -cne '.github/workflows/release-v0.0.19.yml') { throw 'Original workflow run provenance mismatch.' }
+          $job = Read-Api "actions/jobs/$jobId"
+          if ($job.id -ne $jobId -or $job.run_id -ne $runId -or $job.head_sha -cne $source -or $job.name -cne 'verify' -or $job.status -cne 'completed' -or $job.conclusion -cne 'success') { throw 'Original full verification job did not pass on the pinned source.' }
+          $artifact = Read-Api "actions/artifacts/$artifactId"
+          if ($artifact.id -ne $artifactId -or $artifact.expired -or $artifact.size_in_bytes -ne 3631886 -or $artifact.name -cne "release-v0.0.19-$source-1" -or $artifact.digest -cne $artifactHash -or $artifact.workflow_run.id -ne $runId -or $artifact.workflow_run.head_sha -cne $source) { throw 'Original immutable candidate artifact mismatch.' }
+          $candidate = Join-Path $env:RUNNER_TEMP 'bowser-v19-recovery-candidate'
+          $entries = @(Get-ChildItem -LiteralPath $candidate -Force -Recurse)
+          $expectedNames = @('Bowser.exe', 'build-metadata.json', 'native-smoke.json')
+          if ($entries.Count -ne 3 -or @($entries | Where-Object PSIsContainer).Count -ne 0 -or @($entries | Where-Object { $expectedNames -cnotcontains $_.Name }).Count -ne 0) { throw 'Unexpected candidate artifact file set.' }
+          Assert-File (Join-Path $candidate 'Bowser.exe') 7795712 $exeHash
+          Assert-File (Join-Path $candidate 'build-metadata.json') 613 $metadataHash
+          $m = Get-Content -LiteralPath (Join-Path $candidate 'build-metadata.json') -Raw | ConvertFrom-Json
+          if ($m.repository -cne $repo -or $m.commit -cne $source -or $m.version -cne '0.0.19' -or $m.revision -ne 20 -or $m.tag -cne $tag -or $m.asset -cne 'Bowser.exe' -or $m.sha256 -cne $exeHash -or $m.bytes -ne 7795712 -or $m.features -cne 'html-chrome-default' -or $m.run_id -cne '39078462869' -or $m.run_attempt -cne '1' -or $m.smoke_passed -ne $true) { throw 'Pinned candidate build metadata mismatch.' }
+          $smokePath = Join-Path $candidate 'native-smoke.json'
+          Assert-File $smokePath 5032 '864769acd0dcb7d09c5e0c4102ee4ba74e7d44598ad6defc304d1d323c519528'
+          $smoke = Get-Content -LiteralPath $smokePath -Raw | ConvertFrom-Json
+          if ((Get-FileHash -LiteralPath $smokePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $m.smoke_report_sha256 -or $smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $exeHash -or $smoke.executable_bytes -ne 7795712 -or @($smoke.source_status).Count -ne 0) { throw 'Native smoke is not bound to the original tested executable.' }
+          foreach ($check in @('clean_source', 'native_window', 'webview2_local_fixture_javascript', 'ctrl_l_local_navigation', 'f11_enter_exit_geometry', 'page_fullscreen_origin_notice_and_escape', 'clean_exit', 'engine_ready_html_chrome_and_navigation_events', 'executable_unchanged')) {
+              if ($smoke.checks.$check -ne $true) { throw "Missing original native smoke gate: $check" }
+          }
+          Assert-TagIfPresent
+          Assert-Release (Read-Api "releases/$releaseId") $true
+          # Download only the existing pinned draft asset IDs. No build, execution or asset overwrite.
+          $downloaded = Join-Path $env:RUNNER_TEMP ("bowser-v19-existing-draft-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $downloaded | Out-Null
+          $binaryHeaders = $headers.Clone()
+          $binaryHeaders.Accept = 'application/octet-stream'
+          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$exeId" -Headers $binaryHeaders -OutFile (Join-Path $downloaded 'Bowser.exe')
+          Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/assets/$metadataId" -Headers $binaryHeaders -OutFile (Join-Path $downloaded 'build-metadata.json')
+          Assert-File (Join-Path $downloaded 'Bowser.exe') 7795712 $exeHash
+          Assert-File (Join-Path $downloaded 'build-metadata.json') 613 $metadataHash
+          # Re-read immediately before the sole permitted mutation. An already-public release fails closed.
+          Assert-TagIfPresent
+          Assert-Release (Read-Api "releases/$releaseId") $true
+          if ($publishing) {
+              $body = @{ draft = $false; make_latest = 'false' } | ConvertTo-Json -Compress
+              $null = Invoke-RestMethod -Method Patch -Uri "https://api.github.com/repos/$repo/releases/$releaseId" -Headers $headers -ContentType 'application/json' -Body $body
+              # A failed/uncertain publication must be inspected, not retried by another workflow path.
+              Assert-Release (Read-Api "releases/$releaseId") $false
+              $ref = Read-Api "git/ref/tags/$tag"
+              Assert-TagIfPresent
+              $public = Read-Api "releases/tags/$tag"
+              if ($public.id -ne $releaseId -or $public.draft -or -not $public.published_at) { throw 'Public release publication was not verified.' }
+              "Published existing release $releaseId from original source $source; SHA256 $exeHash; 7795712 bytes. Not latest; stable pin unchanged." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          } else {
+              "Read-only provenance and byte comparison passed for existing draft $releaseId. Nothing published." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
