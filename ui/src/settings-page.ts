@@ -16,6 +16,7 @@ import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic'; // --- window and panels (thread T9) ---
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
@@ -667,6 +668,46 @@ export function startSettingsPage(root: HTMLElement): void {
   row(windowCard, 'roundedContentFrame', rounded.root);
   const frameless = switchControl((on) => change((d) => { d.frameless = on; }));
   row(windowCard, 'frameless', frameless.root);
+  // --- window and panels (thread T9) --- Window appearance and Panels: each switch saves the draft and acts at once.
+  const winAnimations = switchControl((on) => change((d) => { d.window.animations = on; }));
+  row(windowCard, 'winAnimations', winAnimations.root);
+  const winRangeButtons = switchControl((on) => change((d) => { d.window.rangeButtons = on; }));
+  row(windowCard, 'winRangeButtons', winRangeButtons.root);
+  const winFade = switchControl((on) => change((d) => { d.window.fadeBackground = on; }));
+  row(windowCard, 'winFade', winFade.root);
+  const winScrollbars = switchControl((on) => change((d) => { d.window.simpleScrollbars = on; }));
+  row(windowCard, 'winScrollbars', winScrollbars.root);
+  const winMonoIcons = switchControl((on) => change((d) => { d.window.monoIcons = on; }));
+  row(windowCard, 'winMonoIcons', winMonoIcons.root);
+  const winReset = textButton('Reset window options', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_APPEARANCE_KEYS); }));
+  row(windowCard, 'winReset', winReset);
+  const panelsCard = card('appearance', 'Panels');
+  const panelClose = switchControl((on) => change((d) => { d.window.panelCloseButton = on; }));
+  row(panelsCard, 'panelCloseButton', panelClose.root);
+  const panelCounts = switchControl((on) => change((d) => { d.window.panelFolderCounts = on; }));
+  row(panelsCard, 'panelFolderCounts', panelCounts.root);
+  const panelAutoClose = switchControl((on) => change((d) => { d.window.panelAutoClose = on; }));
+  row(panelsCard, 'panelAutoClose', panelAutoClose.root);
+  const panelReset = textButton('Reset panel options', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_PANEL_KEYS); }));
+  row(panelsCard, 'panelReset', panelReset);
+  // The slider rows get minus and plus buttons; which of the two shows follows "Buttons instead of sliders".
+  const addSteppers = (wrap: HTMLElement, range: HTMLInputElement, label: string, commit: (value: number) => void): void => {
+    const group = el('div', 'sp-stepper');
+    const step = (direction: -1 | 1): void => {
+      const next = stepValue(Number(range.value), direction, Number(range.step), Number(range.min), Number(range.max));
+      range.value = String(next);
+      commit(next);
+    };
+    const less = textButton('−', () => step(-1));
+    less.setAttribute('aria-label', `Decrease ${label}`);
+    const more = textButton('+', () => step(1));
+    more.setAttribute('aria-label', `Increase ${label}`);
+    group.append(less, more);
+    wrap.append(group);
+  };
+  addSteppers(widthWrap, width, 'sidebar width', (value) => { paintWidth(); change((d) => { d.sidebarWidth = value; }); });
+  addSteppers(uiZoomWrap, uiZoomRange, 'interface zoom', (value) => { paintUiZoom(value); change((d) => { d.layout.uiZoom = value; }); });
+  // --- end window and panels ---
 
   // Bookmarks bar
   const bookmarksCard = card('appearance', 'Bookmarks bar');
@@ -1455,6 +1496,19 @@ export function startSettingsPage(root: HTMLElement): void {
     uiZoomRange.disabled = !s.readable;
     uiZoomValue.disabled = !s.readable;
     // --- end layout ---
+    // --- window and panels (thread T9) ---
+    winAnimations.set(d.window.animations);
+    winRangeButtons.set(d.window.rangeButtons);
+    winFade.set(d.window.fadeBackground);
+    winScrollbars.set(d.window.simpleScrollbars);
+    winMonoIcons.set(d.window.monoIcons);
+    panelClose.set(d.window.panelCloseButton);
+    panelCounts.set(d.window.panelFolderCounts);
+    panelAutoClose.set(d.window.panelAutoClose);
+    for (const wrapNode of [widthWrap, uiZoomWrap]) wrapNode.classList.toggle('is-steps', d.window.rangeButtons);
+    winReset.disabled = !s.readable || windowGroupIsDefault(d.window, WINDOW_APPEARANCE_KEYS);
+    panelReset.disabled = !s.readable || windowGroupIsDefault(d.window, WINDOW_PANEL_KEYS);
+    // --- end window and panels ---
     width.value = String(d.sidebarWidth);
     paintWidth();
     grouping.set(d.automaticTabGrouping);
@@ -1524,6 +1578,7 @@ export function startSettingsPage(root: HTMLElement): void {
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
       ...toolbarSwitches.values(),
       presets, tabEdge, addressEdge, panelEdge, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
+      winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
     downloadAsk.disable(!s.readable);
@@ -1729,7 +1784,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus, message.look); return; }
     if (message.t === 'settingsgo') {
       // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }

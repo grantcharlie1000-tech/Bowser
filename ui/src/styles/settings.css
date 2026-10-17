@@ -1995,3 +1995,23 @@
     gap: var(--bw-space-3);
   }
 }
+
+/* --- window and panels (thread T9) --- */
+.sp-stepper {
+  display: none;
+  align-items: center;
+  gap: var(--bw-space-1_5);
+}
+
+.sp-range-wrap.is-steps .sp-stepper {
+  display: flex;
+}
+
+.sp-range-wrap.is-steps .sp-range {
+  display: none;
+}
+
+:root[data-icons="mono"] .sp-nav-item[aria-current="true"] svg {
+  color: var(--bw-text);
+}
+/* --- end window and panels --- */

@@ -233,6 +233,8 @@ struct RailEntryData {
     /// The favicon's source bytes, as the HTML rail sends them (it sends only PNGs that pass the
     /// protocol gate).
     png: Option<Rc<Vec<u8>>>,
+    /// A web app panel whose page title announces a count (thread T9): the rail button shows its dot.
+    dot: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1331,9 +1333,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
-        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
-    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None });
+    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     if shown(SidebarKind::Workspaces) {
         for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
             let glyph = match icon {
@@ -1360,9 +1362,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 WorkspaceColour::Green => 0x56A36B,
                 WorkspaceColour::Slate => 0x778394,
             }, 0xFF));
-            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None });
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None, dot: false });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
@@ -1382,9 +1384,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 (None, None)
             };
             let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, dot: super::panel_webapp::unread_count(app_entry.id) > 0 });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -1392,9 +1394,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, dot: false });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
         return false;
@@ -1464,6 +1466,7 @@ fn same_rail(a: &[RailEntryData], b: &[RailEntryData]) -> bool {
                 && a.accent == b.accent
                 && same(&a.favicon, &b.favicon)
                 && same(&a.png, &b.png)
+                && a.dot == b.dot
         })
 }
 
@@ -1479,7 +1482,7 @@ fn rail_view_of(entries: &[RailEntryData]) -> Vec<RailEntry<'static>> {
                 icon: entry.icon,
                 label: entry.label.clone(),
                 active: entry.active,
-                dot: false,
+                dot: entry.dot,
                 accent: entry.accent,
                 favicon: entry.favicon.as_deref(),
             };
@@ -1807,7 +1810,8 @@ fn animations_enabled() -> bool {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
     };
-    read.is_err() || enabled.as_bool()
+    // --- window and panels (thread T9) --- Bowser's own "Use animation" setting also has to allow it.
+    crate::window_prefs::animate(read.is_err() || enabled.as_bool())
 }
 fn dpi(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd) }.max(96)
@@ -1919,6 +1923,14 @@ fn invalidate_caret(hwnd: HWND, caret: Rect) {
 /// It runs on every activation message and on the foreground hook, because a window launched behind another
 /// one can miss the activation message when it is brought forward. Checking GetForegroundWindow is what
 /// makes the result reliable.
+// --- window and panels (thread T9) ---
+/// Whether this window is not the foreground window (the chrome's "fade colours in background
+/// windows" option reads it).
+fn window_in_background(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |s| !s.foreground).unwrap_or(false)
+}
+// --- end window and panels ---
+
 fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     let foreground = foreground_is_ours(hwnd);
     let minimised = unsafe { IsIconic(hwnd).as_bool() };
@@ -1935,6 +1947,15 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     if !foreground {
         card::cancel(hwnd);
     }
+    // --- window and panels (thread T9) --- the chrome's `look.bg` changed: send the state again (a
+    // no-op when the JSON is the same). Skipped while the app state is borrowed (a modal loop).
+    if app.is_some_and(|app| app.try_borrow_mut().is_ok()) {
+        let faded = app.is_some_and(|app| App::settings(app).window.fade_background);
+        if faded {
+            html_sync(hwnd);
+        }
+    }
+    // --- end window and panels ---
     // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
     // that stopped while another application was active. Activation can arrive from a modal loop that already
     // holds the app state, so the borrow is checked first.
@@ -3986,6 +4007,12 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- window and panels (thread T9) --- periodic reload of web panels
+            WM_TIMER if wparam.0 == super::panel_webapp::RELOAD_TIMER => {
+                if !super::panel_webapp::reload_timer(hwnd) { let _ = KillTimer(Some(hwnd), super::panel_webapp::RELOAD_TIMER); }
+                LRESULT(0)
+            }
+            // --- end window and panels ---
             WM_TIMER if wparam.0 == super::panel_webapp::IDLE_TIMER => {
                 let running = super::panel_webapp::idle_timer(hwnd);
                 if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
@@ -4831,6 +4858,7 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         ui_font: String::new(),
         density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
         compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     }
     .to_json()
@@ -5308,7 +5336,29 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             });
         }
         RailKey::App(id) => {
-            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
+            // --- window and panels (thread T9) --- this panel's own options live here, not on the settings page.
+            let prefs = crate::panel_prefs::current(id);
+            let reload_choices: Vec<Entry> = crate::panel_prefs::RELOAD_CHOICES.iter()
+                .map(|minutes| Entry::Item(Item::new(100 + usize::from(*minutes), crate::panel_prefs::reload_label(*minutes), Icon::None).checked(prefs.reload_minutes == *minutes)))
+                .collect();
+            let entries = vec![
+                Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")),
+                Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")),
+                Entry::Separator,
+                Entry::Item(Item::new(10, "Zoom in", Icon::Grid).glyph("zoom-in").disabled_if(prefs.zoom >= crate::site_prefs::ZOOM_MAX)),
+                Entry::Item(Item::new(11, "Zoom out", Icon::Grid).glyph("zoom-out").disabled_if(prefs.zoom <= crate::site_prefs::ZOOM_MIN)),
+                Entry::Item(Item::new(12, crate::panel_prefs::zoom_label(prefs.zoom), Icon::Grid).glyph("reset").disabled_if(prefs.zoom == crate::site_prefs::ZOOM_DEFAULT)),
+                Entry::Item(Item::new(13, "Mute audio", Icon::Grid).glyph("mute").checked(prefs.muted)),
+                Entry::Item(Item::new(14, "Reload page every…", Icon::Grid).glyph("reload").submenu_with(reload_choices)),
+                Entry::Item(Item::new(15, "Show unread count from the page title", Icon::Grid).glyph("bell").checked(prefs.notify)),
+                Entry::Separator,
+                Entry::Item(Item::new(16, "Open page in a tab", Icon::Grid).glyph("external")),
+                Entry::Item(Item::new(17, "Open page in a new window", Icon::Grid).glyph("window")),
+                Entry::Item(Item::new(18, "Open page in a private tab", Icon::Grid).glyph("private")),
+                Entry::Separator,
+                Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash")),
+            ];
+            // --- end window and panels ---
             let kind = format!("rail-app:{id}");
             menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
@@ -5317,10 +5367,38 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 match chosen.id {
                     1 => activate_rail(hwnd, app, key),
                     2 => edit_rail_app(hwnd, app, id, point),
+                    // --- window and panels (thread T9) --- per-panel options (src/panel_prefs.rs)
+                    10 | 11 | 12 | 13 | 15 | 100..=130 => {
+                        let _ = crate::panel_prefs::update(|file| {
+                            let mut now = file.get(id);
+                            match chosen.id {
+                                10 => now.zoom = crate::site_prefs::zoom_in(now.zoom),
+                                11 => now.zoom = crate::site_prefs::zoom_out(now.zoom),
+                                12 => now.zoom = crate::site_prefs::ZOOM_DEFAULT,
+                                13 => now.muted = !now.muted,
+                                15 => now.notify = !now.notify,
+                                minutes => now.reload_minutes = (minutes - 100) as u8,
+                            }
+                            file.set(id, now);
+                        });
+                        super::panel_webapp::prefs_changed(id);
+                        let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                        repaint(hwnd);
+                    }
+                    16..=18 => {
+                        let Some(address) = super::panel_webapp::page_url(id) else { return; };
+                        let Ok(target) = url::Url::parse(&address) else { return; };
+                        match chosen.id {
+                            16 => { App::new_tab(app); App::navigate_current(app, &target); }
+                            17 => { if let Ok(profile) = crate::profile::active() { let _ = crate::profile::spawn_window_with_url(&profile, &target); } }
+                            _ => { App::new_private_tab(app); App::navigate_current(app, &target); }
+                        }
+                    }
+                    // --- end window and panels ---
                     3 if crate::win32::ask_yes_no("Remove this web app from the rail?") => {
                         if let Ok(profile) = crate::profile::active() {
                             let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
-                            config.remove_app(id);
+                            config.remove_app_remembered(id); // --- window and panels (thread T9) --- kept for "Restore" ---
                             let _ = config.save(profile.root());
                             super::panel_webapp::forget_app(id);
                             let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -5331,6 +5409,33 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 }
             });
         }
+        // --- window and panels (thread T9) --- the web apps removed from the rail come back from here.
+        RailKey::AddApp => {
+            let removed = crate::profile::active().ok().map(|profile| crate::panel_prefs::PanelPrefsFile::load(profile.root()).removed).unwrap_or_default();
+            let entries: Vec<Entry> = if removed.is_empty() {
+                vec![Entry::Item(Item::new(1, "No removed web apps", Icon::Grid).disabled())]
+            } else {
+                removed.iter().enumerate().map(|(index, entry)| Entry::Item(Item::new(200 + index, entry.name.clone(), Icon::Grid).glyph("app-tile"))).collect()
+            };
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Restore a removed web app".into() }, "rail-app-restore", move |app, chosen| {
+                let Some(index) = chosen.and_then(|item| item.id.checked_sub(200)) else { return; };
+                let Ok(profile) = crate::profile::active() else { return; };
+                let Some(entry) = crate::panel_prefs::update(|file| file.take_removed(index)).flatten() else { return; };
+                let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                match config.add_app(&entry.name, &entry.url) {
+                    Ok(new_id) => {
+                        if config.save(profile.root()).is_ok() {
+                            if let Some(web_app) = config.apps.iter().find(|item| item.id == new_id).cloned() { super::panel_webapp::register_app(app, web_app); }
+                        }
+                    }
+                    // Not restorable now (the address is on the rail again, or the rail is full): keep it listed.
+                    Err(_) => { let _ = crate::panel_prefs::update(|file| file.remember_removed(&entry.name, &entry.url)); }
+                }
+                let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                repaint(hwnd);
+            });
+        }
+        // --- end window and panels ---
         _ => {}
     }
 }
@@ -8752,6 +8857,7 @@ fn html_sync(hwnd: HWND) {
         ui_font: settings.ui_font.clone(),
         density: settings.ui_density,
         compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
@@ -9244,6 +9350,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         ui_font: String::new(),
         density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
         compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -9721,6 +9828,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         ui_font: settings.ui_font.clone(),
         density: settings.ui_density,
         compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     Some(state.to_json())
@@ -12090,6 +12198,7 @@ mod tests {
             accent: None,
             favicon: None,
             png: None,
+            dot: false,
         };
         let mut rail = vec![entry(RailKey::Customize, "Customize"), entry(RailKey::App(1), "Mail")];
         rail[1].png = Some(Rc::new(vec![1u8, 2, 3]));

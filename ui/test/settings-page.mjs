@@ -176,7 +176,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1504,7 +1504,7 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
   const text = logic.saveText({ ...draft, tabLayout: 'bottom', sidePanelPosition: 'right', layout: { ...draft.layout, tabBarVisible: false, addressBarPosition: 'bottom', showTitleBar: true, statusBar: 'hidden', uiDensity: 'compact', compactMenus: true, uiZoom: 150, saved: layoutLogic.layoutConfigKey(layoutLogic.presetConfig('bottom')) } });
   assert.match(text, /^tab_layout=bottom\n/);
   assert.match(text, /\nside_panel_position=right\n/);
-  assert.ok(text.endsWith('\ntab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=true\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=150\nlayout_saved=tabs=bottom,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false'), text);
+  assert.ok(text.endsWith('\ntab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=true\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=150\nlayout_saved=tabs=bottom,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true'), text);
   for (const broken of [{ uiZoom: 30 }, { statusBar: 'show' }, { addressBarPosition: 'left' }, { saved: 'nope' }]) {
     assert.equal(logic.saveText({ ...draft, layout: { ...draft.layout, ...broken } }), null, JSON.stringify(broken));
   }
@@ -1600,7 +1600,7 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.match(sent[0].text, /^tab_layout=bottom\n/);
   assert.match(sent[0].text, /\nside_panel_position=left\n/);
   assert.match(sent[0].text, /\nstatus_bar=overlay\n/);
-  assert.match(sent[0].text, /\nlayout_saved=$/, 'a preset is not Saved');
+  assert.match(sent[0].text, /\nlayout_saved=\n/, 'a preset is not Saved');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'bottom', ack: 'saved' } });
   assert.equal(tiles[4].getAttribute('aria-checked'), 'true');
   sent.length = 0;
@@ -1619,7 +1619,7 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   groups[0].querySelectorAll('[role="radio"]')[2].click();
   assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
   const own = 'tabs=vertical-right,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false';
-  assert.match(sent[0].text, new RegExp(`\\nlayout_saved=${own.replace(/[-,=]/g, '\\$&')}$`));
+  assert.match(sent[0].text, new RegExp(`\\nlayout_saved=${own.replace(/[-,=]/g, '\\$&')}\\n`));
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical-right', layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
   assert.equal(saved.disabled, false, 'the Saved tile has something to bring back');
   assert.equal(saved.getAttribute('aria-checked'), 'true');
@@ -1713,3 +1713,123 @@ test('layout: the view applies the density and compact menus to the root for the
   assert.match(read(join(srcDir, 'styles', 'sidebar.css')), /height: var\(--bw-side-row-h\)/);
   assert.match(read(join(srcDir, 'view.ts')), /root\.dataset\.density = density/);
 });
+
+// ---- window and panels (thread T9): Window appearance and Panels rows ----
+const windowLogic = await bundle('window-logic.ts');
+
+test('window: the snapshot carries the Window object, refuses anything else, and the save lists its keys', () => {
+  const d = fixture.snap.d;
+  const s = logic.parseSettingsSnapshot(d);
+  assert.deepEqual(s.window, { animations: true, rangeButtons: false, fadeBackground: false, simpleScrollbars: false, monoIcons: false, panelCloseButton: true, panelFolderCounts: true, panelAutoClose: true });
+  for (const broken of [{ ...d, window: { ...d.window, animations: 'yes' } }, { ...d, window: { ...d.window, extra: true } }, { ...d, window: null }, { ...d, window: { animations: true } }]) {
+    assert.equal(logic.parseSettingsSnapshot(broken), null);
+  }
+  const { window: _dropped, ...without } = d;
+  assert.equal(logic.parseSettingsSnapshot(without), null, 'the window object is required');
+  const draft = logic.draftOf(s);
+  assert.notEqual(draft.window, s.window, 'the draft owns a copy');
+  const text = logic.saveText({ ...draft, window: { ...draft.window, animations: false, rangeButtons: true, fadeBackground: true, simpleScrollbars: true, monoIcons: true, panelCloseButton: false, panelFolderCounts: false, panelAutoClose: false } });
+  assert.ok(text.endsWith('\nanimations=false\nrange_buttons=true\nfade_background=true\nsimple_scrollbars=true\nmono_icons=true\npanel_close_button=false\npanel_folder_counts=false\npanel_auto_close=false'), text);
+});
+
+test('window: every row is behind More options, none is a not-yet row, and each switch saves its own key', () => {
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  searchFor('');
+  const ids = ['winAnimations', 'winRangeButtons', 'winFade', 'winScrollbars', 'winMonoIcons', 'winReset', 'panelCloseButton', 'panelFolderCounts', 'panelAutoClose', 'panelReset'];
+  for (const id of ids) {
+    const spec = logic.ROWS.find((row) => row.id === id);
+    assert.ok(spec && !spec.notYet && !spec.restart, id);
+    assert.equal(logic.rowTier(spec), 'more', `${id} is behind More options`);
+    assert.ok(moreOf('appearance').contains(rowNode(id)), id);
+  }
+  const sw = (id) => rowNode(id).querySelector('[role="switch"]');
+  const expectSave = (line) => { assert.equal(sent.length, 1); assert.match(sent[0].text, line); sent.length = 0; deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } }); };
+  sent.length = 0;
+  sw('winAnimations').click();
+  expectSave(/\nanimations=false\n/);
+  sw('winRangeButtons').click();
+  expectSave(/\nrange_buttons=true\n/);
+  sw('winFade').click();
+  expectSave(/\nfade_background=true\n/);
+  sw('winScrollbars').click();
+  expectSave(/\nsimple_scrollbars=true\n/);
+  sw('winMonoIcons').click();
+  expectSave(/\nmono_icons=true\n/);
+  sw('panelCloseButton').click();
+  expectSave(/\npanel_close_button=false\n/);
+  sw('panelFolderCounts').click();
+  expectSave(/\npanel_folder_counts=false\n/);
+  sw('panelAutoClose').click();
+  expectSave(/\npanel_auto_close=false$/);
+});
+
+test('window: Buttons instead of sliders swaps the slider for minus and plus, which step and save', () => {
+  const on = { ...fixture.snap.d, ack: 'saved', window: { ...fixture.snap.d.window, rangeButtons: true } };
+  deliver({ ...fixture.snap, d: on });
+  const wrap = (id) => rowNode(id).querySelector('.sp-range-wrap');
+  for (const id of ['sidebarWidth', 'uiZoom']) assert.ok(wrap(id).classList.contains('is-steps'), `${id} shows buttons`);
+  sent.length = 0;
+  const steppers = (id) => rowNode(id).querySelector('.sp-stepper').querySelectorAll('.bw-button');
+  const [less, more] = steppers('sidebarWidth');
+  assert.equal(more.getAttribute('aria-label'), 'Increase sidebar width');
+  more.click();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /^tab_layout=\w[\w-]*\nsidebar_width=270\n/);
+  sent.length = 0;
+  deliver({ ...fixture.snap, d: { ...on, sidebarWidth: 360 } });
+  steppers('sidebarWidth')[1].click();
+  assert.match(sent[0].text, /\nsidebar_width=360\n/, 'the plus button stops at the maximum');
+  sent.length = 0;
+  deliver({ ...fixture.snap, d: on });
+  steppers('uiZoom')[0].click();
+  assert.match(sent[0].text, /\nui_zoom=95\n/);
+  assert.ok(less);
+  deliver({ ...fixture.snap, d: { ...on, window: { ...on.window, rangeButtons: false } } });
+  assert.ok(!wrap('sidebarWidth').classList.contains('is-steps'), 'off, the sliders are back');
+  const css = read(join(srcDir, 'styles', 'settings.css'));
+  assert.match(css, /\.sp-range-wrap\.is-steps \.sp-range \{\s*display: none;/);
+  assert.match(css, /\.sp-range-wrap\.is-steps \.sp-stepper \{\s*display: flex;/);
+});
+
+test('window: each section has a Reset that puts only its own keys back, and is off at the defaults', () => {
+  const dirty = { ...fixture.snap.d, ack: 'saved', window: { animations: false, rangeButtons: true, fadeBackground: true, simpleScrollbars: true, monoIcons: true, panelCloseButton: false, panelFolderCounts: false, panelAutoClose: false } };
+  deliver({ ...fixture.snap, d: dirty });
+  const button = (id) => rowNode(id).querySelector('.bw-button');
+  sent.length = 0;
+  button('winReset').click();
+  assert.match(sent[0].text, /\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=false\npanel_folder_counts=false\npanel_auto_close=false$/);
+  sent.length = 0;
+  deliver({ ...fixture.snap, d: dirty });
+  button('panelReset').click();
+  assert.match(sent[0].text, /\nanimations=false\n.*\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true$/s);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  assert.equal(button('winReset').disabled, true);
+  assert.equal(button('panelReset').disabled, true);
+  assert.equal(windowLogic.windowGroupIsDefault(logic.parseSettingsSnapshot(dirty).window, windowLogic.WINDOW_APPEARANCE_KEYS), false);
+});
+
+test('window: the chrome look reaches every surface as root attributes the CSS acts on', () => {
+  const L = windowLogic;
+  const stock = { motion: true, scroll: false, mono: false, fade: false, bg: false, panelClose: true, folderCounts: true };
+  assert.deepEqual(L.lookAttributes(stock), [['motion', 'on'], ['scroll', 'default'], ['icons', 'default'], ['fade', 'off'], ['panelClose', 'on'], ['folderCounts', 'on']]);
+  const custom = { motion: false, scroll: true, mono: true, fade: true, bg: true, panelClose: false, folderCounts: false };
+  assert.deepEqual(L.lookAttributes(custom), [['motion', 'off'], ['scroll', 'simple'], ['icons', 'mono'], ['fade', 'on'], ['panelClose', 'off'], ['folderCounts', 'off']]);
+  assert.deepEqual(L.lookAttributes({ ...custom, bg: false }).find(([name]) => name === 'fade'), ['fade', 'off'], 'fading is only for background windows');
+  assert.equal(L.parseLook({ ...stock, bg: 1 }), null);
+  assert.equal(L.parseLook({ ...stock, extra: true }), null);
+  const state = (look) => parseInbound(JSON.stringify({ t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'none', label: '', look, theme: {} }));
+  assert.deepEqual(state(custom).look, custom);
+  assert.equal(state({ ...custom, bg: 'x' }), null);
+  const css = read(join(srcDir, 'styles', 'components.css'));
+  assert.match(css, /:root\[data-motion="off"\] \*:not\(\.bw-spinner\)[^{]*\{\s*transition: none !important;\s*animation: none !important;/, 'animation off stops transitions and keyframes, not status spinners');
+  assert.match(css, /:root\[data-scroll="simple"\] \.bw-scroll \{\s*scrollbar-color: transparent transparent;/);
+  assert.match(css, /:root\[data-fade="on"\] body \{\s*filter: saturate\(0\.35\);/);
+  assert.match(css, /:root\[data-panel-close="off"\] \.pn-close \{\s*display: none;/);
+  assert.match(css, /:root\[data-folder-counts="off"\] \.pn-count \{\s*display: none;/);
+  assert.match(read(join(srcDir, 'styles', 'settings.css')), /:root\[data-icons="mono"\] \.sp-nav-item\[aria-current="true"\] svg \{\s*color: var\(--bw-text\);/);
+  assert.match(read(join(srcDir, 'view.ts')), /root\.dataset\[name\] = value/);
+  assert.match(read(join(srcDir, 'panels', 'kit.ts')), /close\.classList\.add\('pn-close'\)/);
+  assert.match(read(join(srcDir, 'panels', 'bookmarks.ts')), /meta\.classList\.add\('pn-count'\)/);
+  assert.match(read(join(srcDir, 'base.css') === '' ? join(srcDir, 'styles', 'base.css') : join(srcDir, 'styles', 'base.css')), /prefers-reduced-motion: reduce/, 'the OS reduced-motion rule stays in force whatever the setting says');
+});
+// ---- end window and panels ----

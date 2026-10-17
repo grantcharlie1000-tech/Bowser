@@ -777,3 +777,48 @@
     animation-duration: calc(var(--bw-dur-spin) * 2.67);
   }
 }
+
+/* --- window and panels (thread T9) --- the Window appearance options reach every surface as
+   attributes on the root (view.ts applyLook): data-motion, data-scroll, data-icons, data-fade,
+   data-panel-close, data-folder-counts. Each is absent or at its default for the stock look. */
+:root[data-motion="off"] *:not(.bw-spinner),
+:root[data-motion="off"] *:not(.bw-spinner)::before,
+:root[data-motion="off"] *:not(.bw-spinner)::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+
+:root[data-scroll="simple"] .bw-scroll {
+  scrollbar-color: transparent transparent;
+}
+
+:root[data-scroll="simple"] .bw-scroll:hover {
+  scrollbar-color: color-mix(in srgb, var(--bw-text) 28%, transparent) transparent;
+}
+
+:root[data-scroll="simple"] .bw-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+:root[data-scroll="simple"] .bw-scroll::-webkit-scrollbar-thumb {
+  background: transparent padding-box;
+}
+
+:root[data-scroll="simple"] .bw-scroll:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--bw-text) 28%, transparent) padding-box;
+}
+
+:root[data-fade="on"] body {
+  filter: saturate(0.35);
+}
+
+:root[data-panel-close="off"] .pn-close {
+  display: none;
+}
+
+:root[data-folder-counts="off"] .pn-count {
+  display: none;
+}
+/* --- end window and panels --- */

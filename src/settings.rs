@@ -609,6 +609,9 @@ pub struct Settings {
     /// Saved tile.
     pub layout_saved: String,
     // --- end layout ---
+    // --- window and panels (thread T9) --- src/window_prefs.rs
+    pub window: crate::window_prefs::WindowPrefs,
+    // --- end window and panels ---
 }
 
 impl Default for Settings {
@@ -677,6 +680,7 @@ impl Default for Settings {
             ui_zoom: crate::layout_prefs::DEFAULT_UI_ZOOM,
             layout_saved: String::new(),
             // --- end layout ---
+            window: crate::window_prefs::WindowPrefs::default(), // --- window and panels (thread T9) ---
         }
     }
 }
@@ -1020,7 +1024,9 @@ impl Settings {
                 // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
                 // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
-                    if !settings.start.parse_key(key, value) {
+                    if !settings.start.parse_key(key, value)
+                        && !settings.window.parse_key(key, value) // --- window and panels (thread T9) ---
+                    {
                         settings.address.parse_line(key, value);
                     }
                 }
@@ -1240,6 +1246,9 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     // --- tab options ---
     let out = crate::tab_options::render_into(&out, &settings.tabs, newline);
     // --- end tab options ---
+    // --- window and panels (thread T9) ---
+    let out = crate::window_prefs::render_into(&out, &settings.window, newline);
+    // --- end window and panels ---
     // Address bar, search and bookmark options (src/address_settings.rs).
     settings.address.render_into(&out, newline)
 }
@@ -1522,6 +1531,7 @@ mod tests {
             ui_zoom: 125,
             layout_saved: String::new(),
             // --- end layout ---
+            window: crate::window_prefs::WindowPrefs::default(), // --- window and panels (thread T9) ---
             sidebar_collapsed: false,
             side_panel_width: 340,
             sleep_enabled: false,

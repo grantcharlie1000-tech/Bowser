@@ -1923,6 +1923,7 @@ fn save_form(hwnd: HWND) {
         ui_zoom: current.ui_zoom,
         layout_saved: current.layout_saved,
         // --- end layout ---
+        window: current.window, // --- window and panels (thread T9) --- no GDI controls; the file's values are kept
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

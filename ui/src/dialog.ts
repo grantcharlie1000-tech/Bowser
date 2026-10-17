@@ -25,7 +25,7 @@ export function startDialog(root: HTMLElement): void {
   const receive = token === 'rename' ? startRenameDialog(root) : token === 'address' ? startAddressDialog(root) : panels[token]?.(root);
   // --- end popup surfaces ---
   onInbound(message => {
-    if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus);
+    if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus, message.look);
     else if (message.t === 'snap' && (message.p === token || (token === 'address' && message.p === 'addressdlg'))) receive?.(message);
   });
   send({ v: 1, t: 'ready' });

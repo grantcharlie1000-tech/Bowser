@@ -1171,7 +1171,7 @@ export function startTabs(strip: HTMLElement): void {
       // --- end vertical sidebar ---
       case 'state':
         // Only the theme and mode reach the tab strip; scale and page state are toolbar concerns.
-        applyTheme(msg.theme, msg.solid, msg.dark, undefined, undefined, msg.density, msg.compactMenus);
+        applyTheme(msg.theme, msg.solid, msg.dark, undefined, undefined, msg.density, msg.compactMenus, msg.look);
         break;
       case 'tabs':
         latest = msg;
