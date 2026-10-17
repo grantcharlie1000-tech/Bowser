@@ -8,7 +8,7 @@ export function startShell(root: HTMLElement, name: string): void {
   container.className = `${name}-shell`;
   root.append(container);
   onInbound(msg => {
-    if (msg.t === 'state') applyTheme(msg.theme, msg.solid, msg.dark);
+    if (msg.t === 'state') applyTheme(msg.theme, msg.solid, msg.dark, undefined, undefined, msg.density, msg.compactMenus);
   });
   send({ v: 1, t: 'ready' });
 }

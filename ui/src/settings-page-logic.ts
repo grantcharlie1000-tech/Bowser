@@ -17,15 +17,13 @@ export type SearchEngine = typeof SEARCH_ENGINES[number];
 export const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
 export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
 export type TrackingPrevention = 'balanced' | 'strict';
-/** Browser layouts, in the order the page lists them. `horizontal` is the saved key of "toolbar above tabs". */
-export const TAB_LAYOUTS = ['horizontal', 'tabs-top', 'single-row', 'vertical'] as const;
-export type TabLayout = typeof TAB_LAYOUTS[number];
-export const TAB_LAYOUT_LABELS: Readonly<Record<TabLayout, string>> = {
-  horizontal: 'Toolbar above tabs',
-  'tabs-top': 'Tabs above toolbar',
-  'single-row': 'Single row',
-  vertical: 'Vertical',
-};
+// --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
+import {
+  LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, layoutSaveLines, parseLayoutSettings,
+  type LayoutSettings, type SidePanelPosition, type TabLayout,
+} from './layout-logic';
+export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
+// --- end layout ---
 export const MIN_SIDEBAR = 180;
 export const MAX_SIDEBAR = 360;
 export const MIN_SLEEP = 30;
@@ -40,8 +38,6 @@ export type ToolbarButton = typeof TOOLBAR_BUTTONS[number];
 export const DEFAULT_TOOLBAR_BUTTONS = TOOLBAR_BUTTONS.join(',');
 export const BOOKMARKS_BAR_MODES = ['always', 'never', 'newtab'] as const;
 export type BookmarksBarMode = typeof BOOKMARKS_BAR_MODES[number];
-export const SIDE_PANEL_POSITIONS = ['left', 'right'] as const;
-export type SidePanelPosition = typeof SIDE_PANEL_POSITIONS[number];
 export const FONT_SIZES = ['small', 'medium', 'large'] as const;
 export type FontSize = typeof FONT_SIZES[number];
 export const DEFAULT_BROWSER_STATES = ['yes', 'no', 'unknown'] as const;
@@ -163,6 +159,10 @@ export interface SettingsSnapshot {
   /** The start page, speed dial, widget, homepage and startup settings (`start_*` keys of settings.txt). */
   start: StartSettings;
   // --- end start page ---
+  // --- layout (thread T6) ---
+  /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
+  layout: LayoutSettings;
+  // --- end layout ---
 }
 
 type RecordValue = Record<string, unknown>;
@@ -177,7 +177,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'layout' /* --- layout (thread T6) --- */];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -245,6 +245,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (start === null) return null;
   const tabOptions = parseTabOptions(v.tabOptions);
   if (!tabOptions) return null;
+  const layout = parseLayoutSettings(v.layout); // --- layout (thread T6) ---
+  if (layout === null) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -306,6 +308,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateTargets: [...(v.translateTargets as string[])],
     start,
     tabOptions,
+    layout, // --- layout (thread T6) ---
   };
 }
 
@@ -316,6 +319,7 @@ export type Draft = Pick<SettingsSnapshot,
   | 'frameless' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
+  | 'layout' // --- layout (thread T6) ---
 >;
 
 export function draftOf(snapshot: SettingsSnapshot): Draft {
@@ -324,7 +328,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
-    blockYoutubeVideoAds, start,
+    blockYoutubeVideoAds, start, layout,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
@@ -332,6 +336,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
     splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
+    layout: { ...layout }, // --- layout (thread T6) ---
   };
 }
 
@@ -393,6 +398,11 @@ export function saveText(draft: Draft): string | null {
   if (startLines === null) return null;
   lines.push(...startLines);
   // --- end start page ---
+  // --- layout (thread T6) --- the Layout block's options follow
+  const layoutLines = layoutSaveLines(draft.layout);
+  if (layoutLines === null) return null;
+  lines.push(...layoutLines);
+  // --- end layout ---
   const text = lines.join('\n');
   return text.length <= MAX_TEXT ? text : null;
 }
@@ -500,7 +510,8 @@ export function moreCountText(count: number): string {
 /** Rows a person changes often enough to see without opening anything. Every other row is `more`. */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
-  'layout', 'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
+  'layoutPreset', 'layoutBars' /* --- layout (thread T6): the presets and the three edges; the rest of the block is `more` --- */,
+  'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
   'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
@@ -563,8 +574,19 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', description: 'Settings on this page apply to this profile only.', keywords: 'account person name avatar guest' },
   { id: 'profiles', section: 'profile', label: 'Manage profiles', description: 'Switch, create, rename or delete profiles.', keywords: 'switch new guest delete rename' },
   { id: 'import', section: 'profile', label: 'Import from another browser', description: 'Bring bookmarks and other data over from a browser on this PC.', keywords: 'chrome edge firefox migrate transfer bookmarks' },
-  { id: 'layout', section: 'appearance', label: 'Browser layout', description: 'Where the toolbar and the tabs sit.', keywords: 'tabs toolbar vertical horizontal sidebar single row top' },
-  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layout.', keywords: 'vertical tabs size wide narrow pixels' },
+  // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
+  { id: 'layoutPreset', section: 'appearance', label: 'Layout', description: 'A starting point for where the tabs, the address bar and the panels sit. Change any of them and the arrangement becomes your own, kept as Saved.', keywords: 'layout preset simple classic vertical left right bottom saved thumbnails arrangement' },
+  { id: 'layoutBars', section: 'appearance', label: 'Tab bar, address bar and panels', description: 'Which edge each one sits on. The address bar along the bottom keeps a title row at the top for the window buttons.', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge' },
+  { id: 'layout', section: 'appearance', label: 'Tab bar style at the top', description: 'How the tabs and the address bar share the top of the window.', keywords: 'tabs toolbar horizontal single row top browser layout' },
+  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layouts.', keywords: 'vertical tabs size wide narrow pixels' },
+  { id: 'tabBarVisible', section: 'appearance', label: 'Show the tab bar', description: 'Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.', keywords: 'tab bar show hide tabs visible' },
+  { id: 'addressBarVisible', section: 'appearance', label: 'Show the address bar row', description: 'The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.', keywords: 'address bar show hide toolbar row visible ctrl l' },
+  { id: 'showTitleBar', section: 'appearance', label: 'Show the title bar when the tab bar is on a side', description: 'A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.', keywords: 'title bar window buttons caption vertical side page title' },
+  { id: 'statusBar', section: 'appearance', label: 'Status bar', description: 'Bowser has no status bar of its own. The address of a link under the pointer shows in a small overlay at the bottom of the page; Hidden turns that off.', keywords: 'status bar info overlay link address hover hide' },
+  { id: 'uiDensity', section: 'appearance', label: 'User interface density', description: 'Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.', keywords: 'density regular compact rows spacing dense' },
+  { id: 'compactMenus', section: 'appearance', label: 'Compact menu layout', description: 'Shorter rows in Bowser’s menus.', keywords: 'compact menus dense rows menu layout' },
+  { id: 'uiZoom', section: 'appearance', label: 'User interface zoom', description: 'Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.', keywords: 'ui zoom scale interface size percent slider text' },
+  // --- end layout ---
   { id: 'theme', section: 'appearance', label: 'Theme', description: 'Helium colours is Bowser’s own palette. System follows Windows light, dark and accent.', keywords: 'dark light colour scheme helium system' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent colour', description: 'Overrides the theme’s accent colour. Reset to use the default.', keywords: 'colour accent override custom theme reset' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Website appearance', description: 'The colour scheme websites are asked to use: light, dark, or what Windows uses.', keywords: 'dark light auto mode prefers color scheme websites page theme' },
@@ -587,7 +609,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
-  { id: 'sidePanelPosition', section: 'appearance', label: 'Side panel position', description: 'Which edge the side panels (history, bookmarks, notes and more) are docked to. Applies the next time a side panel opens.', keywords: 'side panel left right dock position helium' },
+  // --- layout (thread T6) --- the side panel's edge is the Panels choice of the "Tab bar, address bar and panels" row (layoutBars) above; it acts at once.
   { id: 'fontSize', section: 'appearance', label: 'Font size', description: 'The base text size across Bowser’s own pages.', keywords: 'font size small medium large text' },
   { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
   { id: 'defaultZoom', section: 'appearance', label: 'Default zoom', description: 'The starting zoom for new pages, not the current page’s own zoom, which is set separately.', keywords: 'zoom default starting percent' },
@@ -784,9 +806,3 @@ export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' 
   return { title, detail, action: 'check', busy: false, tone: s.lastCheck === 'failed' ? 'warn' : 'ok' };
 }
 
-export const LAYOUT_HINTS: Readonly<Record<TabLayout, string>> = {
-  horizontal: 'The address bar on top, tabs underneath.',
-  'tabs-top': 'Tabs on top, the address bar underneath.',
-  'single-row': 'Everything in one row, for small screens.',
-  vertical: 'Tabs in a sidebar on the left.',
-};

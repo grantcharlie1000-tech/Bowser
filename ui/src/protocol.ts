@@ -231,8 +231,18 @@ export interface StateMsg {
   readonly fontScale?: number;
   /** `ui_font`; empty or absent means the page's own default font-family. */
   readonly uiFont?: string;
+  // --- layout (thread T6) ---
+  /** `ui_density`: list rows in the sidebar, panels and pages. Absent in older hosts (regular). */
+  readonly density?: UiDensity;
+  /** `compact_menus`: shorter menu rows. Absent in older hosts (off). */
+  readonly compactMenus?: boolean;
+  // --- end layout ---
   readonly theme: Theme;
 }
+// --- layout (thread T6) ---
+export const UI_DENSITIES = ['regular', 'compact'] as const;
+export type UiDensity = typeof UI_DENSITIES[number];
+// --- end layout ---
 export interface SetTextMsg {
   readonly t: 'setText';
   readonly text: string;
@@ -1104,7 +1114,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'density', 'compactMenus', 'theme'])) return null;
       if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
@@ -1114,6 +1124,8 @@ export function parseInbound(data: unknown): Inbound | null {
       if ('translate' in raw && !isOneOf(raw.translate, TRANSLATE_PILL)) return null;
       if ('fontScale' in raw && !isInt(raw.fontScale, 50, 200)) return null;
       if ('uiFont' in raw && !isStr(raw.uiFont, 64)) return null;
+      if ('density' in raw && !isOneOf(raw.density, UI_DENSITIES)) return null; // --- layout (thread T6) ---
+      if ('compactMenus' in raw && !isBool(raw.compactMenus)) return null;
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -1148,6 +1160,8 @@ export function parseInbound(data: unknown): Inbound | null {
         ...(isOneOf(raw.translate, TRANSLATE_PILL) ? { translate: raw.translate } : {}),
         ...(isInt(raw.fontScale, 50, 200) ? { fontScale: raw.fontScale } : {}),
         ...(isStr(raw.uiFont, 64) ? { uiFont: raw.uiFont } : {}),
+        ...(isOneOf(raw.density, UI_DENSITIES) ? { density: raw.density } : {}), // --- layout (thread T6) ---
+        ...(isBool(raw.compactMenus) ? { compactMenus: raw.compactMenus } : {}),
         theme: parseTheme(raw.theme),
       };
     }

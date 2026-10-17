@@ -1,0 +1,2055 @@
+﻿Vivaldi Browser Features — Detailed Reference
+Scraped from vivaldi.com/features and linked detail/help pages.
+Feature cards: 40
+Table of contents
+Privacy & Security
+We respect your privacy
+Ad Blocker
+Tracker Blocker
+Hide Cookie warnings
+Private Window
+Password Manager
+Proton VPN for Vivaldi
+Productivity
+Tab Tools
+Tab Stacking
+Tab Hibernation
+Tab Tiling
+Web Panels
+User Profiles
+Workspaces
+Session Management
+Reader View
+Dashboard
+Pop-out Video
+Customization
+Customizable UI
+Editable Toolbars
+Themes
+Extensions Support
+UI Auto-hide
+Razer Chroma
+Tools
+Mail
+Calendar
+Feed Reader
+Sync
+Notes
+Translate
+History
+Capture
+Page Zoom
+Navigation
+Speed Dials
+Mouse Gestures
+Keyboard Shortcuts
+Spatial Navigation
+Quick Commands
+Command Chains
+Entertainment
+Vivaldia Game
+
+Privacy & Security
+We respect your privacy
+URL: https://vivaldi.com/we-respect-your-privacy/
+Summary (from features index): Some apps monitor users, create profiles, and sell your data for profit. Not Vivaldi.
+We Respect Your Privacy
+We don’t profile your behavior, or sell your data.
+In today’s digital world, too many apps (including browsers) are built to collect as much information about you as possible. From tracking how and what you browse, to creating detailed profiles based on your usage and interest, they love to snoop. This data is later sold to advertisers. How that data is then used depends on the purchaser’s goal, perhaps they want you to buy a certain type of toothpaste, or maybe they want to change your opinion on a political topic.
+At Vivaldi, we’re different. We have no interest in tracking your activity or selling your data. What you do in your browser is your business, not ours. Your information is either stored locally on your device or encrypted, and we never see it.
+We do need to know how many people use Vivaldi to keep improving the browser and sustain our business. But we’ve designed a system that counts users without tracking their personal activity.
+How We Count Without Compromising Privacy
+Like every company, we need to know how many users we have out there (yeah, we need that to stay in business). To understand how many users we have, Vivaldi generates an ID upon installation. This ID helps us ensure we don’t count you more than once, even if you reinstall the browser or use multiple profiles on the same device. The ID is used solely for counting users and isn’t combined with any other data. It doesn’t track what you do, where you go, or how you use the browser.
+We truncate the IPs we get from the counting request. This still tells us roughly where you are in the world – which helps us decide things like what countries and languages to focus on to make your experience better. But we couldn’t pinpoint a specific user even if we wanted to. For example: if you are at 455 Rue de Frisky Snail in the 9th arrondissement of Paris, we will only know that we have a user in France.
+We also collect some technical information, like your CPU architecture, screen resolution, and operating system. This helps us optimize Vivaldi for the devices our users have, but it doesn’t tell us anything personal about you.
+Our goal is to be as transparent as possible. We don’t store data about your browsing behavior, and we don’t sell any data to third parties. That’s not how we operate.
+Why We Built a Tracker Blocker
+This feature is designed to stop strangers from tracking you like their prey as you roam the web and harvesting your personal data for their own purposes. Trackers are everywhere, billions of them, but our tracker blocker helps protect your privacy as you browse.
+Of course, no blocker can catch every tracker out there, but we’re constantly improving. And if you come across one that gets through, let us know, and we’ll work to address it.
+At Vivaldi, we’re committed to giving you control of your browsing experience, without any privacy-invading tracking. How many browsers can truly say that?
+Ad Blocker
+URL: https://vivaldi.com/features/ad-blocker/
+Summary (from features index): Skip all those annoying ads that also slow you down. No ads, more speed.
+Ad Blocker – fast and free, no extensions needed
+Vivaldi browser’s integrated Ad Blocker blocks intrusive ads, helps web pages load faster, and protects your devices from malicious ads and trackers. Download Vivaldi browser and surf fast and safe – without extensions.
+Why use our adblocker?
+Browse faster.
+No extensions needed.
+Stay safe and secure online.
+It’s free. Forever.
+Enable Ad Blocker and browse fast
+Without ad blocker, online advertisements not only interrupt your browsing, they stop webpages from loading fast.
+When your browser is busy downloading advertisements – banners, pop-ups, animations, autoplaying videos – your browsing slows down.
+With ad block on, you browse faster because webpages load much more quickly.
+Vivaldi’s pop up blocker stops advertisements as soon as you request a page. We rely on a list of URLs known to distribute ads and stop requests to those URLs before they are even sent. This way, you never download the ads. And you need less bandwidth, CPU, and memory because your browser with adblock isn’t processing more information – another reason you browse faster!
+Built-in ad block is better than using extensions
+Do you want ad block right in your browser? With our ad blocker you don’t need to install extensions to get rid of pesky ads.
+If you are using a third-party pop up blocker, such as AdBlock or AdBlock Plus, you’ll no longer need that.
+Although extensions are often helpful, they can create compatibility issues. Vivaldi browser is packed with features designed to work well with each other. Our philosophy is to rely less on third-parties.
+And extensions are always an option if that’s what you would like.
+Compare Vivaldi browser’s integrated Ad blocker vs third-party extensions
+Vivaldi browser’s Ad blocker
+Regular third-party extensions
+Ad blocking Most ad blockers today remove ads before they are loaded or displayed on a webpage.
+Yes
+Yes
+Available out of the box Third-party extensions are not available out of the box and you’ll need to download them to your browser from an extensions store.
+Yes
+No
+Secure browsing Extensions run in the browser and it’s therefore essential that you pick carefully what you install.
+Yes
+No
+Solid performance Heavy reliance on extensions can compromise the performance of your browser. Often, they sap memory resources and slow you down.
+Yes
+No
+Seamless user experience User experience is much better with native features. Native features will always provide a better, consistent with the product user experience.
+Yes
+No
+Stay safe with integrated ad blocker
+With ad blocker, you stay away from advertising trackers that can compromise your privacy.
+Many online ads use the same technology as trackers. They follow you around the web collecting valuable information. They rely on snippets of code that can be exploited to gain access to sensitive information.
+Prevent your device from showing malicious download ads.
+Without adblocker, you will keep seeing online ads that distribute viruses and malware, compromising your data and computer. “Malvertising” prompts you to go to scam websites and download malicious files or click on links that turn out to be something else. Some websites are more likely to show malvertising ads than others, but websites that display advertising may not have full control over the advertisements they host.
+Use ad block to avoid seeing ads for malicious extensions.
+Third-party extensions run in the browser and can use their access to snoop on you. Keep your data and devices safe with our pop up blocker. It will block ads, including those for malicious extensions.
+Ad blocker with built-in privacy
+Some ad blocker apps monitor their users, create profiles of them, and sell their data to generate revenue and further their business.
+Apps, including ad blocks, have different sources of income.
+Vivaldi browser is different. We are in the business of protecting your data. We integrated an adblocker in Vivaldi to safeguard you from the worst kind of ads, the tracking ads.
+We don’t track you.
+We don’t profile you.
+We don’t sell your data (we have none).
+Before you make a choice, ask this: What is the ad blocker’s business model?
+Enjoy ad block, for free
+Vivaldi browser’s ad block is free to use all the way, no premium features or functionality behind a paywall.
+Out of the box, Vivaldi has more built-in functionality and flexibility than any other browser – and it’s all free! Take advantage of our Ad blocker!
+Stay mindful
+The sites you visit on a daily basis will suffer once you turn ad block on – ads are a source of revenue for many websites.
+As proponents of the free internet, we want websites to keep generating revenue.
+In Vivaldi, you decide how you want sites to display and what you want sites to know about you.
+We recommend blocking trackers on all sites, but ad block only on websites where advertisements are intrusive or distracting.
+To support your favorite websites and free content on the Internet, we advise:
+Do not enable ad blockers across all websites.
+Allow advertising from websites you trust.
+Consider blocking just trackers with Tracker blocker. Tracker blocking will prevent the worst kind of ads – the tracking ads.
+Support websites you regularly visit by donating directly to them.
+Learn more about ad blockers
+What is ad blocker? Ad blockers are software that filters out online ads. They make sure ads don’t show up on websites. The filtering usually happens in a browser – through built-in functionality, or via browser extensions such as AdBlock or AdBlock Plus. Most ad blockers and YouTube ad blockers remove ads before they are loaded or displayed on a website.
+How ad block works Most ad blockers rely on two techniques. First, they intercept requests made from your browser and compare the requested URL to a list of domains and URLs that are known sources of ads. If the requested URL is on that list, the request is cancelled and the page never gets to load the ad. Then, ad blockers look for elements on the page where ads are known to be shown and hide those. This blocks pop-ups that may not have been blocked in the first step, and also hides blank spaces left behind by ads.
+Are all ads blocked with ad block? Since ad blocking relies on lists of URLs known to point to ads, it’s not technically possible to block 100% of ads. The authors of those lists cannot possibly know of every ad source out there at any given time. In addition, the ad landscape of the Internet is constantly changing with new sources showing up and old ones disappearing.
+Do ad blockers collect your data? Each application approaches data collection differently. We advise that you check the Terms of use before downloading an ad blocker. Vivaldi browser’s Ad blocker does not track its users. In addition, we campaign against tracking and data collection.
+How to enable ad block in Vivaldi browser? In Vivaldi, the Ad blocker is off by default. When you download and install the browser, we will ask you what level of blocking you would like to have. You can choose between “No blocking”, “Block trackers”, or “Block Trackers and Ads”. You can change this preference in settings at any time. By default, Vivaldi browser’s Ad Blocker allows non-tracking ads to be shown on our partner search engines pages. You can choose to block those ads by disabling the “Allow ads from our partners” list in the ad blocker sources.
+How to turn off ad blocker? You can disable Ad blocker at any time. Go to Vivaldi Settings and select “No blocking”. You can change this preference at any time.
+How does Vivaldi browser block ads? We block ads by relying on a list of URLs known to distribute ads, and by stopping requests to those URLs before they are sent. In its general design, our Ad blocker is similar to most content blockers. It features a content-blocking engine that determines what should be blocked.
+Which block lists does Vivaldi browser use? For blocking ads, we use the EasyList by default and we provide a variety of local ad blocking lists that can be optionally enabled. Some of those lists are affiliated with EasyList. For blocking trackers, we use the DuckDuckGo Tracker Radar and optionally the well-known EasyPrivacy list. You can view and manage ad block sources by navigating to the Settings. To enable a blocking source, tick the box in front of the listed source. If you want to stop using the blocking source, simply untick it. If the blocking source you want to use isn’t already listed, you can import more sources.
+How to block ads only on specific sites? Once on the website, click on the shield button in Vivaldi browser and tweak the blocking level to “No blocking”, “Block trackers”, or “Block trackers and ads”.
+How to check the number of blocked ads? With Vivaldi browser’s ad blocker you can check the number of blocked advertisements by clicking on the shield button on the left of the Address field. Make sure you’ve enabled at least some level of blocking, then click on the shield button to see exactly how many have been blocked.
+Tracker Blocker
+URL: https://help.vivaldi.com/article/tracking-and-ad-blocking/
+Summary (from features index): Stop sneaky sites (and ads) from tracking you around the web.
+In addition to not tracking you, Vivaldi can protect your browsing experience from web trackers and ads.
+Tracker blocker
+Tracker blocker prevents ubiquitous web trackers from following you around the web and from gathering personal data about you. When the feature is enabled, trackers are blocked by relying on lists of well-known tracker URLs and stopping requests to those URLs before they are ever sent.
+Ad blocker
+While blocking trackers, the Tracker Blocker also blocks many of the ads on websites. So, the Ad Blocker can be viewed as an additional level of protection you can use to block ads that the Tracker Blocker hasn’t already blocked.
+We recommend blocking trackers on all sites, but blocking ads only on sites where they are intrusive or distracting. As ads are a big, if not the only, source of revenue for most websites, consider not enabling Ad Blocker by default to support content makers.
+In case you’ve used Extensions to block ads so far, then with Vivaldi’s built-in Tracker and Ad Blocker, using blocker extensions is no longer necessary. But Extensions are still an option for those who prefer them.
+Blocking settings
+To change the blocking level for all websites:
+Go to Settings > Privacy and Security > Tracker and Ad Blocking.
+Choose between:
+No Blocking,
+Block Trackers, or
+Block Trackers and Ads.
+Blocking per site
+To change the blocking level for a particular website, while the site is open in the active tab:
+Click on the Content Blocker button on the left side of the Address field.
+Choose between:
+No Blocking,
+Block Trackers, or
+Block Trackers and Ads.
+Alternatively, you can add sites to the Exception List in ****Settings > Privacy and Security** > Tracker and Ad Blocking > Exceptions**:
+Click on Add Site Exception.
+Enter the website’s link.
+Select the blocking level.
+Click Add Site.
+To change the level of blocking for exceptions:
+Click on the arrow next to the current blocking level.
+Choose between:
+No Blocking,
+Block Trackers, or
+Block Trackers and Ads.
+To remove a website from the Exceptions List:
+Select the website.
+Click on Remove Site Exception.
+When you’ve enabled at least some level of blocking, you can click on the Content Blocker button to see exactly how many and which trackers have been blocked by Vivaldi’s Tracker and Ad Blocker.
+Blocking Sources
+You can view and manage Tracker and Ad Blocking sources in Settings > Privacy and Security > Tracker and Ad Blocking > Manage Sources.
+To enable a blocking source, tick the box in front of the listed source. Untick to stop using the blocking source.
+Adding Lists
+If the blocking source you want to use for Tracker and Ad blocking isn’t already listed, you can import more sources by:
+Clicking on Add List.
+Enter the URL of the blocker rules or browse for the file on your computer.
+Click Import.
+Hide Cookie warnings
+Since Europe’s GDPR and a few other user privacy laws don’t allow placing cookies in your browser without consent, most websites ask for your permission as the first thing after the web page is loaded. The fastest option is to just accept everything, which always serves the interests of the website not the user. The other option is to manage your preferences and disable the data usage options all at once, if you’re lucky, or one by one, if the website wants to make it especially cumbersome. Vivaldi offers a third option by including two blocker lists in the Ad Blocker that hide these banners and dialogs on most websites. To enable these lists:
+Go to Settings > Privacy and Security > Tracker and Ad Blocking.
+Enable Block Trackers and Ads.
+Click on Manage Sources.
+In Ad Blocking Sources, enable “Remove cookie warnings (Easylist Cookie List)” and “Remove cookie warnings (I don’t care about cookies)”.
+If you only wish to hide the cookie warnings, but don’t want to block ads, disable other blocking sources.
+Please note that not all cookies are used for creating behavioral profiles about users. Some are necessary for the website to function. When the website you’re viewing doesn’t look or work as it should, please disable the blockers. You can do so per site from the Content Blocker menu on the Address Bar.
+Hide Cookie warnings
+URL: https://help.vivaldi.com/desktop/privacy/cookies/#Hide_Cookie_warnings
+Summary (from features index): Hide annoying cookie banners and dialogs on most websites.
+Hide Cookie warnings
+Since Europe’s GDPR and a few other user privacy laws don’t allow placing cookies in your browser without consent, most websites ask for your permission as the first thing after the web page is loaded. The fastest option is to just accept everything, which always serves the interests of the website not the user. The other option is to manage your preferences and disable the data usage options all at once, if you’re lucky, or one by one, if the website wants to make it especially cumbersome.
+Vivaldi offers a third option by including two blocker lists in the Ad Blocker that hide annoying cookie banners and dialogs on most websites.
+To enable these lists:
+Go to Settings > Privacy > Tracker and Ad Blocking;
+Enable Block Trackers and Ads;
+Click on Manage Sources;
+In Ad Blocking Sources, enable “Remove cookie warnings (Easylist Cookie List)”.
+If you only wish to hide the cookie warnings, but don’t want to block ads, disable other blocking sources.
+Please note that not all cookies are used for creating behavioral profiles about users. Some are necessary for the website to function. When the website you’re viewing doesn’t look or work as it should, please disable the blockers. You can do so per site from the Content Blocker menu on the Address Bar.
+Private Window
+URL: https://help.vivaldi.com/desktop/privacy/private-windows/
+Summary (from features index): Use this mode to protect your privacy from other users of your computer.
+Private browsing mode is intended to protect your privacy from other users of your computer. When you browse using a Private Window, Vivaldi will minimize what is stored locally on your computer so that very few traces are left of what you were browsing once you close all private browsing windows.
+To open a Private Window:
+Go to the Vivaldi menu(Windows and Linux)> File > New Private Window;
+Type ’New Private Window‘ in Quick Commands;
+Use the Keyboard Shortcut Ctrl Shift N / ⌘ Shift N;
+Create a new Mouse Gesture for opening a new private window.
+Private Window Theme
+Vivaldi has a separate theme for Private Windows to make it easier to differentiate them from regular Windows. To change the Private Window Theme:
+Go to Settings > Themes > Private Window Theme.
+Select a theme from the drop down menu.
+Private Window Search Engine
+The default Search Engines can be different in regular and private windows. To select a search engine for Private Window:
+Go to Settings > Search > Private Window Search Engine.
+Select a Search Engine from the drop down menu.
+A few things to keep in mind about using Private Windows
+Using a Private Window does not encrypt or otherwise modify your connection.
+All private windows share the same session while they are open, so you need to close all of them to cause the session data to be deleted.
+A Private Window in Vivaldi does not use the same cookie store or cache as for regular browsing.
+Third-party cookies are blocked by default. To change it, go to Settings > Privacy > Cookies > Third-party cookies.
+It does not store the history of addresses that you visit.
+It tries – as much as possible – to only store website cache files in memory instead of on disk, so that disk scanning tools will not find residual traces of the files.
+If you intentionally download something, that content cannot be protected. Downloads are downloads, whether they start in private browsing mode or not.
+If you have forgotten to use private browsing mode, you can select Delete Browsing Datafrom the Tools menu to either delete all your browsing history, or just the history for a selected amount of time. Of course, this cannot remove traces from the disk so disk scanning tools may be able to find traces.
+Always open Vivaldi in a Private Window
+To open a Private Window without opening a normal window first, follow these instructions.
+Option 1
+Right click on Vivaldi in the Start Menu or Task Bar;
+Select New Private Window.
+Option 2
+Open Windows’ Run CommandWin + R;
+Paste Vivaldi’s Executable Path(from vivaldi://about);
+Add –incognito;
+Click OK.
+Option 3
+Make a Desktop shortcut of vivaldi.exe.
+Right click on the shortcut and select Properties.
+In the Target field add –incognito after the Executable Path.
+Option 1
+Open Terminal;
+Paste Vivaldi’s Executable Path(from vivaldi://about);
+Add –args -incognito;
+Press Enter.
+Option 2
+Open Terminal;
+Paste the following code:
+mkdir -p Vivaldi\ Private.app/Contents/MacOSprintf '#!/bin/sh\nopen -a Vivaldi.app --args --incognito' > Vivaldi\ Private.app/Contents/MacOS/Vivaldi\ Privatechmod +x Vivaldi\ Private.app/Contents/MacOS/Vivaldi\ Private
+Press Enter;
+You’ll now have an application called Vivaldi Private, stored in the folder where Terminal is running. You can check the folder location with pwd or open the folder in Finder with Open.
+Move Vivaldi Private to your /Applications folder and use Vivaldi Private to launch the browser.
+Source: https://gist.github.com/ruario/4560cc7ceefdc90da6f0db175ae1f7b6
+Right-click on Vivaldi on the Task Bar or Applications Panel and select New Private Window.
+Password Manager
+URL: https://help.vivaldi.com/desktop/privacy/password-management/
+Summary (from features index): Store your account login credentials in the browser, to access sites quickly and easily.
+With Vivaldi, you can store your account login credentials in the browser.
+Saving passwords
+When password saving is enabled, every time you log into a new account you’ll be asked whether you wish to save the password.
+If you discard the prompt for saving a particular password but want to do it later, click on Save your password on the right side of the Address Field.
+In case you clicked Never, you won’t be asked whether you wish to save the password on that website again. In case you’ve changed your mind, go to Settings > Privacy and Security > Passwords and delete the website from the Declined sites list.
+If you don’t want to save passwords or use other tools to manage them, you can disable the feature in Settings > Privacy and Security > Passwordsby unticking Save Webpage Passwords.
+When you change an account’s password, you’ll get the same prompt asking whether you wish to update the credentials.
+Viewing Passwords
+To view saved passwords:
+In Settings > Privacy and Secuirty > Passwords > Show Passwords;
+Click on Show Password, or right-click on the entry and select Show Password
+Enter your computer’s login password.
+To filter passwords, search for the Website or Account Name in the search box above the list of saved login credentials.
+To sort saved passwords alphabetically, click on the column title according to which you want to sort the saved entries. Click again to reverse the order.
+In addition to the option to show the password, from the right-click menu you can also copy the password or username, visit the page, and delete the saved password.
+Deleting passwords
+To delete stored account credentials, right-click on the entry and select Delete Password.
+To delete all passwords:
+Go to Vivaldi menu > Tools > Delete Browsing Data;
+Select Passwords (includes your Sync login password);
+For Delete data for, select All Time;
+Click Delete.
+To delete a single password:
+Go to Settings > Privacy > Passwords > Show Passwords;
+Right-click on the entry you want to remove;
+Select Delete Password.
+Importing passwords
+The easiest way to import passwords from another Vivaldi browser is to use Sync, which also allows you to synchronize other types of data, such as Bookmarks and Notes.
+To import passwords from another browser:
+Make sure the source browser is closed;
+Then go to Vivaldi menu > File > Import from Applications or Files;
+From the dropdown menu select the browser you wish to import the passwords from;
+Decide on the data you want to import;
+Click Start Import.
+Please note that password import is not possible from all browsers.
+To import passwords from .csv file:
+Go to vivaldi:password-manager/settings.
+Locate the Import passwords section.
+On the right side, click on Select file.
+Choose the .csv file with your passwords;
+Click Open.
+Exporting passwords
+To export passwords:
+Option 1
+Go to Settings > Privacy and Security > Passwords.
+Click on Export passwords.
+Enter your computer’s password.
+Save the .csv file.
+Option 2
+Go to Vivaldi menu > File > Export > Export Passwords.
+Enter your computer’s password.
+Save the .csv file.
+Third-Party Password Managers
+If you don’t want to use the built-in password manager, you can install password management Extensions from the Chrome Web Store.
+Proton VPN for Vivaldi
+URL: https://vivaldi.com/protonvpn/
+Summary (from features index): With one-click activation, you get enhanced privacy protections and all the VPN functionality you need. Because privacy should always be simple.
+Proton VPN for Vivaldi
+Secure your connection, protect your online privacy, and seamlessly access global content directly from Vivaldi, powered by Proton VPN.
+Hide your IP address
+Proton VPN for Vivaldi is a fast and reliable VPN service that protects your online privacy by hiding your real IP address.
+Block malicious scripts
+Proton’s DNS filtering prevents connections to unwanted domains and blocks malicious scripts.
+Access global content
+When connected to a Proton VPN server, you can access websites, content, and services that may be blocked or limited in your region.
+Strong encryption
+Proton’s VPN protocols use proven open source encryption standards such as AES-256 and ChaCha20 at their strongest settings.
+Privacy you can trust
+Proton operates with a strict no-logs policy and their VPN protocols use proven open source encryption standards. Ensuring Your online activity stays completely private.
+High-speed servers
+Proton’s 10 Gbps server network combined with a unique VPN Accelerator increases your VPN speeds by up to 400% while also providing you with the strongest encryption and security.
+Built into Vivaldi
+Proton VPN for Vivaldi is built right into the desktop browser. Just open your browser settings, enable Proton VPN for Vivaldi, and start browsing privately within seconds.
+Making privacy the default
+Proton was started in Switzerland in 2014 by scientists who met at the European Organization for Nuclear Research (CERN). Their vision is to build an internet where privacy is the default through an ecosystem of services accessible to everyone, everywhere, every day.
+Europe’s answer to online privacy
+In an era dominated by Big Tech, Vivaldi and Proton represent a European commitment to digital independence, privacy, and transparency. By choosing Proton and Vivaldi, you’re joining a growing movement that believes privacy is a fundamental right, not a privilege.
+Frequently Asked Questions
+How does Proton VPN for Vivaldi work? Proton VPN protects your online privacy by hiding your real IP address. With your virtual location hidden, it’s much harder for your online activity to be monitored, restricted, or sold to advertisers. Learn more
+How do I install Proton VPN for Vivaldi? Proton VPN for Vivaldi is ready to go out of the box. However, this is an opt-in feature and is not pre-installed, so the first thing you need to do is to click the VPN button in your toolbar. Then you only need to sign in with your Vivaldi account to get going. If you don’t have an account you can create one.
+Is Proton VPN for Vivaldi free? Yes. Proton VPN for vivaldi is free with no ads, no data limits, and a strict no-logs policy. Some premium features are only available on the paid Proton VPN Plus subscription.
+How secure is Proton VPN for Vivaldi? All Proton VPN network traffic is encrypted using either AES-256 or ChaCha20, and Proton uses strong VPN protocols like WireGuard® and OpenVPN.
+Can I use Proton VPN for Vivaldi on Mobile? Proton VPN for Vivaldi is only available for desktop at the moment. We hope to include it for mobile in the future.
+How is this funded? Proton VPN for Vivaldi offers a free option with no time limit, without any ads, or trackers, and no bandwidth limits. Users can upgrade to a Proton VPN paid plan to gain access to other features such as faster speeds, additional servers, extra devices, etc. Whether they choose a free or a paid version, they will benefit from the same advanced anti-censorship features. If a user upgrades to Proton VPN Plus, this generates revenue for Proton and Vivaldi.
+Is it legal to use Proton VPN? Using a VPN is legal in most countries, but some nations restrict or ban VPN use. Learn more in Proton’s country-by-country VPN guide.
+
+Productivity
+Tab Tools
+URL: https://vivaldi.com/features/tab-management/
+Summary (from features index): Enjoy more organized and efficient browsing, thanks to our unrivaled collection of tab tools.
+Tame your tabs
+Go ahead. Open as many tabs as you want. These built-in tools put you in full control.
+Take tabs to the next level, literally
+Sort out your tabs by grouping them in two-level Tab Stacks. Stacks are a great way to keep things tidy when you have a lot of open tabs.
+Once tabs are in a Stack, you can do a lot: give the group a name, create splitscreens or even hibernate them. Go nuts!
+Vertical tabs
+Put your Tab Bar on the left or right and enjoy. Having tabs displayed vertically means you can see the name of your tabs no matter how many you have open.
+Tile tabs to view them in splitscreen
+No more jumping back and forth between tabs – Tab Tiling allows you to view several tabs at the same time. Researching while drafting a blog post? Watching multiple streams at once? Kick things up a notch and Tile those tabs.
+What others think of tabs in Vivaldi
+Using @vivaldibrowser, you can display both the mobile and medium sized version of your web page on the same tab. This is great to check your website responsiveness!
+@vivaldibrowser just saw the option “Stack tabs by host” and it just made my day!
+The recent tab upgrades - double layer stacking plus renaming - is killer! The UX the whole way is so good. Keep up the good work!!
+I’m REALLY digging @vivaldibrowser. Mouse gestures are very very cool. Also being able to put tabs on the side. It’s super customisable
+I use @vivaldibrowser which has tab search already built in. It also lets you put the tab well vertically with a scrollbar, which means you can always read tab titles and icons. This, in addition to automatic tab hibernation, makes the number of open tabs a non-issue.
+Tom, if you’re in the mood I recommend using @vivaldibrowser. If you keep multiple tabs you can group them and name the group. You can mute all but the active tab through configuration or keyboard shortcuts.
+Tree-style tabs
+Feeling adventurous? Drop the Tab Bar altogether and use the Window Panel to manage tabs with a tree-style overview in the sidebar.
+Accordion tabs
+Accordion tabs allow you to expand and collapse a tab stack with a single click. It’s a great way to quickly show and hide information, especially when you have a limited amount of space available.
+Search your open tabs
+Finding a tab shouldn’t be like looking for a needle in a haystack. Search your open tabs using Quick Commands for a more speedy result.
+Scrollable tabs
+Scrollable Tabs let you scroll tabs and two-level tab bars horizontally, so you can keep more tabs open without them shrinking. Navigate by scrolling your mouse or using the arrows on either side of the tabs.
+Pinned tabs
+Pinned Tabs allow you to keep your most used tabs and tab stacks open and available in the same location, at all times.
+Hibernate tabs
+Having hundreds of tabs open can be a drag (on your laptop and your sanity). Use Tab Hibernation to lighten the load – put tabs to sleep until you need them.
+Periodic reloader
+Use Periodic Reloader to set reload tab values, so you are always looking at the latest version of a site or so you stay logged in, while working elsewhere. A countdown will display on the Tab under the favicon and title.
+Save tabs for later
+Saved Sessions let you quickly reopen a set of tabs you choose. Set up work areas for different projects and keep the tabs (and their layout) ready for action later.
+Seamless switching
+There’s no need to hunt around the tab bar to switch tabs. Use Tab Cycling to switch tabs using keyboard shortcuts or a scroll of your mouse.
+Undo tab close
+Need to reopen a tab you just closed? Just click the tab-trash-icon Closed Tabs button for a list of previously closed Tabs and Windows within the latest session; then, click the one you want to reopen.
+Sound control
+Unintentional audio is a nightmare. Put a lid on auto-playing video with more control over which tabs can make sounds, and when, using Tab Muting.
+Tab Stacking
+URL: https://help.vivaldi.com/desktop/tabs/tab-stacks/
+Summary (from features index): Sort out your tabs by grouping them in two-level Tab Stacks. Stacks are a great way to keep things tidy when you have a lot of open tabs.
+Tab Stacks let you group your browser tabs to avoid confusion and stay organised when you have several tabs open. In addition to the Tab Bar, tabs can also be managed in the Windows and Tabs Panel, in most cases, following the same instructions.
+Create a new Tab Stack
+Option 1
+Click and start dragging one tab over another or over an existing Tab Stack.
+When the second tab turns into your Theme’s highlight color, release the mouse button.
+Give the stack a name and pick a color (optional).
+Press Enter or click outside the stack editor.
+You can adjust Stacking Drop Delay in Settings > Tabs > Tab Features > Tab Stack Options. Make it longer if you often accidentally create Tab Stacks when dragging tabs from one place on the Tab Bar to another.
+In case stacking doesn’t work with drag and drop, make sure stacking tabs by drag and drop is enabled in Settings > Tabs > Tab Features** > Tab Stack Options > Allow Stacking by Drag and Drop**
+Option 2
+Select multiple tabs while holding down either the Shift or Ctrl/⌘ key.
+Right-click on one of the selected tabs.
+Select Stack # Selected Tabs.
+Give the stack a name and pick a color (optional).
+Press Enter or click outside the stack editor.
+Alternatively, after selecting the tabs for the Tab Stack:
+Open Quick Commands and type “Stack Tabs“, or
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Option 3
+To group all tabs from the same domain into a Tab Stack:
+Right-click on one of the tabs you want to group.
+Select Stack (# Tabs by Host – website.com).
+The option is visible in menus only when there’s more than one tab open from the same domain.
+Option 4
+Option 3 is useful if you only want to stack tabs from a single domain. To go through all your tabs and group them all by domain:
+Right-click on a tab.
+Select Stack Tabs by Hosts.
+Option 5
+It’s possible to create a new Tab Stack automatically with the active tab and any new tab you open from a link in the active tab. To enable this feature:
+Go to Settings > Tabs > New Tab Position.
+Enable As Tab Stack with Related Tab.
+In case creating Tab Stacks doesn’t work, make sure Tab Stacking hasn’t been disabled in Settings > Tabs > Tab features > Tab Stacking.
+Add tabs to a Tab Stack
+To manually add a tab to an existing stack, use either Option 1 or 2 described above.
+To automatically add new tabs you open from a link to the same Tab Stack:
+Go to Settings > Tabs > Tab Features > Tab Stack Options.
+Enable Open Tabs in Current Tab Stack.
+Remove tabs from a Tab Stack
+Option 1
+Right-click on the tab. If you’re using Two-Level Tab Stacks, click on the tab on the second row.
+Select Remove from Tab Stack from the context menu.
+Option 2
+With Popup Thumbnails enabled for Tabs:
+Hover over the Tab Stack.
+Right-click on the tab’s thumbnail you want to remove from the Tab Stack.
+Select Remove from Tab Stack.
+Option 3
+Drag the tab from the Tab Stack to the Tab Bar:
+With Two-Level Tab Stacks, first start dragging the tab downwards (to the side on a vertical Tab Bar) and then move it to the main level.
+With Compact Tab Stacks, hover the mouse cursor over the top edge of the tab and drag to remove it from the Tab Stack (see video below).
+With Popup Thumbnails enabled, hover the mouse first over the Tab Stack for the thumbnails to appear, then drag the thumbnail from the stack to the Tab Bar.
+Ungroup a Tab Stack
+To unstack tabs:
+Right-click on the Tab Stack and select Stack.
+While one of the tabs in the Tab Stack is open, open Quick Commands and type Unstack Tabs.
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Tab Stack display
+In Vivaldi, Tab Stacks can be displayed either on the same level as other tabs or on a second level.
+To change how stacks are displayed:
+Go to Settings > Tab > Tab Features > Tab Stacking.
+Select your preferred option.
+Compact Tab Stacks
+All tabs are on the same level. The Tab Stack, regardless of how many tabs are in the stack, will take up the same amount of space as other tabs.
+To switch between tabs, click on the small tab indicators above the Tab Stack or hover over the stack and click on the tab’s thumbnail you want to open. In case you don’t see the thumbnails, check Settings > Tabs > Tab Display > Tab Options, to make sure Popup Thumbnails are enabled.
+Two-Level Tab Stacks
+Tabs in a Tab Stack are displayed on the second level and you can use Tab Features (e.g. hibernating, cloning, muting, etc.) the same way you’d use them on regular, ungrouped tabs.
+The second level is only displayed when one of the stacked tabs is the active tab. To always show the second level, click on the padlock button on the far right of the Tab Bar (bottom on vertical Tab Bar) to lock it in place.
+Accordion Tab Stacks
+All tabs are on the same level. When the Tab Stack is collapsed the stack is almost the same width as a regular tab. When the Tab Stack is expanded, the tabs in the stack will share the available space on the Tab Bar with all other tabs.
+The stack will expand automatically when viewing a tab in the stack and collapse, when viewing other tabs. To keep the Tab Stack open, click on the Expand/Reduce Tab Stack button or double click on the collapsed Tab Stack. Don’t use the latter option in case you have enabled closing tabs on double click.
+The Tab Stack is surrounded by a border to help you visually distinguish the tabs in the group.
+Rename Tab Stacks
+Option 1
+Double-click on the Tab Stack.
+Give the stack a name.
+Press Enter or focus elsewhere in the browser to save the new name.
+In case Close Tab on Double Click has been enabled in Settings > Tabs > Tab Handling or Minimize Active Tab has been enabled in ****Settings** > Tabs > Tab Features > Tab Cycling**, it’s not possible to start renaming a Tab Stack with double-click.
+Option 2
+Right-click on the Tab Stack.
+Select Edit from the context menu.
+Give the stack a name.
+Press Enter or focus elsewhere in the browser to save the new name.
+Add color to Tab Stacks
+To make Tab Stacks stand out and be more recognizable, you can give the stack a color, which will be seen when the stack is not in focus.
+To color a stack:
+Right-click on the stack to open the context menu.
+Select Edit.
+Pick a color for the stack.
+To remove the color, follow the same steps as above, but select the last “No color” option in the row of colors.
+Pin Tab Stacks
+Pinning a Tab Stack prevents it or any of the tabs in the stack from accidentally being closed. The pinned stack will be located at the beginning of the Tab Bar on the left or top, depending on your Tab Bar location.
+To pin a Tab Stack:
+Right-click on the Tab Stack on the Tab Bar (or in the Windows Panel).
+Select Pin. (Pinned Tab Stack will have the most recently visited tab’s favicon.)
+To unpin a Tab Stack:
+Right-click on the Tab Stack on the Tab Bar (or Window Panel).
+Select Pin.
+Alternatively, type (Un)Pin Tabs in Quick Commands or create a Keyboard Shortcut or Mouse Gesture for the action.
+Additional Tab Stack Features
+When you right-click on a Tab Stack, you’re presented with some useful options. In addition to the ones covered above, you can also:
+Bookmark all tabs in the stack. The new bookmarks will be grouped into their own Bookmarks folder.
+Copy all links allows you to create a list of links you can share with others or save in a document somewhere.
+Save the stack as an Individual Session.
+Tile all tabs in the stack for side-by-side view.
+Reload all tabs in one go.
+Hibernate the stack to save browser resources.
+Move the stack left or right on the Tab Bar to a new window or another Workspace.
+Tab Hibernation
+URL: https://help.vivaldi.com/desktop/tabs/tab-features/#Hibernating_Tabs
+Summary (from features index): Use Tab Hibernation to lighten the load of having hundreds of open tabs. Put tabs to sleep until you need them.
+Hibernating Tabs
+Hibernating Tabs helps you to reduce the browser’s memory usage. To hibernate a tab or a Tab Stack, right-click on it in the Tab Bar and select whether you want to:
+Hibernate a single tab (can’t be the active tab);
+A Tab Stack, or
+Background Tabs.
+To hibernate Tabs in the Window Panel, right-click on:
+A single tab (can’t be the active tab);
+Tab Stack or
+Select multiple Tabs with Shift or Ctrl/⌘ keys to hibernate them.
+When you have enabled Dim Icon when Hibernated in Settings > Tabs > Tab Display you can easily see which Tabs and Tab Stacks are currently hibernating.
+Lazy Loading
+When opening the browser with your previous session or a Saved Session, lazy loading opens the background tabs of the session in a hibernated state to save resources. To enable it, go to Settings > General > Startup with and tick the box for Lazy Load Restored Tabs. If you don’t want Pinned Tabs to hibernate, tick the box also for Always Load Pinned Tabs.
+Tab Tiling
+URL: https://help.vivaldi.com/desktop/tabs/tab-tiling/
+Summary (from features index): Open tabs in split-screen to view multiple pages side by side.
+Instead of constantly switching back and forth between tabs, you can tile tabs to create a split-screen view. Tab Tiling lets you compare, reference, monitor, and think in parallel.
+Tiling Tabs
+To tile two or more tabs:
+Select the tabs by holding down the Ctrl/⌘ or Shift key and clicking on the tabs on the Tab Bar or Windows and Tabs Panel.
+Tile the tabs by:
+Drag the tab(s) from the Tab Bar into the main content window of your currently active tab. When you see a box with the text Drop to tile, release the mouse button.
+Right-clicking on one of the selected tabs and select Tile.
+Clicking on the Page Tiling button on the Status Bar and selecting the tiling layout.
+Typing “Tile Vertically/Horizontally/to Grid” in Quick Commands.
+Using a Keyboard Shortcut.
+Creating a Mouse Gesture for the action.
+To tile the active tab with the previous tab, you can simply click on the Page Tiling button on the Status Bar and select the tiling layout without needing to select the tabs on the Tab Bar first.
+Open Link as a Tiled Tab
+If you’ve come across a link on a web page that you’d like to open in a tiled view with the active tab:
+Right-click on the link.
+Select Open Link in > Open Link as Tiled Tab.
+There’s no limit to how many tabs you can tile at once, but from a certain point onwards (depends on your screen size), seeing the page content can become difficult.
+Tiling Tab Stacks
+Tile a Tab Stack either by:
+Right-clicking on the Tab Stack on the Tab Bar or Windows and Tabs Panel and selecting Tile.
+Clicking on the Page Tiling button on the Status Bar and selecting the tiling layout.
+Typing “Tile Vertically/Horizontally/to Grid” in Quick Commands.
+Using a Keyboard Shortcut.
+Creating a Mouse Gesture for the action.
+Untiling Tabs
+You can untile tabs by:
+Click on the Untile button on the right side of the tiled tab’s title bar.
+Right-clicking on one of the tiled tabs and selecting Tile to remove a single tab from the tiled view.
+Right-clicking on the tab stack and selecting Tile to untile all tabs.
+Clicking on the Page Tiling button on the Status Bar and selecting Untile pages.
+Typing “Untile Tabs” in Quick Commands.
+Using a Keyboard Shortcut.
+Creating a Mouse Gesture for the action.
+Tiled Tabs layout
+To change the layout of the tiled tabs, use one of the following options.
+Option 1
+Clicking on the Page Tiling button on the Status Bar.
+Select between vertical, horizontal, or grid tiling.
+Option 2
+Type “Tile Vertically / Horizontally / to Grid” in Quick Commands.
+Option 3
+Use Keyboard Shortcuts to switch layouts.
+Vertically Ctrl+F9 / ⌘F9
+Horizontally Ctrl+F8 / ⌘F8
+Grid Ctrl+F7 / ⌘F7
+Option 4
+Create Mouse gestures for the actions.
+Option 5
+To split tiles further into smaller tiles:
+Click on and hold down the mouse button on the tiled tab’s title bar.
+Drag it over another tiled tab, closer to the edge of the tile rather than the middle.
+When you see a box with the text Drop to tile, release the mouse button.
+Take a look at the screenshots below, where each color represents a different tab.
+Vertical tiles
+Horizontal tiles
+Grid tiles
+Custom
+Resizing Tiled Tabs
+To resize tiled tabs:
+Hover your mouse between two of the tiled tabs.
+Drag in desired direction.
+To return to the default layout:
+Click on the Page Tiling button on the Status Bar.
+Click on the highlighted option or select a different layout.
+Reordering Tiled Tabs
+To reorder tiles:
+Click on and hold down the mouse button on the tiled tab’s title bar.
+Drag it in the middle of the tiled tab you want to change places with.
+When you see a box with the text Move tile here, release the mouse button.
+Web Panels
+URL: https://help.vivaldi.com/article/web-panels/
+Summary (from features index): Add any website to your side bar. A great spot for your chat apps and social feeds.
+Web Panels are customisable Tabs which allow you to keep your favourite sites easily accessible in the side Panel of Vivaldi. Opening a Web Panel will allow you to simultaneously view its content alongside the tab(s) in your main window.
+Add a new Web Panel
+From the Panel
+Open the Panel area either by clicking the Show Panel icon on the left side of the Status Bar or using the corresponding Keyboard Shortcut (F4 / ⌥⌘ P)
+Click the Add Web Panel button to:
+add the current active page,
+one of your frequently visited websites or
+to type a URL.
+From the context menu
+Right-click anywhere on an open web page to open the context menu
+Select Add Page to Web Panelfrom the menu
+The page will be available immediately as a Web Panel.
+In case you’re asked to download an App or a message says that the page is not available on Mobile, switch to desktop mode.
+To switch views:
+Option 1
+Click on the Switch to Desktop/Mobile View button at the top of the Web Panel.
+Option 2
+Right-click on the Web Panel button.
+Select Show Desktop/Mobile Version.
+Using drag and drop
+When you have the web page you want to add as a Web Panel open in a Tab:
+Hover the mouse cursor over either:
+the tab on the Tab Bar,
+Site info button on the Address Bar.
+Start dragging downwards towards the Panel bar on the side of the browser window.
+When you see a line in your Theme‘s highlight colour appear on the Panel bar, release your mouse to create the new Web Panel. Alternatively, drop the link on the Add Web Panel button.
+Access Web Panels
+To open a Web Panel, either:
+Click on the Web Panel’s button in the side Panel;
+Use a Keyboard Shortcut (set a specific shortcut for each Web Panel in Settings > Keyboard > View);
+Type “Web Panel #” in Quick Commands;
+Open Vivaldi Menu > View > Web Panels and click on the web panel you want to open;
+Use a Mouse Gesture (create a gesture for each Web Panel in Settings > Mouse > Gesture Mapping);
+In case you have more Web Panels than your window height can accommodate, then place the mouse cursor on the side bar and scroll up and down.
+Customise Web Panels
+Some Web Panels need more space than others. To have panels with separate width:
+Right-click on the Web Panel’s icon;
+select Separate Width;
+from the outer edge of the panel drag it to preferred size.
+To display navigation buttons, right click on the Web Panel’s icon > Toolbar > Display All Controls.
+Reorder Web Panels
+To change the order of Web Panels:
+Hold down the Ctrl / ⌘ key.
+Drag the Web Panel to it’s preferred location.
+Web panels can be rearranged among themselves. They can’t be mixed with the browser’s Panels.
+Zoom in Web Panels
+To increase or decrease the size of the content in Web Panels:
+Right-click on a Web Panel.
+Select Toolbar > Display Zoom Controls from the context menu.
+Then click on the zoom buttons and at the top of the Web Panel to zoom in and out.
+Zoom level is retained through closing and reopening of the Web Panel and browser restarts.
+Periodic Reload of Web Panels
+Periodic web panel reload can be used on sites where the page is often updated, but the new content isn’t automatically displayed.
+To reload a web panel every X minutes:
+Right-click on the Web Panel;
+Select Periodic Reload;
+And pick the interval between 1 and 30 minutes.
+To disable Periodic Reload of a Web Panel:
+Right-click on the Web Panel;
+Select Periodic Reload;
+Select Disable or Disable all, if you have more than one Periodic Reload active.
+Mute Web Panels
+Like Tabs, Web Panels can also play some sounds. If you’ve added, for example, messaging services or video/audio sites as Web Panels, but need them to stay quiet for a while, you can mute them.
+To mute and unmute a Web Panel:
+Right-click on the Web Panel’s icon.
+Select Mute Panel from the context menu.
+To unmute Web Panels you can also click on the muted speaker icon.
+Open a page from a Web Panel in a new Tab
+To open the page you currently have open in the Web Panel in a Tab:
+Option 1
+Right-click on the Web Panel’s icon.
+Hover over Open in.
+Click on either New Tab, New Background Tab, Current Tab, New Window, Private Window depending on, where you want to open the web page.
+Option 2
+Right-click on the Web Panel’s top menu bar.
+Hover over Open in.
+Click on either New Tab, New Background Tab, Current Tab, New Window, Private Window depending on, where you want to open the web page.
+Option 3
+If you have a mouse with a middle mouse button (in some cases the scroll wheel), click on the Web Panel’s icon with the middle mouse button to open the page in a new background tab.
+Remove a Web Panel
+To remove a web panel:
+Right-click on the Web Panel’s icon;
+Select Remove Web Panel.
+To restore a deleted Web Panel:
+Right-click on the Panel;
+Go to Removed Web Panels (if you right-clicked on a Panel or Web Panel button, go to Panels > Removed Web Panels);
+Click on the Web Panel you want to restore.
+Alternatively, click on Clear All to remove them permanently.
+To just hide, instead of remove a Web Panel:
+Right-click on the Web Panel;
+Go to Panels;
+Click on the Web Panel you want to hide in the context menu.
+Panels and Web Panels with a check-mark in front of their name in the right-click context menu are displayed, those without are hidden.
+Popular uses for Web Panels
+Below we’ve listed a few of the most common uses for custom Web Panels. Keep in mind that due to the smaller view area, mobile-friendly sites will work best. Try adding one yourself by opening the link and adding it via the instructions above!
+Resources for work and research (e.g. StackOverflow, DevDocs);
+Translation tools like Google Translate;
+Grammar or copy writing tools such as a Thesaurus;
+Social media and News feeds (e.g. Twitter, Instagram, HackerNews);
+Chat apps (e.g. Messenger, WhatsApp).
+User Profiles
+URL: https://help.vivaldi.com/desktop/tools/user-profiles/
+Summary (from features index): Share one Vivaldi installation with other users, without having to maintain multiple installations.
+User profiles allow multiple “users” to share one Vivaldi installation, without requiring you to log in to a different operating system user account, or maintain multiple Standalone installations.
+Each profile can have a different set of Extensions, Bookmarks, Speed Dials, Cookies, History, etc. In addition, each profile can have its own look and configuration (Keyboard Shortcuts, Mouse Gestures, etc.).
+If a second profile is needed only briefly, for example, for a friend to use your browser (without messing up your setup or interacting with your open tabs), use a temporary Guest Profile.
+Add a new profile
+Click on the Profile button in the top right corner of the browser window and select Manage People.
+Click on Add Personat the bottom of the popout menu.
+Pick a name for the new profile and select or upload an avatar. On Windows and macOS, you can also decide whether you want a Desktop shortcut for the profile or not.
+Click Add Person.
+You can also manage profiles from Settings > General > Profile Management and click on Manage Profiles, or type “Manage Profiles” in Quick Commands.
+When you are logged in to your Vivaldi account to use Sync, your account’s username and profile image will be shown instead.
+Switch between profiles
+Open the Profile menu and click on the profile you want to open.
+Choose a profile on startup
+To choose which profile to open when you start Vivaldi:
+Type “Manage Profiles” in Quick Command or go to Settings > General > Profile Management and click on Manage Profiles.
+In the bottom right corner, enable Show on startup.
+When enabled, before the browser opens, you’ll see the window shown on the image below.
+Edit a profile
+To change the name or avatar of the profile or create a desktop shortcut:
+Open the Profile menu;
+Click on the active profile’s avatar or name;
+Make the changes and click Save.
+In case you’re logged into your Vivaldi account, you can update the profile image on your account’s profile on Vivaldi.net.
+Delete a profile
+To remove a profile:
+Open the Profile menu and select Manage Profiles;
+Click on the user you want to delete;
+Before you delete the profile you’ll see information about the profile, such as the number of Bookmarks and saved Passwords;
+Click Remove Person to permanently delete the profile and all its data.
+Move or hide the Profile button
+You can change the location or remove the User Profiles button by Editing Toolbars.
+If you don’t want to use the multiple profile feature or don’t want the button to clutter your Address Bar, right-click on the User Profiles button > Edit > Remove from Toolbar.
+Sync profiles
+To Sync profile data across devices, currently, a separate Vivaldi account is needed for each profile.
+Workspaces
+URL: https://vivaldi.com/features/workspaces/
+Summary (from features index): Organize your tabs and tab stacks into categories and switch easily between views.
+Workspaces
+Workspaces are a whole new way to organize your tabs - and your workflow - in Vivaldi.
+What are Workspaces?
+They let you group tabs and Tab Stacks into distinct Workspaces by category. With a click, you can immediately switch views within a window. Keep organized, banish distractions and get more done.
+Like Tab Stacks, Workspaces let you organize your tabs into different categories. The difference is that when you select a workspace to view, you will see only the tabs for that category in your window.
+What makes our Workspaces unique?
+Well, first of all, you won’t find Workspaces in all browsers. But a key advantage with Vivaldi Workspaces is that you can use them with Tab Stacks.
+And, unlike Workspaces in other browsers, with Vivaldi you also have Tab Tiling. Use split-screen or a grid view to streamline your workflow when working with multiple tabs. This combination gives you a powerhouse of productivity.
+How do I get started with Workspaces?
+Just click the Workspaces button in the tab bar or use a Quick Command. Select New Workspace and name it. And if you feel like it, add an icon or a custom emoji.
+Place the Workspaces button where you want it - in the Tab Bar or Address Bar, as a Panel or in the Status Bar. Whatever works for you.
+Switching between Workspaces couldn’t be easier, and you have several options. Click the Workspaces button or use Quick Commands or Keyboard Shortcuts.
+The Workspace menu displays how many tabs are in each workspace.
+To move a tab or tab stack to another workspace, drag it to the new workspace via the context menu or drag and drop in the Windows Panel.
+The Windows Panel shows your Workspaces, along with any Tab Stacks within them. A tab and tab-stack count displays for each workspace, as does the tab count for each stack.
+When you close the browser, your Workspaces are saved automatically. Workspaces created in private windows are removed once the private windows are closed.
+How can I use Workspaces?
+You can use Workspaces for as many categories or reasons you can think of. But here are some examples of how they can improve your workflow and help you browse better.
+Work
+Sort your different projects into Workspaces and add Tab Stacks within to keep all your work organized. And, as you work, split-screen Tab Tiling means no more clicking back and forth between tabs.
+Gaming
+Group your gaming-related tabs into Workspaces and use Tab Stacks for more organization of your games and chats. Want an overview of everything on deck? Use Tab Tiling for a grid view of your tabs.
+Travel
+Organize your hotels, flights, ground transportation, local attractions, and more. Tab Stacks are there when you need more grouping, and Tab Tiling is a must-have when you want to compare reviews or fares.
+Research
+Sort your different projects into Workspaces and add tab stacks within to keep all your research organized. And split-screen Tab Tiling saves you the time spent clicking back and forth between tabs as you work.
+Sports
+Stay on top of the action by grouping your favorite sport channels in one spot. Use Tab Stacks to keep everything organized. And if you want to keep an overall view, Tab Tiling will make sure you never miss a thing.
+News
+Sort your different news sites into Workspaces and add tab stacks within to keep all your articles and videos organized. And split-screen or grid Tab Tiling lets you keep an eye on developing events.
+Session Management
+URL: https://help.vivaldi.com/desktop/tabs/session-management/
+Summary (from features index): Save your current open tabs as a named session and access them again later.
+Vivaldi allows you to save your current open tabs as a named “session” and access them again later. This allows you to open the set of tabs included in a session with one click whenever you need or when the browser starts.
+Saving a session
+To save all open tabs in either one or multiple windows as a session, either:
+Open the Vivaldi menu > File > Save Open Tabs as a Session.
+Click on Save Tabs as Session in the Sessions Panel.
+Type “Save All Tabs as Session” in Quick Commands.
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+To save only some tabs as a session, use the Ctrl/⌘/Shift key to make a selection and:
+Right-click on one of the selected tabs and select Bookmark and Save > Save as Session from the context menu.
+Type “Save Selected Tabs as Session” in Quick Commands;
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Opening a saved session
+To open a saved session:
+Go to the Vivaldi menu > File > Open Saved Session.
+Double-click on a saved session in the Sessions Panel.
+Start typing “Open Saved Sessions” in Quick Commands.
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Sessions Panel
+A convenient and powerful way to manage your Sessions is using the Sessions Panel. Learn how to use it here.
+Reader View
+URL: https://help.vivaldi.com/desktop/tools/reader-view/
+Summary (from features index): Cut through the noise as you browse. No ads, no pop-ups, just pure content.
+Vivaldi’s Reader View lets you cut through the noise as you browse. No ads, no pop-ups, just pure content.
+Enable Reader View
+When you’ve found an article that you’d like to read in reader mode:
+Click on the Reader View button on the right side of the Address Bar.
+Type “Toggle Reader View” in Quick Commands.
+Create a Keyboard Shortcut or Mouse Gesture for the action.
+Add Toggle Reader View command to customized menus.
+Once active, the Reader View button on the Address Bar will have a highlighted background.
+Below the title you’ll also see a minute counter, estimating how long it will take to read the article.
+Reader View Settings
+Go to Settings > Webpages > Reader and adjust the Reader View settings, such as font face and size, line height, column width, and color scheme. To enable vertical reader mode, first tick the box for Allow Vertical Text Direction.
+To access Reader View settings directly on the website:
+Make sure Display Settings on Page in Reader Modehas been enabled in Reader settings.
+Enable Reader View on the webpage.
+Click on the Reader View Settings icon at the top right corner of a page.
+Reader View icon not showing
+If the Reader View button doesn’t show in the Address Bar, the page may not support this feature. Reader View button will only show when the webpage has suitable content.
+Exit Reader View
+To exit the Reader View:
+Click on the Reader View icon in the address bar.
+Type “Toggle Reader View” in Quick Commands.
+Create a Keyboard Shortcut or Mouse Gesture for the action.
+Add Toggle Reader View command to customized menus.
+Dashboard
+URL: https://help.vivaldi.com/desktop/tools/start-page-dashboard/
+Summary (from features index): Your all-in-one control center. Your Mail, Calendar, Notes, Tasks, and even your Feed Reader, are all in one place. You can even add any website as a widget.
+The Start Page is designed to give you full control of your digital life in one centralized space. Its flexibility allows you to create a unique dashboard personalized just for you. Continue reading to learn how to customize the Start Page with Widgets.
+Widgets
+To add a new widget:
+Click on Widgets at the bottom of the Start Page.
+Click on the widget you want to add.
+If relevant, go through widget-specific options, such as selecting an account or a folder to display.
+Some widgets, like Date and Tip of the Day, can be added once, but most can be added multiple times. This allows you to display different content in each widget, such as different email accounts, calendars, bookmark folders, etc.
+Calendar Agenda
+View, add, and manage your upcoming events from the Start Page.
+You can display events and tasks from all calendars in a single widget or add multiple widgets for different calendars.
+To change which calendar(s) events are shown from:
+Click on Open menu button in the top right corner of the widget.
+Select Select Calendar.
+Choose the calendar(s) from the dropdown menu.
+Click Done.
+Latest Emails
+Get a glimpse of your latest incoming emails and open them directly from the widget. You can display emails from all your mail accounts in a single widget or add a widget for each account you want to keep an eye on.
+To select the mail account:
+Click on Open menu button in the top right corner of the widget.
+Select Change Folder.
+Select All messages or one of your mail accounts.
+Click Done.
+Sticky Note
+Sticky Notes are for quickly jotting down reminders, ideas, and more. You can add as many little notes as you like. Please note that, Sticky Notes are not saved to Notes by default.
+To save a sticky note as a more permanent note:
+Click on Open menu button in the top right corner of the widget.
+Select Save to a Note.
+Bookmarks
+Keep your favorite bookmarks at easy reach with the Bookmarks widget. You can display bookmarks from a selected folder and add multiple widgets to display different bookmark folders.
+To select the folder:
+Click on Open menu button in the top right corner of the widget.
+Select Select Folder.
+Click on the folder name in the sub-menu.
+You can also customize how bookmarks are displayed from the widget’s menu. Decide, whether to show the bookmarks’ titles or not, and whether to display the bookmarks’ favicons or thumbnails.
+Tasks
+Just like in the Calendar widget, you can view, add, and manage your tasks easily from the Dashboard.
+Tip of the Day
+To learn something new about Vivaldi every day, add the Tip of the Day widget that features desktop tips and tricks from vivaldi.com/blog/tips/. Click on the widget to see the full tip with step-by-step instructions.
+Feeds
+With the Feeds widget, you can see the latest posts from all the feeds you are subscribed to or display the newest posts from a selected feed.
+To select the feed:
+Click on Open menu button in the top right corner of the widget.
+Select Select Feed.
+Select All Recent Feedsor one of the feeds you follow.
+Top Sites
+The Top Sites widget displays the websites you visit most frequently.
+Privacy Statistics
+Keep an eye on how many trackers and ads Vivaldi’s built-in Tracker and Ad Blocker has blocked as you’ve browsed online. Click on the widget to see more detailed statistics and a list of blocked trackers.
+Webpages
+With the Webpage widget, you can view a webpage of your choice on the Dashboard.
+To change the link:
+Click on Open menu button in the top right corner of the widget.
+Select Change Webpage URL.
+Enter the link.
+Click Done.
+Date
+From the Date widget, you can quickly see the day of the week, the full date, the week number, and the current time.
+Weather
+With the weather widget, you can keep an eye on the local weather in the next 24 hours as well as the forecast for the next 7 days.
+To customize the Weather widget:
+Click on Open menu button in the top right corner of the widget.
+Select Change Location to change the locale.
+In addition, make your choice for the units of measurement:
+Temperature (Celsius or Fahrenheit).
+Wind speed (meters per second, kilometers per hour, or miles per hour)
+Precipitation (millimeters or inches).
+Currency
+The Currency widget makes it easy to convert one currency into another, as well as follow the changes in exchange rates over time.
+Customize the Dashboard
+Columns
+The number of columns you see side by side depends on the size of your browser window. You can decide on the maximum number of columns that will be displayed when there’s plenty of space.
+To change the upper limit for columns:
+Go to Settings > Start Page > Widgets. Alternatively, open Quick Settings from the top right corner of the Start Page.
+Select a number between 1 and 4 for maximum columns.
+Widget size
+The height of some widgets can be changed.
+To resize a widget:
+Click on Open menu button in the top right corner of the widget.
+Select Widget Size.
+Choose whether to have a regular-sized widget or a tall one, which is twice the size of a regular widget.
+Widget Background Style
+To give widgets the aesthetic you like, you can adjust the transparency of the widgets’ backgrounds or give them a custom color.
+To adjust the style:
+Click on Open menu button in the top right corner of the widget.
+Select Background Style.
+Choose between:
+Solid
+Semi-Transparent
+Transparent
+Custom
+Rearrange widgets
+You can move widgets around and have them displayed in the order you like.
+To rearrange widgets:
+Click on the widget title area and hold down the mouse button.
+Drag the widget to its new location.
+Release the mouse button.
+Disable Widgets
+If you know you won’t be using Widgets, you can disable them.
+To disable the Dashboard:
+Go to Settings > Start Page > Widgets. Alternatively, open Quick Settings from the top right corner of the Start Page.
+Untick the box for Enable Widgets.
+Pop-out Video
+URL: https://help.vivaldi.com/desktop/media/pop-out-video/
+Summary (from features index): Display videos in a floating window, so you can continue watching, while you work or play.
+The Pop-out Video feature, also known as Picture-in-picture (PiP), allows you to display HTML5 videos in a floating window so that you can continue watching the video while scrolling down a page or changing tabs.
+To use this feature:
+Hover the mouse cursor over the video;
+Click on the pop-out video button that appears at the top edge of the video.
+Alternatively, right-click on the video and select Picture-in-picture from the context menu. For certain sites, like Youtube, this is not yet possible via their custom context menu. In that case, double right-click to reveal the context menu with the Picture-in-picture option.
+The popped-out video includes controls for:
+pausing the video;
+returning to the main window;
+changing the video’s volume;
+moving to the next/previous video (when playing a video from a playlist);
+skipping ahead or going back in the video timeline by either:
+clicking on the progress bar, or
+using the left and right arrow keys while the pop-out video is in focus;
+for closing the pop-out.
+Disable Pop-out Video button
+Pop-out Video button is enabled by default. If you won’t be using the feature:
+Go to Settings > Webpages.
+Disable Picture-in-Picture Button on Videos.
+Restart the browser.
+
+Customization
+Customizable UI
+URL: https://help.vivaldi.com/desktop/appearance-customization/browser-appearance-customization-on-desktop/
+Summary (from features index): Customize Vivaldi’s User Interface to your heart’s content. Virtually everything can be customized.
+Customization is one of Vivaldi’s strong suits. There are many ways you can alter the appearance of the browser, so let’s take a look at what you can change to make Vivaldi look the way you want it.
+Layout Presets
+The sheer range of settings can be overwhelming, especially to brand new users, so Vivaldi offers 6 layout presets you can choose as a starting point in your customization journey.
+You can pick a layout, either:
+During onboarding when you’ve opened Vivaldi for the first time (revisit onboarding from the Vivaldi menu > Help > Vivaldi Welcome Tour).
+From Settings > Appearance > Layout Presets.
+People, who used Vivaldi before the introduction of layouts in Vivaldi 8.0, will see an Autosaved layout they had before upgrading. The Saved layout is your custom configuration, which gets updated with each restart.
+Website Appearance
+If you prefer dark themes and want the web page content to match:
+Go to Settings > Appearance > Website Appearance.
+Select between:
+Light,
+Dark, or
+Auto.
+Some websites do not offer their site in dark mode. In that case, you can force dark mode, by selecting the “Dark” option and enabling Force a dark theme on all websites.
+Window Appearance
+To make small changes with a big impact take a look at the following settings.
+Open Settings in a Tab
+By default, Settings open in a little window of their own, but if you prefer to browse and change settings in a tab:
+Go to Settings > Appearance > Window Appearance.
+Enable Open Settings in a Tab.
+Open Popups in Tabs
+Pop-up windows in Vivaldi are blocked by default. If you’ve allowed them either globally or on select sites, you can decide whether to open popups in a new window or a new tab.
+To open popups in tabs instead of windows:
+Go to Settings > Appearance > Window Appearance.
+Enable Open Popups in Tabs.
+Use Animations
+To make transitions smoother when opening Panels, reordering Speed Dials, etc. animation effects are applied. To disable animations:
+Go to Settings > Appearance > Window Appearance.
+Disable Use Animation.
+Use Buttons in Range Controls
+When using the Zoom feature or changing some settings, you can change the value using a slider. If you want to change the value step-by-step with more accuracy, you can replace sliders with button controls.
+To switch from sliders to button controls:
+Go to Settings > Appearance > Window Appearance.
+Enable Use Buttons in Range Controls.
+Use Native Window
+To enable the Native Window:
+Go to Settings > Appearance > Window Appearance.
+Enable Use Native Window.
+Restart the browser.
+Using the Native window allows you to:
+Integrate Vivaldi with the rest of your operating system’s user interface.
+Use OS-based window controls.
+Display the Active Tab’s full title.
+Make use of macOS’ Split View feature.
+Show Title Bar
+When you have moved the Tab Bar to the left or right side of the browser window, you have the option to show the title of the active tab in a Title Bar, which will also include the Vivaldi Menu button as well as window controls for minimizing, maximizing and closing browser windows.
+To enable the Title Bar:
+Go to Settings > Appearance > Window Appearance.
+Enable Show Title Bar.
+Fade Colors in Background Windows
+When you’re viewing browser windows side by side, it can be difficult to see, which one you’ve focused on. Fading colors of background windows helps to make it more obvious.
+To enable background window color fading:
+Go to Settings > Appearance > Window Appearance.
+Enable Fade Colors in Background Windows.
+Use Simple Scrollbars
+Depending on the window size and the amount of content, you may see scrollbars here and there in the Vivaldi user interface, for example, in Panels, Mail lists and emails, Calendar views, etc. By default, the scrollbars are thicker and have clickable arrows at both ends. To get slimmer and more minimalistic looking scrollbars:
+Go to Settings > Appearance > Window Appearance.
+Enable Use Simple Scrollbars.
+Use Monochrome Settings Icons
+Settings categories in the column on the left are colored and grouped. If you prefer a more monochrome look on the category icons:
+Go to Settings > Appearance > Window Appearance.
+Enable Use Monochrome Settings Icons.
+User Interface Density
+To change the UI density:
+Go to Settings > Appearance > Window Appearance > User Interface Density.
+Choose between:
+Regular i.e. the more spacious layout, and
+Compact layout.
+Compact Menu Layout
+While you’re deciding on the density of the user interface, you can also make a call on the density of menus.
+To switch from spacious menus to compact ones:
+Go to Settings > Appearance > Window Appearance > User Interface Density.
+Enable Compact Menu Layout.
+Restart the browser.
+User Interface Zoom
+If you have plenty of screen real estate to spare on a large monitor or your vision requires to have larger buttons and texts for comfortable viewing, you can increase (or decrease) the user interface size.
+To change the UI zoom level:
+Go to Settings > Appearance > Window Appearance > User Interface Zoom.
+Use the slider or range control buttons to find a suitable UI size for you.
+If you click on the current zoom value, you can also enter the desired zoom value by typing the number.
+Status Ba r
+To hide the Status Bar or display it again:
+Go to Settings > Appearance > Window Appearance > Status Bar.
+Choose between the following:
+Always show the Status Bar.
+Only show status info overlay.
+Hide it completely.
+Toolbar Customization
+To learn about moving, adding, and removing buttons on the user interface, go to the Help page about editing toolbars.
+Menu
+To learn about the options available for the menus, take a look at the Help page about the Vivaldi Menu, and if you want to customize the menus, check out the Help page about editing menus.
+Themes
+To change the color scheme and background image of the browser, schedule themes, and more, have a look at the Help page about Themes.
+Editable Toolbars
+URL: https://help.vivaldi.com/desktop/appearance-customization/edit-toolbars/
+Summary (from features index): Move and remove any items on the Navigation Toolbar, Status Bar, Panel, Mail Toolbar, Mail Composer Toolbar and Mail Message Toolbar.
+Vivaldi is all about customization. Editing toolbars is one of the customization tools that allow you to tailor the browser to your needs.
+Move or hide toolbars
+Tab Bar
+To change the Tab Bar’s location:
+Go to Settings > Tabs > Tab Bar Position.
+Choose your preferred location for the Tab Bar:
+Top,
+Left,
+Right,
+Bottom.
+When you move the Tab Bar to the side or bottom of the browser window, buttons like the Vivaldi Menu, Minimize, Maximize and Close will be merged with the Address Bar as long as it’s at the top of the browser window. When the Address Bar is at the bottom, a title bar with the buttons will be displayed.
+To always display the Title Bar when the Tab Bar isn’t at the top of the window:
+Go to Settings > Appearance > Window Appearance.
+Enable Show Title Bar.
+To toggle the visibility of the Tab Bar:
+Go to Settings > Tabs and tick the box for Show Tab Bar.
+Go to the Vivaldi menu > View and select Show Tab Bar.
+Type “Tab Bar” in Quick Commands.
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Address Bar
+To change the Address Bar’s location:
+Go to Settings > Address Bar > Address Bar Position:
+Choose your preferred location for the Address Bar:
+Top,
+Bottom.
+To toggle the visibility of the Address Bar:
+Go to Settings > Address Bar and tick the box for Show Address Bar.
+Type “Address Bar” in Quick Commands.
+Create a Keyboard Shortcut or a Mouse Gesture for the action.
+Panel
+To change the Panel’s location:
+Go to Settings > Panel > Panel Position.
+Choose your preferred location for the Panel:
+Left Side,
+Right Side.
+To toggle the visibility of the Panel:
+Click on Hide/Show Panel button on the left side of the Status Bar.
+Enable Show Panel Toggle in Settings > Panel > Panel Options and use the toggle to hide/show the Panel.
+Go to the Vivaldi menu > View and select Show Panel.
+Type “Panel” in Quick Commands.
+Use the Keyboard Shortcut F4 / ⌥⌘P.
+Create a Mouse Gesture for the action.
+Status Bar
+It’s, unfortunately, not possible to change the location of the Status Bar.
+To toggle the visibility of the Status Bar:
+Go to Settings > Appearance > Status Bar and select between:
+Show Status Bar,
+Status Info Overlay (for example, shows URLs at the bottom left corner of the window when hovering a mouse cursor over a link on the page),
+Hide Status Bar.
+Type “Status Bar” in Quick Commands.
+Use the Keyboard Shortcut Ctrl+Shift+S / ⌘/.
+Create a Mouse Gesture for the action.
+Customize toolbars
+You can add, move and remove any of the components on the Tab Bar, Address Bar, Status Bar, Panels sidebar, Mail Toolbar, Mail Composer Toolbar and Mail Message Toolbar using the Toolbar Editor.
+To open the Toolbar Editor, either:
+Right-click on one of the components and select Customize Toolbar.
+Go to the Vivaldi menu > View > Customize Toolbar.
+Type “Customize Toolbar” in Quick Commands.
+Create a Keyboard Shortcut or a Mouse Gesture for opening the Toolbar Editor.
+Add components
+To add a new component to the toolbar:
+From the Toolbar Editor’s drop-down menu, select the toolbar where the component can be found by default.
+Pick the component you want to add from the selection and drag it to its new place. A vertical line in your Theme’s highlight color will indicate where the component will be added.
+To add components to Mail views, first open the Mail tab or the Mail composer and then open the Toolbar Editor.
+Command Chains
+In addition to components normally found on the toolbars, you can also add buttons for Command Chains.
+To add a button for a chains:
+Create a new chain in Settings > Quick Commands > Command Chains.
+Open the Toolbar Editor.
+From the drop-down menu, select Command Chains.
+Select the chain you want to add as a button and drag it to one of the toolbars.
+Move components
+To move a component that’s already on the toolbar, hold down the Ctrl / ⌘* key and drag the component to the new location.
+*On macOS, release the ⌘ key before you release the mouse button.
+Remove components
+Option 1
+To hide a component from a toolbar, right-click on it > Remove from Toolbar.
+Option 2
+While you have the Toolbar Editor open, drag the component you want to remove to the area between the toolbar and Toolbar Editor window.
+Reset Toolbars
+Option 1
+Right-click on a toolbar component and select Reset Toolbar To Default.
+Option 2
+Go to Settings > Appearance > Window Appearance > Toolbar customizations and click on Reset Navigation Toolbar/ Reset Status Toolbar.
+Option 3
+Open the Toolbar Editor, select the toolbar you want to reset and click Reset [toolbar name] to Default at the bottom of the editor window.
+Themes
+URL: https://themes.vivaldi.net
+Summary (from features index): Share and download themes to quickly change the look of your Vivaldi browser.
+External themes gallery (themes.vivaldi.net); no dedicated feature detail page with sub-features. Static HTML has little content (likely JS-rendered).
+Page title: Vivaldi Themes
+External themes gallery (themes.vivaldi.net); no dedicated feature detail page with sub-features. Static HTML has little content (likely JS-rendered).
+Download themes for your Vivaldi Browser. Get Vivaldi now at vivaldi.com .
+By: samuelthegaming17122005
+Reflections of a Metropolis
+Extensions Support
+URL: https://help.vivaldi.com/desktop/appearance-customization/extensions/
+Summary (from features index): Bring your favorite Chrome extensions with you. They work great in Vivaldi too.
+What is an extension?
+An extension is a small software program that can be installed to give added functionality to the Vivaldi browser. Extensions allow you to further customize and enhance your usage of the browser and range from social media tools to privacy-related features such as ad-blocking.
+Extensions in Vivaldi
+Although Vivaldi aims to provide as much built-in functionality as possible, many users further fine-tune the browsing experience using extensions.
+Because Vivaldi is built using the Chromium web browser project, extensions available in the Chrome Web Store can also be installed in Vivaldi. In some instances, extensions built for the Chrome browser will behave differently when installed in Vivaldi, but for the most part, your favorite Chrome extensions will work just fine in Vivaldi.
+In case an extension does not work as expected, please discuss the extension on our Forum, to see if the issue can be solved or if our Community members can suggest alternatives. Contacting the extension developers can help as well.
+Install an extension in Vivaldi:
+Browse to the Chrome Web Store.
+Search for the desired extension.
+Click Add to Vivaldi to install the extension in Vivaldi.
+If you don’t see the button Add to Vivaldi, go to Settings > Privacy and Security > Google Extensions and make sure the option Web Store has been enabled.
+In case an extension isn’t available on the Chrome Web Store, you can upload them manually:
+Go to the Extensions page from the Vivaldi Menu > Tools > Extensions..
+Enable Developer mode from a toggle in the top right corner of the page.
+Click Load unpacked on the new menu that appears.
+Find the extension folder in your File Manager (if you have it as a .zip file, extract it first).
+Click Select Folder to load the extension to Vivaldi.
+Import Extensions
+You can import Extensions to Vivaldi from other Chromium-based browsers, for example, Chrome, Edge, Opera, etc.
+To import Extensions:
+Make sure the browser you want to export from is closed.
+In Vivaldi, go to the Vivaldi menu > File > Import from Applications or Files.
+Select the Chromium-based browser you want to import data from.
+Click “Start Import”.
+When the import has finished, click “Close”.
+On the Extensions management page that opens, enable the extensions you want to use in Vivaldi by clicking the toggle button at the bottom right corner of each extension card.
+Allow third-party extensions to control the Start Page
+To have a custom Start Page page using an extension:
+Open Vivaldi Settings.
+Go to Tabs > New Tab Page.
+Tick the Controlled by Extensioncheckbox.
+Manage Extensions
+The Extensions page gives an overview of the extensions currently installed, the ability to disable or delete extensions and adjust extension-specific settings.
+Access the Extensions page
+To open the Extensions page, go to the Vivaldi Menu > Tools > Extensions.
+The Extensions page can also be accessed by:
+Using a Keyboard Shortcuts Ctrl+Shift+E / ⌃ ⌘ E.
+Typing “Extensions” in Quick Commands.
+Right-clicking on an extension button in the Address Bar and selecting Manage Extensions.
+Entering vivaldi://extensions in the Address Bar.
+Creating a Mouse Gesture for the action.
+Access extensions using Quick Commands
+To open the extension’s popup or options:
+Open Quick Commands (F2 / ⌘ E).
+Type in the extension’s name.
+Use arrow keys to select the extension.
+Press Enter to open the extension’s popup or Ctrl + Enter / ⌘ Enter to open the extension’s options page (if the extension has one).
+Change extension settings
+Some Extensions have settings you can change. To check these options:
+Right-click on the Extension on the Address Bar and select Options from the context menu.
+Alternatively, click on Details > Extension Options on the Extensions page.
+Update extensions
+Extensions usually update automatically. To manually update extensions:
+Go to the Extensions page.
+Enable Developer mode from a toggle in the top right corner of the page.
+Click Update on the new menu that appears.
+Disable extensions
+To disable an extension:
+Open the Extensions page.
+Click on the toggle button in the lower right corner of the extension card.
+Disabling extensions is a good way to test whether an issue you’re encountering in the browser is caused by an Extension or not.
+Remove extensions
+To remove an extension:
+Right-click on the Extension on the Address Bar and select Remove Extension from the context menu.
+Alternatively, click Remove on the Extension page.
+Confirm your decision by clicking Remove again in the confirmation dialog.
+Hide extension buttons
+To hide or show an extension, right-click on its button and select Hide Button/Show Button. Use the Show/Hide hidden extensions toggle button on the right to view hidden extensions. To view hidden extensions in a drop-down menu instead of expanding the Address Bar (compare the images below), go to Settings > Address Bar > Extension Visibility and tick the box for Expand Hidden Extensions to Drop-Down Menu.
+Move extensions
+By default, Extensions will be accessible from the right side of the Address Bar. If that location doesn’t suit you, you can move them to the Panels sidebar or Status Bar. Note that all extensions are grouped together and cannot be moved individually to different locations on the browser’s toolbars.
+To move Extensions:
+Option 1
+Open the toolbar editor from the Vivaldi menu > View > Customize Toolbar.
+From its current location, drag the Extensions button to your preferred location.
+Option 2
+If you’ve hidden some extensions and see the Extensions button next to your visible extensions, you can move them without needing to open the Toolbar Editor.
+Hold down the Ctrl/⌘* key.
+Drag the Extensions button to your preferred location.
+*On macOS, release the ⌘ key before you release the mouse button.
+Reorder extensions
+Enabled extensions often display a button. You can reorder these buttons among themselves by holding down the Ctrl/⌘* key and dragging and dropping them directly on the Address Bar.
+*On macOS, release the ⌘ key before you release the mouse button.
+UI Auto-hide
+URL: https://help.vivaldi.com/desktop/appearance-customization/auto-hide-interface/
+Summary (from features index): Allow us to get out of your way. Hide all menus, buttons and bars. Until you need them.
+Automatically hiding the browser’s toolbars gives all the available space in the Vivaldi window to the page content. Whether the window is maximized or not. It’s great for those browsing on smaller screens and those, who prefer a more minimalist, distraction free experience.
+Toggle UI Auto-hide on and off
+To enable and disable Auto-hide, use one of the following methods:
+Click the Toggle UI Auto-hide button on the Status Bar.
+Use the Keyboard Shortcut Ctrl+F11 / ⌘ F11.
+Type “Toggle UI Auto-hide” in Quick Commands.
+Go to the Vivaldi menu > Window > UI Auto-hide.
+Create a Mouse Gesture for the action.
+Go to Settings > Appearance > UI Auto-Hide and tick the box for Enable UI Auto-hide.
+Accessing toolbars when Auto-hide is enabled
+To access the toolbars and the Panel when the toolbars are hidden:
+Move the mouse cursor to the edge of the browser window.
+Interact with the toolbar, e.g. switch tabs, open a bookmark, change the site’s zoom level.
+When you’re done, move the mouse cursor back over to the page content or outside the browser window.
+Alternatively, use Keyboard Shortcuts, Quick Commands or Mouse Gestures to focus on the toolbars and panels you want to use.
+Auto-hide settings
+It’s up to you whether you want to hide all toolbars or just some of them.
+You can toggle the visibility of the following toolbars:
+Tab Bar
+Panel
+Address Bar
+Status Bar
+Bookmarks Bar
+To select which toolbars to hide:
+Go to Settings > Appearance > UI Auto-Hide and tick the box for Enable UI Auto-hide.
+Keep enabled the toolbars you want to hide and disable the toolbar options that you want to always keep visible.
+Always use Auto-hide in Fullscreen
+When you go into fullscreen mode, for example, to watch a video, you won’t be able to interact with the browser’s user interface. But by making use of the Auto-hide feature, even when you don’t use Auto-hide normally, you can make the toolbars appear by moving the mouse to the edge of the screen.
+To enable Auto-hide in fullscreen mode:
+Go to Settings > Appearance > UI Auto-Hide.
+Enable Always use Auto-hide in Fullscreen.
+Security implications
+If you enable autohide of the address field, then a malicious web page can show you a fake address field when you interact with it. To make sure you can recognize your real Address Field, we suggest making some changes to your address bar, so that it is uniquely yours.
+These changes could be:
+Customize the Address Bar – change the order and/or add/hide buttons.
+Change your browser’s Theme.
+Move the Address Bar to a different side of the window.
+Razer Chroma
+URL: https://help.vivaldi.com/desktop/miscellaneous/razer-chroma/
+Summary (from features index): Combine Vivaldi on Windows with Razer Chroma to make browsing more immersive and personal.
+Combine Vivaldi on Windows with Razer Chroma to make browsing more immersive and personal.
+Enabling Razer Chroma on Vivaldi
+Make sure your Chroma devices are connected to your computer.
+Go to Settings > Themes > Razer Chroma Theme Integration.
+Make sure the box for Enable Razer Chroma Integration is ticked.
+Select the devices you want to sync with Vivaldi.
+If Chroma integration is enabled in Vivaldi, but the device colors don’t match the browser, check Razer’s Synapse > Connect > Apps and make sure Vivaldi is enabled and on top of the list.
+If Accent Colour from Active Page is enabled in Settings > Themes > Edit Theme > Theme Preferences, the Chroma devices will change color based on the active tab’s webpage color. When disabled, your theme’s accent color will be used. If you’ve set up Scheduled Themes, Chroma colors will change when the Theme changes.
+
+Tools
+Mail
+URL: https://vivaldi.com/features/mail/
+Summary (from features index): Manage emails from multiple accounts, mailing lists and feeds in a unified inbox, with this powerful, built-in email client.
+A powerful email client made for high-volume inboxes
+Built into the Vivaldi browser, you get access to a powerful email client. Offering a focused email experience by managing all your accounts in one user-friendly inbox.
+It’s free, and available for Windows, macOS and Linux.
+All of your accounts in one place
+With IMAP and POP3 support, you can integrate nearly any email provider.
+The Database
+A database of all your messages, labels, filters, searches is maintained by Vivaldi and the bedrock of our powerful email client. Mail from all of your accounts is indexed, so it’s searchable offline.
+Browser benefits
+Having a mail client built into your browser just makes sense. Compose messages in new tabs, keep multiple messages open and manage them with ease using Vivaldi’s extensive tab features.
+Unseen and Unread
+There are two counters next to folders in Vivaldi Mail. Brand new mails that have never been seen before are called Unseen. Emails that you have seen but not dealt with are Unread.
+Smarter navigation
+Use customisable Keyboard Shortcuts to work through email faster. Use the Back/Forward buttons to jump in through “history” and views while you work.
+Integrated Feed Reader
+New feed items from Vivaldi Feed Reader display like your other messages in the Mail interface. You can search them, filter them and even reply to authors if they’ve provided their details.
+Get your toggle on
+In every view there is a set of toggles at the top. With a click you can hide or show Read emails, as well messages from mailing lists, custom folders, feeds, junk and trash.
+Saved Searches
+Searches can be saved as filters. No need to reinvent the wheel every time.
+Queue up
+Queue messages in your Outbox and batch send when you’re ready.
+Manage Events
+Send and receive event invites seamlessly with Mail’s sidekick, Vivaldi Calendar.
+See Vivaldi Mail in action
+Vivaldi’s vision is simple – you should be in control of how your mail client looks, feels, and works.
+Unlock the full potential of your inbox
+Compare Vivaldi Mail to other popular email clients and see the difference for yourself.
+Think outside the folder
+A single message can show up in any number of “folders” or views. Don’t waste time digging from folder-to-folder. Instead, focus on creating views that show the messages that matter.
+Trusted by millions of users
+Having no external investors gives us the freedom to listen to our users and, together with them, build the browser they deserve.
+Features working in concert
+Vivaldi’s integrated tools put you in control of your data and your workflow. Check out the other things we’ve built into the browser to help you get more done.
+Calendar
+Organize your days with private or shared calendars in a simple yet powerful interface.
+Feed Reader
+Build a news feed based on what you care about, not what you do online.
+Translate
+Keep your translation activity private, with hosting on Vivaldi’s own servers.
+All Features
+Build the browser you need with clever features and unlimited options.
+Calendar
+URL: https://vivaldi.com/features/calendar/
+Summary (from features index): Manage events with this built-in flexible, private calendar.
+A flexible, private calendar built in your browser
+Vivaldi Calendar is a flexible and deeply integrated way to manage events in your browser.
+Details, details
+Choose from Minimal, Full or Compact views to adjust how much detail you want to show for each event in your overview.
+Flexible grid
+Vivaldi Calendar’s grid expands as needed to fit every event’s details. Time slots will adjust to fit the events you add and everything stays visible. You won’t find this anywhere else.
+Private or Shared
+You decide whether you want to keep your calendar on one computer only, or use calendars stored online, like Google Calendar.
+Browser benefits
+Being built-in has its benefits. Send or respond to event invites in Vivaldi Mail with no fuss. Add events to Vivaldi Calendar with a right-click on any web page to bring up the editor and attach a link.
+Inline or pop-out
+Create events in seconds without hiding other parts of your calendar while you do it using the Inline Editor. A pop-out editor is also doable with a quick trip to your Settings.
+Calendar on the side
+Use the Calendar Panel for quick access while you browse to manage events and stay on schedule throughout the day.
+Trusted by millions of users
+Having no external investors gives us the freedom to listen to our users and, together with them, build the browser they deserve.
+Features working in concert
+Vivaldi’s integrated tools put you in control of your data and your workflow. Check out the other things we’ve built into the browser to help you get more done.
+Mail
+Enjoy a more organized, powerful, and private email experience with Vivaldi Mail.
+Feed Reader
+Build a news feed based on what you care about, not what you do online.
+Translate
+Keep your translation activity private, with hosting on Vivaldi’s own servers.
+All Features
+Build the browser you need with clever features and unlimited options.
+Feed Reader
+URL: https://vivaldi.com/features/feed-reader/
+Summary (from features index): Use this built-in, algorithm-free feed reader to build a private news feed that is based on your interests, not what you do online.
+An algorithm-free feed reader built in your browser
+Vivaldi Feed Reader helps you build a private news feed based on your interests, not what you do online.
+Direct to your inbox
+The Feed Reader uses Vivaldi Mail to display and manage feed items. Feed items look like mail. You can mark them as Read like mail. And they get indexed like mail, so they’re easy to search for later.
+YouTube subscriptions, but private
+You can also add your favorite YouTube channels to your Feed Reader. For added privacy, video content is extracted using a no cookie URL and displayed inline, rather than linking to the video.
+Import from other readers
+You can migrate from your current feed reader to Vivaldi by exporting your feed list in “OPML” format. Name the file feeds.xml. Open it in Vivaldi and away you go.
+Add Podcasts to the mix
+Subscribe to feeds from your favorite podcasts to add them to your reader. Use the embedded player in Vivaldi Feed Reader to listen while you browse.
+Preview before you subscribe
+Like “try before you buy”. Vivaldi detects newsfeeds on web pages, and shows an icon in the Address Field. Click it to preview a feed before subscribing, or to subscribe directly.
+Content from the sources you choose
+At some point, getting the latest content from your favorite sources got complicated. We built the Vivaldi Feed Reader to give you content direct from the sources you trust and away from prying eyes.
+Feeds Panel
+A dedicated Feeds Panel gives you quick access to the latest content in your feeds and lets you dive in with a focused space for reading and managing feed items.
+Trusted by millions of users
+Having no external investors gives us the freedom to listen to our users and, together with them, build the browser they deserve.
+Features working in concert
+Vivaldi’s integrated tools put you in control of your data and your workflow. Check out the other things we’ve built into the browser to help you get more done.
+Mail
+Enjoy a more organized, powerful, and private email experience with Vivaldi Mail.
+Calendar
+Organize your days with private or shared calendars in a simple yet powerful interface.
+Translate
+Keep your translation activity private, with hosting on Vivaldi’s own servers.
+All Features
+Build the browser you need with clever features and unlimited options.
+Sync
+URL: https://help.vivaldi.com/desktop/tools/sync/
+Summary (from features index): Securely synchronize your Vivaldi browser data across multiple devices.
+With the synchronization function, you can synchronize your Vivaldi browser data across multiple devices.
+Important! Sync is not meant to be used as a data backup service. If the data is not stored locally on any devices, we can’t guarantee you’ll be able to restore the data on a later date.
+Access Sync
+To access Sync settings, either:
+Click on the Syncbutton on the left side of the Status Bar.
+Click on the Synced Tabs button on the Tab Bar.
+Go to Settings > Sync.
+Click on the User Profile button on the right side of the Address Bar and then onCreate an Account.
+First, log in to your Vivaldi account with your account’s username and login password. Your login password is sent to our servers over a secure connection and a hash of it is stored in our database.
+In case you don’t have an account yet, create a new Vivaldi account in the Settings window or on Vivaldi.net. With a Vivaldi account, in addition to Sync, you’ll get access to the Forum, Vivaldi Social, Webmail, Themes and Blogs.
+Encryption password
+Once you’ve logged in, you also need to pick an encryption password that is used for encrypting your data. The password needs to be at least 12 characters long and you can use any letters, number and characters in it. We recommend using a password that’s different from your login password. Your encryption password is used locally on your computer for encrypting the data you’re about to send to our servers and to decrypt the received data. Your encryption password is never sent to us or any other third party, which ensures that we cannot decrypt your data. This also means that even if someone should get access to your account’s username and login password, it’s impossible for them to find out the encryption password, unless you yourself have shared it with them.
+It can happen that you forget the encryption password. When you have the data stored locally and can still access it, forgetting the password isn’t a big deal. You’ll just need to reset the encryption password and upload all the data again. Should you not have access to your browser data on any devices (for example, you used Sync only on one device and had to reset the OS, losing all your data), restoring it requires to have prepared for this beforehand by saving a backup encryption key in a safe place.
+Backup Encryption Key
+Backup encryption key is an alternative method to the encryption password for decrypting your Sync data. Like with the encryption password, your backup encryption key is never sent to us or any other third party, which ensures that we cannot decrypt your data. For it to be useful, you need to save the key in a safe location, while you can access your Sync settings with the encryption password.
+Save the backup encryption key
+Log in to your Vivaldi account in Settings > Sync.
+Enter the encryption password.
+Below your account info, look for Save Backup Encryption Key.
+Click on it and save the key file to your device.
+The key is valid until you reset the remote Sync data. We recommend storing the key file in a location that can survive something irreparable to your device, such as an external memory drive or a trusted cloud service.
+Use the backup encryption key
+Log in to your Vivaldi account in Settings > Sync.
+When asked for the encryption password, click Load Encryption Key.
+Click Load and find the key file.
+Click Open.
+Start syncing.
+Syncing
+To start Sync:
+Select the data you want to synchronise;
+Click Start Syncing.
+Currently, Vivaldi supports synchronisation of the following items:
+Bookmarks and Speed Dials
+Some Settings (more will be added in the future)
+Stored webpage Passwords
+Stored autofill information
+History (visited sites and typed URLs and searches)
+Extensions
+Web Apps
+Reading List
+Open Tabs
+Notes (partially, without attachments)
+Sync User Profiles
+To sync User Profile data across devices, currently, a separate Vivaldi account is needed for each profile.
+The data to be synced is encrypted end-to-end
+The data you send us is encrypted on your computer using a password that is never sent to us. In addition, the servers on which your encrypted data is stored are well protected from intrusion both physically and from the network.
+When syncing, the encrypted data is sent to a central server, from which it can be requested from all other Vivaldi instances only by the same user. When one Vivaldi instance sends new data to the Sync server, a notification is immediately sent to all other Vivaldi instances to let them know that they can download this new information. This means you should see changes reflected within a minute.
+Vivaldi stores Sync data on its own servers in Iceland. If you want to know more about how we handle your synced data please visit Sync’s Privacy Page.
+Connecting another device
+To connect another device to Sync:
+Open Sync Settings;
+Log in;
+Enter the encryption password;
+Start syncing.
+With bigger profiles, the first sync between newly connected devices can take some time to finish.
+Most data, like Bookmarks and Notes, will be put to their respective locations, but to access the tabs that you have open in another Vivaldi instance, look for the Synced Tabs section in the Tab Button menu or Windows and Tabs Panel.
+When you log in or enable synchronisation of some data type, your local data is merged and re-associated with what exists on the server. This is done in a way that ensures you won’t lose any data. Some things like Bookmarks can be moved to match the location the server believes they are in.
+When you make changes to synced data on one client, Sync will check the servers for updates, download any new data and upload the changes you just made. It will also try to notify all desktop clients about the update, so they could download it.
+Send Tab to Device
+When you have Tabs sync enabled, you’ll find all your open tabs from the Synced Tabs menu on the Tab Bar or in the Windows Panel. If you want to quickly open a specific tab on another synced device, use the Send Tab to Device feature.
+To send a tab from desktop:
+Open the tab you want to send.
+Right-click on the tab on the Tab Bar or on an empty area on the page.
+Select Send to Your Devices.
+Choose to which synced device you want to send the tab to.
+To open a received tab on desktop:
+When you’ve sent a tab from another device to your current desktop/laptop computer, you’ll see a notification on the Synced Tabs menu button.
+Click on the Synced Tabs button on the far side of the Tab Bar.
+Click on “From [device name]: [page link]”.
+Another feature that can be used for accessing websites on multiple synced devices is the Reading List.
+Stop syncing
+When you choose to stop syncing some types of data, the browser forgets all association between your local data and the data located on the Sync server. All your data remains on the Sync server as it was. When you explicitly log out from Sync, the same happens for all the synced data. Please note that quitting the browser does not log you out from Sync.
+Delete synced data
+To delete synced data from the servers:
+Open Sync Settings;
+Make sure you’re logged in;
+Click on Reset Remote Data.
+You will need to make sure that you have all your data client side before doing this to avoid losing data. Note that the data will be re-uploaded if you choose to run sync again in the future.
+If, in addition to clearing the data and logging out of Sync, you’re also thinking of deleting your Vivaldi account, please note that when the account is deleted, you will also lose access to all other Vivaldi Community services such as webmail, forum, and blogs and all the data will be deleted. If you still wish to proceed, follow the instructions on our help page about deleting Vivaldi accounts.
+Change or reset your account login password
+If you wish to change your login password, log in onVivaldi.net, go to your profile (top right corner) and change it there. In case you’ve forgotten your password, send yourself a password reset email. Note that if you have chosen to use the same password for login and encryption, changing your login password will not automatically change your encryption password and you will have to do this separately.
+Change or reset your encryption password
+In case you’ve forgotten your encryption password and don’t have a backup encryption key to decrypt the data or just want to change the encryption password:
+Open Sync Settings;
+Log into your Vivaldi account;
+Click on the Forgot Password?button;
+In the pop up, click on Delete Data;
+Then Start Sync again and enter a new password.
+Your data will be deleted from Vivaldi’s Sync servers and re-uploaded from the computer you’re using once you enter a new password. In case the synced data isn’t stored locally on any devices (e.g. after a OS reset) and you don’t have a backup encryption key to decrypt the data, the synced data will unfortunately be lost when resetting the encryption password.
+Get help
+Check the help page for Troubleshooting Sync issues and file a bug report if necessary. The forum is also a great place for getting answers to your questions.
+Notes
+URL: https://help.vivaldi.com/article/notes/
+Summary (from features index): Take notes in the side bar as you browse and sync them securely to other devices.
+Take notes, adding a description and even screenshots to the notes while surfing the web with the Vivaldi browser. Add your thoughts and ideas to any sites you visit using Vivaldi Notes.
+View Notes
+Find and edit your notes from the Notes Panel located on the side of the browser window. You can also use Keyboard Shortcuts (Ctrl+Shift+O / ⌥ ⌘ N). For a full window notes editor open the Notes Manager.
+Create a new Note
+To write a new note, click on the New Note button at the top of the Panel. Everything you type will be saved automatically.
+Copy to Note
+To create a note with text on a web page:
+Select the text on the page.
+Right-click on the highlighted text.
+Select Add to Note > Add to New Note from the context menu.
+Alternatively, after selecting the text:
+Use the Keyboard Shortcut Ctrl + Shift C / ⌥ ⌘ C.
+Type “Copy Selected Text to Note” in Quick Commands.
+Create a Mouse Gesture for the action.
+The note will be added with the marked text as body, the webpage link, the creation date, and a screenshot of the page with the highlighted text.
+Append to Note
+While Copy to Note creates a new note with the text you’ve selected on a web page, Append to Note will add the text to an existing note of your choice.
+To add text to a note:
+Option 1
+Select the text.
+Right-click on the highlighted text and select Add to Note > Append to Note from the context menu.
+Select the note you want to add the text to.
+Click Add to Note.
+Option 2
+Select the text.
+Type “Append Selected Text to Note” in Quick Commands.
+Select the note you want to add the text to.
+Click Add to Note.
+Option 3 Create a Keyboard Shortcut or Mouse Gesture for the action and use it after selecting the text.
+New Note with Capture Page
+In addition to text, you can take screenshots and save them as Notes. To save a screenshot as a note:
+Click on Capture Page on the Status Bar;
+Select whether you want to capture the full page or just a part of it;
+For Format select Create Note With…;
+Click Capture.
+The note will be added with the capture as an attachment, the webpage link, and the creation date. You can add a title and note about the screenshot.
+New note with drag and drop
+Highlight the text you want to make into a note;
+Drag the highlighted text (you can also drag links and images) to the Notes Panel button;
+Release the mouse button to create a new note.
+When the Notes Panel is already open, drag the note content to the notes list to create a new note.
+If you want to add to an existing note, open the note, then drag and drop the additional content to the note editor section.
+Search Notes
+To find a note, use the Search box on top of the Notes Panel. Notes can also be searched for using Quick Commands.
+Edit Notes
+At the bottom of the Notes Panel, you may:
+Edit the note.
+Use Markdown formatting to make your notes more readable and interesting.
+Add an image either from a webpage or from a file on your computer.
+Add a webpage link to the note.
+Organize Notes
+Notes can be sorted:
+Manually,
+by Title,
+by Address,
+by Content,
+by Date Created.
+Notes can also be divided into folders. To create a new folder, click on the New Folder button on top of the Panel and give it a title.
+Notes can be moved between folders by dragging the note to the new destination folder.
+Insert Notes
+Instead of opening the Notes Panel or Notes Manager, looking for the note and copying its contents, you can insert notes on web pages, in Vivaldi Mail and other places in the browser directly from the text field’s context menu.
+To insert a note:
+Right-click on the text input field.
+Hover over Insert Note in the context menu.
+Select the note you want to use.
+Delete Notes
+To delete a note or a notes folder, either select the note/folder and click on the Delete button on top of the Panel or right-click the note/folder and select Delete from the context menu.
+Restoring deleted Notes
+Drag the note out of the Trash and place it anywhere above.
+Emptying Notes Trash
+Right-click the Trash and select Empty trash.
+Export and Import Notes
+Exporting Notes
+To export your notes:
+Go to the Vivaldi menu > File > Export > Export Notes.
+Select the destination folder.
+Alternatively:
+Type “Export notes“ in Quick Commands (F2 / ⌘ E).
+Create a Keyboard Shortcut or Mouse Gesture for the action.
+All notes will be saved as separate text (.txt) or markdown (.md) files.
+Importing Notes
+To import notes:
+Make sure all notes you want to import are in one folder and saved as a text or markdown file.
+Go to the Vivaldi menu > File > Import from Applications or Files.
+From the drop-down menu select Notes Folder.
+Click Choose a Notes Folder.
+Select the source folder.
+Alternatively:
+Type “Import notes“ in Quick Commands (F2 / ⌘ E).
+Create a Keyboard Shortcut or Mouse Gesture for the action.
+All applicable files in the folder will be imported as notes to Vivaldi.
+Translate
+URL: https://vivaldi.com/features/translate/
+Summary (from features index): Translate any webpage with a single click with a built-in, private translation tool.
+Vivaldi Translate
+Our browser is private by design, so is Vivaldi Translate powered by Lingvanex. Vivaldi makes it easy to instantly translate websites and short text snippets without the need for third-party extensions that spy on you.
+Break the language barrier
+Built-in Vivaldi Translate lets you translate selected text or full webpages into 108 languages at the click of a button.
+Safer, more secure translation
+The translation engine is securely hosted on Vivaldi servers in Iceland. This means there are no third-party servers involved. And it means nobody can access your private translation activity, even us.
+Fast translations in the sidebar
+A dedicated Translate Panel auto-translates selected text in a flash and gives you access to your translation history.
+Translate on all your devices
+Our translator works on Windows, Linux, macOS and Android. You’ll enjoy fast and seamless full page translations on every platform, with the same functionality of Vivaldi Translate on desktop.
+Translator customization options
+About Lingvanex
+Vivaldi has partnered with Lingvanex to help millions of users break the language barrier without compromising security and privacy. Lingvanex offers high-quality and secure machine translation for text, voice, documents, and websites in 200+ languages for companies and individuals in the form of Cloud API, local server or applications. More information about privacy-centric machine translation solutions can be found on the Lingvanex website.
+Translate Websites
+Translate Documents
+Cloud API
+Machine Translation
+History
+URL: https://help.vivaldi.com/desktop/navigation/history/
+Summary (from features index): Get a detailed overview of your browsing history, with statistics presented in a fresh, visual way.
+The History tool in Vivaldi is somewhat different than in a typical browser – instead, Vivaldi’s History is a detailed overview backed by statistics and presented in a fresh, visual way. It was built to give users a powerful and useful tool to explore their browsing patterns and to make finding previously visited sites easier than ever.
+Accessing History
+To open the History page:
+Click on History on the top menu of the Start Page (vivaldi://startpage);
+Go to Vivaldi menu > Tools > History;
+Enter vivaldi://history in the Address Field;
+Type “History” in Quick Commands:
+Middle-click on the History Panel button;
+Use the Keyboard Shortcut Ctrl H / ⌘ Y;
+Create a Mouse Gesture for opening the History manager
+Searching visited pages
+To search specific History entries, enter the page’s title or URL in one of the following places:
+History Manager’s search field in the top left corner of the page.
+History Panel‘s search field at the top of the panel.
+In the Address Field, type “@history” followed by a space and your search keyword to see results only from History.
+Using History in Vivaldi
+History offers a number of different views and ways to filter your browsing history data in Vivaldi. Get an overview and a few examples with the video below:
+Delete browsing history
+Clearing browsing data can be done from the History page by clicking the Clear Browsing Data button in the top-right of the History page.
+Alternatively, open the Delete Browsing Data window:
+From Vivaldi menu > Tools > Delete Browsing Data;
+By clicking the Clear Browsing Data button in the top-right corner of the History Panel;
+By typing “Delete Browsing Data” in Quick Commands;
+Using the Keyboard Shortcut Ctrl Shift Del / ⇧ ⌘ ⌫;
+Creating a Mouse Gesture for the action.
+Select:
+The time range
+Past Hour
+Past Day
+Past Week
+Past 4 Weeks
+Everything
+Which elements of the stored browsing data to delete
+Browsing History
+Cookies
+Storage
+Cache
+Passwords
+Form Autofill Data
+Application Cache
+Site Settings
+And confirm by clicking Delete.
+History Retention
+You can decide for how long your browsing history is saved in Vivaldi.
+To review and change the time:
+Go to Settings > Privacy and Security > Privacy > Save Browsing History.
+Choose between:
+Session Only – meaning your history will be deleted every time you exit the browser.
+One Day
+One Week
+One Month
+Three Months (the default)
+Six Months
+One Year
+Forever
+Restart the browser.
+Privacy
+History data is strictly private and stored locally to individual Vivaldi installations – Vivaldi Technologies does not collect any History data from browser users. Find out more about Vivaldi’s Privacy policies and terms here.
+Capture
+URL: https://help.vivaldi.com/article/capture-a-screenshot/
+Summary (from features index): Take screenshots of full web pages or a selection of the screen.
+Vivaldi’s built-in Capture tool lets you capture either a Full Page screenshot, or a Selection of the screen that you define. It can be accessed in a number of ways through the Vivaldi UI to give you flexibility in how you implement the tool.
+Types of Capture
+Full Page
+A Full Page capture is a screenshot of the full length of a website (max 30 000 pixels). Whether you’re giving feedback on a design, gathering inspiration, or just want to share an interesting site with a friend, this is a great way to get a bird’s eye view in a single image.
+Selection
+Capturing a Selection lets you focus in on a particular piece of your screen for more precision. After doing an initial selection, you can resize the capture area, before taking the screenshot.
+Output of Capture
+Whether capturing a Full Page or a Selection, you can choose to save the new snap to your disk for later use, or copy it to your clipboard to share it instantly.
+Save to Disk
+In the Capture tool you are given options to “Save as JPEG” or “Save as PNG“. When choosing these options, your new screenshot will be saved immediately to your local disk.
+Copy to Clipboard
+A newly captured screenshot can be copied as an image to your system’s clipboard. This makes it easy to share your new screenshot in other applications and documents immediately; once a screenshot is copied to your clipboard, simply Paste in place to insert the image into the desired location.
+Create a new note from the capture
+When you save the capture as a note, the screenshot will be saved with the capture date and page URL. The note won’t have a title or any text content, so go to the Notes Panel or Notes Manager to add it.
+Access the Capture tool
+Vivaldi lets you choose how to use its features, giving you several ways to get something done. Capturing screenshots is no exception. Below we describe the ways which you can access the Capture functionality in your browser.
+Status Bar
+Capture can be accessed in your Status Bar via the camera icon. Clicking on the icon will bring up your options for capturing a new screenshot: Full Page vs Selection, “Save as…” and “Copy to Clipboard“.
+Keyboard Shortcuts
+Capture functionality can be activated using Keyboard Shortcuts in Vivaldi. This means that pressing a pre-defined combination of keys will fire the associated action (e.g. capturing a Selection screenshot).
+To map a custom keyboard shortcut to your preferred Capture method open your Settings and search for “Capture”. The available actions that can be mapped to a keyboard shortcut will display in the search results.
+Click into the action you’d like to work with, and type your custom shortcut. The command is available immediately.
+Read more about adding or editing Keyboard Shortcuts
+Notes
+Vivaldi has a built-in Notes tool which allows you to capture thoughts and ideas while you browse. The Capture tool is integrated directly in the Notes Panel, allowing you to attach screenshots to your notes.
+Quick Commands
+Quick Commands is a tool for users that like to keep their hands on the keyboard. To access the Capture tool via Quick Commands:
+Open Quick Commands by pressing F2 / ⌘ E.
+Enter “Capture” to filter the list of available commands.
+Use ↓ ↑ arrow keys to navigate the list of Capture commands.
+Press Enter to issue selected command, or
+Close Quick Commands by pressing Escape key.
+Change the location of saved captures
+When you select the option to “Save as PNG” or “Save as JPG“, your capture will be stored at the directory specified in Settings. The location where your captures will be saved can be edited in Settings > Webpages > Image Capture > Capture Storage Folder.
+Naming the Capture
+Captures will be named automatically, but you can define the format in Settings > Webpages > Image Capture > Capture File Name Template.
+Page Zoom
+URL: https://help.vivaldi.com/desktop/tabs/zooming-options-in-vivaldi/
+Summary (from features index): Scroll over a slider on the Status Bar to zoom in and out for the perfect view.
+There are many ways to adjust the zoom in Vivaldi.
+Zoom with the slider on the Status Bar
+Drag the slider on the Status Bar to the right to zoom in and to the left to zoom out the active page. Click Reset to revert zoom to the default value.
+You can switch the slider for buttons in Settings > Appearance > Window Appearanceby ticking the box for Use Buttons in Range Controls. This will affect all range controls in the browser UI.
+Zoom with keyboard shortcuts
+Use the Ctrl + / ⌘ + Keyboard Shortcut to zoom in and Ctrl - / ⌘ - to zoom out of a page. The shortcuts can be edited in Settings > Keyboard > Shortcuts.
+Alternatively, focus on the zoom slider on the Status Bar and use the arrow keys to change the zoom level by 10% increments or the Page Up and Page Down keys to change the zoom level by 50%.
+Pressing Home or End while the slider is focused will zoom the page to the minimum or maximum value (respectively).
+To reset zoom to the default value, use the shortcut Ctrl + 0 / ⌘ 0.
+When you’ve enabled Single Key Shortcuts, you can zoom in and out by pressing the following numbers either above the letters on the keyboard or on the number pad:
+0 – zoom in by 10%
+9 – zoom out by 10%
+8 – double the zoom level
+7 – halve the zoom level
+6 – reset the zoom level
+Zoom with a mouse scroll
+When Use Ctrl/⌘ + Scroll to Zoom Pageis enabled in Settings (see image below), hold down the Ctrl / ⌘ key and use the mouse scroll to zoom. On a touchpad hold down the same key and with two fingers slide either up or down.
+When Use Ctrl/⌘ + Scroll to Zoom Pageis disabled, then using the pinch zooming gesture on the touchpad, instead of rearranging the page and increasing font and other element sizes, will create an effect similar to using a magnifying glass (sometimes referred to as pinch-to-zoom).
+Another option is to hover over the zoom slider on the Status Bar and use your mouse scroll or two finger slide on the touchpad to zoom.
+Zoom from the Vivaldi menu
+From menu (on Windows and Linux) > View select whether you want to zoom the page in or out, or reset the zoom to the default value.
+Zoom every page from settings
+Change the default zoom level of every page you visit by using the range control in Settings > Webpages> Default Webpage Zoom.
+Website Zoom vs Tab Zoom
+When Use Tab Zoom is enabled in Settings > Webpages> Default Webpage Zoom, the zoom level will stay the same on all the websites you visit in that tab. The same website open in different tabs can have different zoom levels.
+When Use Tab Zoom is disabled each site you visit in the tab can have a different zoom level. When you open the same website in a different tab or at a different time, it will be displayed at the zoom level you set for the site in the other tab.
+Zoom in Web Panels
+To increase or decrease the size of the content in Web Panels:
+Right-click on a Web Panel.
+Select Navigation Controls > Display Zoom Controls from the context menu.
+Then click on the zoom buttons and at the top of the Web Panel to zoom in and out.
+Zoom level is retained through closing and reopening of the Web Panel and browser restarts.
+Zoom the user interface
+Change the default zoom level by using the range control in Settings > Appearance > User Interface Zoom.
+Text Zoom
+To increase the text font size on web pages:
+Go to Settings > Webpages > Fonts.
+Change the Minimum Font Size.
+
+Navigation
+Speed Dials
+URL: https://help.vivaldi.com/desktop/bookmarks-speed-dial/speed-dials/
+Summary (from features index): Access your favorite websites quickly from the Start Page. You can customize the included Bookmarks or add custom Speed Dials and folders.
+Speed Dials in Vivaldi allow you to quickly access your favourite websites from the Start Page. You can customise the Bookmarks included in your Speed Dial, or add custom Speed Dials and folders to organise your content.
+Display a bookmark folder on the Start Page as a Speed Dial
+To access bookmarks from a specific bookmarks folder on the Start Page:
+Open the Bookmark Panel or Bookmark Manager.
+Select the folder you want to add as the Speed Dial.
+In the bookmark folder information section, tick the box for Speed Dial.
+Multiple bookmark folders can be added to the Speed Dial. All Speed Dial folders have a special Speed Dial folder icon in front of the folder name to indicate that they’re Speed Dial folders.
+Create a new Speed Dial folder
+To create a new Speed Dial group:
+Click the New Group button on the Start Page navigation bar (located next to Bookmarks and History entries).
+Give the new group a name.
+Add or move bookmarks to the new Speed Dial group.
+The new group can also be accessed from the Bookmark Panel, Bookmark Manager and Bookmark Menu.
+Add bookmarks to the Speed Dial
+To add a new bookmark:
+Click on the Add Bookmark to Speed Dial button that’s after the last Speed Dial on the Start Page. Alternatively, right-click on an empty area on the page and select Add Bookmark to Speed Dial from the context menu.
+Enter a website address and title or click on the suggestions.
+If you entered a link manually, click on Add below the title field, otherwise close the dialog from the close button in the top right corner.
+Alternatively, add a bookmark as you prefer doing it, just make sure to add it to the Speed Dial bookmark folder.
+To add an existing bookmark, copy or move the bookmark to the bookmark folder that’s set to be displayed on the Speed Dial in the Bookmark Panel or Bookmark Manager.
+Edit a Speed Dial bookmark
+To edit a Speed Dial bookmark’s information:
+Right-click on the Speed Dial bookmark.
+Select Edit.
+Make the changes in the pop up.
+Click Save.
+Alternatively, edit the bookmark in the Bookmark Panel or Bookmark Manager.
+Reorder and move Speed Dial bookmarks
+On the Start Page, Speed Dial bookmarks can only be sorted manually. To reorder the Speed Dials, drag and drop them to place them in the order you prefer.
+To move bookmarks between folders, it’s best to use the Bookmark Panel or Bookmark Manager.
+Delete a Speed Dial bookmark
+Hover briefly on the bookmark thumbnail, then click on the in the upper right corner to delete the bookmark from your Speed Dial. Alternatively, delete the bookmark from the Speed Dial folder in the Bookmark Panel or Bookmark Manager.
+Add Speed Dial subfolders
+To add a new subfolder to the Speed Dial:
+Click the big button on the Start Page.
+In the section that opens, click New Folder.
+Give the new folder a name.
+Alternatively, create a new folder or move an existing one to a Speed Dial folder in the Bookmark Panel or Bookmark Manager.
+Upload a custom thumbnail to a Speed Dial or Speed Dial folder
+Hover over the Speed Dial thumbnail and click on the + to select a custom image. Alternatively, right-click a Speed Dial icon or a Speed Dial folder and choose Select Custom Speed Dial Thumbnail option from the context menu.
+Select an image to replace the thumbnail. The recommended image size is 440×360 px and most image formats are supported, including animated GIFs.
+Note: Vivaldi only stores a reference to an image that is stored locally on your computer. This means that should you either move or delete the image, Vivaldi will no longer have access to it and it will disappear from you Speed Dial. Make sure to store custom speed dial images in a folder that will not be deleted. To remove a thumbnail image from the Speed Dial, right click on the Speed Dial and select Clear Custom Thumbnail.
+Change the background of the Speed Dial page
+Go to Settings > Themes > Editor > Background.
+Choose between the preset backgrounds or add your own background image or colour. To use your own background image, click on Select Image (Background type has to be set to Image).
+Reopen Speed Dial with
+As you can have multiple Speed Dials groups, you may develop a preference for which group you want to open when you open the Start Page.
+To choose the view the Start Page is opened with:
+Go to Settings > Start Page > Reopen Speed Dial with.
+Select between:
+Last Selected Group,
+First Group.
+Other Speed Dial Settings
+In Settings > Start Page, you can adjust other aspects of Speed Dial behaviour such as:
+Toggle display of Speed Dial titles to always show, never show or only show when needed.
+Show/Hide the Add button to free up screen real estate.
+Change the maximum number of columns that display. The Maximum Columns setting allows you to set the amount columns of thumbnails to be shown per Speed Dial. Select None to let the thumbnails fill in all available space.
+Change the Speed Dial thumbnail size. You can pick from 5 different sizes.
+Enable/Disable the option to reorder Speed Dials by Drag and Drop.
+In case you prefer to access your bookmarks using other options available in the browser and don’t plan on using the Speed Dial, you can change your Homepage, New Tab Page and Startup settings to “disable” the Speed Dial.
+To change the Homepage:
+Go to Settings > General > Homepage;
+Set a specific website as your homepage.
+To change the New Tab page:
+Go to Settings > Tabs > New Tab Page;
+Instead of Start Page, select either:
+Homepage,
+Blank Page, or
+Specific Page.
+In case you’ve also set the browser to open with the Start Page and want to change it:
+Go to Settings > General > Startup with;
+Instead of Start Page, select either:
+Last Session,
+Homepage,
+Specific Pages.
+Mouse Gestures
+URL: https://help.vivaldi.com/desktop/shortcuts/mouse-gestures/
+Summary (from features index): Do just about anything in Vivaldi - open, close and switch Tabs, create Notes, and much more - all with movements of the mouse.
+Mouse Gestures let you speed up navigation and perform useful actions with quick movements of the mouse. You can edit existing gestures and add your own to match your browsing style. Read on to find out more.
+Enabling gestures
+To enable and disable Mouse Gestures:
+Go to Settings > Mouse > Gestures and tick the box for Allow Gestures;
+Type “Toggle Mouse Gestures” in Quick Commands;
+Create a Keyboard Shortcut for the action.
+Performing a gesture
+Click and hold the right mouse button (or press and hold the ALT key).
+Move the pointer to perform an action.
+You can also perform gestures using other input devices, such as trackpads or touchpads. To enable gestures for these devices, tick the box for Perform Gestures with ALT Key in Settings.
+Default gestures
+To view default gestures, to Settings > Mouse > Gesture Mapping.
+Making your own gesture
+Go to Settings > Mouse > Gesture Mapping.
+Click on the New Gesture button.
+Pick a command from the drop-down menu or search for one by name.
+Click Next.
+Draw a new gesture in the highlighted area using primary button.
+Click Save Gesture.
+Editing gestures
+Go to Settings > Mouse > Gesture Mapping.
+Pick a gesture you want to edit.
+Click on the Edit Gesture button.
+Draw a new gesture and click Save Gesture.
+Gesture sensitivity
+Go to Settings > Mouse > Gesture Sensitivity.
+Move the slider to set a minimum stroke length to be recognised as a gesture.
+Rocker gestures
+Rocker Gestures are Mouse Gestures used to execute commands with the left and right mouse buttons. Learn more on the Help page about Rocker Gestures.
+Keyboard Shortcuts
+URL: https://help.vivaldi.com/desktop/shortcuts/keyboard-shortcuts/
+Summary (from features index): Most things can be done in Vivaldi with the keyboard alone, such as opening, closing and switching Tabs, creating Notes, and more.
+Most things can be done in Vivaldi with the keyboard alone, such as opening, closing and switching Tabs, toggling the visibility of UI elements and creating Notes.
+Keyboard settings
+Focus Cycling and UI Focus Control
+The Tab key can be used to move from one element to the next on the open web page and browser user interface. In Settings, you can select whether pressing the Tab key should focus only on individual toolbars or web pages, or go through all browser’s toolbars and the web page.
+In addition, you can choose whether pressing the Tab key focuses on all controls or only inputs, such as text fields.
+Access Keys
+Some web pages can be navigated with their own keyboard shortcuts. You can enable/disable the use of these shortcuts from Settings > Keyboard > Access Keys. Learn more about these shortcuts on the Help page about Webpage Access Key Shortcuts.
+Keyboard Shortcut options
+Keyboard Shortcuts are enabled by default. Should you wish to disable them, go to Settings > Keyboard > Keyboard Shortcuts and untick Enable Keyboard Shortcuts. There, you can also enable/disable the use of Single Key Shortcuts, both in general and specifically when using Mail and Calendar.
+On websites with paginated content, for example, Search Engine’s search results or recent posts on the Vivaldi Forum, you can press the Space key to move down on the page and once at the end of the page, load the next page, i.e. Fast Forward. You can disable that behavior in Keyboard Shortcuts settings.
+Pressing the Alt key on your keyboard opens the Vivaldi Menu. If you don’t want that to happen, you can disable that behavior from Keyboard Shortcuts settings. Alternatively, you can use the Alt key for drawing Mouse Gestures on trackpads or other input devices. Enable it from Settings > Mouse > Gestures.
+Viewing Keyboard Shortcuts
+While browsing, use the keyboard shortcut Ctrl+F1 / ⌘ F1 to view a cheat sheet of all the available keyboard shortcuts.
+Alternatively, go to Settings > Keyboard.
+Adding and editing Keyboard Shortcuts
+To add or edit a keyboard shortcut:
+Go to Settings > Keyboard.
+Find the shortcut you want to add or edit.
+If needed, remove the current shortcut (see instructions below).
+While the focus is on the input field, press the keys of the new shortcut.
+You can also add multiple shortcuts for the same action.
+To remove a shortcut:
+Go to Settings > Keyboard.
+Find the shortcut you want to remove.
+Hover the mouse cursor over the shortcut and click the Clear Shortcut button to the right of the input field. Alternatively, click on the shortcut in the input field and press either Backspace or Delete.
+Reset shortcuts
+To reset a single keyboard shortcut, hover over the shortcut and click on Restore Default Shortcut.
+To reset all shortcuts, click on Restore Default Keys at the bottom of the list of shortcuts.
+Single Key Shortcuts
+Learn more about shortcuts that consist of only one key on the Help page about Single Key Shortcuts.
+Keyboard modifiers
+There are many useful actions that can be done using the keyboard keys together with the mouse. Here’s a few:
+Ctrl / ⌘ and a mouse click on a link will open the link in a new background Tab.
+Shift and a mouse click will open the link in a new foreground Tab.
+Ctrl / ⌘ + Shift and a click will open the link in a new Window.
+Ctrl / ⌘ and a mouse scroll can be used to Zoom the page in or out.
+Alt with a mouse scroll will display the Tab Cycler.
+Browser Priority Shortcuts
+In addition to the browser being controlled with Keyboard Shortcuts, web pages can have their own set of shortcuts which can sometimes overlap with the browser’s shortcuts. In that case, shortcuts will trigger actions on the web page.
+To give browser priority over shortcuts:
+Go to Settings > Keyboard > Browser Priority Shortcuts.
+Add shortcuts that should trigger actions in the browser, even when the web page uses the same shortcut.
+To control the setting per website:
+Go to Settings > Privacy and Security > Website Permissions.
+If the website isn’t already on the list of domains, click on Add New Domainat the bottom of the list of domains. Otherwise, select the domain and skip to step 5.
+Enter the website’s URL you want to give different permissions from the global ones to.
+Click Add Domain.
+Change the setting for Prioritize Website Shortcuts.
+Spatial Navigation
+URL: https://help.vivaldi.com/desktop/shortcuts/spatial-navigation/
+Summary (from features index): Browse through websites quickly and easily, using only the keyboard. You can edit the keyboard shortcuts used for navigating to fit your needs.
+Spatial Navigation is a kind of keyboard navigation using the arrow keys that allows you to move between interactive elements on the page by their proximity not by the document order like tabbing.
+Navigating websites
+Hold down the Shift key and use the arrow keys to move from one link on the page to another. When focused, press Enter to go to the link or press Ctrl + Enter to open the link in a new Tab.
+You can edit the Keyboard Shortcuts used for navigating in Settings > Keyboard > Page.
+Enabling Spatial Navigation
+To enable or disable the feature:
+Go to Settings > Keyboard > Spatial Navigation.
+Tick the box for Enabled.
+Quick Commands
+URL: https://help.vivaldi.com/desktop/shortcuts/quick-commands/
+Summary (from features index): Use this powerful universal search tool to search the web, find an open tab, search your history, or even find and issue a command.
+Quick Commands is a powerful universal search wrapped in a minimal, command line interface. Use it to search the web, find an open tab, search your history, or even find and issue a command.
+Open Quick Commands
+To open the Quick Commands menu:
+Use the Keyboard Shortcuts F2 / ⌘ E.
+Go to the Vivaldi menu > Tools > Quick Commands.
+Create a Mouse Gesture for the action.
+Features available in Quick Commands
+Quick Commands menu lets you:
+navigate to open Tabs and Synced Tabs,
+reopen Closed Tabs,
+switch Workspaces,
+open Bookmarks,
+create Notes,
+navigate to entered addresses,
+find suggested Search terms,
+search browsing History,
+filter a list of available commands in Vivaldi,
+execute Command Chains,
+apply Page Action filters,
+do simple calculations (after pressing Enter the result will be copied to your clipboard).
+Search and navigate results
+Start typing your search/command term. The search term will be highlighted for better discoverability.
+Use ↓ ↑ arrow keys or scroll to navigate the list of results. Press Shift or → key to auto-complete the highlighted result and narrow down the search results even further. To skip sections, hold down the Alt key while pressing ↓ ↑ arrow keys.
+Press Enter or click on the item to issue selected command, or
+Close Quick Commands menu by pressing Escape key.
+Filter searches
+To search only a specific category, you can use a the following keywords in front of the search term to filter out only relevant results:
+Bookmarks – bookmark:
+Notes – note:
+Open and Closed Tabs – tab:
+Browsing History – history:
+Commands – command:
+Page Actions – action:
+Workspaces – workspace:
+For example, the search filter history: Vivaldi will search the term “Vivaldi” in your browsing history. The search filter note: cake will search your Notes for the word “cake.”
+It’s also possible to use shorter keywords like bkm: (bookmark), tb: (tab), cmd: (command) and other alternative search terms derived using regular expression.
+In addition, when your browser’s user interface is not in English, you can use the keywords both in the user interface’s language and in English. Just make sure, you have enabled Include English Search Terms in Settings > Quick Commands > Quick Command Options.
+Customize Quick Commands
+You can choose which data types to show in Quick Commands’ search results and in which order.
+To toggle some types on or off:
+Go to Settings > Quick Commands > Search Types and Priority.
+(Un)tick the box for the data type.
+To reorder the list:
+Click on the data type you want to move.
+Move the item to it’s new location on the list by:
+using drag and drop,
+clicking on the Move up and Move down buttons at the bottom of the list,
+using the keyboard shortcuts Alt ↓ and Alt ↑.
+To restore the default order, click on Reset Priority below the list.
+Quick Command Options
+In addition to toggling the visibility and reordering data types, you can enable the following options:
+Keep last typed value even after exiting Quick Commands.
+Limit the number of visible search results.
+Open links in a new tab.
+Open Bookmarks automatically on a nickname match.
+Open Notes in Notes Manager instead of Notes Panel.
+Allow search keywords in English.
+Command Chains
+In Vivaldi you can group commands together to execute them in a sequence. Learn more about the feature on our Help page about Command Chains.
+Command Chains
+URL: https://help.vivaldi.com/desktop/shortcuts/command-chains/
+Summary (from features index): Save time and boost productivity by building your own shortcuts, workflows and browser modes. Trigger a custom sequence of commands with a single keystroke or gesture.
+A Command Chain is a group of commands executed in a sequence. For example, instead of toggling on first the Reader View and then Fullscreen Mode to focus on what you’re reading, with Command Chains you can do it with a single shortcut in one go.
+You can trigger a chain from Quick Commands, assign it a custom Keyboard Shortcut or a Mouse Gesture, or add a button to one of the Toolbars.
+Create a Command Chain
+Go to Settings > Quick Commands > Command Chains.
+Click on Add Command Chain.
+Give the new chain a name.
+Change Command 1 to an action you want to execute first.
+Click on Add Command on the right side to add the next command in the sequence.
+When you’re done adding the commands, click Test Chain to confirm that it works as expected.
+Use the command Delay between other commands to give the previous command time to be executed before applying the next command. Delay time is measured in milliseconds and can be adjusted.
+To reorder commands in the chain:
+Hover over the command.
+When you see a Move cursor, drag the command to its new location in the sequence.
+Create a new Command Chain from an existing chain
+When you want to create a new chain which is very similar to an existing one, you can clone the chain and edit it to make a new Command Chain.
+Right-click on the existing chain.
+Select Clone Command Chain.
+Change the cloned chain’s name.
+Edit the commands in the chain.
+Use Command Chains
+Quick Commands
+Once a new Command Chain has been created you can immediately execute it from Quick Commands.
+Open Quick Commands (F2 / ⌘ E).
+Type in the chain’s name.
+Press Enter to execute it.
+Keyboard shortcuts
+Before you can execute a Command Chain using a Keyboard Shortcut, you’ll need to assign a new shortcut for the new chain.
+Go to Settings > Keyboard Shortcuts > Chains.
+Find the chain you want to assign a keyboard shortcut for and click on it.
+Press the keyboard shortcut on your keyboard.
+Once the chain is assigned a keyboard shortcut, you can use it anywhere to run the sequence of commands.
+Mouse gestures
+Before you can execute a Command Chain using a Mouse Gesture, you’ll need to assign a new gesture for the new chain.
+Go to Settings > Mouse > Gesture Mapping.
+Click on the New Gesture button.
+Find the Command Chain from the drop-down menu or search for it by name.
+Click Next.
+Draw a new gesture in the highlighted area using primary (left) mouse button.
+Click Save Gesture.
+Once the chain is assigned a Mouse Gesture, you can use it anywhere to run the sequence of commands.
+Toolbar button
+To add a Command Chain as a button to a toolbar, so you can execute it with one click:
+Go to the Vivaldi menu > View > Customize Toolbar.
+Select Command Chains from the drop-down menu in the Toolbar Editor.
+Click and drag the chain to the Address Bar or Status Bar.
+Edit Command Chains
+To update a chain:
+Go to Settings > Quick Commands > Command Chains.
+Select the chain you want to edit.
+Make the changes.
+The chain will be updated automatically.
+Delete Command Chains
+To delete a chain:
+Go to Settings > Quick Commands > Command Chains.
+Select the chain you want to delete.
+Press Delete on your keyboard or click on Delete Command Chain at the bottom of the list of Command Chains.
+Examples of Command Chains
+To get some inspiration for what kind of chains you can set up, check out the Command Chains Vivaldi Community members have shared on the Forum – Command Chain Recipes.
+
+Entertainment
+Vivaldia Game
+URL: https://vivaldi.com/game/
+Summary (from features index): Play Vivaldia – a real 80s arcade-style game built into the browser.
+A free arcade game series from Vivaldi.
+Vivaldia 1 is only available through the Vivaldi browser.
+Vivaldia 2 is also available on Steam.
+Everything was peaceful until one day…
+Vivaldia wakes up to discover that her peaceful city has been taken over by the big evil machines who want to steal everyone’s identity and turn people into numbers. If the humans don’t fight back, their future looks bleak.
+In the face of adversity, Vivaldia grows strong and takes on the enemy. She fights to save the humans of the city.
+Riding her cybernetic ninja one-wheeler called the CyclePunk, Vivaldia outruns and outsmarts the big evil machines. At times, it looks like an impossible battle to win but through courage and strength, Vivaldia triumphs. The evil is overcome and the humans can claim their city and future back. Vivaldia has won the hearts of the people.
+The story continues…
+Vivaldia is transported to a Lost Valley where she must continue her fight against evil. Embarking on a thrilling adventure, facing robots and prehistoric dinosaurs, Vivaldia has to save a new world, this time from the clutches of the malevolent Robot Overlord.
+Pitted against relentless robotic foes and navigating through dense and perilous jungles, scorching lava-fields, and treacherous swamps, Vivaldia once again seems faced with an impossible challenge.
+With the fate of the land in her hands – will Vivaldia rise to the occasion?
+Download the Vivaldia theme
+The best browser for gamers
+Vivaldi is packed with all of the features you’d expect from a modern browser, but it also has lots of built-in smart tools that make browsing easier, faster, and more fun.
+Meet the developers
+Vivaldi is proud to partner with Porcelain Fortress, a game development company from Reykjavík, Iceland. Porcelain Fortress looks to the arcade games and consoles of yesteryear for inspiration. They build new and exciting experiences from those roots with the technology of tomorrow.
+The Porcelain Fortress team was born and raised in the vibrant decades of the 80s and 90s and we all share a collective nostalgia for the pixelated magic of those times. The first Vivaldia game drew its inspiration from Atari games like Pitfall and Jungle Hunt but for the sequel we wanted to create an ode to DOS Shareware games and the old Sega and Nintendo console games we played in our youth.
+About Vivaldi
+Vivaldi is a powerful, personal, and private browser that adapts to you, not the other way around.
+With a flexible, and fully customizable interface, we strive to offer the best Internet experience on any device and currently cover platforms such as Windows, Mac, Linux, Raspberry Pi, iOS, Android, and Android Automotive.
+We build products and services with two ground rules: privacy is a default, and everything’s an option. In practice, this means building software that protects users’ privacy but also does not track how they use it. We believe private and secure software should be the rule, not the exception.
+

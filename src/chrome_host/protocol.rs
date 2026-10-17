@@ -1413,6 +1413,12 @@ pub struct ViewState {
     pub font_scale: u32,
     /// `ui_font`; empty means the page's own default font-family.
     pub ui_font: String,
+    // --- layout (thread T6) ---
+    /// `ui_density`: the page sets `data-density` on its root, which its list rows read.
+    pub density: crate::layout_prefs::UiDensity,
+    /// `compact_menus`: shorter menu rows (`data-compact-menus`).
+    pub compact_menus: bool,
+    // --- end layout ---
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1447,6 +1453,8 @@ impl ViewState {
             translate: crate::translate::Pill::Hidden,
             font_scale: self.font_scale,
             ui_font: self.ui_font.clone(),
+            density: self.density, // --- layout (thread T6) ---
+            compact_menus: self.compact_menus,
             theme: self.theme.clone(),
         }
     }
@@ -1495,6 +1503,12 @@ impl ViewState {
         out.push_str(&self.font_scale.clamp(50, 200).to_string());
         out.push_str(",\"uiFont\":");
         out.push_str(&json_string(truncate_utf16(&self.ui_font, crate::settings::MAX_UI_FONT_CHARS)));
+        // --- layout (thread T6) ---
+        out.push_str(",\"density\":");
+        out.push_str(&json_string(self.density.key()));
+        out.push_str(",\"compactMenus\":");
+        out.push_str(if self.compact_menus { "true" } else { "false" });
+        // --- end layout ---
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -2349,6 +2363,8 @@ mod tests {
             translate: crate::translate::Pill::Hidden,
             font_scale: 100,
             ui_font: String::new(),
+            density: crate::layout_prefs::UiDensity::Regular,
+            compact_menus: false,
             theme: Vec::new(),
         }
     }
@@ -3402,6 +3418,8 @@ mod tests {
             translate: crate::translate::Pill::On,
             font_scale: 115,
             ui_font: "Consolas".to_string(),
+            density: crate::layout_prefs::UiDensity::Compact,
+            compact_menus: true,
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -3409,14 +3427,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","translate":"none","fontScale":100,"uiFont":"","theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","translate":"none","fontScale":100,"uiFont":"","density":"regular","compactMenus":false,"theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 

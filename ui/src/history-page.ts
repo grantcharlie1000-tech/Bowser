@@ -531,7 +531,7 @@ export function startHistoryPage(root: HTMLElement): void {
 
   // ---- Bowser's messages ----
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus); return; }
     if (message.t !== 'snap' || message.p !== 'historypage') return;
     const parsed = parseHistorySnapshot(message.d);
     if (!parsed) return;
