@@ -238,10 +238,9 @@ impl RailKeyWire {
                     Self::Workspace(canonical_decimal(digits, 20)?)
                 } else if let Some(digits) = raw.strip_prefix("app:") {
                     Self::App(u32::try_from(canonical_decimal(digits, 10)?).ok()?)
-                } else if let Some(digits) = raw.strip_prefix("tool:") {
-                    Self::Tool(u8::try_from(canonical_decimal(digits, 2)?).ok().filter(|n| usize::from(*n) < crate::toolbar_prefs::MAX_ITEMS)?)
                 } else {
-                    return None;
+                    let digits = raw.strip_prefix("tool:")?;
+                    Self::Tool(u8::try_from(canonical_decimal(digits, 2)?).ok().filter(|n| usize::from(*n) < crate::toolbar_prefs::MAX_ITEMS)?)
                 }
             }
         })

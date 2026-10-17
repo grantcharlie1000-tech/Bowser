@@ -38,8 +38,8 @@ use windows::{
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents, MemoryTargetApply,
-    MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
+    BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
+    MemoryTargetApply, MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
 use crate::tabs::TabId;
@@ -495,12 +495,7 @@ unsafe fn bounded_wide_len(value: PWSTR, max_units: usize) -> Option<usize> {
     if value.is_null() {
         return None;
     }
-    for index in 0..=max_units {
-        if unsafe { *value.0.add(index) } == 0 {
-            return Some(index);
-        }
-    }
-    None
+    (0..=max_units).find(|&index| unsafe { *value.0.add(index) } == 0)
 }
 
 struct ZeroizingWebMessage<'a> {
@@ -521,7 +516,7 @@ impl ZeroizingWebMessage<'_> {
         }
     }
 
-    fn to_string(&self) -> String {
+    fn owned_text(&self) -> String {
         self._allocation.to_string()
     }
 }
@@ -542,9 +537,7 @@ fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
     unsafe { webview.Source(&mut source) }.ok()?;
     let source_pointer = source;
     let source = CoTaskMemPWSTR::from(source);
-    if unsafe { bounded_wide_len(source_pointer, 4096) }.is_none() {
-        return None;
-    }
+    unsafe { bounded_wide_len(source_pointer, 4096) }?;
     web_url_from_source(&source.to_string())
 }
 
@@ -1222,7 +1215,7 @@ fn install_fetch_listener(
 fn note_blocked_request(
     block: &TabBlockState,
     tab_id: TabId,
-    blocked_callback: &Option<Rc<dyn Fn(TabId, u32, String)>>,
+    blocked_callback: &Option<BlockedChangedCallback>,
     policy_log: &Option<Rc<dyn Fn(&'static str)>>,
 ) {
     let count = block.count.get().saturating_add(1);
@@ -1242,7 +1235,7 @@ fn install_loading_failed_listener(
     webview: &ICoreWebView2,
     block: &Rc<TabBlockState>,
     tab_id: TabId,
-    blocked_callback: Option<Rc<dyn Fn(TabId, u32, String)>>,
+    blocked_callback: Option<BlockedChangedCallback>,
     policy_log: Option<Rc<dyn Fn(&'static str)>>,
 ) {
     let receiver = match unsafe { webview.GetDevToolsProtocolEventReceiver(w!("Network.loadingFailed")) }
@@ -4190,7 +4183,7 @@ unsafe fn configure_controller(
                     if !raw_message.within_limit {
                         return Ok(());
                     }
-                    let json = Zeroizing::new(raw_message.to_string());
+                    let json = Zeroizing::new(raw_message.owned_text());
                     let mut source = PWSTR::null();
                     if args.Source(&mut source).is_err() {
                         return Ok(());
@@ -4362,7 +4355,7 @@ unsafe fn configure_controller(
                     };
                     let allowed = parsed
                         .as_ref()
-                        .is_some_and(|url| frame_navigation_scheme_allowed(url));
+                        .is_some_and(frame_navigation_scheme_allowed);
                     // blob:, data: and about:srcdoc frames are left alone: only an http(s) frame
                     // destination is ever checked against the blocker.
                     let blocked = allowed

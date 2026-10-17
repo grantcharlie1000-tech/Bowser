@@ -785,7 +785,7 @@ impl Surface {
     }
 
     /// Converts a content-relative rectangle to host client coordinates.
-    pub(crate) fn to_host(&self, rect: RECT) -> RECT {
+    pub(crate) fn to_host(self, rect: RECT) -> RECT {
         RECT {
             left: rect.left + self.origin.left,
             top: rect.top + self.origin.top,
@@ -795,7 +795,7 @@ impl Surface {
     }
 
     /// Converts a host client point to content coordinates.
-    pub(crate) fn to_content(&self, x: i32, y: i32) -> (i32, i32) {
+    pub(crate) fn to_content(self, x: i32, y: i32) -> (i32, i32) {
         (x - self.origin.left, y - self.origin.top)
     }
 

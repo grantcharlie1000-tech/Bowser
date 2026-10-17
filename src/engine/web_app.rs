@@ -48,8 +48,7 @@ pub struct WebAppEvents {
     /// Downloads from a web app panel are tracked like a tab's (engine/download.rs); without both
     /// hooks they are cancelled.
     pub download_event: Option<Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
-    pub download_plan:
-        Option<Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
+    pub download_plan: Option<super::DownloadPlanCallback>,
     pub policy_event: Option<Rc<dyn Fn(&'static str)>>,
 }
 
@@ -94,7 +93,7 @@ impl WebAppHost {
         std::fs::create_dir_all(web_apps_user_data_dir).map_err(|error| {
             Error::new(
                 windows::core::HRESULT(0x80070005u32 as i32),
-                &format!("Could not create isolated WebApps profile: {error}"),
+                format!("Could not create isolated WebApps profile: {error}"),
             )
         })?;
         let profile: Vec<u16> = web_apps_user_data_dir
@@ -181,7 +180,7 @@ impl WebAppHost {
                 unsafe { app.webview.Source(&mut current)?; }
                 let current = CoTaskMemPWSTR::from(current).to_string();
                 if current.is_empty() {
-                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(&url.to_string()).as_ptr()))?; }
+                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(url.as_ref()).as_ptr()))?; }
                 }
                 return Ok(());
             }

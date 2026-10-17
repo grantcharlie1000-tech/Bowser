@@ -225,9 +225,11 @@ pub(crate) fn refresh_bookmarks() -> bool {
     }
 }
 
+type BookmarkSnapshot = (Rc<Vec<(String, String)>>, Rc<HashSet<String>>);
+
 /// The cached links and address set, re-read only when the file's time or size changed. `None` in
 /// a guest profile or without a profile.
-fn refreshed() -> Option<(Rc<Vec<(String, String)>>, Rc<HashSet<String>>)> {
+fn refreshed() -> Option<BookmarkSnapshot> {
     let profile = crate::profile::active().ok()?;
     if !crate::productivity::profile_allows_productivity(&profile) {
         return None;

@@ -14,6 +14,16 @@ pub use download::{cancel as cancel_download, pause as pause_download, resume as
 
 use windows::Win32::Foundation::RECT;
 
+pub type TabMemoryUsageCallback = Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>;
+pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>;
+pub type LinkNavigationCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>;
+pub type BlockedChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>;
+pub type PermissionDeniedCallback =
+    std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::permissions::Permission, String)>;
+pub type DownloadPlanCallback =
+    std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>;
+pub type ContextNotesCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>;
+
 pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,7 +255,7 @@ pub trait EngineAdapter {
     }
     /// The working set in bytes of the page process of each tab that can be told apart (the tab hover
     /// card's memory line). Tabs the engine cannot match to a process are left out. `done` may run later.
-    fn tab_memory_usage(&mut self, done: Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>) {
+    fn tab_memory_usage(&mut self, done: TabMemoryUsageCallback) {
         done(Vec::new());
     }
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
@@ -437,7 +447,7 @@ pub struct EngineEvents {
     /// A page element went full screen or left it (a video's full-screen button). The window then
     /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`). The optional URL
     /// is the native top-level WebView2 Source at the event, never an optimistic navigation target.
-    pub fullscreen_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>>,
+    pub fullscreen_changed: Option<FullscreenChangedCallback>,
     /// A WebView2 pane received focus from the user.
     pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
@@ -451,11 +461,11 @@ pub struct EngineEvents {
     /// A link the user followed is about to load in this tab (a new document, not a redirect or a typed
     /// address). Returning true cancels it: the app opened the page in a new tab instead ("Keep pinned
     /// tabs on their site").
-    pub link_navigation: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>>,
+    pub link_navigation: Option<LinkNavigationCallback>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A blocker stopped a request; includes the current-page count and page host when known.
-    pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>>,
+    pub blocked_changed: Option<BlockedChangedCallback>,
     /// A top-level navigation in this tab finished with an error. The flag is true for certificate
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
@@ -466,8 +476,7 @@ pub struct EngineEvents {
     /// A camera, microphone, location or notification request, or a script popup, from this tab's
     /// page was denied (no stored Allow). The origin is the page's canonical origin only.
     /// Bowser never prompts; the toolbar shows a passive indicator.
-    pub permission_denied:
-        Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::permissions::Permission, String)>>,
+    pub permission_denied: Option<PermissionDeniedCallback>,
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
@@ -475,8 +484,7 @@ pub struct EngineEvents {
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
     /// Where a download from a normal tab goes (a path, the Save dialog, or none).
-    pub download_plan:
-        Option<std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
+    pub download_plan: Option<DownloadPlanCallback>,
     // --- split view ---
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
@@ -490,7 +498,7 @@ pub struct EngineEvents {
     // --- end address bar, search and bookmarks ---
     // --- page tools (T7) ---
     /// The page context menu opened on a text field: the notes it may insert, as (id, menu label).
-    pub context_notes: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>>,
+    pub context_notes: Option<ContextNotesCallback>,
     /// One of those notes was picked.
     pub context_note_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
     // --- end page tools ---

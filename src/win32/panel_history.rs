@@ -373,7 +373,7 @@ pub(crate) fn execute(app: &AppRef, owner: HWND, action: Action) -> Option<std::
             history_file.as_deref().map(|path| productivity::delete_history_for_host(path, &host).map(|_| ()))
         }
         Action::ClearRange(range) => {
-            let Some(path) = history_file.as_deref() else { return None };
+            let path = history_file.as_deref()?;
             if !ask_yes_no_owned(owner, &format!("Clear {} of browsing history? This cannot be undone.", range.label().to_lowercase())) { return None; }
             let offset = local_offset();
             Some(match range.bounds(now_secs(), offset) {

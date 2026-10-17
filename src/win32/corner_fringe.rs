@@ -216,6 +216,8 @@ pub(crate) struct Backdrop {
     pub shadow: Shadow,
 }
 
+type PaintedBackdrop = (i32, i32, i32, (u8, u8, u8), Shadow);
+
 struct Fringe {
     window: HWND,
     dc: HDC,
@@ -224,7 +226,7 @@ struct Fringe {
     /// The bitmap's size in pixels.
     capacity: (i32, i32),
     /// What the bitmap currently holds: (width, visible, radius, surface, shadow).
-    painted: Option<(i32, i32, i32, (u8, u8, u8), Shadow)>,
+    painted: Option<PaintedBackdrop>,
     shown: bool,
 }
 
@@ -260,11 +262,13 @@ pub(crate) fn show(owner: HWND, after: HWND, spec: Backdrop) {
     FRINGES.with(|all| {
         let mut all = all.borrow_mut();
         let key = owner.0 as isize;
-        if !all.contains_key(&key) {
-            let Some(fringe) = create(owner) else { return };
-            all.insert(key, fringe);
-        }
-        let Some(fringe) = all.get_mut(&key) else { return };
+        let fringe = match all.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let Some(fringe) = create(owner) else { return };
+                entry.insert(fringe)
+            }
+        };
         unsafe {
             let wanted = (spec.width, spec.visible, spec.radius, spec.surface, spec.shadow);
             if fringe.painted != Some(wanted) {

@@ -1421,7 +1421,7 @@ impl PanelContent for Content {
     fn on_mouse_wheel(&mut self, delta: i16) {
         let geometry = self.geometry();
         let m = self.list_metrics(&geometry);
-        let step = geometry.row * 3 * delta.signum() as i32 * -1;
+        let step = -(geometry.row * 3 * delta.signum() as i32);
         self.model.scroll_by(step, m);
         self.surface.invalidate();
     }

@@ -186,7 +186,7 @@ fn attach(runtime: &Rc<RefCell<Runtime>>, env: ChromeEnv) {
     });
     let accel: AccelHandler = Rc::new(move |key: Accel| super::window::html_panel_accelerator(owner, key));
     let ready_weak = Rc::downgrade(runtime);
-    let created = ChromeHost::create(&env, window, bounds_of(window), View::DialogAddress, commands, failed, Some(accel), move |result| match result {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: window, bounds: bounds_of(window), view: View::DialogAddress, on_command: commands, on_failed: failed, on_accelerator: Some(accel) }, move |result| match result {
         Ok(host) => {
             if let Some(state) = ready_weak.upgrade() {
                 if let Ok(mut runtime) = state.try_borrow_mut() {

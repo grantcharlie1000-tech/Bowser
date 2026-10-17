@@ -314,16 +314,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     let on_failed = Rc::new(move || {
         crate::win32::post(HWND(failed_window as *mut _), WM_HOVER_FAILED, WPARAM(0), LPARAM(0));
     });
-    let created = ChromeHost::create(
-        &env,
-        window,
-        RECT { left: 0, top: 0, right: 480, bottom: 640 },
-        View::Hover,
-        on_command,
-        on_failed,
-        None,
-        move |result| *ready_slot.borrow_mut() = Some(result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: window, bounds: RECT { left: 0, top: 0, right: 480, bottom: 640 }, view: View::Hover, on_command, on_failed, on_accelerator: None }, move |result| *ready_slot.borrow_mut() = Some(result));
     if created.is_err() {
         unsafe {
             let _ = DestroyWindow(window);

@@ -98,6 +98,17 @@ pub struct OmniboxView<'a> {
     pub site: SiteSecurity,
 }
 
+/// Read-only state needed to paint the independent vertical tab sidebar.
+pub struct SidebarPaintView<'a> {
+    pub layout: &'a crate::vertical_tabs::SidebarLayout,
+    pub rows: &'a [crate::chrome::vertical_paint::SidebarRow],
+    pub workspace: &'a str,
+    pub active: crate::tabs::TabId,
+    pub scroll: i32,
+    pub hover_row: Option<usize>,
+    pub html_sidebar: bool,
+}
+
 /// A complete read-only snapshot of the chrome state for one paint.
 pub struct ChromeView<'a> {
     pub layout: &'a Layout,
@@ -452,16 +463,11 @@ impl ChromeSurface {
     /// Draws the independent vertical list into the same layered surface as the toolbar.
     pub fn paint_vertical_sidebar(
         &mut self,
-        layout: &crate::vertical_tabs::SidebarLayout,
-        rows: &[crate::chrome::vertical_paint::SidebarRow],
-        workspace: &str,
-        active: crate::tabs::TabId,
-        scroll: i32,
-        hover_row: Option<usize>,
-        html_sidebar: bool,
+        view: SidebarPaintView<'_>,
         dirty: Rect,
         palette: &Palette,
     ) {
+        let SidebarPaintView { layout, rows, workspace, active, scroll, hover_row, html_sidebar } = view;
         let clip = layout.sidebar.intersect(dirty);
         if clip.is_empty() {
             return;
@@ -2070,7 +2076,7 @@ impl ChromeSurface {
         let left_inset = m.px(if view.show_site_info { Metrics::OMNIBOX_TEXT_LEFT } else { Metrics::OMNIBOX_TEXT_INSET });
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let split_button = view.show_split.then(|| view.layout.split_button()).unwrap_or_default();
+        let split_button = if view.show_split { view.layout.split_button() } else { Rect::default() };
         let text_right_limit = if view.show_split {
             split_button.left - m.px(4)
         } else {

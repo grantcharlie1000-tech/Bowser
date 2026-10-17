@@ -423,12 +423,28 @@ struct RelayoutInputs {
     ui_font: String,
 }
 
+struct RelayoutRequest<'a> {
+    w: i32,
+    h: i32,
+    dpi: u32,
+    active: TabId,
+    maximised: bool,
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    sidebar_width: u16,
+    centred_address_bar: bool,
+    font_scale: u32,
+    ui_font: &'a str,
+}
+
+type HtmlTabSnapshot = (TabId, String, bool, Option<Marker>, bool, bool, bool);
+
 #[derive(Clone, PartialEq, Eq)]
 struct HtmlTabsInputs {
     mode: chrome_host::protocol::LayoutMode,
     workspace: (String, String),
     active: TabId,
-    snapshot: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)>,
+    snapshot: Vec<HtmlTabSnapshot>,
     group_inputs: Vec<tab_groups::TabGroupInput>,
     group_preferences: tab_groups::GroupPreferences,
     favicons: Vec<(TabId, Option<FaviconKey>)>,
@@ -837,19 +853,7 @@ impl WindowChrome {
         let Some(inputs) = self.last_relayout.clone() else {
             return false;
         };
-        self.relayout(
-            self.client.0,
-            self.client.1,
-            self.dpi,
-            inputs.active,
-            inputs.maximised,
-            inputs.arrangement,
-            inputs.density,
-            width,
-            inputs.centred_address_bar,
-            inputs.font_scale,
-            &inputs.ui_font,
-        );
+        self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: inputs.active, maximised: inputs.maximised, arrangement: inputs.arrangement, density: inputs.density, sidebar_width: width, centred_address_bar: inputs.centred_address_bar, font_scale: inputs.font_scale, ui_font: &inputs.ui_font });
         true
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -1015,36 +1019,12 @@ impl WindowChrome {
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
             let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
-            self.relayout(
-                self.client.0,
-                self.client.1,
-                self.dpi,
-                App::active_tab_id(app),
-                self.layout.maximised,
-                arrangement,
-                settings.ui_density,
-                sidebar_width,
-                settings.centred_address_bar,
-                crate::layout_prefs::chrome_scale_percent(&settings),
-                &settings.ui_font,
-            );
+            self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: App::active_tab_id(app), maximised: self.layout.maximised, arrangement, density: settings.ui_density, sidebar_width, centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
         }
         self.motion.sync_groups(&self.group_specs(), now);
     }
-    fn relayout(
-        &mut self,
-        w: i32,
-        h: i32,
-        dpi: u32,
-        active: TabId,
-        maximised: bool,
-        arrangement: layout::Arrangement,
-        density: crate::layout_prefs::UiDensity,
-        sidebar_width: u16,
-        centred_address_bar: bool,
-        font_scale: u32,
-        ui_font: &str,
-    ) {
+    fn relayout(&mut self, request: RelayoutRequest<'_>) {
+        let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
         self.client = (w, h);
         self.dpi = dpi.max(96);
         self.last_relayout = Some(RelayoutInputs {
@@ -2156,7 +2136,8 @@ fn app_icon(instance: HINSTANCE, size: i32) -> HICON {
     unsafe {
         LoadImageW(
             Some(instance),
-            windows::core::PCWSTR(1 as *const u16),
+            // MAKEINTRESOURCEW(1): integer resource ID, not an aligned/dereferenceable pointer.
+            windows::core::PCWSTR(std::ptr::without_provenance(1)),
             IMAGE_ICON,
             size,
             size,
@@ -2474,7 +2455,7 @@ unsafe extern "system" fn window_proc(
                 if message == WM_SETTINGCHANGE {
                     // lParam is the changed setting's name, or null.
                     let name = (lparam.0 != 0)
-                        .then(|| windows::core::PCWSTR(lparam.0 as *const u16))
+                        .then_some(windows::core::PCWSTR(lparam.0 as *const u16))
                         .and_then(|name| name.to_string().ok());
                     if !glass::setting_change_is_relevant(wparam.0, name.as_deref())
                         && !glass::refresh_system_state_changed()
@@ -2624,19 +2605,7 @@ unsafe extern "system" fn window_proc(
                     let settings = App::settings(app);
                     let arrangement = App::arrangement(app); // --- layout (thread T6) ---
                     let _ = with_chrome(hwnd, |s| {
-                        s.relayout(
-                            r.right,
-                            r.bottom,
-                            dpi(hwnd),
-                            active,
-                            maximised_now,
-                            arrangement.with_address_bar_revealed(s.address_bar_revealed),
-                            settings.ui_density,
-                            App::sidebar_width(app),
-                            settings.centred_address_bar,
-                            crate::layout_prefs::chrome_scale_percent(&settings),
-                            &settings.ui_font,
-                        );
+                        s.relayout(RelayoutRequest { w: r.right, h: r.bottom, dpi: dpi(hwnd), active, maximised: maximised_now, arrangement: arrangement.with_address_bar_revealed(s.address_bar_revealed), density: settings.ui_density, sidebar_width: App::sidebar_width(app), centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
                     });
                     sync_html_host_bounds(hwnd);
                     html_sync(hwnd);
@@ -2706,19 +2675,7 @@ unsafe extern "system" fn window_proc(
                         }
                         let settings = App::settings(app);
                         let arrangement = App::arrangement(app).with_address_bar_revealed(s.address_bar_revealed); // --- layout (thread T6) ---
-                        s.relayout(
-                            r.right,
-                            r.bottom,
-                            dpi(hwnd),
-                            App::active_tab_id(app),
-                            auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) ---
-                            arrangement,
-                            settings.ui_density,
-                            App::sidebar_width(app),
-                            settings.centred_address_bar,
-                            crate::layout_prefs::chrome_scale_percent(&settings),
-                            &settings.ui_font,
-                        );
+                        s.relayout(RelayoutRequest { w: r.right, h: r.bottom, dpi: dpi(hwnd), active: App::active_tab_id(app), maximised: auto_hide::zoomed_or_full(hwnd), arrangement, density: settings.ui_density, sidebar_width: App::sidebar_width(app), centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
                         s.refresh(app, true)
                     });
                     sync_html_host_bounds(hwnd);
@@ -3123,7 +3080,7 @@ unsafe extern "system" fn window_proc(
                 }
                 if drag.active {
                     let entries = rail_entries(s);
-                    let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                    let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
                     drag.target = crate::chrome::rail::drop_indicator(&geometry, drag.key, p.x, p.y);
                 }
                 s.rail_drag = Some(drag);
@@ -3900,7 +3857,7 @@ unsafe extern "system" fn window_proc(
                             let keys: Vec<_> = s.rail_entries.iter().map(|entry| entry.key).collect();
                             s.rail_focus = crate::chrome::rail::step_focus(&keys, s.rail_focus, if key == VK_UP.0 as u32 { -1 } else { 1 });
                             let entries = rail_entries(s);
-                            let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                            let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
                             if let Some(focus) = s.rail_focus
                                 && matches!(focus, RailKey::Workspace(_) | RailKey::AddWorkspace | RailKey::App(_) | RailKey::AddApp)
                                 && let Some(item) = geometry.item(focus)
@@ -3926,7 +3883,7 @@ unsafe extern "system" fn window_proc(
                         let previous = with_chrome(hwnd, |s| {
                             s.rail_keyboard_focus = false;
                             s.rail_focus = None;
-                            std::mem::replace(&mut s.rail_previous_focus, HWND::default())
+                            std::mem::take(&mut s.rail_previous_focus)
                         }).unwrap_or_default();
                         if !previous.0.is_null() { let _ = SetFocus(Some(previous)); }
                         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -3967,7 +3924,7 @@ unsafe extern "system" fn window_proc(
                     let key = s.rail_tooltip_key;
                     if key.is_some() && s.hover == Hit::Rail(key.unwrap()) && s.rail_drag.is_none() {
                         let entries = rail_entries(s);
-                        let _ = key.map(|key| crate::chrome::rail::rail_tooltip(key, &entries));
+                        let _ = key.map(|key| crate::chrome::rail::rail_tooltip(key, entries));
                         s.rail_tooltip_visible = true;
                         true
                     } else { false }
@@ -5282,7 +5239,7 @@ fn flyout_button(id: side_panel::PanelId) -> RailKey {
 fn flyout_anchor(hwnd: HWND, key: RailKey) -> Option<html_panel::Anchor> {
     let (html_rail, reported, layout_rail, native, dpi) = with_chrome(hwnd, |s| {
         let entries = rail_entries(s);
-        let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+        let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
         let native = geometry.items.iter().find(|item| item.key == key).map(|item| to_win_rect(item.rect));
         (s.html_rail.clone().filter(|_| s.html_rail_page_ready), s.html_rail_anchors.get(&key).copied(), to_win_rect(s.layout.rail), native, s.dpi)
     })?;
@@ -5415,7 +5372,7 @@ fn rail_entries(state: &WindowChrome) -> &[RailEntry<'_>] {
 fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, RailDropIndicator)> {
     with_chrome(hwnd, |state| {
         let entries = rail_entries(state);
-        let geometry = crate::chrome::rail::geometry(state.layout.rail, &entries, state.rail_scroll, state.dpi);
+        let geometry = crate::chrome::rail::geometry(state.layout.rail, entries, state.rail_scroll, state.dpi);
         crate::chrome::rail::drop_indicator(&geometry, key, x, y)
     }).flatten()
 }
@@ -5668,7 +5625,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).0 { let _ = App::workspace_move(app, id, index - 1); },
                     5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).1 { let _ = App::workspace_move(app, id, index + 1); },
                     // --- popup surfaces (lane PP) --- confirm in the HTML popup, not a MessageBox
-                    6 => if set.workspace_count() > 1 { confirm_rail_workspace_delete(hwnd, point, id, &name); },
+                    6 if set.workspace_count() > 1 => { confirm_rail_workspace_delete(hwnd, point, id, &name); },
                     _ => {}
                 }
             });
@@ -7367,7 +7324,7 @@ fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
         if App::tab_ids(app).contains(&TabId(id)) {
             let _ = App::select_tab(app, TabId(id));
         }
-    } else if let Some(url) = action.strip_prefix("url:").or_else(|| action.strip_prefix("reopen:")).and_then(|s| web(s)) {
+    } else if let Some(url) = action.strip_prefix("url:").or_else(|| action.strip_prefix("reopen:")).and_then(web) {
         // "Open links in a new tab" decides between a new tab and the current one; a closed tab always
         // comes back in a tab of its own (`commands::behaviour::link_open`).
         if crate::commands::behaviour::link_open(&options, action) == Some(crate::commands::behaviour::LinkOpen::NewTab) {
@@ -9068,16 +9025,7 @@ fn start_html_toolbar(hwnd: HWND, env: &ChromeEnv) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        env,
-        hwnd,
-        bounds,
-        View::Toolbar,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_created(hwnd, result),
-    );
+    let created = ChromeHost::create(env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Toolbar, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_created(hwnd, result));
     if created.is_err() {
         html_failed(hwnd);
     }
@@ -9302,8 +9250,7 @@ fn html_sync(hwnd: HWND) {
         (send_text, select, s.html_state_generation[0])
     })
     .unwrap_or_default();
-    if send_text {
-        if host.post_json(&set_text_json(&display, select)).is_ok() {
+    if send_text && host.post_json(&set_text_json(&display, select)).is_ok() {
             let _ = with_chrome(hwnd, |s| {
                 if s.html_state_generation[0] != generation { return; }
                 s.html_synced_tab = Some(id);
@@ -9311,7 +9258,6 @@ fn html_sync(hwnd: HWND) {
                 s.edit_text.clone_from(&display);
                 s.completion = None;
             });
-        }
     }
 }
 
@@ -9897,16 +9843,7 @@ fn start_html_tabs(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        &env,
-        hwnd,
-        bounds,
-        View::Tabs,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_tabs_created(hwnd, result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Tabs, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_tabs_created(hwnd, result));
     if created.is_err() {
         html_tabs_failed(hwnd);
     }
@@ -10203,10 +10140,8 @@ pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
                 defer_html_command(hwnd, DeferredChromeCommand::PopupCompose { tok });
             }
         }
-        ChromeCommand::DownloadsAct { tok, id, n } => {
-            if super::downloads_ui::valid_act(hwnd, tok) {
-                defer_html_command(hwnd, DeferredChromeCommand::DownloadsAct { tok, id, n });
-            }
+        ChromeCommand::DownloadsAct { tok, id, n } if super::downloads_ui::valid_act(hwnd, tok) => {
+            defer_html_command(hwnd, DeferredChromeCommand::DownloadsAct { tok, id, n });
         }
         // --- end popup surfaces ---
         _ => {}
@@ -10735,7 +10670,7 @@ fn html_tabs_sync(hwnd: HWND) {
     // --- end tab options ---
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
-    let tab_states: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)> = snapshot
+    let tab_states: Vec<HtmlTabSnapshot> = snapshot
         .iter()
         .map(|(id, title, loading, marker)| {
             (
@@ -10912,16 +10847,7 @@ fn start_html_rail(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        &env,
-        hwnd,
-        bounds,
-        View::Rail,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_rail_created(hwnd, result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Rail, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_rail_created(hwnd, result));
     if created.is_err() {
         html_rail_failed(hwnd);
     }
@@ -11103,7 +11029,7 @@ fn html_rail_sync(hwnd: HWND) {
         let host = s.html_rail.clone()?;
         let items = {
             let entries = rail_entries(s);
-            chrome_host::rail_items(&entries, open, |key| {
+            chrome_host::rail_items(entries, open, |key| {
                 s.rail_entries
                     .iter()
                     .find(|entry| entry.key == key)
@@ -11759,19 +11685,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
                 if let Some(sidebar) = s.sidebar.filter(|_| !s.ah.sidebar_hidden()) { // --- auto-hide (T11) ---
-                    s.surface.paint_vertical_sidebar(
-                        &sidebar,
-                        &s.sidebar_rows,
-                        &s.paint_prefs.workspace_name,
-                        active,
-                        s.sidebar_scroll,
-                        s.sidebar_hover_row,
-                        // --- vertical sidebar (lane S) ---
-                        s.html_tab_region().is_some(),
-                        // --- end vertical sidebar ---
-                        dirty,
-                        p,
-                    );
+                    s.surface.paint_vertical_sidebar(crate::chrome::paint::SidebarPaintView { layout: &sidebar, rows: &s.sidebar_rows, workspace: &s.paint_prefs.workspace_name, active, scroll: s.sidebar_scroll, hover_row: s.sidebar_hover_row, html_sidebar: s.html_tab_region().is_some() }, dirty, p);
                 }
                 // --- split view --- the native strip's half, or the HTML card's fallback rectangle
                 let native_drop = s.split_drop.map(|zone| {
@@ -12794,7 +12708,7 @@ mod tests {
                 crate::settings::TabLayout::SingleRow,
             ] {
                 let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
-                s.relayout(1000, 700, dpi, TabId(0), false, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, 100, "");
+                s.relayout(RelayoutRequest { w: 1000, h: 700, dpi, active: TabId(0), maximised: false, arrangement, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 260, centred_address_bar: true, font_scale: 100, ui_font: "" });
                 let chrome = layout::chrome_height(tab_layout, dpi);
                 assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
                 assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
@@ -12806,7 +12720,7 @@ mod tests {
     // --- auto-hide (T11) ---
     fn relaid(s: &mut WindowChrome, dpi: u32, maximised: bool, tab_layout: crate::settings::TabLayout) {
         let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
-        s.relayout(1280, 720, dpi, TabId(0), maximised, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, 100, "");
+        s.relayout(RelayoutRequest { w: 1280, h: 720, dpi, active: TabId(0), maximised, arrangement, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 260, centred_address_bar: true, font_scale: 100, ui_font: "" });
     }
 
     /// The user's rule: with auto-hide off the window lays out exactly as it always did, and no sensor,
@@ -13000,7 +12914,7 @@ mod tests {
         let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
         assert!(!s.relayout_sidebar(300), "nothing to repeat before the first layout");
         let vertical = layout::Arrangement { tabs: crate::settings::TabLayout::Vertical, ..Default::default() };
-        s.relayout(1200, 700, 96, TabId(0), false, vertical, crate::layout_prefs::UiDensity::Regular, 200, true, 100, "");
+        s.relayout(RelayoutRequest { w: 1200, h: 700, dpi: 96, active: TabId(0), maximised: false, arrangement: vertical, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 200, centred_address_bar: true, font_scale: 100, ui_font: "" });
         let narrow = s.sidebar.expect("a vertical layout has a sidebar").sidebar;
         let top = s.layout.viewport.top;
         assert!(s.relayout_sidebar(320));

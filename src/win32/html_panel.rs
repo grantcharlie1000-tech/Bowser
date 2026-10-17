@@ -128,7 +128,7 @@ fn start(runtime: &Rc<RefCell<Runtime>>, env: &ChromeEnv) {
     let accel: AccelHandler = Rc::new(move |accel: Accel| super::window::html_panel_accelerator(owner, accel));
     let ready_runtime = Rc::downgrade(runtime);
     let bounds = RECT { left: 0, top: 0, right: 360, bottom: 600 };
-    if ChromeHost::create(env, window, bounds, View::Panel, commands, failed, Some(accel), move |result| match result {
+    if ChromeHost::create(env, crate::chrome_host::host::ChromeHostOptions { parent: window, bounds, view: View::Panel, on_command: commands, on_failed: failed, on_accelerator: Some(accel) }, move |result| match result {
         Ok(host) => {
             let Some(runtime) = ready_runtime.upgrade() else { host.close(); return; };
             let Ok(mut state) = runtime.try_borrow_mut() else { host.close(); return; };

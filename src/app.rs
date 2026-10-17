@@ -3243,9 +3243,7 @@ impl App {
         orientation: crate::split_view::Orientation,
         bounds: Option<SplitBounds>,
     ) -> Option<TabId> {
-        if app.borrow().tab_model.get(tab).is_none() {
-            return None;
-        }
+        app.borrow().tab_model.get(tab)?;
         let empty = Self::new_tab(app);
         let (left, right) = match side {
             Pane::Left => (empty, tab),

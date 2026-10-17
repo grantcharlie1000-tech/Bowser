@@ -181,7 +181,10 @@ pub(crate) fn show(owner: HWND, data: PaletteData, options: Options) -> Option<R
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(state.edit));
     }
-    while !state.done {
+    loop {
+        // DispatchMessageW invokes the window procedure, which mutates this owned state.
+        // Re-read after each dispatch; do not cache the callback-controlled completion flag.
+        if state.done { break; }
         let mut msg = MSG::default();
         let got = unsafe { GetMessageW(&mut msg, None, 0, 0).0 };
         if got <= 0 {

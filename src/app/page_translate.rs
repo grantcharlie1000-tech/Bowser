@@ -215,8 +215,7 @@ impl App {
         let (Some(store), Some(origin)) = (store, origin) else {
             return false;
         };
-        let saved = store.borrow_mut().set_translate(&origin, choice).is_ok();
-        saved
+        store.borrow_mut().set_translate(&origin, choice).is_ok()
     }
 
     // --- running ---

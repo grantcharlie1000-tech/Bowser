@@ -919,7 +919,7 @@ impl DownloadManager {
             got += entry.got.min(entry.total as u64);
             total += entry.total as u64;
         }
-        let pct = if total == 0 { -1 } else { (got * 100 / total).min(100) as i32 };
+        let pct = (got * 100).checked_div(total).map_or(-1, |pct| pct.min(100) as i32);
         let latest_unseen = self
             .entries
             .iter()

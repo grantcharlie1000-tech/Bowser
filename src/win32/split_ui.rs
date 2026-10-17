@@ -209,7 +209,14 @@ fn ensure_host(owner: HWND) {
         super::window::split_ui_invalidate(owner);
     });
     let on_accelerator: AccelHandler = Rc::new(move |accel: Accel| super::window::html_split_accelerator(HWND(raw as *mut _), accel));
-    let created = ChromeHost::create(&env, container, RECT { left: 0, top: 0, right: 1, bottom: 1 }, View::Split, on_command, on_failed, Some(on_accelerator), move |result| {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions {
+        parent: container,
+        bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 },
+        view: View::Split,
+        on_command,
+        on_failed,
+        on_accelerator: Some(on_accelerator),
+    }, move |result| {
         let owner = HWND(raw as *mut _);
         match result {
             Ok(host) => {
@@ -747,10 +754,8 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
             }
             drop_tab(owner, app, tab, zone);
         }
-        SplitCommand::DragEnd { .. } => {
-            if with(owner, |rt| rt.drag.take()).flatten().is_some() {
-                super::window::split_ui_invalidate(owner);
-            }
+        SplitCommand::DragEnd { .. } if with(owner, |rt| rt.drag.take()).flatten().is_some() => {
+            super::window::split_ui_invalidate(owner);
         }
         _ => {}
     }
@@ -973,7 +978,7 @@ fn layout_entries(view: split_view::SplitView, divider: Option<Divider>) -> Vec<
         };
         if beside {
             let zone = view.zone_of(pane);
-            entries.push(Entry::Item(Item::new(CLOSE_PANE + pane.index(), &format!("Close {} tab", zone_word(zone)), Icon::Close).glyph(zone_glyph(zone))));
+            entries.push(Entry::Item(Item::new(CLOSE_PANE + pane.index(), format!("Close {} tab", zone_word(zone)), Icon::Close).glyph(zone_glyph(zone))));
         }
     }
     entries

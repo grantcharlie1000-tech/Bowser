@@ -392,7 +392,14 @@ pub fn compute_in_frame_for(
     active_index: usize,
     maximised: bool,
 ) -> Layout {
-    compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, true)
+    compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred: true })
+}
+
+/// Window-state and address-bar preferences shared by chrome layout constructors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LayoutOptions {
+    pub maximised: bool,
+    pub centred: bool,
 }
 
 /// [`compute_in_frame_for`] with the omnibox centred in the toolbar only when `centred` is set; off,
@@ -404,22 +411,13 @@ pub fn compute_in_frame_for_with(
     dpi: u32,
     tab_count: usize,
     active_index: usize,
-    maximised: bool,
-    centred: bool,
+    options: LayoutOptions,
 ) -> Layout {
+    let LayoutOptions { maximised, centred } = options;
     let client_w = client_w.max(0);
     let client_h = client_h.max(0);
     let inset = left_rail_inset(dpi);
-    let mut layout = compute_for_with(
-        variant,
-        client_w - inset,
-        client_h,
-        dpi,
-        tab_count,
-        active_index,
-        maximised,
-        centred,
-    )
+    let mut layout = compute_for_with(variant, client_w - inset, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred })
     .shifted_right(inset);
     layout.client = Rect::new(0, 0, client_w, client_h);
     layout.rail = left_rail(client_h, dpi);
@@ -607,7 +605,7 @@ pub fn compute_for(
     active_index: usize,
     maximised: bool,
 ) -> Layout {
-    compute_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, true)
+    compute_for_with(variant, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred: true })
 }
 
 /// [`compute_for`] with the omnibox centred in the toolbar only when `centred` is set; off, the
@@ -621,9 +619,9 @@ pub fn compute_for_with(
     dpi: u32,
     tab_count: usize,
     active_index: usize,
-    maximised: bool,
-    centred: bool,
+    options: LayoutOptions,
 ) -> Layout {
+    let LayoutOptions { maximised, centred } = options;
     let m = Metrics::new(dpi);
     let client_w = client_w.max(0);
     let client_h = client_h.max(0);
@@ -1446,7 +1444,7 @@ pub fn compute_vertical_in_frame(
     maximised: bool,
     sidebar_width: i32,
 ) -> (Layout, crate::vertical_tabs::SidebarLayout) {
-    compute_vertical_in_frame_with(client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, true)
+    compute_vertical_in_frame_with(client_w, client_h, dpi, tab_count, active_index, sidebar_width, LayoutOptions { maximised, centred: true })
 }
 
 /// [`compute_vertical_in_frame`] with the omnibox centred in the toolbar only when `centred` is set.
@@ -1456,15 +1454,15 @@ pub fn compute_vertical_in_frame_with(
     dpi: u32,
     tab_count: usize,
     active_index: usize,
-    maximised: bool,
     sidebar_width: i32,
-    centred: bool,
+    options: LayoutOptions,
 ) -> (Layout, crate::vertical_tabs::SidebarLayout) {
+    let LayoutOptions { maximised, centred } = options;
     let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(
         client_w, client_h, dpi, sidebar_width, maximised,
     );
     let offset = sidebar.sidebar.right;
-    let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised, centred)
+    let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred })
         .shifted_right(offset);
     layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
     layout.rail = left_rail(client_h, dpi);
@@ -1940,7 +1938,7 @@ pub fn compute_arranged_in_frame(
                 client_w, client_h, dpi, sidebar_width, maximised, SidePanelPosition::Left, title_h, client_h, sidebar_row_height,
             );
             let offset = sidebar.sidebar.right;
-            let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised, centred)
+            let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred })
                 .shifted_right(offset);
             layout.client = Rect::new(0, 0, client_w, client_h);
             layout.rail = left_rail(client_h, dpi);
@@ -1949,11 +1947,11 @@ pub fn compute_arranged_in_frame(
         Some(SidePanelPosition::Right) => {
             // The toolbar keeps the full width (the window buttons stay at the top right); the
             // sidebar hangs under the top rows, down to the bottom rows.
-            let mut layout = compute_in_frame_for_with(TabLayout::Vertical, client_w, client_h, dpi, tab_count, active_index, maximised, centred);
+            let mut layout = compute_in_frame_for_with(TabLayout::Vertical, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred });
             layout.variant = TabLayout::VerticalRight;
             (layout, None)
         }
-        None => (compute_in_frame_for_with(base, client_w, client_h, dpi, tab_count, active_index, maximised, centred), None),
+        None => (compute_in_frame_for_with(base, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred }), None),
     };
     if title {
         layout = layout.with_title_row(inset);
@@ -2070,7 +2068,7 @@ pub fn compute_in_frame_auto_hide(
     hide: AutoHide,
 ) -> Layout {
     let mut layout =
-        compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, centred);
+        compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred });
     let hide = AutoHide { sidebar: false, ..hide };
     layout.viewport = auto_hide_viewport(layout.viewport, hide, dpi, maximised);
     layout
@@ -2092,25 +2090,14 @@ pub fn compute_vertical_in_frame_auto_hide(
     centred: bool,
     hide: AutoHide,
 ) -> (Layout, crate::vertical_tabs::SidebarLayout) {
-    let (mut layout, sidebar) = compute_vertical_in_frame_with(
-        client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, centred,
-    );
+    let (mut layout, sidebar) = compute_vertical_in_frame_with(client_w, client_h, dpi, tab_count, active_index, sidebar_width, LayoutOptions { maximised, centred });
     if hide.is_off() {
         return (layout, sidebar);
     }
     if hide.sidebar {
         let inset = left_rail_inset(dpi);
         let normal_viewport = layout.viewport;
-        layout = compute_for_with(
-            TabLayout::Vertical,
-            client_w.max(0) - inset,
-            client_h,
-            dpi,
-            tab_count,
-            active_index,
-            maximised,
-            centred,
-        )
+        layout = compute_for_with(TabLayout::Vertical, client_w.max(0) - inset, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred })
         .shifted_right(inset);
         layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
         layout.rail = left_rail(client_h, dpi);
@@ -2542,8 +2529,8 @@ mod tests {
     /// same width; on, it stays centred.
     #[test]
     fn the_centred_address_bar_option_off_puts_the_omnibox_beside_navigation() {
-        let centred = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, false, true);
-        let left = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, false, false);
+        let centred = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, LayoutOptions { maximised: false, centred: true });
+        let left = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, LayoutOptions { maximised: false, centred: false });
         assert_eq!((centred.omnibox.left + centred.omnibox.right) / 2, 720, "on: centred");
         assert!(left.omnibox.left < centred.omnibox.left, "off: further left");
         assert_eq!(left.omnibox.width(), centred.omnibox.width(), "same width either way");
@@ -4288,7 +4275,7 @@ mod tests {
                 for (w, h) in [(1920, 1079), (1904, 1041), (1280, 720), (2560, 1400)] {
                     for maximised in [false, true] {
                         let context = format!("{variant:?} {w}x{h} dpi {dpi} maximised {maximised}");
-                        let l = compute_in_frame_for_with(variant, w, h, dpi, 5, 0, maximised, true);
+                        let l = compute_in_frame_for_with(variant, w, h, dpi, 5, 0, LayoutOptions { maximised, centred: true });
                         let inset = left_rail_inset(dpi);
                         let page = content_rect(variant, w - inset, h, dpi, maximised).shifted_right(inset);
                         assert_eq!(page, l.viewport, "{context}");
@@ -4300,7 +4287,7 @@ mod tests {
             }
         }
         // The configuration in the report: a 1920 x 1079 maximised client at 96 DPI.
-        let l = compute_in_frame_for_with(TabLayout::ToolbarTop, 1920, 1079, 96, 5, 0, true, true);
+        let l = compute_in_frame_for_with(TabLayout::ToolbarTop, 1920, 1079, 96, 5, 0, LayoutOptions { maximised: true, centred: true });
         assert_eq!(l.viewport, Rect::new(30, 63, 1920, 1079));
         assert_eq!(l.rail, Rect::new(2, 2, 28, 1077));
     }
@@ -4318,7 +4305,7 @@ mod tests {
                     for maximised in [false, true] {
                         for centred in [false, true] {
                             let context = format!("{variant:?} {w}x{h} dpi {dpi} max {maximised} centred {centred}");
-                            let before = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, maximised, centred);
+                            let before = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, LayoutOptions { maximised, centred });
                             let after = compute_in_frame_auto_hide(variant, w, h, dpi, 5, 2, maximised, centred, AutoHide::OFF);
                             assert_eq!(before, after, "{context}");
                             assert_eq!(
@@ -4335,7 +4322,7 @@ mod tests {
             for (w, h) in SIZES {
                 for maximised in [false, true] {
                     let context = format!("vertical {w}x{h} dpi {dpi} max {maximised}");
-                    let before = compute_vertical_in_frame_with(w, h, dpi, 5, 2, maximised, 260, true);
+                    let before = compute_vertical_in_frame_with(w, h, dpi, 5, 2, 260, LayoutOptions { maximised, centred: true });
                     let after = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, AutoHide::OFF);
                     assert_eq!(before, after, "{context}");
                     assert_eq!(
@@ -4357,7 +4344,7 @@ mod tests {
                 for (w, h) in SIZES {
                     for maximised in [false, true] {
                         let context = format!("{variant:?} {w}x{h} dpi {dpi} max {maximised}");
-                        let shown = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, maximised, true);
+                        let shown = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, LayoutOptions { maximised, centred: true });
                         let hide = AutoHide { top: true, sidebar: false };
                         let hidden = compute_in_frame_auto_hide(variant, w, h, dpi, 5, 2, maximised, true, hide);
                         assert_eq!(hidden.viewport.top, auto_hide_top(dpi, maximised), "{context}");
@@ -4390,7 +4377,7 @@ mod tests {
             for (w, h) in SIZES {
                 for maximised in [false, true] {
                     let context = format!("vertical {w}x{h} dpi {dpi} max {maximised}");
-                    let (shown, sidebar) = compute_vertical_in_frame_with(w, h, dpi, 5, 2, maximised, 260, true);
+                    let (shown, sidebar) = compute_vertical_in_frame_with(w, h, dpi, 5, 2, 260, LayoutOptions { maximised, centred: true });
                     let inset = left_rail_inset(dpi);
                     let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
                     // The sidebar alone: the page starts at the rail; the toolbar follows it left.
@@ -4588,7 +4575,7 @@ mod arrangement_tests {
     fn the_default_arrangement_is_the_toolbar_above_tabs_layout_unchanged() {
         for dpi in DPIS {
             let (layout, sidebar) = arranged(Arrangement::default(), dpi);
-            let plain = compute_in_frame_for_with(TabLayout::ToolbarTop, 1400, 900, dpi, 5, 1, false, true);
+            let plain = compute_in_frame_for_with(TabLayout::ToolbarTop, 1400, 900, dpi, 5, 1, LayoutOptions { maximised: false, centred: true });
             assert!(sidebar.is_none());
             assert_eq!(layout.strip, plain.strip, "dpi {dpi}");
             assert_eq!(layout.tab_row, plain.tab_row, "dpi {dpi}");
@@ -4602,11 +4589,11 @@ mod arrangement_tests {
         // Every plain variant comes out of the arranged path the same way.
         for variant in [TabLayout::TabsTop, TabLayout::SingleRow] {
             let (layout, _) = arranged(Arrangement { tabs: variant, ..Default::default() }, 96);
-            let plain = compute_in_frame_for_with(variant, 1400, 900, 96, 5, 1, false, true);
+            let plain = compute_in_frame_for_with(variant, 1400, 900, 96, 5, 1, LayoutOptions { maximised: false, centred: true });
             assert_eq!((layout.strip, layout.tab_row, layout.viewport), (plain.strip, plain.tab_row, plain.viewport), "{variant:?}");
         }
         let (layout, sidebar) = arranged(Arrangement { tabs: TabLayout::Vertical, ..Default::default() }, 96);
-        let (plain, plain_sidebar) = compute_vertical_in_frame_with(1400, 900, 96, 5, 1, false, 260, true);
+        let (plain, plain_sidebar) = compute_vertical_in_frame_with(1400, 900, 96, 5, 1, 260, LayoutOptions { maximised: false, centred: true });
         assert_eq!((layout.strip, layout.viewport), (plain.strip, plain.viewport));
         assert_eq!(sidebar.unwrap().sidebar, plain_sidebar.sidebar);
     }

@@ -743,7 +743,7 @@ fn paint(hwnd: HWND) {
         text(
             dc,
             RECT {
-                left: scale(EXT as i32, hwnd),
+                left: scale(EXT, hwnd),
                 top: scale(8, hwnd),
                 right: client.right - scale(52, hwnd),
                 bottom: scale(38, hwnd),
@@ -777,7 +777,7 @@ fn paint(hwnd: HWND) {
             };
             smooth::fill_round_rect(
                 dc,
-                rect(EXT as i32, 46, s.width / 2 - 4, 84, hwnd),
+                rect(EXT, 46, s.width / 2 - 4, 84, hwnd),
                 scale(6, hwnd),
                 active,
             );
@@ -789,7 +789,7 @@ fn paint(hwnd: HWND) {
             );
             text(
                 dc,
-                rect(EXT as i32, 46, s.width / 2 - 4, 84, hwnd),
+                rect(EXT, 46, s.width / 2 - 4, 84, hwnd),
                 "Notes",
                 p.tab_text_active,
                 false,
@@ -803,13 +803,13 @@ fn paint(hwnd: HWND) {
             );
             smooth::fill_round_rect(
                 dc,
-                rect(s.width - 80, 46, s.width - EXT as i32, 84, hwnd),
+                rect(s.width - 80, 46, s.width - EXT, 84, hwnd),
                 scale(6, hwnd),
                 p.tab_hover,
             );
             text(
                 dc,
-                rect(s.width - 80, 46, s.width - EXT as i32, 84, hwnd),
+                rect(s.width - 80, 46, s.width - EXT, 84, hwnd),
                 "+ Add",
                 p.tab_text_active,
                 false,
@@ -824,9 +824,9 @@ fn paint(hwnd: HWND) {
                             break;
                         }
                         let bounds = rect(
-                            EXT as i32,
+                            EXT,
                             y,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             y + row - scale(2, hwnd),
                             hwnd,
                         );
@@ -840,7 +840,7 @@ fn paint(hwnd: HWND) {
                         rect(
                             s.width - 76,
                             s.height - 194,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             s.height - 166,
                             hwnd,
                         ),
@@ -851,9 +851,9 @@ fn paint(hwnd: HWND) {
                     text(
                         dc,
                         rect(
-                            EXT as i32,
+                            EXT,
                             s.height - 158,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             s.height - 136,
                             hwnd,
                         ),
@@ -871,9 +871,9 @@ fn paint(hwnd: HWND) {
                             break;
                         }
                         let bounds = rect(
-                            EXT as i32,
+                            EXT,
                             y,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             y + row - scale(2, hwnd),
                             hwnd,
                         );
@@ -912,9 +912,9 @@ fn paint(hwnd: HWND) {
                     text(
                         dc,
                         rect(
-                            EXT as i32,
+                            EXT,
                             s.height - 86,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             s.height - 60,
                             hwnd,
                         ),
@@ -927,7 +927,7 @@ fn paint(hwnd: HWND) {
                         rect(
                             s.width - 76,
                             s.height - 42,
-                            s.width - EXT as i32,
+                            s.width - EXT,
                             s.height - 14,
                             hwnd,
                         ),
@@ -1070,11 +1070,11 @@ unsafe extern "system" fn proc(
                 if let Some(s) = panel(hwnd)
                     && !s.updating
                 {
-                    if (wparam.0 & 0xffff) as usize == TITLE_ID
-                        || (wparam.0 & 0xffff) as usize == BODY_ID
+                    if (wparam.0 & 0xffff) == TITLE_ID
+                        || (wparam.0 & 0xffff) == BODY_ID
                     {
                         save_note(hwnd, s);
-                    } else if (wparam.0 & 0xffff) as usize == TASK_ID {
+                    } else if (wparam.0 & 0xffff) == TASK_ID {
                         save_task(hwnd, s);
                     }
                 }

@@ -180,7 +180,14 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
     let accel: AccelHandler = Rc::new(move |key: Accel| super::window::html_panel_accelerator(accel_owner, key));
     let ready_weak = Rc::downgrade(&runtime);
     let view = kind.view();
-    if let Err(error) = ChromeHost::create(&env, parent, bounds, view, commands, failed, Some(accel), move |result| match result {
+    if let Err(error) = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions {
+        parent,
+        bounds,
+        view,
+        on_command: commands,
+        on_failed: failed,
+        on_accelerator: Some(accel),
+    }, move |result| match result {
         Ok(host) => if let Some(state) = ready_weak.upgrade() {
             if let Ok(mut runtime) = state.try_borrow_mut() {
                 if runtime.closed { host.close(); return; }
@@ -372,7 +379,7 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
 /// The Privacy dashboard's `privacy` snapshot, for its own window and for the settings page.
 pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
     let profile = profile::active().ok();
-    let snapshot = super::privacy_panel::gather(&app, profile.as_ref(), None);
+    let snapshot = super::privacy_panel::gather(app, profile.as_ref(), None);
     protocol::snap_json("privacy", |out| {
         out.string("profile", &snapshot.profile); out.bool("guest", snapshot.guest);
         out.object("stats", |stats| {
@@ -388,14 +395,14 @@ pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
         out.string("trackingSetting", snapshot.tracking_setting); out.bool("efficiencyActive", snapshot.efficiency_active);
         if let Some(enabled) = snapshot.smart_screen { out.bool("smartScreen", enabled); } else { out.null("smartScreen"); }
         out.bool("blockerSetting", snapshot.blocker_setting); out.bool("sleeping", snapshot.sleeping); out.uint("sleepAfter", snapshot.sleep_after);
-        let denied = App::denied_requests(&app);
+        let denied = App::denied_requests(app);
         let sites = {
             // A private tab's site is never offered as "current": a stored decision made here would
             // be written to the shared permission store.
-            let current = App::active_site(&app)
-                .filter(|(tab, _)| !App::tab_private(&app, *tab))
+            let current = App::active_site(app)
+                .filter(|(tab, _)| !App::tab_private(app, *tab))
                 .and_then(|(_, url)| crate::permissions::origin_of(url.as_str()));
-            let store = App::permissions_handle(&app);
+            let store = App::permissions_handle(app);
             let guard = store.as_ref().map(|store| store.borrow());
             let empty = crate::permissions::PermissionStore::default();
             let also: Vec<&str> = denied.iter().map(|attempt| attempt.origin.as_str()).collect();

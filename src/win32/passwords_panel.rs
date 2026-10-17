@@ -612,11 +612,7 @@ fn build_vault(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
                 action_row + s(BUTTON_HEIGHT),
             ),
             label,
-            if target == Target::Delete {
-                Role::Secondary
-            } else {
-                Role::Secondary
-            },
+            Role::Secondary,
             has_selection,
         );
     }
@@ -692,9 +688,7 @@ fn build_editor(panel: &Panel, width: i32, height: i32, dpi: u32) -> Scene {
             value
         };
         scene.control(
-            match field {
-                _ => Target::Focus(field),
-            },
+            Target::Focus(field),
             rect(x0, top + s(22), x1, top + s(58)),
             text,
             Role::Field,
@@ -866,7 +860,7 @@ fn clipboard_unchanged_and_clear(owner: HWND, baseline: &[u16]) -> ClipboardClea
                 return ClipboardClear::Changed;
             };
             let memory = HGLOBAL(handle.0);
-            if GlobalSize(memory) < baseline.len() * std::mem::size_of::<u16>() {
+            if GlobalSize(memory) < std::mem::size_of_val(baseline) {
                 return ClipboardClear::Changed;
             }
             let data = GlobalLock(memory).cast::<u16>();

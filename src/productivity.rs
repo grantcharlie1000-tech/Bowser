@@ -122,10 +122,9 @@ pub fn rank_items<'a>(
                 1000 - detail.len().min(500) as i32
             } else if let Some(gap) = subsequence_gap(&needle, &label) {
                 500 - gap.min(400) as i32
-            } else if let Some(gap) = subsequence_gap(&needle, &detail) {
-                250 - gap.min(200) as i32
             } else {
-                return None;
+                let gap = subsequence_gap(&needle, &detail)?;
+                250 - gap.min(200) as i32
             };
             Some((item, score))
         })
@@ -435,7 +434,7 @@ pub fn add_history_entry_at(
     url: &str,
     title: &str,
 ) -> std::io::Result<()> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     // The caller only queues the visit: the read-merge-rewrite of the file runs on the history
     // writer thread, and every history read or edit flushes the queue first. A file that exists
     // but cannot be read is still refused here, cheaply, and again by the writer.
@@ -689,7 +688,7 @@ pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> 
 
 /// Removes a bookmark from the established flat file and the additive v2 tree.
 pub fn remove_bookmark(path: &Path, url: &str) -> std::io::Result<bool> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     let mut entries = read_bookmarks(path);
     let old_len = entries.len();
     entries.retain(|(_, existing, _)| existing != &url);
@@ -723,7 +722,7 @@ pub fn add_bookmark_in_folder(
     title: &str,
     folder: &str,
 ) -> std::io::Result<()> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     let mut entries = read_bookmarks(path);
     entries.retain(|(_, existing, _)| existing != &url);
     entries.push((
@@ -747,7 +746,7 @@ pub fn add_bookmark_in_folder(
         let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
         let parent = folder_path(&mut tree, folder)?;
         if let Some(old) = tree.items().iter().find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: old, .. } if old == &url)).map(|item| item.id) { tree.delete(old); }
-        tree.add_bookmark(parent, &title, &url)?;
+        tree.add_bookmark(parent, title, &url)?;
         tree.save(profile_dir)?;
     }
     Ok(())

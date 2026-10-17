@@ -33,16 +33,13 @@ use windows::{
 /// the content top). The only painted control left: the site otherwise fills the whole panel.
 const RETRY_DIP: (i32, i32, i32, i32) = (16, 42, 104, 78);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 enum ViewState {
+    #[default]
     Loading,
     Ready,
     Error(String),
     Removed,
-}
-
-impl Default for ViewState {
-    fn default() -> Self { Self::Loading }
 }
 
 impl ViewState {
@@ -198,7 +195,7 @@ pub fn register(app: &AppRef) {
     let profile = profile::active().ok();
     let shared = Rc::new(RefCell::new(Shared {
         app: app.clone(),
-        profile_dir: profile.as_ref().map_or_else(|| PathBuf::new(), |p| p.web_apps_dir()),
+        profile_dir: profile.as_ref().map_or_else(PathBuf::new, |p| p.web_apps_dir()),
         main_hwnd: app.borrow().hwnd,
         parent: None,
         host: None,

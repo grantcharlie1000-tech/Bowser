@@ -1965,10 +1965,7 @@ pub fn relaunch_for_restart() -> bool {
 }
 
 fn check_due_after(now_secs: u64, last_check_secs: Option<u64>, interval: u64) -> bool {
-    match last_check_secs {
-        Some(last) if now_secs.saturating_sub(last) < interval && now_secs >= last => false,
-        _ => true,
-    }
+    !matches!(last_check_secs, Some(last) if now_secs.saturating_sub(last) < interval && now_secs >= last)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -334,7 +334,7 @@ fn raise(hwnd: HWND) {
 }
 
 pub fn timer(owner: HWND) -> bool {
-    let running = HOSTS.with(|hosts| unsafe {
+    HOSTS.with(|hosts| unsafe {
         let raw = hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0);
         let hwnd = HWND(raw as *mut c_void);
         let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return false };
@@ -353,8 +353,7 @@ pub fn timer(owner: HWND) -> bool {
         if state.width == 0 && state.id.is_none() { let _ = ShowWindow(hwnd, SW_HIDE); }
         let _ = InvalidateRect(Some(hwnd), None, false);
         (state.animation.is_some() && animation_running(elapsed)) || !state.retired.is_empty()
-    });
-    running
+    })
 }
 
 fn arm_animation(owner: HWND) { unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(owner), TIMER_ID, FRAME_MS, None); } }

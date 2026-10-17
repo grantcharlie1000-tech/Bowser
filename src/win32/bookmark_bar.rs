@@ -190,7 +190,7 @@ fn ensure_host(owner: HWND) {
         }
     });
     let on_failed: Rc<dyn Fn()> = Rc::new(move || fail(HWND(raw as *mut _)));
-    let created = ChromeHost::create(&env, container, RECT { left: 0, top: 0, right: 1, bottom: 1 }, View::BookmarkBar, on_command, on_failed, None, move |result| {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: container, bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 }, view: View::BookmarkBar, on_command, on_failed, on_accelerator: None }, move |result| {
         let owner = HWND(raw as *mut _);
         match result {
             Ok(host) => {

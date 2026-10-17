@@ -69,3 +69,13 @@ test('theme-flow tests use isolated real persistence and cannot block in error d
   assert.match(mod, /#\[cfg\(test\)\]\s*pub fn show_error_message\(message: &str\) \{\s*panic!/);
   assert.match(mod, /#\[cfg\(not\(test\)\)\]\s*pub fn show_error_message/);
 });
+test('lint repairs preserve callback-driven modal completion and integer icon identity', () => {
+  for (const file of ['command_palette.rs', 'profile_rename.rs']) {
+    const source = read(`src/win32/${file}`);
+    assert.match(source, /loop \{[\s\S]*?if state\.done \{ break; \}[\s\S]*?GetMessageW[\s\S]*?DispatchMessageW/);
+  }
+  assert.match(window, /PCWSTR\(std::ptr::without_provenance\(1\)\)/);
+  const engineSource = read('src/engine/webview2.rs');
+  assert.match(engineSource, /Zeroizing::new\(raw_message\.owned_text\(\)\)/);
+  assert.doesNotMatch(engineSource, /impl[^\n]*Display for ZeroizingWebMessage/);
+});

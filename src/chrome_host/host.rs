@@ -362,6 +362,16 @@ pub struct ChromeHost {
     state: Rc<RefCell<State>>,
 }
 
+/// Parent, geometry and callbacks used to create one HTML chrome controller.
+pub struct ChromeHostOptions {
+    pub parent: HWND,
+    pub bounds: RECT,
+    pub view: View,
+    pub on_command: Rc<dyn Fn(Command)>,
+    pub on_failed: Rc<dyn Fn()>,
+    pub on_accelerator: Option<AccelHandler>,
+}
+
 impl ChromeHost {
     /// Starts creating a controller for `view` in the shared `env`, as a child of `parent`. `on_ready`
     /// runs once, with the host or the reason creation failed. The controller stays hidden until the
@@ -370,14 +380,10 @@ impl ChromeHost {
     /// `on_ready` never runs.
     pub fn create(
         env: &ChromeEnv,
-        parent: HWND,
-        bounds: RECT,
-        view: View,
-        on_command: Rc<dyn Fn(Command)>,
-        on_failed: Rc<dyn Fn()>,
-        on_accelerator: Option<AccelHandler>,
+        options: ChromeHostOptions,
         on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
     ) -> Result<()> {
+        let ChromeHostOptions { parent, bounds, view, on_command, on_failed, on_accelerator } = options;
         let setup = Setup {
             env: env.clone(),
             parent,

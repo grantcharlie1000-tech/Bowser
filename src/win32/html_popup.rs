@@ -212,23 +212,12 @@ thread_local! { static POPUPS: RefCell<HashMap<isize, Popup>> = RefCell::new(Has
 thread_local! { static PAGE_READY: RefCell<HashSet<isize>> = RefCell::new(HashSet::new()); }
 thread_local! { static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) }; }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DismissState {
     active: bool,
     kind: String,
     closed_kind: String,
     closed_at: Option<Instant>,
-}
-
-impl Default for DismissState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            kind: String::new(),
-            closed_kind: String::new(),
-            closed_at: None,
-        }
-    }
 }
 
 impl DismissState {
@@ -328,17 +317,19 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     };
     let created = ChromeHost::create(
         &env,
-        window,
-        RECT {
-            left: 0,
-            top: 0,
-            right: 800,
-            bottom: 800,
+        crate::chrome_host::host::ChromeHostOptions {
+            parent: window,
+            bounds: RECT {
+                left: 0,
+                top: 0,
+                right: 800,
+                bottom: 800,
+            },
+            view: View::Popup,
+            on_command: command,
+            on_failed: failed,
+            on_accelerator: Some(Rc::new(move |accel: Accel| popup_accelerator(owner, accel))),
         },
-        View::Popup,
-        command,
-        failed,
-        Some(Rc::new(move |accel: Accel| popup_accelerator(owner, accel))),
         on_ready,
     );
     if created.is_err() {
