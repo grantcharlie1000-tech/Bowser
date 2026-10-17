@@ -59,12 +59,13 @@
     if (cur && cur.tagName !== 'A') cur = null;
     if (cur) from = cur.getBoundingClientRect();
     else {
-      // Nothing focused: start from the middle of the edge the key points away from.
+      // Nothing focused: start from the corner the key points away from, so Down finds the first link at the
+      // top left and Up the last at the bottom left.
       vr = { left: 0, right: W.innerWidth, top: 0, bottom: W.innerHeight };
-      from = d === 0 ? { left: vr.right / 2, right: vr.right / 2, top: vr.bottom, bottom: vr.bottom }
-        : d === 1 ? { left: vr.right / 2, right: vr.right / 2, top: 0, bottom: 0 }
-        : d === 2 ? { left: vr.right, right: vr.right, top: vr.bottom / 2, bottom: vr.bottom / 2 }
-        : { left: 0, right: 0, top: vr.bottom / 2, bottom: vr.bottom / 2 };
+      from = d === 0 ? { left: 0, right: 0, top: vr.bottom, bottom: vr.bottom }
+        : d === 1 ? { left: 0, right: 0, top: 0, bottom: 0 }
+        : d === 2 ? { left: vr.right, right: vr.right, top: 0, bottom: 0 }
+        : { left: 0, right: 0, top: 0, bottom: 0 };
     }
     for (i = 0; i < links.length && i < MAX; i++) {
       if (links[i] === cur) continue;

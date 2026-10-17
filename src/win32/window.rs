@@ -5510,7 +5510,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 ),
         ),
     ]);
-    if pip_available {
+    // Settings > Page tools > "Offer picture in picture in the tab menu" (the Ctrl+Shift+Y command works either way).
+    if crate::page_tools::pip_menu_entry(pip_available, App::settings(app).page_tools.pip_menu) {
         entries.push(Entry::Item(Item::new(
             PICTURE_IN_PICTURE,
             "Picture in picture",
@@ -6933,6 +6934,25 @@ fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
         "translate" => run_translate(hwnd, app, TranslateAction::Toggle),
         _ => {}
     }
+}
+
+/// A short list of notes to pick one from (page tools: "Add selection to an existing note"). `picked` gets
+/// the note's id; it runs only if the pick is still one of the listed notes.
+pub(crate) fn show_note_pick_menu(hwnd: HWND, notes: Vec<(u64, String)>, picked: Box<dyn FnOnce(u64)>) {
+    const BASE: usize = 0x5500;
+    let entries: Vec<Entry> = notes
+        .iter()
+        .enumerate()
+        .map(|(index, (_, label))| Entry::Item(Item::new(BASE + index, label.clone(), Icon::None).glyph("notes")))
+        .collect();
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu { header: None, entries, footer: "Add to a note".into() };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "note-pick", move |_app, chosen| {
+        let Some(chosen) = chosen else { return };
+        if let Some((id, _)) = notes.get(chosen.id.wrapping_sub(BASE)) {
+            picked(*id);
+        }
+    });
 }
 
 /// A passive one-line message in the same toast the reader and bookmark commands use.

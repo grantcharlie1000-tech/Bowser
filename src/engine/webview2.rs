@@ -6586,9 +6586,11 @@ mod tests {
                         (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                     let expected = if is_key_down(kind)
                         && key != u32::from(VK_ESCAPE.0)
-                        // Ctrl+F1 (the cheat sheet) is the one chord the command registry adds.
+                        // Chords the command registry adds for commands with no `Command` of their own
+                        // (Ctrl+F1, the cheat sheet; page tools' capture and notes) are forwarded too.
                         && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
-                            || (key, ctrl, shift, alt) == (0x70, true, false, false))
+                            || [(0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false)]
+                                .contains(&(key, ctrl, shift, alt)))
                     {
                         forward(key, ctrl, shift, alt)
                     } else {

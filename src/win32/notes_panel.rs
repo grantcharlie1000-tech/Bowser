@@ -283,6 +283,26 @@ pub(crate) fn save_html_notes(profile: &Profile, notes: &[data::Note]) -> std::i
     else { data::write_note_list(&profile.notes_file(), notes) }
 }
 
+// --- page tools (T7): the notes with their folders, sort order and origin (src/notes_book.rs) ---
+thread_local! { static GUEST_META: RefCell<String> = const { RefCell::new(String::new()) }; }
+
+fn meta_file(profile: &Profile) -> std::path::PathBuf { profile.notes_file().with_file_name("notes-meta.txt") }
+
+/// The notes of the profile with what `notes-meta.txt` adds. A guest keeps both in memory.
+pub(crate) fn html_book(profile: &Profile) -> crate::notes_book::Book {
+    let text = if profile.is_guest() { GUEST_META.with(|meta| meta.borrow().clone()) }
+        else { data::read_bounded(&meta_file(profile)).unwrap_or_default() };
+    crate::notes_book::Book::from_parts(html_notes(profile), &text)
+}
+
+pub(crate) fn save_html_book(profile: &Profile, book: &crate::notes_book::Book) -> std::io::Result<()> {
+    save_html_notes(profile, &book.notes)?;
+    let text = book.meta_text();
+    if profile.is_guest() { GUEST_META.with(|meta| *meta.borrow_mut() = text); Ok(()) }
+    else { data::atomic_write(&meta_file(profile), text.as_bytes()) }
+}
+// --- end page tools ---
+
 pub(crate) fn save_html_tasks(profile: &Profile, tasks: &[data::Task]) -> std::io::Result<()> {
     if profile.is_guest() { GUEST_DATA.with(|data| data.borrow_mut().1 = tasks.to_vec()); Ok(()) }
     else { data::write_tasks(&profile.tasks_file(), tasks) }

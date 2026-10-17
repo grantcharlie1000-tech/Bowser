@@ -107,21 +107,25 @@ pub struct Selection {
     pub title: String,
 }
 
-/// Reads [`SELECTION_SCRIPT`]'s answer. `Ok(None)` is "nothing selected"; `Err(())` is an answer that
-/// is not the script's (nothing from the page is trusted beyond text and whole numbers).
-pub fn parse_selection(raw: &str) -> Result<Option<Selection>, ()> {
+/// An answer that is not [`SELECTION_SCRIPT`]'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BadAnswer;
+
+/// Reads [`SELECTION_SCRIPT`]'s answer. `Ok(None)` is "nothing selected"; `Err(BadAnswer)` is an answer
+/// that is not the script's (nothing from the page is trusted beyond text and whole numbers).
+pub fn parse_selection(raw: &str) -> Result<Option<Selection>, BadAnswer> {
     if raw.len() > SELECTION_ANSWER_LIMIT {
-        return Err(());
+        return Err(BadAnswer);
     }
-    let inner = string_value(raw.trim()).ok_or(())?;
-    let value = crate::translate::json::parse(&inner).ok_or(())?;
+    let inner = string_value(raw.trim()).ok_or(BadAnswer)?;
+    let value = crate::translate::json::parse(&inner).ok_or(BadAnswer)?;
     match value.get("c").and_then(|c| c.as_int()) {
         Some(0) => return Ok(None),
         Some(1) => {}
-        _ => return Err(()),
+        _ => return Err(BadAnswer),
     }
-    let int = |key: &str| value.get(key).and_then(|v| v.as_int()).ok_or(());
-    let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned).ok_or(());
+    let int = |key: &str| value.get(key).and_then(|v| v.as_int()).ok_or(BadAnswer);
+    let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned).ok_or(BadAnswer);
     Ok(Some(Selection {
         text: text("t")?,
         rect: (int("x")?, int("y")?, int("w")?, int("h")?),
@@ -457,10 +461,10 @@ pub(crate) mod tests {
         assert_eq!(parsed.address, "https://example.test/p");
         assert_eq!(parse_selection(&raw(r#"{"c":0}"#)), Ok(None));
         for bad in [r#"{"c":2}"#, r#"{"c":1,"t":5,"x":1,"y":1,"w":1,"h":1,"a":"","n":""}"#, r#"{"c":1,"t":"x","x":1.5,"y":1,"w":1,"h":1,"a":"","n":""}"#, "[]", "{"] {
-            assert_eq!(parse_selection(&raw(bad)), Err(()), "{bad}");
+            assert_eq!(parse_selection(&raw(bad)), Err(BadAnswer), "{bad}");
         }
-        assert_eq!(parse_selection("not json"), Err(()));
-        assert_eq!(parse_selection(&"x".repeat(SELECTION_ANSWER_LIMIT + 1)), Err(()));
+        assert_eq!(parse_selection("not json"), Err(BadAnswer));
+        assert_eq!(parse_selection(&"x".repeat(SELECTION_ANSWER_LIMIT + 1)), Err(BadAnswer));
     }
 
     #[test]

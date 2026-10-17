@@ -35,6 +35,7 @@ use crate::{
         extensions_page as ext,
         commands_page as cmdpage,
         address_page as address_wire,
+        page_tools_page as pt_wire, // --- page tools (T7) ---
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -88,6 +89,8 @@ struct Runtime {
     dirty: bool,
     /// Last address bar, search and bookmark snapshot sent (src/chrome_host/address_page.rs).
     address: Option<String>,
+    /// Last Page tools snapshot sent (src/chrome_host/page_tools_page.rs).
+    pagetools: Option<String>,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
     focus_pending: bool,
@@ -276,6 +279,7 @@ fn ensure_host(owner: HWND) {
                     rt.state = None;
                     rt.snapshot = None;
                     rt.address = None;
+                    rt.pagetools = None;
                     rt.privacy = None;
                     rt.commands = None;
                     crate::commands::set_capturing(false); // a reloaded page is not waiting for a key
@@ -443,6 +447,13 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         if address_fresh && host.post_json(&address_snapshot).is_ok() {
             let _ = with(owner, |rt| rt.address = Some(address_snapshot));
         }
+        // --- page tools (T7) --- the Page tools section reads the same answer.
+        let pt_snapshot = pagetools_snapshot(address_ack, &address_error);
+        let pt_fresh = with(owner, |rt| address_ack != Ack::None || rt.pagetools.as_deref() != Some(pt_snapshot.as_str())).unwrap_or(false);
+        if pt_fresh && host.post_json(&pt_snapshot).is_ok() {
+            let _ = with(owner, |rt| rt.pagetools = Some(pt_snapshot));
+        }
+        // --- end page tools ---
         if fresh && host.post_json(&snapshot).is_ok() {
             let _ = with(owner, |rt| {
                 rt.snapshot = Some(snapshot);
@@ -627,6 +638,8 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                     run_commands(owner, app, action);
                 } else if let Some(action) = address_wire::map_command(&fields) {
                     run_address(owner, app, action);
+                } else if let Some(change) = pt_wire::map_command(&fields) {
+                    run_pagetools(owner, app, change); // --- page tools (T7) ---
                 }
             }
             Queued::Privacy(fields) => {
@@ -879,6 +892,41 @@ fn run_address(owner: HWND, app: &AppRef, action: address_wire::Action) {
             answer(owner, Ok(()));
         }
     }
+}
+
+// ----- the Page tools section (src/chrome_host/page_tools_page.rs) -----
+
+/// The section's snapshot, read now.
+fn pagetools_snapshot(ack: Ack, error: &str) -> String {
+    let profile = crate::profile::active().ok();
+    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+    pt_wire::snapshot_json(
+        &settings.page_tools,
+        profile.as_ref().is_some_and(|profile| profile.is_guest()),
+        match ack {
+            Ack::None => pt_wire::Ack::None,
+            Ack::Saved => pt_wire::Ack::Saved,
+            Ack::Failed => pt_wire::Ack::Failed,
+        },
+        error,
+    )
+}
+
+/// Runs one change from the Page tools section: saved to the profile's file, then applied live.
+fn run_pagetools(owner: HWND, app: &AppRef, change: pt_wire::Change) {
+    let Ok(profile) = crate::profile::active() else { return answer(owner, Err("The profile is not ready.".into())) };
+    let path = profile.settings_file();
+    let Ok(mut settings) = crate::settings::read_strict(&path) else {
+        return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
+    };
+    if !settings.page_tools.set(&change.key, &change.value) {
+        return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+    }
+    let saved = crate::settings::save(&path, &settings);
+    if saved.is_ok() {
+        App::apply_live_settings(app, &settings);
+    }
+    answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
 }
 
 // ----- the Extensions section (docs/extensions.md "Managing extensions") -----

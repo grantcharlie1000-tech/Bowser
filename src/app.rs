@@ -793,6 +793,8 @@ struct AppTab {
     permission_blocked: bool,
     /// The page zoom in percent this tab last showed or was set to (100 for a new controller).
     zoom: u16,
+    /// The user gave this tab its zoom (page tools, "tab zoom"): it then keeps it across pages.
+    zoom_set: bool,
     /// Outcome of the last top-level navigation, for the connection state in Site information.
     load: LoadState,
     /// A private (InPrivate) tab: see `crate::private`. Fixed when the tab is created.
@@ -833,6 +835,7 @@ impl AppTab {
             blocked: 0,
             permission_blocked: false,
             zoom: crate::site_prefs::ZOOM_DEFAULT,
+            zoom_set: false,
             load: LoadState::Loaded,
             reader: crate::reader::TabState::default(),
             translate: crate::translate::TabState::default(),
@@ -842,6 +845,8 @@ impl AppTab {
 }
 
 mod page_translate;
+mod page_actions; // page tools: capture, selection, applying the settings (thread T7)
+pub use page_actions::{CaptureResult, Selected, capture_busy};
 pub use page_translate::Notice as TranslateNotice;
 mod privacy; // privacy, history and website appearance (thread T3)
 pub use privacy::DeleteReport;
@@ -3802,18 +3807,23 @@ impl App {
 
     /// Records a tab's zoom, optionally stores it for the page's origin, and refreshes the toolbar.
     fn note_tab_zoom(app: &AppRef, tab: TabId, percent: u16, persist: bool) {
-        let (url, store, hwnd) = {
+        let (url, store, hwnd, scope) = {
             let mut state = app.borrow_mut();
             let store = state.site_prefs.clone();
             let hwnd = state.hwnd;
+            let scope = state.settings.page_tools.zoom_scope;
             let Some(entry) = state.tabs.iter_mut().find(|entry| entry.id == tab) else {
                 return;
             };
             entry.zoom = percent;
-            (entry.url.clone(), store, hwnd)
+            if persist {
+                entry.zoom_set = true; // the user's own change (page tools: tab zoom keeps it)
+            }
+            (entry.url.clone(), store, hwnd, scope)
         };
-        // A private tab's zoom lives in the tab only: nothing is written to the site store.
-        let persist = persist && !Self::tab_private(app, tab);
+        // A private tab's zoom lives in the tab only: nothing is written to the site store. Neither
+        // does a zoom kept per tab (Settings > Page tools > Page zoom).
+        let persist = persist && !Self::tab_private(app, tab) && crate::page_tools::zoom_is_stored(scope);
         if persist
             && let (Some(store), Some(origin)) = (
                 store,
@@ -3834,20 +3844,20 @@ impl App {
             // A private tab neither reads nor writes stored zoom; it keeps its own level.
             return;
         }
-        let (store, current, default_zoom) = {
+        let (store, current, default_zoom, scope, tab_set) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
                 return;
             };
-            (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom)
+            (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom, state.settings.page_tools.zoom_scope, entry.zoom_set)
         };
         let Some(store) = store else {
             return;
         };
-        let target = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
-        if target == current {
+        let stored = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
+        let Some(target) = crate::page_tools::zoom_on_commit(scope, tab_set, current, stored, default_zoom) else {
             return;
-        }
+        };
         let applied = Self::call_engine(app, |engine| engine.set_zoom_percent(tab, target))
             .and_then(Result::ok)
             .unwrap_or(false);
@@ -4346,12 +4356,16 @@ impl App {
 
     /// The script call for `action` with the session's reader settings and Bowser's current colours.
     fn reader_invocation(app: &AppRef, action: crate::reader::Action) -> String {
-        let prefs = app.borrow().reader_prefs;
+        let (prefs, typography) = {
+            let state = app.borrow();
+            (state.reader_prefs, state.settings.page_tools.reader())
+        };
         let appearance = win32::glass::appearance();
         let palette = crate::theme::palette(appearance, true);
-        crate::reader::invocation(
+        crate::reader::invocation_with(
             action,
             prefs,
+            typography,
             appearance == crate::theme::Appearance::Dark,
             &crate::reader::Colours::from_palette(palette),
         )
@@ -4854,6 +4868,8 @@ impl App {
         // Retention and the website look are read by code that runs before any window setting is
         // applied (the history load, the first tab), so they are set here (thread T3).
         crate::history_retention::set_current(app.settings.history_retention);
+        crate::page_tools::apply_runtime(&app.settings.page_tools); // --- page tools (T7) ---
+        app.reader_prefs = app.settings.page_tools.reader_prefs();
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
@@ -6075,6 +6091,17 @@ impl App {
                 }))
             },
             // --- end address bar, search and bookmarks ---
+            // --- page tools (T7): "Insert note" in a text field's context menu ---
+            context_notes: Some(Rc::new(move |_tab| win32::context_note_items())),
+            context_note_pick: {
+                let note_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, note| {
+                    if let Some(app) = note_app.upgrade() {
+                        win32::insert_note_into_page(&app, tab, note);
+                    }
+                }))
+            },
+            // --- end page tools ---
             render_process_failed: {
                 let crash_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -6779,6 +6806,7 @@ impl App {
         let before = app.borrow().settings.clone(); // --- wave-1 fixes ---
         // The blocker, retention and website-look settings take effect without a restart.
         Self::apply_privacy_settings(app, settings);
+        Self::apply_page_tools_settings(app, settings); // --- page tools (T7) ---
         let (hwnd, edit) = {
             let mut state = app.borrow_mut();
             // --- wave-1 fixes --- the Downloads and Translation options the page saves through the app
@@ -7433,6 +7461,7 @@ mod tests {
     mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
     mod tab_flow; // --- tab options ---
     mod wave1_fixes; // --- wave-1 fixes ---
+    mod page_tools_flow; // --- page tools (T7) ---
 
     #[test]
     fn reader_probe_due_table() {

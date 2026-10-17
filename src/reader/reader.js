@@ -123,10 +123,10 @@
     for (k in st.tb) set(st.tb[k], 'aria-pressed', String(k === st.th));
   }
   function bar(st) {
-    var h = n.mk('div'), s = n.as.call(h, { mode: 'closed' }), b = n.mk('div'), i, t;
-    function btn(t, l, f) { var e = n.mk('button'); e.type = 'button'; e.textContent = t; set(e, 'aria-label', l); e.addEventListener('click', f); b.appendChild(e); return e; }
     st.tb = {};
     if (!tf.g && !tf.r) return; // no controls and no reading time: nothing to put on the page
+    var h = n.mk('div'), s = n.as.call(h, { mode: 'closed' }), b = n.mk('div'), i, t;
+    function btn(t, l, f) { var e = n.mk('button'); e.type = 'button'; e.textContent = t; set(e, 'aria-label', l); e.addEventListener('click', f); b.appendChild(e); return e; }
     b.className = 'b'; set(h, 'data-bwr-x', 'b'); set(b, 'role', tf.g ? 'toolbar' : 'status'); set(b, 'aria-label', tf.g ? 'Reader controls' : 'Reading time');
     function theme(t) { st.tb[t] = btn(t.charAt(0).toUpperCase() + t.slice(1), t + ' theme', function () { st.th = t; paint(st); }); }
     if (tf.g) {

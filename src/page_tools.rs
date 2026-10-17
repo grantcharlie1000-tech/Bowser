@@ -601,6 +601,29 @@ pub const SPATIAL_SCRIPT: &str = include_str!("spatial.js");
 pub const SPATIAL_OFF_SCRIPT: &str =
     "(function(){var s=window[Symbol.for('bowser.spatial.v1')];if(s&&typeof s.off==='function'){s.off();}})()";
 
+// ---------------------------------------------------------------------------------------------
+// What the engine reads
+// ---------------------------------------------------------------------------------------------
+
+static SPATIAL_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WHEEL_ZOOM_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Publishes the settings the engine reads when it makes a tab. True when either changed.
+pub fn apply_runtime(tools: &PageTools) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let a = SPATIAL_ON.swap(tools.spatial_nav, Relaxed) != tools.spatial_nav;
+    let b = WHEEL_ZOOM_ON.swap(tools.wheel_zoom, Relaxed) != tools.wheel_zoom;
+    a || b
+}
+
+pub fn spatial_on() -> bool {
+    SPATIAL_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn wheel_zoom_on() -> bool {
+    WHEEL_ZOOM_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

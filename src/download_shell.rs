@@ -128,6 +128,25 @@ pub fn pick_folder(owner: HWND, start: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+/// The open dialog for importing notes: a Markdown or text file. `None` when cancelled.
+pub fn open_notes_dialog(owner: HWND) -> Option<PathBuf> {
+    unsafe {
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        dialog
+            .SetOptions(windows::Win32::UI::Shell::FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR)
+            .ok()?;
+        dialog.SetTitle(w!("Import notes")).ok()?;
+        let filters = [
+            COMDLG_FILTERSPEC { pszName: w!("Markdown and text files"), pszSpec: w!("*.md;*.markdown;*.txt") },
+            COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
+        ];
+        let _ = dialog.SetFileTypes(&filters);
+        let _ = dialog.SetFileTypeIndex(1);
+        dialog.Show(Some(owner)).ok()?;
+        chosen_path(&dialog)
+    }
+}
+
 /// The Save dialog for "Ask where to save each file": `name` preselected in `dir`, the file's own
 /// extension as the first filter (so a name typed without one gets it). `None` when cancelled.
 pub fn save_dialog(owner: HWND, dir: &Path, name: &str) -> Option<PathBuf> {

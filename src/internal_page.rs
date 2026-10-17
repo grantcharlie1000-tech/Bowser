@@ -45,6 +45,8 @@ pub enum Section {
     StartPage,
     Privacy,
     Performance,
+    /// Page capture, spatial navigation, reader defaults, zoom and pop-out video (src/page_tools.rs).
+    PageTools,
     /// The address bar and its drop-down (src/address_settings.rs).
     Address,
     Search,
@@ -60,13 +62,14 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Profile,
         Self::Appearance,
         Self::Tabs,
         Self::StartPage,
         Self::Privacy,
         Self::Performance,
+        Self::PageTools,
         Self::Address,
         Self::Search,
         Self::Bookmarks,
@@ -88,6 +91,7 @@ impl Section {
             Self::StartPage => "startpage",
             Self::Privacy => "privacy",
             Self::Performance => "performance",
+            Self::PageTools => "pagetools",
             Self::Address => "address",
             Self::Search => "search",
             Self::Bookmarks => "bookmarks",
@@ -267,7 +271,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 16);
+        assert_eq!(Section::ALL.len(), 17);
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
