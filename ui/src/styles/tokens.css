@@ -139,6 +139,13 @@
     --bw-nav-h: 28px; /* back/forward group and toolbar icon buttons */
     --bw-tab-h: var(--bw-pill-h);
 
+    /* --- layout (thread T6) --- list row heights. `ui_density` (html[data-density]) lowers the
+       sidebar, panel and page rows; `compact_menus` (html[data-compact-menus]) the menu rows. The
+       toolbar row never changes: it is the native strip's height. */
+    --bw-row-h: 32px; /* .bw-row, panel list rows */
+    --bw-side-row-h: var(--bw-tab-h); /* vertical sidebar tab rows */
+    --bw-menu-row-h: 28px; /* HTML menu rows (menu.css) */
+
     /* Icons: 16px glyph in a 20px box, 24-unit grid, stroke in rendered px (non-scaling). */
     --bw-icon: 16px;
     --bw-icon-box: 20px;
@@ -181,6 +188,16 @@
     --bw-z-tooltip: 50;
     --bw-z-palette: 60;
     --bw-z-dialog: 70;
+  }
+
+  /* --- layout (thread T6) --- the compact UI density and compact menus (set by view.ts applyTheme). */
+  :root[data-density="compact"] {
+    --bw-row-h: 28px;
+    --bw-side-row-h: 22px;
+  }
+
+  :root[data-compact-menus="true"] {
+    --bw-menu-row-h: 24px;
   }
 
   :root[data-scheme="light"] {

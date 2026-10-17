@@ -255,9 +255,10 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
 /// Client-relative HTML sidebar bounds, stopping at the native resize handle's left edge.
 pub fn sidebar_bounds(layout: &crate::vertical_tabs::SidebarLayout) -> Option<RECT> {
     let bounds = layout.sidebar;
-    let right = layout.handle.left;
-    if right <= bounds.left || bounds.bottom <= bounds.top { return None; }
-    Some(RECT { left: bounds.left, top: bounds.top, right, bottom: bounds.bottom })
+    // --- layout (thread T6) --- the handle is on the inner edge: right of a left sidebar, left of a right one.
+    let (left, right) = (layout.content_left(), layout.content_right());
+    if right <= left || bounds.bottom <= bounds.top { return None; }
+    Some(RECT { left, top: bounds.top, right, bottom: bounds.bottom })
 }
 // --- end vertical sidebar ---
 
