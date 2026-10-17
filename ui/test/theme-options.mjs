@@ -251,7 +251,7 @@ test('every theme row sits behind More options; the main view keeps its ten rows
   // --- final --- the schedule joined Appearance's main view on its own branch; with the layout
   // presets and the auto-hide switch merged, Appearance keeps the ten core rows PR #34 had.
   for (const id of options.THEME_ROW_IDS) assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
-  const core = areaNode.querySelectorAll('.sp-row').filter((row) => !more.contains(row)).map((row) => row.dataset.row);
+  const core = areaNode.querySelectorAll('.sp-row').filter((row) => !more.contains(row)).map((row) => row.dataset.row).filter((id) => typeof id === 'string');
   assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent'], 'the theme card gains no core row');
   assert.ok(core.length <= 10, `${core.length} core rows in Appearance`);
   // Search finds a hidden row and opens the disclosure it is in.

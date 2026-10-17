@@ -1,6 +1,6 @@
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { onInbound, send, sendClosedTabs, sendTabSelection, sendTabStack, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { onInbound, send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
@@ -110,6 +110,7 @@ const DEFAULT_OPTS: TabOptsMsg = {
   alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
   stackDrag: true, stackDelay: 400, // --- tab stacks (T10) ---
   stackRow: 'off', // --- two-level stacks (T10b) ---
+  closedButton: true, tools: [], // --- toolbars and feeds (thread T13) ---
 };
 const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
 
@@ -429,10 +430,32 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   closedBtn.append(icon('tab-restore'));
   setTip(closedBtn, 'Closed tabs');
   closedBtn.addEventListener('click', () => { sendClosedTabs(); });
+  // --- toolbars and feeds (thread T13) --- the end of the strip: the Closed tabs button (when `toolbar_tabs` lists it)
+  // and the command buttons the user put on the tab bar, in one box so they stay together while the strip scrolls.
+  const stripTools = el('div', 'strip-tools');
+  let toolSig = '';
+  const toolButtons: HTMLButtonElement[] = [];
+  const syncTools = (): void => {
+    const sig = ui.tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    if (sig === toolSig) return;
+    toolSig = sig;
+    toolButtons.length = 0;
+    for (const tool of ui.tools) {
+      const button = el('button', 'closed-btn tab-tool bw-icon-btn');
+      button.type = 'button';
+      button.setAttribute('aria-label', tool.l);
+      button.append(icon('command'));
+      setTip(button, tool.l);
+      button.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
+      toolButtons.push(button);
+    }
+  };
+  // --- end toolbars and feeds ---
   const pinSep = el('span', 'pinsep');
   pinSep.setAttribute('aria-hidden', 'true');
   pinSep.setAttribute('role', 'presentation');
   const applyUi = (): void => {
+    syncTools(); // --- toolbars and feeds (thread T13) ---
     const wanted = stripClasses(ui);
     for (const name of STRIP_OPTION_CLASSES) strip.classList.toggle(name, wanted.includes(name));
     strip.style.setProperty('--tab-active-min', ui.minWidth > 0 ? `${ui.minWidth}px` : '');
@@ -668,7 +691,13 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     showRow2(second === null ? null : ui.stackRow); // --- two-level stacks (T10b) ---
     // --- tab options --- a thin line where the pinned tabs end, and the Closed tabs button at the end.
     if (ui.separator && lastPinned >= 0 && lastPinned < top.length - 1) top.splice(lastPinned + 1, 0, pinSep);
-    if (ui.closed > 0) top.push(closedBtn);
+    // --- toolbars and feeds (thread T13) --- Closed tabs only when the bar lists it; command buttons after it.
+    const tools: HTMLElement[] = [...(ui.closed > 0 && ui.closedButton ? [closedBtn] : []), ...toolButtons];
+    if (tools.length > 0) {
+      place(stripTools, tools);
+      top.push(stripTools);
+    }
+    // --- end toolbars and feeds ---
     // --- end tab options ---
     place(strip, top);
     strip.append(...ghosts);

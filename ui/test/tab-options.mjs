@@ -254,6 +254,7 @@ test('the strip options message is whole or refused', () => {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
     selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4, stackDrag: false, stackDelay: 250,
     stackRow: 'regular', // --- two-level stacks (T10b) ---
+    closedButton: true, tools: [{ k: 'cmd:new-tab', l: 'New tab', i: 1 }], // --- toolbars and feeds (thread T13) ---
   });
   assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackRow, 'off', 'no second row unless Rust laid one out');
   assert.equal(parseInbound(JSON.stringify({ ...stripFixture.opts, stackRow: 'compact' })).stackRow, 'compact');

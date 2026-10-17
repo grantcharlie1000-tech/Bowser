@@ -9,9 +9,10 @@ export const MAX_RAIL_KEY = 24;
 /** Most favicons kept at once; equal to the item cap, so a full rail always fits. */
 export const RAIL_FAV_MAX = 128;
 
-export const RAIL_KEY_RE = /^(home|customize|addws|addapp|bookmarks|history|menu|ws:[0-9]{1,20}|app:[0-9]{1,10})$/;
+// `tool:<n>` is an extra button of the panel bar (thread T13): the Feeds button or a command button.
+export const RAIL_KEY_RE = /^(home|customize|addws|addapp|bookmarks|history|menu|ws:[0-9]{1,20}|app:[0-9]{1,10}|tool:[0-9]{1,2})$/;
 
-export const RAIL_ICON_NAMES = ['home', 'customize', 'plus', 'heart', 'clock', 'dots', 'apptile', 'letter'] as const;
+export const RAIL_ICON_NAMES = ['home', 'customize', 'plus', 'heart', 'clock', 'dots', 'apptile', 'letter', 'feed'] as const;
 export const RAIL_GLYPHS = [
   'briefcase',
   'home',
@@ -61,7 +62,7 @@ export function sectionOf(key: string): Section | null {
   if (key === 'home' || key === 'customize') return 'top';
   if (key === 'addws' || key.startsWith('ws:')) return 'workspaces';
   if (key === 'addapp' || key.startsWith('app:')) return 'apps';
-  if (key === 'bookmarks' || key === 'history' || key === 'menu') return 'bottom';
+  if (key === 'bookmarks' || key === 'history' || key === 'menu' || key.startsWith('tool:')) return 'bottom';
   return null;
 }
 

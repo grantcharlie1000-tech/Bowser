@@ -241,6 +241,10 @@ pub static BUILTINS: &[CommandDef] = &[
     def("next-workspace", "Next workspace", "Switch to the workspace below this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_next_workspace)),
     def("previous-workspace", "Previous workspace", "Switch to the workspace above this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_previous_workspace)),
     // --- end tab stacks, tiling and workspaces ---
+    // --- toolbars and feeds (T13): the Feeds panel; also the panel bar's Feeds button and a command button's target ---
+    def("feeds", "Feeds", "Read the feeds you subscribed to, and subscribe to this page's feed", C::Panels, &[], Cmd, Run(crate::win32::run_open_feeds)),
+    def("subscribe-feed", "Subscribe to this page's feed", "Open Feeds with the feeds this page offers, to preview and subscribe", C::Page, &[], Page, Run(crate::win32::run_open_feeds)),
+    // --- end toolbars and feeds ---
 ];
 
 /// The command with this id, if it is a built-in.

@@ -10,6 +10,7 @@ import {
   sendSuggestEnd,
   sendSuggestPick,
   sendSuggestPreview,
+  sendTool, // --- toolbars and feeds (thread T13) ---
   type CaptionAction,
   type CompletionMsg,
   type NavAction,
@@ -150,6 +151,12 @@ function startToolbar(root: HTMLElement): void {
   view.reader.addEventListener('click', () => open('reader'));
   view.translate.addEventListener('click', () => open('translate'));
   view.menu.addEventListener('click', () => open('menu'));
+  // --- toolbars and feeds (thread T13) --- the buttons the address bar's list adds (docs/toolbars.md).
+  const tool = (item: string): void => { sendTool('address', item, view.bar.items.indexOf(item)); };
+  view.bookmark.addEventListener('click', () => tool('bookmark'));
+  view.newtab.addEventListener('click', () => tool('newtab'));
+  view.feed.addEventListener('click', () => open('feeds'));
+  // --- end toolbars and feeds ---
   view.downloads.button.addEventListener('click', () => { sendDownloadToggle(view.downloads.button.getBoundingClientRect()); });
   view.extensions.button.addEventListener('click', () => { sendExtensionsButton(view.extensions.button.getBoundingClientRect()); });
 

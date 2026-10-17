@@ -444,6 +444,7 @@ pub fn rail_key_to_wire(key: RailKey) -> RailKeyWire {
         RailKey::Bookmarks => RailKeyWire::Bookmarks,
         RailKey::History => RailKeyWire::History,
         RailKey::Menu => RailKeyWire::Menu,
+        RailKey::Tool(n) => RailKeyWire::Tool(n),
     }
 }
 
@@ -465,6 +466,7 @@ pub fn rail_icon_wire(icon: RailIcon) -> String {
         RailIcon::Heart => "heart",
         RailIcon::Clock => "clock",
         RailIcon::Dots => "dots",
+        RailIcon::Feed => "feed",
         RailIcon::AppTile => "apptile",
         RailIcon::Letter => "letter",
         RailIcon::Glyph(glyph) => {

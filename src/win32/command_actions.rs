@@ -117,6 +117,13 @@ pub(crate) fn toggle_site(store: &mut Store, host: &str) -> bool {
     }
 }
 
+// --- toolbars and feeds (T13) ---
+/// "Feeds" and "Subscribe to this page's feed": the Feeds panel, at the feeds the page in front offers.
+pub(crate) fn run_open_feeds(cx: &Context) {
+    super::window::open_feeds_panel(cx.hwnd, cx.app);
+}
+// --- end toolbars and feeds ---
+
 // --- wave-1 integration: registry commands for T1's periodic reload, T3's privacy tools and T2's
 // address bar, so Quick Commands, the cheat sheet, the keyboard editor and chains reach them ---
 

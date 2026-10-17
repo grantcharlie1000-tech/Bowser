@@ -35,7 +35,7 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader' | 'translate';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader' | 'translate' | 'feeds';
 /** The reader view button: hidden, offered (the page looks like an article) or on. */
 export type ReaderPill = 'none' | 'available' | 'on';
 /** The translate button: hidden, offered (the page is in another language) or on (showing the translation). */
@@ -45,8 +45,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess' | 'feed';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -97,6 +97,9 @@ export type Command =
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
   // --- end vertical sidebar ---
+  // --- toolbars and feeds (thread T13) --- a command button of the address bar or the tab bar: its item id and its place in the bar's list.
+  | { v: 1; t: 'tool'; b: 'address' | 'tabs'; k: string; i: number }
+  // --- end toolbars and feeds ---
   | { v: 1; t: 'rail'; a: RailAction; k: string; r?: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
   | ({ v: 1; t: PanelKind } & PanelFields)
@@ -243,7 +246,31 @@ export interface StateMsg {
   // --- end layout ---
   /** Window appearance options and whether the window is in the background (window-logic.ts). Absent in older hosts (stock look). */
   readonly look?: Look; // --- window and panels (thread T9) ---
+  // --- toolbars and feeds (thread T13) --- the address bar's buttons; all four absent in older hosts (every button, in its usual place).
+  /** `toolbar_buttons`: the buttons in order, as a comma list. */
+  readonly items?: string;
+  /** The command buttons among `items`, with the names the registry gives them. */
+  readonly tools?: readonly ToolButtonMsg[];
+  /** CSS px the always-there buttons at the end of the bar take from the address field. */
+  readonly extra?: number;
+  /** How many feeds the page in front offers; 0 hides the feed button. */
+  readonly feeds?: number;
+  // --- end toolbars and feeds ---
   readonly theme: Theme;
+}
+/** A command button on a bar: its item id (`cmd:new-tab`, `chain:2`) and the name it shows. */
+export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number }
+/** Most command buttons on one bar (Rust `MAX_COMMAND_ITEMS`). */
+export const MAX_TOOLS = 4;
+const TOOL_ITEM_RE = /^[a-z0-9:-]{1,64}$/;
+function parseTools(value: unknown): ToolButtonMsg[] | null {
+  if (!Array.isArray(value) || value.length > MAX_TOOLS) return null;
+  const out: ToolButtonMsg[] = [];
+  for (const row of value) {
+    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
+    out.push({ k: row.k, l: row.l, i: row.i });
+  }
+  return out;
 }
 // --- layout (thread T6) ---
 export const UI_DENSITIES = ['regular', 'compact'] as const;
@@ -497,6 +524,12 @@ export interface TabOptsMsg {
   readonly stackDelay: number;
   /** --- two-level stacks (T10b) --- the second tab row Rust laid out (`chrome::layout::StackRow`). */
   readonly stackRow: StackRowSize;
+  // --- toolbars and feeds (thread T13) ---
+  /** `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all. */
+  readonly closedButton: boolean;
+  /** The tab bar's command buttons, in order. */
+  readonly tools: readonly ToolButtonMsg[];
+  // --- end toolbars and feeds ---
 }
 export const STACK_ROWS = ['off', 'regular', 'compact'] as const;
 export type StackRowSize = typeof STACK_ROWS[number];
@@ -521,6 +554,13 @@ export function sendRailWheel(d: number): boolean {
   return Number.isInteger(d) && d !== 0 && Math.abs(d) <= MAX_RAIL_WHEEL && send({ v: 1, t: 'railwheel', d });
 }
 // --- end tab stacks ---
+// --- toolbars and feeds (thread T13) ---
+/** A command button of the address bar or the tab bar: Rust runs it only if `item` is at `index` in that bar's list. */
+export function sendTool(bar: 'address' | 'tabs', item: string, index: number): boolean {
+  if (!TOOL_ITEM_RE.test(item) || !isInt(index, 0, 13)) return false;
+  return send({ v: 1, t: 'tool', b: bar, k: item, i: index });
+}
+// --- end toolbars and feeds ---
 // --- end tab options ---
 // --- vertical sidebar (lane S) ---
 export interface WorkspaceMsg {
@@ -630,7 +670,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -1165,7 +1205,13 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'density', 'compactMenus', 'look', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'density', 'compactMenus', 'look', 'items', 'tools', 'extra', 'feeds', 'theme'])) return null;
+      // --- toolbars and feeds (thread T13) --- the four come together or not at all.
+      const barKeys = ['items', 'tools', 'extra', 'feeds'] as const;
+      const barCount = barKeys.filter((key) => key in raw).length;
+      if (barCount !== 0 && barCount !== barKeys.length) return null;
+      if (barCount !== 0 && (!isStr(raw.items, 512) || parseTools(raw.tools) === null || !isInt(raw.extra, 0, 400) || !isInt(raw.feeds, 0, 9))) return null;
+      // --- end toolbars and feeds ---
       if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
@@ -1215,6 +1261,7 @@ export function parseInbound(data: unknown): Inbound | null {
         ...(isOneOf(raw.density, UI_DENSITIES) ? { density: raw.density } : {}), // --- layout (thread T6) ---
         ...(isBool(raw.compactMenus) ? { compactMenus: raw.compactMenus } : {}),
         ...('look' in raw ? { look: parseLook(raw.look)! } : {}), // --- window and panels (thread T9) ---
+        ...(barCount === 4 ? { items: raw.items as string, tools: parseTools(raw.tools) as ToolButtonMsg[], extra: raw.extra as number, feeds: raw.feeds as number } : {}), // --- toolbars and feeds ---
         theme: parseTheme(raw.theme),
       };
     }
@@ -1249,13 +1296,15 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- tab options ---
     case 'tabopts': {
-      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay', 'stackRow'];
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay', 'stackRow', 'closedButton', 'tools'];
       if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
-      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow } = raw;
-      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag].every(isBool)) return null;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag, closedButton].every(isBool)) return null;
       if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99) || !isInt(stackDelay, 0, 2000)) return null;
       if (!isOneOf(stackRow, STACK_ROWS)) return null; // --- two-level stacks (T10b) ---
-      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow } as TabOptsMsg;
+      const tools = parseTools(raw.tools); // --- toolbars and feeds (thread T13) ---
+      if (tools === null) return null;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton, tools } as TabOptsMsg;
     }
     // --- end tab options ---
     case 'fav': {

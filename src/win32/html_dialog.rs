@@ -25,11 +25,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Privacy, Rename, Sessions }
+pub(crate) enum Kind { Notes, Privacy, Rename, Sessions, Feeds }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions, Self::Feeds => View::DialogFeeds } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions", Self::Feeds => "feeds" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions", Self::Feeds => "Feeds" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -40,6 +40,8 @@ thread_local! {
     static PRIVACY: Cell<isize> = const { Cell::new(0) };
     /// The open Sessions panel, so a second request focuses it instead of stacking one.
     static SESSIONS: Cell<isize> = const { Cell::new(0) };
+    /// The open Feeds panel (thread T13), likewise.
+    static FEEDS: Cell<isize> = const { Cell::new(0) };
     /// An HTML dialog host could not be created: later dialogs use their native windows.
     static FAILED: Cell<bool> = const { Cell::new(false) };
 }
@@ -51,6 +53,9 @@ const PRIVACY_HEIGHT: i32 = 760;
 /// Logical (96 DPI) size of the Sessions panel.
 const SESSIONS_WIDTH: i32 = 420;
 const SESSIONS_HEIGHT: i32 = 560;
+/// Logical (96 DPI) size of the Feeds panel.
+const FEEDS_WIDTH: i32 = 480;
+const FEEDS_HEIGHT: i32 = 680;
 /// The Notes window keeps its native resize strip on the left edge, so the page starts after it.
 const NOTES_RESIZE_STRIP_DIP: i32 = 9;
 
@@ -108,11 +113,14 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 LRESULT(1)
             }
             WM_SIZE => { resize(hwnd); LRESULT(0) }
+            // A feed worker left an answer (thread T13).
+            m if m == super::feeds_panel::WM_FEEDS_DONE => { feeds_done(hwnd); LRESULT(0) }
             WM_CLOSE => { let _ = DestroyWindow(hwnd); LRESULT(0) }
             WM_NCDESTROY => {
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -240,6 +248,36 @@ pub(crate) fn open_sessions(owner: HWND, app: &AppRef, env: ChromeEnv) {
     unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
+/// Opens the Feeds panel in its own owned window, or brings the open one to the front with a fresh snapshot.
+pub(crate) fn open_feeds(owner: HWND, app: &AppRef, env: ChromeEnv) {
+    let existing = FEEDS.with(Cell::get);
+    if existing != 0 {
+        let window = HWND(existing as *mut std::ffi::c_void);
+        if unsafe { IsWindow(Some(window)) }.as_bool() {
+            unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+            send_to(window);
+            return;
+        }
+        FEEDS.with(|slot| slot.set(0));
+    }
+    let Some(window) = create_window(owner, Kind::Feeds.title(), FEEDS_WIDTH, FEEDS_HEIGHT) else {
+        show_error_message("The Feeds panel could not be opened.");
+        return;
+    };
+    FEEDS.with(|slot| slot.set(window.0 as isize));
+    attach(app, owner, window, env, Kind::Feeds);
+    unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+}
+
+/// A feed worker's answer arrived for the Feeds window `parent`: apply it and redraw the panel.
+fn feeds_done(parent: HWND) {
+    if super::feeds_panel::apply_done(parent)
+        && let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned())
+    {
+        send_current(&runtime);
+    }
+}
+
 /// Sends the open Sessions panel a fresh snapshot (its list changed from outside).
 pub(crate) fn refresh_sessions() {
     let existing = SESSIONS.with(Cell::get);
@@ -278,6 +316,12 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             send_current(runtime);
             // --- popup surfaces (lane PP) ---
             let (kind, parent, host) = { let state = runtime.borrow(); (state.kind, state.parent, state.host.clone()) };
+            // The Feeds panel fetches the subscriptions that are older than the user's refresh choice.
+            if kind == Kind::Feeds {
+                let app = runtime.borrow().app.clone();
+                super::feeds_panel::on_ready(&app, parent);
+                send_current(runtime);
+            }
             if kind == Kind::Rename {
                 if super::profile_rename::html_ready(parent) {
                     if let Some(host) = host { let _ = host.focus(); }
@@ -302,6 +346,7 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         Command::Panel { kind: PanelType::Notes, f } if runtime.borrow().kind == Kind::Notes => handle_notes(runtime, f),
         Command::Panel { kind: PanelType::Privacy, f } if runtime.borrow().kind == Kind::Privacy => handle_privacy(runtime, f),
         Command::Panel { kind: PanelType::Sessions, f } if runtime.borrow().kind == Kind::Sessions => handle_sessions(runtime, f),
+        Command::Panel { kind: PanelType::Feeds, f } if runtime.borrow().kind == Kind::Feeds => handle_feeds(runtime, f),
         _ => {}
     }
 }
@@ -311,7 +356,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime), Kind::Feeds => feeds_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
     if kind == Kind::Privacy {
         let app = runtime.try_borrow().ok().map(|state| state.app.clone());
@@ -446,6 +491,21 @@ fn handle_rename(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     }
 }
 // --- end popup surfaces ---
+
+// --- toolbars and feeds (thread T13) --- the Feeds panel (win32/feeds_panel.rs).
+fn feeds_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let app = runtime.try_borrow().ok()?.app.clone();
+    Some(super::feeds_panel::snapshot_json(&app))
+}
+
+/// A validated `feed` command (`panels::feeds::map_command`).
+fn handle_feeds(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let (app, parent) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.parent), Err(_) => return };
+    let Some(action) = panels::feeds::map_command(&f) else { return; };
+    super::feeds_panel::handle(&app, parent, action);
+    send_current(runtime);
+}
+// --- end toolbars and feeds ---
 
 // --- tab options --- the Sessions panel: saved sessions, saving the open tabs, opening and deleting.
 fn sessions_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {

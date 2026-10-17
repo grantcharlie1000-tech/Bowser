@@ -528,7 +528,15 @@
   pointer-events: none;
 }
 
-/* The Closed tabs button sits at the end of the strip. */
+/* The Closed tabs button and the command buttons of the tab bar (Settings > Toolbars) sit together at the end
+   of the strip; the box is what stays put while a long strip scrolls. */
+.strip .strip-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  align-self: center;
+}
+
 .strip .closed-btn {
   flex: none;
   align-self: center;
@@ -537,7 +545,7 @@
 }
 
 .strip .closed-btn:hover { color: var(--bw-text); }
-.strip.scrolling .closed-btn { position: sticky; right: 0; }
+.strip.scrolling .strip-tools { position: sticky; right: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .strip .tab.dragging,

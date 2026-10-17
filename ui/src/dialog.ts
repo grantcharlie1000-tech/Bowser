@@ -6,7 +6,7 @@ import { startRenameDialog } from './rename';
 import { startAddressDialog } from './address-dialog'; // --- address bar, search and bookmarks ---
 
 const isPanelToken = (value: string | null): value is PanelToken =>
-  value === 'notes' || value === 'privacy' || value === 'rename' || value === 'address' || value === 'sessions';
+  value === 'notes' || value === 'privacy' || value === 'rename' || value === 'address' || value === 'sessions' || value === 'feeds';
 
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');

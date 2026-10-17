@@ -191,6 +191,8 @@ enum DeferredChromeCommand {
     SystemMenu,
     /// A left click on a rail button: what a native click does. May open a modal prompt.
     RailClick { key: RailKey },
+    /// A command button of the address bar or the tab bar (thread T13): the item at `index` of that bar's list.
+    Tool { bar: chrome_host::protocol::ToolBar, index: u8 },
     /// A right click on a rail button: the native rail context menu at the client point.
     RailMenu { key: RailKey, x: i32, y: i32 },
     /// The pointer rested on a flyout button while a flyout is open: switch to it.
@@ -568,6 +570,13 @@ struct WindowChrome {
     html_ext_slot: i32,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
+    // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
+    // toolbar's slots: whether Downloads and Extensions may take theirs, and the room the always-there
+    // buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
+    html_dl_allowed: bool,
+    html_ext_allowed: bool,
+    html_bar_extra: i32,
+    // --- end toolbars and feeds ---
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
@@ -747,6 +756,9 @@ impl WindowChrome {
             html_ext_slot: 0,
             html_ext_last: None,
             html_ext_rect: None,
+            html_dl_allowed: true,
+            html_ext_allowed: true,
+            html_bar_extra: 0,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -1193,7 +1205,8 @@ impl WindowChrome {
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
-        self.html_dl_slot + self.html_ext_slot
+        // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
+        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -1411,7 +1424,7 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
-        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
     entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     // --- tab stacks and workspaces (T10) --- "Workspaces" off hides them; the counts are an option.
@@ -1446,7 +1459,7 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             }, 0xFF));
             entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None, dot: false, count, emoji });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
@@ -1466,9 +1479,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 (None, None)
             };
             let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, dot: super::panel_webapp::unread_count(app_entry.id) > 0, count: 0, emoji: None });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, dot: super::panel_webapp::unread_count(app_entry.id) > 0, count: 0, emoji: None });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -1476,9 +1489,15 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+    // --- toolbars and feeds (thread T13) --- the panel bar's extra buttons (`toolbar_panel`), after the
+    // built-in ones: the Feeds button and command buttons (a letter tile, the command's name as its tooltip).
+    for (index, label, icon) in panel_tools(&App::settings(app).toolbar_panel) {
+        entries.push(RailEntryData { key: RailKey::Tool(index), icon, label, active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+    }
+    // --- end toolbars and feeds ---
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
         return false;
@@ -5169,6 +5188,7 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
         compact_menus: false,
         look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     }
     .to_json()
@@ -5386,6 +5406,14 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
         // The History button opens bowser://history; without it, it toggles the flyout or panel.
         RailKey::History if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
         RailKey::History => { rail_activate_at(hwnd, app, side_panel::PanelId::History, Some(key)); }
+        // --- toolbars and feeds (thread T13) --- the item at that place of the panel bar's list, if it is still there.
+        RailKey::Tool(index) => {
+            let settings = App::settings(app);
+            if let Some(item) = settings.toolbar_panel.get(usize::from(index)) {
+                run_bar_item(hwnd, app, item);
+            }
+        }
+        // --- end toolbars and feeds ---
     }
 
     let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -9204,9 +9232,18 @@ fn html_sync(hwnd: HWND) {
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
+    let settings = App::settings(&app);
+    // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
+    let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
+    let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
+    let _ = with_chrome(hwnd, |s| {
+        s.html_bar_extra = bar_extra;
+        s.html_dl_allowed = dl_allowed;
+        s.html_ext_allowed = ext_allowed;
+    });
+    // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
-    let settings = App::settings(&app);
     // While a private tab is shown, the chrome takes its own light or dark look when the private
     // theme asks for one (thread T3); otherwise it follows the normal appearance.
     let system_look = glass::appearance();
@@ -9246,6 +9283,7 @@ fn html_sync(hwnd: HWND) {
         density: settings.ui_density,
         compact_menus: settings.compact_menus,
         look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
+        bar: address_bar_items(&app, &settings), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
@@ -9621,6 +9659,27 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 run_translate(hwnd, &app, TranslateAction::Toggle);
             }
         }
+        // --- toolbars and feeds (thread T13) ---
+        // The feed button in the address field: the Feeds panel opens with the feeds this page offers.
+        ChromeCommand::Open(OpenTarget::Feeds) => {
+            if let Some(app) = app_of(hwnd) {
+                open_feeds_panel(hwnd, &app);
+            }
+        }
+        // A command button: only an item the user put at that place in that bar's list runs.
+        ChromeCommand::Tool { bar, item, index } => {
+            if let Some(app) = app_of(hwnd) {
+                let settings = App::settings(&app);
+                let list = match bar {
+                    chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                    chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+                };
+                if list.get(usize::from(index)) == Some(&item) {
+                    defer_html_command(hwnd, DeferredChromeCommand::Tool { bar, index });
+                }
+            }
+        }
+        // --- end toolbars and feeds ---
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
@@ -9745,6 +9804,7 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
         compact_menus: false,
         look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -10064,7 +10124,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -10249,6 +10309,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         density: settings.ui_density,
         compact_menus: settings.compact_menus,
         look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     Some(state.to_json())
@@ -10302,6 +10363,17 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::RailMenu { key, x, y } => {
             if rail_model_keys(hwnd).contains(&key) {
                 show_rail_context_menu(hwnd, &app, key, x, y);
+            }
+        }
+        // The list may have changed while the command waited: the item must still be where it was.
+        DeferredChromeCommand::Tool { bar, index } => {
+            let settings = App::settings(&app);
+            let list = match bar {
+                chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+            };
+            if let Some(item) = list.get(usize::from(index)) {
+                run_bar_item(hwnd, &app, item);
             }
         }
         DeferredChromeCommand::RailHover { key } => {
@@ -10506,6 +10578,7 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
 fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripOptions {
     use crate::tab_options::LoadIndicator;
     let options = App::tab_options(app);
+    let settings = App::settings(app); // --- toolbars and feeds (thread T13) ---
     chrome_host::protocol::StripOptions {
         close_left: options.close_button_left,
         close_always: options.close_button_always,
@@ -10534,8 +10607,83 @@ fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripO
             if s.layout.stack_row.is_empty() { "off" } else { s.last_relayout.as_ref().map_or("off", |inputs| inputs.arrangement.stack_row.key()) }
         })
         .unwrap_or("off"),
+        // --- toolbars and feeds (thread T13) ---
+        closed_button: crate::toolbar_prefs::Bar::Tabs.list(&settings).iter().any(|item| item == "closed-tabs"),
+        tools: tool_buttons(crate::toolbar_prefs::Bar::Tabs.list(&settings)),
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+/// The command buttons among `items`, with the names the registry gives them. A chain that was deleted
+/// since the button was placed, or a command that no longer exists, simply shows no button.
+fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
+    if !items.iter().any(|item| crate::toolbar_prefs::command_of(item).is_some()) {
+        return Vec::new();
+    }
+    let live = crate::commands::live();
+    let entries = live.store.entries();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let id = crate::toolbar_prefs::command_of(item)?;
+            let entry = entries.iter().find(|entry| entry.id == id)?;
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
+        })
+        .collect()
+}
+
+/// What the toolbar page needs to lay out the address bar: its list, the command buttons' names, the room
+/// the always-there buttons at its end take, and how many feeds the page in front offers.
+fn address_bar_items(app: &AppRef, settings: &crate::settings::Settings) -> chrome_host::protocol::BarItems {
+    chrome_host::protocol::BarItems {
+        items: Some(settings.toolbar_buttons.join(",")),
+        tools: tool_buttons(&settings.toolbar_buttons),
+        extra: crate::toolbar_prefs::right_static_px(settings).max(0) as u32,
+        feeds: App::active_feed_links(app).len() as u32,
+    }
+}
+
+/// The panel bar's extra buttons as the rail draws them: `(place in the list, name, icon)`. The Feeds button
+/// has its own icon; a command button is a letter tile named after its command. A command or chain that no
+/// longer exists shows no button.
+fn panel_tools(items: &[String]) -> Vec<(u8, String, RailIcon)> {
+    let buttons = tool_buttons(items);
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if item == "feeds" {
+                return Some((index as u8, "Feeds".to_owned(), RailIcon::Feed));
+            }
+            let button = buttons.iter().find(|button| &button.item == item)?;
+            Some((index as u8, button.label.clone(), RailIcon::Letter))
+        })
+        .collect()
+}
+
+/// Runs the command behind a bar item: the bar's own buttons that are commands (`bookmark`, `newtab`,
+/// `feeds`) and the command and chain buttons. False for an item that is not a command (the other buttons
+/// have their own wire).
+fn run_bar_item(hwnd: HWND, app: &AppRef, item: &str) -> bool {
+    let id = match item {
+        "bookmark" => "add-bookmark",
+        "newtab" => "new-tab",
+        "feeds" => "feeds",
+        other => match crate::toolbar_prefs::command_of(other) {
+            Some(id) => id,
+            None => return false,
+        },
+    };
+    run_registered(hwnd, app, id)
+}
+
+/// The Feeds panel from the address bar's feed button (`OpenTarget::Feeds`) and the `feeds` command: with
+/// the feeds the page in front offers.
+pub(crate) fn open_feeds_panel(hwnd: HWND, app: &AppRef) {
+    super::feeds_panel::open(hwnd, app, App::active_feed_links(app));
+}
+// --- end toolbars and feeds ---
 
 /// What the strip marks on tab `id`, from the one pass `App::tab_strip_extras` made.
 fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_host::protocol::TabMarks {
@@ -12864,3 +13012,45 @@ fn main_menu_anchor(hwnd: HWND) -> windows::Win32::Foundation::POINT {
     })
     .unwrap_or_default()
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod bar_tests {
+    use super::*;
+
+    fn list(text: &str) -> Vec<String> {
+        text.split(',').filter(|id| !id.is_empty()).map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn command_buttons_take_their_commands_name_and_their_place_in_the_list() {
+        let buttons = tool_buttons(&list("closed-tabs,cmd:new-private-tab,cmd:no-such,chain:9,cmd:history"));
+        let named: Vec<(&str, &str, u8)> = buttons.iter().map(|b| (b.item.as_str(), b.label.as_str(), b.index)).collect();
+        assert_eq!(named, [("cmd:new-private-tab", "New private tab", 1), ("cmd:history", "History", 4)], "a deleted chain or unknown command shows no button");
+        assert!(tool_buttons(&list("back,reload")).is_empty());
+    }
+
+    #[test]
+    fn the_panel_bar_shows_feeds_with_its_own_glyph_and_command_buttons_as_letter_tiles() {
+        let tools = panel_tools(&list("feeds,cmd:toggle-notes,cmd:no-such"));
+        assert_eq!(tools.len(), 2);
+        assert_eq!((tools[0].0, tools[0].1.as_str(), tools[0].2), (0, "Feeds", RailIcon::Feed));
+        assert_eq!((tools[1].0, tools[1].1.as_str(), tools[1].2), (1, "Toggle notes and tasks", RailIcon::Letter));
+        assert!(panel_tools(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_rail_wire_names_a_tool_by_its_place_and_the_feed_glyph_by_name() {
+        assert_eq!(chrome_host::rail_key_to_wire(RailKey::Tool(3)).to_wire(), "tool:3");
+        assert_eq!(chrome_host::rail_icon_wire(RailIcon::Feed), "feed");
+    }
+
+    #[test]
+    fn a_bar_item_runs_the_command_the_registry_names() {
+        // The commands the bar's own buttons stand for exist, so a button can never be a dead end.
+        for command in ["add-bookmark", "new-tab", "feeds", "subscribe-feed"] {
+            assert!(crate::commands::registry::builtin(command).is_some(), "{command}");
+        }
+    }
+}
+// --- end toolbars and feeds ---

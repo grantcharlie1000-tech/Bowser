@@ -94,7 +94,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
   const s = logic.parseSettingsSnapshot(d);
   assert.equal(s.theme, 'helium');
   assert.equal(s.themeAccent, '');
-  assert.equal(s.toolbarButtons, 'back,forward,reload,site-info,bookmark,newtab,split,reader');
+  assert.equal(s.toolbarButtons, 'back,forward,reload,site-info,split,reader,extensions,downloads');
   assert.equal(s.defaultBrowser, 'yes');
   assert.ok(logic.parseSettingsSnapshot({ ...d, themeAccent: '#1a2b3c' }));
   assert.ok(logic.parseSettingsSnapshot({ ...d, toolbarButtons: '' }));
@@ -113,7 +113,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
 
   const text = logic.saveText(draft);
   for (const line of [
-    'theme=helium', 'theme_accent=', 'toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader', 'centred_address_bar=true',
+    'theme=helium', 'theme_accent=', 'toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads', 'centred_address_bar=true',
     'minimal_url=true', 'show_load_progress=true', 'frameless=false', 'rounded_content_frame=true', 'show_home_button=true', 'bookmarks_bar=never',
     'bookmarks_bar_tab_groups=false', 'side_panel_position=left', 'tab_preview_images=true', 'tab_preview_memory=true', 'font_size=medium',
     'ui_font=', 'default_zoom=100', 'show_zoom_indicator=true', 'new_tab_beside_active=true', 'ctrl_tab_mru=true', 'shift_right_click_context=false',
@@ -170,9 +170,10 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
   assert.deepEqual(restart, ['grouping', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
-  // --- settings slim --- the toolbar checklist joins it: the HTML toolbar reads none of its ids.
+  // --- toolbars and feeds (thread T13) --- the toolbar editor acts on the HTML toolbar, tab strip and rail, so only
+  // the frameless window is left that saves a choice and does nothing.
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['toolbarButtons'], 'frameless is the working auto-hide switch now');
+  assert.deepEqual(notYet, [], 'final: frameless is the auto-hide switch (T11) and the toolbar editor acts (T13), so nothing waits');
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -182,7 +183,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -409,7 +410,7 @@ test('Downloads: the location and Change, the ask switch, each its own command',
   ask.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'downloadfolder' }, { v: 1, t: 'set', a: 'downloadask', on: true }]);
   assert.ok(!sent.some((m) => m.a === 'save'), 'never part of save');
-  assert.doesNotMatch(logic.saveText(logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d))), /download/);
+  assert.doesNotMatch(logic.saveText(logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d))), /download_dir|ask_download|downloadDir/);
   deliver(fixture.snap);
   const s = logic.parseSettingsSnapshot(fixture.guest.d);
   assert.equal(s.downloadDir, '');
@@ -480,7 +481,9 @@ test('Translation: two switches and a language select, each its own command, app
 
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
-  assert.equal(flagOf('toolbarButtons').textContent, logic.NOT_YET_NOTE);
+  // --- final --- the toolbar editor (T13) acts now: its opening row carries no note, and no row is "not yet".
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.sp-flag'), null);
+  assert.equal(logic.ROWS.filter((row) => row.notYet).length, 0, 'every row acts');
   assert.equal(flagOf('frameless'), null, 'auto-hide acts now: no note');
   assert.equal(flagOf('autoHideBars'), null);
   assert.equal(flagOf('autoHideFullscreen'), null);
@@ -494,9 +497,8 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(app.querySelectorAll('.sp-group-note').length, 0);
   const frameless = app.querySelector('.sp-row[data-row="frameless"]').querySelector('[role="switch"]');
   assert.equal(frameless.getAttribute('aria-describedby'), 'sp-d-frameless', 'auto-hide acts now, so it has no note to read');
-  const locked = app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelector('[role="switch"]');
-  assert.match(locked.getAttribute('aria-describedby') ?? 'sp-f-toolbarButtons', /sp-f-toolbarButtons/, 'a note is read with its control');
   assert.ok(app.querySelectorAll('.sp-flag').every((flag) => !/Applies after restart/.test(flag.textContent) || !logic.ROWS.find((r) => `sp-f-${r.id}` === flag.id)?.notYet));
+  assert.ok(app.querySelectorAll('.sp-flag').every((flag) => flag.textContent !== logic.NOT_YET_NOTE), 'no "no effect yet" note anywhere');
 });
 
 test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
@@ -547,25 +549,108 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-// --- settings slim --- the HTML toolbar reads none of `toolbar_buttons`, so the checklist sits in
-// "Not active yet": it shows the saved choice, offers no live control, and the choice is kept.
-test('the toolbar checklist shows the saved choice in "Not active yet", locked, and the choice is kept', () => {
+// --- toolbars and feeds (thread T13) --- the toolbar editor: the three bars' lists as rows, each change saved as the
+// whole new list (the address bar's through Save, the other two through `baropt`), reset per bar, locked when the
+// file cannot be read. The HTML toolbar, strip and rail drawing them is tested in test/bars.mjs.
+const editorRows = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined);
+const editorButton = (row, name) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(name));
+const barReset = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelector('.sp-tbe-head').querySelector('button');
+const toolbarSave = () => sent.filter((m) => m.a === 'save').map((m) => /\ntoolbar_buttons=([^\n]*)\n/.exec(m.text)?.[1]);
+const commandsFixture0 = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
+
+test('the toolbar editor opens from one row, lists each bar and is no longer in "Not active yet"', () => {
   deliver(fixture.snap);
-  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
-  assert.ok(app.querySelector('section[data-area="later"]').contains(toolbarRow));
-  const switches = toolbarRow.querySelectorAll('[role="switch"]');
-  assert.equal(switches.length, 8);
-  assert.ok(switches.every((sw) => sw.getAttribute('aria-checked') === 'true'), 'the default set is every button, all on');
-  assert.ok(switches.every((sw) => sw.disabled && sw.getAttribute('aria-disabled') === 'true'));
-  const reset = toolbarRow.querySelector('.sp-corner').querySelector('button');
+  assert.equal(logic.ROWS.find((row) => row.id === 'toolbarButtons').notYet, undefined);
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'page');
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').textContent, 'Edit toolbars…');
+  assert.ok(!app.querySelector('section[data-area="later"]').contains(app.querySelector('.sp-row[data-row="toolbarButtons"]')));
+  assert.deepEqual(editorRows('address').map((row) => row.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads']);
+  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['closed-tabs']);
+  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), []);
+  const headings = app.querySelectorAll('.sp-tbe-title').map((h) => h.textContent);
+  assert.deepEqual(headings, ['Address bar', 'Tab bar', 'Panel bar'], 'there is no status bar to edit');
+});
+
+test('moving, removing and resetting an address bar button each save the whole list', () => {
+  deliver(fixture.snap);
   sent.length = 0;
-  switches[0].click();
-  reset.click();
-  assert.deepEqual(sent, [], 'nothing is sent from a row that does nothing yet');
-  // Another change still carries the saved list, so nothing is lost.
-  app.querySelector('.sp-row[data-row="roundedContentFrame"]').querySelector('[role="switch"]').click();
-  assert.match(sent[0].text, /\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  // Move Forward up past Back: back and forward swap.
+  editorButton(editorRows('address')[1], 'Move Forward up').click();
+  assert.deepEqual(toolbarSave(), ['forward,back,reload,site-info,split,reader,extensions,downloads']);
   deliver(fixture.snap);
+  sent.length = 0;
+  // Remove Reload.
+  editorButton(editorRows('address')[2], 'Remove Reload').click();
+  assert.deepEqual(toolbarSave(), ['back,forward,site-info,split,reader,extensions,downloads']);
+  deliver(fixture.snap);
+  sent.length = 0;
+  // The first button of a zone cannot move up, the last cannot move down, and a button never crosses into another zone.
+  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').disabled, true);
+  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').disabled, true, 'reload is the last before the address field');
+  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').disabled, true, 'site information is the first inside the field');
+  // Reset returns the default list (here it already is the default, so the button is off).
+  assert.equal(barReset('address').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab' } });
+  sent.length = 0;
+  assert.equal(barReset('address').disabled, false);
+  barReset('address').click();
+  assert.deepEqual(toolbarSave(), ['back,forward,reload,site-info,split,reader,extensions,downloads']);
+  deliver(fixture.snap);
+});
+
+test('the tab bar and panel bar lists are their own baropt commands, never part of save', () => {
+  deliver(fixture.snap);
+  sent.length = 0;
+  editorButton(editorRows('tabs')[0], 'Remove Closed tabs').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=' }]);
+  assert.ok(!sent.some((m) => m.a === 'save'));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,closed-tabs', panel: 'feeds,chain:2' } } });
+  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['cmd:new-tab', 'closed-tabs']);
+  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), ['feeds', 'chain:2']);
+  sent.length = 0;
+  editorButton(editorRows('tabs')[1], 'Move Closed tabs up').click();
+  editorButton(editorRows('panel')[0], 'Move Feeds down').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' },
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=chain:2,feeds' },
+  ]);
+  sent.length = 0;
+  barReset('panel').click();
+  barReset('tabs').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=' },
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' },
+  ]);
+  deliver(fixture.snap);
+});
+
+test('command buttons take the name of their command once the commands arrive', () => {
+  deliver(fixture.snap);
+  deliver({ v: 1, t: 'snap', p: 'commands', d: JSON.parse(JSON.stringify(commandsFixture0.d)) });
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,cmd:no-such' } } });
+  const names = editorRows('tabs').map((row) => row.querySelector('.sp-label').textContent);
+  assert.equal(names[0], 'New tab');
+  assert.equal(names[1], 'no such', 'a command Rust does not list is named from its id');
+  deliver(fixture.snap);
+});
+
+test('the feed rows: open the panel, the address bar button and when Feeds fetches', () => {
+  deliver(fixture.snap);
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  sent.length = 0;
+  rowOf('feedsOpen').querySelector('button').click();
+  const detect = rowOf('feedsDetect').querySelector('[role="switch"]');
+  assert.equal(detect.getAttribute('aria-checked'), 'true');
+  detect.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'openfeeds' }, { v: 1, t: 'set', a: 'baropt', text: 'feeds_detect=false' }]);
+  assert.ok(!sent.some((m) => m.a === 'save'));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, feedsDetect: false, feedsRefresh: 180 } } });
+  assert.equal(detect.getAttribute('aria-checked'), 'false');
+  assert.equal(rowOf('feedsRefresh').querySelector('.bw-select-value').textContent, 'After 3 hours');
+  deliver(fixture.snap);
+  assert.equal(rowOf('feedsRefresh').querySelector('.bw-select-value').textContent, 'After 1 hour');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'feedsOpen')), 'core');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'feedsDetect')), 'more');
 });
 
 test('the theme reset button clears both theme and accent in one save', () => {
@@ -597,9 +682,10 @@ test('default browser status reflects the snapshot and the button sends a bare s
 
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
-  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
-  for (const sw of toolbarRow.querySelectorAll('[role="switch"]')) assert.equal(sw.disabled, true);
-  assert.equal(toolbarRow.querySelector('.sp-corner').querySelector('button').disabled, true);
+  // --- toolbars and feeds (thread T13) --- the toolbar editor and the feed rows lock too.
+  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button')) assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  assert.equal(app.querySelector('.sp-row[data-row="feedsDetect"]').querySelector('[role="switch"]').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="feedsRefresh"]').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
   assert.equal(themeRow.querySelector('input').disabled, true);
   assert.equal(themeRow.querySelector('button').disabled, true);
@@ -1391,38 +1477,31 @@ test('slim: the search finds rows behind a closed disclosure and opens it; clear
   searchFor('');
   assert.equal(button.getAttribute('aria-expanded'), 'true', 'a row used from the search stays in view');
   button.click();
-  // Rows that do nothing yet are found too, in their own closed section.
-  searchFor('customise your toolbar');
-  assert.equal(areaNode('later').hidden, false);
-  assert.equal(areaNode('later').querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'true');
-  assert.equal(rowNode('toolbarButtons').hidden, false);
-  assert.equal(areaNode('appearance').hidden, true, 'not in Appearance any more');
+  // --- final --- nothing waits in "Not active yet" any more: the toolbar editor (T13) is a sub-page whose
+  // opening row the search finds in Appearance, and the section itself stays hidden.
+  searchFor('customise your toolbars');
+  assert.equal(areaNode('later').hidden, true);
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').hidden, false);
+  assert.equal(areaNode('appearance').hidden, false, 'the opening row is in Appearance');
   searchFor('');
-  assert.equal(areaNode('later').querySelector('.sp-more-body').hidden, true);
+  assert.equal(areaNode('later').hidden, true);
 });
 
 test('slim: no row that does nothing yet renders as a live control', () => {
   deliver(fixture.snap);
   const later = areaNode('later');
-  assert.equal(later.querySelector('.sp-h').textContent, logic.LATER_TITLE);
-  assert.equal(later.querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
-  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Customise your toolbar');
+  // --- final --- every row acts now, so "Not active yet" has no rows and the whole section (its heading
+  // included) stays out of view; and the page draws no locked control anywhere.
+  assert.equal(later.querySelectorAll('.sp-row').length, 0);
+  assert.equal(later.hidden, true, 'an empty Not active yet is not shown');
   for (const row of logic.ROWS) {
-    const node = rowNode(row.id);
-    assert.equal(later.contains(node), row.notYet === true, `${row.id} is in Not active yet only when it does nothing yet`);
-    assert.equal(tierOf(row.id) === 'later', row.notYet === true, row.id);
-    if (!row.notYet) continue;
-    const controls = node.querySelectorAll('button, input');
-    assert.ok(controls.length > 0);
-    assert.ok(controls.every((c) => c.disabled && c.getAttribute('aria-disabled') === 'true'), `${row.id} has no live control`);
-    assert.equal(node.querySelector('.sp-flag').textContent, logic.NOT_YET_NOTE);
+    assert.equal(row.notYet, undefined, `${row.id} acts`);
+    assert.notEqual(tierOf(row.id), 'later', row.id);
+    assert.ok(!later.contains(rowNode(row.id)), `${row.id} is not in Not active yet`);
   }
-  sent.length = 0;
-  rowNode('toolbarButtons').querySelector('[role="switch"]').click();
-  assert.deepEqual(sent, []);
-  // A fresh snapshot (which enables every working control) leaves them locked.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: true } });
-  assert.equal(rowNode('toolbarButtons').querySelector('[role="switch"]').disabled, true);
+  const locked = app.querySelectorAll('.sp-row [role="switch"]').filter((c) => c.getAttribute('aria-disabled') === 'true' && c.disabled);
+  assert.deepEqual(locked.map((c) => c.closest('.sp-row')?.dataset.row).filter((id) => id !== 'autoHideBars' && !String(id).startsWith('tabs_')), [], 'a readable snapshot enables every control (the bar list follows its master switch)');
 });
 
 test('slim: every editor opens on its own sub-page from one row, and Back, a nav pick or a search returns', () => {
