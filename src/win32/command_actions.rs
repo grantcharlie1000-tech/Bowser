@@ -124,6 +124,11 @@ pub(crate) fn run_open_feeds(cx: &Context) {
 }
 // --- end toolbars and feeds ---
 
+// --- latency (fix E) --- "Bookmarks panel" (Ctrl+B by default; rebindable like every command).
+pub(crate) fn run_bookmarks_panel(cx: &Context) {
+    let _ = super::window::rail_activate(cx.hwnd, cx.app, super::side_panel::PanelId::Bookmarks);
+}
+
 // --- wave-1 integration: registry commands for T1's periodic reload, T3's privacy tools and T2's
 // address bar, so Quick Commands, the cheat sheet, the keyboard editor and chains reach them ---
 

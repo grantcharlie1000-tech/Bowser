@@ -73,6 +73,7 @@ pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
 pub(crate) use glass::{local_minutes, set_scheduled_look};
 // Registry handlers (`crate::commands::registry`) that need a window.
 pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_open_feeds, run_toggle_site_shortcuts};
+pub(crate) use command_actions::run_bookmarks_panel; // --- latency (fix E) ---
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.
 // --- auto-hide (T11) --- Auto-hide and full screen (registry commands).
 pub(crate) use command_actions::{run_toggle_auto_hide, run_toggle_fullscreen};
@@ -318,6 +319,28 @@ pub(crate) fn dev_tools_dock_tab_closed(hwnd: HWND, tab: crate::tabs::TabId) {
     devtools_dock::tab_closed(hwnd, tab);
 }
 // --- end developer tools dock ---
+
+// --- latency (fix E) --- the blocker builds its lists on a worker thread.
+/// The main window, once it exists: where a finished blocker build is announced.
+static BLOCKER_WAKE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Called by the blocker's build worker: asks the main window to swap the new rules in (the
+/// window's `WM_SETTINGS_COMMAND` runs `protection::take_built`). Before the window exists the
+/// build waits; [`set_blocker_wake`] collects it.
+pub(crate) fn blocker_built_wake() {
+    let raw = BLOCKER_WAKE.load(std::sync::atomic::Ordering::Acquire);
+    if raw != 0 {
+        post(HWND(raw as *mut _), WM_SETTINGS_COMMAND, Default::default(), Default::default());
+    }
+}
+
+/// The main window exists: later builds are announced to it, and one that finished before it
+/// existed is collected now.
+pub(crate) fn set_blocker_wake(hwnd: HWND) {
+    BLOCKER_WAKE.store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
+    blocker_built_wake();
+}
+// --- end latency ---
 
 pub(crate) fn post(
     hwnd: HWND,

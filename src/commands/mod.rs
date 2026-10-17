@@ -431,6 +431,37 @@ mod tests {
         assert_eq!(resolve_in(&changed, 0x54, true, false, false, &on_site), None);
     }
 
+    /// Fix E: Ctrl+B / Ctrl+H / Ctrl+J go through the registry only (the window procedure no
+    /// longer hardcodes them), so a rebinding, a cleared command, Alt and "shortcuts off" all count.
+    #[test]
+    fn ctrl_b_h_and_j_follow_the_registry_and_a_rebound_ctrl_h_runs_the_new_command() {
+        const B: u32 = 0x42;
+        const H: u32 = 0x48;
+        const J: u32 = 0x4A;
+        let registered = |live: &Live, key: u32, alt: bool| match resolve_in(live, key, true, false, alt, &cx()) {
+            Some(Command::Registered(handle)) => id_of(handle),
+            Some(other) => Some(format!("{other:?}")),
+            None => None,
+        };
+        let live = Live::new(Store::default());
+        assert_eq!(registered(&live, B, false).as_deref(), Some("bookmarks-panel"), "Ctrl+B is a registry command");
+        assert_eq!(resolve_in(&live, H, true, false, false, &cx()), Some(Command::ShowHistory));
+        assert_eq!(resolve_in(&live, J, true, false, false, &cx()), Some(Command::ShowDownloads));
+        assert_eq!(resolve_in(&live, H, true, false, true, &cx()), None, "Ctrl+Alt+H is not Ctrl+H");
+        assert_eq!(resolve_in(&live, B, true, false, true, &cx()), None, "Ctrl+Alt+B is not Ctrl+B");
+        let mut store = Store::default();
+        store.assign("bookmarks-panel", "Ctrl+H", true).unwrap();
+        store.clear("downloads");
+        let rebound = Live::new(store.clone());
+        assert_eq!(registered(&rebound, H, false).as_deref(), Some("bookmarks-panel"), "Ctrl+H runs the command it was given");
+        assert_eq!(resolve_in(&rebound, J, true, false, false, &cx()), None, "a cleared Ctrl+J does nothing");
+        store.options.shortcuts_enabled = false;
+        let off = Live::new(store);
+        for key in [B, H, J] {
+            assert_eq!(resolve_in(&off, key, true, false, false, &cx()), None, "{key:#x} with shortcuts off");
+        }
+    }
+
     #[test]
     fn palette_commands_list_the_searchable_ones_with_live_shortcuts() {
         let mut store = Store::default();

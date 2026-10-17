@@ -2231,6 +2231,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         super::panel_customize::register(&app);
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
+        super::set_blocker_wake(hwnd); // --- latency (fix E) --- blocker lists built off-thread
         super::panel_webapp::register(&app);
         super::panel_webapp::set_on_icon_changed(Box::new(move || {
             RAIL_ICON_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
@@ -3914,25 +3915,9 @@ unsafe extern "system" fn window_proc(
                         return LRESULT(0);
                     }
                 }
-                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) >= 0 {
-                    if let Some(app) = app {
-                        match wparam.0 as u32 {
-                            0x42 => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); return LRESULT(0); }
-                            // bowser://downloads in a tab (docs/design/downloads.md).
-                            0x4A => { super::downloads_page::open(hwnd, app, false); return LRESULT(0); }
-                            // bowser://history in a tab (the side panel without the HTML chrome).
-                            0x48 => {
-                                if super::history_page::available(hwnd) {
-                                    super::history_page::open(hwnd, app, false);
-                                } else {
-                                    rail_activate(hwnd, app, side_panel::PanelId::History);
-                                }
-                                return LRESULT(0);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // --- latency (fix E) --- Ctrl+B / Ctrl+J / Ctrl+H are registry commands
+                // ("bookmarks-panel", "downloads", "history") run by `dispatch_current` below, so
+                // rebinding, clearing and "shortcuts off" apply to them like every other chord.
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && side_panel::is_open(hwnd)
                     && !crate::win32::menu::is_tracking()
@@ -12268,7 +12253,12 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
         Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),
         Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         // bowser://history in a tab; the flyout or the docked panel without the HTML chrome.
-        Command::ShowHistory => super::history_page::open(hwnd, app, false),
+        // bowser://history in a tab; the History side panel without the HTML chrome (fix E: this
+        // fallback was in the hardcoded Ctrl+H block).
+        Command::ShowHistory if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
+        Command::ShowHistory => {
+            rail_activate(hwnd, app, side_panel::PanelId::History);
+        }
         // bowser://downloads in a tab (Ctrl+J, the main menu).
         Command::ShowDownloads => super::downloads_page::open(hwnd, app, false),
         Command::ToggleReader => run_reader(hwnd, app, crate::reader::Mode::Reader),

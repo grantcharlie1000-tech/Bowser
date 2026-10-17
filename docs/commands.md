@@ -52,6 +52,11 @@ shows it.
    and is never taken from a page or while a text field in the chrome has the keyboard.
 5. On a site in the prioritised list, and from a page, only commands marked browser priority are claimed.
 
+No chord is hardcoded in front of this lookup. Ctrl+B ("bookmarks-panel", the Bookmarks side panel),
+Ctrl+H ("history": the history page, or the History side panel without the HTML chrome) and Ctrl+J
+("downloads") are ordinary registry commands, so rebinding, clearing and switching shortcuts off apply
+to them, and they show in the cheat sheet.
+
 `src/shortcuts.rs` keeps the default chord table (`command_for`, `command_for_gated`) as a reference: a test
 checks that the registry's default keymap is that table key for key, plus Ctrl+F1 and the tilings' Ctrl+F7, Ctrl+F8
 and Ctrl+F9.

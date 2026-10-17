@@ -4914,6 +4914,11 @@ impl App {
         // Retention and the website look are read by code that runs before any window setting is
         // applied (the history load, the first tab), so they are set here (thread T3).
         crate::history_retention::set_current(app.settings.history_retention);
+        // --- latency (fix E) --- join the profile's running set; the first process clears a
+        // session-only history a crash left behind.
+        if track_privacy {
+            crate::history_retention::start_session();
+        }
         crate::page_tools::apply_runtime(&app.settings.page_tools); // --- page tools (T7) ---
         app.reader_prefs = app.settings.page_tools.reader_prefs();
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
@@ -4931,17 +4936,21 @@ impl App {
         if track_privacy {
             // Always built, even with blocking off: cookie-notice hiding and per-site levels work
             // without the global switch (thread T3). A "none" level adds no request work.
-            let mut state = crate::blocker::BlockerState::load(
+            // --- latency (fix E) --- the built-in lists now, every other list from a worker
+            // thread (up to 24 lists of 8 MB): launch never waits on parsing them.
+            let mut state = crate::blocker::BlockerState::load_deferred(
                 &profile.blocker_dir(),
                 &app.settings.blocker_allow,
+                win32::blocker_built_wake,
             );
             state.apply_settings(&app.settings);
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
         if allow_private_tabs {
             app.private_blocker = Some(app.blocker.clone().unwrap_or_else(|| {
-                Rc::new(RefCell::new(crate::blocker::BlockerState::matcher_only(
+                Rc::new(RefCell::new(crate::blocker::BlockerState::matcher_only_deferred(
                     &profile.blocker_dir(),
+                    win32::blocker_built_wake,
                 )))
             }));
         }

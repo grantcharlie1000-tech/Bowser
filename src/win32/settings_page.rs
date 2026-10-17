@@ -620,6 +620,10 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
     if super::protection::apply_fetched(app, owner) {
         let _ = with(owner, |rt| rt.dirty = true);
     }
+    // A blocker build a worker finished is swapped in (fix E).
+    if super::protection::take_built(app) {
+        let _ = with(owner, |rt| rt.dirty = true);
+    }
     let commands: Vec<Queued> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);

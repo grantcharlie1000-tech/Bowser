@@ -35,6 +35,8 @@ thread_local! {
     static SEQ: Cell<u64> = const { Cell::new(0) };
     /// A list fetch is running.
     static BUSY: Cell<bool> = const { Cell::new(false) };
+    /// A list just added, waiting for the worker's build to report its rule count (id, name).
+    static ADDED: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 }
 
 /// What a fetch worker found, waiting for the UI thread.
@@ -246,11 +248,37 @@ pub(crate) fn run(app: &AppRef, owner: HWND, action: Action) {
     }
 }
 
-/// Rebuilds the blocker's rules from the sources on disk.
+/// Rebuilds the blocker's rules from the sources on disk, on a worker thread (fix E): the current
+/// rules stay until [`take_built`] swaps the new ones in.
 fn rebuild(app: &AppRef, dir: &std::path::Path) {
+    ADDED.with(|added| *added.borrow_mut() = None);
     if let Some(blocker) = App::blocker_handle(app) {
-        blocker.borrow_mut().reload_sources(dir);
+        blocker.borrow_mut().reload_sources_deferred(dir, super::blocker_built_wake);
     }
+}
+
+/// Swaps in a blocker build a worker finished (the launch build or a [`rebuild`]), then reports a
+/// list that was just added with its rule count. `true` when the rules changed.
+pub(crate) fn take_built(app: &AppRef) -> bool {
+    let mut changed = false;
+    let normal = App::blocker_handle(app);
+    if let Some(blocker) = &normal {
+        changed |= blocker.borrow_mut().take_built();
+    }
+    if let Some(private) = App::private_blocker_handle(app)
+        && !normal.as_ref().is_some_and(|normal| std::rc::Rc::ptr_eq(normal, &private))
+    {
+        changed |= private.borrow_mut().take_built();
+    }
+    if changed
+        && let Some(blocker) = &normal
+        && !blocker.borrow().building()
+        && let Some((id, name)) = ADDED.with(|added| added.borrow_mut().take())
+    {
+        let count = blocker.borrow().source_rule_count(&id);
+        set_result(true, format!("Added {name}: {count} rules."));
+    }
+    changed
 }
 
 /// Adds the list in a local file the user picked. Reading is bounded and the text is checked like
@@ -276,8 +304,10 @@ fn commit(app: &AppRef, dir: &std::path::Path, kind: SourceKind, origin: Origin,
     match registry.add(dir, name, kind, origin, text) {
         Ok(id) => {
             rebuild(app, dir);
-            let count = App::blocker_handle(app).map_or(0, |blocker| blocker.borrow().source_rule_count(&id));
-            set_result(true, format!("Added {}: {count} rules.", sources::clean_name(name)));
+            // The count is reported once the worker's build is in (`take_built`).
+            let name = sources::clean_name(name);
+            set_result(true, format!("Added {name}."));
+            ADDED.with(|added| *added.borrow_mut() = Some((id, name)));
         }
         Err(error) => set_result(false, error.to_string()),
     }

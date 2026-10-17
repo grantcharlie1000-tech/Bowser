@@ -328,8 +328,25 @@ pub struct Built {
 
 /// Builds the matchers from the enabled sources of `registry` stored in `dir`.
 pub fn build(dir: &Path, registry: &Registry) -> Built {
+    build_from(dir, registry, false)
+}
+
+/// Builds only the enabled built-in sources of `registry`: nothing is read from disk, so it is
+/// cheap enough for the UI thread. The blocker starts with it while [`build`] runs on a worker.
+pub fn build_builtin(registry: &Registry) -> Built {
+    build_from(Path::new(""), registry, true)
+}
+
+/// Whether an enabled source of `registry` is read from disk (`filters.txt` or an added list), so
+/// a full [`build`] has more to do than [`build_builtin`].
+pub fn reads_disk(registry: &Registry) -> bool {
+    registry.sources().iter().any(|source| source.enabled && source.origin != Origin::Builtin)
+}
+
+fn build_from(dir: &Path, registry: &Registry, builtin_only: bool) -> Built {
     let mut built = Built::default();
-    for source in registry.sources().iter().filter(|source| source.enabled) {
+    let wanted = |source: &&Source| source.enabled && (!builtin_only || source.origin == Origin::Builtin);
+    for source in registry.sources().iter().filter(wanted) {
         let count = match (&source.origin, source.kind) {
             (Origin::Builtin, SourceKind::Trackers) => {
                 add_kinded(&mut built.all, &mut built.trackers, BUILTIN_LIST, KindSelect::Markers(ListKind::Trackers))

@@ -245,6 +245,8 @@ pub static BUILTINS: &[CommandDef] = &[
     def("feeds", "Feeds", "Read the feeds you subscribed to, and subscribe to this page's feed", C::Panels, &[], Cmd, Run(crate::win32::run_open_feeds)),
     def("subscribe-feed", "Subscribe to this page's feed", "Open Feeds with the feeds this page offers, to preview and subscribe", C::Page, &[], Page, Run(crate::win32::run_open_feeds)),
     // --- end toolbars and feeds ---
+    // --- latency (fix E): Ctrl+B was a hardcoded key in the window procedure; now it is rebindable ---
+    def("bookmarks-panel", "Bookmarks panel", "Open the Bookmarks side panel", C::Bookmarks, &["Ctrl+B"], Cmd, Run(crate::win32::run_bookmarks_panel)),
 ];
 
 /// The command with this id, if it is a built-in.

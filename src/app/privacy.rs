@@ -22,6 +22,12 @@ impl App {
         app.borrow().blocker.clone()
     }
 
+    /// The blocker private tabs use: the normal one, or its own matcher when the normal one is off
+    /// (benchmark and custom-profile launches).
+    pub fn private_blocker_handle(app: &AppRef) -> Option<BlockerHandle> {
+        app.borrow().private_blocker.clone()
+    }
+
     /// Takes the privacy, history and appearance settings into the running app: the blocker's level,
     /// cookie-notice switch and exceptions, the history retention, the website look and the private
     /// theme. Called after any of them is saved. Pages already open keep what they loaded.
