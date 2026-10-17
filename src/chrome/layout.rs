@@ -1505,6 +1505,171 @@ pub fn reorder_target(layout: &Layout, dragged_index: usize, x: i32) -> usize {
     target.min(count - 1)
 }
 
+// --- auto-hide (T11) --- geometry for "Auto-hide toolbars and tabs" (docs/design/t11-auto-hide.md).
+//
+// Auto-hide never relays out the page when a bar appears: the page is laid out as if the hidden bars
+// were gone, and a revealed bar floats over it. With auto-hide off every function below returns what
+// the function it wraps returns, field for field (`auto_hide_off_changes_nothing`).
+
+/// Which chrome the page's rectangle no longer leaves room for.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AutoHide {
+    /// The top chrome: the toolbar and, in the horizontal layouts, the tab row (they share the top edge).
+    pub top: bool,
+    /// The vertical layout's tab sidebar.
+    pub sidebar: bool,
+}
+
+impl AutoHide {
+    pub const OFF: Self = Self { top: false, sidebar: false };
+
+    pub const fn is_off(self) -> bool {
+        !self.top && !self.sidebar
+    }
+}
+
+/// Where the page starts when the top chrome is out of the layout: flush with the screen edge when
+/// the window is maximised or full screen, else the same native rim the other three sides keep (the
+/// window stays resizable from its top edge).
+pub fn auto_hide_top(dpi: u32, maximised: bool) -> i32 {
+    if maximised {
+        0
+    } else {
+        Metrics::new(dpi).px(Metrics::RESIZE_RIM)
+    }
+}
+
+/// `normal` (the page rectangle with every bar laid out) widened over the hidden bars. The left rail
+/// is not a bar that hides, so the page never goes under it.
+pub fn auto_hide_viewport(normal: Rect, hide: AutoHide, dpi: u32, maximised: bool) -> Rect {
+    if hide.is_off() {
+        return normal;
+    }
+    let mut viewport = normal;
+    if hide.top {
+        viewport.top = auto_hide_top(dpi, maximised).min(viewport.bottom);
+    }
+    if hide.sidebar {
+        let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
+        viewport.left = (left_rail_inset(dpi) + rim).min(viewport.right);
+    }
+    viewport
+}
+
+/// [`compute_in_frame_for_with`] with the chrome in `hide` taken out of the page's rectangle. The
+/// bars keep the rectangles they have when shown, so a revealed bar is drawn exactly where it
+/// always is. The horizontal layouts have no sidebar; `hide.sidebar` is ignored there.
+pub fn compute_in_frame_auto_hide(
+    variant: TabLayout,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    centred: bool,
+    hide: AutoHide,
+) -> Layout {
+    let mut layout =
+        compute_in_frame_for_with(variant, client_w, client_h, dpi, tab_count, active_index, maximised, centred);
+    let hide = AutoHide { sidebar: false, ..hide };
+    layout.viewport = auto_hide_viewport(layout.viewport, hide, dpi, maximised);
+    layout
+}
+
+/// [`compute_vertical_in_frame_with`] with the chrome in `hide` taken out of the page's rectangle.
+/// With the sidebar hidden the toolbar starts at the rail instead of at the sidebar's edge, so no
+/// gap is left where the sidebar was; the returned sidebar keeps its shown rectangle, which is where
+/// it floats when revealed.
+pub fn compute_vertical_in_frame_auto_hide(
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    sidebar_width: i32,
+    centred: bool,
+    hide: AutoHide,
+) -> (Layout, crate::vertical_tabs::SidebarLayout) {
+    let (mut layout, sidebar) = compute_vertical_in_frame_with(
+        client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, centred,
+    );
+    if hide.is_off() {
+        return (layout, sidebar);
+    }
+    if hide.sidebar {
+        let inset = left_rail_inset(dpi);
+        let normal_viewport = layout.viewport;
+        layout = compute_for_with(
+            TabLayout::Vertical,
+            client_w.max(0) - inset,
+            client_h,
+            dpi,
+            tab_count,
+            active_index,
+            maximised,
+            centred,
+        )
+        .shifted_right(inset);
+        layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
+        layout.rail = left_rail(client_h, dpi);
+        layout.viewport = normal_viewport;
+    }
+    layout.viewport = auto_hide_viewport(layout.viewport, hide, dpi, maximised);
+    (layout, sidebar)
+}
+
+/// The page rectangle for a window with the chrome in `hide` out of the layout (what the app sizes
+/// a tab to before the window has laid itself out). Same rectangle as the layouts' `viewport`.
+pub fn auto_hide_page_rect(
+    variant: TabLayout,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    maximised: bool,
+    sidebar_width: i32,
+    hide: AutoHide,
+) -> Rect {
+    let normal = if variant.is_vertical() {
+        crate::vertical_tabs::SidebarLayout::compute_in_frame(client_w, client_h, dpi, sidebar_width, maximised).viewport
+    } else {
+        let inset = left_rail_inset(dpi);
+        content_rect(variant, client_w.max(0) - inset, client_h, dpi, maximised).shifted_right(inset)
+    };
+    let hide = if variant.is_vertical() { hide } else { AutoHide { sidebar: false, ..hide } };
+    auto_hide_viewport(normal, hide, dpi, maximised)
+}
+
+/// Where the hidden bars are drawn while revealed (they float over the page).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AutoHideOverlay {
+    /// The toolbar and tab row, from the client's top edge to where the shown page area begins.
+    pub top: Rect,
+    /// The vertical layout's sidebar (empty in the horizontal layouts).
+    pub sidebar: Rect,
+}
+
+/// The rectangles a revealed top bar and sidebar occupy. `sidebar_hidden` says whether the toolbar
+/// was moved left over the sidebar's place (see [`compute_vertical_in_frame_auto_hide`]).
+pub fn auto_hide_overlay(
+    layout: &Layout,
+    sidebar: Option<&crate::vertical_tabs::SidebarLayout>,
+    dpi: u32,
+    sidebar_hidden: bool,
+) -> AutoHideOverlay {
+    let height = chrome_height(layout.variant, dpi).min(layout.client.bottom);
+    let left = match sidebar {
+        Some(sidebar) if !sidebar_hidden => sidebar.sidebar.right,
+        _ => left_rail_inset(dpi),
+    };
+    AutoHideOverlay {
+        top: Rect::new(left.min(layout.client.right), 0, layout.client.right, height),
+        sidebar: sidebar.map(|sidebar| sidebar.sidebar).unwrap_or_default(),
+    }
+}
+// --- end auto-hide ---
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3527,4 +3692,151 @@ mod tests {
         assert_eq!(l.viewport, Rect::new(30, 63, 1920, 1079));
         assert_eq!(l.rail, Rect::new(2, 2, 28, 1077));
     }
+
+    // --- auto-hide (T11) ---
+    const SIZES: [(i32, i32); 3] = [(1920, 1079), (1280, 720), (800, 600)];
+
+    /// The user's rule: auto-hide off, the layouts are exactly what they were. Every field of every
+    /// layout, for every variant, DPI, size and window state.
+    #[test]
+    fn auto_hide_off_changes_nothing() {
+        for variant in HORIZONTAL_FAMILY {
+            for dpi in DPIS {
+                for (w, h) in SIZES {
+                    for maximised in [false, true] {
+                        for centred in [false, true] {
+                            let context = format!("{variant:?} {w}x{h} dpi {dpi} max {maximised} centred {centred}");
+                            let before = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, maximised, centred);
+                            let after = compute_in_frame_auto_hide(variant, w, h, dpi, 5, 2, maximised, centred, AutoHide::OFF);
+                            assert_eq!(before, after, "{context}");
+                            assert_eq!(
+                                auto_hide_page_rect(variant, w, h, dpi, maximised, 260, AutoHide::OFF),
+                                before.viewport,
+                                "{context}: the app's page rectangle"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for dpi in DPIS {
+            for (w, h) in SIZES {
+                for maximised in [false, true] {
+                    let context = format!("vertical {w}x{h} dpi {dpi} max {maximised}");
+                    let before = compute_vertical_in_frame_with(w, h, dpi, 5, 2, maximised, 260, true);
+                    let after = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, AutoHide::OFF);
+                    assert_eq!(before, after, "{context}");
+                    assert_eq!(
+                        auto_hide_page_rect(TabLayout::Vertical, w, h, dpi, maximised, 260, AutoHide::OFF),
+                        before.0.viewport,
+                        "{context}: the app's page rectangle"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The hidden top chrome only moves the top of the page; the bars keep every rectangle they have
+    /// when shown, so a revealed bar is drawn where it always is, and nothing else about the layout moves.
+    #[test]
+    fn hiding_the_top_chrome_moves_only_the_pages_top_edge() {
+        for variant in HORIZONTAL_FAMILY {
+            for dpi in DPIS {
+                for (w, h) in SIZES {
+                    for maximised in [false, true] {
+                        let context = format!("{variant:?} {w}x{h} dpi {dpi} max {maximised}");
+                        let shown = compute_in_frame_for_with(variant, w, h, dpi, 5, 2, maximised, true);
+                        let hide = AutoHide { top: true, sidebar: false };
+                        let hidden = compute_in_frame_auto_hide(variant, w, h, dpi, 5, 2, maximised, true, hide);
+                        assert_eq!(hidden.viewport.top, auto_hide_top(dpi, maximised), "{context}");
+                        assert_eq!(Layout { viewport: shown.viewport, ..hidden }, shown, "{context}: only the viewport differs");
+                        assert_eq!(
+                            (hidden.viewport.left, hidden.viewport.right, hidden.viewport.bottom),
+                            (shown.viewport.left, shown.viewport.right, shown.viewport.bottom),
+                            "{context}"
+                        );
+                        assert!(hidden.viewport.top < shown.viewport.top, "{context}: the page gained the bars' room");
+                        assert_eq!(
+                            auto_hide_page_rect(variant, w, h, dpi, maximised, 260, hide),
+                            hidden.viewport,
+                            "{context}: the app and the window agree"
+                        );
+                        // Where the bars float when revealed: from the top edge to the shown page's top.
+                        let overlay = auto_hide_overlay(&hidden, None, dpi, false);
+                        assert_eq!(overlay.top, Rect::new(left_rail_inset(dpi), 0, w, shown.viewport.top), "{context}");
+                        assert!(overlay.top.contains_rect(hidden.strip), "{context}: the toolbar is inside it");
+                        assert!(overlay.sidebar.is_empty(), "{context}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hiding_the_sidebar_and_the_toolbar_in_the_vertical_layout() {
+        for dpi in DPIS {
+            for (w, h) in SIZES {
+                for maximised in [false, true] {
+                    let context = format!("vertical {w}x{h} dpi {dpi} max {maximised}");
+                    let (shown, sidebar) = compute_vertical_in_frame_with(w, h, dpi, 5, 2, maximised, 260, true);
+                    let inset = left_rail_inset(dpi);
+                    let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
+                    // The sidebar alone: the page starts at the rail; the toolbar follows it left.
+                    let hide = AutoHide { top: false, sidebar: true };
+                    let (side_hidden, hidden_sidebar) = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, hide);
+                    assert_eq!(hidden_sidebar, sidebar, "{context}: the sidebar keeps its shown rectangle");
+                    assert_eq!(side_hidden.viewport.left, inset + rim, "{context}");
+                    assert_eq!(
+                        (side_hidden.viewport.top, side_hidden.viewport.right, side_hidden.viewport.bottom),
+                        (shown.viewport.top, shown.viewport.right, shown.viewport.bottom),
+                        "{context}"
+                    );
+                    assert!(side_hidden.strip.left < shown.strip.left, "{context}: the toolbar moved into the sidebar's place");
+                    assert!(side_hidden.strip.left >= inset, "{context}: and not under the rail");
+                    assert_eq!(side_hidden.rail, shown.rail, "{context}");
+                    assert_eq!(
+                        auto_hide_page_rect(TabLayout::Vertical, w, h, dpi, maximised, 260, hide),
+                        side_hidden.viewport,
+                        "{context}: the app and the window agree"
+                    );
+                    // The toolbar alone: the sidebar stays and the page rises.
+                    let hide = AutoHide { top: true, sidebar: false };
+                    let (top_hidden, _) = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, hide);
+                    assert_eq!(top_hidden.strip, shown.strip, "{context}");
+                    assert_eq!(top_hidden.viewport.left, shown.viewport.left, "{context}");
+                    assert_eq!(top_hidden.viewport.top, auto_hide_top(dpi, maximised), "{context}");
+                    assert_eq!(
+                        auto_hide_page_rect(TabLayout::Vertical, w, h, dpi, maximised, 260, hide),
+                        top_hidden.viewport,
+                        "{context}"
+                    );
+                    // Both.
+                    let hide = AutoHide { top: true, sidebar: true };
+                    let (both, _) = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, hide);
+                    assert_eq!(both.viewport, Rect::new(inset + rim, auto_hide_top(dpi, maximised), shown.viewport.right, shown.viewport.bottom), "{context}");
+                    assert_eq!(auto_hide_page_rect(TabLayout::Vertical, w, h, dpi, maximised, 260, hide), both.viewport, "{context}");
+                    // Floating: the sidebar over the page's left, the toolbar from the rail (or the sidebar) on.
+                    let overlay = auto_hide_overlay(&both, Some(&sidebar), dpi, true);
+                    assert_eq!(overlay.sidebar, sidebar.sidebar, "{context}");
+                    assert_eq!(overlay.top.left, inset, "{context}");
+                    let overlay = auto_hide_overlay(&top_hidden, Some(&sidebar), dpi, false);
+                    assert_eq!(overlay.top.left, sidebar.sidebar.right, "{context}: the shown sidebar is not covered");
+                }
+            }
+        }
+    }
+
+    /// Revealing a bar is an overlay: the page rectangle is the same shown or hidden, so nothing
+    /// relays out and the page never gets a `resize`.
+    #[test]
+    fn the_page_rectangle_does_not_depend_on_whether_a_hidden_bar_is_revealed() {
+        let hide = AutoHide { top: true, sidebar: false };
+        let a = compute_in_frame_auto_hide(TabLayout::ToolbarTop, 1280, 720, 144, 4, 1, false, true, hide);
+        let b = compute_in_frame_auto_hide(TabLayout::ToolbarTop, 1280, 720, 144, 4, 1, false, true, hide);
+        assert_eq!(a.viewport, b.viewport);
+        let overlay = auto_hide_overlay(&a, None, 144, false);
+        assert!(overlay.top.bottom > a.viewport.top, "the revealed bars cover the top of the page");
+        assert_eq!(overlay.top.bottom, chrome_height(TabLayout::ToolbarTop, 144));
+    }
+    // --- end auto-hide ---
 }
