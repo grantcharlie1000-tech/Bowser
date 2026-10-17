@@ -611,17 +611,21 @@ impl ChromeSurface {
             pixels[start..start + dirty.width() as usize * 4].fill(0);
         }
         if !view.palette.translucent {
+            // --- layout (thread T6) --- the chrome bands: above the page (title row, toolbar, tab
+            // row, whichever are at the top) and below it (a tab row or the toolbar along the
+            // bottom edge; nothing when there is none).
             self.fill_rect(
-                Rect::new(
-                    0,
-                    0,
-                    self.width,
-                    layout::chrome_height(view.layout.variant, view.layout.metrics.dpi()),
-                ),
+                Rect::new(0, 0, self.width, view.layout.top_chrome),
+                view.palette.window,
+                dirty,
+            );
+            self.fill_rect(
+                Rect::new(0, view.layout.bottom_chrome, self.width, self.height),
                 view.palette.window,
                 dirty,
             );
         }
+        self.paint_title_bar(view, dirty); // --- layout (thread T6) ---
         // Each HTML region is cleared here: the overlay sits above the HTML chrome's child window, so
         // the page shows through. The native paint of that region is then skipped.
         if self.html_toolbar {
@@ -1854,6 +1858,30 @@ impl ChromeSurface {
             }
         }
     }
+
+    // --- layout (thread T6) ---
+    /// The title row: the active page's title at its left end, clear of the window buttons (which
+    /// `paint_caption` draws). Nothing when the arrangement has no title row.
+    fn paint_title_bar(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let bar = view.layout.title_bar;
+        if bar.is_empty() || bar.intersect(dirty).is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        let title = view.tabs.get(view.active).map_or("", |tab| tab.title);
+        // An empty string must never reach the text painter (DrawTextW faults on it).
+        if title.trim().is_empty() {
+            return;
+        }
+        let pad = m.px(Metrics::TAB_PADDING + Metrics::OUTER_MARGIN);
+        let buttons_left = if view.layout.caption_area.is_empty() { bar.right } else { view.layout.caption_area.left };
+        let rect = Rect::new(bar.left + pad, bar.top, (buttons_left - pad).max(bar.left + pad), bar.bottom);
+        if rect.is_empty() {
+            return;
+        }
+        self.draw_text(title, rect, view.palette.tab_text_active, true, bar, dirty);
+    }
+    // --- end layout ---
 
     fn paint_caption(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;

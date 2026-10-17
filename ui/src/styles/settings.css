@@ -1174,6 +1174,48 @@
   text-align: end;
 }
 
+/* ---- Layout block (thread T6): preset thumbnails, the three edges, the UI zoom value ---- */
+/* Six preset tiles: two rows of three, the same tile as the top-style tiles. */
+:where(#app.sp-root) .sp-tiles.is-presets {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sp-tile[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+/* The three edges on one line, each a captioned segmented control; they wrap when narrow. */
+.sp-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-3) var(--bw-space-4);
+}
+
+.sp-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-1);
+}
+
+.sp-bar-label {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* The UI zoom value is a field (select it to type), beside the slider and before Reset. */
+.sp-ui-zoom {
+  flex-wrap: wrap;
+}
+
+.sp-ui-zoom .sp-range {
+  flex: 1 1 160px;
+}
+
+.sp-ui-zoom-value {
+  width: 64px;
+}
+
 /* ---- Privacy dashboard (the settings page hosts it; panels.css styles its rows) ---- */
 .sp-dash {
   display: flex;
@@ -1615,7 +1657,8 @@
     grid-column: 1 / -1;
   }
 
-  :where(#app.sp-root) .sp-tiles {
+  :where(#app.sp-root) .sp-tiles,
+  :where(#app.sp-root) .sp-tiles.is-presets {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

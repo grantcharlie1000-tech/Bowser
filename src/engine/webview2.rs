@@ -2916,6 +2916,22 @@ impl EngineAdapter for WebView2Engine {
         }
     }
 
+    // --- layout (thread T6) ---
+    fn apply_status_overlay(&mut self) {
+        let shown = crate::layout_prefs::status_overlay_shown();
+        let webviews: Vec<ICoreWebView2> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        for webview in &webviews {
+            let _ = unsafe { webview.Settings().and_then(|settings| settings.SetIsStatusBarEnabled(shown)) };
+        }
+    }
+    // --- end layout ---
+
     fn clear_browsing_data_set(
         &mut self,
         tab: TabId,
@@ -3944,6 +3960,9 @@ unsafe fn configure_controller(
         // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
         // touch the ad blocker's `CallDevToolsProtocolMethod` Fetch/Network session.
         settings.SetAreDevToolsEnabled(true)?;
+        // --- layout (thread T6) --- the link-address overlay at the bottom of the page follows the
+        // status bar setting (Bowser has no status bar of its own).
+        settings.SetIsStatusBarEnabled(crate::layout_prefs::status_overlay_shown())?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
                 settings4.SetIsPasswordAutosaveEnabled(false)?;

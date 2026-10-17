@@ -543,8 +543,13 @@ export function applyState(view: View, state: StateMsg): void {
   }
 }
 
-export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string): void {
+export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string, density?: 'regular' | 'compact', compactMenus?: boolean): void {
   const root = document.documentElement;
+  // --- layout (thread T6) --- `ui_density` / `compact_menus`: the row-height tokens read these.
+  // Absent (an older host, a view that does not send them) leaves the regular heights.
+  if (density !== undefined) root.dataset.density = density;
+  if (compactMenus !== undefined) root.dataset.compactMenus = String(compactMenus);
+  // --- end layout ---
   for (const token of THEME_TOKENS) {
     const value = theme[token];
     if (value !== undefined) root.style.setProperty(THEME_VAR[token], value);

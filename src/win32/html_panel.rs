@@ -338,7 +338,9 @@ fn open_panel(runtime: &Rc<RefCell<Runtime>>, id: PanelId, anchor: Anchor, conte
     let centre = POINT { x: anchor.button.left, y: (anchor.button.top + anchor.button.bottom) / 2 };
     let (dpi, work) = super::html_popup::monitor_data(centre);
     let size = if id == PanelId::Customize { flyout::CUSTOMIZE_SIZE } else { flyout::LIST_SIZE };
-    let placement = flyout::place(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size);
+    // --- layout (thread T6) --- the flyout follows `side_panel_position` like the docked panels.
+    let side = runtime.try_borrow().ok().map_or(crate::settings::SidePanelPosition::Left, |state| crate::app::App::settings(&state.app).side_panel_position);
+    let placement = flyout::place_at(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size, side);
     {
         let Ok(mut state) = runtime.try_borrow_mut() else { return; };
         if !state.open {

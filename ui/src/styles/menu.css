@@ -28,7 +28,7 @@
  */
 
 #app.html-menu {
-  --menu-item-h: 28px;
+  --menu-item-h: var(--bw-menu-row-h); /* 28px; 24px with compact menus (thread T6) */
   --menu-icon-gap: var(--bw-space-3);
   box-sizing: border-box;
   display: flex;

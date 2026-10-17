@@ -387,7 +387,7 @@
   align-items: center;
   gap: var(--bw-space-3);
   min-width: 0;
-  min-height: 32px;
+  min-height: var(--bw-row-h); /* 32px; 28px at the compact density (thread T6) */
   padding: 0 var(--bw-space-2);
   border-radius: var(--bw-r-row);
   color: var(--bw-text);

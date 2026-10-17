@@ -84,10 +84,22 @@ fn dip(value: i32, dpi: u32) -> i32 {
 /// Places a flyout of `size` beside the rail: left edge `GAP` right of `rail_right`, header centred
 /// on `button`, never wider than the owner's client area (`owner`, screen) nor taller than the band
 /// shared by the owner and the monitor work area. All rectangles are screen pixels at `dpi`.
+#[cfg(test)]
 pub(crate) fn place(rail_right: i32, button: RECT, owner: RECT, work: RECT, dpi: u32, size: Size) -> Placement {
-    let left = rail_right + px(GAP, dpi);
-    let room = (owner.right - px(EDGE, dpi) - left).max(1);
+    place_at(rail_right, button, owner, work, dpi, size, crate::settings::SidePanelPosition::Left)
+}
+
+/// --- layout (thread T6) --- [`place`] on either edge: `side_panel_position=right` puts the
+/// surface against the window's right edge (`EDGE` inside it), the rail's side of it clear of the
+/// rail as before, and no caret (the rail button it belongs to is on the other side).
+pub(crate) fn place_at(rail_right: i32, button: RECT, owner: RECT, work: RECT, dpi: u32, size: Size, side: crate::settings::SidePanelPosition) -> Placement {
+    let beside_rail = rail_right + px(GAP, dpi);
+    let room = (owner.right - px(EDGE, dpi) - beside_rail).max(1);
     let width = if dip(owner.right - owner.left, dpi) < NARROW { room } else { px(size.width, dpi).min(room) };
+    let left = match side {
+        crate::settings::SidePanelPosition::Left => beside_rail,
+        crate::settings::SidePanelPosition::Right => (owner.right - px(EDGE, dpi) - width).max(beside_rail),
+    };
     let band_top = owner.top.max(work.top) + px(EDGE, dpi);
     let band_bottom = (owner.bottom.min(work.bottom) - px(EDGE, dpi)).max(band_top + 1);
     let height = px(size.height, dpi).min(band_bottom - band_top);
@@ -95,7 +107,7 @@ pub(crate) fn place(rail_right: i32, button: RECT, owner: RECT, work: RECT, dpi:
     let top = (centre - px(HEADER_CENTRE, dpi)).clamp(band_top, band_bottom - height);
     let offset = centre - top;
     let keep = px(CARET_KEEP, dpi);
-    let caret = if offset >= keep && offset <= height - keep { dip(offset, dpi) } else { -1 };
+    let caret = if side == crate::settings::SidePanelPosition::Right { -1 } else if offset >= keep && offset <= height - keep { dip(offset, dpi) } else { -1 };
     let surface = RECT { left, top, right: left + width, bottom: top + height };
     let window = RECT {
         left: surface.left - px(SHADOW.left, dpi),
@@ -314,6 +326,24 @@ mod tests {
         assert_eq!(placed.window.bottom - placed.surface.bottom, 36);
         assert_eq!(placed.caret, 22);
     }
+
+    // --- layout (thread T6) ---
+    #[test]
+    fn on_the_right_the_flyout_hugs_the_window_edge_without_a_caret() {
+        use crate::settings::SidePanelPosition;
+        let right = place_at(74, button(70), OWNER, WORK, 96, LIST_SIZE, SidePanelPosition::Right);
+        assert_eq!(right.surface.right, OWNER.right - 8, "EDGE inside the window's right edge");
+        assert_eq!(right.surface.right - right.surface.left, 360);
+        assert_eq!(right.surface.top, 61, "the same band as on the left");
+        assert_eq!(right.caret, -1, "no caret: the rail button is on the other side");
+        assert_eq!(place_at(74, button(70), OWNER, WORK, 96, LIST_SIZE, SidePanelPosition::Left), place(74, button(70), OWNER, WORK, 96, LIST_SIZE));
+        // A window too narrow for both: the surface still starts clear of the rail.
+        let narrow = RECT { right: 480, ..OWNER };
+        let tight = place_at(74, button(70), narrow, WORK, 96, LIST_SIZE, SidePanelPosition::Right);
+        assert_eq!(tight.surface.left, 78);
+        assert_eq!(tight.surface.right, 472);
+    }
+    // --- end layout ---
 
     #[test]
     fn a_caret_that_would_land_in_a_corner_is_hidden() {
