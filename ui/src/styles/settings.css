@@ -302,8 +302,96 @@
 }
 
 /* Extensions: the Installed card sits right under its lead, there is no long list to introduce. */
-.sp-sec[data-section="extensions"] > .sp-lead {
+.sp-sec[data-area="extensions"] > .sp-lead {
   margin-bottom: var(--bw-space-2);
+}
+
+/* ---- settings slim: parts, "More options", sub-pages ----
+   An area holds one part per Rust section; a merged area's parts read as groups of one list. The
+   disclosure is one row in a card, the same height, inset and type as every other row; its body is
+   ordinary groups. A sub-page is a section of its own with a quiet way back above its title. */
+.sp-part + .sp-part {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-more {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-more-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-6);
+  width: 100%;
+  min-height: 56px;
+  margin: 0;
+  padding: var(--bw-space-3) var(--sp-row-x);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-more-btn:hover {
+  background: color-mix(in srgb, var(--bw-text) 4%, transparent);
+}
+
+.sp-more-btn:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.sp-more-chev {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--bw-text-2);
+  transition: transform var(--bw-dur-fast) var(--bw-ease-move);
+}
+
+.sp-more.is-open .sp-more-chev {
+  transform: rotate(180deg);
+}
+
+.sp-more-body {
+  margin-top: var(--sp-gap-group);
+}
+
+/* The opened list settles in from just above: a short, finite fade and lift. */
+@keyframes sp-more-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.sp-more.is-open > .sp-more-body {
+  animation: sp-more-in var(--bw-dur-slow) var(--bw-ease-out) both;
+}
+
+.sp.is-searching .sp-more.is-open > .sp-more-body {
+  animation: none;
+}
+
+.sp-more-body > .sp-group + .sp-dash,
+.sp-more-body > .sp-dash + .sp-group {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-sec.sp-page {
+  margin-top: 0;
+}
+
+.sp-back {
+  margin: 0 0 var(--bw-space-3);
+}
+
+.sp-page .sp-row.is-page > .sp-text {
+  display: none;
 }
 
 /* A group: its heading, an optional "no effect yet" note, then the card. */
@@ -1554,7 +1642,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sp-mark.is-turn svg,
-  .sp-card.is-flash::after {
+  .sp-card.is-flash::after,
+  .sp-more.is-open > .sp-more-body {
     animation: none;
   }
 

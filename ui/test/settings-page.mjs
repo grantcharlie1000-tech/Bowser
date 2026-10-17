@@ -164,8 +164,9 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
   assert.deepEqual(restart, ['grouping', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
+  // --- settings slim --- the toolbar checklist joins it: the HTML toolbar reads none of its ids.
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['frameless']);
+  assert.deepEqual(notYet, ['frameless', 'toolbarButtons']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -355,6 +356,9 @@ Object.assign(globalThis, {
   IntersectionObserver: class { observe() {} disconnect() {} },
   chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
+// --- settings slim --- the disclosures remember their state here; Privacy was left open last time.
+const stored = new Map([['bowser.settings.more', JSON.stringify(['privacy'])]]);
+globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)), removeItem: (k) => stored.delete(k) };
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
 globalThis.HTMLInputElement = class {};
@@ -369,16 +373,21 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 16);
-  assert.equal(app.querySelectorAll('section').length, 16);
-  for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby'));
+  // --- settings slim --- twelve areas in the nav, each holding the Rust sections it merges, then
+  // "Not active yet" and one sub-page per big editor.
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, 12);
+  assert.equal(app.querySelectorAll('section.sp-part').length, 16);
+  assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
+  assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
+  for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
   // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
-  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row);
-  assert.deepEqual(rows, logic.ROWS.map((row) => row.id));
+  // Every row is drawn exactly once, wherever it sits now.
+  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row).filter((id) => id !== undefined);
+  assert.deepEqual([...rows].sort(), logic.ROWS.map((row) => row.id).sort());
   for (const control of app.querySelectorAll('[role="switch"], [role="radiogroup"]')) {
     assert.ok(control.getAttribute('aria-labelledby') || control.getAttribute('aria-label'), control.className);
   }
-  assert.equal(app.querySelector('[role="status"]')?.getAttribute('aria-live'), 'polite');
+  assert.equal(app.querySelector('.sp-sr[role="status"]')?.getAttribute('aria-live'), 'polite');
   assert.equal(app.querySelector('.sp-avatar').textContent, 'W');
   assert.equal(app.querySelector('.sp-tile[aria-checked="true"]')?.querySelector('.sp-tile-name').textContent, 'Toolbar above tabs');
 });
@@ -526,20 +535,25 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-test('the toolbar checklist toggles one id and the reset button restores the full catalog', () => {
+// --- settings slim --- the HTML toolbar reads none of `toolbar_buttons`, so the checklist sits in
+// "Not active yet": it shows the saved choice, offers no live control, and the choice is kept.
+test('the toolbar checklist shows the saved choice in "Not active yet", locked, and the choice is kept', () => {
   deliver(fixture.snap);
   const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
+  assert.ok(app.querySelector('section[data-area="later"]').contains(toolbarRow));
   const switches = toolbarRow.querySelectorAll('[role="switch"]');
   assert.equal(switches.length, 8);
   assert.ok(switches.every((sw) => sw.getAttribute('aria-checked') === 'true'), 'the default set is every button, all on');
-  sent.length = 0;
-  switches[0].click();
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /toolbar_buttons=forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  assert.ok(switches.every((sw) => sw.disabled && sw.getAttribute('aria-disabled') === 'true'));
   const reset = toolbarRow.querySelector('.sp-corner').querySelector('button');
   sent.length = 0;
+  switches[0].click();
   reset.click();
-  assert.match(sent[0].text, /toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  assert.deepEqual(sent, [], 'nothing is sent from a row that does nothing yet');
+  // Another change still carries the saved list, so nothing is lost.
+  app.querySelector('.sp-row[data-row="roundedContentFrame"]').querySelector('[role="switch"]').click();
+  assert.match(sent[0].text, /\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  deliver(fixture.snap);
 });
 
 test('the theme reset button clears both theme and accent in one save', () => {
@@ -639,8 +653,11 @@ test('the three shortcut rows that used to say "no effect yet" now say nothing, 
 
 const commandsFixture = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
 const commandsSnap = (patch = {}) => ({ ...commandsFixture, d: { ...commandsFixture.d, ...patch } });
-const keyboard = () => app.querySelector('section[data-section="keyboard"]');
-const quick = () => app.querySelector('section[data-section="commands"]');
+// --- settings slim --- Keyboard and Quick commands are one area; the shortcut list and the chains are sub-pages.
+const keyboard = () => app.querySelector('section[data-area="keyboard"]');
+const quick = keyboard;
+const kbPage = () => app.querySelector('section[data-page="kbEditor"]');
+const chainsPage = () => app.querySelector('section[data-page="chains"]');
 const rowIn = (root, id) => root.querySelector(`.sp-row[data-row="${id}"]`);
 const kbRow = (id) => app.querySelector(`.sp-kb-row[data-command="${id}"]`);
 const buttonNamed = (root, text) => root.querySelectorAll('button').find((b) => b.textContent.trim() === text);
@@ -651,9 +668,10 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section).slice(7, 12), ['search', 'bookmarks', 'keyboard', 'commands', 'downloads']);
-  assert.equal(keyboard().querySelector('.sp-kb').dataset.row, 'kbEditor');
-  assert.equal(quick().querySelector('.sp-chains').dataset.row, 'chains');
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), ['profile', 'appearance', 'tabs', 'privacy', 'performance', 'address', 'keyboard', 'downloads', 'media', 'extensions', 'updates', 'about']);
+  assert.deepEqual(keyboard().querySelectorAll('section.sp-part').map((s) => s.dataset.section), ['keyboard', 'commands']);
+  assert.equal(kbPage().querySelector('.sp-kb').dataset.row, 'kbEditor');
+  assert.equal(chainsPage().querySelector('.sp-chains').dataset.row, 'chains');
   deliver(commandsSnap());
   const on = (root, id) => rowIn(root, id).querySelector('[role="switch"]').getAttribute('aria-checked');
   assert.deepEqual(['kbEnabled', 'kbSingleKey', 'kbAltMenu', 'kbFocusCycling'].map((id) => on(keyboard(), id)), ['true', 'false', 'false', 'false']);
@@ -703,9 +721,9 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   assert.equal(tool(kbRow('chain:1'), 'Browser priority for Morning'), undefined, 'a chain has no browser priority');
   assert.equal(tool(kbRow('reload'), 'Browser priority for Reload').getAttribute('aria-pressed'), 'false', 'a command off the list shows it');
   // Categories keep the registry's order, chains last.
-  assert.deepEqual(keyboard().querySelectorAll('.sp-card-h').map((h) => h.textContent).at(-1), 'Command chains');
+  assert.deepEqual(kbPage().querySelectorAll('.sp-card-h').map((h) => h.textContent).at(-1), 'Command chains');
   // The filter matches names, categories and the shortcuts themselves.
-  const filter = keyboard().querySelector('.sp-kb-filter');
+  const filter = kbPage().querySelector('.sp-kb-filter');
   filter.value = 'ctrl+j';
   filter.dispatch('input');
   assert.deepEqual(app.querySelectorAll('.sp-kb-row').map((r) => r.dataset.command), ['downloads']);
@@ -718,10 +736,10 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   assert.ok(app.querySelectorAll('.sp-kb-row').length > 50);
   // The cheat sheet and restore all (which asks first).
   sent.length = 0;
-  buttonNamed(keyboard(), 'Cheat sheet').click();
+  buttonNamed(kbPage(), 'Cheat sheet').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbsheet' }]);
   sent.length = 0;
-  const restoreAll = buttonNamed(keyboard(), 'Restore all');
+  const restoreAll = buttonNamed(kbPage(), 'Restore all');
   restoreAll.click();
   assert.deepEqual(sent, [], 'the first click only asks');
   assert.equal(restoreAll.textContent, 'Restore every shortcut');
@@ -829,7 +847,7 @@ test('Quick commands: result types show, hide, reorder and reset; the limit clam
 
 test('command chains: the list, clone, delete with a confirmation, and the editor (name, delays, order, test, save)', () => {
   deliver(commandsSnap());
-  const block = quick().querySelector('.sp-chains');
+  const block = chainsPage().querySelector('.sp-chains');
   const chainRows = () => block.querySelectorAll('.sp-chain-row');
   assert.equal(chainRows().length, 1);
   assert.equal(chainRows()[0].querySelector('.sp-label').textContent, 'Morning');
@@ -891,7 +909,7 @@ test('command chains: the list, clone, delete with a confirmation, and the edito
 
 test('a new chain is checked here before it is sent: a name, a command, whole-millisecond delays', () => {
   deliver(commandsSnap());
-  const block = quick().querySelector('.sp-chains');
+  const block = chainsPage().querySelector('.sp-chains');
   const editor = block.querySelector('.sp-chain-editor');
   sent.length = 0;
   buttonNamed(block, 'New chain').click();
@@ -925,12 +943,14 @@ test('the new rows join the page search and the Keyboard and Quick commands bloc
   const search = app.querySelector('.sp-search-input');
   search.value = 'macro';
   search.dispatch('input');
-  assert.equal(quick().querySelector('.sp-chains').hidden, false);
-  assert.equal(keyboard().querySelector('.sp-kb').hidden, true);
-  assert.equal(keyboard().hidden, true, 'a section with no match is hidden');
+  assert.equal(chainsPage().querySelector('.sp-chains').hidden, false);
+  assert.equal(app.querySelector('[data-opens="chains"]').hidden, false, 'the row that opens the chains is the hit');
+  assert.equal(kbPage().querySelector('.sp-kb').hidden, true);
+  assert.equal(app.querySelector('section[data-section="keyboard"]').hidden, true, 'a part with no match is hidden');
+  assert.equal(app.querySelector('section[data-section="commands"]').hidden, false);
   search.value = '';
   search.dispatch('input');
-  assert.equal(keyboard().querySelector('.sp-kb').hidden, false);
+  assert.equal(kbPage().querySelector('.sp-kb').hidden, false);
 });
 
 test('a bad commands snapshot is dropped and leaves the sections as they were', () => {
@@ -1228,7 +1248,9 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_bar_display=bookmark-icon' });
   rowOf('bmBarPosition').querySelectorAll('[role="radio"]')[1].click();
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_bar_position=bottom' });
-  assert.equal(rowOf('bmBarDisplay').parent.parent, rowOf('bookmarksBar').parent.parent, 'one card with the page\'s bookmarks bar rows');
+  const headingOf = (id) => rowOf(id).parent.parent.querySelector('.sp-group-h').textContent;
+  assert.equal(headingOf('bmBarDisplay'), headingOf('bookmarksBar'), 'under the page\'s own Bookmarks bar heading');
+  assert.equal(headingOf('bmBarDisplay'), 'Bookmarks bar');
   assert.equal(rowOf('bmBarFolder').querySelector('.bw-select-button') !== null, true);
   // A bad snapshot is dropped and leaves the page as it was.
   deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
@@ -1248,7 +1270,7 @@ test('integrated page: sixteen sections in order, no duplicate rows or keys, and
   assert.equal(logic.ROWS.find((r) => r.id === 'newTabBesideActive'), undefined);
   assert.equal(app.querySelector('.sp-row[data-row="newTabBesideActive"]'), null);
   // The Ctrl+Tab order and the tab previews sit in Tabs > Tab bar, after T1's own rows.
-  const tabsSection = app.querySelector('section[data-section="tabs"]');
+  const tabsSection = app.querySelector('section[data-area="tabs"]');
   for (const id of ['ctrlTabMru', 'tabPreviewImages', 'tabPreviewMemory']) {
     assert.equal(logic.ROWS.find((r) => r.id === id).section, 'tabs', id);
     assert.ok(tabsSection.querySelector(`.sp-row[data-row="${id}"]`), `${id} is drawn in Tabs`);
@@ -1281,4 +1303,175 @@ test('row descriptions match what the rows do', () => {
   assert.match(desc('qcNotesPanel'), /does not yet go to the picked note/);
   assert.match(desc('sidePanelPosition'), /next time a side panel opens/);
   assert.ok(!row('sidePanelPosition').restart, 'it applies without a restart');
+});
+// ---- settings slim: a short core list per area, one "More options", sub-pages, "Not active yet" ----
+
+const areaNode = (key) => app.querySelector(`section[data-area="${key}"]`);
+const moreOf = (key) => areaNode(key).querySelector('.sp-more');
+const rowNode = (id) => app.querySelector(`[data-row="${id}"]`);
+const tierOf = (id) => logic.rowTier(logic.ROWS.find((r) => r.id === id));
+const searchFor = (text) => { const input = app.querySelector('.sp-search-input'); input.value = text; input.dispatch('input'); };
+
+test('slim: each area shows a short core list and puts the rest behind one closed "More options" that remembers itself', () => {
+  deliver(fixture.snap);
+  searchFor('');
+  for (const area of logic.AREAS) {
+    const node = areaNode(area.key);
+    const inArea = logic.ROWS.filter((row) => area.parts.includes(row.section) && tierOf(row.id) !== 'later');
+    const core = inArea.filter((row) => tierOf(row.id) === 'core' || tierOf(row.id) === 'page');
+    const more = inArea.filter((row) => tierOf(row.id) === 'more');
+    assert.ok(core.length > 0 && core.length <= 10, `${area.key}: ${core.length} rows in its main view`);
+    for (const row of core) {
+      const drawn = tierOf(row.id) === 'page' ? app.querySelector(`[data-opens="${row.id}"]`) : rowNode(row.id);
+      assert.ok(node.contains(drawn), `${row.id} is in ${area.key}`);
+      assert.ok(!(moreOf(area.key)?.contains(drawn) ?? false), `${row.id} is not behind More options`);
+    }
+    if (more.length === 0) { assert.equal(moreOf(area.key), null, `${area.key} has no long tail`); continue; }
+    const d = moreOf(area.key);
+    assert.equal(node.querySelectorAll('.sp-more').length, 1, 'one disclosure per area');
+    assert.equal(d.querySelector('.sp-label').textContent, logic.MORE_LABEL);
+    assert.equal(d.querySelector('.sp-desc').textContent, logic.moreCountText(more.length));
+    for (const row of more) assert.ok(d.contains(rowNode(row.id)), `${row.id} is behind More options`);
+    // Closed by default; Privacy was left open last time.
+    const open = area.key === 'privacy';
+    assert.equal(d.querySelector('.sp-more-btn').getAttribute('aria-expanded'), String(open), area.key);
+    assert.equal(d.querySelector('.sp-more-body').hidden, !open, area.key);
+  }
+  // Opening and closing is remembered.
+  const button = moreOf('tabs').querySelector('.sp-more-btn');
+  button.click();
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  assert.equal(moreOf('tabs').querySelector('.sp-more-body').hidden, false);
+  assert.deepEqual(JSON.parse(stored.get('bowser.settings.more')).sort(), ['privacy', 'tabs']);
+  button.click();
+  assert.equal(moreOf('tabs').querySelector('.sp-more-body').hidden, true);
+  assert.deepEqual(JSON.parse(stored.get('bowser.settings.more')), ['privacy']);
+  // A row behind the disclosure still saves as before.
+  sent.length = 0;
+  rowNode('tabs_mute_mode').querySelectorAll('[role="radio"]')[1].click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_mute_mode=active' }]);
+});
+
+test('slim: the search finds rows behind a closed disclosure and opens it; clearing closes it unless a found row was used', () => {
+  deliver(fixture.snap);
+  const d = moreOf('tabs');
+  const button = d.querySelector('.sp-more-btn');
+  const body = d.querySelector('.sp-more-body');
+  assert.equal(button.getAttribute('aria-expanded'), 'false');
+  searchFor('tab audio');
+  assert.equal(rowNode('tabs_mute_mode').hidden, false);
+  assert.equal(button.getAttribute('aria-expanded'), 'true', 'the hit opens its disclosure');
+  assert.equal(body.hidden, false);
+  assert.equal(d.hidden, false);
+  assert.equal(areaNode('tabs').hidden, false);
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'tabs');
+  // Disclosures with no hit stay out of the way.
+  assert.equal(moreOf('appearance').hidden, true);
+  searchFor('');
+  assert.equal(button.getAttribute('aria-expanded'), 'false', 'only opened for the search');
+  assert.equal(body.hidden, true);
+  searchFor('tab audio');
+  body.dispatch('focusin');
+  searchFor('');
+  assert.equal(button.getAttribute('aria-expanded'), 'true', 'a row used from the search stays in view');
+  button.click();
+  // Rows that do nothing yet are found too, in their own closed section.
+  searchFor('frameless');
+  assert.equal(areaNode('later').hidden, false);
+  assert.equal(areaNode('later').querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'true');
+  assert.equal(rowNode('frameless').hidden, false);
+  assert.equal(areaNode('appearance').hidden, true, 'not in Appearance any more');
+  searchFor('');
+  assert.equal(areaNode('later').querySelector('.sp-more-body').hidden, true);
+});
+
+test('slim: no row that does nothing yet renders as a live control', () => {
+  deliver(fixture.snap);
+  const later = areaNode('later');
+  assert.equal(later.querySelector('.sp-h').textContent, logic.LATER_TITLE);
+  assert.equal(later.querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
+  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Customise your toolbar, Frameless window');
+  for (const row of logic.ROWS) {
+    const node = rowNode(row.id);
+    assert.equal(later.contains(node), row.notYet === true, `${row.id} is in Not active yet only when it does nothing yet`);
+    assert.equal(tierOf(row.id) === 'later', row.notYet === true, row.id);
+    if (!row.notYet) continue;
+    const controls = node.querySelectorAll('button, input');
+    assert.ok(controls.length > 0);
+    assert.ok(controls.every((c) => c.disabled && c.getAttribute('aria-disabled') === 'true'), `${row.id} has no live control`);
+    assert.equal(node.querySelector('.sp-flag').textContent, logic.NOT_YET_NOTE);
+  }
+  sent.length = 0;
+  rowNode('frameless').querySelector('[role="switch"]').click();
+  assert.deepEqual(sent, []);
+  // A fresh snapshot (which enables every working control) leaves them locked.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: true } });
+  assert.equal(rowNode('frameless').querySelector('[role="switch"]').disabled, true);
+});
+
+test('slim: every editor opens on its own sub-page from one row, and Back, a nav pick or a search returns', () => {
+  deliver(fixture.snap);
+  for (const [id, spec] of Object.entries(logic.PAGE_ROWS)) {
+    const opener = app.querySelector(`[data-opens="${id}"]`);
+    assert.ok(opener, id);
+    assert.equal(app.querySelectorAll(`[data-opens="${id}"]`).length, 1, `one row opens ${id}`);
+    const area = logic.areaOf(logic.ROWS.find((r) => r.id === id).section);
+    assert.ok(areaNode(area.key).contains(opener), `${id} opens from ${area.key}`);
+    const button = opener.querySelector('.bw-button');
+    assert.equal(button.textContent, spec.button);
+    const subPage = app.querySelector(`section[data-page="${id}"]`);
+    assert.equal(subPage.hidden, true);
+    assert.ok(subPage.contains(rowNode(id)), `${id} lives on its sub-page`);
+    button.click();
+    assert.equal(subPage.hidden, false, id);
+    assert.ok(logic.AREAS.every((a) => areaNode(a.key).hidden), 'the page shows only the editor');
+    assert.equal(subPage.querySelector('.sp-h').textContent, logic.ROWS.find((r) => r.id === id).label);
+    assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, area.key);
+    subPage.querySelector('.sp-back').click();
+    assert.equal(subPage.hidden, true);
+    assert.ok(logic.AREAS.every((a) => !areaNode(a.key).hidden));
+    assert.equal(document.activeElement, button, 'Back returns to the row that opened it');
+  }
+  // A nav pick or a search leaves the sub-page too.
+  const engines = app.querySelector('[data-opens="engines"]').querySelector('.bw-button');
+  engines.click();
+  deliver(fixture.go);
+  assert.equal(app.querySelector('section[data-page="engines"]').hidden, true);
+  assert.equal(areaNode('privacy').hidden, false);
+  engines.click();
+  searchFor('img');
+  assert.equal(app.querySelector('section[data-page="engines"]').hidden, true);
+  assert.equal(rowNode('searchDefault').hidden, false);
+  // A hit inside a sub-page shows the row that opens it.
+  searchFor('reorder nickname suggest');
+  assert.equal(app.querySelector('[data-opens="engines"]').hidden, false);
+  searchFor('');
+  // The editors still act from their sub-page.
+  sent.length = 0;
+  app.querySelector('.ad-engine[data-engine="bing"]').querySelector('[aria-label="Remove Bing"]').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'engine', text: 'remove\tbing' }]);
+});
+
+test('slim: a deep link to a merged section lands in its area; areas name their parts', () => {
+  sent.length = 0;
+  deliver({ v: 1, t: 'settingsgo', s: 'search' });
+  assert.deepEqual(sent, []);
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'address');
+  deliver({ v: 1, t: 'settingsgo', s: 'startpage' });
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'tabs');
+  for (const section of logic.SETTINGS_SECTIONS) assert.ok(logic.areaOf(section).parts.includes(section), section);
+  assert.deepEqual(logic.AREAS.flatMap((a) => a.parts).sort(), [...logic.SETTINGS_SECTIONS].sort(), 'every Rust section is in exactly one area');
+  // A merged area draws each part's core rows as one card under the part's own title.
+  const parts = areaNode('address').querySelectorAll('section.sp-part').map((p) => p.querySelector('.sp-group-h').textContent);
+  assert.deepEqual(parts, ['Address bar', 'Search engine', 'Bookmarks']);
+});
+
+test('slim: a row nobody placed defaults to More options, so new rows never lengthen the main view', () => {
+  const base = { section: 'appearance', label: 'x', description: '', keywords: '' };
+  assert.equal(logic.rowTier({ ...base, id: 'someNewRow' }), 'more');
+  assert.equal(logic.rowTier({ ...base, id: 'someNewRow', tier: 'core' }), 'core');
+  assert.equal(logic.rowTier({ ...base, id: 'someNewRow', tier: 'core', notYet: true }), 'later', 'a row that does nothing is never shown as live');
+  assert.equal(logic.rowTier({ ...base, id: 'engines' }), 'page');
+  assert.equal(logic.moreCountText(1), '1 more setting');
+  assert.equal(logic.moreCountText(12), '12 more settings');
 });
