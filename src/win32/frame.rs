@@ -72,11 +72,26 @@ pub fn frame_hit_test(
     maximised: bool,
     chrome_hit: ChromeHit,
 ) -> FrameHit {
+    frame_hit_test_with(point, client_size, dpi, maximised, chrome_hit, false)
+}
+
+/// --- layout (thread T6) --- [`frame_hit_test`] with the bottom grip as thin as the top one when
+/// `thin_bottom` is set: a tab row or the toolbar along the bottom edge would otherwise lose its
+/// lower part to the resize edge, as the tabs at the top would.
+pub fn frame_hit_test_with(
+    point: POINT,
+    client_size: (i32, i32),
+    dpi: u32,
+    maximised: bool,
+    chrome_hit: ChromeHit,
+    thin_bottom: bool,
+) -> FrameHit {
     let m = Metrics::new(dpi);
     let (width, height) = (client_size.0.max(0), client_size.1.max(0));
     let (x, y) = (point.x, point.y);
     let edge = m.px(RESIZE_GRIP);
     let top_edge = m.px(Metrics::ISLAND_MARGIN);
+    let bottom_edge = if thin_bottom { top_edge } else { edge };
     if x < -edge || y < -edge || x >= width.saturating_add(edge) || y >= height.saturating_add(edge)
     {
         return FrameHit::Client;
@@ -87,7 +102,7 @@ pub fn frame_hit_test(
         let right = x >= width.saturating_sub(edge);
         let top_corner = y < edge;
         let top = y < top_edge;
-        let bottom = y >= height.saturating_sub(edge);
+        let bottom = y >= height.saturating_sub(bottom_edge);
         match (top_corner, bottom, left, right) {
             (true, _, true, _) => return FrameHit::TopLeft,
             (true, _, _, true) => return FrameHit::TopRight,
@@ -320,4 +335,20 @@ mod tests {
         );
         assert_eq!(caption_strip_height(120), 38, "37.5 rounds up");
     }
+
+    // --- layout (thread T6) ---
+    #[test]
+    fn a_row_along_the_bottom_edge_keeps_the_bottom_grip_as_thin_as_the_top_one() {
+        let size = (1000, 700);
+        let low = POINT { x: 500, y: 694 };
+        assert_eq!(frame_hit_test(low, size, 96, false, ChromeHit::Interactive), FrameHit::Bottom, "8px grip by default");
+        assert_eq!(frame_hit_test_with(low, size, 96, false, ChromeHit::Interactive, true), FrameHit::Client, "a tab there is a tab");
+        let edge = POINT { x: 500, y: 699 };
+        assert_eq!(frame_hit_test_with(edge, size, 96, false, ChromeHit::Interactive, true), FrameHit::Bottom, "the last 2px still resize");
+        let corner = POINT { x: 996, y: 694 };
+        assert_eq!(frame_hit_test_with(corner, size, 96, false, ChromeHit::None, true), FrameHit::Right, "the side grips keep their width");
+        assert_eq!(frame_hit_test_with(low, size, 96, true, ChromeHit::Interactive, true), FrameHit::Client, "maximised: no grips at all");
+        assert_eq!(frame_hit_test_with(POINT { x: 500, y: 10 }, size, 96, false, ChromeHit::None, true), FrameHit::Caption, "the top is unchanged");
+    }
+    // --- end layout ---
 }

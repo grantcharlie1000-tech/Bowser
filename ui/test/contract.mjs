@@ -25,7 +25,7 @@ test('foundation Rust fixture messages parse across the bridge', () => {
   assert.deepEqual(parseInbound(fixture.state), {
     t: 'state', scale: 1.25, pillx: 0, pillw: 624, menux: 627,
     solid: true, dark: true, back: false, forward: false, loading: false, split: false, bookmarked: false,
-    progress: 0, security: 'secure', label: 'Secure', showProgress: true, permblocked: false, zoom: 100, showZoom: true, private: true, reader: 'none', translate: 'none', fontScale: 100, uiFont: '', theme: { bg: '#123456', text: '#fff' },
+    progress: 0, security: 'secure', label: 'Secure', showProgress: true, permblocked: false, zoom: 100, showZoom: true, private: true, reader: 'none', translate: 'none', fontScale: 100, uiFont: '', density: 'regular', compactMenus: false, look: { motion: true, scroll: false, mono: false, fade: false, bg: false, panelClose: true, folderCounts: true }, compactMenus: false, theme: { bg: '#123456', text: '#fff' },
   });
   assert.deepEqual(parseInbound(fixture.tabs), {
     t: 'tabs', active: 7, items: [

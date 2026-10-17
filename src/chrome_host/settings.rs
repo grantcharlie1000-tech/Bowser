@@ -162,6 +162,26 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
         // --- start page --- one object, so the strict key list of the snapshot grows by one
         out.object("start", |start| start_snapshot(&settings.start, start));
         // --- end start page ---
+        // --- layout (thread T6) --- one object: the Layout block's options (src/layout_prefs.rs)
+        out.object("layout", |layout| {
+            layout.bool("tabBarVisible", settings.tab_bar_visible);
+            layout.string("addressBarPosition", settings.address_bar_position.key());
+            layout.bool("addressBarVisible", settings.address_bar_visible);
+            layout.bool("showTitleBar", settings.show_title_bar);
+            layout.string("statusBar", settings.status_bar.key());
+            layout.string("uiDensity", settings.ui_density.key());
+            layout.bool("compactMenus", settings.compact_menus);
+            layout.uint("uiZoom", u64::from(settings.ui_zoom));
+            layout.string("saved", &settings.layout_saved);
+        });
+        // --- end layout ---
+        // --- window and panels (thread T9) --- one object of booleans (src/window_prefs.rs)
+        out.object("window", |window| {
+            for (key, value) in settings.window.pairs() {
+                window.bool(&snake_to_camel(key), value == "true");
+            }
+        });
+        // --- end window and panels ---
     })
     .expect("settings is a panel token")
 }
@@ -290,6 +310,16 @@ pub fn apply_page_save(settings: &mut Settings, text: &str) -> bool {
 /// Applies a `save` payload: every profile setting exactly once, exact keys and values, nothing
 /// else (the update switch is install-wide and never part of it). `false` leaves the caller's copy
 /// to be discarded.
+/// `range_buttons` -> `rangeButtons` (the snapshot's key style).
+fn snake_to_camel(key: &str) -> String {
+    let mut out = String::new();
+    let mut up = false;
+    for c in key.chars() {
+        if c == '_' { up = true; } else if up { out.push(c.to_ascii_uppercase()); up = false; } else { out.push(c); }
+    }
+    out
+}
+
 pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
     if text.len() > MAX_SAVE_TEXT { return false; }
     let mut seen = std::collections::HashSet::new();
@@ -336,6 +366,20 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             // --- start page --- optional: a payload without them leaves the start page settings as they are
             key if crate::start_page::SETTING_KEYS.contains(&key) => { if settings.start.apply_strict(key, value).is_none() { return false; } }
             // --- end start page ---
+            // --- layout (thread T6) --- optional too: a payload without them leaves the layout options as they are
+            "tab_bar_visible" => settings.tab_bar_visible = match value { "true" => true, "false" => false, _ => return false },
+            "address_bar_position" => { let Some(value) = crate::layout_prefs::BarPosition::ALL.into_iter().find(|p| p.key() == value) else { return false; }; settings.address_bar_position = value; }
+            "address_bar_visible" => settings.address_bar_visible = match value { "true" => true, "false" => false, _ => return false },
+            "show_title_bar" => settings.show_title_bar = match value { "true" => true, "false" => false, _ => return false },
+            "status_bar" => { let Some(value) = crate::layout_prefs::StatusBar::ALL.into_iter().find(|s| s.key() == value) else { return false; }; settings.status_bar = value; }
+            "ui_density" => { let Some(value) = crate::layout_prefs::UiDensity::ALL.into_iter().find(|d| d.key() == value) else { return false; }; settings.ui_density = value; }
+            "compact_menus" => settings.compact_menus = match value { "true" => true, "false" => false, _ => return false },
+            "ui_zoom" => { let Ok(value) = value.parse::<u16>() else { return false; }; if !(crate::layout_prefs::MIN_UI_ZOOM..=crate::layout_prefs::MAX_UI_ZOOM).contains(&value) { return false; } settings.ui_zoom = value; }
+            "layout_saved" => { if !crate::layout_prefs::is_layout_saved(value) { return false; } settings.layout_saved = value.to_owned(); }
+            // --- end layout ---
+            // --- window and panels (thread T9) ---
+            key if crate::window_prefs::KEYS.contains(&key) => { if settings.window.apply_strict(key, value).is_none() { return false; } }
+            // --- end window and panels ---
             _ => return false,
         }
     }
@@ -573,8 +617,63 @@ mod tests {
         settings.translate_auto = true;
         let json = snapshot_json(&sample(&settings));
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
-        assert!(json.ends_with(r##""widgetColor":"#1f2933","widgetDrag":true}}}"##), "{json}");
+        // --- layout (thread T6) --- the Layout block's object closes the snapshot.
+        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true},"layout":{"##), "{json}");
+        // --- window and panels (thread T9) --- the Window object closes the snapshot.
+        assert!(json.contains(r##""uiZoom":100,"saved":""},"window":{"##), "{json}");
+        assert!(json.ends_with(r##""panelAutoClose":true}}}"##), "{json}");
     }
+
+    // --- layout (thread T6) ---
+    #[test]
+    fn the_snapshot_and_save_carry_the_layout_options_and_refuse_bad_values() {
+        let mut settings = Settings::default();
+        settings.tab_layout = TabLayout::VerticalRight;
+        settings.tab_bar_visible = false;
+        settings.address_bar_position = crate::layout_prefs::BarPosition::Bottom;
+        settings.show_title_bar = true;
+        settings.status_bar = crate::layout_prefs::StatusBar::Hidden;
+        settings.ui_density = crate::layout_prefs::UiDensity::Compact;
+        settings.compact_menus = true;
+        settings.ui_zoom = 150;
+        settings.layout_saved = crate::layout_prefs::Preset::Bottom.config().key();
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""tabLayout":"vertical-right""#), "{json}");
+        assert!(json.contains(&format!(r#""layout":{{"tabBarVisible":false,"addressBarPosition":"bottom","addressBarVisible":true,"showTitleBar":true,"statusBar":"hidden","uiDensity":"compact","compactMenus":true,"uiZoom":150,"saved":"{}"}}"#, settings.layout_saved)), "{json}");
+
+        let required = "tab_layout=bottom\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\n\
+            theme=helium\ntheme_accent=\ntoolbar_buttons=back\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\n\
+            bookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=right\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\n\
+            show_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true";
+        let layout = "tab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=false\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=75\nlayout_saved=tabs=single-row,tabbar=true,address=top,addressbar=true,panel=left,status=hidden,title=false";
+        let mut applied = Settings::default();
+        assert!(apply_settings_text(&mut applied, &format!("{required}\n{layout}")));
+        assert_eq!(applied.tab_layout, TabLayout::TabsBottom);
+        assert_eq!(applied.side_panel_position, SidePanelPosition::Right);
+        assert!(!applied.tab_bar_visible);
+        assert_eq!(applied.address_bar_position, crate::layout_prefs::BarPosition::Bottom);
+        assert!(!applied.address_bar_visible);
+        assert!(applied.show_title_bar);
+        assert_eq!(applied.status_bar, crate::layout_prefs::StatusBar::Hidden);
+        assert_eq!(applied.ui_density, crate::layout_prefs::UiDensity::Compact);
+        assert!(applied.compact_menus);
+        assert_eq!(applied.ui_zoom, 75);
+        assert_eq!(crate::layout_prefs::LayoutConfig::parse(&applied.layout_saved).map(|c| c.tab_layout), Some(TabLayout::SingleRow));
+        // Every new tab layout key is accepted; the two new ones are nothing else.
+        for key in ["vertical-right", "bottom"] {
+            assert!(apply_settings_text(&mut applied, &required.replace("tab_layout=bottom", &format!("tab_layout={key}"))), "{key}");
+        }
+        // Without the layout lines (another thread's payload) the options stay as they were.
+        let mut kept = Settings::default();
+        kept.ui_zoom = 125;
+        assert!(apply_settings_text(&mut kept, required));
+        assert_eq!(kept.ui_zoom, 125);
+        // A value that does not parse refuses the whole payload.
+        for bad in ["tab_bar_visible=yes", "address_bar_position=middle", "status_bar=show", "ui_density=dense", "compact_menus=1", "ui_zoom=49", "ui_zoom=201", "ui_zoom=100%", "layout_saved=tabs=sideways"] {
+            assert!(!apply_settings_text(&mut Settings::default(), &format!("{required}\n{bad}")), "{bad}");
+        }
+    }
+    // --- end layout ---
 
     #[test]
     fn the_snapshot_and_save_carry_the_start_page_settings_and_old_payloads_still_apply() {

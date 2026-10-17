@@ -39,7 +39,9 @@ export function panelHeader(title: string, closeLabel = 'Close', level: 'h1' | '
   const heading = el(level, 'pn-title');
   heading.textContent = title;
   const tools = el('div', 'pn-tools');
-  root.append(heading, tools, iconButton('close', closeLabel, dismissPanel));
+  const close = iconButton('close', closeLabel, dismissPanel);
+  close.classList.add('pn-close'); // --- window and panels (thread T9) --- `panel_close_button` hides it (data-panel-close)
+  root.append(heading, tools, close);
   return { root, title: heading, tools };
 }
 

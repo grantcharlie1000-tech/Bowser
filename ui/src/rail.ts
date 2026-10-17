@@ -454,7 +454,7 @@ export function startRail(root: HTMLElement): void {
     switch (msg.t) {
       case 'state':
         // Only the theme and mode reach the rail; scale and page state are toolbar concerns.
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        applyTheme(msg.theme, msg.solid, msg.dark, undefined, undefined, msg.density, msg.compactMenus, msg.look);
         break;
       case 'rail':
         latest = msg;

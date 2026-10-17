@@ -778,6 +778,9 @@ fn theme_json(like_toolbar: bool) -> String {
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(palette),
     }
     .to_json()

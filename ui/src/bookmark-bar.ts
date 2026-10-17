@@ -134,7 +134,7 @@ export function startBookmarkBar(root: HTMLElement): void {
   new ResizeObserver(() => fit()).observe(bar);
 
   onInbound((message: Inbound) => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look); return; }
     if (message.t !== 'snap' || message.p !== 'bookmarkbar') return;
     const parsed = parseBarSnapshot(message.d);
     if (!parsed) return;

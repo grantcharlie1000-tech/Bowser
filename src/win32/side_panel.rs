@@ -171,6 +171,9 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             state.id = Some(id);
             state.header = content.native_header();
             state.width_dip = state.width_dip.max(content.min_width()).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
+            // --- window and panels (thread T9) --- a web panel keeps its own width; leaving one goes back to the shared width.
+            if let Some(width) = panel_width_choice(state.id, id) { state.width_dip = width.max(content.min_width()).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP); }
+            // --- end window and panels ---
             if let Some(previous) = state.content.take() { state.retired.push(previous); state.retired_blur.push(false); }
             state.content = Some(content);
             if let Some(current) = state.content.as_mut() { current.on_focus(true); }
@@ -196,6 +199,7 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     let preferred = if saved_width == crate::settings::DEFAULT_SIDE_PANEL_WIDTH as i32 { content.preferred_width() } else { saved_width };
     let minimum = content.min_width().clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
     let width_dip = preferred.clamp(minimum, MAX_WIDTH_DIP);
+    let width_dip = panel_width_choice(None, id).map_or(width_dip, |own| own.clamp(minimum, MAX_WIDTH_DIP)); // --- window and panels (thread T9) ---
     let Some(target_width) = panel_width_px(width_dip, dpi(owner), client.right-inset) else {
         STATUS.with(|status| status.set(Some("This window is too narrow to open a side panel while keeping the page readable.")));
         return false;
@@ -286,6 +290,25 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
     });
 }
 
+// --- layout (thread T6) ---
+/// Moves an open docked panel to `position` at once (the settings page changed it). A panel opened
+/// later reads the setting from the file as before.
+pub fn set_position(owner: HWND, position: SidePanelPosition) {
+    let moved = HOSTS.with(|hosts| unsafe {
+        let raw = hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0);
+        let hwnd = HWND(raw as *mut c_void);
+        let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return false };
+        if state.position == position { return false; }
+        state.position = position;
+        true
+    });
+    if moved {
+        sync(owner, base_viewport(owner), dpi(owner));
+        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(owner), WM_RESIZED, WPARAM(0), LPARAM(0)) };
+    }
+}
+// --- end layout ---
+
 pub fn adjust_viewport(viewport: RECT, owner: HWND) -> RECT {
     let width = active_width_px(owner);
     if width == 0 { return viewport; }
@@ -320,7 +343,8 @@ pub fn timer(owner: HWND) -> bool {
         for (mut content, blur) in retired.into_iter().zip(retired_blur) { if blur { content.on_focus(false); } }
         let Some(anim) = &state.animation else { return !state.retired.is_empty() };
         let elapsed = Instant::now().saturating_duration_since(anim.started).as_secs_f32() * 1000.0;
-        let t = (elapsed / ANIMATION_MS).clamp(0.0, 1.0);
+        // --- window and panels (thread T9) --- "Use animation" off: the panel snaps to its width.
+        let t = if crate::window_prefs::animate(true) { (elapsed / ANIMATION_MS).clamp(0.0, 1.0) } else { 1.0 };
         state.width = animation_width(anim.from, anim.to, t);
         if t >= 1.0 { state.width = anim.to; state.animation = None; }
         let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
@@ -373,7 +397,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             if let Some(owner)=close_owner { close(owner); }
             LRESULT(0)
         }
-        WM_LBUTTONUP => { if let Some(s)=host(hwnd) { let owner=s.owner; if s.resizing { s.resizing=false; let _=ReleaseCapture(); save_width(owner,s.width_dip); } else if let Some(c)=s.content.as_mut() { c.on_mouse_up(lp.0 as u16 as i32,(lp.0>>16) as u16 as i32); } crate::win32::post(owner,crate::win32::WM_RAIL_CHANGED,WPARAM(0),LPARAM(0)); } LRESULT(0) }
+        WM_LBUTTONUP => { if let Some(s)=host(hwnd) { let owner=s.owner; if s.resizing { s.resizing=false; let _=ReleaseCapture(); save_panel_width(s.id, owner, s.width_dip); } else if let Some(c)=s.content.as_mut() { c.on_mouse_up(lp.0 as u16 as i32,(lp.0>>16) as u16 as i32); } crate::win32::post(owner,crate::win32::WM_RAIL_CHANGED,WPARAM(0),LPARAM(0)); } LRESULT(0) }
         WM_MOUSEWHEEL => { if let Some(s)=host(hwnd) { if let Some(c)=s.content.as_mut() { c.on_mouse_wheel((wp.0>>16) as i16); } } LRESULT(0) }
         WM_CHAR => { if let Some(s)=host(hwnd) { let owner=s.owner; if let Some(c)=s.content.as_mut() { if let Some(ch)=char::from_u32(wp.0 as u32) { c.on_char(ch); } } crate::win32::post(owner,crate::win32::WM_RAIL_CHANGED,WPARAM(0),LPARAM(0)); } LRESULT(0) }
         WM_KEYDOWN => {
@@ -421,6 +445,34 @@ fn paint(hwnd: HWND) {
         let _=EndPaint(hwnd,&ps);
     }
 }
+
+// --- window and panels (thread T9) --- a web panel's own width (src/panel_prefs.rs `width`).
+/// The width a switch to `next` should take, or `None` to leave the host's width alone: a web panel's
+/// own width (or the shared one when it has none), and the shared width when leaving a web panel.
+fn panel_width_choice(previous: Option<PanelId>, next: PanelId) -> Option<i32> {
+    let shared = || crate::profile::active().ok().map_or_else(|| GUEST_WIDTH.with(Cell::get), |profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_width as i32);
+    match (previous, next) {
+        (_, PanelId::WebApp(app)) => Some(crate::panel_prefs::current(app).width.map_or_else(shared, i32::from)),
+        (Some(PanelId::WebApp(_)), _) => Some(shared()),
+        _ => None,
+    }
+}
+
+/// A drag of the panel's edge ended: a web panel remembers it for itself, every other panel for all.
+fn save_panel_width(id: Option<PanelId>, owner: HWND, width: i32) {
+    match id {
+        Some(PanelId::WebApp(app)) => {
+            let width = width.clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP) as u16;
+            let _ = crate::panel_prefs::update(|file| {
+                let mut prefs = file.get(app);
+                prefs.width = Some(width);
+                file.set(app, prefs);
+            });
+        }
+        _ => save_width(owner, width),
+    }
+}
+// --- end window and panels ---
 
 fn save_width(_owner: HWND, width: i32) { let width=width.clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); if let Ok(profile)=crate::profile::active() { if profile.is_guest() { GUEST_WIDTH.with(|v|v.set(width)); } else { let path=profile.settings_file(); let mut settings=crate::settings::Settings::load(&path); settings.side_panel_width=width as u16; let _=crate::settings::save(&path,&settings); } } else { GUEST_WIDTH.with(|v|v.set(width)); } }
 fn panel_origin(viewport_left: i32, inset: i32) -> i32 { viewport_left.max(inset) }

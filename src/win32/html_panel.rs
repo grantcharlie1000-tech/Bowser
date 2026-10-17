@@ -247,6 +247,9 @@ pub(crate) fn note_context(owner: HWND, now: Context) {
 /// does not depend on how fast the click reaches Rust. If no rail command comes (a press that
 /// became a drag), the flyout closes after `flyout::RAIL_SETTLE_MS`.
 pub(crate) fn flyout_deactivated(owner: HWND) {
+    // --- window and panels (thread T9) --- "Close floating panels when you click elsewhere" off: it stays
+    // until Escape, its close button or its rail button closes it.
+    if !crate::window_prefs::auto_close_panels() { return; }
     let Some(runtime) = runtime(owner) else { return; };
     let (close, window) = match runtime.try_borrow() {
         Ok(state) => (state.open && state.hold == 0 && unsafe { GetForegroundWindow() } != state.window, state.window),
@@ -269,6 +272,7 @@ pub(crate) fn flyout_deactivated(owner: HWND) {
 /// A rail press kept the flyout open but no rail command followed: close it now unless the flyout
 /// took the activation back.
 pub(crate) fn flyout_rail_settled(owner: HWND) {
+    if !crate::window_prefs::auto_close_panels() { return; } // --- window and panels (thread T9) ---
     let Some(runtime) = runtime(owner) else { return; };
     let close = runtime.try_borrow_mut().is_ok_and(|mut state| {
         let pending = std::mem::take(&mut state.rail_press);
@@ -338,7 +342,9 @@ fn open_panel(runtime: &Rc<RefCell<Runtime>>, id: PanelId, anchor: Anchor, conte
     let centre = POINT { x: anchor.button.left, y: (anchor.button.top + anchor.button.bottom) / 2 };
     let (dpi, work) = super::html_popup::monitor_data(centre);
     let size = if id == PanelId::Customize { flyout::CUSTOMIZE_SIZE } else { flyout::LIST_SIZE };
-    let placement = flyout::place(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size);
+    // --- layout (thread T6) --- the flyout follows `side_panel_position` like the docked panels.
+    let side = runtime.try_borrow().ok().map_or(crate::settings::SidePanelPosition::Left, |state| crate::app::App::settings(&state.app).side_panel_position);
+    let placement = flyout::place_at(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size, side);
     {
         let Ok(mut state) = runtime.try_borrow_mut() else { return; };
         if !state.open {
@@ -631,7 +637,7 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                     if sidebar.set_visible(kind, visible).is_ok() { changed_sidebar = true; }
                 }
                 CustomizeAction::AppRemove(id) => {
-                    if sidebar.remove_app(id) { super::panel_webapp::forget_app(id); changed_sidebar = true; }
+                    if sidebar.remove_app_remembered(id) { super::panel_webapp::forget_app(id); changed_sidebar = true; }
                 }
                 CustomizeAction::AppMove(id, before) => {
                     let Some(from) = sidebar.apps.iter().position(|item| item.id == id) else { send_current(runtime); return; };

@@ -67,6 +67,7 @@ pub(crate) use window::{
     gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer, set_link_timer, set_tab_tick, set_thumbnail_timer,
     show_pending_address, sync_address_input,
 };
+pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
 // Registry handlers (`crate::commands::registry`) that need a window.
 pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_toggle_site_shortcuts};
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.

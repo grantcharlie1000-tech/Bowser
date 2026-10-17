@@ -233,6 +233,8 @@ struct RailEntryData {
     /// The favicon's source bytes, as the HTML rail sends them (it sends only PNGs that pass the
     /// protocol gate).
     png: Option<Rc<Vec<u8>>>,
+    /// A web app panel whose page title announces a count (thread T9): the rail button shows its dot.
+    dot: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -395,9 +397,13 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
 struct RelayoutInputs {
     active: TabId,
     maximised: bool,
-    tab_layout: crate::settings::TabLayout,
+    // --- layout (thread T6) --- the whole arrangement and the list density, not just the tab layout.
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    // --- end layout ---
     centred_address_bar: bool,
-    font_size: crate::settings::FontSize,
+    /// The chrome's text scale in percent (`layout_prefs::chrome_scale_percent`).
+    font_scale: u32,
     ui_font: String,
 }
 
@@ -435,6 +441,9 @@ struct WindowChrome {
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    /// --- layout (thread T6) --- a hidden address bar brought back by Ctrl+L, until the address
+    /// field loses focus again.
+    address_bar_revealed: bool,
     /// The width a sidebar drag has reached, laid out once per frame and saved to the settings when
     /// the drag ends, and whether a frame for it is due.
     sidebar_drag_width: Option<u16>,
@@ -648,6 +657,7 @@ impl WindowChrome {
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            address_bar_revealed: false,
             sidebar_drag_width: None,
             sidebar_drag_pending: false,
             last_relayout: None,
@@ -796,10 +806,11 @@ impl WindowChrome {
             self.dpi,
             inputs.active,
             inputs.maximised,
-            inputs.tab_layout,
+            inputs.arrangement,
+            inputs.density,
             width,
             inputs.centred_address_bar,
-            inputs.font_size,
+            inputs.font_scale,
             &inputs.ui_font,
         );
         true
@@ -951,16 +962,18 @@ impl WindowChrome {
         if reproject {
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
+            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
             self.relayout(
                 self.client.0,
                 self.client.1,
                 self.dpi,
                 App::active_tab_id(app),
                 self.layout.maximised,
-                App::tab_layout(app),
+                arrangement,
+                settings.ui_density,
                 sidebar_width,
                 settings.centred_address_bar,
-                settings.font_size,
+                crate::layout_prefs::chrome_scale_percent(&settings),
                 &settings.ui_font,
             );
         }
@@ -973,10 +986,11 @@ impl WindowChrome {
         dpi: u32,
         active: TabId,
         maximised: bool,
-        tab_layout: crate::settings::TabLayout,
+        arrangement: layout::Arrangement,
+        density: crate::layout_prefs::UiDensity,
         sidebar_width: u16,
         centred_address_bar: bool,
-        font_size: crate::settings::FontSize,
+        font_scale: u32,
         ui_font: &str,
     ) {
         self.client = (w, h);
@@ -984,9 +998,10 @@ impl WindowChrome {
         self.last_relayout = Some(RelayoutInputs {
             active,
             maximised,
-            tab_layout,
+            arrangement,
+            density,
             centred_address_bar,
-            font_size,
+            font_scale,
             ui_font: ui_font.to_owned(),
         });
         let was_vertical = self.sidebar.is_some();
@@ -999,15 +1014,14 @@ impl WindowChrome {
                     .is_some_and(|tab| tab.id == active)
             })
             .unwrap_or(0);
-        let (layout, sidebar) = if tab_layout.is_vertical() {
-            let (layout, sidebar) = layout::compute_vertical_in_frame_with(
-                w, h, self.dpi, self.slots.len().max(1), i, maximised,
-                i32::from(sidebar_width), centred_address_bar,
-            );
-            (layout, Some(sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi)))
-        } else {
-            (layout::compute_in_frame_for_with(tab_layout, w, h, self.dpi, self.slots.len().max(1), i, maximised, centred_address_bar), None)
-        };
+        // --- layout (thread T6) --- one geometry for every arrangement: tab bar edge or hidden,
+        // address bar edge or hidden, title row, sidebar side and the list density.
+        let (layout, sidebar) = layout::compute_arranged_in_frame(
+            arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+        );
+        let sidebar = sidebar.map(|sidebar| sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi));
+        // --- end layout ---
         self.layout = layout.with_group_slots(
             self.slots.iter().map(|slot| slot.marker_only),
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
@@ -1041,7 +1055,7 @@ impl WindowChrome {
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
         self.surface.resize(w, h, self.dpi);
-        self.surface.set_font(font_size.scale_percent(), ui_font);
+        self.surface.set_font(font_scale, ui_font);
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
@@ -1319,9 +1333,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
-        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
-    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None });
+    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     if shown(SidebarKind::Workspaces) {
         for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
             let glyph = match icon {
@@ -1348,9 +1362,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 WorkspaceColour::Green => 0x56A36B,
                 WorkspaceColour::Slate => 0x778394,
             }, 0xFF));
-            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None });
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None, dot: false });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
@@ -1370,9 +1384,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 (None, None)
             };
             let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, dot: super::panel_webapp::unread_count(app_entry.id) > 0 });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -1380,9 +1394,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, dot: false });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, dot: false });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
         return false;
@@ -1452,6 +1466,7 @@ fn same_rail(a: &[RailEntryData], b: &[RailEntryData]) -> bool {
                 && a.accent == b.accent
                 && same(&a.favicon, &b.favicon)
                 && same(&a.png, &b.png)
+                && a.dot == b.dot
         })
 }
 
@@ -1467,7 +1482,7 @@ fn rail_view_of(entries: &[RailEntryData]) -> Vec<RailEntry<'static>> {
                 icon: entry.icon,
                 label: entry.label.clone(),
                 active: entry.active,
-                dot: false,
+                dot: entry.dot,
                 accent: entry.accent,
                 favicon: entry.favicon.as_deref(),
             };
@@ -1795,7 +1810,8 @@ fn animations_enabled() -> bool {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
     };
-    read.is_err() || enabled.as_bool()
+    // --- window and panels (thread T9) --- Bowser's own "Use animation" setting also has to allow it.
+    crate::window_prefs::animate(read.is_err() || enabled.as_bool())
 }
 fn dpi(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd) }.max(96)
@@ -1805,7 +1821,7 @@ fn dpi(hwnd: HWND) -> u32 {
 pub(crate) fn refresh_edit_font(hwnd: HWND, app: &AppRef) {
     let settings = App::settings(app);
     let ui_font = (!settings.ui_font.is_empty()).then_some(settings.ui_font.as_str());
-    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, settings.font_size.scale_percent(), ui_font);
+    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, crate::layout_prefs::chrome_scale_percent(&settings), ui_font); // --- layout (thread T6) ---
     let (edit, old) = {
         let mut a = app.borrow_mut();
         (a.edit, std::mem::replace(&mut a.input_font, font))
@@ -1907,6 +1923,14 @@ fn invalidate_caret(hwnd: HWND, caret: Rect) {
 /// It runs on every activation message and on the foreground hook, because a window launched behind another
 /// one can miss the activation message when it is brought forward. Checking GetForegroundWindow is what
 /// makes the result reliable.
+// --- window and panels (thread T9) ---
+/// Whether this window is not the foreground window (the chrome's "fade colours in background
+/// windows" option reads it).
+fn window_in_background(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |s| !s.foreground).unwrap_or(false)
+}
+// --- end window and panels ---
+
 fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     let foreground = foreground_is_ours(hwnd);
     let minimised = unsafe { IsIconic(hwnd).as_bool() };
@@ -1923,6 +1947,15 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     if !foreground {
         card::cancel(hwnd);
     }
+    // --- window and panels (thread T9) --- the chrome's `look.bg` changed: send the state again (a
+    // no-op when the JSON is the same). Skipped while the app state is borrowed (a modal loop).
+    if app.is_some_and(|app| app.try_borrow_mut().is_ok()) {
+        let faded = app.is_some_and(|app| App::settings(app).window.fade_background);
+        if faded {
+            html_sync(hwnd);
+        }
+    }
+    // --- end window and panels ---
     // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
     // that stopped while another application was active. Activation can arrive from a modal loop that already
     // holds the app state, so the borrow is checked first.
@@ -2173,7 +2206,9 @@ unsafe extern "system" fn window_proc(
                         | Hit::SiteInfo
                         | Hit::Split
                 );
-                frame::frame_hit_test(
+                // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
+                let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
+                frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
@@ -2183,6 +2218,7 @@ unsafe extern "system" fn window_proc(
                     } else {
                         frame::ChromeHit::None
                     },
+                    thin_bottom,
                 )
                 .lresult()
             }
@@ -2405,6 +2441,7 @@ unsafe extern "system" fn window_proc(
                     apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
                     let active = App::active_tab_id(app);
                     let settings = App::settings(app);
+                    let arrangement = App::arrangement(app); // --- layout (thread T6) ---
                     let _ = with_chrome(hwnd, |s| {
                         s.relayout(
                             r.right,
@@ -2412,10 +2449,11 @@ unsafe extern "system" fn window_proc(
                             dpi(hwnd),
                             active,
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement.with_address_bar_revealed(s.address_bar_revealed),
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
-                            settings.font_size,
+                            crate::layout_prefs::chrome_scale_percent(&settings),
                             &settings.ui_font,
                         );
                     });
@@ -2486,16 +2524,18 @@ unsafe extern "system" fn window_proc(
                             tab.favicon = None;
                         }
                         let settings = App::settings(app);
+                        let arrangement = App::arrangement(app).with_address_bar_revealed(s.address_bar_revealed); // --- layout (thread T6) ---
                         s.relayout(
                             r.right,
                             r.bottom,
                             dpi(hwnd),
                             App::active_tab_id(app),
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement,
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
-                            settings.font_size,
+                            crate::layout_prefs::chrome_scale_percent(&settings),
                             &settings.ui_font,
                         );
                         s.refresh(app, true)
@@ -2897,7 +2937,9 @@ unsafe extern "system" fn window_proc(
             } else {
                 let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
-                        let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                        // --- layout (thread T6) --- measured from the sidebar's own edge, whichever side it is on.
+                        let drag_px = with_chrome(hwnd, |s| s.sidebar.map_or(p.x, |sidebar| sidebar.drag_width_px(p.x))).unwrap_or(p.x);
+                        let width = ((drag_px * 96) / dpi(hwnd).max(96) as i32).clamp(
                             i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
                             i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
                         ) as u16;
@@ -3046,9 +3088,7 @@ unsafe extern "system" fn window_proc(
                         let Some(sidebar) = s.sidebar else {
                             return false;
                         };
-                        let row_height = crate::chrome::layout::Metrics::new(s.dpi)
-                            .px(crate::vertical_tabs::TAB_ROW_HEIGHT)
-                            .max(1);
+                        let row_height = sidebar.row_height().max(1); // --- layout (thread T6) ---
                         s.sidebar_scroll_target = s
                             .sidebar_scroll_target
                             .saturating_sub(delta * row_height * 3)
@@ -3967,6 +4007,12 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- window and panels (thread T9) --- periodic reload of web panels
+            WM_TIMER if wparam.0 == super::panel_webapp::RELOAD_TIMER => {
+                if !super::panel_webapp::reload_timer(hwnd) { let _ = KillTimer(Some(hwnd), super::panel_webapp::RELOAD_TIMER); }
+                LRESULT(0)
+            }
+            // --- end window and panels ---
             WM_TIMER if wparam.0 == super::panel_webapp::IDLE_TIMER => {
                 let running = super::panel_webapp::idle_timer(hwnd);
                 if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
@@ -4810,6 +4856,9 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     }
     .to_json()
@@ -5287,7 +5336,29 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             });
         }
         RailKey::App(id) => {
-            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
+            // --- window and panels (thread T9) --- this panel's own options live here, not on the settings page.
+            let prefs = crate::panel_prefs::current(id);
+            let reload_choices: Vec<Entry> = crate::panel_prefs::RELOAD_CHOICES.iter()
+                .map(|minutes| Entry::Item(Item::new(100 + usize::from(*minutes), crate::panel_prefs::reload_label(*minutes), Icon::None).checked(prefs.reload_minutes == *minutes)))
+                .collect();
+            let entries = vec![
+                Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")),
+                Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")),
+                Entry::Separator,
+                Entry::Item(Item::new(10, "Zoom in", Icon::Grid).glyph("zoom-in").disabled_if(prefs.zoom >= crate::site_prefs::ZOOM_MAX)),
+                Entry::Item(Item::new(11, "Zoom out", Icon::Grid).glyph("zoom-out").disabled_if(prefs.zoom <= crate::site_prefs::ZOOM_MIN)),
+                Entry::Item(Item::new(12, crate::panel_prefs::zoom_label(prefs.zoom), Icon::Grid).glyph("reset").disabled_if(prefs.zoom == crate::site_prefs::ZOOM_DEFAULT)),
+                Entry::Item(Item::new(13, "Mute audio", Icon::Grid).glyph("mute").checked(prefs.muted)),
+                Entry::Item(Item::new(14, "Reload page every…", Icon::Grid).glyph("reload").submenu_with(reload_choices)),
+                Entry::Item(Item::new(15, "Show unread count from the page title", Icon::Grid).glyph("bell").checked(prefs.notify)),
+                Entry::Separator,
+                Entry::Item(Item::new(16, "Open page in a tab", Icon::Grid).glyph("external")),
+                Entry::Item(Item::new(17, "Open page in a new window", Icon::Grid).glyph("window")),
+                Entry::Item(Item::new(18, "Open page in a private tab", Icon::Grid).glyph("private")),
+                Entry::Separator,
+                Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash")),
+            ];
+            // --- end window and panels ---
             let kind = format!("rail-app:{id}");
             menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
@@ -5296,10 +5367,38 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 match chosen.id {
                     1 => activate_rail(hwnd, app, key),
                     2 => edit_rail_app(hwnd, app, id, point),
+                    // --- window and panels (thread T9) --- per-panel options (src/panel_prefs.rs)
+                    10 | 11 | 12 | 13 | 15 | 100..=130 => {
+                        let _ = crate::panel_prefs::update(|file| {
+                            let mut now = file.get(id);
+                            match chosen.id {
+                                10 => now.zoom = crate::site_prefs::zoom_in(now.zoom),
+                                11 => now.zoom = crate::site_prefs::zoom_out(now.zoom),
+                                12 => now.zoom = crate::site_prefs::ZOOM_DEFAULT,
+                                13 => now.muted = !now.muted,
+                                15 => now.notify = !now.notify,
+                                minutes => now.reload_minutes = (minutes - 100) as u8,
+                            }
+                            file.set(id, now);
+                        });
+                        super::panel_webapp::prefs_changed(id);
+                        let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                        repaint(hwnd);
+                    }
+                    16..=18 => {
+                        let Some(address) = super::panel_webapp::page_url(id) else { return; };
+                        let Ok(target) = url::Url::parse(&address) else { return; };
+                        match chosen.id {
+                            16 => { App::new_tab(app); App::navigate_current(app, &target); }
+                            17 => { if let Ok(profile) = crate::profile::active() { let _ = crate::profile::spawn_window_with_url(&profile, &target); } }
+                            _ => { App::new_private_tab(app); App::navigate_current(app, &target); }
+                        }
+                    }
+                    // --- end window and panels ---
                     3 if crate::win32::ask_yes_no("Remove this web app from the rail?") => {
                         if let Ok(profile) = crate::profile::active() {
                             let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
-                            config.remove_app(id);
+                            config.remove_app_remembered(id); // --- window and panels (thread T9) --- kept for "Restore" ---
                             let _ = config.save(profile.root());
                             super::panel_webapp::forget_app(id);
                             let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -5310,6 +5409,33 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 }
             });
         }
+        // --- window and panels (thread T9) --- the web apps removed from the rail come back from here.
+        RailKey::AddApp => {
+            let removed = crate::profile::active().ok().map(|profile| crate::panel_prefs::PanelPrefsFile::load(profile.root()).removed).unwrap_or_default();
+            let entries: Vec<Entry> = if removed.is_empty() {
+                vec![Entry::Item(Item::new(1, "No removed web apps", Icon::Grid).disabled())]
+            } else {
+                removed.iter().enumerate().map(|(index, entry)| Entry::Item(Item::new(200 + index, entry.name.clone(), Icon::Grid).glyph("app-tile"))).collect()
+            };
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Restore a removed web app".into() }, "rail-app-restore", move |app, chosen| {
+                let Some(index) = chosen.and_then(|item| item.id.checked_sub(200)) else { return; };
+                let Ok(profile) = crate::profile::active() else { return; };
+                let Some(entry) = crate::panel_prefs::update(|file| file.take_removed(index)).flatten() else { return; };
+                let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                match config.add_app(&entry.name, &entry.url) {
+                    Ok(new_id) => {
+                        if config.save(profile.root()).is_ok() {
+                            if let Some(web_app) = config.apps.iter().find(|item| item.id == new_id).cloned() { super::panel_webapp::register_app(app, web_app); }
+                        }
+                    }
+                    // Not restorable now (the address is on the rail again, or the rail is full): keep it listed.
+                    Err(_) => { let _ = crate::panel_prefs::update(|file| file.remember_removed(&entry.name, &entry.url)); }
+                }
+                let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                repaint(hwnd);
+            });
+        }
+        // --- end window and panels ---
         _ => {}
     }
 }
@@ -8727,8 +8853,11 @@ fn html_sync(hwnd: HWND) {
         private: App::tab_private(&app, id),
         reader: App::active_reader_pill(&app),
         translate: App::active_translate_pill(&app),
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
@@ -8862,6 +8991,34 @@ pub(super) fn toolbar_anchor(hwnd: HWND, rect: chrome_host::protocol::HoverRect)
 /// Gives the bookmarks bar `reserve` (physical pixels, bottom?) of the page area. `true` when that
 /// changed it: the window is laid out again at once, and the caller's sync runs again with the room
 /// in place.
+// --- layout (thread T6) ---
+/// Shows a hidden address bar (Ctrl+L and the other ways into the address field) or hides it again
+/// (the field lost focus). Nothing changes while the setting shows the bar anyway. True when the
+/// chrome was laid out again.
+pub(super) fn set_address_bar_revealed(hwnd: HWND, app: &AppRef, on: bool) -> bool {
+    let arrangement = App::arrangement(app);
+    let on = on && !arrangement.address_bar_visible;
+    let relaid = with_chrome(hwnd, |s| {
+        if s.address_bar_revealed == on {
+            return false;
+        }
+        s.address_bar_revealed = on;
+        if let Some(inputs) = s.last_relayout.as_mut() {
+            inputs.arrangement = arrangement.with_address_bar_revealed(on);
+        }
+        s.relayout_sidebar(App::sidebar_width(app))
+    })
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        html_sync(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+        repaint(hwnd);
+    }
+    relaid
+}
+// --- end layout ---
+
 pub(super) fn apply_bar_reserve(hwnd: HWND, app: &AppRef, reserve: (i32, bool)) -> bool {
     let relaid = with_chrome(hwnd, |s| {
         if s.bar_reserve == reserve {
@@ -9028,6 +9185,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                     s.completion = None;
                 }
             });
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if !on && let Some(app) = app_of(hwnd) {
+                set_address_bar_revealed(hwnd, &app, false);
+            }
         }
         ChromeCommand::Open(OpenTarget::Menu) => {
             defer_html_command(hwnd, DeferredChromeCommand::MainMenu);
@@ -9187,6 +9348,9 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -9196,6 +9360,13 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
 pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
     with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
+
+// --- layout (thread T6) ---
+/// Whether a hidden address bar is shown right now because Ctrl+L asked for it.
+pub(crate) fn address_bar_revealed(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |state| state.address_bar_revealed).unwrap_or(false)
+}
+// --- end layout ---
 
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
     with_chrome(hwnd, |state| state.html_env.clone()).flatten()
@@ -9653,8 +9824,11 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         private: App::tab_private(&app, id),
         reader: crate::reader::Pill::Hidden,
         translate: crate::translate::Pill::Hidden,
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     Some(state.to_json())
@@ -11126,6 +11300,8 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
     }
 }
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    // --- layout (thread T6) --- a hidden address bar comes back for as long as it has the focus.
+    set_address_bar_revealed(hwnd, app, true);
     let _ = with_chrome(hwnd, |s| {
         s.omnibox_claimed = true;
         s.omnibox_edited = false;
@@ -11581,6 +11757,10 @@ unsafe extern "system" fn edit_subclass(
                 s.edit_text.push_str(&display);
             });
             invalidate_omni(main);
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if let Some(app) = app {
+                set_address_bar_revealed(main, app, false);
+            }
             return r;
         }
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
@@ -11954,7 +12134,8 @@ mod tests {
                 crate::settings::TabLayout::TabsTop,
                 crate::settings::TabLayout::SingleRow,
             ] {
-                s.relayout(1000, 700, dpi, TabId(0), false, tab_layout, 260, true, crate::settings::FontSize::Medium, "");
+                let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+                s.relayout(1000, 700, dpi, TabId(0), false, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, 100, "");
                 let chrome = layout::chrome_height(tab_layout, dpi);
                 assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
                 assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
@@ -12017,6 +12198,7 @@ mod tests {
             accent: None,
             favicon: None,
             png: None,
+            dot: false,
         };
         let mut rail = vec![entry(RailKey::Customize, "Customize"), entry(RailKey::App(1), "Mail")];
         rail[1].png = Some(Rc::new(vec![1u8, 2, 3]));
@@ -12055,7 +12237,8 @@ mod tests {
     fn a_sidebar_drag_frame_lays_out_again_with_only_the_width_changed() {
         let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
         assert!(!s.relayout_sidebar(300), "nothing to repeat before the first layout");
-        s.relayout(1200, 700, 96, TabId(0), false, crate::settings::TabLayout::Vertical, 200, true, crate::settings::FontSize::Medium, "");
+        let vertical = layout::Arrangement { tabs: crate::settings::TabLayout::Vertical, ..Default::default() };
+        s.relayout(1200, 700, 96, TabId(0), false, vertical, crate::layout_prefs::UiDensity::Regular, 200, true, 100, "");
         let narrow = s.sidebar.expect("a vertical layout has a sidebar").sidebar;
         let top = s.layout.viewport.top;
         assert!(s.relayout_sidebar(320));

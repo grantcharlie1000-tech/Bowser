@@ -66,7 +66,7 @@ export function startPanel(root: HTMLElement): void {
   onInbound((message) => {
     switch (message.t) {
       case 'state':
-        applyTheme(message.theme, message.solid, message.dark);
+        applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus, message.look);
         return;
       case 'flyout': {
         caret.hidden = message.caret < 0;
