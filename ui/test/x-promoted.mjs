@@ -21,11 +21,19 @@ const EDGE = [
 ].find((path) => path && existsSync(path));
 const skip = EDGE ? false : 'Microsoft Edge is not installed';
 
-const cell = (id, header, body, extra = '') => `<div data-testid="cellInnerDiv" id="${id}"><article data-testid="tweet">
-  <div><div data-testid="User-Name"><span>${header.name}</span><span>@${header.handle}</span></div>${header.label ? `<div><span class="x1">${header.label}</span></div>` : ''}</div>
-  <div data-testid="tweetText"><span>${body}</span></div>${extra}</article></div>`;
-const normal = (id, body = 'hello') => cell(id, { name: 'Someone', handle: 'someone' }, body);
-const ad = (id, label = 'Ad') => cell(id, { name: 'Brand', handle: 'brand', label }, 'Buy now');
+// The structure of a For-you post as of the report from the live timeline: the name and handle are links in
+// User-Name, the grey "Ad" sits at the right of the header row left of the "..." menu button, the post text is
+// tweetText, and a link card ends in a "From domain" line (normal posts with link cards have it too).
+const cell = (id, header, body, extra = '', wrap = true) => {
+  const post = `<article data-testid="tweet" role="article"><div class="hdr">
+  <div data-testid="User-Name"><a href="/${header.handle}" role="link"><span>${header.name}</span></a><a href="/${header.handle}"><span>@${header.handle}</span></a></div>
+  ${header.label ?? ''}<button data-testid="caret" aria-label="More"><svg></svg></button></div>
+  <div data-testid="tweetText"><span>${body}</span></div>${extra}</article>`;
+  return wrap ? `<div data-testid="cellInnerDiv" id="${id}">${post}</div>` : post.replace('<article', `<article id="${id}"`);
+};
+const normal = (id, body = 'hello', extra = '') => cell(id, { name: 'Someone', handle: 'someone' }, body, extra);
+const label = (text, style) => `<div class="x2">${style === 'wrapped' ? `<div><span>${text}</span><svg></svg></div>` : style === 'bare' ? text : `<span class="x1">${text}</span>`}</div>`;
+const ad = (id, text = 'Ad', style = 'span') => cell(id, { name: 'riffle', handle: 'rifflerdotstudio', label: label(text, style) }, 'Buy now', '<div><a href="https://riffle.studio">From riffle.studio</a></div>');
 
 const PAGE = (initial, later) => `<!doctype html><html><body><div id="tl">${initial}</div><script>
   var out = { errors: [] };
@@ -37,7 +45,7 @@ const PAGE = (initial, later) => `<!doctype html><html><body><div id="tl">${init
     setTimeout(function () {
       document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(later)});
       setTimeout(function () {
-        out.second = hidden();
+        out.second = hidden(); out.statsHidden = window.__bowserXPromoted.stats.hidden;
         s.remove();
         document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(ad('late'))});
         setTimeout(function () {
@@ -73,15 +81,19 @@ function run(html) {
 
 test('only promoted cells are hidden, on load and for posts inserted later', { skip }, () => {
   const initial = normal('n1') + ad('a1') + normal('n2')
-    // A normal post whose text is just "Ad", a name that is "Ad", and a quoted post with the label word in it.
+    // A normal post whose text is just "Ad", a name that is "Ad", a quoted post with the label word, a link card.
     + cell('n3', { name: 'Someone', handle: 'someone' }, 'Ad')
     + cell('n4', { name: 'Ad', handle: 'ad' }, 'my name is Ad')
-    + cell('n5', { name: 'Someone', handle: 'someone' }, 'quote', '<div data-testid="quoteTweet"><span>Promoted</span></div>')
-    + '<div data-testid="cellInnerDiv" id="n6"><div>Who to follow</div></div>';
-  const later = normal('n7') + ad('a2', 'Promoted') + ad('a3', 'Sponsored') + normal('n8', 'Ad hoc');
+    + normal('n5', 'quote', '<div role="link" data-testid="quoteTweet"><span>Promoted</span></div>')
+    + normal('n9', 'card', '<div role="link"><span>Ad</span></div><a href="https://x.example">From x.example</a>')
+    + '<div data-testid="cellInnerDiv" id="n6"><div>Who to follow</div></div>'
+    + ad('a4', 'Ad', 'wrapped');
+  const later = normal('n7') + ad('a2', 'Promoted') + ad('a3', 'Sponsored', 'bare') + normal('n8', 'Ad hoc')
+    + cell('a5', { name: 'riffle', handle: 'r', label: label('Ad') }, 'no cell wrapper', '', false);
   const r = run(PAGE(initial, later));
-  assert.deepEqual(r.first, { n1: false, a1: true, n2: false, n3: false, n4: false, n5: false, n6: false });
+  assert.deepEqual(r.first, { n1: false, a1: true, n2: false, n3: false, n4: false, n5: false, n9: false, n6: false, a4: true });
   assert.deepEqual(r.second, { ...r.first, n7: false, a2: true, a3: true, n8: false });
+  assert.equal(r.statsHidden, 5);
 });
 
 test('removing the cosmetic style stops the script and unmarks every cell', { skip }, () => {
@@ -89,5 +101,5 @@ test('removing the cosmetic style stops the script and unmarks every cell', { sk
   assert.equal(r.afterOff.a1, false);
   assert.equal(r.afterOff.late, false);
   assert.equal(r.marked, 0);
-  assert.equal(r.flag, false);
+  assert.ok(!r.flag);
 });
