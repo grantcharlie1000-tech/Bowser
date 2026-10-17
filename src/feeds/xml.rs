@@ -326,24 +326,51 @@ fn push_text(element: &mut Element, text: String) {
     }
 }
 
+/// The byte index of the `;` that closes the entity `rest` starts with (`rest[0]` is `&`), looked for only
+/// in the next ten bytes: searching the whole remainder per `&` made a run of `&` quadratic.
+pub(crate) fn entity_end(rest: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut at = 0;
+    while at < bytes.len().min(11) {
+        if bytes[at] == b';' {
+            return Some(at);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Calls `decode` with the name of each `&name;` in `raw` (at most nine bytes between `&` and `;`) and puts
+/// its answer in place of the entity; a `None` answer leaves the `&` as text. One pass over the bytes.
+pub(crate) fn replace_entities(raw: &str, decode: impl Fn(&str) -> Option<char>) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let (mut start, mut at) = (0, 0);
+    while at < bytes.len() {
+        if bytes[at] == b'&'
+            && let Some(end) = entity_end(&raw[at..])
+            && let Some(c) = decode(&raw[at + 1..at + end])
+        {
+            out.push_str(&raw[start..at]);
+            out.push(c);
+            at += end + 1;
+            start = at;
+            continue;
+        }
+        at += 1;
+    }
+    out.push_str(&raw[start..]);
+    out
+}
+
 /// Replaces the five predefined entities and numeric character references. Any other `&name;` stays as
 /// it is, so a document can never name something the reader would look up.
 pub fn decode_entities(raw: &str) -> String {
     if !raw.contains('&') {
         return raw.to_owned();
     }
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        let Some(end) = rest.find(';').filter(|&end| end <= 10) else {
-            out.push('&');
-            rest = &rest[1..];
-            continue;
-        };
-        let entity = &rest[1..end];
-        let decoded = match entity {
+    replace_entities(raw, |entity| {
+        match entity {
             "amp" => Some('&'),
             "lt" => Some('<'),
             "gt" => Some('>'),
@@ -356,20 +383,8 @@ pub fn decode_entities(raw: &str) -> String {
                 };
                 char::from_u32(code).filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r'))
             }),
-        };
-        match decoded {
-            Some(c) => {
-                out.push(c);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
         }
-    }
-    out.push_str(rest);
-    out
+    })
 }
 
 #[cfg(test)]
@@ -400,6 +415,16 @@ mod tests {
         let root = parse("<a>&xxe; &#65; &#x42; &amp;amp; &bad</a>").unwrap();
         assert_eq!(root.text(), "&xxe; A B &amp; &bad");
         assert_eq!(decode_entities("&#0;&#1;"), "&#0;&#1;", "control characters are not produced");
+    }
+
+    #[test]
+    fn a_long_run_of_ampersands_decodes_in_linear_time() {
+        let hostile = "&".repeat(2_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(decode_entities(&hostile), hostile);
+        assert_eq!(decode_entities(&format!("{hostile}&amp;")), format!("{hostile}&"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert_eq!(decode_entities("&amp;&#x1F600;&lt"), "&\u{1F600}&lt");
     }
 
     #[test]

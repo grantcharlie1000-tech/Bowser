@@ -121,8 +121,12 @@ fn parse_line(line: &str) -> Option<(Vec<Box<str>>, Box<str>, bool)> {
     if !valid_selector(selector, unlock) {
         return None;
     }
-    let mut domains: Vec<Box<str>> = Vec::new();
     let domain_part = domain_part.trim();
+    // A rule for every site must name something specific, or it hides ordinary page structure everywhere.
+    if domain_part.is_empty() && !specific_selector(selector) {
+        return None;
+    }
+    let mut domains: Vec<Box<str>> = Vec::new();
     if !domain_part.is_empty() {
         for entry in domain_part.split(',') {
             let entry = entry.trim().to_ascii_lowercase();
@@ -181,6 +185,28 @@ pub fn valid_selector(selector: &str, unlock: bool) -> bool {
     })
 }
 
+/// Whether every comma-separated part of `selector` ends in a compound that names a class, an id or an
+/// attribute value (`.x`, `#x`, `[a="b"]`), so a generic rule cannot be a bare `div` or `[class]`.
+/// Expects a selector [`valid_selector`] accepted.
+fn specific_selector(selector: &str) -> bool {
+    selector.split(',').all(|part| {
+        let mut in_bracket = false;
+        last_compound(part.trim()).bytes().any(|byte| match byte {
+            b'[' => {
+                in_bracket = true;
+                false
+            }
+            b']' => {
+                in_bracket = false;
+                false
+            }
+            b'=' => in_bracket,
+            b'.' | b'#' => !in_bracket,
+            _ => false,
+        })
+    })
+}
+
 /// The last compound selector of one comma-free selector: what follows the final space, `>` or
 /// `+` that is not inside an attribute test (a space inside `[a="b c"]` does not split it).
 fn last_compound(part: &str) -> &str {
@@ -207,6 +233,21 @@ mod tests {
         assert!(!valid_selector("div > body[x=\"a > b\"]", false));
         assert!(valid_selector("div[x=\"a body\"]", false));
         assert_eq!(last_compound(".a > .b[c=\"d e\"]"), ".b[c=\"d e\"]");
+    }
+
+    #[test]
+    fn a_generic_rule_must_name_a_class_an_id_or_an_attribute_value() {
+        for vague in ["##div", "##[class]", "##div > span", "##.banner, div", "##[id] p", "##@scroll:div", "##div[data-x]"] {
+            assert!(parse_line(vague).is_none(), "{vague}");
+        }
+        for specific in ["##.cookie-banner", "###consent", "##div[class=\"cookie\"]", "##[id^=cookie]", "##.a, div#b", "##.wrap > div.notice", "##@scroll:html.no-scroll"] {
+            assert!(parse_line(specific).is_some(), "{specific}");
+        }
+        // A rule scoped to a site may stay broad: it only runs there.
+        assert!(parse_line("example.com##div").is_some());
+        assert!(parse_line("example.com##[class]").is_some());
+        // A dot or hash inside an attribute test does not count; only its value does.
+        assert!(!specific_selector("[a.b]"));
     }
 
     #[test]

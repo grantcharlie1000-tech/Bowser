@@ -16,6 +16,8 @@ pub const MAX_SUMMARY_CHARS: usize = 400;
 pub const MAX_URL_BYTES: usize = 2048;
 /// Most feeds read from one OPML file.
 pub const MAX_OPML_FEEDS: usize = 500;
+/// Most bytes of one raw text `plain_text` looks at.
+const MAX_PLAIN_INPUT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Enclosure {
@@ -186,6 +188,12 @@ pub fn safe_link(base: &Url, raw: &str) -> Option<String> {
 /// `raw` as one line of plain text of at most `max` characters: tags removed (a `script` or `style`
 /// element with its content), entities decoded, control characters dropped, white space collapsed.
 pub fn plain_text(raw: &str, max: usize) -> String {
+    // Only the start of a huge text can reach the at-most-`max` output, so the work is capped too.
+    let mut cut = raw.len().min(MAX_PLAIN_INPUT_BYTES);
+    while !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let raw = &raw[..cut];
     let mut stripped = String::with_capacity(raw.len().min(4096));
     let mut rest = raw;
     // Feeds put escaped HTML in text; the XML reader decoded one level already, so tags are literal here.
@@ -261,18 +269,8 @@ pub fn plain_text(raw: &str, max: usize) -> String {
 
 /// The XML entities plus the handful of named HTML ones feeds use.
 fn decode_html_entities(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        let Some(end) = rest.find(';').filter(|&end| end <= 10) else {
-            out.push('&');
-            rest = &rest[1..];
-            continue;
-        };
-        let name = &rest[1..end];
-        let named = match name {
+    xml::replace_entities(text, |name| {
+        match name {
             "nbsp" => Some(' '),
             "hellip" => Some('\u{2026}'),
             "ndash" => Some('\u{2013}'),
@@ -282,23 +280,11 @@ fn decode_html_entities(text: &str) -> String {
             "ldquo" => Some('\u{201c}'),
             "rdquo" => Some('\u{201d}'),
             "copy" => Some('\u{a9}'),
-            "amp" | "lt" | "gt" | "quot" | "apos" => xml::decode_entities(&rest[..=end]).chars().next(),
-            _ if name.starts_with('#') => xml::decode_entities(&rest[..=end]).chars().next().filter(|&c| c != '&'),
+            "amp" | "lt" | "gt" | "quot" | "apos" => xml::decode_entities(&format!("&{name};")).chars().next(),
+            _ if name.starts_with('#') => xml::decode_entities(&format!("&{name};")).chars().next().filter(|&c| c != '&'),
             _ => None,
-        };
-        match named {
-            Some(c) => {
-                out.push(c);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
         }
-    }
-    out.push_str(rest);
-    out
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -410,9 +396,10 @@ fn parse_rfc822(text: &str) -> Option<u64> {
         "MDT" => -360,
         "PST" => -480,
         "PDT" => -420,
-        numeric if numeric.len() == 5 && (numeric.starts_with('+') || numeric.starts_with('-')) => {
-            let hours: i64 = numeric[1..3].parse().ok()?;
-            let minutes: i64 = numeric[3..5].parse().ok()?;
+        // ASCII only: a five-byte zone such as `+1é1` would otherwise be sliced inside a character.
+        numeric if numeric.len() == 5 && numeric.is_ascii() && (numeric.starts_with('+') || numeric.starts_with('-')) => {
+            let hours: i64 = numeric.get(1..3)?.parse().ok()?;
+            let minutes: i64 = numeric.get(3..5)?.parse().ok()?;
             let total = hours * 60 + minutes;
             if numeric.starts_with('-') { -total } else { total }
         }
@@ -568,6 +555,27 @@ mod tests {
         assert_eq!(plain_text(&hostile, 100), "");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(plain_text("a<ScRiPt>x</SCRIPT>b<STYLE>y</style >c", 100), "a b c");
+    }
+
+    #[test]
+    fn a_long_run_of_ampersands_stays_linear_and_plain_text_input_is_capped() {
+        let hostile = "&".repeat(2_000_000);
+        let started = std::time::Instant::now();
+        assert_eq!(decode_html_entities(&hostile), hostile);
+        assert_eq!(plain_text(&hostile, 10), "&&&&&&&&&\u{2026}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert_eq!(decode_html_entities("&hellip;&#65;&amp"), "\u{2026}A&amp");
+        // The cap lands on a character boundary.
+        let wide = "\u{e9}".repeat(MAX_PLAIN_INPUT_BYTES);
+        assert_eq!(plain_text(&wide, 3).chars().count(), 3);
+    }
+
+    #[test]
+    fn a_non_ascii_five_byte_zone_does_not_panic() {
+        assert_eq!(parse_date("Thu, 01 Jan 1970 00:00:00 +1\u{e9}1"), Some(0));
+        assert_eq!(parse_date("Thu, 01 Jan 1970 01:00:00 +0100"), Some(0));
+        let feed = format!("<rss><channel><title>t</title><item><title>a</title><pubDate>Thu, 01 Jan 1970 00:00:00 +1\u{e9}1</pubDate></item></channel></rss>");
+        assert!(parse_feed(feed.as_bytes(), &base()).is_ok());
     }
 
     #[test]
