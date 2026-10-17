@@ -485,27 +485,80 @@ fn handle_sessions(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
 
 fn notes_snapshot() -> Option<String> {
     let profile = profile::active().ok()?;
-    let notes = notes_panel::html_notes(&profile);
+    let book = notes_panel::html_book(&profile);
     let tasks = notes_panel::html_tasks(&profile);
     protocol::snap_json("notes", |out| {
-        out.array("notes", |items| for note in &notes { items.object(|item| { item.uint("id", note.id); item.string("title", &note.title); item.string("body", &note.body); }); });
+        out.string("sort", book.sort.key());
+        out.array("folders", |items| for folder in &book.folders { items.object(|item| { item.uint("id", folder.id); item.string("name", &folder.name); }); });
+        out.array("notes", |items| for note in book.ordered(book.sort) {
+            let meta = book.meta_of(note.id);
+            items.object(|item| { item.uint("id", note.id); item.string("title", &note.title); item.string("body", &note.body); item.string("addr", &meta.addr); item.uint("created", meta.created); item.uint("folder", meta.folder); });
+        });
         out.array("tasks", |items| for task in &tasks { items.object(|item| { item.uint("id", task.id); item.string("text", &task.text); item.bool("complete", task.complete); }); });
     })
 }
 
 fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let Ok(profile) = profile::active() else { return; };
-    let mut notes = notes_panel::html_notes(&profile);
+    let parent = runtime.borrow().parent;
+    let mut book = notes_panel::html_book(&profile);
     let mut tasks = notes_panel::html_tasks(&profile);
+    let text_len_ok = |max: usize| f.text.as_ref().is_some_and(|s| s.chars().count() <= max);
+    let only = |id: bool, parent_f: bool, n: bool, on: bool, text: bool| (f.id.is_some() == id) && (f.parent.is_some() == parent_f) && (f.n.is_some() == n) && (f.on.is_some() == on) && (f.text.is_some() == text) && f.before.is_none() && f.url.is_none();
+    let now = || { let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(); (since.as_secs(), since.as_micros() as u64) };
+    let book_result = |book: &crate::notes_book::Book, refused: Result<(), crate::notes_book::Refused>| -> std::io::Result<()> {
+        match refused { Ok(()) => notes_panel::save_html_book(&profile, book), Err(why) => { show_error_message(&why.to_string()); Ok(()) } }
+    };
+    let id = f.id.unwrap_or_default();
     let result = match f.a.as_str() {
-        "add-note" if empty_fields(&f, false) => { let id = next_id(notes.iter().map(|n| n.id)); notes.push(crate::productivity::Note { id, title: "New note".into(), body: String::new() }); notes_panel::save_html_notes(&profile, &notes) }
-        "save-title" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
-            let Some(note) = notes.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; note.title = f.text.unwrap_or_default(); notes_panel::save_html_notes(&profile, &notes)
+        "add-note" if empty_fields(&f, false) => { let (secs, micros) = now(); let added = book.add("New note", "", "", 0, secs, micros).map(|_| ()); book_result(&book, added) }
+        "save-title" if only(true, false, false, false, true) && text_len_ok(2048) => {
+            let Some(note) = book.notes.iter_mut().find(|item| item.id == id) else { return; };
+            let title = crate::notes_book::clip_chars(f.text.as_deref().unwrap_or_default(), crate::notes_book::MAX_TITLE_CHARS);
+            note.title = title; notes_panel::save_html_book(&profile, &book)
         }
-        "save-body" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
-            let Some(note) = notes.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; note.body = f.text.unwrap_or_default(); notes_panel::save_html_notes(&profile, &notes)
+        "save-body" if only(true, false, false, false, true) && text_len_ok(crate::notes_book::MAX_BODY_CHARS) => {
+            let Some(note) = book.notes.iter_mut().find(|item| item.id == id) else { return; }; note.body = f.text.unwrap_or_default(); notes_panel::save_html_book(&profile, &book)
         }
-        "delete-note" if id_only(&f) => { notes.retain(|item| item.id != f.id.unwrap_or_default()); notes_panel::save_html_notes(&profile, &notes) }
+        "delete-note" if id_only(&f) => { book.delete_note(id); notes_panel::save_html_book(&profile, &book) }
+        // Sort order (manual, title, address, content, date), kept with the notes.
+        "sort" if only(false, false, false, false, true) => {
+            let Some(sort) = f.text.as_deref().and_then(crate::notes_book::Sort::parse) else { return; };
+            book.sort = sort; notes_panel::save_html_book(&profile, &book)
+        }
+        // Manual order: the note `id` goes before the note `n` (the end when there is none).
+        "move-note" if f.id.is_some() && f.parent.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none() && f.n.is_none() => { let before = f.before; let moved = book.move_note(id, before); book_result(&book, moved)
+        }
+        // The folder of a note: `parent` is the folder's id, 0 for none.
+        "note-folder" if only(true, true, false, false, false) => { let moved = book.set_folder(id, f.parent.unwrap_or_default()); book_result(&book, moved) }
+        "folder-add" if only(false, false, false, false, true) && text_len_ok(120) => { let (_, micros) = now(); let added = book.add_folder(f.text.as_deref().unwrap_or_default(), micros).map(|_| ()); book_result(&book, added) }
+        "folder-rename" if only(true, false, false, false, true) && text_len_ok(120) => { let renamed = book.rename_folder(id, f.text.as_deref().unwrap_or_default()); book_result(&book, renamed) }
+        "folder-delete" if id_only(&f) => { let removed = book.delete_folder(id); book_result(&book, removed) }
+        // Export: `text` is "md" or "txt"; `n` is 0 for every note, 1 for the folder `id`, 2 for the note `id`.
+        "export" if f.parent.is_none() && f.on.is_none() && f.before.is_none() && f.url.is_none() && matches!(f.text.as_deref(), Some("md" | "txt")) && matches!(f.n, Some(0..=2)) => {
+            let kind = if f.text.as_deref() == Some("txt") { crate::notes_book::FileKind::Text } else { crate::notes_book::FileKind::Markdown };
+            let scope = match f.n { Some(1) => crate::notes_book::Scope::Folder(id), Some(2) => crate::notes_book::Scope::One(id), _ => crate::notes_book::Scope::All };
+            let name = format!("Notes.{}", kind.extension());
+            let dir = crate::capture::default_dir().and_then(|d| d.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
+            if let Some(mut path) = crate::download_shell::save_dialog(parent, &dir, &name) {
+                if crate::notes_book::FileKind::of_path(&path).is_none() { path.set_extension(kind.extension()); }
+                let kind = crate::notes_book::FileKind::of_path(&path).unwrap_or(kind);
+                match std::fs::write(&path, book.export(scope, kind)) { Ok(()) => {}, Err(error) => show_error_message(&format!("The notes could not be exported: {error}")) }
+            }
+            return;
+        }
+        "import" if empty_fields(&f, false) => {
+            let Some(path) = crate::download_shell::open_notes_dialog(parent) else { return; };
+            let Some(kind) = crate::notes_book::FileKind::of_path(&path) else { show_error_message("Choose a .md or .txt file."); return; };
+            let too_big = std::fs::metadata(&path).map(|m| m.len() > crate::notes_book::MAX_IMPORT_BYTES).unwrap_or(true);
+            let text = if too_big { None } else { std::fs::read(&path).ok().and_then(|bytes| String::from_utf8(bytes).ok()) };
+            let Some(text) = text else { show_error_message("That file could not be read as text, or it is larger than 256 KB."); return; };
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported note").to_owned();
+            let (secs, micros) = now();
+            let (added, left_out) = book.import(crate::notes_book::parse_import(&text, kind, &stem), secs, micros);
+            if left_out > 0 { show_error_message(&format!("Imported {added} notes. {left_out} did not fit: there is room for 100 notes.")); }
+            notes_panel::save_html_book(&profile, &book)
+        }
         "add-task" if empty_fields(&f, false) => { let id = next_id(tasks.iter().map(|task| task.id)); tasks.push(crate::productivity::Task { id, complete: false, text: "New task".into() }); notes_panel::save_html_tasks(&profile, &tasks) }
         "save-task" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
             let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.text = f.text.unwrap_or_default(); notes_panel::save_html_tasks(&profile, &tasks)

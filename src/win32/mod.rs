@@ -25,6 +25,7 @@ mod html_suggest;
 // --- end hover layer ---
 // --- end popup host ---
 mod notes_panel;
+mod page_tools_ui; // capture and notes-from-the-page commands (thread T7)
 // --- tab options --- the Sessions panel.
 mod sessions_panel;
 // --- end tab options ---
@@ -334,3 +335,11 @@ pub(crate) fn set_input_text(hwnd: HWND, value: &str) -> bool {
             && readback[..copied as usize] == value[..value.len() - 1]
     }
 }
+
+// --- page tools (T7) ---
+pub(crate) use page_tools_ui::{
+    context_note_items, insert_note_into_page, run_capture_full, run_capture_full_copy, run_capture_full_note,
+    run_capture_selection, run_capture_selection_copy, run_capture_selection_note, run_capture_visible,
+    run_capture_visible_copy, run_capture_visible_note, run_note_append, run_note_from_selection,
+};
+// --- end page tools ---

@@ -26,6 +26,9 @@ pub mod import;
 pub mod internal_page;
 pub mod navigation;
 pub mod omnibox;
+pub mod page_tools; // capture, spatial navigation, reader defaults, zoom scope, pop-out video (T7)
+pub mod capture; // page capture: CDP requests, image stitching, files, clipboard (T7)
+pub mod notes_book; // notes: folders, sort, markdown, export and import (T7)
 pub mod passwords;
 pub mod performance;
 pub mod permissions;

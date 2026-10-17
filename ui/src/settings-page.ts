@@ -16,6 +16,7 @@ import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
@@ -47,6 +48,7 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
   address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
+  pagetools: 'image', // --- page tools (T7) ---
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -831,6 +833,17 @@ export function startSettingsPage(root: HTMLElement): void {
     segmentedControl,
   });
 
+  // Page tools (src/page-tools-section.ts): its own snapshot and commands in the `set` family. The few core
+  // rows and the rest behind "More options" are decided by row id in settings-page-logic.ts.
+  const pageToolsSection = mountPageToolsSection({
+    send: cmd,
+    toast: (text, ok) => showToast(text, ok),
+    card,
+    row: (into, id, control, options) => row(into, id, control, options),
+    switchControl,
+    segmentedControl,
+  });
+
   // Keyboard and Quick commands (docs/commands.md): each control is its own command, answered by the
   // `commands` snapshot, never part of `save`. The rows join the page's search like any other.
   const commandSections = mountCommandsSections({ send: cmd, toast: (text, ok) => showToast(text, ok) });
@@ -1588,6 +1601,7 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') { commandSections.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
     if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);

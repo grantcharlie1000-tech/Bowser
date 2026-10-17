@@ -117,6 +117,30 @@ impl Default for Prefs {
     }
 }
 
+/// How reader view sets its text, from Settings > Page tools. These are defaults for every page, not
+/// per-session choices: the colour scheme and size controls on the page (`Prefs`) adjust for the
+/// session, and the next page starts from here again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Typography {
+    pub font: crate::page_tools::ReaderFont,
+    /// Line height in tenths of the font size (16 is 1.6).
+    pub line_tenths: u8,
+    /// Column width in `ch`.
+    pub width_ch: u8,
+    /// Text runs top to bottom, lines from right to left (as in traditional Chinese and Japanese).
+    pub vertical: bool,
+    /// The control bar (the settings icon) is on the page. Off, only the reading time may be.
+    pub controls: bool,
+    /// How long the page takes to read, in the bar.
+    pub reading_time: bool,
+}
+
+impl Default for Typography {
+    fn default() -> Self {
+        Self { font: crate::page_tools::ReaderFont::Serif, line_tenths: 16, width_ch: 68, vertical: false, controls: true, reading_time: false }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Read-only: how article-like is this page, or what state is it in?
@@ -174,6 +198,11 @@ pub fn looks_like_article(words: u32, link_percent: u32) -> bool {
 /// The script call for `action`, ready for `ExecuteScript`: `((function (o) {...}))({...})`. Colours
 /// that are not plain CSS colours are left out, and the page script validates them again.
 pub fn invocation(action: Action, prefs: Prefs, dark: bool, colours: &Colours) -> String {
+    invocation_with(action, prefs, Typography::default(), dark, colours)
+}
+
+/// [`invocation`] with the typography Settings > Page tools chose.
+pub fn invocation_with(action: Action, prefs: Prefs, typography: Typography, dark: bool, colours: &Colours) -> String {
     let mode = match action {
         Action::Toggle(mode) => mode,
         Action::Probe | Action::Exit => Mode::Reader,
@@ -186,6 +215,15 @@ pub fn invocation(action: Action, prefs: Prefs, dark: bool, colours: &Colours) -
         prefs.size.clamp(MIN_SIZE, MAX_SIZE),
         dark
     );
+    options.push_str(&format!(
+        ",\"f\":\"{}\",\"l\":{},\"w\":{},\"v\":{},\"g\":{},\"r\":{}",
+        typography.font.key(),
+        typography.line_tenths.clamp(12, 24),
+        typography.width_ch.clamp(40, 120),
+        typography.vertical,
+        typography.controls,
+        typography.reading_time
+    ));
     if matches!(action, Action::Toggle(_)) {
         options.push_str(",\"c\":{");
         let mut first = true;

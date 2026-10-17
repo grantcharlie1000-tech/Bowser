@@ -1906,6 +1906,8 @@ fn save_form(hwnd: HWND) {
         start: current.start,
         // Address bar, search and bookmark options have no GDI controls; the file's values are kept.
         address: current.address,
+        // Page tools (T7) have no GDI controls; the file's values are kept.
+        page_tools: current.page_tools,
         // The GDI form has no controls for the tab options (the HTML settings page has them).
         tabs: current.tabs,
     };

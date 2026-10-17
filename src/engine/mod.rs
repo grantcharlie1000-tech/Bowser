@@ -367,6 +367,35 @@ pub trait EngineAdapter {
     fn smart_screen_enabled(&self, _tab: crate::tabs::TabId) -> Option<bool> {
         None
     }
+    // --- page tools (T7) ---
+    /// Calls one DevTools method of a tab and hands back the raw answer, for page capture only: the
+    /// engine refuses every method but `crate::capture::METHOD_METRICS` and `METHOD_SHOT`, never runs
+    /// for a page that is not http(s) (checked against the live address at the moment of the call) and
+    /// drops an answer over the capture limit. `None` is a refusal or a failure. `done` may run later.
+    fn devtools_call(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _method: &str,
+        _params: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Runs one read-only page-tools script (the selection) in a tab, under the same rules as
+    /// `run_reader_script` (http(s) pages only) but with the answer limit the caller names.
+    fn run_page_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        _limit: usize,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Applies Settings > Page tools to every open tab (spatial navigation, Ctrl+scroll zoom). Tabs
+    /// created later start with them.
+    fn apply_page_tools(&mut self) {}
+    // --- end page tools ---
 }
 
 /// Operations against one logical tab. Implementations may share an environment across tabs.
@@ -440,6 +469,12 @@ pub struct EngineEvents {
     /// One of those items was picked.
     pub context_search_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, ContextSearchPick)>>,
     // --- end address bar, search and bookmarks ---
+    // --- page tools (T7) ---
+    /// The page context menu opened on a text field: the notes it may insert, as (id, menu label).
+    pub context_notes: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>>,
+    /// One of those notes was picked.
+    pub context_note_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
+    // --- end page tools ---
 }
 
 /// Asks for the labels of the search items a page context menu gets.
