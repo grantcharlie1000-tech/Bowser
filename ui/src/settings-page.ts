@@ -20,11 +20,26 @@ import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictTe
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SECTIONS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
+  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
+  AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
 } from './settings-page-logic';
+
+/** --- settings slim --- the disclosures remember whether they are open (a per-viewer convenience only). */
+const OPEN_KEY = 'bowser.settings.more';
+function readOpen(): Set<string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(OPEN_KEY) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+function writeOpen(open: ReadonlySet<string>): void {
+  try { localStorage.setItem(OPEN_KEY, JSON.stringify([...open])); } catch { /* storage unavailable: the state lasts this visit */ }
+}
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
@@ -277,18 +292,29 @@ export function startSettingsPage(root: HTMLElement): void {
   const groups: Group[] = [];
   let cardSeq = 0;
 
-  for (const spec of SECTIONS) {
-    const section = el('section', 'sp-sec');
-    section.dataset.section = spec.key;
+  // --- settings slim --- one section per area (its heading, lead and nav item), holding one part per
+  // Rust section; the rows are built into the parts, then `arrange` sorts them into place.
+  const areaNodes = new Map<SettingsSection, HTMLElement>();
+  for (const spec of AREAS) {
+    const area = el('section', 'sp-sec');
+    area.dataset.area = spec.key;
     const heading = el('h2', 'sp-h');
     heading.id = `sp-h-${spec.key}`;
     heading.textContent = spec.title;
-    section.setAttribute('aria-labelledby', heading.id);
+    area.setAttribute('aria-labelledby', heading.id);
     const lead = el('p', 'sp-lead');
     lead.textContent = spec.lead;
-    section.append(heading, lead);
-    sectionNodes.set(spec.key, section);
-    column.append(section);
+    area.append(heading, lead);
+    areaNodes.set(spec.key, area);
+    column.append(area);
+    for (const key of spec.parts) {
+      const part = el('section', 'sp-part');
+      part.dataset.section = key;
+      if (key === spec.key) part.setAttribute('aria-labelledby', heading.id);
+      else part.setAttribute('aria-label', partTitle(key));
+      area.append(part);
+      sectionNodes.set(key, part);
+    }
 
     const item = el('li');
     const button = el('button', 'sp-nav-item');
@@ -435,12 +461,11 @@ export function startSettingsPage(root: HTMLElement): void {
   accentWrap.append(accentInput, accentReset);
   row(themeCard, 'themeAccent', accentWrap);
 
-  // Website appearance and the private tab theme (thread T3)
-  const websiteCard = card('appearance', 'Website appearance');
-  row(websiteCard, 'websiteAppearance', protection.websiteAppearance.root);
-  row(websiteCard, 'forceDark', protection.forceDark.root);
-  const privateCard = card('appearance', 'Private tabs');
-  row(privateCard, 'privateTheme', protection.privateTheme.root);
+  // Website appearance and the private tab theme (thread T3). --- settings slim --- they join the
+  // Theme card, so the core view is one card of colour choices.
+  row(themeCard, 'websiteAppearance', protection.websiteAppearance.root);
+  row(themeCard, 'forceDark', protection.forceDark.root);
+  row(themeCard, 'privateTheme', protection.privateTheme.root);
 
   // Toolbar
   const TOOLBAR_LABELS: Readonly<Record<ToolbarButton, string>> = {
@@ -475,8 +500,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
   row(toolbarCard, 'showHomeButton', showHome.root);
 
-  // Address bar
-  const addressCard = card('appearance', 'Address bar');
+  // Address bar (--- settings slim --- in the Toolbar card it belongs to)
+  const addressCard = toolbarCard;
   const centred = switchControl((on) => change((d) => { d.centredAddressBar = on; }));
   row(addressCard, 'centredAddressBar', centred.root);
   const minimal = switchControl((on) => change((d) => { d.minimalUrl = on; }));
@@ -497,7 +522,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
   row(tabsCard, 'pinNewTabGroups', pinGroups.root);
   const vTabs = switchControl((on) => change((d) => { d.ctrlSVerticalTabs = on; }));
-  row(tabsCard, 'ctrlSVerticalTabs', vTabs.root);
 
   // Window
   const windowCard = card('appearance', 'Window');
@@ -518,8 +542,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const sidePanelCtl = segmentedControl<SidePanelPosition>('Side panel position', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; }));
   row(panelsCard, 'sidePanelPosition', sidePanelCtl.root);
 
-  // Fonts
-  const fontsCard = card('appearance', 'Fonts');
+  // Fonts and zoom (--- settings slim --- one card)
+  const fontsCard = card('appearance', 'Text and zoom');
   const fontSizeCtl = segmentedControl<FontSize>('Font size', FONT_SIZES.map((key) => [key, key === 'small' ? 'Small' : key === 'medium' ? 'Medium (recommended)' : 'Large'] as const), (value) => change((d) => { d.fontSize = value; }));
   row(fontsCard, 'fontSize', fontSizeCtl.root);
   const uiFont = el('input', 'bw-input sp-ui-font-input');
@@ -532,8 +556,7 @@ export function startSettingsPage(root: HTMLElement): void {
   uiFont.addEventListener('change', () => change((d) => { d.uiFont = uiFont.value.trim(); }));
   row(fontsCard, 'uiFont', uiFont);
 
-  // Zoom
-  const zoomCard = card('appearance', 'Zoom');
+  const zoomCard = fontsCard;
   const zoomInput = el('input', 'bw-input sp-zoom-input');
   zoomInput.type = 'number';
   zoomInput.min = String(MIN_ZOOM);
@@ -584,12 +607,9 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   row(translateCard, 'translateTarget', translateHost);
 
-  // Shortcuts
-  const shortcutsCard = card('appearance', 'Shortcuts');
+  // The three shortcut switches are built into Shortcuts and commands, after the Keyboard rows.
   const shiftRightClick = switchControl((on) => change((d) => { d.shiftRightClickContext = on; }));
-  row(shortcutsCard, 'shiftRightClickContext', shiftRightClick.root);
   const copyLink = switchControl((on) => change((d) => { d.ctrlShiftCCopyLink = on; }));
-  row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
 
   // Tabs: every option is a `tabopt` command of its own (`key=value`), applied at once, never part of `save`.
   const tabControls = new Map<string, { set(values: TabOptionValues): void; disable(off: boolean): void }>();
@@ -818,6 +838,26 @@ export function startSettingsPage(root: HTMLElement): void {
   sectionNodes.get('commands')?.append(...commandSections.commands);
   for (const found of commandSections.rows) rows.set(found.spec.id, { ...found, flag: null, target: null });
   groups.push(...commandSections.groups);
+  // --- settings slim --- the shortcut switches that lived in Appearance, beside the other keyboard options.
+  const shortcutsCard = el('div', 'sp-card');
+  {
+    const group = el('div', 'sp-group');
+    const heading = el('h3', 'sp-group-h');
+    heading.id = `sp-card-${++cardSeq}`;
+    heading.textContent = 'Shortcuts';
+    shortcutsCard.setAttribute('role', 'group');
+    shortcutsCard.setAttribute('aria-labelledby', heading.id);
+    group.append(heading, shortcutsCard);
+    // After the Keyboard options and websites, before the shortcut list.
+    const kb = sectionNodes.get('keyboard')!;
+    const editorBlock = kb.querySelector('.sp-kb');
+    if (editorBlock) editorBlock.replaceWith(group); else kb.append(group);
+    if (editorBlock) group.after(editorBlock);
+    groups.push({ root: group, heading, card: shortcutsCard });
+  }
+  row(shortcutsCard, 'shiftRightClickContext', shiftRightClick.root);
+  row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
+  row(shortcutsCard, 'ctrlSVerticalTabs', vTabs.root);
 
   // Downloads (docs/design/downloads.md "Settings"): both controls are their own commands, never
   // part of `save`; Rust shows the native folder picker and answers with the next snapshot.
@@ -975,6 +1015,289 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   }
 
+  // ---- --- settings slim --- arranging the rows: core, "More options", sub-pages, "Not active yet" ----
+
+  interface Disclosure {
+    readonly key: string; readonly root: HTMLElement; readonly button: HTMLButtonElement; readonly body: HTMLElement;
+    readonly desc: HTMLElement; readonly groups: Map<string, HTMLElement>; count: number;
+  }
+  /** Where each row ended up: its area, the part it shows in (null inside a disclosure), its disclosure, or its sub-page. */
+  interface Place { readonly area: string; readonly part: SettingsSection | null; readonly disclosure: Disclosure | null; readonly page: boolean }
+  interface Opener { readonly id: string; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly button: HTMLButtonElement; readonly part: SettingsSection }
+  interface SubPage { readonly id: string; readonly root: HTMLElement; readonly heading: HTMLElement; readonly area: AreaSpec }
+  const places = new Map<string, Place>();
+  const openers = new Map<string, Opener>();
+  const subPages = new Map<string, SubPage>();
+  const disclosures: Disclosure[] = [];
+  const openState = readOpen();
+  let openPage: SubPage | null = null;
+  let searching = false;
+
+  const paintDisclosure = (d: Disclosure, open: boolean): void => {
+    d.button.setAttribute('aria-expanded', String(open));
+    d.root.classList.toggle('is-open', open);
+    d.body.hidden = !open;
+  };
+  /** One disclosure row: a full-width button in a card, its body (groups of rows) below it. */
+  const disclosure = (key: string, label: string): Disclosure => {
+    const root = el('div', 'sp-more');
+    root.dataset.more = key;
+    const button = el('button', 'sp-more-btn');
+    button.type = 'button';
+    button.id = `sp-more-b-${key}`;
+    const text = el('span', 'sp-text');
+    const name = el('span', 'sp-label');
+    name.textContent = label;
+    const desc = el('span', 'sp-desc');
+    text.append(name, desc);
+    button.append(text, icon('chevron-down', { size: 16, className: 'sp-more-chev' }));
+    const head = el('div', 'sp-card sp-more-card');
+    head.append(button);
+    const body = el('div', 'sp-more-body');
+    body.id = `sp-more-${key}`;
+    body.setAttribute('role', 'region');
+    body.setAttribute('aria-labelledby', button.id);
+    button.setAttribute('aria-controls', body.id);
+    root.append(head, body);
+    const d: Disclosure = { key, root, button, body, desc, groups: new Map(), count: 0 };
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') !== 'true';
+      if (open) openState.add(key); else openState.delete(key);
+      writeOpen(openState);
+      paintDisclosure(d, open);
+    });
+    // Using a row found by the search keeps its disclosure open after the search is cleared.
+    body.addEventListener('focusin', () => {
+      if (!searching || openState.has(key)) return;
+      openState.add(key);
+      writeOpen(openState);
+    });
+    paintDisclosure(d, openState.has(key));
+    disclosures.push(d);
+    return d;
+  };
+  /** The card for `heading` (a row's old group) inside a disclosure, made on first use. */
+  const disclosureCard = (d: Disclosure, groupKey: string, heading: string): HTMLElement => {
+    const found = d.groups.get(groupKey);
+    if (found) return found;
+    const group = el('div', 'sp-group');
+    const node = el('div', 'sp-card');
+    node.setAttribute('role', 'group');
+    let h: HTMLElement | null = null;
+    if (heading !== '') {
+      h = el('h3', 'sp-group-h');
+      h.id = `sp-card-${++cardSeq}`;
+      h.textContent = heading;
+      node.setAttribute('aria-labelledby', h.id);
+      group.append(h);
+    }
+    group.append(node);
+    d.body.append(group);
+    groups.push({ root: group, heading: h, card: node });
+    d.groups.set(groupKey, node);
+    return node;
+  };
+  const groupOfCard = (cardNode: HTMLElement): Group | undefined => groups.find((g) => g.card === cardNode);
+
+  // Sub-pages: the big editors, each on a page of its own with a way back.
+  const closePage = (refocus: boolean): void => {
+    const shown = openPage;
+    if (!shown) return;
+    openPage = null;
+    page.classList.remove('is-sub');
+    shown.root.hidden = true;
+    for (const node of [...areaNodes.values(), laterNode]) node.hidden = false;
+    const opener = openers.get(shown.id);
+    if (opener && refocus) {
+      opener.root.scrollIntoView({ block: 'center' });
+      opener.button.focus({ preventScroll: true });
+    }
+  };
+  const showPage = (id: string): void => {
+    const sub = subPages.get(id);
+    if (!sub) return;
+    if (query !== '') { input.value = ''; query = ''; filter(); }
+    if (openPage && openPage !== sub) openPage.root.hidden = true;
+    openPage = sub;
+    page.classList.add('is-sub');
+    for (const node of [...areaNodes.values(), laterNode]) node.hidden = true;
+    empty.hidden = true;
+    sub.root.hidden = false;
+    main.scrollTop = 0;
+    if (current !== sub.area.key) { current = sub.area.key; paintNav(); }
+    sub.heading.focus({ preventScroll: true });
+  };
+  const openerRow = (id: string, spec: RowSpec): Opener => {
+    const node = el('div', 'sp-row');
+    node.dataset.opens = id;
+    const text = el('div', 'sp-text');
+    const label = el('span', 'sp-label');
+    label.id = `sp-l-open-${id}`;
+    label.textContent = spec.label;
+    text.append(label);
+    let desc: HTMLElement | null = null;
+    if (spec.description !== '') {
+      desc = el('span', 'sp-desc');
+      desc.id = `sp-d-open-${id}`;
+      desc.textContent = spec.description;
+      text.append(desc);
+    }
+    const button = textButton(PAGE_ROWS[id]!.button, () => showPage(id));
+    button.setAttribute('aria-describedby', [label.id, desc?.id].filter(Boolean).join(' '));
+    const wrap = el('div', 'sp-ctl');
+    wrap.append(button);
+    node.append(text, wrap);
+    const made = { id, root: node, label, desc, button, part: spec.section };
+    openers.set(id, made);
+    return made;
+  };
+  const subPage = (node: RowNode, area: AreaSpec): SubPage => {
+    const sub = el('section', 'sp-sec sp-page');
+    sub.dataset.page = node.spec.id;
+    sub.hidden = true;
+    const back = textButton(area.title, () => closePage(true), { icon: 'chevron-left', subtle: true });
+    back.classList.add('sp-back');
+    back.setAttribute('aria-label', `Back to ${area.title}`);
+    const heading = el('h2', 'sp-h');
+    heading.id = `sp-h-page-${node.spec.id}`;
+    heading.tabIndex = -1;
+    heading.textContent = node.spec.label;
+    sub.setAttribute('aria-labelledby', heading.id);
+    const lead = el('p', 'sp-lead');
+    lead.textContent = node.spec.description;
+    sub.append(back, heading, lead);
+    // The editor's own title and lead would repeat the page's: they stay for the search marks, unseen.
+    if (node.root.classList.contains('sp-row')) {
+      node.root.classList.add('is-page');
+      const box = el('div', 'sp-card');
+      box.append(node.root);
+      sub.append(box);
+    } else {
+      const title = Array.from(node.root.querySelectorAll<HTMLElement>('.sp-group-h')).find((h) => h.textContent === node.spec.label);
+      const words = Array.from(node.root.querySelectorAll<HTMLElement>('.sp-desc')).find((d) => d.textContent === node.spec.description);
+      if (title) title.hidden = true;
+      if (words) words.hidden = true;
+      sub.append(node.root);
+    }
+    column.append(sub, empty);
+    const made = { id: node.spec.id, root: sub, heading, area };
+    subPages.set(node.spec.id, made);
+    return made;
+  };
+
+  // "Not active yet": the rows Bowser saves but does not act on, at the very end, collapsed.
+  const laterNode = el('section', 'sp-sec sp-later');
+  laterNode.dataset.area = 'later';
+  {
+    const heading = el('h2', 'sp-h');
+    heading.id = 'sp-h-later';
+    heading.tabIndex = -1;
+    heading.textContent = LATER_TITLE;
+    laterNode.setAttribute('aria-labelledby', heading.id);
+    const lead = el('p', 'sp-lead');
+    lead.textContent = LATER_LEAD;
+    laterNode.append(heading, lead);
+  }
+  const laterDisclosure = disclosure('later', LATER_LABEL);
+  laterNode.append(laterDisclosure.root);
+
+  /** True for a part whose rows are drawn as one card under the part's title (the merged areas' second and third parts too). */
+  const mergedArea = (area: AreaSpec): boolean => area.parts.length > 1;
+  const coreCards = new Map<SettingsSection, HTMLElement>();
+  const coreGroups = new Map<SettingsSection, HTMLElement>();
+  const coreCard = (part: SettingsSection): HTMLElement => {
+    const found = coreCards.get(part);
+    if (found) return found;
+    const group = el('div', 'sp-group');
+    const h = el('h3', 'sp-group-h');
+    h.id = `sp-card-${++cardSeq}`;
+    h.textContent = partTitle(part);
+    const node = el('div', 'sp-card');
+    node.setAttribute('role', 'group');
+    node.setAttribute('aria-labelledby', h.id);
+    group.append(h, node);
+    sectionNodes.get(part)!.prepend(group);
+    groups.push({ root: group, heading: h, card: node });
+    coreCards.set(part, node);
+    coreGroups.set(part, group);
+    return node;
+  };
+
+  const arrange = (): void => {
+    const moreOf = new Map<SettingsSection, Disclosure>();
+    for (const area of AREAS) {
+      const d = disclosure(area.key, MORE_LABEL);
+      moreOf.set(area.key, d);
+      areaNodes.get(area.key)!.append(d.root);
+    }
+    // Page order, so every list keeps the order the rows were built in.
+    const ordered = Array.from(column.querySelectorAll<HTMLElement>('[data-row]')).map((node) => rows.get(node.dataset.row ?? '')).filter((node): node is RowNode => node !== undefined);
+    for (const node of ordered) {
+      const spec = node.spec;
+      const area = areaOf(spec.section);
+      const tier = rowTier(spec);
+      const inCard = node.card !== node.root;
+      const heading = inCard ? groupOfCard(node.card)?.heading?.textContent ?? '' : '';
+      if (tier === 'core') {
+        if (mergedArea(area)) coreCard(spec.section).append(node.root);
+        places.set(spec.id, { area: area.key, part: spec.section, disclosure: null, page: false });
+      } else if (tier === 'page') {
+        const opener = openerRow(spec.id, spec);
+        const after = PAGE_ROWS[spec.id]?.after;
+        const anchor = after === undefined ? null : openers.get(after)?.root ?? rows.get(after)?.root ?? null;
+        // The editor itself moves to its sub-page below.
+        if (anchor) {
+          anchor.after(opener.root);
+        } else if (mergedArea(area)) {
+          coreCard(spec.section).append(opener.root);
+        } else if (inCard) {
+          node.root.replaceWith(opener.root);
+        } else {
+          const group = el('div', 'sp-group');
+          const box = el('div', 'sp-card');
+          group.append(box);
+          node.root.replaceWith(group);
+          box.append(opener.root);
+          groups.push({ root: group, heading: null, card: box });
+        }
+        subPage(node, area);
+        places.set(spec.id, { area: area.key, part: spec.section, disclosure: null, page: true });
+      } else {
+        const d = tier === 'later' ? laterDisclosure : moreOf.get(area.key)!;
+        if (inCard) disclosureCard(d, tier === 'later' ? area.key : `${spec.section}|${heading}`, tier === 'later' ? area.title : heading).append(node.root);
+        else d.body.append(node.root);
+        d.count += 1;
+        places.set(spec.id, { area: tier === 'later' ? 'later' : area.key, part: null, disclosure: d, page: false });
+      }
+    }
+    for (const d of disclosures) {
+      d.desc.textContent = d === laterDisclosure
+        ? ordered.filter((node) => places.get(node.spec.id)?.disclosure === d).map((node) => node.spec.label).join(', ')
+        : moreCountText(d.count);
+      if (d.count === 0) d.root.remove();
+    }
+    // A note that belongs to a row follows it: "shortcuts are off" sits under the Keyboard shortcuts switch.
+    const offNote = sectionNodes.get('keyboard')?.querySelector('.sp-cmd-note');
+    if (offNote) coreGroups.get('keyboard')?.append(offNote);
+    if (laterDisclosure.count === 0) laterNode.hidden = true;
+    column.append(laterNode, ...[...subPages.values()].map((sub) => sub.root), empty);
+  };
+  arrange();
+
+  /** Rows Bowser does not act on yet keep their saved value but never look like a control that works. */
+  const lockLater = (): void => {
+    for (const [id, place] of places) {
+      if (place.area !== 'later') continue;
+      const node = rows.get(id);
+      if (!node) continue;
+      for (const control of Array.from(node.root.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input'))) {
+        control.disabled = true;
+        control.setAttribute('aria-disabled', 'true');
+      }
+    }
+  };
+  lockLater();
+
   // ---- applying a snapshot ----
   const apply = (s: SettingsSnapshot): void => {
     const settle = pending === 0;
@@ -1065,13 +1388,14 @@ export function startSettingsPage(root: HTMLElement): void {
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
     startSection.apply(d.start, s.readable); // --- start page ---
+    lockLater(); // --- settings slim ---
     if (query !== '') filter();
   };
 
-  // ---- navigation: scroll position, active section, indicator ----
+  // ---- navigation: scroll position, active area, indicator ----
   const paintNav = (): void => {
     let index = 0;
-    SECTIONS.forEach((spec, i) => {
+    AREAS.forEach((spec, i) => {
       const on = spec.key === current;
       const button = navButtons.get(spec.key);
       if (on) { button?.setAttribute('aria-current', 'true'); index = i; } else button?.removeAttribute('aria-current');
@@ -1084,51 +1408,55 @@ export function startSettingsPage(root: HTMLElement): void {
     if (page.classList.contains('is-narrow')) button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
+  /** Scrolls to an area, or to a part inside a merged area (a deep link such as bowser://settings/search). */
   const scrollToSection = (key: SettingsSection | '', smooth: boolean): void => {
-    const target = key === '' ? null : sectionNodes.get(key);
+    const area = key === '' ? null : areaOf(key);
+    const target = key === '' || area === null ? null : key === area.key ? areaNodes.get(area.key) : sectionNodes.get(key);
     const top = target ? target.offsetTop - 8 : 0;
     main.scrollTo({ top, behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
   };
 
   /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
+    closePage(false);
     if (query !== '') { input.value = ''; query = ''; filter(); }
-    current = key === '' ? 'profile' : key;
-    // The chosen section stays current even when the page cannot scroll it to the top (the last
+    const area = key === '' ? AREAS[0]! : areaOf(key);
+    current = area.key;
+    // The chosen area stays current even when the page cannot scroll it to the top (the last
     // ones), until the user scrolls by hand.
     pinned = true;
     paintNav();
     scrollToSection(key, smooth);
     if (tell) cmd({ a: 'section', text: key });
-    if (key === 'media' && !mediaStarted) checkMedia();
-    if (tell && key !== '') sectionNodes.get(key)?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
+    if (area.key === 'media' && !mediaStarted) checkMedia();
+    if (tell && key !== '') areaNodes.get(area.key)?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
   };
 
-  // The section whose heading last passed a line a third of the way down is the current one.
+  // The area whose heading last passed a line a third of the way down is the current one.
   let scrollFrame = 0;
   let pinned = false;
   for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const) main.addEventListener(type, () => { pinned = false; }, { passive: true });
   main.addEventListener('scroll', () => {
-    if (scrollFrame || pinned) return;
+    if (scrollFrame || pinned || openPage) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
       const line = main.scrollTop + main.clientHeight / 3;
       let next: SettingsSection = 'profile';
-      for (const spec of SECTIONS) {
-        const node = sectionNodes.get(spec.key);
+      for (const spec of AREAS) {
+        const node = areaNodes.get(spec.key);
         if (node && !node.hidden && node.offsetTop <= line) next = spec.key;
       }
       if (main.scrollTop + main.clientHeight >= main.scrollHeight - 2) {
-        const visible = SECTIONS.filter((spec) => !sectionNodes.get(spec.key)?.hidden);
+        const visible = AREAS.filter((spec) => !areaNodes.get(spec.key)?.hidden);
         next = visible[visible.length - 1]?.key ?? next;
       }
       if (next !== current) { current = next; paintNav(); }
       if (current === 'media' && !mediaStarted) checkMedia();
     });
   }, { passive: true });
-  for (const node of sectionNodes.values()) node.querySelector<HTMLElement>('h2')!.tabIndex = -1;
+  for (const node of areaNodes.values()) node.querySelector<HTMLElement>('h2')!.tabIndex = -1;
 
-  // ---- search ----
+  // ---- search: every row is found, wherever it is drawn; a disclosure with a hit opens ----
   const marked = (target: HTMLElement, text: string): void => {
     const ranges = query === '' ? [] : highlightRanges(text, query);
     if (ranges.length === 0) { if (target.textContent !== text || target.childElementCount > 0) target.textContent = text; return; }
@@ -1144,25 +1472,44 @@ export function startSettingsPage(root: HTMLElement): void {
     if (at < text.length) parts.push(document.createTextNode(text.slice(at)));
     target.replaceChildren(...parts);
   };
+  /** A card shows while any row in it shows (an emptied card, its rows moved elsewhere, never). */
+  const paintGroups = (): void => {
+    for (const group of groups) group.root.hidden = !group.card.querySelector('.sp-row:not([hidden])');
+  };
   function filter(): void {
+    if (query !== '') closePage(false);
     const hits = matchRows(query);
+    searching = hits !== null;
     page.classList.toggle('is-searching', hits !== null);
+    const shows = (id: string): boolean => hits === null || hits.has(id);
     for (const node of rows.values()) {
-      const show = hits === null || hits.has(node.spec.id);
-      node.root.hidden = !show;
+      node.root.hidden = !shows(node.spec.id);
       const labelText = node.label.textContent ?? '';
       marked(node.label, labelText);
       if (node.desc) marked(node.desc, node.desc.textContent ?? '');
     }
-    for (const group of groups) group.root.hidden = hits !== null && !group.card.querySelector('.sp-row:not([hidden])');
+    // A row on a sub-page is found through the row that opens it.
+    for (const opener of openers.values()) {
+      opener.root.hidden = !shows(opener.id);
+      marked(opener.label, opener.label.textContent ?? '');
+      if (opener.desc) marked(opener.desc, opener.desc.textContent ?? '');
+    }
+    paintGroups();
     mediaResults.hidden = hits !== null && !hits.has('media');
-    dashHost.hidden = hits !== null && !hits.has('dashboard');
-    for (const spec of SECTIONS) {
-      const section = sectionNodes.get(spec.key)!;
-      const any = hits === null || [...rows.values()].some((node) => node.spec.section === spec.key && hits.has(node.spec.id));
-      section.hidden = !any;
+    const seen = (place: Place | undefined, id: string): boolean => place !== undefined && shows(id);
+    for (const d of disclosures) {
+      const any = [...places].some(([id, place]) => place.disclosure === d && seen(place, id));
+      d.root.hidden = hits !== null && !any;
+      paintDisclosure(d, hits !== null ? any : openState.has(d.key));
+    }
+    const shownIn = (test: (place: Place) => boolean): boolean => [...places].some(([id, place]) => test(place) && seen(place, id));
+    for (const spec of AREAS) {
+      for (const key of spec.parts) sectionNodes.get(key)!.hidden = hits !== null && !shownIn((place) => place.part === key);
+      const any = hits === null || shownIn((place) => place.area === spec.key);
+      areaNodes.get(spec.key)!.hidden = !any;
       navButtons.get(spec.key)?.classList.toggle('is-empty', !any);
     }
+    laterNode.hidden = laterDisclosure.count === 0 || (hits !== null && !shownIn((place) => place.area === 'later'));
     const total = hits?.size ?? 0;
     empty.hidden = hits === null || total > 0;
     page.classList.toggle('is-nomatch', hits !== null && total === 0);
@@ -1171,24 +1518,34 @@ export function startSettingsPage(root: HTMLElement): void {
     clear.hidden = query === '';
     main.scrollTop = 0;
     if (hits !== null) {
-      const first = SECTIONS.find((spec) => !sectionNodes.get(spec.key)?.hidden);
+      const first = AREAS.find((spec) => !areaNodes.get(spec.key)?.hidden);
       if (first && first.key !== current) { current = first.key; paintNav(); }
     }
   }
+  paintGroups();
   input.addEventListener('input', () => { query = input.value; filter(); });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && input.value !== '') { event.preventDefault(); input.value = ''; query = ''; filter(); return; }
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    const first = [...rows.values()].find((node) => !node.root.hidden);
+    // The first hit in page order: a row, or the row that opens the sub-page a hit is on.
+    const first = Array.from(column.querySelectorAll<HTMLElement>('[data-row], [data-opens]')).find((node) => {
+      if (node.hidden) return false;
+      const id = node.dataset.row;
+      return id === undefined || !places.get(id)?.page;
+    });
     if (!first) return;
-    const target = first.root.querySelector<HTMLElement>('button:not([disabled]), input:not([disabled])');
-    first.card.classList.remove('is-flash');
-    void first.card.offsetWidth;
-    first.card.classList.add('is-flash');
-    first.root.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' });
+    const id = first.dataset.row ?? first.dataset.opens ?? '';
+    const found = rows.get(id);
+    const box = found && first.dataset.row !== undefined ? found.card : groups.find((g) => g.card.contains(first))?.card ?? first;
+    const target = first.querySelector<HTMLElement>('button:not([disabled]), input:not([disabled])');
+    box.classList.remove('is-flash');
+    void box.offsetWidth;
+    box.classList.add('is-flash');
+    first.scrollIntoView({ block: 'center', behavior: reduceMotion() ? 'auto' : 'smooth' });
     target?.focus({ preventScroll: true });
-    cmd({ a: 'section', text: first.spec.section });
+    const spec = ROWS.find((r) => r.id === id);
+    if (spec) cmd({ a: 'section', text: spec.section });
   });
   clear.addEventListener('click', () => { input.value = ''; query = ''; filter(); input.focus(); });
   // Ctrl+F and / jump to the search field, as on Chrome's settings page.
