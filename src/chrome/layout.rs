@@ -1765,6 +1765,18 @@ mod tests {
         );
     }
 
+    /// --- wave-1 fixes --- `centred_address_bar` off: the omnibox moves left, next to navigation, at the
+    /// same width; on, it stays centred.
+    #[test]
+    fn the_centred_address_bar_option_off_puts_the_omnibox_beside_navigation() {
+        let centred = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, false, true);
+        let left = compute_for_with(TabLayout::ToolbarTop, 1440, 900, 96, 1, 0, false, false);
+        assert_eq!((centred.omnibox.left + centred.omnibox.right) / 2, 720, "on: centred");
+        assert!(left.omnibox.left < centred.omnibox.left, "off: further left");
+        assert_eq!(left.omnibox.width(), centred.omnibox.width(), "same width either way");
+        assert!(left.omnibox.left < 200, "beside the navigation buttons: {:?}", left.omnibox);
+    }
+
     #[test]
     fn eight_tabs_at_1024_shrink_evenly_without_overflow() {
         let l = layout(1024, 96, 8);

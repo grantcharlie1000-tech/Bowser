@@ -8,7 +8,7 @@
 //! Bowser's own pages (settings, history, the toolbar) live in a separate WebView2 environment and
 //! never see either, so the browser's chrome does not change with this.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::settings::WebsiteAppearance;
 
@@ -65,14 +65,42 @@ pub fn current() -> WebsiteLook {
     unpack(CURRENT.load(Ordering::Relaxed))
 }
 
+/// --- wave-1 fixes --- set once the look changed this run.
+static CHANGED: AtomicBool = AtomicBool::new(false);
+
 /// Records `look`; `true` when it differs from the one in force (the engine then re-applies it).
 pub fn set(look: WebsiteLook) -> bool {
-    CURRENT.swap(pack(look), Ordering::Relaxed) != pack(look)
+    let changed = CURRENT.swap(pack(look), Ordering::Relaxed) != pack(look);
+    if changed {
+        CHANGED.store(true, Ordering::Relaxed);
+    }
+    changed
+}
+
+/// Whether a new tab must be given the look: always when it is not the default, and also after any
+/// change this run, because a browsing profile (the private one too) keeps a scheme set earlier, so
+/// going back to Auto must clear a stale Dark for the next tab. Untouched, a new tab sends nothing.
+pub fn new_tab_needs(look: WebsiteLook, changed_this_run: bool) -> bool {
+    look != WebsiteLook::default() || changed_this_run
+}
+
+/// [`new_tab_needs`] for the look in force.
+pub fn new_tab_needs_now() -> bool {
+    new_tab_needs(current(), CHANGED.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- wave-1 fixes ---
+    #[test]
+    fn a_new_tab_gets_the_look_after_any_change_even_back_to_auto() {
+        let dark = WebsiteLook { appearance: WebsiteAppearance::Dark, force_dark: false };
+        assert!(!new_tab_needs(WebsiteLook::default(), false), "never changed: nothing is sent");
+        assert!(new_tab_needs(dark, false));
+        assert!(new_tab_needs(WebsiteLook::default(), true), "Auto after Dark clears the profile's stale scheme");
+    }
 
     #[test]
     fn every_look_survives_packing() {

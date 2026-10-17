@@ -415,6 +415,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
     let tab = App::active_tab_id(app);
     let Some(url) = App::tab_committed_url(app, tab) else { return };
     let title = App::tab_title(app, tab).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    let user_name = App::tab_name(app, tab); // --- wave-1 fixes --- a name the user gave the tab is kept
     let fetch = App::settings(app).address.fetch_metadata && !super::html_suggest::is_bookmarked(url.as_str());
     let raw = owner.0 as isize;
     let app_handle = app.clone();
@@ -429,7 +430,7 @@ pub(super) fn show_bookmark(owner: HWND, app: &AppRef) {
             return;
         }
         let (title, description) = match meta {
-            Some((meta_title, description)) => (better_title(&title, &meta_title), description),
+            Some((meta_title, description)) => (bookmark_title(user_name.as_deref(), &title, &meta_title, &url_text), description),
             None => (title, String::new()),
         };
         open(owner, &app_handle, Page::Bookmark { url: url_text, title, description });
@@ -441,6 +442,26 @@ thread_local! {
     static READY_META: RefCell<Option<Option<(String, String)>>> = const { RefCell::new(None) };
 }
 
+/// --- wave-1 fixes --- what Ctrl+D (the bookmark button) does under the bookmark options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuickAdd {
+    /// "Always open the bookmark dialog": the dialog instead of a quick save.
+    Dialog,
+    /// "Fetch bookmark details from the page": read the page, then save with what it declares.
+    ReadPageFirst,
+    /// Save at once with the tab's title.
+    SaveNow,
+}
+
+fn quick_add_plan(address: &crate::address_settings::AddressSettings, has_page: bool, bookmarked: bool) -> QuickAdd {
+    if address.always_dialog {
+        QuickAdd::Dialog
+    } else if has_page && address.fetch_metadata && !bookmarked {
+        QuickAdd::ReadPageFirst
+    } else {
+        QuickAdd::SaveNow
+    }
+}
 /// Ctrl+D (the bookmark button) before it saves: with "always open the bookmark dialog" the dialog
 /// opens instead, and with "fetch bookmark details from the page" a page that is not bookmarked yet is
 /// read first and the save runs again with what it declared. `true` when the save is not to run now.
@@ -449,14 +470,16 @@ pub(super) fn defer_quick_add(owner: HWND, app: &AppRef) -> bool {
         return false; // the second run, with the page's details in hand
     }
     let settings = App::settings(app);
-    if settings.address.always_dialog {
-        show_bookmark(owner, app);
-        return true;
-    }
     let tab = App::active_tab_id(app);
-    let Some(url) = App::tab_committed_url(app, tab) else { return false };
-    if !settings.address.fetch_metadata || super::html_suggest::is_bookmarked(url.as_str()) {
-        return false;
+    let url = App::tab_committed_url(app, tab);
+    let bookmarked = url.as_ref().is_some_and(|url| super::html_suggest::is_bookmarked(url.as_str()));
+    match quick_add_plan(&settings.address, url.is_some(), bookmarked) {
+        QuickAdd::Dialog => {
+            show_bookmark(owner, app);
+            return true;
+        }
+        QuickAdd::SaveNow => return false,
+        QuickAdd::ReadPageFirst => {}
     }
     let raw = owner.0 as isize;
     let app_handle = app.clone();
@@ -474,9 +497,9 @@ pub(super) fn defer_quick_add(owner: HWND, app: &AppRef) -> bool {
 
 /// The title to save and the description that goes beside it: the page's own details when
 /// [`defer_quick_add`] fetched them, else the tab's title and nothing.
-pub(super) fn apply_metadata(tab_title: String) -> (String, String) {
+pub(super) fn apply_metadata(tab_title: String, user_name: Option<&str>, url: &str) -> (String, String) {
     match READY_META.with(|slot| slot.borrow().clone()) {
-        Some(Some((meta_title, description))) => (better_title(&tab_title, &meta_title), description),
+        Some(Some((meta_title, description))) => (bookmark_title(user_name, &tab_title, &meta_title, url), description),
         _ => (tab_title, String::new()),
     }
 }
@@ -493,15 +516,40 @@ pub(super) fn save_description(profile: &crate::profile::Profile, url: &str, des
     }
 }
 
-/// The page's own title when the tab's is empty or just the address.
-pub(crate) fn better_title(tab_title: &str, meta_title: &str) -> String {
-    let tab = tab_title.trim();
-    let meta = meta_title.trim();
-    if meta.is_empty() || (!tab.is_empty() && !tab.starts_with("http") && tab.chars().count() >= 3) {
-        if tab.is_empty() { meta.to_owned() } else { tab.to_owned() }
-    } else {
-        meta.to_owned()
+/// --- wave-1 fixes --- whether a tab title says nothing of its own: empty, too short, the address
+/// (with or without its scheme, `www.` or a trailing slash), the host, or a placeholder such as
+/// "New tab" or "Loading…" that a page without a title of its own shows.
+fn placeholder_title(title: &str, url: &str) -> bool {
+    let title = title.trim();
+    if title.chars().count() < 3 || title.starts_with("http") {
+        return true;
     }
+    let lower = title.to_lowercase();
+    if ["new tab", "untitled", "loading", "loading…", "loading...", "about:blank"].contains(&lower.as_str()) {
+        return true;
+    }
+    let bare = |text: &str| {
+        let text = text.trim().trim_end_matches('/').to_lowercase();
+        let text = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://")).map(str::to_owned).unwrap_or(text);
+        text.strip_prefix("www.").map(str::to_owned).unwrap_or(text)
+    };
+    let (title, address) = (bare(title), bare(url));
+    let host = address.split(['/', '?', '#']).next().unwrap_or_default().to_owned();
+    title == address || title == host
+}
+
+/// The title a bookmark of `url` is saved with: the name the user gave the tab, when they gave one;
+/// else the tab's own title unless it is only the address or a placeholder; else the title the page
+/// declares (`og:title`); else the tab's title as it is.
+pub(crate) fn bookmark_title(user_name: Option<&str>, tab_title: &str, meta_title: &str, url: &str) -> String {
+    if let Some(name) = user_name.map(str::trim).filter(|name| !name.is_empty()) {
+        return name.to_owned();
+    }
+    let (tab, meta) = (tab_title.trim(), meta_title.trim());
+    if meta.is_empty() || !placeholder_title(tab, url) {
+        return tab.to_owned();
+    }
+    meta.to_owned()
 }
 
 /// Reads the title and description the page declares (`og:title`, `description`), once, with the
@@ -560,12 +608,33 @@ mod tests {
     }
 
     #[test]
-    fn the_page_s_own_title_replaces_a_missing_or_address_like_tab_title() {
-        assert_eq!(better_title("https://x.example/a", "Real title"), "Real title");
-        assert_eq!(better_title("", "Real title"), "Real title");
-        assert_eq!(better_title("Tab title", "Other"), "Tab title");
-        assert_eq!(better_title("Tab title", ""), "Tab title");
-        assert_eq!(better_title("", ""), "");
+    fn ctrl_d_opens_the_dialog_reads_the_page_or_saves_as_the_options_say() {
+        let mut address = crate::address_settings::AddressSettings { always_dialog: true, fetch_metadata: true, ..Default::default() };
+        assert_eq!(quick_add_plan(&address, true, false), QuickAdd::Dialog, "always the dialog wins");
+        address.always_dialog = false;
+        assert_eq!(quick_add_plan(&address, true, false), QuickAdd::ReadPageFirst);
+        assert_eq!(quick_add_plan(&address, true, true), QuickAdd::SaveNow, "already bookmarked: nothing to fetch");
+        assert_eq!(quick_add_plan(&address, false, false), QuickAdd::SaveNow, "no page to read");
+        address.fetch_metadata = false;
+        assert_eq!(quick_add_plan(&address, true, false), QuickAdd::SaveNow);
+    }
+
+    #[test]    fn the_page_s_own_title_replaces_a_missing_or_address_like_tab_title() {
+        // --- wave-1 fixes --- the address without its scheme, the host and placeholders count as no title;
+        // a name the user typed for the tab always wins.
+        let url = "https://www.example.com/docs/";
+        assert_eq!(bookmark_title(None, "example.com/docs", "Docs", url), "Docs");
+        assert_eq!(bookmark_title(None, "www.example.com", "Docs", url), "Docs");
+        assert_eq!(bookmark_title(None, "New tab", "Docs", url), "Docs");
+        assert_eq!(bookmark_title(None, "Example Docs", "Docs", url), "Example Docs", "a real tab title stays");
+        assert_eq!(bookmark_title(Some("My docs"), "example.com/docs", "Docs", url), "My docs");
+        assert_eq!(bookmark_title(Some("  "), "example.com/docs", "Docs", url), "Docs", "an empty name is no name");
+        assert_eq!(bookmark_title(None, "example.com/docs", "", url), "example.com/docs", "nothing better: as it is");
+        assert_eq!(bookmark_title(None, "https://x.example/a", "Real title", ""), "Real title");
+        assert_eq!(bookmark_title(None, "", "Real title", ""), "Real title");
+        assert_eq!(bookmark_title(None, "Tab title", "Other", ""), "Tab title");
+        assert_eq!(bookmark_title(None, "Tab title", "", ""), "Tab title");
+        assert_eq!(bookmark_title(None, "", "", ""), "");
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //! The history list is `history.txt` (see `productivity`). This module only decides which visits are
 //! too old and asks `productivity` to remove them, so the history writer's locks and cache stay in
 //! one place. It runs when Bowser starts, when the setting changes, every few hours while Bowser is
-//! open (on the next visit that is recorded), and, for "session only", once more when Bowser closes.
+//! open (on the next visit that is recorded). "Session only" never clears while Bowser is open: the
+//! history is cleared once, when Bowser closes.
 //! Nothing here reads or changes bookmarks, passwords, downloads or any browser-engine data.
 
 use std::{
@@ -71,10 +72,21 @@ pub fn prune(path: &Path, retention: HistoryRetention, now: u64) -> io::Result<u
     }
 }
 
-/// [`prune`] with the current setting and clock. For a worker thread: it takes the history lock.
+/// --- wave-1 fixes --- [`prune`] while Bowser is open: "session only" keeps this session's visits (they
+/// are cleared by [`finish_at_exit`] when Bowser closes), so choosing it, a new window or the
+/// periodic check never wipes the history in use.
+pub fn prune_in_session(path: &Path, retention: HistoryRetention, now: u64) -> io::Result<usize> {
+    if retention == HistoryRetention::Session {
+        return Ok(0);
+    }
+    prune(path, retention, now)
+}
+
+/// [`prune_in_session`] with the current setting and clock. For a worker thread: it takes the
+/// history lock.
 pub fn prune_now(path: &Path) -> io::Result<usize> {
     LAST_PRUNE.store(now_secs(), Ordering::Relaxed);
-    prune(path, current(), now_secs())
+    prune_in_session(path, current(), now_secs())
 }
 
 /// Whether a long-running Bowser is due for another check, and if so notes that it is being done.
@@ -86,27 +98,29 @@ pub fn due() -> bool {
 }
 
 /// After a visit is recorded: if a check is due, runs it on its own thread so the page load never
-/// waits for it. "Forever" never checks.
+/// waits for it. "Forever" and "session only" never check.
 pub fn after_visit(path: &Path) {
-    if current() == HistoryRetention::Forever || !due() {
+    if matches!(current(), HistoryRetention::Forever | HistoryRetention::Session) || !due() {
         return;
     }
     let path = path.to_path_buf();
     let _ = std::thread::Builder::new().name("history-retention".into()).spawn(move || {
-        let _ = prune(&path, current(), now_secs());
+        let _ = prune_in_session(&path, current(), now_secs());
     });
 }
 
 /// At exit: a session-only history ends here. Other settings leave the file alone.
 pub fn finish_at_exit() {
-    if current() != HistoryRetention::Session {
-        return;
-    }
     if let Ok(profile) = crate::profile::active() {
         if !profile.is_guest() {
-            let _ = productivity::clear_history(&profile.history_file());
+            let _ = finish_at_exit_for(&profile.history_file(), current());
         }
     }
+}
+
+/// [`finish_at_exit`] for the history at `path`: clears it only for "session only". True when cleared.
+pub fn finish_at_exit_for(path: &Path, retention: HistoryRetention) -> bool {
+    retention == HistoryRetention::Session && productivity::clear_history(path).is_ok()
 }
 
 #[cfg(test)]
@@ -161,6 +175,21 @@ mod tests {
         assert_eq!(prune(&path, HistoryRetention::Session, now).unwrap(), 3);
         assert!(urls(&path).is_empty());
         assert_eq!(prune(&path, HistoryRetention::Session, now).unwrap(), 0, "nothing left to remove");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // --- wave-1 fixes ---
+    #[test]
+    fn session_only_keeps_the_history_while_open_and_clears_it_at_exit() {
+        let now = 1_900_000_000;
+        let path = history_with("session-open", &[0, 1, 400], now);
+        assert_eq!(prune_in_session(&path, HistoryRetention::Session, now).unwrap(), 0, "choosing it or a check");
+        assert_eq!(urls(&path).len(), 3, "nothing is wiped while Bowser is open");
+        assert_eq!(prune_in_session(&path, HistoryRetention::Week, now).unwrap(), 1, "other periods still prune");
+        assert!(!finish_at_exit_for(&path, HistoryRetention::Week), "other periods leave it at exit");
+        assert_eq!(urls(&path).len(), 2);
+        assert!(finish_at_exit_for(&path, HistoryRetention::Session));
+        assert!(urls(&path).is_empty(), "closing Bowser ends a session-only history");
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

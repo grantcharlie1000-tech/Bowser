@@ -105,7 +105,7 @@ const PLAIN_VIEW: TabView = { indicator: 'spinner', picked: false, now: 0 };
 /** Before the host's first `tabopts`: Bowser's own defaults. */
 const DEFAULT_OPTS: TabOptsMsg = {
   t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
-  alignClose: false, selection: true, removeSpacing: false, maximised: false, closed: 0,
+  alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
 };
 const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
 
@@ -1026,7 +1026,7 @@ export function startTabs(strip: HTMLElement): void {
     if (a === 'select') {
       // Ctrl and Shift click select tabs without leaving the one being read; a plain click clears the selection.
       const outcome = ui.selection
-        ? clickSelection(picked, visibleTabs().map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey })
+        ? clickSelection(picked, visibleTabs().map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey }, ui.selectionActive)
         : { selected: [] as number[], anchor: id, activate: true };
       anchor = outcome.anchor;
       setPicked(outcome.selected);

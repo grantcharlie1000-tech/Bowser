@@ -466,11 +466,12 @@ pub struct Settings {
     pub bookmarks_bar: BookmarksBar,
     /// `bookmarks_bar_tab_groups` (default false). Applies after restart.
     pub bookmarks_bar_tab_groups: bool,
-    /// `side_panel_position=left|right` (default left). Applies after restart.
+    /// `side_panel_position=left|right` (default left). Read from the file each time the side panel
+    /// opens, so it applies from the next panel opened; memory keeps the startup value.
     pub side_panel_position: SidePanelPosition,
-    /// `tab_preview_images` (default true). Applies after restart.
+    /// `tab_preview_images` (default true): the hover card's thumbnail. Applies immediately.
     pub tab_preview_images: bool,
-    /// `tab_preview_memory` (default true). Applies after restart.
+    /// `tab_preview_memory` (default true): the hover card's memory line. Applies immediately.
     pub tab_preview_memory: bool,
     /// `font_size=small|medium|large` (default medium). Applies immediately.
     pub font_size: FontSize,
@@ -1109,6 +1110,44 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     settings.address.render_into(&out, newline)
 }
 
+// --- wave-1 fixes: key-level merge for saves from memory ---
+/// The `key=value` lines `settings` renders to, by key. A key with no line (an unset search
+/// engine) is absent.
+fn rendered_keys(settings: &Settings) -> std::collections::BTreeMap<String, String> {
+    render_updated("", settings)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim().to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// A three-way merge for a save from memory: each key the running app changed since `base` (what
+/// memory last agreed with the file) takes `memory`'s value; every other key keeps `file`'s, so a
+/// value the settings page wrote straight to the file is never put back to an older one.
+pub fn merge_changed(base: &Settings, memory: &Settings, file: &Settings) -> Settings {
+    let (base, memory, file) = (rendered_keys(base), rendered_keys(memory), rendered_keys(file));
+    let keys: std::collections::BTreeSet<&String> = base.keys().chain(memory.keys()).chain(file.keys()).collect();
+    let mut text = String::new();
+    for key in keys {
+        let mine = memory.get(key);
+        let pick = if mine != base.get(key) { mine } else { file.get(key) };
+        if let Some(value) = pick {
+            text.push_str(key);
+            text.push('=');
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    Settings::parse(&text)
+}
+
+/// Reset settings: every option in the file goes back to its default except how long history is
+/// kept, which the page's description promises it leaves alone (history itself is not in this file).
+pub fn reset_defaults(current: &Settings) -> Settings {
+    Settings { history_retention: current.history_retention, ..Settings::default() }
+}
+// --- end wave-1 fixes ---
+
 /// Reads the file as text, refusing anything over `MAX_FILE_BYTES` or not valid UTF-8. Unlike
 /// `load`, the reason is returned, so the settings window can say what is wrong with the file.
 fn read_text(path: &Path) -> io::Result<String> {
@@ -1689,6 +1728,57 @@ tabs_new_tab_url=javascript:1
         );
         assert_eq!(Settings::parse(&text), sample());
     }
+
+    // --- wave-1 fixes: key-level merge ---
+    #[test]
+    fn merge_with_no_changes_keeps_every_value() {
+        assert_eq!(merge_changed(&sample(), &sample(), &sample()), sample());
+        assert_eq!(merge_changed(&Settings::default(), &Settings::default(), &sample()), sample());
+        assert_eq!(merge_changed(&sample(), &sample(), &Settings::default()), Settings::default());
+    }
+
+    /// The reported revert: the page changes Tracking prevention in the file, then the app saves
+    /// "Ask where to save" from memory. Several pairs: one key the app changed, one the page changed.
+    #[test]
+    fn merge_keeps_the_files_newer_value_for_keys_memory_did_not_change() {
+        let base = Settings::default();
+        type Change = fn(&mut Settings);
+        let pairs: [(Change, Change); 5] = [
+            (|s| s.ask_download_location = true, |s| s.tracking_prevention = TrackingLevel::Strict),
+            (|s| s.translate_offer = false, |s| s.blocker_level = BlockerLevel::Trackers),
+            (|s| s.sidebar_collapsed = true, |s| s.minimal_url = false),
+            (|s| s.tabs.keep_window = !s.tabs.keep_window, |s| s.theme = Theme::System),
+            (|s| s.download_dir = "D:\\Saved".into(), |s| s.address.select_on_activate = !s.address.select_on_activate),
+        ];
+        for (app_change, page_change) in pairs {
+            let mut memory = base.clone();
+            app_change(&mut memory);
+            let mut file = base.clone();
+            page_change(&mut file);
+            let mut want = file.clone();
+            app_change(&mut want);
+            assert_eq!(merge_changed(&base, &memory, &file), want);
+        }
+    }
+
+    #[test]
+    fn merge_lets_a_key_memory_changed_win_over_the_file() {
+        let base = Settings::default();
+        let memory = Settings { ask_download_location: true, ..Settings::default() };
+        let file = Settings { ask_download_location: false, search_engine: Some(SearchEngine::Google), ..Settings::default() };
+        let merged = merge_changed(&base, &memory, &file);
+        assert!(merged.ask_download_location);
+        assert_eq!(merged.search_engine, Some(SearchEngine::Google), "an engine only the file names stays");
+    }
+
+    #[test]
+    fn reset_puts_every_option_back_but_keeps_history_retention() {
+        let reset = reset_defaults(&sample());
+        assert_eq!(reset.history_retention, sample().history_retention);
+        assert_ne!(sample().history_retention, Settings::default().history_retention, "the sample proves it");
+        assert_eq!(Settings { history_retention: Settings::default().history_retention, ..reset }, Settings::default());
+    }
+    // --- end wave-1 fixes ---
 
     #[test]
     fn render_collapses_duplicate_setting_lines() {
