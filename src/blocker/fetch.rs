@@ -134,7 +134,7 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
 }
 
 /// Resolves `host` and returns its addresses only if every one is public.
-fn resolve_public(host: &str) -> Result<(), FetchError> {
+pub(crate) fn resolve_public(host: &str) -> Result<(), FetchError> {
     let mut any = false;
     for address in (host, 443).to_socket_addrs().map_err(|_| FetchError::Network)? {
         any = true;
@@ -156,7 +156,7 @@ pub fn peer_address(text: &[u8]) -> Option<IpAddr> {
 
 /// Called by WinHTTP, on the calling thread, as it resolves and connects. `context` is the address of
 /// the hop's [`AtomicBool`]; an address that is not public (or not readable) sets it.
-unsafe extern "system" fn peer_watch(_handle: *mut c_void, context: usize, status: u32, info: *mut c_void, length: u32) {
+pub(crate) unsafe extern "system" fn peer_watch(_handle: *mut c_void, context: usize, status: u32, info: *mut c_void, length: u32) {
     if context == 0 || !matches!(status, WINHTTP_CALLBACK_STATUS_NAME_RESOLVED | WINHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER | WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER) {
         return;
     }
@@ -198,7 +198,7 @@ fn check_url(url: &Url) -> Result<(), FetchError> {
 }
 
 /// A name that can only be a public host: at least two labels, no local-network suffix.
-fn public_host_name(host: &str) -> bool {
+pub(crate) fn public_host_name(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if !host.contains('.') || host.len() > 253 {
         return false;
@@ -215,7 +215,7 @@ fn public_host_name(host: &str) -> bool {
     !numeric_like
 }
 
-struct Handle(*mut c_void);
+pub(crate) struct Handle(pub(crate) *mut c_void);
 
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -340,7 +340,7 @@ fn get_once(url: &Url, started: Instant) -> Result<Reply, FetchError> {
     }
 }
 
-fn location(request: *mut c_void) -> Result<String, FetchError> {
+pub(crate) fn location(request: *mut c_void) -> Result<String, FetchError> {
     let mut buffer = vec![0u16; 2048];
     let mut size = (buffer.len() * 2) as u32;
     unsafe {

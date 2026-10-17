@@ -129,6 +129,17 @@ pub trait EngineAdapter {
     ) {
         done(None);
     }
+    /// Runs the feed-detection script (`app::feed_features`) in a tab and hands back its raw result,
+    /// under the same rules as `run_reader_script` (http(s) pages only, checked at the moment of the
+    /// call) with an answer limit of a few kilobytes: the answer is a short list of `<link>` tags.
+    fn run_feed_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
     /// Checks for a visible, currently playing video without installing page scripts or polling.
     fn picture_in_picture_eligible(
         &mut self,

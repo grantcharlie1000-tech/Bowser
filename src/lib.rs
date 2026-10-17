@@ -22,6 +22,7 @@ pub mod efficiency;
 pub mod engine;
 pub mod extensions;
 pub mod favicon;
+pub mod feeds; // the feed reader: reading, finding, storing and fetching feeds (T13)
 pub mod import;
 pub mod internal_page;
 pub mod navigation;
@@ -58,6 +59,7 @@ pub mod thumbnail;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;
+pub mod toolbar_prefs; // the address, tab and panel bars' buttons and the feed settings (T13)
 pub mod updater;
 pub mod vertical_tabs;
 pub mod win32;

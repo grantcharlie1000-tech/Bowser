@@ -27,6 +27,7 @@ mod html_suggest;
 mod notes_panel;
 // --- tab options --- the Sessions panel.
 mod sessions_panel;
+mod feeds_panel; // the Feeds panel's host side and its fetch workers (thread T13)
 // --- end tab options ---
 mod panel_bookmarks;
 mod panel_customize;
@@ -69,7 +70,7 @@ pub(crate) use window::{
 };
 pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
 // Registry handlers (`crate::commands::registry`) that need a window.
-pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_toggle_site_shortcuts};
+pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_open_feeds, run_toggle_site_shortcuts};
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.
 pub(crate) use command_actions::{
     run_cycle_blocking_level, run_delete_browsing_data, run_periodic_reload, run_qr_code, run_stop_all_reloads, run_toggle_address_bar,

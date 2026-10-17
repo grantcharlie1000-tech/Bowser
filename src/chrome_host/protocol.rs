@@ -65,7 +65,63 @@ pub enum OpenTarget {
     Reader,
     /// Translates the active page with Google Translate, or shows its original (`crate::translate`).
     Translate,
+    /// The address bar's feed button: the Feeds panel, at the feeds this page offers (docs/feeds.md).
+    Feeds,
 }
+
+// --- toolbars and feeds (thread T13) ---
+/// Which bar a command button was pressed on (the rail's buttons come as `tool:<n>` rail keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolBar {
+    Address,
+    Tabs,
+}
+
+/// A command button on a bar: the item id (`cmd:new-tab`, `chain:2`) and the name it shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolButton {
+    pub item: String,
+    pub label: String,
+}
+
+/// How the toolbar page lays out its buttons (`crate::toolbar_prefs`, docs/toolbars.md). `items` is
+/// the address bar's list in order; `None` (a state for another view) leaves it out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BarItems {
+    pub items: Option<String>,
+    /// The command buttons among `items`, with their names.
+    pub tools: Vec<ToolButton>,
+    /// CSS px the right end's always-there buttons take from the address field.
+    pub extra: u32,
+    /// How many feeds the page in front offers (`0` hides the feed button).
+    pub feeds: u32,
+}
+
+/// Longest item id and button name accepted or sent.
+pub const MAX_TOOL_ITEM_CHARS: usize = 64;
+pub const MAX_TOOL_LABEL_CHARS: usize = 60;
+
+fn tool_item_ok(item: &str) -> bool {
+    !item.is_empty() && item.chars().count() <= MAX_TOOL_ITEM_CHARS && item.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b':'))
+}
+
+/// `[{"k":item,"l":label},...]`.
+fn tools_json(tools: &[ToolButton]) -> String {
+    let mut out = String::from("[");
+    for (index, tool) in tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS).enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"k\":{},\"l\":{}}}",
+            json_string(truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS)),
+            json_string(truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS))
+        ));
+    }
+    out.push(']');
+    out
+}
+// --- end toolbars and feeds ---
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptionAction {
@@ -109,7 +165,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -149,6 +205,8 @@ pub enum RailKeyWire {
     Menu,
     Workspace(u64),
     App(u32),
+    /// `tool:<n>`: an extra button of the panel bar (thread T13), `n` its place in `toolbar_panel`.
+    Tool(u8),
 }
 
 /// Longest rail key on the wire, in bytes.
@@ -177,6 +235,8 @@ impl RailKeyWire {
                     Self::Workspace(canonical_decimal(digits, 20)?)
                 } else if let Some(digits) = raw.strip_prefix("app:") {
                     Self::App(u32::try_from(canonical_decimal(digits, 10)?).ok()?)
+                } else if let Some(digits) = raw.strip_prefix("tool:") {
+                    Self::Tool(u8::try_from(canonical_decimal(digits, 2)?).ok().filter(|n| usize::from(*n) < crate::toolbar_prefs::MAX_ITEMS)?)
                 } else {
                     return None;
                 }
@@ -196,6 +256,7 @@ impl RailKeyWire {
             Self::Menu => "menu".to_owned(),
             Self::Workspace(id) => format!("ws:{id}"),
             Self::App(id) => format!("app:{id}"),
+            Self::Tool(n) => format!("tool:{n}"),
         }
     }
 }
@@ -253,6 +314,11 @@ pub enum Command {
     // --- vertical sidebar (lane S) ---
     Side(SideAction),
     // --- end vertical sidebar ---
+    // --- toolbars and feeds (thread T13) ---
+    /// A command button of the address bar or the tab bar: Rust checks `item` is at `index` in that bar's
+    /// list (what the user put there) before running its command.
+    Tool { bar: ToolBar, item: String, index: u8 },
+    // --- end toolbars and feeds ---
     /// A click, right click or flyout hover on a rail button. `rect` is the button in rail CSS
     /// pixels (optional for clicks and menus, required for hover); it anchors a flyout.
     Rail { action: RailAction, key: RailKeyWire, rect: Option<HoverRect> },
@@ -1047,10 +1113,11 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // --- vertical sidebar (lane S) ---
         "side" => &["a"],
         // --- end vertical sidebar ---
+        "tool" => &["b", "k", "i"], // --- toolbars and feeds (thread T13) ---
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -1113,6 +1180,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "zoomreset" => OpenTarget::ZoomReset,
             "reader" => OpenTarget::Reader,
             "translate" => OpenTarget::Translate,
+            "feeds" => OpenTarget::Feeds,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -1151,6 +1219,24 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         // --- end vertical sidebar ---
+        // --- toolbars and feeds (thread T13) ---
+        "tool" => {
+            let bar = match str_field(fields, "b")? {
+                "address" => ToolBar::Address,
+                "tabs" => ToolBar::Tabs,
+                _ => return Err(ProtocolError::InvalidValue("b")),
+            };
+            let item = str_field(fields, "k")?;
+            if !tool_item_ok(item) {
+                return Err(ProtocolError::InvalidValue("k"));
+            }
+            let index = uint_field(fields, "i")?;
+            if index >= crate::toolbar_prefs::MAX_ITEMS as u32 {
+                return Err(ProtocolError::InvalidValue("i"));
+            }
+            Command::Tool { bar, item: item.to_owned(), index: index as u8 }
+        }
+        // --- end toolbars and feeds ---
         "rail" => {
             let action = match str_field(fields, "a")? {
                 "click" => RailAction::Click,
@@ -1177,7 +1263,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1195,6 +1281,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "spage" => PanelType::StartPage,
                 // The Sessions panel (Settings > Tabs, docs/design/sessions.md).
                 "sess" => PanelType::Sessions,
+                // The Feeds panel (docs/feeds.md).
+                "feed" => PanelType::Feeds,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -1419,6 +1507,8 @@ pub struct ViewState {
     /// `compact_menus`: shorter menu rows (`data-compact-menus`).
     pub compact_menus: bool,
     // --- end layout ---
+    /// The address bar's buttons and the feed button (docs/toolbars.md); neutral for the other views.
+    pub bar: BarItems, // --- toolbars and feeds (thread T13) ---
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1455,6 +1545,7 @@ impl ViewState {
             ui_font: self.ui_font.clone(),
             density: self.density, // --- layout (thread T6) ---
             compact_menus: self.compact_menus,
+            bar: BarItems::default(),
             theme: self.theme.clone(),
         }
     }
@@ -1509,6 +1600,15 @@ impl ViewState {
         out.push_str(",\"compactMenus\":");
         out.push_str(if self.compact_menus { "true" } else { "false" });
         // --- end layout ---
+        // --- toolbars and feeds (thread T13) ---
+        if let Some(items) = &self.bar.items {
+            out.push_str(",\"items\":");
+            out.push_str(&json_string(truncate_utf16(items, 512)));
+            out.push_str(",\"tools\":");
+            out.push_str(&tools_json(&self.bar.tools));
+            out.push_str(&format!(",\"extra\":{},\"feeds\":{}", self.bar.extra.min(400), self.bar.feeds.min(9)));
+        }
+        // --- end toolbars and feeds ---
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1631,6 +1731,12 @@ pub struct StripOptions {
     pub maximised: bool,
     /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
     pub closed: u32,
+    // --- toolbars and feeds (thread T13) ---
+    /// `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all.
+    pub closed_button: bool,
+    /// The tab bar's command buttons, in order.
+    pub tools: Vec<ToolButton>,
+    // --- end toolbars and feeds ---
 }
 
 impl Default for StripOptions {
@@ -1649,6 +1755,8 @@ impl Default for StripOptions {
             remove_spacing: false,
             maximised: false,
             closed: 0,
+            closed_button: true,
+            tools: Vec::new(),
         }
     }
 }
@@ -1671,6 +1779,17 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         out.bool("removeSpacing", options.remove_spacing);
         out.bool("maximised", options.maximised);
         out.uint("closed", u64::from(options.closed.min(99)));
+        // --- toolbars and feeds (thread T13) ---
+        out.bool("closedButton", options.closed_button);
+        out.array("tools", |list| {
+            for tool in options.tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS) {
+                list.object(|o| {
+                    o.string("k", truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS));
+                    o.string("l", truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS));
+                });
+            }
+        });
+        // --- end toolbars and feeds ---
     })
 }
 // --- end tab options ---
@@ -2103,7 +2222,8 @@ pub fn is_popup_command(command: &Command) -> bool {
         command,
         Command::BeginDrag
             | Command::Caption(_)
-            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader | OpenTarget::Translate)
+            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader | OpenTarget::Translate | OpenTarget::Feeds)
+            | Command::Tool { .. } // --- toolbars and feeds (thread T13) ---
             | Command::DownloadsToggle { .. }
             | Command::ExtensionsButton { .. }
             | Command::Tab { action: TabAction::Menu, .. }
@@ -2365,6 +2485,7 @@ mod tests {
             ui_font: String::new(),
             density: crate::layout_prefs::UiDensity::Regular,
             compact_menus: false,
+            bar: BarItems::default(),
             theme: Vec::new(),
         }
     }
@@ -3420,6 +3541,12 @@ mod tests {
             ui_font: "Consolas".to_string(),
             density: crate::layout_prefs::UiDensity::Compact,
             compact_menus: true,
+            bar: BarItems {
+                items: Some("back,reload,cmd:new-tab".to_owned()),
+                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned() }],
+                extra: 32,
+                feeds: 2,
+            },
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -3427,7 +3554,7 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"items":"back,reload,cmd:new-tab","tools":[{"k":"cmd:new-tab","l":"New tab"}],"extra":32,"feeds":2,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
@@ -4828,7 +4955,7 @@ mod tests {
         let json = tabopts_json(&StripOptions::default());
         assert_eq!(
             json,
-            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0}"#
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"closedButton":true,"tools":[]}"#
         );
         let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
         let json = tabopts_json(&set);
@@ -4843,7 +4970,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4 };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned() }] };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {

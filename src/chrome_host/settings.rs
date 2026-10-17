@@ -175,6 +175,15 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             layout.string("saved", &settings.layout_saved);
         });
         // --- end layout ---
+        // --- toolbars and feeds (thread T13) --- one object: the tab bar and panel bar lists and the feed
+        // options (the address bar's list is `toolbarButtons`, part of the page's Save).
+        out.object("bars", |bars| {
+            bars.string("tabs", &settings.toolbar_tabs.join(","));
+            bars.string("panel", &settings.toolbar_panel.join(","));
+            bars.bool("feedsDetect", settings.feeds_detect);
+            bars.uint("feedsRefresh", u64::from(settings.feeds_refresh_minutes));
+        });
+        // --- end toolbars and feeds ---
     })
     .expect("settings is a panel token")
 }
@@ -238,6 +247,13 @@ pub enum Action {
     /// One `key=value` change of the Tabs section, checked by `tab_options::apply_assignment`.
     TabOption(String),
     // --- end tab options ---
+    // --- toolbars and feeds (thread T13) ---
+    /// One `key=value` change of the tab bar, panel bar or feed options, checked by
+    /// `toolbar_prefs::apply_assignment`.
+    BarOption(String),
+    /// "Open Feeds": the Feeds panel.
+    OpenFeeds,
+    // --- end toolbars and feeds ---
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -275,6 +291,17 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             Action::TabOption(text.to_owned())
         }
         // --- end tab options ---
+        // --- toolbars and feeds (thread T13) ---
+        "baropt" if text_only => {
+            let text = f.text.as_deref()?;
+            let mut probe = Settings::default();
+            if text.len() > MAX_TAB_OPTION_TEXT || !crate::toolbar_prefs::apply_assignment(&mut probe, text) { return None; }
+            // The address bar's list is part of the page's Save, never this command.
+            if text.starts_with("toolbar_buttons=") { return None; }
+            Action::BarOption(text.to_owned())
+        }
+        "openfeeds" if bare => Action::OpenFeeds,
+        // --- end toolbars and feeds ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
@@ -599,7 +626,7 @@ mod tests {
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
         // --- layout (thread T6) --- the Layout block's object closes the snapshot.
         assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true},"layout":{"##), "{json}");
-        assert!(json.ends_with(r##""uiZoom":100,"saved":""}}}"##), "{json}");
+        assert!(json.ends_with(r##""uiZoom":100,"saved":""},"bars":{"tabs":"closed-tabs","panel":"","feedsDetect":true,"feedsRefresh":60}}}"##), "{json}");
     }
 
     // --- layout (thread T6) ---
@@ -742,6 +769,61 @@ block_youtube_video_ads=true".to_owned();
         assert_eq!(go_json(Some(Section::Updates)), r#"{"v":1,"t":"settingsgo","s":"updates"}"#);
         assert_eq!(go_json(None), r#"{"v":1,"t":"settingsgo","s":""}"#);
     }
+
+    // --- toolbars and feeds (thread T13) ---
+    #[test]
+    fn the_snapshot_carries_the_bars_and_feed_options_and_baropt_checks_them() {
+        let mut settings = Settings::default();
+        settings.toolbar_tabs = vec!["cmd:new-tab".to_owned()];
+        settings.toolbar_panel = vec!["feeds".to_owned(), "chain:2".to_owned()];
+        settings.feeds_detect = false;
+        settings.feeds_refresh_minutes = 0;
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""bars":{"tabs":"cmd:new-tab","panel":"feeds,chain:2","feedsDetect":false,"feedsRefresh":0}"#), "{json}");
+
+        let option = |text: &str| PanelFields { a: "baropt".into(), text: Some(text.into()), ..fields("baropt") };
+        assert_eq!(map_command(&option("toolbar_tabs=closed-tabs,cmd:new-tab")), Some(Action::BarOption("toolbar_tabs=closed-tabs,cmd:new-tab".into())));
+        assert_eq!(map_command(&option("toolbar_panel=feeds")), Some(Action::BarOption("toolbar_panel=feeds".into())));
+        assert_eq!(map_command(&option("feeds_detect=false")), Some(Action::BarOption("feeds_detect=false".into())));
+        assert_eq!(map_command(&option("feeds_refresh_minutes=30")), Some(Action::BarOption("feeds_refresh_minutes=30".into())));
+        for bad in [
+            "toolbar_tabs=feeds", "toolbar_panel=cmd:nope", "feeds_detect=maybe", "feeds_refresh_minutes=5", "tab_layout=vertical", "toolbar_buttons=back",
+            "toolbar_tabs", "", "toolbar_tabs=cmd:new-tab\nsleep_enabled=false",
+        ] {
+            assert_eq!(map_command(&option(bad)), None, "{bad:?}");
+        }
+        let mut with_switch = option("feeds_detect=true");
+        with_switch.on = Some(true);
+        assert_eq!(map_command(&with_switch), None, "carries text only");
+        assert_eq!(map_command(&fields("baropt")), None);
+        assert_eq!(map_command(&fields("openfeeds")), Some(Action::OpenFeeds));
+        assert_eq!(map_command(&PanelFields { text: Some("x".into()), ..fields("openfeeds") }), None);
+    }
+
+    #[test]
+    fn the_address_bars_list_travels_in_the_pages_save_with_command_buttons() {
+        let mut settings = Settings::default();
+        let page = "toolbar_buttons=back,newtab,cmd:new-private-tab,chain:1";
+        let mut text = String::new();
+        for key in [
+            "tab_layout=horizontal", "sidebar_width=260", "sleep_enabled=true", "sleep_after_secs=300", "blocker_enabled=true", "blocker_allow=", "automatic_tab_grouping=true",
+            "efficiency_mode=auto", "tracking_prevention=balanced", "theme=helium", "theme_accent=", page, "centred_address_bar=true", "minimal_url=true", "show_load_progress=true",
+            "frameless=false", "rounded_content_frame=true", "show_home_button=true", "bookmarks_bar=never", "bookmarks_bar_tab_groups=false", "side_panel_position=left",
+            "tab_preview_images=true", "tab_preview_memory=true", "font_size=medium", "ui_font=", "default_zoom=100", "show_zoom_indicator=true", "new_tab_beside_active=true",
+            "ctrl_tab_mru=true", "shift_right_click_context=false", "ctrl_shift_c_copy_link=true", "ctrl_s_vertical_tabs=false", "pin_new_tab_groups=false", "split_edge_drop=true",
+            "block_youtube_video_ads=true",
+        ] {
+            text.push_str(key);
+            text.push('\n');
+        }
+        let text = text.trim_end();
+        assert!(apply_settings_text(&mut settings, text));
+        assert_eq!(settings.toolbar_buttons, ["back", "newtab", "cmd:new-private-tab", "chain:1"]);
+        let mut bad = Settings::default();
+        assert!(!apply_settings_text(&mut bad, &text.replace(page, "toolbar_buttons=back,cmd:nope")));
+        assert_eq!(bad, Settings::default());
+    }
+    // --- end toolbars and feeds ---
 
     #[test]
     fn settings_messages_match_committed_fixture() {

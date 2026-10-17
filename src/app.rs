@@ -674,6 +674,8 @@ pub struct App {
     /// The reader probe waiting on `WM_READER_PROBE_TIMER`: the tab and its reader epoch when the
     /// probe was scheduled. A newer schedule replaces it.
     reader_probe_pending: Option<(TabId, u32)>,
+    /// The feeds each tab's page offered, for the address bar's feed button (thread T13). In memory only.
+    feed_pages: HashMap<TabId, feed_features::PageFeeds>,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
     // --- split view ---
@@ -843,6 +845,8 @@ impl AppTab {
 
 mod page_translate;
 pub use page_translate::Notice as TranslateNotice;
+mod feed_features; // toolbar and feed options at work (thread T13)
+pub(crate) use feed_features::MAX_FEED_ANSWER_BYTES;
 mod privacy; // privacy, history and website appearance (thread T3)
 pub use privacy::DeleteReport;
 // --- tab options --- tab behaviour that follows the settings page's Tabs section.
@@ -4971,6 +4975,7 @@ impl App {
             tab_model,
             tab_mru: Vec::new(),
             reader_probe_pending: None,
+            feed_pages: HashMap::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
@@ -5836,6 +5841,8 @@ impl App {
                         if app.borrow().tab_model.active() == tab_id {
                             App::schedule_reader_probe(&app, tab_id);
                         }
+                        // One small script reads the feeds the page offers (the address bar's feed button).
+                        App::feed_probe(&app, tab_id);
                     }
                 }))
             },
@@ -6805,6 +6812,15 @@ impl App {
             state.settings.rounded_content_frame = settings.rounded_content_frame;
             state.settings.show_home_button = settings.show_home_button;
             state.settings.toolbar_buttons = settings.toolbar_buttons.clone();
+            // --- toolbars and feeds (thread T13) ---
+            state.settings.toolbar_tabs = settings.toolbar_tabs.clone();
+            state.settings.toolbar_panel = settings.toolbar_panel.clone();
+            state.settings.feeds_detect = settings.feeds_detect;
+            state.settings.feeds_refresh_minutes = settings.feeds_refresh_minutes;
+            if !settings.feeds_detect {
+                state.feed_pages.clear();
+            }
+            // --- end toolbars and feeds ---
             state.settings.font_size = settings.font_size;
             state.settings.ui_font = settings.ui_font.clone();
             state.settings.default_zoom = settings.default_zoom;
@@ -9687,6 +9703,7 @@ mod tests {
             tab_model: crate::tabs::TabList::new(),
             tab_mru: Vec::new(),
             reader_probe_pending: None,
+            feed_pages: HashMap::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),

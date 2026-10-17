@@ -124,6 +124,15 @@ fn run_translate_script(
     run_capped_script(webview, script, crate::translate::MAX_ANSWER_BYTES, done);
 }
 
+/// The same for the feed-detection script, whose answer is a short list of `<link>` tags.
+fn run_feed_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    run_capped_script(webview, script, crate::app::MAX_FEED_ANSWER_BYTES, done);
+}
+
 fn run_capped_script(
     webview: &ICoreWebView2,
     script: &str,
@@ -3139,6 +3148,23 @@ impl EngineAdapter for WebView2Engine {
             .and_then(|tab| tab.webview.clone());
         match webview {
             Some(webview) => run_translate_script(&webview, script, done),
+            None => done(None),
+        }
+    }
+    fn run_feed_script(
+        &mut self,
+        tab: TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_feed_script(&webview, script, done),
             None => done(None),
         }
     }

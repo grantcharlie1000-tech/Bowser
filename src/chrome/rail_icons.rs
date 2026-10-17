@@ -55,6 +55,12 @@ pub fn primitives(icon: RailIcon) -> Vec<Primitive> {
             segment(&mut out, (17.0, 13.5), (17.0, 20.5));
             segment(&mut out, (13.5, 17.0), (20.5, 17.0));
         }
+        RailIcon::Feed => {
+            // A dot and two arcs (the feed mark): the same strokes as icons/extra/rss.svg.
+            dot(&mut out, (5.0, 19.0), 1.6);
+            Path::new(&mut out, (4.0, 11.0)).c((8.97, 11.0), (13.0, 15.03), (13.0, 20.0));
+            Path::new(&mut out, (4.0, 4.0)).c((12.84, 4.0), (20.0, 11.16), (20.0, 20.0));
+        }
         RailIcon::Letter => {}
         RailIcon::Glyph(glyph) => workspace_glyph(&mut out, glyph),
     }
