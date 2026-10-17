@@ -38,7 +38,7 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/bowser-v19-recovery-candidate
           merge-multiple: true
-      - name: Verify original source, immutable evidence and exact existing draft bytes
+      - name: Verify immutable original source and evidence; draft checks require main publisher
         env:
           GH_TOKEN: ${{ github.token }}
           RECOVERY_PUBLISH: 'false'
@@ -111,6 +111,10 @@ jobs:
               if ($smoke.checks.$check -ne $true) { throw "Missing original native smoke gate: $check" }
           }
           Assert-TagIfPresent
+          if (-not $publishing) {
+              "Read-only immutable source/artifact/file/smoke and optional tag checks passed. Draft checks are reserved for the mandatory main-only publisher; no draft access or publication attempted." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              exit 0
+          }
           Assert-Release (Read-Api "releases/$releaseId") $true
           # Download only the existing pinned draft asset IDs. No build, execution or asset overwrite.
           $downloaded = Join-Path $env:RUNNER_TEMP ("bowser-v19-existing-draft-" + [guid]::NewGuid().ToString('N'))
@@ -134,8 +138,6 @@ jobs:
               $public = Read-Api "releases/tags/$tag"
               if ($public.id -ne $releaseId -or $public.draft -or -not $public.published_at) { throw 'Public release publication was not verified.' }
               "Published existing release $releaseId from original source $source; SHA256 $exeHash; 7795712 bytes. Not latest; stable pin unchanged." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          } else {
-              "Read-only provenance and byte comparison passed for existing draft $releaseId. Nothing published." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
 
   publish:
@@ -159,7 +161,7 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/bowser-v19-recovery-candidate
           merge-multiple: true
-      - name: Verify original source, immutable evidence and exact existing draft bytes
+      - name: Verify immutable original source and evidence; draft checks require main publisher
         env:
           GH_TOKEN: ${{ github.token }}
           RECOVERY_PUBLISH: 'true'
@@ -232,6 +234,10 @@ jobs:
               if ($smoke.checks.$check -ne $true) { throw "Missing original native smoke gate: $check" }
           }
           Assert-TagIfPresent
+          if (-not $publishing) {
+              "Read-only immutable source/artifact/file/smoke and optional tag checks passed. Draft checks are reserved for the mandatory main-only publisher; no draft access or publication attempted." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+              exit 0
+          }
           Assert-Release (Read-Api "releases/$releaseId") $true
           # Download only the existing pinned draft asset IDs. No build, execution or asset overwrite.
           $downloaded = Join-Path $env:RUNNER_TEMP ("bowser-v19-existing-draft-" + [guid]::NewGuid().ToString('N'))
@@ -255,7 +261,5 @@ jobs:
               $public = Read-Api "releases/tags/$tag"
               if ($public.id -ne $releaseId -or $public.draft -or -not $public.published_at) { throw 'Public release publication was not verified.' }
               "Published existing release $releaseId from original source $source; SHA256 $exeHash; 7795712 bytes. Not latest; stable pin unchanged." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-          } else {
-              "Read-only provenance and byte comparison passed for existing draft $releaseId. Nothing published." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
 
