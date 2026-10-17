@@ -71,6 +71,28 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $source.Trim() -cne $env:GITHUB_SHA) { throw 'Wrong source SHA.' }
           $dirty = git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source tree is not clean.' }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          rustc +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'rustc unavailable.' }
+          cargo +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'cargo unavailable.' }
+      - name: Require Cargo identity, Windows tests and Clippy
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = cargo +stable metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
+          $package = ($raw | ConvertFrom-Json).packages | Where-Object name -eq 'bowser'
+          if (@($package).Count -ne 1 -or $package.version -cne '0.0.19') { throw 'Wrong Cargo package version.' }
+          if ((Get-Content src/updater.rs -Raw) -notmatch '(?m)^const PIN_REVISION: u32 = 20;$') { throw 'Wrong updater revision.' }
+          cargo +stable test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Native-default Rust tests failed.' }
+          cargo +stable test --locked --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'HTML-default Rust tests failed.' }
+          cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -113,26 +135,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed assets.' }
           $dirty = git status --porcelain
           if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Build changed the source tree.' }
-      - name: Install official Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
-          rustc +stable --version
-          if ($LASTEXITCODE -ne 0) { throw 'rustc unavailable.' }
-          cargo +stable --version
-          if ($LASTEXITCODE -ne 0) { throw 'cargo unavailable.' }
-      - name: Require Cargo identity, Windows tests and Clippy
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $raw = cargo +stable metadata --locked --no-deps --format-version 1
-          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
-          $package = ($raw | ConvertFrom-Json).packages | Where-Object name -eq 'bowser'
-          if (@($package).Count -ne 1 -or $package.version -cne '0.0.19') { throw 'Wrong Cargo package version.' }
-          if ((Get-Content src/updater.rs -Raw) -notmatch '(?m)^const PIN_REVISION: u32 = 20;$') { throw 'Wrong updater revision.' }
-          cargo +stable test --locked --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
-          cargo +stable clippy --locked --features html-chrome-default -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
       - name: Build production HTML chrome executable
         run: |
           cargo +stable build --release --locked --bin bowser --features html-chrome-default

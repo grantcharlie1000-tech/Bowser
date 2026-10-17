@@ -6014,7 +6014,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         entries,
         footer: "Actions for this tab".to_owned(),
     };
-    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| unsafe {
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| {
         let command = chosen.map_or(0, |chosen| chosen.id);
         // The tab may have closed while the menu was open.
         if command == 0 || !App::tab_ids(app).contains(&id) {

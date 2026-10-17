@@ -88,6 +88,7 @@ pub(crate) struct Shadow {
 
 impl Shadow {
     /// No shadow at all: the backdrop is then the corner fringe alone.
+    #[cfg(test)]
     pub(crate) const NONE: Shadow = Shadow { ambient_sigma: 1.0, ambient_alpha: 0.0, key_drop: 0.0, key_sigma: 1.0, key_alpha: 0.0 };
 
     /// Room the shadow needs beside the list (each side) and below it, in whole pixels: three

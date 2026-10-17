@@ -132,7 +132,6 @@ impl Page {
 pub(crate) enum ActOutcome {
     Refresh(Page),
     Close,
-    Keep,
 }
 
 pub(crate) type ActHandler = Rc<dyn Fn(&AppRef, u32, u8) -> ActOutcome>;
@@ -854,7 +853,6 @@ pub(crate) fn run_compose(owner: HWND, token: u32, app: &AppRef) {
 
 fn apply_outcome(owner: HWND, token: u32, outcome: ActOutcome, app: &AppRef) {
     match outcome {
-        ActOutcome::Keep => {}
         ActOutcome::Close => run_result(owner, token, None, app),
         ActOutcome::Refresh(page) => {
             let key = owner.0 as isize;
@@ -1640,7 +1638,7 @@ mod tests {
     #[test]
     fn a_composer_page_declares_no_pick_or_act_and_its_submit_handler_never_reaches_the_wire() {
         let mut page = Page::new("composer", |out| out.string("mode", "app-add"));
-        page.compose(Rc::new(|_, _, _| ActOutcome::Keep));
+        page.compose(Rc::new(|_, _, _| ActOutcome::Close));
         assert!(page.compose.is_some());
         let (json, picks, acts) = page_json(9, "composer:app-add", page).expect("small page");
         assert_eq!(json, "{\"v\":1,\"t\":\"composer\",\"tok\":9,\"kind\":\"composer:app-add\",\"mode\":\"app-add\"}");

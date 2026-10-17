@@ -28,6 +28,18 @@ jobs:
             (Join-Path $pwd 'benchmarks/scripts/verify-release-candidate.ps1'),
             [ref]$tokens, [ref]$parseErrors) | Out-Null
           if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw 'Native smoke script does not parse.' }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustc +stable --version
+          cargo +stable --version
+      - name: Test default native Windows source
+        run: cargo +stable test --locked
+      - name: Test shipping HTML-default Windows source
+        run: cargo +stable test --locked --features html-chrome-default
+      - name: Check Windows source with Clippy
+        run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -66,16 +78,6 @@ jobs:
         run: |
           git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
           if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed source/assets.' }
-      - name: Install official Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
-          rustc +stable --version
-          cargo +stable --version
-      - name: Test Windows source and default HTML chrome
-        run: cargo +stable test --locked --features html-chrome-default
-      - name: Check Windows source with Clippy
-        run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
       - name: Build release candidate
         run: cargo +stable build --release --locked --bin bowser --features html-chrome-default
       - name: Smoke exact native release executable in isolated profile
