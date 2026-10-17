@@ -141,6 +141,10 @@ const WM_TAB_TICK_TIMER: usize = 0xB0A1;
 const WM_TAB_THUMB_TIMER: usize = 0xB0A2;
 const WM_TAB_LINK_TIMER: usize = 0xB0A3;
 // --- end tab options ---
+// --- theme options ---
+/// Twice a minute while the theme follows a time schedule: is it time to switch between light and dark?
+const WM_THEME_SCHEDULE_TIMER: usize = 0xB0A4;
+// --- end theme options ---
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
 // --- end popup host ---
 /// Posted from the first paint to start the HTML chrome. Posted, not called, so the paint finishes
@@ -1741,6 +1745,32 @@ pub(crate) fn schedule_power_timer(hwnd: HWND, enabled: bool) {
         }
     }
 }
+// --- theme options ---
+/// Starts or stops the half-minute timer the time schedule of the theme runs on.
+pub(crate) fn set_theme_timer(hwnd: HWND, on: bool) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        if on {
+            let _ = SetTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER, 30_000, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER);
+        }
+    }
+}
+
+/// Has the window take a changed light/dark look or palette: the backdrop, the chrome and the
+/// hosts follow, as they do when Windows changes its colours.
+pub(crate) fn refresh_theme(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_THEMECHANGED, WPARAM(0), LPARAM(0));
+    }
+}
+// --- end theme options ---
 // --- tab options ---
 /// Starts or stops the window's one-second tab tick.
 pub(crate) fn set_tab_tick(hwnd: HWND, on: bool) {
@@ -2288,6 +2318,11 @@ unsafe extern "system" fn window_proc(
                         return LRESULT(0);
                     }
                 }
+                // --- theme options --- the person's colours follow the Windows accent they were made with.
+                if let Some(app) = app {
+                    App::refresh_theme_install(app);
+                }
+                // --- end theme options ---
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
@@ -2323,6 +2358,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_CREATE => {
                 if let Some(app) = app {
+                    App::theme_window_created(app, hwnd); // --- theme options ---
                     let instance = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
                     let edit = match CreateWindowExW(
                         windows::Win32::UI::WindowsAndMessaging::WS_EX_TRANSPARENT,
@@ -3778,6 +3814,16 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- theme options --- the time schedule (App::theme_tick).
+            WM_TIMER if wparam.0 == WM_THEME_SCHEDULE_TIMER => {
+                if let Some(app) = app {
+                    App::theme_tick(app);
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER);
+                }
+                LRESULT(0)
+            }
+            // --- end theme options ---
             // --- tab options --- periodic reload and the audio rule (App::tab_tick).
             WM_TIMER if wparam.0 == WM_TAB_TICK_TIMER => {
                 if let Some(app) = app {
@@ -4803,7 +4849,13 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         None => (palette, system_look == crate::theme::Appearance::Dark),
     };
     // --- end wave-1 integration ---
-    let mut palette = crate::theme::with_accent(palette, accent);
+    // --- theme options --- the person's colours and accent (the page's, when asked) for this host too.
+    let look = if dark { crate::theme::Appearance::Dark } else { crate::theme::Appearance::Light };
+    let mut palette = match app_of(hwnd) {
+        Some(app) => App::themed_palette(&app, look, !palette.translucent).0,
+        None => crate::theme::with_accent(palette, accent),
+    };
+    // --- end theme options ---
     palette.window.a = 255;
     ViewState {
         scale: dpi as f32 / 96.0,
@@ -8720,7 +8772,7 @@ fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let Some((palette, dpi, layout)) = with_chrome(hwnd, |s| {
+    let Some((_chrome_palette, dpi, layout)) = with_chrome(hwnd, |s| {
         if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready) { return None; }
         Some((s.palette, s.dpi, s.layout))
     })
@@ -8736,13 +8788,10 @@ fn html_sync(hwnd: HWND) {
     // theme asks for one (thread T3); otherwise it follows the normal appearance.
     let system_look = glass::appearance();
     let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
-    let palette = if look == system_look {
-        palette
-    } else {
-        crate::theme::palette(look, glass::backdrop_mode() == glass::BackdropMode::Solid)
-    };
+    // --- theme options --- the person's colours, the accent (the page's, when asked) and the tint.
+    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid);
+    // --- end theme options ---
     let dark = look == crate::theme::Appearance::Dark;
-    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
     let state = ViewState {
         scale: dpi as f32 / 96.0,
         pillx,
@@ -9234,8 +9283,12 @@ pub(super) fn html_panel_accelerator(hwnd: HWND, accel: Accel) -> bool {
 pub(super) fn html_panel_state(hwnd: HWND) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
-    let accent = app_of(hwnd).and_then(|app| App::settings_accent(&app));
-    let palette = crate::theme::with_accent(palette, accent);
+    // --- theme options ---
+    let palette = match app_of(hwnd) {
+        Some(app) => App::themed_palette(&app, glass::appearance(), !palette.translucent).0,
+        None => palette.clone(),
+    };
+    // --- end theme options ---
     ViewState {
         scale: dpi as f32 / 96.0,
         pillx: 0,
@@ -9711,7 +9764,9 @@ pub(super) fn request_composer(
 pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
     let app = app_of(hwnd)?;
     let (palette, dpi) = with_chrome(hwnd, |s| (s.palette, s.dpi))?;
-    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
+    // --- theme options ---
+    let palette = App::themed_palette(&app, glass::appearance(), !palette.translucent).0;
+    // --- end theme options ---
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
     let settings = App::settings(&app);

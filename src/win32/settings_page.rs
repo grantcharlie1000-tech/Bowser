@@ -759,6 +759,33 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
         }
         // --- end tab options ---
+        // --- theme options ---
+        Action::ThemeOption(text) => {
+            if App::set_theme_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        Action::ThemeReset => {
+            App::reset_theme(app);
+            answer(owner, Ok(()));
+        }
+        Action::ThemeExport => match export_theme_file(owner, app) {
+            Ok(true) => answer(owner, Ok(())),
+            Ok(false) => {
+                let _ = with(owner, |rt| rt.dirty = true);
+            }
+            Err(message) => answer(owner, Err(message)),
+        },
+        Action::ThemeImport => match import_theme_file(owner, app) {
+            Ok(true) => answer(owner, Ok(())),
+            Ok(false) => {
+                let _ = with(owner, |rt| rt.dirty = true);
+            }
+            Err(message) => answer(owner, Err(message)),
+        },
+        // --- end theme options ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.
@@ -776,6 +803,49 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
     }
 }
+
+// --- theme options --- the theme file: the person picks the file in Windows' own dialog; the page never
+// names a path. What is read is checked by `theme_custom::parse_theme_file` before anything is applied.
+
+/// "Export theme": `Ok(false)` when the dialog was cancelled.
+fn export_theme_file(owner: HWND, app: &AppRef) -> Result<bool, String> {
+    let dir = crate::download_shell::default_downloads_dir().unwrap_or_default();
+    let Some(path) = crate::download_shell::save_dialog(owner, &dir, crate::theme_custom::FILE_NAME) else {
+        return Ok(false);
+    };
+    let text = App::export_theme_text(app);
+    std::fs::write(&path, text).map_err(|error| format!("The theme could not be saved: {error}."))?;
+    Ok(true)
+}
+
+/// "Import theme": `Ok(false)` when the dialog was cancelled.
+fn import_theme_file(owner: HWND, app: &AppRef) -> Result<bool, String> {
+    let Some(path) = crate::download_shell::open_dialog(owner, "Choose a Bowser theme file", "Bowser theme files", crate::theme_custom::FILE_EXTENSION) else {
+        return Ok(false);
+    };
+    let bytes = read_theme_file(&path)?;
+    App::import_theme(app, &bytes)?;
+    Ok(true)
+}
+
+/// The bytes of a theme file, read only if it is a regular file no larger than the cap (and never
+/// more than the cap plus one byte, whatever the file grows to while it is read).
+fn read_theme_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let cap = crate::theme_custom::MAX_THEME_FILE_BYTES;
+    let file = std::fs::File::open(path).map_err(|error| format!("The theme file could not be opened: {error}."))?;
+    let meta = file.metadata().map_err(|error| format!("The theme file could not be read: {error}."))?;
+    if !meta.is_file() {
+        return Err(crate::theme_custom::FileError::NotATheme.to_string());
+    }
+    if meta.len() > cap as u64 {
+        return Err(crate::theme_custom::FileError::TooLarge.to_string());
+    }
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1).read_to_end(&mut bytes).map_err(|error| format!("The theme file could not be read: {error}."))?;
+    Ok(bytes)
+}
+// --- end theme options ---
 
 // ----- the Keyboard and Quick Commands sections (docs/commands.md) -----
 

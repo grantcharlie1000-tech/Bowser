@@ -854,6 +854,9 @@ pub use privacy::DeleteReport;
 mod tab_features;
 pub use tab_features::{TabStripExtra, MAX_SESSION_NAME_CHARS, MAX_TAB_NAME_CHARS};
 // --- end tab options ---
+// --- theme options --- colours, accent mode, schedule and the theme file (thread T8).
+mod theme_features;
+// --- end theme options ---
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -4879,6 +4882,7 @@ impl App {
         app.reader_prefs = app.settings.page_tools.reader_prefs();
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
         crate::layout_prefs::set_status_overlay(app.settings.status_bar); // --- layout (thread T6) ---
+        theme_features::install_launch_theme(&app.settings); // --- theme options ---
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -5848,6 +5852,7 @@ impl App {
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = loaded_events_app.upgrade() {
                         App::tab_page_loaded(&app, tab_id);
+                        App::sample_page_accent(&app, tab_id); // --- theme options ---
                         // One read-only probe decides whether the toolbar offers reader view.
                         if app.borrow().tab_model.active() == tab_id {
                             App::schedule_reader_probe(&app, tab_id);
@@ -6045,6 +6050,7 @@ impl App {
                     };
                     if found {
                         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        Self::note_favicon_colour(&app, tab_id); // --- theme options ---
                     }
                 }
             })),
@@ -6827,6 +6833,7 @@ impl App {
             // --- end wave-1 fixes ---
             state.settings.theme = settings.theme;
             state.settings.theme_accent = settings.theme_accent.clone();
+            state.settings.themes = settings.themes.clone(); // --- theme options ---
             state.settings.centred_address_bar = settings.centred_address_bar;
             state.settings.minimal_url = settings.minimal_url;
             state.settings.show_load_progress = settings.show_load_progress;
@@ -6888,6 +6895,7 @@ impl App {
             Self::tab_options_changed(app, &before);
         }
         Self::mark_synced_from(app, &before); // --- wave-1 fixes ---
+        Self::apply_theme_options(app); // --- theme options ---
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         // The address field's own font follows font_size and ui_font (the painted chrome and the
@@ -7531,6 +7539,7 @@ mod tests {
     mod tab_flow; // --- tab options ---
     mod wave1_fixes; // --- wave-1 fixes ---
     mod page_tools_flow; // --- page tools (T7) ---
+    mod theme_flow; // --- theme options ---
 
     #[test]
     fn reader_probe_due_table() {

@@ -1925,6 +1925,8 @@ fn save_form(hwnd: HWND) {
         ui_zoom: current.ui_zoom,
         layout_saved: current.layout_saved,
         // --- end layout ---
+        // The GDI form has no controls for the theme options (the HTML settings page has them).
+        themes: current.themes,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

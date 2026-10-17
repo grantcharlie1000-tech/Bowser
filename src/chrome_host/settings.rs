@@ -86,6 +86,7 @@ pub struct Snapshot<'a> {
 const MAX_DOWNLOAD_DIR_CHARS: usize = 260;
 /// Longest `key=value` text of one tab option (the new tab address is the longest value).
 const MAX_TAB_OPTION_TEXT: usize = 2100;
+const MAX_THEME_OPTION_TEXT: usize = 64;
 
 pub fn snapshot_json(s: &Snapshot<'_>) -> String {
     let settings = s.settings;
@@ -139,6 +140,17 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             }
         });
         // --- end tab options ---
+        // --- theme options ---
+        out.object("themeOptions", |options| {
+            for (key, value) in settings.themes.entries() {
+                match value {
+                    crate::tab_options::Value::Bool(on) => options.bool(key, on),
+                    crate::tab_options::Value::Text(text) => options.string(key, &text),
+                    crate::tab_options::Value::Uint(n) => options.uint(key, n),
+                }
+            }
+        });
+        // --- end theme options ---
         out.bool("autoUpdate", s.auto_update);
         out.bool("historyEnabled", s.history_enabled && !s.guest);
         out.bool("guest", s.guest);
@@ -238,6 +250,16 @@ pub enum Action {
     /// One `key=value` change of the Tabs section, checked by `tab_options::apply_assignment`.
     TabOption(String),
     // --- end tab options ---
+    // --- theme options ---
+    /// One `key=value` change of the theme options, checked by `theme_custom::apply_assignment`.
+    ThemeOption(String),
+    /// "Export theme": Bowser shows the native save dialog and writes the theme file.
+    ThemeExport,
+    /// "Import theme": Bowser shows the native open dialog and checks the file it reads.
+    ThemeImport,
+    /// "Reset theme settings": the theme, accent and every theme option back to the defaults.
+    ThemeReset,
+    // --- end theme options ---
 }
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
@@ -275,6 +297,16 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             Action::TabOption(text.to_owned())
         }
         // --- end tab options ---
+        // --- theme options ---
+        "themeopt" if text_only => {
+            let text = f.text.as_deref()?;
+            if text.len() > MAX_THEME_OPTION_TEXT || !crate::theme_custom::accepts(text) { return None; }
+            Action::ThemeOption(text.to_owned())
+        }
+        "themeexport" if bare => Action::ThemeExport,
+        "themeimport" if bare => Action::ThemeImport,
+        "themereset" if bare => Action::ThemeReset,
+        // --- end theme options ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
@@ -542,6 +574,51 @@ mod tests {
             assert_eq!(map_command(&fields(unknown)), None, "{unknown}");
         }
     }
+
+    // --- theme options ---
+    #[test]
+    fn theme_commands_carry_exactly_their_own_fields_and_only_legal_values() {
+        let mut change = fields("themeopt");
+        assert_eq!(map_command(&change), None, "a theme option needs its text");
+        for good in ["theme_schedule=time", "theme_look=dark", "theme_light_from=06:30", "theme_dark_from=22:00", "theme_background=#102030", "theme_foreground=", "theme_highlight=#FFCC00",
+            "theme_colouring=unified", "theme_accent_page=true", "theme_saturation=40", "theme_contrast=high"] {
+            change.text = Some(good.into());
+            assert_eq!(map_command(&change), Some(Action::ThemeOption(good.into())), "{good}");
+        }
+        for bad in ["theme_schedule=weekly", "theme_background=red", "theme_background=#12345", "theme_saturation=101", "theme_light_from=25:00", "theme_nothing=1", "tabs_scroll=true", "theme_look", "=", "theme_accent=#112233"] {
+            change.text = Some(bad.into());
+            assert_eq!(map_command(&change), None, "{bad}");
+        }
+        change.text = Some(format!("theme_foreground={}", "#".repeat(80)));
+        assert_eq!(map_command(&change), None, "an over-long value");
+        change.text = Some("theme_look=dark".into());
+        change.on = Some(true);
+        assert_eq!(map_command(&change), None, "a theme option carries no switch");
+        change.on = None;
+        change.url = Some("https://example.com/".into());
+        assert_eq!(map_command(&change), None);
+        for (name, action) in [("themeexport", Action::ThemeExport), ("themeimport", Action::ThemeImport), ("themereset", Action::ThemeReset)] {
+            assert_eq!(map_command(&fields(name)), Some(action), "{name}");
+            // The file is picked by Bowser's own dialog: the command carries nothing, least of all a path.
+            let mut with_text = fields(name);
+            with_text.text = Some("C:\\Windows\\win.ini".into());
+            assert_eq!(map_command(&with_text), None, "{name} with a path");
+            let mut with_on = fields(name);
+            with_on.on = Some(true);
+            assert_eq!(map_command(&with_on), None, "{name} with on");
+        }
+    }
+
+    #[test]
+    fn the_snapshot_carries_every_theme_option_with_the_values_the_page_reads() {
+        let mut settings = Settings::default();
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r#""themeOptions":{"theme_schedule":"system","theme_look":"light","theme_light_from":"07:00","theme_dark_from":"19:00","theme_background":"","theme_foreground":"","theme_highlight":"","theme_colouring":"off","theme_accent_page":false,"theme_saturation":100,"theme_contrast":"standard"}"#), "{json}");
+        assert!(settings.themes.set("theme_background", "#102030") && settings.themes.set("theme_accent_page", "true") && settings.themes.set("theme_saturation", "35"));
+        let json = snapshot_json(&sample(&settings));
+        assert!(json.contains(r##""theme_background":"#102030""##) && json.contains(r#""theme_accent_page":true,"theme_saturation":35"#), "{json}");
+    }
+    // --- end theme options ---
 
     fn sample<'a>(settings: &'a Settings) -> Snapshot<'a> {
         Snapshot {
